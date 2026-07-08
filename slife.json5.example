@@ -1,0 +1,65 @@
+{
+  // ═══════════════════════════════════════════════════════════════
+  // slife Configuration — OpenClaw-compatible JSON5 format
+  // ═══════════════════════════════════════════════════════════════
+  // API keys: set as environment variables, reference with ${VAR}.
+
+  // ── Agent defaults ───────────────────────────────────────────
+
+  agent: {
+    max_iterations: 10,
+    system_prompt: "You are slife, a helpful AI assistant with access to tools.\nUse web_search to find current information from the web.\nUse execute_shell to run shell commands on the user's system.\nThink step by step and use tools when needed.\nWhen you have enough information, answer the user directly.",
+  },
+
+  // ── Models ───────────────────────────────────────────────────
+  // id    = local identifier (unique within provider)
+  // model = actual API model name
+  // name  = display label
+
+  models: {
+    mode: "merge",
+
+    providers: {
+      deepseek: {
+        base_url: "https://api.deepseek.com",
+        api_key: "${DEEPSEEK_API_KEY}",
+        api: "openai-completions",
+
+        models: [
+          {
+            id: "v4-flash",
+            model: "deepseek-v4-flash",
+            name: "DeepSeek V4 Flash",
+            reasoning: false,
+            input: ["text", "image"],
+            context_window: 131072,
+            max_tokens: 8192,
+            temperature: 0.7,
+            top_p: 1.0,
+          },
+          {
+            id: "v4-pro",
+            model: "deepseek-v4-pro",
+            name: "DeepSeek V4 Pro",
+            reasoning: true,
+            // reasoning_effort: "high",
+            input: ["text", "image"],
+            context_window: 131072,
+            max_tokens: 8192,
+            temperature: 0.7,
+            top_p: 1.0,
+          },
+        ],
+      },
+    },
+  },
+
+  active_model: "deepseek/v4-pro",
+
+  // ── Tools ────────────────────────────────────────────────────
+
+  tools: [
+    { type: "serper", api_key: "${SERPER_API_KEY}" },
+    { type: "shell", timeout: 30 },
+  ],
+}

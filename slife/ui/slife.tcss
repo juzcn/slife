@@ -1,0 +1,66 @@
+Screen {
+    background: $surface;
+}
+
+Header {
+    background: $primary-darken-1;
+    color: $text;
+    text-style: bold;
+}
+
+ChatView {
+    overflow-y: auto;
+    padding: 1;
+    scrollbar-size: 1 0;
+}
+
+.user-message {
+    background: $primary 15%;
+    color: $text;
+    margin: 1 0;
+    padding: 1 2;
+    border-left: thick $primary;
+}
+
+.assistant-message {
+    margin: 1 0;
+    padding: 1 2;
+    border-left: thick $success;
+}
+
+.system-message {
+    margin: 1 0;
+    padding: 0 2;
+    color: $text-disabled;
+    text-style: italic;
+}
+
+.tool-call {
+    margin: 1 2;
+    padding: 1;
+    border: solid $warning 50%;
+    background: $panel;
+}
+
+.tool-call > Static {
+    padding: 0 1;
+}
+
+.tool-detail {
+    margin: 0 1;
+    padding: 1;
+    background: $panel-darken-1;
+    overflow-x: auto;
+    height: auto;
+}
+
+InputBar {
+    dock: bottom;
+    height: auto;
+    padding: 1;
+    border-top: solid $primary 30%;
+}
+
+InputBar Input {
+    width: 100%;
+}

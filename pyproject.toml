@@ -1,0 +1,21 @@
+[project]
+name = "slife"
+version = "0.1.0"
+description = "Silicon-based life based on LLM"
+requires-python = ">=3.13"
+dependencies = [
+    "textual>=1.0.0",
+    "openai>=1.0.0",
+    "httpx>=0.27.0",
+    "json5>=0.15.0",
+]
+
+[project.scripts]
+slife = "slife:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["slife"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
