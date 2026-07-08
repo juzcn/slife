@@ -2,6 +2,7 @@
 
 import base64
 import mimetypes
+import re
 from pathlib import Path
 
 
@@ -41,19 +42,19 @@ def encode_image(path: str | Path) -> dict:
     }
 
 
+_FILE_PATTERN = re.compile(r"^/file\s+(.+)$")
+
+
 def parse_file_attachments(text: str) -> tuple[str, list[str]]:
     """Extract /file <path> directives from user input.
 
     Returns (cleaned_text, [file_path, ...]).
     """
-    import re
-
-    paths = []
-    cleaned_parts = []
-    pattern = re.compile(r"^/file\s+(.+)$")
+    paths: list[str] = []
+    cleaned_parts: list[str] = []
 
     for line in text.split("\n"):
-        m = pattern.match(line.strip())
+        m = _FILE_PATTERN.match(line.strip())
         if m:
             paths.append(m.group(1).strip())
         else:

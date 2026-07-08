@@ -1,17 +1,7 @@
 """Abstract base classes for the tool system."""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-
-
-@dataclass
-class ToolResult:
-    """Result of executing a tool."""
-
-    tool_call_id: str
-    tool_name: str
-    content: str
-    is_error: bool = False
+from typing import ClassVar
 
 
 class Tool(ABC):
@@ -26,9 +16,9 @@ class Tool(ABC):
     Validation happens at class definition time via __init_subclass__.
     """
 
-    name: str
-    description: str
-    parameters: dict
+    name: ClassVar[str]
+    description: ClassVar[str]
+    parameters: ClassVar[dict]
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)

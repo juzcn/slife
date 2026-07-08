@@ -1,66 +1,124 @@
+/* ═══════════════════════════════════════════════════════════════════
+   slife TUI — Claude Code CLI style
+   Dark minimal theme with warm amber accents.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Screen ──────────────────────────────────────────────────── */
+
 Screen {
-    background: $surface;
+    background: #0d1117;
+    color: #e6edf3;
 }
 
-Header {
-    background: $primary-darken-1;
-    color: $text;
-    text-style: bold;
-}
+/* ── Chat view (main scrollable area) ────────────────────────── */
 
 ChatView {
     overflow-y: auto;
-    padding: 1;
-    scrollbar-size: 1 0;
+    padding: 0;
+    scrollbar-size: 0 0;
+    scrollbar-color: #30363d;
+    scrollbar-color-hover: #484f58;
 }
+
+/* ── User messages — ">" style ───────────────────────────────── */
 
 .user-message {
-    background: $primary 15%;
-    color: $text;
-    margin: 1 0;
-    padding: 1 2;
-    border-left: thick $primary;
+    margin: 1 0 0 0;
+    padding: 0 1;
+    color: #e6edf3;
 }
+
+.user-message > Static {
+    width: 100%;
+}
+
+/* ── Assistant messages — clean, no label ────────────────────── */
 
 .assistant-message {
-    margin: 1 0;
-    padding: 1 2;
-    border-left: thick $success;
+    margin: 0 0 1 0;
+    padding: 0 1;
+    color: #e6edf3;
 }
 
-.system-message {
-    margin: 1 0;
-    padding: 0 2;
-    color: $text-disabled;
+/* ── Thinking block inside assistant messages ────────────────── */
+
+.thinking-block {
+    color: #6e7681;
     text-style: italic;
-}
-
-.tool-call {
-    margin: 1 2;
-    padding: 1;
-    border: solid $warning 50%;
-    background: $panel;
-}
-
-.tool-call > Static {
+    margin: 0 0 1 0;
     padding: 0 1;
 }
 
+/* ── System messages ─────────────────────────────────────────── */
+
+.system-message {
+    margin: 0 0;
+    padding: 0 1;
+    color: #6e7681;
+    text-style: italic;
+}
+
+/* ── Tool call containers ────────────────────────────────────── */
+
+.tool-call {
+    margin: 0 1 1 2;
+    padding: 0 1;
+    border: solid #30363d;
+    background: #161b22;
+}
+
+.tool-call > Static {
+    padding: 0;
+}
+
+.tool-call-header {
+    color: #d29922;
+    text-style: bold;
+}
+
 .tool-detail {
-    margin: 0 1;
+    margin: 0;
     padding: 1;
-    background: $panel-darken-1;
+    background: #0d1117;
+    color: #c9d1d9;
     overflow-x: auto;
     height: auto;
+    border-top: dashed #30363d;
 }
+
+/* ── Input bar (bottom docked) ───────────────────────────────── */
 
 InputBar {
     dock: bottom;
     height: auto;
-    padding: 1;
-    border-top: solid $primary 30%;
+    padding: 0 1 1 1;
+    background: #0d1117;
+    border-top: solid #30363d;
 }
 
 InputBar Input {
     width: 100%;
+    background: #0d1117;
+    color: #e6edf3;
+    border: none;
+    padding: 1 1;
+}
+
+InputBar Input:focus {
+    border: none;
+}
+
+InputBar Input > .input--placeholder {
+    color: #484f58;
+}
+
+/* ── Status bar (bottom docked, below input) ─────────────────── */
+
+StatusBar {
+    dock: bottom;
+    height: 1;
+    background: #161b22;
+    color: #6e7681;
+    padding: 0 1;
+    text-style: none;
 }

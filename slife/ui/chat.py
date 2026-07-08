@@ -1,4 +1,4 @@
-"""Chat view widgets for the slife TUI."""
+"""Chat view widgets for the slife TUI — Claude Code CLI style."""
 
 from textual.containers import Container, VerticalScroll
 from textual.widgets import Input, Static
@@ -11,7 +11,9 @@ class ChatView(VerticalScroll):
 
     can_focus = False
 
-    def add_user_message(self, text: str, images: list[str] | None = None) -> "UserMessage":
+    def add_user_message(
+        self, text: str, images: list[str] | None = None
+    ) -> "UserMessage":
         """Add and return a user message widget."""
         msg = UserMessage(text, images=images)
         self.mount(msg)
@@ -33,20 +35,23 @@ class ChatView(VerticalScroll):
 
 
 class UserMessage(Static):
-    """Displays a user message with optional file attachment indicators."""
+    """User message — "> text" prefix style, no label."""
 
     def __init__(self, text: str, images: list[str] | None = None):
-        parts = ["[bold]You:[/bold]"]
+        parts = [f"[bold #d97706]>[/bold #d97706] {text}"]
         if images:
             file_list = ", ".join(images)
-            parts.append(f" [dim][📎 {file_list}][/dim]")
-        parts.append(f" {text}")
+            parts.append(f" [dim]# 📎 {file_list}[/dim]")
         super().__init__("".join(parts))
         self.add_class("user-message")
 
 
 class AssistantMessage(Static):
-    """Displays an assistant message with thinking and token usage."""
+    """Assistant message — clean text with optional thinking block.
+
+    Claude Code style: no "Assistant:" label, thinking in dim italic,
+    response text cleanly presented, token usage shown subtly.
+    """
 
     def __init__(self):
         super().__init__("")
@@ -62,9 +67,9 @@ class AssistantMessage(Static):
         self._has_thinking = True
         self._refresh_display()
 
-    def append_char(self, char: str) -> None:
-        """Append a character to the visible response."""
-        self._buffer += char
+    def append_text(self, text: str) -> None:
+        """Append text to the visible response."""
+        self._buffer += text
         self._refresh_display()
 
     def set_token_usage(self, usage: TokenUsage) -> None:
@@ -73,9 +78,10 @@ class AssistantMessage(Static):
         self._refresh_display()
 
     def _refresh_display(self) -> None:
-        """Rebuild the display from thinking, response, and usage."""
+        """Rebuild the display in Claude Code style."""
         parts = []
 
+        # Thinking block — dim italic, subtle header
         if self._has_thinking:
             thinking_display = (
                 self._thinking[:500] + "..."
@@ -83,19 +89,21 @@ class AssistantMessage(Static):
                 else self._thinking
             )
             parts.append(
-                f"[dim italic]Thought:[/dim italic] [dim]{thinking_display}[/dim]"
+                f"[dim italic]⟐ Thinking…[/dim italic]\n"
+                f"[dim]{thinking_display}[/dim]"
             )
             parts.append("")
 
+        # Response text — clean, no label
         if self._buffer:
-            parts.append(f"[bold]Assistant:[/bold] {self._buffer}")
-        else:
-            if not self._has_thinking:
-                parts.append("[bold]Assistant:[/bold] [dim]...[/dim]")
+            parts.append(self._buffer)
+        elif not self._has_thinking:
+            parts.append("[dim]…[/dim]")
 
+        # Token usage — very subtle
         if self._usage:
             parts.append(
-                f"[dim]↖ {self._usage.total_tokens:,} tokens "
+                f"\n[dim]↑ {self._usage.total_tokens:,} tokens "
                 f"(in: {self._usage.prompt_tokens:,}, "
                 f"out: {self._usage.completion_tokens:,})[/dim]"
             )
@@ -104,13 +112,10 @@ class AssistantMessage(Static):
 
 
 class InputBar(Container):
-    """Bottom input bar with text input field."""
+    """Bottom input bar — minimal, prompt-style."""
 
     def compose(self):
         yield Input(
-            placeholder=(
-                "Type your message... (/file <path> to attach, "
-                "Ctrl+C to quit, Ctrl+L to clear)"
-            ),
+            placeholder="Message slife…",
             id="user-input",
         )

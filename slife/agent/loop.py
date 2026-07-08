@@ -1,13 +1,15 @@
-"""Function-calling agent loop with token tracking and thinking support."""
+"""Function-calling agent loop with real-time streaming and thinking support."""
 
-import asyncio
 import json
-from collections.abc import Callable, Awaitable
 from dataclasses import dataclass
+from typing import Protocol
 
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.conversation import Conversation
 from slife.tools.registry import ToolRegistry
+
+
+# ── Types ──────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -35,17 +37,63 @@ class MaxIterationsExceeded(Exception):
         super().__init__(f"Agent exceeded maximum of {iterations} iterations")
 
 
+class AgentEventHandler(Protocol):
+    """Protocol for handling agent events during streaming.
+
+    Implementations (e.g. a TUI) receive real-time callbacks
+    as thinking, text, tool calls, and token usage are produced.
+    """
+
+    async def on_thinking_chunk(self, chunk: str) -> None:
+        """Called with each reasoning/thinking token as it arrives."""
+        ...
+
+    async def on_text_chunk(self, chunk: str) -> None:
+        """Called with each text token as it arrives from the LLM."""
+        ...
+
+    async def on_tool_call(self, tool_call: ToolCallInfo) -> None:
+        """Called before a tool is executed."""
+        ...
+
+    async def on_tool_result(
+        self, tool_call_id: str, result: str, is_error: bool
+    ) -> None:
+        """Called after a tool finishes executing."""
+        ...
+
+    async def on_token_usage(self, usage: TokenUsage) -> None:
+        """Called with cumulative token usage after each LLM call."""
+        ...
+
+
+# ── Stream accumulator ─────────────────────────────────────────────
+
+
+@dataclass
+class _StreamResult:
+    """Accumulated result from processing a single streaming response."""
+
+    content: str
+    thinking: str
+    usage: TokenUsage
+    tool_accum: dict[int, dict]  # index → partial tool call info
+
+
+# ── Agent loop ─────────────────────────────────────────────────────
+
+
 class AgentLoop:
-    """Core function-calling agent loop.
+    """Core function-calling agent loop with real-time streaming.
 
     The loop:
-      1. Sends conversation + tools to the LLM
-      2. If the LLM returns tool_calls, executes them and loops
-      3. If the LLM returns text (no tool_calls), returns the final text
+      1. Sends conversation + tools to the LLM via streaming API
+      2. Emits thinking and text chunks via callbacks in real-time
+      3. Accumulates tool call deltas; if the model requests tools,
+         executes them and loops back
+      4. If the LLM returns text (no tool calls), returns the final text
 
     Tracks cumulative token usage across all API calls in the loop.
-    Callbacks allow the TUI to display streaming text, thinking content,
-    tool calls, tool results, and token usage in real time.
     """
 
     def __init__(
@@ -59,24 +107,6 @@ class AgentLoop:
         self.max_iterations = max_iterations
 
     # ── Tool call helpers ──────────────────────────────────────────
-
-    @staticmethod
-    def _parse_tool_calls(message) -> list[ToolCallInfo]:
-        """Parse OpenAI tool_calls from a response message."""
-        parsed = []
-        for tc in message.tool_calls or []:
-            try:
-                args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError:
-                args = {}
-            parsed.append(
-                ToolCallInfo(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=args,
-                )
-            )
-        return parsed
 
     @staticmethod
     def _serialize_tool_calls(tool_calls: list[ToolCallInfo]) -> list[dict]:
@@ -95,6 +125,118 @@ class AgentLoop:
             for tc in tool_calls
         ]
 
+    @staticmethod
+    def _build_tool_calls_from_deltas(
+        accum: dict[int, dict],
+    ) -> list[ToolCallInfo]:
+        """Build ToolCallInfo list from accumulated streaming deltas."""
+        result = []
+        for idx in sorted(accum.keys()):
+            acc = accum[idx]
+            try:
+                args = (
+                    json.loads(acc["arguments"])
+                    if acc["arguments"].strip()
+                    else {}
+                )
+            except json.JSONDecodeError:
+                args = {}
+            result.append(
+                ToolCallInfo(
+                    id=acc["id"],
+                    name=acc["name"],
+                    arguments=args,
+                )
+            )
+        return result
+
+    # ── Stream processing ──────────────────────────────────────────
+
+    async def _process_stream(
+        self,
+        conversation: Conversation,
+        handler: AgentEventHandler | None,
+    ) -> _StreamResult:
+        """Consume a single streaming LLM response.
+
+        Emits thinking and text chunks to the handler in real-time.
+        Accumulates tool call deltas, content, and usage.
+
+        Returns a _StreamResult with the complete response data.
+        """
+        content_parts: list[str] = []
+        thinking_parts: list[str] = []
+        tool_accum: dict[int, dict] = {}
+        stream_usage = TokenUsage()
+
+        async for chunk in self.llm_client.chat_stream(
+            messages=conversation.to_openai_messages(),
+            tools=self.tool_registry.to_openai_functions(),
+        ):
+            if chunk.thinking:
+                thinking_parts.append(chunk.thinking)
+                if handler:
+                    await handler.on_thinking_chunk(chunk.thinking)
+
+            if chunk.content:
+                content_parts.append(chunk.content)
+                if handler:
+                    await handler.on_text_chunk(chunk.content)
+
+            if chunk.tool_deltas:
+                for td in chunk.tool_deltas:
+                    idx = td["index"]
+                    if idx not in tool_accum:
+                        tool_accum[idx] = {
+                            "id": "",
+                            "name": "",
+                            "arguments": "",
+                        }
+                    acc = tool_accum[idx]
+                    if td["id"]:
+                        acc["id"] = td["id"]
+                    if td["function"]["name"]:
+                        acc["name"] = td["function"]["name"]
+                    if td["function"]["arguments"]:
+                        acc["arguments"] += td["function"]["arguments"]
+
+            if chunk.usage:
+                stream_usage = chunk.usage
+
+        return _StreamResult(
+            content="".join(content_parts),
+            thinking="".join(thinking_parts),
+            usage=stream_usage,
+            tool_accum=tool_accum,
+        )
+
+    # ── Tool execution ─────────────────────────────────────────────
+
+    async def _execute_tools(
+        self,
+        tool_calls: list[ToolCallInfo],
+        conversation: Conversation,
+        handler: AgentEventHandler | None,
+    ) -> None:
+        """Execute a batch of tool calls and record results.
+
+        Emits on_tool_call/on_tool_result via the handler.
+        Adds tool result messages to the conversation.
+        """
+        for tc in tool_calls:
+            if handler:
+                await handler.on_tool_call(tc)
+
+            result = await self.tool_registry.execute(
+                tc.name, **tc.arguments
+            )
+            is_error = result.startswith("Error")
+
+            if handler:
+                await handler.on_tool_result(tc.id, result, is_error)
+
+            conversation.add_tool_result(tc.id, result)
+
     # ── Main loop ──────────────────────────────────────────────────
 
     async def run(
@@ -102,28 +244,17 @@ class AgentLoop:
         user_input: str,
         conversation: Conversation,
         images: list[str] | None = None,
-        on_thinking_chunk: Callable[[str], Awaitable[None]] | None = None,
-        on_text_chunk: Callable[[str], Awaitable[None]] | None = None,
-        on_tool_call: Callable[[ToolCallInfo], Awaitable[None]] | None = None,
-        on_tool_result: (
-            Callable[[str, str, bool], Awaitable[None]] | None
-        ) = None,
-        on_token_usage: (
-            Callable[[TokenUsage], Awaitable[None]] | None
-        ) = None,
+        handler: AgentEventHandler | None = None,
     ) -> AgentResult:
         """Run the agent loop for a single user input.
+
+        Uses streaming API so thinking and text appear in real-time.
 
         Args:
             user_input: The user's message text.
             conversation: The conversation history (mutated in place).
             images: Optional list of image file paths to attach.
-            on_thinking_chunk: Called with each char of reasoning content.
-            on_text_chunk: Called with each character of the final response.
-            on_tool_call: Called before each tool execution.
-            on_tool_result: Called after each tool execution with
-                            (tool_call_id, result_str, is_error).
-            on_token_usage: Called with cumulative usage after each LLM call.
+            handler: Optional event handler for real-time callbacks.
 
         Returns:
             AgentResult with final text and cumulative token usage.
@@ -134,63 +265,29 @@ class AgentLoop:
         conversation.add_user_message(user_input, images=images)
         total_usage = TokenUsage()
 
-        for iteration in range(self.max_iterations):
-            response, usage = await self.llm_client.chat(
-                messages=conversation.to_openai_messages(),
-                tools=self.tool_registry.to_openai_functions(),
-                stream=False,
-            )
+        for _ in range(self.max_iterations):
+            result = await self._process_stream(conversation, handler)
 
-            total_usage = total_usage + usage
+            total_usage = total_usage + result.usage
+            if handler:
+                await handler.on_token_usage(total_usage)
 
-            if on_token_usage:
-                await on_token_usage(total_usage)
-
-            message = response.choices[0].message
-
-            # Emit reasoning/thinking content if present (deepseek-reasoner / V4 thinking)
-            reasoning = getattr(message, "reasoning_content", None)
-            if reasoning and on_thinking_chunk:
-                for char in reasoning:
-                    await on_thinking_chunk(char)
-                    await asyncio.sleep(0)
-
-            # Check for tool calls
-            if message.tool_calls:
-                tool_calls = self._parse_tool_calls(message)
-
-                # Record assistant message with tool calls
+            # Tool calls?
+            if result.tool_accum:
+                tool_calls = self._build_tool_calls_from_deltas(
+                    result.tool_accum
+                )
                 conversation.add_assistant_message(
-                    content=message.content,
+                    content=result.content or None,
                     tool_calls=self._serialize_tool_calls(tool_calls),
                 )
+                await self._execute_tools(tool_calls, conversation, handler)
+                continue
 
-                # Execute each tool
-                for tc in tool_calls:
-                    if on_tool_call:
-                        await on_tool_call(tc)
-
-                    result = await self.tool_registry.execute(
-                        tc.name, **tc.arguments
-                    )
-                    is_error = result.startswith("Error")
-
-                    if on_tool_result:
-                        await on_tool_result(tc.id, result, is_error)
-
-                    conversation.add_tool_result(tc.id, result)
-
-                continue  # Loop back to send tool results to LLM
-
-            # No tool calls — this is the final text response
-            content = message.content or ""
-
-            if on_text_chunk and content:
-                for char in content:
-                    await on_text_chunk(char)
-                    await asyncio.sleep(0)
-
-            conversation.add_assistant_message(content=content)
-            return AgentResult(text=content, usage=total_usage)
+            # No tool calls — final response
+            conversation.add_assistant_message(
+                content=result.content or ""
+            )
+            return AgentResult(text=result.content, usage=total_usage)
 
         raise MaxIterationsExceeded(self.max_iterations)

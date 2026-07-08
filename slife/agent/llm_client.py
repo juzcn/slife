@@ -1,5 +1,9 @@
-"""LLM client wrapper for OpenAI-compatible APIs (DeepSeek & others)."""
+"""LLM client wrapper for OpenAI-compatible APIs (DeepSeek & others).
 
+Supports both batch (chat) and real-time streaming (chat_stream) modes.
+"""
+
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from openai import AsyncOpenAI
@@ -30,6 +34,20 @@ class TokenUsage:
         )
 
 
+@dataclass
+class StreamChunk:
+    """A single chunk from a streaming LLM response.
+
+    Fields are mutually exclusive in practice — a given chunk
+    carries either thinking, content, tool deltas, or usage.
+    """
+
+    thinking: str | None = None
+    content: str | None = None
+    tool_deltas: list[dict] | None = None
+    usage: TokenUsage | None = None
+
+
 class LLMClient:
     """Wrapper around AsyncOpenAI, configured from a ModelConfig.
 
@@ -54,23 +72,12 @@ class LLMClient:
         base_url = self.model_config.base_url.lower()
         return "deepseek" in provider or "deepseek" in base_url
 
-    async def chat(
-        self,
-        messages: list[dict],
-        tools: list[dict] | None = None,
-        stream: bool = False,
-    ) -> tuple:
-        """Send a chat completion request.
+    # ── Shared kwargs ──────────────────────────────────────────────
 
-        Args:
-            messages: OpenAI-format message list.
-            tools: Optional function definitions.
-            stream: If True, return a streaming response.
-
-        Returns:
-            Tuple of (response, TokenUsage).
-            response is the ChatCompletion or AsyncStream object.
-        """
+    def _build_kwargs(
+        self, messages: list[dict], tools: list[dict] | None
+    ) -> dict:
+        """Build shared kwargs for both batch and streaming requests."""
         kwargs: dict = {
             "model": self.model_config.api_model,
             "messages": messages,
@@ -81,10 +88,6 @@ class LLMClient:
 
         if tools:
             kwargs["tools"] = tools
-
-        if stream:
-            kwargs["stream"] = True
-            kwargs["stream_options"] = {"include_usage": True}
 
         # DeepSeek-specific thinking mode control
         if self._is_deepseek():
@@ -106,11 +109,29 @@ class LLMClient:
                 )
             kwargs["extra_body"] = extra_body
 
+        return kwargs
+
+    # ── Batch (non-streaming) ─────────────────────────────────────
+
+    async def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+    ) -> tuple:
+        """Send a chat completion request (batch mode).
+
+        Args:
+            messages: OpenAI-format message list.
+            tools: Optional function definitions.
+
+        Returns:
+            Tuple of (response, TokenUsage).
+        """
+        kwargs = self._build_kwargs(messages, tools)
         response = await self.client.chat.completions.create(**kwargs)
 
-        # Extract token usage
         usage = TokenUsage()
-        if not stream and hasattr(response, "usage") and response.usage:
+        if hasattr(response, "usage") and response.usage:
             usage = TokenUsage(
                 prompt_tokens=response.usage.prompt_tokens or 0,
                 completion_tokens=response.usage.completion_tokens or 0,
@@ -118,3 +139,74 @@ class LLMClient:
             )
 
         return response, usage
+
+    # ── Streaming ─────────────────────────────────────────────────
+
+    async def chat_stream(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream a chat completion, yielding chunks as they arrive.
+
+        Yields StreamChunk objects in real-time:
+          - thinking: reasoning/thinking tokens (DeepSeek V4 Pro etc.)
+          - content: regular text tokens
+          - tool_deltas: raw tool-call deltas from the API
+          - usage: TokenUsage (in the final chunk)
+
+        Usage:
+            async for chunk in client.chat_stream(messages, tools):
+                if chunk.thinking:
+                    await emit_thinking(chunk.thinking)
+                if chunk.content:
+                    await emit_text(chunk.content)
+                if chunk.usage:
+                    total_usage += chunk.usage
+        """
+        kwargs = self._build_kwargs(messages, tools)
+        kwargs["stream"] = True
+        kwargs["stream_options"] = {"include_usage": True}
+
+        stream = await self.client.chat.completions.create(**kwargs)
+
+        async for event in stream:
+            if not event.choices:
+                continue
+
+            delta = event.choices[0].delta
+
+            # DeepSeek reasoning/thinking content (streaming delta)
+            reasoning = getattr(delta, "reasoning_content", None) or ""
+            if reasoning:
+                yield StreamChunk(thinking=reasoning)
+
+            # Regular text content
+            if delta.content:
+                yield StreamChunk(content=delta.content)
+
+            # Tool call deltas (may be partial)
+            if delta.tool_calls:
+                raw_deltas = []
+                for tc in delta.tool_calls:
+                    raw_deltas.append({
+                        "index": tc.index,
+                        "id": tc.id,
+                        "function": {
+                            "name": tc.function.name if tc.function else None,
+                            "arguments": (
+                                tc.function.arguments
+                                if tc.function
+                                else ""
+                            ),
+                        },
+                    })
+                yield StreamChunk(tool_deltas=raw_deltas)
+
+            # Usage (final chunk with stream_options.include_usage)
+            if hasattr(event, "usage") and event.usage:
+                yield StreamChunk(usage=TokenUsage(
+                    prompt_tokens=event.usage.prompt_tokens or 0,
+                    completion_tokens=event.usage.completion_tokens or 0,
+                    total_tokens=event.usage.total_tokens or 0,
+                ))

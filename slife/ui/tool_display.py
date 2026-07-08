@@ -1,4 +1,4 @@
-"""Tool call display widget (collapsible)."""
+"""Tool call display widget — Claude Code CLI style."""
 
 import json
 
@@ -9,10 +9,11 @@ from textual.widgets import Static
 class ToolCallWidget(Vertical):
     """Display a tool call with status indicator and collapsible details.
 
-    Shows:
-      - Header line: status icon, tool name, args preview, status text
-      - Collapsible details: full arguments + result
+    Claude Code style: subtle amber header, spinner while running,
+    monospace details area.
     """
+
+    SPINNER_FRAMES = ["◌", "◍", "●", "◍"]
 
     def __init__(
         self,
@@ -43,21 +44,27 @@ class ToolCallWidget(Vertical):
             Static(
                 self._header_text(),
                 id=f"tool-header-{self.tool_call_id}",
+                classes="tool-call-header",
             )
         )
 
         # Detail area (collapsed by default)
-        detail_style = "display: none;" if self._is_collapsed else ""
-        self.mount(
-            Static(
+        if self._is_collapsed:
+            detail = Static(
                 self._detail_text(),
                 id=f"tool-detail-{self.tool_call_id}",
                 classes="tool-detail",
             )
-        )
-        if self._is_collapsed:
-            detail = self.query_one(f"#tool-detail-{self.tool_call_id}")
             detail.display = False
+            self.mount(detail)
+        else:
+            self.mount(
+                Static(
+                    self._detail_text(),
+                    id=f"tool-detail-{self.tool_call_id}",
+                    classes="tool-detail",
+                )
+            )
 
     def set_running(self) -> None:
         """Indicate the tool is currently executing."""
@@ -76,35 +83,49 @@ class ToolCallWidget(Vertical):
         self._is_collapsed = not self._is_collapsed
         detail = self.query_one(f"#tool-detail-{self.tool_call_id}")
         detail.display = False if self._is_collapsed else True
+        # Update header to reflect collapse state
+        header = self.query_one(f"#tool-header-{self.tool_call_id}")
+        header.update(self._header_text())
 
     def on_click(self) -> None:
         """Toggle detail on click."""
         self.toggle()
 
     def _header_text(self) -> str:
-        """Build the header line text."""
-        icons = {"running": "[yellow]⚙[/yellow]", "done": "[green]✓[/green]", "error": "[red]✗[/red]", "pending": "[dim]…[/dim]"}
-        labels = {"running": "[yellow]Running...[/yellow]", "done": "[green]Done[/green]", "error": "[red]Error[/red]", "pending": "[dim]Pending[/dim]"}
-        icon = icons.get(self._status, icons["pending"])
-        label = labels.get(self._status, labels["pending"])
+        """Build the header line — Claude Code style."""
+        status_icon = {
+            "running": "[#d29922]◌[/]",
+            "done": "[#3fb950]●[/]",
+            "error": "[#f85149]●[/]",
+            "pending": "[#484f58]◌[/]",
+        }.get(self._status, "[#484f58]◌[/]")
 
-        indicator = "▸" if self._is_collapsed else "▾"
+        status_text = {
+            "running": "[#d29922]running[/]",
+            "done": "[#3fb950]done[/]",
+            "error": "[#f85149]error[/]",
+            "pending": "[#484f58]pending[/]",
+        }.get(self._status, "[#484f58]pending[/]")
+
+        indicator = "▾" if not self._is_collapsed else "▸"
 
         return (
-            f"{indicator} {icon} [bold yellow]{self.tool_name}[/bold yellow] "
-            f"[dim]({self._args_preview()})[/dim] {label}"
+            f"{indicator} {status_icon} "
+            f"[bold #d29922]{self.tool_name}[/bold #d29922] "
+            f"[#8b949e]{self._args_preview()}[/#8b949e]  "
+            f"{status_text}"
         )
 
     def _detail_text(self) -> str:
-        """Build the detail area text."""
+        """Build the detail area text — monospace style."""
         parts = [
-            "[bold]Arguments:[/bold]",
-            json.dumps(self.tool_args, indent=2, ensure_ascii=False),
+            "[bold #8b949e]Arguments:[/bold #8b949e]",
+            f"[#c9d1d9]{json.dumps(self.tool_args, indent=2, ensure_ascii=False)}[/#c9d1d9]",
         ]
         if self._result:
-            status = "Error" if self._result_is_error else "Result"
-            color = "[red]" if self._result_is_error else ""
-            parts.extend(["", f"[bold]{status}:[/bold]", f"{color}{self._result}[/]"])
+            label = "Error" if self._result_is_error else "Result"
+            color = "#f85149" if self._result_is_error else "#c9d1d9"
+            parts.extend(["", f"[bold #8b949e]{label}:[/bold #8b949e]", f"[{color}]{self._result}[/]"])
         return "\n".join(parts)
 
     def _args_preview(self) -> str:
