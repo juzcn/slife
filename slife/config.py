@@ -5,11 +5,11 @@ Two-level model hierarchy:
     <provider-id>:           # connection config (shared)
       base_url, api_key, api
       models:
-        - id: "<api-model>"  # real API model name
-          name: "<display>"  # human-readable label
+        - model: "<api-name>"  # API model name, doubles as local id
+          name: "<display>"    # human-readable label
           reasoning, input, context_window, max_tokens, ...
 
-Model refs: "provider-id/api-model-id"
+Model refs: "provider-id/model-name"
 """
 
 import json5
@@ -42,20 +42,19 @@ class ModelConfig:
     def from_dict(cls, data: dict) -> "ModelConfig":
         """Parse a model entry (OpenClaw field names → internal).
 
-        id: real API model name (e.g. "deepseek-v4-flash")
+        model: API model name, doubles as local id (e.g. "deepseek-v4-flash")
         name: display label (e.g. "DeepSeek V4 Flash")
         reasoning: true → thinking_enabled
         input: ["text","image"] → supports_vision
         """
-        # id = local unique identifier within provider
-        # model = actual API model name (defaults to id if omitted)
-        local_id = data["id"]
-        api_model = data.get("model", local_id)
+        api_model = data["model"]
 
-        if "/" in local_id:
-            provider, local_id = local_id.split("/", 1)
+        # model may contain provider prefix: "deepseek/deepseek-v4-flash"
+        if "/" in api_model:
+            provider, local_id = api_model.split("/", 1)
         else:
             provider = data.get("provider", "unknown")
+            local_id = api_model
 
         ref = f"{provider}/{local_id}"
         display_name = data.get("name", api_model)
@@ -141,18 +140,16 @@ class Config:
                     m.setdefault("api_key", api_key)
                     m.setdefault("base_url", base_url)
                     m.setdefault("api", api)
-
-                    # Build ref: "provider/api-model"
-                    api_model = m["id"]
-                    if "/" not in api_model:
-                        m["id"] = f"{provider_id}/{api_model}"
                     m.setdefault("provider", provider_id)
 
-                    local_id = m["id"].split("/", 1)[-1]
+                    # The 'model' field is both the id and the API model name
+                    model_name = m["model"]
+                    local_id = model_name.split("/", 1)[-1]
+
                     if local_id in seen_ids:
                         raise ValueError(
-                            f"Duplicate model id '{local_id}' in provider "
-                            f"'{provider_id}'. Model ids must be unique "
+                            f"Duplicate model '{local_id}' in provider "
+                            f"'{provider_id}'. Model names must be unique "
                             f"within a provider."
                         )
                     seen_ids.add(local_id)

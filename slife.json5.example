@@ -12,8 +12,7 @@
   },
 
   // ── Models ───────────────────────────────────────────────────
-  // id    = local identifier (unique within provider)
-  // model = actual API model name
+  // model = API model name (doubles as local identifier, unique within provider)
   // name  = display label
 
   models: {
@@ -27,7 +26,6 @@
 
         models: [
           {
-            id: "v4-flash",
             model: "deepseek-v4-flash",
             name: "DeepSeek V4 Flash",
             reasoning: false,
@@ -38,7 +36,6 @@
             top_p: 1.0,
           },
           {
-            id: "v4-pro",
             model: "deepseek-v4-pro",
             name: "DeepSeek V4 Pro",
             reasoning: true,
@@ -54,7 +51,7 @@
     },
   },
 
-  active_model: "deepseek/v4-pro",
+  active_model: "deepseek/deepseek-v4-pro",
 
   // ── Tools ────────────────────────────────────────────────────
 
