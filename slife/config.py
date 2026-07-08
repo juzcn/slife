@@ -13,35 +13,10 @@ Model refs: "provider-id/api-model-id"
 """
 
 import json5
-import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
-_ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::-([^}]*))?\}")
-
-
-def _resolve_env(value):
-    """Resolve ${ENV_VAR} references recursively."""
-    if isinstance(value, str):
-        def _replace(m):
-            var_name = m.group(1)
-            default = m.group(2)
-            env_val = os.environ.get(var_name)
-            if env_val is not None:
-                return env_val
-            if default is not None:
-                return default
-            raise KeyError(
-                    f"Environment variable '{var_name}' is not set."
-                )
-        return _ENV_PATTERN.sub(_replace, value)
-    elif isinstance(value, dict):
-        return {k: _resolve_env(v) for k, v in value.items()}
-    elif isinstance(value, list):
-        return [_resolve_env(item) for item in value]
-    else:
-        return value
+from slife.env import resolve_env
 
 
 @dataclass
@@ -154,7 +129,7 @@ class Config:
             providers = models_section.get("providers", {})
 
             for provider_id, provider_cfg in providers.items():
-                provider_cfg = _resolve_env(provider_cfg)
+                provider_cfg = resolve_env(provider_cfg)
                 base_url = provider_cfg.get("base_url", "")
                 api_key = provider_cfg.get("api_key", "")
                 api = provider_cfg.get("api", "openai-completions")
@@ -162,7 +137,7 @@ class Config:
                 seen_ids: set[str] = set()
 
                 for m in provider_cfg.get("models", []):
-                    m = _resolve_env(m)
+                    m = resolve_env(m)
                     m.setdefault("api_key", api_key)
                     m.setdefault("base_url", base_url)
                     m.setdefault("api", api)
@@ -186,7 +161,7 @@ class Config:
 
         elif isinstance(models_section, list):
             for m in models_section:
-                m = _resolve_env(m)
+                m = resolve_env(m)
                 all_models.append(ModelConfig.from_dict(m))
 
         if not all_models:
@@ -195,7 +170,7 @@ class Config:
             )
 
         agent = raw.get("agent", {})
-        tools = _resolve_env(raw.get("tools", []))
+        tools = resolve_env(raw.get("tools", []))
 
         return cls(
             models=all_models,

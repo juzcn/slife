@@ -1,6 +1,6 @@
 """Config-driven tool loading.
 
-Maps TOML tool entries to Tool instances. Add new tool types here.
+Maps JSON5 tool entries to Tool instances. Add new tool types here.
 """
 
 from slife.tools.base import Tool

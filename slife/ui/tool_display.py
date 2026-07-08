@@ -25,6 +25,9 @@ class ToolCallWidget(Vertical):
         self.tool_args = tool_args
         self.tool_call_id = tool_call_id
         self._is_collapsed = True
+        self._status: str = "pending"
+        self._result: str = ""
+        self._result_is_error: bool = False
         self.add_class("tool-call")
 
     def on_mount(self) -> None:
@@ -80,11 +83,10 @@ class ToolCallWidget(Vertical):
 
     def _header_text(self) -> str:
         """Build the header line text."""
-        status = getattr(self, "_status", "pending")
         icons = {"running": "[yellow]⚙[/yellow]", "done": "[green]✓[/green]", "error": "[red]✗[/red]", "pending": "[dim]…[/dim]"}
         labels = {"running": "[yellow]Running...[/yellow]", "done": "[green]Done[/green]", "error": "[red]Error[/red]", "pending": "[dim]Pending[/dim]"}
-        icon = icons.get(status, icons["pending"])
-        label = labels.get(status, labels["pending"])
+        icon = icons.get(self._status, icons["pending"])
+        label = labels.get(self._status, labels["pending"])
 
         indicator = "▸" if self._is_collapsed else "▾"
 
@@ -99,9 +101,9 @@ class ToolCallWidget(Vertical):
             "[bold]Arguments:[/bold]",
             json.dumps(self.tool_args, indent=2, ensure_ascii=False),
         ]
-        if hasattr(self, "_result"):
-            status = "Error" if getattr(self, "_result_is_error", False) else "Result"
-            color = "[red]" if getattr(self, "_result_is_error", False) else ""
+        if self._result:
+            status = "Error" if self._result_is_error else "Result"
+            color = "[red]" if self._result_is_error else ""
             parts.extend(["", f"[bold]{status}:[/bold]", f"{color}{self._result}[/]"])
         return "\n".join(parts)
 

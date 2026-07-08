@@ -44,6 +44,16 @@ class LLMClient:
             base_url=model.base_url,
         )
 
+    def _is_deepseek(self) -> bool:
+        """Check if the configured provider is DeepSeek.
+
+        Only DeepSeek supports the 'thinking' extra_body parameter.
+        Sending it to other providers (OpenAI, etc.) would be rejected.
+        """
+        provider = self.model_config.provider.lower()
+        base_url = self.model_config.base_url.lower()
+        return "deepseek" in provider or "deepseek" in base_url
+
     async def chat(
         self,
         messages: list[dict],
@@ -76,25 +86,25 @@ class LLMClient:
             kwargs["stream"] = True
             kwargs["stream_options"] = {"include_usage": True}
 
-        # DeepSeek V4 thinking mode control
-        extra_body: dict = {
-            "thinking": {
-                "type": (
-                    "enabled"
-                    if self.model_config.thinking_enabled
-                    else "disabled"
-                )
+        # DeepSeek-specific thinking mode control
+        if self._is_deepseek():
+            extra_body: dict = {
+                "thinking": {
+                    "type": (
+                        "enabled"
+                        if self.model_config.thinking_enabled
+                        else "disabled"
+                    )
+                }
             }
-        }
-        if (
-            self.model_config.thinking_enabled
-            and self.model_config.reasoning_effort
-        ):
-            extra_body["reasoning_effort"] = (
-                self.model_config.reasoning_effort
-            )
-
-        kwargs["extra_body"] = extra_body
+            if (
+                self.model_config.thinking_enabled
+                and self.model_config.reasoning_effort
+            ):
+                extra_body["reasoning_effort"] = (
+                    self.model_config.reasoning_effort
+                )
+            kwargs["extra_body"] = extra_body
 
         response = await self.client.chat.completions.create(**kwargs)
 

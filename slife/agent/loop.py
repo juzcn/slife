@@ -58,6 +58,45 @@ class AgentLoop:
         self.tool_registry = tool_registry
         self.max_iterations = max_iterations
 
+    # ── Tool call helpers ──────────────────────────────────────────
+
+    @staticmethod
+    def _parse_tool_calls(message) -> list[ToolCallInfo]:
+        """Parse OpenAI tool_calls from a response message."""
+        parsed = []
+        for tc in message.tool_calls or []:
+            try:
+                args = json.loads(tc.function.arguments)
+            except json.JSONDecodeError:
+                args = {}
+            parsed.append(
+                ToolCallInfo(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=args,
+                )
+            )
+        return parsed
+
+    @staticmethod
+    def _serialize_tool_calls(tool_calls: list[ToolCallInfo]) -> list[dict]:
+        """Serialize ToolCallInfo list back to OpenAI API format."""
+        return [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.name,
+                    "arguments": json.dumps(
+                        tc.arguments, ensure_ascii=False
+                    ),
+                },
+            }
+            for tc in tool_calls
+        ]
+
+    # ── Main loop ──────────────────────────────────────────────────
+
     async def run(
         self,
         user_input: str,
@@ -118,36 +157,12 @@ class AgentLoop:
 
             # Check for tool calls
             if message.tool_calls:
-                tool_calls = []
-                for tc in message.tool_calls:
-                    try:
-                        args = json.loads(tc.function.arguments)
-                    except json.JSONDecodeError:
-                        args = {}
-                    tool_calls.append(
-                        ToolCallInfo(
-                            id=tc.id,
-                            name=tc.function.name,
-                            arguments=args,
-                        )
-                    )
+                tool_calls = self._parse_tool_calls(message)
 
                 # Record assistant message with tool calls
                 conversation.add_assistant_message(
                     content=message.content,
-                    tool_calls=[
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(
-                                    tc.arguments, ensure_ascii=False
-                                ),
-                            },
-                        }
-                        for tc in tool_calls
-                    ],
+                    tool_calls=self._serialize_tool_calls(tool_calls),
                 )
 
                 # Execute each tool

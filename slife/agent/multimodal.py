@@ -4,8 +4,11 @@ import base64
 import mimetypes
 from pathlib import Path
 
-# Ensure common MIME types are recognized
-mimetypes.init()
+
+def _ensure_mimetypes() -> None:
+    """Lazily initialize mimetypes database (avoids import-time side effect)."""
+    if not mimetypes.inited:
+        mimetypes.init()
 
 
 def encode_image(path: str | Path) -> dict:
@@ -25,6 +28,7 @@ def encode_image(path: str | Path) -> dict:
     data = path.read_bytes()
 
     # Guess MIME type, default to PNG
+    _ensure_mimetypes()
     mime_type = mimetypes.guess_type(str(path))[0] or "image/png"
     if not mime_type.startswith("image/"):
         mime_type = "image/png"
