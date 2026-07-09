@@ -16,6 +16,8 @@ def _make_widget(**kwargs):
         w._status = kwargs.get("_status", "pending")
         w._result = kwargs.get("_result", "")
         w._result_is_error = kwargs.get("_result_is_error", False)
+        w._header_widget = kwargs.get("_header_widget", None)
+        w._detail_widget = kwargs.get("_detail_widget", None)
         w.mount = MagicMock()
         w.query_one = MagicMock()
         w._nodes = {}

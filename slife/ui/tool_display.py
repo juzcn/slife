@@ -26,66 +26,55 @@ class ToolCallWidget(Vertical):
         self.tool_args = tool_args
         self.tool_call_id = tool_call_id
         self._is_collapsed = True
-        self._status: str = "pending"
+        self._status: str = "running"
         self._result: str = ""
         self._result_is_error: bool = False
+        self._header_widget: Static | None = None
+        self._detail_widget: Static | None = None
         self.add_class("tool-call")
 
     def on_mount(self) -> None:
-        """Build initial layout."""
-        self._rebuild()
-
-    def _rebuild(self) -> None:
-        """Rebuild child widgets with current state."""
-        for child in list(self.children):
-            child.remove()
-
-        self.mount(
-            Static(
-                self._header_text(),
-                id=f"tool-header-{self.tool_call_id}",
-                classes="tool-call-header",
-            )
+        """Build initial child widgets — called once when mounted into the DOM."""
+        self._header_widget = Static(
+            self._header_text(),
+            id=f"tool-header-{self.tool_call_id}",
+            classes="tool-call-header",
         )
+        self._detail_widget = Static(
+            self._detail_text(),
+            id=f"tool-detail-{self.tool_call_id}",
+            classes="tool-detail",
+        )
+        self._detail_widget.display = False
+        self.mount(self._header_widget)
+        self.mount(self._detail_widget)
 
-        # Detail area (collapsed by default)
-        if self._is_collapsed:
-            detail = Static(
-                self._detail_text(),
-                id=f"tool-detail-{self.tool_call_id}",
-                classes="tool-detail",
-            )
-            detail.display = False
-            self.mount(detail)
-        else:
-            self.mount(
-                Static(
-                    self._detail_text(),
-                    id=f"tool-detail-{self.tool_call_id}",
-                    classes="tool-detail",
-                )
-            )
+    def _refresh(self) -> None:
+        """Update existing child widgets in place — never removes/recreates them."""
+        if self._header_widget is not None:
+            self._header_widget.update(self._header_text())
+        if self._detail_widget is not None:
+            self._detail_widget.update(self._detail_text())
 
     def set_running(self) -> None:
         """Indicate the tool is currently executing."""
         self._status = "running"
-        self._rebuild()
+        self._refresh()
 
     def set_complete(self, result: str, is_error: bool = False) -> None:
         """Indicate the tool has completed with a result."""
         self._status = "error" if is_error else "done"
         self._result = result[:2000] + "..." if len(result) > 2000 else result
         self._result_is_error = is_error
-        self._rebuild()
+        self._refresh()
 
     def toggle(self) -> None:
         """Toggle the detail area visibility."""
         self._is_collapsed = not self._is_collapsed
-        detail = self.query_one(f"#tool-detail-{self.tool_call_id}")
-        detail.display = False if self._is_collapsed else True
-        # Update header to reflect collapse state
-        header = self.query_one(f"#tool-header-{self.tool_call_id}")
-        header.update(self._header_text())
+        if self._detail_widget is not None:
+            self._detail_widget.display = False if self._is_collapsed else True
+        if self._header_widget is not None:
+            self._header_widget.update(self._header_text())
 
     def on_click(self) -> None:
         """Toggle detail on click."""

@@ -101,9 +101,9 @@ class _TUIHandler:
             tool_args=tool_call.arguments,
             tool_call_id=tool_call.id,
         )
-        widget.set_running()
         chat_view = self._app.query_one("#chat-view", ChatView)
         chat_view.mount(widget)
+        widget.set_running()
         chat_view.scroll_end(animate=False)
         self._app._tool_widgets[tool_call.id] = widget
 
