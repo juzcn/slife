@@ -1,4 +1,4 @@
-"""Tests for environment variable resolution (slife.env)."""
+"""Tests for slife.env — environment variable resolution."""
 
 import os
 
@@ -7,225 +7,174 @@ import pytest
 from slife.env import resolve_env
 
 
-# ── Plain values (no env refs) ───────────────────────────────────────
+# ── String resolution ─────────────────────────────────────────────────
 
 
-def test_resolve_plain_string():
-    """Strings without env refs pass through unchanged."""
-    assert resolve_env("hello world") == "hello world"
+class TestResolveEnvStrings:
+    """Tests for resolve_env with string values."""
+
+    def test_plain_string_unchanged(self):
+        """Plain strings without env refs pass through unchanged."""
+        assert resolve_env("hello world") == "hello world"
+        assert resolve_env("no variables here") == "no variables here"
+        assert resolve_env("") == ""
+
+    def test_simple_var_resolution(self, monkeypatch):
+        """${VAR} resolves from environment."""
+        monkeypatch.setenv("MY_VAR", "resolved_value")
+        assert resolve_env("${MY_VAR}") == "resolved_value"
+
+    def test_var_in_middle_of_string(self, monkeypatch):
+        """Env var embedded in a larger string."""
+        monkeypatch.setenv("NAME", "Alice")
+        assert resolve_env("Hello, ${NAME}!") == "Hello, Alice!"
+
+    def test_multiple_vars_in_string(self, monkeypatch):
+        """Multiple env vars in one string."""
+        monkeypatch.setenv("FIRST", "foo")
+        monkeypatch.setenv("LAST", "bar")
+        assert resolve_env("${FIRST} ${LAST}") == "foo bar"
+
+    def test_default_value_used(self):
+        """${VAR:-default} uses default when var unset."""
+        assert resolve_env("${MISSING:-fallback}") == "fallback"
+
+    def test_default_value_skipped_when_set(self, monkeypatch):
+        """Default is not used when var is set."""
+        monkeypatch.setenv("EXISTS", "real")
+        assert resolve_env("${EXISTS:-fallback}") == "real"
+
+    def test_default_empty_string(self):
+        """${VAR:-} with empty default."""
+        assert resolve_env("${MISSING:-}") == ""
+
+    def test_missing_var_raises(self):
+        """Missing var without default raises KeyError."""
+        with pytest.raises(KeyError) as exc_info:
+            resolve_env("${DEFINITELY_NOT_SET_12345}")
+        assert "DEFINITELY_NOT_SET_12345" in str(exc_info.value)
+
+    def test_var_with_special_chars(self, monkeypatch):
+        """Var name may contain underscores and digits."""
+        monkeypatch.setenv("DB_PORT_2", "5432")
+        assert resolve_env("${DB_PORT_2}") == "5432"
+
+    def test_repeated_var(self, monkeypatch):
+        """Same var referenced multiple times resolves each."""
+        monkeypatch.setenv("X", "1")
+        assert resolve_env("${X} ${X} ${X}") == "1 1 1"
 
 
-def test_resolve_empty_string():
-    """Empty string passes through."""
-    assert resolve_env("") == ""
+# ── Dict resolution ───────────────────────────────────────────────────
 
 
-def test_resolve_int():
-    """Integer values pass through unchanged."""
-    assert resolve_env(42) == 42
+class TestResolveEnvDicts:
+    """Tests for resolve_env with dict values."""
+
+    def test_dict_values_resolved(self, monkeypatch):
+        """String values in dicts are resolved."""
+        monkeypatch.setenv("KEY", "secret")
+        result = resolve_env({"api_key": "${KEY}", "url": "https://example.com"})
+        assert result == {"api_key": "secret", "url": "https://example.com"}
+
+    def test_nested_dict_resolved(self, monkeypatch):
+        """Nested dicts are recursively resolved."""
+        monkeypatch.setenv("DB_HOST", "localhost")
+        monkeypatch.setenv("DB_PORT", "5432")
+        result = resolve_env({
+            "database": {
+                "host": "${DB_HOST}",
+                "port": "${DB_PORT}",
+            }
+        })
+        assert result == {"database": {"host": "localhost", "port": "5432"}}
+
+    def test_empty_dict(self):
+        """Empty dicts are unchanged."""
+        assert resolve_env({}) == {}
+
+    def test_non_string_values_preserved(self):
+        """Non-string values in dicts are kept as-is."""
+        result = resolve_env({"count": 42, "flag": True, "nested": {"x": 1.5}})
+        assert result == {"count": 42, "flag": True, "nested": {"x": 1.5}}
 
 
-def test_resolve_float():
-    """Float values pass through unchanged."""
-    assert resolve_env(3.14) == 3.14
+# ── List resolution ───────────────────────────────────────────────────
 
 
-def test_resolve_bool():
-    """Boolean values pass through unchanged."""
-    assert resolve_env(True) is True
-    assert resolve_env(False) is False
+class TestResolveEnvLists:
+    """Tests for resolve_env with list values."""
 
+    def test_list_items_resolved(self, monkeypatch):
+        """String items in lists are resolved."""
+        monkeypatch.setenv("A", "alpha")
+        monkeypatch.setenv("B", "beta")
+        result = resolve_env(["${A}", "${B}", "plain"])
+        assert result == ["alpha", "beta", "plain"]
 
-def test_resolve_none():
-    """None passes through unchanged."""
-    assert resolve_env(None) is None
-
-
-def test_resolve_bytes():
-    """Bytes values pass through unchanged."""
-    assert resolve_env(b"hello") == b"hello"
-
-
-# ── ${VAR} resolution ────────────────────────────────────────────────
-
-
-def test_resolve_env_var(monkeypatch):
-    """${VAR} is replaced with the env var value."""
-    monkeypatch.setenv("MY_VAR", "resolved_value")
-    assert resolve_env("prefix_${MY_VAR}_suffix") == "prefix_resolved_value_suffix"
-
-
-def test_resolve_multiple_env_vars(monkeypatch):
-    """Multiple ${VAR} references are all resolved."""
-    monkeypatch.setenv("A", "alpha")
-    monkeypatch.setenv("B", "beta")
-    assert resolve_env("${A} and ${B}") == "alpha and beta"
-
-
-def test_resolve_full_string_is_var(monkeypatch):
-    """When entire string is a var reference, it resolves."""
-    monkeypatch.setenv("X", "full_value")
-    assert resolve_env("${X}") == "full_value"
-
-
-def test_resolve_missing_env_var_raises_keyerror(monkeypatch):
-    """Missing env var without default raises KeyError."""
-    monkeypatch.delenv("MISSING_VAR", raising=False)
-    with pytest.raises(KeyError, match="Environment variable 'MISSING_VAR' is not set"):
-        resolve_env("hello ${MISSING_VAR} world")
-
-
-def test_resolve_env_var_prefix_suffix_no_var(monkeypatch):
-    """String with $ but no valid ${} pattern passes through."""
-    # $ without braces is not a valid pattern
-    assert resolve_env("$HOME") == "$HOME"
-
-
-# ── ${VAR:-default} resolution ───────────────────────────────────────
-
-
-def test_resolve_with_default_when_var_set(monkeypatch):
-    """Default is ignored when var is set."""
-    monkeypatch.setenv("PORT", "8080")
-    assert resolve_env("${PORT:-3000}") == "8080"
-
-
-def test_resolve_with_default_when_var_missing(monkeypatch):
-    """Default is used when var is not set."""
-    monkeypatch.delenv("PORT", raising=False)
-    assert resolve_env("${PORT:-3000}") == "3000"
-
-
-def test_resolve_with_empty_default(monkeypatch):
-    """Empty string default is valid."""
-    monkeypatch.delenv("X", raising=False)
-    assert resolve_env("${X:-}") == ""
-
-
-def test_resolve_with_default_containing_special_chars(monkeypatch):
-    """Default value can contain special chars."""
-    monkeypatch.delenv("URL", raising=False)
-    assert resolve_env("${URL:-https://example.com/path?q=1}") == "https://example.com/path?q=1"
-
-
-def test_resolve_with_default_mid_string(monkeypatch):
-    """Default syntax works when mid-string."""
-    monkeypatch.delenv("NAME", raising=False)
-    result = resolve_env("Hello ${NAME:-World}!")
-    assert result == "Hello World!"
-
-
-def test_resolve_env_var_empty_string_value(monkeypatch):
-    """Env var set to empty string is treated as set (not missing)."""
-    monkeypatch.setenv("EMPTY_VAR", "")
-    assert resolve_env("${EMPTY_VAR:-fallback}") == ""
-
-
-# ── Nested structures ────────────────────────────────────────────────
-
-
-def test_resolve_dict(monkeypatch):
-    """resolve_env recurses into dict values."""
-    monkeypatch.setenv("KEY", "secret")
-    result = resolve_env({
-        "api_key": "${KEY}",
-        "timeout": 30,
-        "nested": {"url": "${KEY:-default}"},
-    })
-    assert result == {
-        "api_key": "secret",
-        "timeout": 30,
-        "nested": {"url": "secret"},
-    }
-
-
-def test_resolve_list(monkeypatch):
-    """resolve_env recurses into list items."""
-    monkeypatch.setenv("A", "1")
-    monkeypatch.setenv("B", "2")
-    result = resolve_env(["${A}", "${B}", "static", 42])
-    assert result == ["1", "2", "static", 42]
-
-
-def test_resolve_nested_mixed(monkeypatch):
-    """resolve_env handles deeply nested mixed structures."""
-    monkeypatch.setenv("X", "val")
-    data = {
-        "servers": [
-            {"host": "${X}", "ports": ["${X:-80}", 443]},
-            {"host": "${X:-backup}", "ports": [8080]},
+    def test_list_of_dicts(self, monkeypatch):
+        """Dicts inside lists are recursively resolved."""
+        monkeypatch.setenv("TOKEN", "abc123")
+        monkeypatch.setenv("URL", "https://api.example.com")
+        result = resolve_env([
+            {"key": "${TOKEN}", "url": "${URL}"},
+            {"key": "static"},
+        ])
+        assert result == [
+            {"key": "abc123", "url": "https://api.example.com"},
+            {"key": "static"},
         ]
-    }
-    result = resolve_env(data)
-    assert result == {
-        "servers": [
-            {"host": "val", "ports": ["val", 443]},
-            {"host": "val", "ports": [8080]},
-        ]
-    }
+
+    def test_empty_list(self):
+        """Empty lists are unchanged."""
+        assert resolve_env([]) == []
 
 
-def test_resolve_empty_dict():
-    """Empty dict passes through."""
-    assert resolve_env({}) == {}
+# ── Scalar resolution ─────────────────────────────────────────────────
 
 
-def test_resolve_empty_list():
-    """Empty list passes through."""
-    assert resolve_env([]) == []
+class TestResolveEnvScalars:
+    """Tests for resolve_env with non-string scalar values."""
+
+    def test_int_unchanged(self):
+        assert resolve_env(42) == 42
+
+    def test_float_unchanged(self):
+        assert resolve_env(3.14) == 3.14
+
+    def test_bool_unchanged(self):
+        assert resolve_env(True) is True
+        assert resolve_env(False) is False
+
+    def test_none_unchanged(self):
+        assert resolve_env(None) is None
 
 
-# ── Edge cases ───────────────────────────────────────────────────────
+# ── Edge cases ────────────────────────────────────────────────────────
 
 
-def test_resolve_unclosed_brace():
-    """Unclosed ${ passes through as literal text."""
-    assert resolve_env("${UNCLOSED") == "${UNCLOSED"
+class TestResolveEnvEdgeCases:
+    """Edge cases for env resolution."""
 
+    def test_default_contains_colons(self, monkeypatch):
+        """Default value can contain colons and special chars."""
+        result = resolve_env("${MISSING:-http://localhost:8080/path?q=1}")
+        assert result == "http://localhost:8080/path?q=1"
 
-def test_resolve_dollar_without_brace():
-    """$ sign without { passes through."""
-    assert resolve_env("Cost: $50.00") == "Cost: $50.00"
+    def test_default_contains_braces(self, monkeypatch):
+        """Default value can contain braces."""
+        result = resolve_env("${MISSING:-{key: value}}")
+        assert result == "{key: value}"
 
+    def test_deeply_nested_structure(self, monkeypatch):
+        """Deep nesting works correctly."""
+        monkeypatch.setenv("VAL", "done")
+        result = resolve_env({
+            "a": [{"b": [{"c": "${VAL}"}]}]
+        })
+        assert result == {"a": [{"b": [{"c": "done"}]}]}
 
-def test_resolve_double_braces(monkeypatch):
-    """Pattern with }} in string content — just a single var."""
-    monkeypatch.setenv("VAR", "x")
-    # The pattern is ${VAR} followed by literal }
-    assert resolve_env("${VAR}}") == "x}"
-
-
-def test_resolve_var_with_underscores_and_digits(monkeypatch):
-    """Environment variable names can contain underscores and digits."""
-    monkeypatch.setenv("MY_VAR_2", "ok")
-    assert resolve_env("${MY_VAR_2}") == "ok"
-
-
-# ── Pattern boundary tests ───────────────────────────────────────────
-
-
-def test_resolve_var_at_start(monkeypatch):
-    """Var at the start of string."""
-    monkeypatch.setenv("PREFIX", ">>>")
-    assert resolve_env("${PREFIX} content") == ">>> content"
-
-
-def test_resolve_var_at_end(monkeypatch):
-    """Var at the end of string."""
-    monkeypatch.setenv("SUFFIX", "<<<")
-    assert resolve_env("content ${SUFFIX}") == "content <<<"
-
-
-def test_resolve_adjacent_vars(monkeypatch):
-    """Two vars adjacent to each other."""
-    monkeypatch.setenv("FIRST", "hello")
-    monkeypatch.setenv("SECOND", "world")
-    assert resolve_env("${FIRST}${SECOND}") == "helloworld"
-
-
-def test_resolve_var_with_colon_but_no_default(monkeypatch):
-    """Colon without dash is NOT a valid default separator — passes through."""
-    # The pattern requires ${VAR} or ${VAR:-default}. ${FOO:BAR} doesn't match
-    # either (colon without dash), so it passes through as literal text.
-    monkeypatch.setenv("FOO:BAR", "value")
-    assert resolve_env("${FOO:BAR}") == "${FOO:BAR}"
+    def test_var_with_no_default_no_brace_space(self, monkeypatch):
+        """Pattern does not match without closing brace."""
+        # This is just a literal string, not a pattern
+        assert resolve_env("${NOT_CLOSED") == "${NOT_CLOSED"

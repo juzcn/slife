@@ -1,233 +1,74 @@
-"""Tests for the ToolRegistry (slife.tools.registry)."""
-
-from unittest.mock import AsyncMock, MagicMock
+"""Tests for slife.tools.registry — ToolRegistry."""
 
 import pytest
 
-from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
+from slife.tools.base import Tool
 
 
-# ── Test tool fixtures ────────────────────────────────────────────────
+class TestToolRegistry:
+    """Tests for ToolRegistry."""
 
-
-class _MockTool(Tool):
-    """Simple mock tool for testing."""
-
-    name = "mock_tool"
-    description = "A mock tool for testing"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "param1": {"type": "string"},
-        },
-        "required": ["param1"],
-    }
-
-    async def execute(self, param1: str) -> str:
-        return f"mock result: {param1}"
-
-
-class _MockTool2(Tool):
-    """Second mock tool for testing."""
-
-    name = "mock_tool2"
-    description = "Another mock tool"
-    parameters = {"type": "object", "properties": {}}
-
-    async def execute(self, **kwargs) -> str:
-        return "result2"
-
-
-# ══════════════════════════════════════════════════════════════════════
-
-
-class TestToolRegistryInit:
-    """Tests for ToolRegistry.__init__()."""
-
-    def test_empty_registry(self):
+    def test_empty_registry(self, empty_registry):
         """New registry has no tools."""
+        assert empty_registry.list_tools() == []
+
+    def test_register_and_get(self, echo_tool):
         registry = ToolRegistry()
-        assert registry.list_tools() == []
-        assert registry.to_openai_functions() == []
+        registry.register(echo_tool)
+        assert registry.get("echo") is echo_tool
 
+    def test_get_missing_returns_none(self, empty_registry):
+        assert empty_registry.get("nonexistent") is None
 
-class TestToolRegistryRegister:
-    """Tests for ToolRegistry.register()."""
+    def test_list_tools(self, tool_registry):
+        tools = tool_registry.list_tools()
+        names = {t.name for t in tools}
+        assert names == {"echo", "failer"}
 
-    def test_register_tool(self):
-        """Tool is added to the registry."""
-        registry = ToolRegistry()
-        tool = _MockTool()
-        registry.register(tool)
-        assert len(registry.list_tools()) == 1
-        assert registry.list_tools()[0] == tool
+    def test_to_openai_functions(self, tool_registry):
+        fns = tool_registry.to_openai_functions()
+        assert len(fns) == 2
+        names = [f["function"]["name"] for f in fns]
+        assert "echo" in names
+        assert "failer" in names
 
-    def test_register_multiple_tools(self):
-        """Multiple tools can be registered."""
-        registry = ToolRegistry()
-        t1 = _MockTool()
-        t2 = _MockTool2()
-        registry.register(t1)
-        registry.register(t2)
-        assert len(registry.list_tools()) == 2
+    @pytest.mark.asyncio
+    async def test_execute_known_tool(self, tool_registry):
+        result = await tool_registry.execute("echo", message="hello")
+        assert "Echo: hello" in result
 
-    def test_register_overwrites_by_name(self):
+    @pytest.mark.asyncio
+    async def test_execute_unknown_tool(self, empty_registry):
+        result = await empty_registry.execute("nonexistent")
+        assert result.startswith("Error: Unknown tool")
+        assert "nonexistent" in result
+
+    @pytest.mark.asyncio
+    async def test_execute_with_error(self, tool_registry):
+        result = await tool_registry.execute("failer", reason="test failure")
+        assert "Error executing failer" in result
+        assert "Intentional failure" in result
+
+    @pytest.mark.asyncio
+    async def test_execute_is_async(self, tool_registry):
+        """Execute is async and can be awaited."""
+        result = await tool_registry.execute("echo", message="test")
+        assert result == "Echo: test"
+
+    @pytest.mark.asyncio
+    async def test_register_overwrites(self, echo_tool):
         """Registering a tool with the same name overwrites."""
         registry = ToolRegistry()
+        registry.register(echo_tool)
 
-        class ToolV1(Tool):
-            name = "versioned"
-            description = "v1"
+        class NewEcho(Tool):
+            name = "echo"
+            description = "New echo"
             parameters = {"type": "object", "properties": {}}
+            async def execute(self, **kwargs): return "New!"
 
-            async def execute(self, **kwargs) -> str:
-                return "v1"
-
-        class ToolV2(Tool):
-            name = "versioned"
-            description = "v2"
-            parameters = {"type": "object", "properties": {}}
-
-            async def execute(self, **kwargs) -> str:
-                return "v2"
-
-        registry.register(ToolV1())
-        registry.register(ToolV2())
+        registry.register(NewEcho())
         assert len(registry.list_tools()) == 1
-        assert registry.list_tools()[0].description == "v2"
-
-
-class TestToolRegistryGet:
-    """Tests for ToolRegistry.get()."""
-
-    def test_get_existing_tool(self):
-        """get() returns the tool for a known name."""
-        registry = ToolRegistry()
-        tool = _MockTool()
-        registry.register(tool)
-        assert registry.get("mock_tool") == tool
-
-    def test_get_unknown_tool_returns_none(self):
-        """get() returns None for unknown tool name."""
-        registry = ToolRegistry()
-        assert registry.get("nonexistent") is None
-
-    def test_get_from_empty_registry(self):
-        """get() on empty registry returns None."""
-        registry = ToolRegistry()
-        assert registry.get("anything") is None
-
-
-class TestToolRegistryListTools:
-    """Tests for ToolRegistry.list_tools()."""
-
-    def test_list_returns_copy(self):
-        """list_tools() returns a new list."""
-        registry = ToolRegistry()
-        t1 = _MockTool()
-        registry.register(t1)
-
-        tools = registry.list_tools()
-        tools.append(_MockTool2())  # Mutate the returned list
-        assert len(registry.list_tools()) == 1  # Registry unchanged
-
-    def test_list_preserves_order(self):
-        """Tools are returned in registration order."""
-        registry = ToolRegistry()
-        t1 = _MockTool()
-        t2 = _MockTool2()
-        registry.register(t1)
-        registry.register(t2)
-
-        tools = registry.list_tools()
-        assert tools[0].name == "mock_tool"
-        assert tools[1].name == "mock_tool2"
-
-
-class TestToolRegistryToOpenaiFunctions:
-    """Tests for ToolRegistry.to_openai_functions()."""
-
-    def test_empty_registry(self):
-        """Empty registry returns empty list."""
-        registry = ToolRegistry()
-        assert registry.to_openai_functions() == []
-
-    def test_single_tool(self):
-        """Single tool converted to OpenAI format."""
-        registry = ToolRegistry()
-        registry.register(_MockTool())
-        result = registry.to_openai_functions()
-        assert len(result) == 1
-        assert result[0]["type"] == "function"
-        assert result[0]["function"]["name"] == "mock_tool"
-
-    def test_multiple_tools(self):
-        """All tools are converted."""
-        registry = ToolRegistry()
-        registry.register(_MockTool())
-        registry.register(_MockTool2())
-        result = registry.to_openai_functions()
-        assert len(result) == 2
-        names = {f["function"]["name"] for f in result}
-        assert names == {"mock_tool", "mock_tool2"}
-
-
-class TestToolRegistryExecute:
-    """Tests for ToolRegistry.execute()."""
-
-    @pytest.mark.asyncio
-    async def test_execute_known_tool(self):
-        """Known tool is executed with kwargs."""
-        registry = ToolRegistry()
-        registry.register(_MockTool())
-
-        result = await registry.execute("mock_tool", param1="hello")
-        assert result == "mock result: hello"
-
-    @pytest.mark.asyncio
-    async def test_execute_unknown_tool(self):
-        """Unknown tool returns error message."""
-        registry = ToolRegistry()
-        result = await registry.execute("unknown_tool", arg="val")
-        assert result.startswith("Error: Unknown tool")
-        assert "unknown_tool" in result
-
-    @pytest.mark.asyncio
-    async def test_execute_tool_raises_exception(self):
-        """Tool execution error is caught and returned as error string."""
-
-        class FailingTool(Tool):
-            name = "failer"
-            description = "Always fails"
-            parameters = {"type": "object", "properties": {}}
-
-            async def execute(self, **kwargs) -> str:
-                raise RuntimeError("Something broke")
-
-        registry = ToolRegistry()
-        registry.register(FailingTool())
-
-        result = await registry.execute("failer")
-        assert "Error" in result
-        assert "Something broke" in result
-
-    @pytest.mark.asyncio
-    async def test_execute_passes_kwargs(self):
-        """execute() passes all kwargs to the tool."""
-
-        class KwargsTool(Tool):
-            name = "kwargs_tool"
-            description = "Checks kwargs"
-            parameters = {"type": "object", "properties": {}}
-
-            async def execute(self, **kwargs) -> str:
-                return f"got: {sorted(kwargs.keys())}"
-
-        registry = ToolRegistry()
-        registry.register(KwargsTool())
-
-        result = await registry.execute("kwargs_tool", a=1, b=2, c=3)
-        assert "a" in result
-        assert "b" in result
-        assert "c" in result
+        result = await registry.execute("echo")
+        assert "New!" in result

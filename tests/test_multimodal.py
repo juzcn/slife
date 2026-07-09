@@ -1,80 +1,112 @@
-"""Tests for multimodal utilities (slife.agent.multimodal)."""
+"""Tests for slife.agent.multimodal — image encoding and file attachment parsing."""
 
 import base64
-import re
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
 
-from slife.agent.multimodal import encode_image, parse_file_attachments, _ensure_mimetypes
+from slife.agent.multimodal import (
+    encode_image,
+    parse_file_attachments,
+    _ensure_mimetypes,
+    _FILE_PATTERN,
+)
+
+
+# ── encode_image ──────────────────────────────────────────────────────
 
 
 class TestEncodeImage:
-    """Tests for encode_image()."""
+    """Tests for encode_image function."""
 
-    def test_encodes_png(self, temp_image_file):
-        """PNG file is base64-encoded with correct MIME type."""
-        result = encode_image(temp_image_file)
+    def test_png_image(self, tmp_path):
+        """PNG image is base64-encoded correctly."""
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake png content")
+
+        result = encode_image(img)
+
         assert result["type"] == "image_url"
-        assert "image_url" in result
-        url = result["image_url"]["url"]
-        assert url.startswith("data:image/png;base64,")
-        # Decode and verify
-        b64_data = url.split(",", 1)[1]
+        assert result["image_url"]["url"].startswith("data:image/png;base64,")
+        b64_data = result["image_url"]["url"].split(",", 1)[1]
         decoded = base64.b64decode(b64_data)
-        assert decoded == temp_image_file.read_bytes()
+        assert decoded == b"\x89PNG\r\n\x1a\nfake png content"
+
+    def test_jpeg_image(self, tmp_path):
+        """JPEG image gets correct MIME type."""
+        img = tmp_path / "photo.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0 fake jpeg")
+
+        result = encode_image(img)
+        assert result["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+    def test_webp_image(self, tmp_path):
+        """WebP image gets correct MIME type."""
+        img = tmp_path / "image.webp"
+        img.write_bytes(b"RIFF....WEBP fake webp")
+
+        result = encode_image(img)
+        assert result["image_url"]["url"].startswith("data:image/webp;base64,")
 
     def test_file_not_found(self):
-        """FileNotFoundError for missing file."""
-        with pytest.raises(FileNotFoundError, match="Image not found"):
-            encode_image("nonexistent_image_xyz.png")
+        """Raises FileNotFoundError for missing files."""
+        with pytest.raises(FileNotFoundError) as exc_info:
+            encode_image("/nonexistent/image.png")
+        assert "Image not found" in str(exc_info.value)
 
     def test_not_a_file(self, tmp_path):
-        """ValueError when path is a directory."""
-        with pytest.raises(ValueError, match="Not a file"):
+        """Raises ValueError for directories."""
+        with pytest.raises(ValueError) as exc_info:
             encode_image(tmp_path)
-
-    def test_returns_dict_with_correct_keys(self, temp_image_file):
-        """Return value has the expected structure."""
-        result = encode_image(temp_image_file)
-        assert isinstance(result, dict)
-        assert "type" in result
-        assert "image_url" in result
-        assert "url" in result["image_url"]
+        assert "Not a file" in str(exc_info.value)
 
     def test_unknown_extension_defaults_to_png(self, tmp_path):
-        """File with unknown extension defaults to image/png."""
-        # Create a file with valid PNG header to avoid issues
-        p = tmp_path / "image.xyz"
-        # Write minimal valid PNG bytes
-        import struct, zlib
-        def chunk(t, d):
-            c = t + d
-            return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
-        png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00")) + chunk(b"IEND", b"")
-        p.write_bytes(png)
+        """Files with unknown extensions default to image/png."""
+        img = tmp_path / "image.xyzzy"
+        img.write_bytes(b"some binary content")
 
-        result = encode_image(p)
-        # May resolve as different image type or default to png
-        assert result["image_url"]["url"].startswith("data:image/")
-
-    def test_non_image_mime_falls_back_to_png(self, temp_image_file, monkeypatch):
-        """If guessed MIME is not image/*, fall back to image/png."""
-        import mimetypes
-
-        def mock_guess_type(path):
-            return ("text/plain", None)
-
-        monkeypatch.setattr(mimetypes, "guess_type", mock_guess_type)
-        result = encode_image(temp_image_file)
+        result = encode_image(img)
         assert result["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_no_extension_defaults_to_png(self, tmp_path):
+        """Files with no extension default to image/png."""
+        img = tmp_path / "noext"
+        img.write_bytes(b"binary data here")
+
+        result = encode_image(img)
+        assert result["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_gif_image(self, tmp_path):
+        """GIF gets correct MIME type."""
+        img = tmp_path / "anim.gif"
+        img.write_bytes(b"GIF89a fake gif")
+
+        result = encode_image(img)
+        assert result["image_url"]["url"].startswith("data:image/gif;base64,")
+
+    def test_non_image_mime_defaults_to_png(self, tmp_path):
+        """Files with non-image MIME type default to image/png."""
+        import mimetypes
+        # Force mimetypes to be initialized
+        mimetypes.init()
+        # Create a file with no recognized image extension
+        img = tmp_path / "data.bin"
+        img.write_bytes(b"binary data")
+        # Override guess_type to return a non-image MIME
+        with patch("mimetypes.guess_type", return_value=("application/octet-stream", None)):
+            result = encode_image(img)
+            assert result["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+# ── parse_file_attachments ────────────────────────────────────────────
 
 
 class TestParseFileAttachments:
-    """Tests for parse_file_attachments()."""
+    """Tests for parse_file_attachments function."""
 
     def test_no_file_directives(self):
-        """Text without /file passes through unchanged."""
+        """Text without /file directives passes through."""
         text = "Hello, how are you?"
         cleaned, paths = parse_file_attachments(text)
         assert cleaned == "Hello, how are you?"
@@ -82,42 +114,30 @@ class TestParseFileAttachments:
 
     def test_single_file_directive(self):
         """Single /file directive is extracted."""
-        text = "Look at this\n/file image.png"
+        text = "Look at this:\n/file image.png\nWhat do you think?"
         cleaned, paths = parse_file_attachments(text)
-        assert cleaned == "Look at this"
+        assert cleaned == "Look at this:\nWhat do you think?"
         assert paths == ["image.png"]
 
     def test_multiple_file_directives(self):
-        """Multiple /file directives are all extracted."""
-        text = "Compare:\n/file a.png\n/file b.jpg\nWhat do you think?"
+        """Multiple /file directives all extracted."""
+        text = "/file a.png\n/file b.jpg\nDescribe these."
         cleaned, paths = parse_file_attachments(text)
-        # Lines that were /file become empty strings in cleaned_parts, then
-        # join produces consecutive newlines. The trailing strip() removes
-        # trailing newlines but preserves internal ones.
-        assert "Compare:" in cleaned
-        assert "What do you think?" in cleaned
+        assert cleaned == "Describe these."
         assert paths == ["a.png", "b.jpg"]
 
-    def test_file_directive_with_spaces(self):
-        """File paths with spaces are preserved."""
-        text = "/file my documents/photo.jpg"
+    def test_file_paths_trimmed(self):
+        """File paths have whitespace stripped."""
+        text = "/file   path with spaces.png   "
         cleaned, paths = parse_file_attachments(text)
-        assert cleaned == ""
-        assert paths == ["my documents/photo.jpg"]
+        assert paths == ["path with spaces.png"]
 
-    def test_file_directive_only(self):
-        """Only /file directives, no other text."""
-        text = "/file a.png\n/file b.png"
+    def test_only_file_directives(self):
+        """Text containing only /file directives returns empty string."""
+        text = "/file img1.png\n/file img2.png"
         cleaned, paths = parse_file_attachments(text)
         assert cleaned == ""
-        assert paths == ["a.png", "b.png"]
-
-    def test_file_directive_with_leading_trailing_spaces(self):
-        """/file with extra whitespace around path."""
-        text = "/file   padded.png   "
-        cleaned, paths = parse_file_attachments(text)
-        assert cleaned == ""
-        assert paths == ["padded.png"]
+        assert paths == ["img1.png", "img2.png"]
 
     def test_empty_input(self):
         """Empty string returns empty results."""
@@ -125,47 +145,58 @@ class TestParseFileAttachments:
         assert cleaned == ""
         assert paths == []
 
-    def test_false_positive_avoided(self):
-        """Text containing '/file' not at start of line is not treated as directive."""
-        text = "Use the /file command to attach"
+    def test_file_directive_not_on_own_line(self):
+        """/file directive only matches when on its own line."""
+        text = "Some /file image.png inline text"
         cleaned, paths = parse_file_attachments(text)
-        # "Use the /file command to attach" — not at line start, so stays
-        assert "Use the /file command" in cleaned
+        assert cleaned == "Some /file image.png inline text"
         assert paths == []
 
-    def test_mixed_content_and_files(self):
-        """Realistic mixed input."""
-        text = "Please analyze these images:\n/file photo1.png\n/file photo2.jpg\nWhat do you see?"
+    def test_case_sensitive(self):
+        """/file is case-sensitive (must be lowercase)."""
+        text = "/File image.png"
         cleaned, paths = parse_file_attachments(text)
-        assert "Please analyze these images:" in cleaned
-        assert "What do you see?" in cleaned
-        assert paths == ["photo1.png", "photo2.jpg"]
+        assert paths == []
 
-    def test_lines_with_only_whitespace_not_matched(self):
-        """Lines that are just whitespace are preserved as empty lines."""
-        text = "hello\n  \n/file img.png\nworld"
-        cleaned, paths = parse_file_attachments(text)
-        # The blank line with spaces becomes empty after join and strip
-        assert "hello" in cleaned
-        assert "world" in cleaned
-        assert paths == ["img.png"]
+
+# ── _FILE_PATTERN ─────────────────────────────────────────────────────
+
+
+class TestFilePattern:
+    """Tests for the regex pattern behavior."""
+
+    def test_pattern_matches_file_directive(self):
+        m = _FILE_PATTERN.match("/file path/to/file.txt")
+        assert m is not None
+        assert m.group(1) == "path/to/file.txt"
+
+    def test_pattern_does_not_match_similar(self):
+        assert _FILE_PATTERN.match(" /file leading space") is None
+        assert _FILE_PATTERN.match("/files plural") is None
+        assert _FILE_PATTERN.match("/file") is None  # No path after
+
+
+# ── _ensure_mimetypes ─────────────────────────────────────────────────
 
 
 class TestEnsureMimetypes:
-    """Tests for _ensure_mimetypes()."""
+    """Tests for _ensure_mimetypes helper."""
 
-    def test_initializes_mimetypes(self):
-        """_ensure_mimetypes initializes the mimetypes database."""
+    def test_initializes_once(self):
+        """Calling twice should be safe (idempotent)."""
         import mimetypes
-        # Force re-init check
+        # Force uninitialized state
         mimetypes.inited = False
         _ensure_mimetypes()
         assert mimetypes.inited is True
+        # Second call should not fail
+        _ensure_mimetypes()
+        assert mimetypes.inited is True
 
-    def test_idempotent(self):
-        """Calling _ensure_mimetypes multiple times is safe."""
-        _ensure_mimetypes()
-        _ensure_mimetypes()
-        _ensure_mimetypes()
+    def test_already_initialized(self):
+        """Should be a no-op when already initialized."""
         import mimetypes
+        mimetypes.init()
+        assert mimetypes.inited is True
+        _ensure_mimetypes()
         assert mimetypes.inited is True

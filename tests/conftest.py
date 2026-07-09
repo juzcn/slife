@@ -1,30 +1,133 @@
-"""Shared fixtures for slife test suite."""
+"""Shared test fixtures and mocks for the slife test suite."""
 
-import json
 import os
-import tempfile
+import json
+import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+from dataclasses import dataclass, field
 
 import pytest
 
 from slife.config import Config, ModelConfig
-from slife.agent.llm_client import TokenUsage
+from slife.agent.llm_client import TokenUsage, StreamChunk
+from slife.agent.conversation import Conversation
+from slife.agent.loop import ToolCallInfo, AgentResult
+from slife.tools.base import Tool
+from slife.tools.registry import ToolRegistry
 
 
-# ── Environment isolation ────────────────────────────────────────────
+# ── Environment helpers ───────────────────────────────────────────────
 
 
 @pytest.fixture
 def clean_env(monkeypatch):
-    """Remove all slife-related env vars for test isolation."""
+    """Remove slife-related env vars for isolated tests."""
     for key in list(os.environ.keys()):
-        if key.startswith("SLIFE") or key.startswith("TEST_"):
+        if key.startswith("SLIFE_") or key.startswith("TEST_"):
             monkeypatch.delenv(key, raising=False)
     yield
 
 
-# ── TokenUsage fixtures ──────────────────────────────────────────────
+# ── Model config fixtures ─────────────────────────────────────────────
+
+
+@pytest.fixture
+def sample_model_config():
+    """A typical ModelConfig for testing."""
+    return ModelConfig(
+        ref="deepseek/deepseek-v4-flash",
+        provider="deepseek",
+        api_model="deepseek-v4-flash",
+        display_name="DeepSeek V4 Flash",
+        api_key="sk-test-key",
+        base_url="https://api.deepseek.com",
+        api="openai-completions",
+        supports_vision=False,
+        max_tokens=4096,
+        context_window=131072,
+        temperature=0.7,
+        top_p=1.0,
+        thinking_enabled=False,
+        reasoning_effort=None,
+    )
+
+
+@pytest.fixture
+def thinking_model_config():
+    """Model config with thinking enabled."""
+    return ModelConfig(
+        ref="deepseek/deepseek-v4-pro",
+        provider="deepseek",
+        api_model="deepseek-v4-pro",
+        display_name="DeepSeek V4 Pro",
+        api_key="sk-pro-key",
+        base_url="https://api.deepseek.com",
+        api="openai-completions",
+        supports_vision=True,
+        max_tokens=8192,
+        context_window=131072,
+        temperature=0.6,
+        top_p=0.9,
+        thinking_enabled=True,
+        reasoning_effort="high",
+    )
+
+
+@pytest.fixture
+def openai_model_config():
+    """Model config for a non-DeepSeek provider (OpenAI)."""
+    return ModelConfig(
+        ref="openai/gpt-4o",
+        provider="openai",
+        api_model="gpt-4o",
+        display_name="GPT-4o",
+        api_key="sk-openai-key",
+        base_url="https://api.openai.com/v1",
+        api="openai-completions",
+        supports_vision=True,
+        max_tokens=4096,
+        context_window=128000,
+        temperature=0.7,
+        top_p=1.0,
+        thinking_enabled=False,
+        reasoning_effort=None,
+    )
+
+
+# ── Config fixtures ───────────────────────────────────────────────────
+
+
+@pytest.fixture
+def sample_config(sample_model_config):
+    """A typical Config with one model and shell tool."""
+    return Config(
+        models=[sample_model_config],
+        active_model_ref="deepseek/deepseek-v4-flash",
+        tools=[
+            {"type": "shell", "timeout": 30},
+        ],
+        max_iterations=10,
+        system_prompt="You are slife, a helpful AI assistant.",
+    )
+
+
+# ── Conversation fixture ──────────────────────────────────────────────
+
+
+@pytest.fixture
+def conversation():
+    """Fresh conversation with a system prompt."""
+    return Conversation(system_prompt="You are a helpful assistant.")
+
+
+@pytest.fixture
+def empty_conversation():
+    """Fresh conversation without system prompt."""
+    return Conversation()
+
+
+# ── Token usage fixtures ──────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -34,164 +137,138 @@ def zero_usage():
 
 
 @pytest.fixture
-def small_usage():
-    """Small token usage for additive tests."""
+def sample_usage():
+    """Typical token usage values."""
     return TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
 
 
-@pytest.fixture
-def large_usage():
-    """Large token usage for additive tests."""
-    return TokenUsage(prompt_tokens=1000, completion_tokens=500, total_tokens=1500)
+# ── Tool registry fixtures ────────────────────────────────────────────
 
 
-# ── ModelConfig fixtures ─────────────────────────────────────────────
-
-
-@pytest.fixture
-def basic_model_dict():
-    """Minimal valid model dictionary."""
-    return {
-        "model": "deepseek-v4-flash",
-        "api_key": "sk-test123",
+class _EchoTool(Tool):
+    """Test tool that echoes its arguments."""
+    name = "echo"
+    description = "Echoes back the input."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "message": {"type": "string", "description": "Message to echo."}
+        },
+        "required": ["message"],
     }
 
+    async def execute(self, message: str = "") -> str:
+        return f"Echo: {message}"
 
-@pytest.fixture
-def full_model_dict():
-    """Full model dictionary with all options."""
-    return {
-        "model": "deepseek/deepseek-v4-pro",
-        "name": "DeepSeek V4 Pro",
-        "api_key": "sk-test456",
-        "base_url": "https://api.deepseek.com",
-        "api": "openai-completions",
-        "reasoning": True,
-        "reasoning_effort": "high",
-        "input": ["text", "image"],
-        "context_window": 131072,
-        "max_tokens": 8192,
-        "temperature": 0.7,
-        "top_p": 1.0,
+
+class _FailingTool(Tool):
+    """Test tool that always raises."""
+    name = "failer"
+    description = "Always fails."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string", "description": "Reason for failure."}
+        },
+        "required": [],
     }
 
-
-@pytest.fixture
-def basic_model_config(basic_model_dict):
-    """Basic ModelConfig instance."""
-    return ModelConfig.from_dict(basic_model_dict)
-
-
-# ── Config fixtures ──────────────────────────────────────────────────
+    async def execute(self, **kwargs) -> str:
+        reason = kwargs.get("reason", "unknown")
+        raise RuntimeError(f"Intentional failure: {reason}")
 
 
 @pytest.fixture
-def minimal_json5_config():
-    """Minimal valid JSON5 config content."""
-    return """
-{
-    models: {
-        providers: {
-            deepseek: {
-                base_url: "https://api.deepseek.com",
-                api_key: "sk-test",
-                models: [
-                    { model: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }
-                ]
-            }
-        }
-    },
-    tools: [
-        { type: "shell", timeout: 30 }
-    ]
-}
-"""
+def echo_tool():
+    """An echo test tool instance."""
+    return _EchoTool()
 
 
 @pytest.fixture
-def multi_model_json5_config():
-    """JSON5 config with multiple models and providers."""
-    return """
-{
-    models: {
-        providers: {
-            deepseek: {
-                base_url: "https://api.deepseek.com",
-                api_key: "sk-test-ds",
-                models: [
-                    {
-                        model: "deepseek-v4-flash",
-                        name: "DeepSeek V4 Flash",
-                        reasoning: false,
-                        input: ["text", "image"],
-                        context_window: 131072,
-                        max_tokens: 8192,
-                    },
-                    {
-                        model: "deepseek-v4-pro",
-                        name: "DeepSeek V4 Pro",
-                        reasoning: true,
-                        reasoning_effort: "high",
-                        input: ["text", "image"],
-                        context_window: 131072,
-                        max_tokens: 8192,
-                    },
-                ]
-            },
-            openai: {
-                base_url: "https://api.openai.com/v1",
-                api_key: "sk-test-oai",
-                models: [
-                    { model: "gpt-5", name: "GPT-5" }
-                ]
-            }
-        }
-    },
-    active_model: "deepseek/deepseek-v4-pro",
-    agent: {
-        max_iterations: 20,
-        system_prompt: "Custom system prompt for testing.",
-    },
-    tools: [
-        { type: "serper", api_key: "test-serper-key" },
-        { type: "shell", timeout: 60 },
-    ]
-}
-"""
+def failing_tool():
+    """A failing test tool instance."""
+    return _FailingTool()
 
 
 @pytest.fixture
-def temp_config_file(minimal_json5_config):
-    """Create a temporary JSON5 config file."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json5", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(minimal_json5_config)
-        f.flush()
-        yield Path(f.name)
-    # Cleanup
-    Path(f.name).unlink(missing_ok=True)
+def tool_registry(echo_tool, failing_tool):
+    """Registry with both echo and failing tools registered."""
+    registry = ToolRegistry()
+    registry.register(echo_tool)
+    registry.register(failing_tool)
+    return registry
 
 
 @pytest.fixture
-def temp_multi_config_file(multi_model_json5_config):
-    """Create a temporary multi-model JSON5 config file."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json5", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(multi_model_json5_config)
-        f.flush()
-        yield Path(f.name)
-    # Cleanup
-    Path(f.name).unlink(missing_ok=True)
+def empty_registry():
+    """An empty tool registry."""
+    return ToolRegistry()
 
 
-# ── Mock fixtures ────────────────────────────────────────────────────
+# ── LLM response mocks ────────────────────────────────────────────────
+
+
+class _MockChoice:
+    """Mock for openai choice object."""
+    def __init__(self, delta):
+        self.delta = delta
+
+
+class _MockStreamEvent:
+    """Mock for a streaming API event."""
+    def __init__(self, delta=None, usage=None):
+        self.choices = [_MockChoice(delta)] if delta else []
+        self.usage = usage
+
+
+class _MockDelta:
+    """Mock delta with optional content, reasoning, tool_calls."""
+    def __init__(self, content=None, reasoning_content=None, tool_calls=None):
+        self.content = content
+        self.reasoning_content = reasoning_content
+        self.tool_calls = tool_calls
+
+
+class _MockToolCallDelta:
+    """Mock for a single tool call delta."""
+    def __init__(self, index=0, id=None, function=None):
+        self.index = index
+        self.id = id
+        self.function = function
+
+
+class _MockFunctionDelta:
+    """Mock for function delta in tool call."""
+    def __init__(self, name=None, arguments=""):
+        self.name = name
+        self.arguments = arguments
+
+
+class _MockUsage:
+    """Mock for API usage response."""
+    def __init__(self, prompt_tokens=100, completion_tokens=50, total_tokens=150):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
+
+
+class _MockResponse:
+    """Mock for a non-streaming API response."""
+    def __init__(self, content=None, tool_calls=None, usage=None):
+        self.choices = [
+            type("Choice", (), {
+                "message": type("Message", (), {
+                    "content": content,
+                    "tool_calls": tool_calls,
+                })()
+            })()
+        ]
+        self.usage = usage or _MockUsage()
 
 
 @pytest.fixture
 def mock_openai_client():
-    """Create a mock AsyncOpenAI client."""
+    """Create a mock AsyncOpenAI client with configurable responses."""
     mock = MagicMock()
     mock.chat = MagicMock()
     mock.chat.completions = MagicMock()
@@ -199,67 +276,49 @@ def mock_openai_client():
     return mock
 
 
-@pytest.fixture
-def mock_tool_registry():
-    """Create a mock tool registry."""
-    registry = MagicMock()
-    registry.to_openai_functions.return_value = []
-    registry.execute = AsyncMock(return_value="mock result")
-    return registry
+# ── Async helpers ─────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def mock_event_handler():
-    """Create a mock AgentEventHandler."""
-    handler = MagicMock()
-    handler.on_thinking_chunk = AsyncMock()
-    handler.on_text_chunk = AsyncMock()
-    handler.on_tool_call = AsyncMock()
-    handler.on_tool_result = AsyncMock()
-    handler.on_token_usage = AsyncMock()
-    return handler
+def async_return(value):
+    """Create a coroutine that returns the given value."""
+    async def _inner():
+        return value
+    return _inner()
 
 
-# ── Temp files ───────────────────────────────────────────────────────
+def make_async_iter(items):
+    """Create an async iterator from a list of items."""
+    async def _gen():
+        for item in items:
+            yield item
+    return _gen()
 
 
-@pytest.fixture
-def temp_image_file():
-    """Create a temporary PNG-like file (valid PNG header)."""
-    import struct
-    import zlib
-
-    # Minimal valid PNG file
-    def create_png(width=1, height=1):
-        def chunk(chunk_type, data):
-            c = chunk_type + data
-            crc = struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
-            return struct.pack(">I", len(data)) + c + crc
-
-        header = b"\x89PNG\r\n\x1a\n"
-        ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-        raw = zlib.compress(b"\x00\xff\x00\xff\x00\xff\x00")
-        idat = chunk(b"IDAT", raw)
-        iend = chunk(b"IEND", b"")
-        return header + ihdr + idat + iend
-
-    with tempfile.NamedTemporaryFile(
-        mode="wb", suffix=".png", delete=False
-    ) as f:
-        png_data = create_png()
-        f.write(png_data)
-        f.flush()
-        yield Path(f.name)
-    Path(f.name).unlink(missing_ok=True)
+# ── JSON5 config builders ─────────────────────────────────────────────
 
 
-@pytest.fixture
-def temp_text_file():
-    """Create a temporary text file."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".txt", delete=False, encoding="utf-8"
-    ) as f:
-        f.write("hello world\n")
-        f.flush()
-        yield Path(f.name)
-    Path(f.name).unlink(missing_ok=True)
+def build_json5_config(models=None, active_model=None, tools=None, agent=None, system_prompt=None):
+    """Build a minimal JSON5-serializable config dict for testing."""
+    cfg = {
+        "models": models or {
+            "providers": {
+                "deepseek": {
+                    "base_url": "https://api.deepseek.com",
+                    "api_key": "sk-test",
+                    "models": [
+                        {
+                            "model": "deepseek-v4-flash",
+                            "name": "DeepSeek V4 Flash",
+                        }
+                    ],
+                }
+            }
+        },
+        "active_model": active_model or "deepseek/deepseek-v4-flash",
+        "tools": tools or [],
+    }
+    if agent is not None:
+        cfg["agent"] = agent
+    if system_prompt is not None:
+        cfg.setdefault("agent", {})["system_prompt"] = system_prompt
+    return cfg

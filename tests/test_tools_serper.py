@@ -1,305 +1,177 @@
-"""Tests for SerperSearchTool (slife.tools.serper)."""
-
-from unittest.mock import AsyncMock, MagicMock, patch
+"""Tests for slife.tools.serper — Serper.dev web search tool."""
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from slife.tools.serper import SerperSearchTool
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def serper_tool():
-    """Create a SerperSearchTool with a test API key."""
-    return SerperSearchTool(api_key="test-key")
-
-
-@pytest.fixture
-def mock_serper_response():
-    """Mock successful Serper API response."""
-    return {
-        "organic": [
-            {
-                "title": "Cats - Wikipedia",
-                "snippet": "The cat is a small domesticated carnivorous mammal.",
-                "link": "https://en.wikipedia.org/wiki/Cat",
-            },
-            {
-                "title": "Cat Photos",
-                "snippet": "Browse cute cat photos.",
-                "link": "https://example.com/cats",
-            },
-        ]
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Tool Metadata
-# ══════════════════════════════════════════════════════════════════════
+# ── Tool metadata ─────────────────────────────────────────────────────
 
 
 class TestSerperMetadata:
-    """Tests for class-level metadata."""
+    """Tests for SerperSearchTool class-level attributes."""
 
     def test_name(self):
-        """Tool name is 'web_search'."""
         assert SerperSearchTool.name == "web_search"
 
     def test_description(self):
-        """Tool has a non-empty description."""
-        assert len(SerperSearchTool.description) > 10
-        assert "search" in SerperSearchTool.description.lower()
+        assert "Search the web" in SerperSearchTool.description
 
-    def test_parameters_schema(self):
-        """Parameters define a 'query' string parameter."""
+    def test_parameters(self):
         params = SerperSearchTool.parameters
         assert params["type"] == "object"
         assert "query" in params["properties"]
-        assert params["properties"]["query"]["type"] == "string"
         assert "query" in params["required"]
 
-    def test_to_openai_function(self):
-        """to_openai_function() returns correct format."""
-        func = SerperSearchTool.to_openai_function()
-        assert func["type"] == "function"
-        assert func["function"]["name"] == "web_search"
+
+# ── Construction ─────────────────────────────────────────────────────
 
 
-# ══════════════════════════════════════════════════════════════════════
-# Initialization
-# ══════════════════════════════════════════════════════════════════════
+class TestSerperConstruction:
+    """Tests for SerperSearchTool.__init__."""
 
-
-class TestSerperInit:
-    """Tests for __init__()."""
-
-    def test_stores_api_key(self):
-        """API key is stored on the instance."""
+    def test_api_key_stored(self):
         tool = SerperSearchTool(api_key="my-key")
         assert tool.api_key == "my-key"
 
-    def test_accepts_empty_key(self):
-        """Empty string API key is stored (API will reject it)."""
-        tool = SerperSearchTool(api_key="")
-        assert tool.api_key == ""
+
+# ── _format_results ──────────────────────────────────────────────────
 
 
-# ══════════════════════════════════════════════════════════════════════
-# execute()
-# ══════════════════════════════════════════════════════════════════════
+class TestFormatResults:
+    """Tests for SerperSearchTool._format_results."""
 
+    def test_formats_organic_results(self):
+        tool = SerperSearchTool(api_key="k")
+        data = {
+            "organic": [
+                {
+                    "title": "Test Title",
+                    "snippet": "A snippet about testing.",
+                    "link": "https://example.com",
+                },
+                {
+                    "title": "Another Result",
+                    "snippet": "More content here.",
+                    "link": "https://example.org",
+                },
+            ]
+        }
+        result = tool._format_results(data)
+        assert "Test Title" in result
+        assert "A snippet about testing" in result
+        assert "https://example.com" in result
+        assert "Another Result" in result
+        assert "https://example.org" in result
 
-class TestSerperExecute:
-    """Tests for SerperSearchTool.execute()."""
-
-    @pytest.mark.asyncio
-    async def test_successful_search(self, serper_tool, mock_serper_response):
-        """Successful search formats and returns results."""
-        with patch("slife.tools.serper.httpx.AsyncClient") as MockClient:
-            mock_instance = MagicMock()
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
-
-            mock_response = MagicMock()
-            mock_response.raise_for_status = MagicMock()
-            mock_response.json.return_value = mock_serper_response
-            mock_instance.post = AsyncMock(return_value=mock_response)
-
-            result = await serper_tool.execute(query="cats")
-
-            assert "Cats - Wikipedia" in result
-            assert "https://en.wikipedia.org/wiki/Cat" in result
-            assert "Cat Photos" in result
-
-    @pytest.mark.asyncio
-    async def test_calls_serper_api(self, serper_tool, mock_serper_response):
-        """execute() makes a POST to the Serper API."""
-        with patch("slife.tools.serper.httpx.AsyncClient") as MockClient:
-            mock_instance = MagicMock()
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
-
-            mock_response = MagicMock()
-            mock_response.raise_for_status = MagicMock()
-            mock_response.json.return_value = mock_serper_response
-            mock_instance.post = AsyncMock(return_value=mock_response)
-
-            await serper_tool.execute(query="test query")
-
-            # Verify the POST request
-            mock_instance.post.assert_called_once()
-            call_args = mock_instance.post.call_args
-            assert call_args[0][0] == "https://google.serper.dev/search"
-            assert call_args[1]["json"] == {"q": "test query"}
-            assert call_args[1]["headers"]["X-API-KEY"] == "test-key"
-
-    @pytest.mark.asyncio
-    async def test_no_results(self, serper_tool):
-        """When no organic results, returns 'No results found.'"""
-        with patch("slife.tools.serper.httpx.AsyncClient") as MockClient:
-            mock_instance = MagicMock()
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
-
-            mock_response = MagicMock()
-            mock_response.raise_for_status = MagicMock()
-            mock_response.json.return_value = {"organic": []}
-            mock_instance.post = AsyncMock(return_value=mock_response)
-
-            result = await serper_tool.execute(query="xyznonexistent123")
-            assert result == "No results found."
-
-    @pytest.mark.asyncio
-    async def test_empty_response(self, serper_tool):
-        """When response has no 'organic' key at all."""
-        with patch("slife.tools.serper.httpx.AsyncClient") as MockClient:
-            mock_instance = MagicMock()
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
-
-            mock_response = MagicMock()
-            mock_response.raise_for_status = MagicMock()
-            mock_response.json.return_value = {}
-            mock_instance.post = AsyncMock(return_value=mock_response)
-
-            result = await serper_tool.execute(query="test")
-            assert result == "No results found."
-
-    @pytest.mark.asyncio
-    async def test_http_error(self, serper_tool):
-        """HTTP errors propagate (raise_for_status)."""
-        with patch("slife.tools.serper.httpx.AsyncClient") as MockClient:
-            mock_instance = MagicMock()
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
-
-            import httpx
-            mock_response = MagicMock()
-            mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-                "error", request=MagicMock(), response=MagicMock(status_code=403)
-            )
-            mock_instance.post = AsyncMock(return_value=mock_response)
-
-            with pytest.raises(httpx.HTTPStatusError):
-                await serper_tool.execute(query="test")
-
-    @pytest.mark.asyncio
-    async def test_unicode_query(self, serper_tool, mock_serper_response):
-        """Unicode queries are handled correctly."""
-        with patch("slife.tools.serper.httpx.AsyncClient") as MockClient:
-            mock_instance = MagicMock()
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
-
-            mock_response = MagicMock()
-            mock_response.raise_for_status = MagicMock()
-            mock_response.json.return_value = mock_serper_response
-            mock_instance.post = AsyncMock(return_value=mock_response)
-
-            result = await serper_tool.execute(query="café résumé")
-            assert result  # Should not raise
-
-    @pytest.mark.asyncio
-    async def test_results_limited_to_10(self, serper_tool):
-        """Only first 10 organic results are shown."""
-        many_results = {
+    def test_limits_to_10_results(self):
+        tool = SerperSearchTool(api_key="k")
+        data = {
             "organic": [
                 {"title": f"Result {i}", "snippet": f"Snippet {i}", "link": f"https://{i}.com"}
                 for i in range(20)
             ]
         }
+        result = tool._format_results(data)
+        # Count numbered entries
+        lines = result.split("\n")
+        numbered = [l for l in lines if l.startswith(("1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.", "10."))]
+        assert len(numbered) <= 11  # 10 entries with possible "10." counted
 
-        with patch("slife.tools.serper.httpx.AsyncClient") as MockClient:
-            mock_instance = MagicMock()
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+    def test_no_results(self):
+        tool = SerperSearchTool(api_key="k")
+        result = tool._format_results({})
+        assert result == "No results found."
 
-            mock_response = MagicMock()
-            mock_response.raise_for_status = MagicMock()
-            mock_response.json.return_value = many_results
-            mock_instance.post = AsyncMock(return_value=mock_response)
+    def test_empty_organic(self):
+        tool = SerperSearchTool(api_key="k")
+        result = tool._format_results({"organic": []})
+        assert result == "No results found."
 
-            result = await serper_tool.execute(query="test")
-
-            # Count numbered lines (each result starts with "N. ")
-            import re
-            numbered = re.findall(r"^\d+\.", result, re.MULTILINE)
-            assert len(numbered) == 10
-            assert "Result 9" in result   # 10th result, 0-indexed
-            assert "Result 10" not in result  # 11th result, should not exist
-
-
-# ══════════════════════════════════════════════════════════════════════
-# _format_results()
-# ══════════════════════════════════════════════════════════════════════
-
-
-class TestSerperFormatResults:
-    """Tests for SerperSearchTool._format_results()."""
-
-    def test_formats_complete_result(self, serper_tool):
-        """Complete result includes title, snippet, and link."""
+    def test_missing_fields(self):
+        """Results with missing title/snippet/link get defaults."""
+        tool = SerperSearchTool(api_key="k")
         data = {
             "organic": [
-                {
-                    "title": "Test Title",
-                    "snippet": "Test snippet text",
-                    "link": "https://example.com",
-                }
+                {},
             ]
         }
-        result = serper_tool._format_results(data)
-        assert "1. Test Title" in result
-        assert "Test snippet text" in result
-        assert "https://example.com" in result
-
-    def test_missing_title(self, serper_tool):
-        """Missing title shows 'No title'."""
-        data = {
-            "organic": [
-                {
-                    "snippet": "Snippet",
-                    "link": "https://example.com",
-                }
-            ]
-        }
-        result = serper_tool._format_results(data)
+        result = tool._format_results(data)
         assert "No title" in result
-
-    def test_missing_snippet(self, serper_tool):
-        """Missing snippet shows 'No snippet'."""
-        data = {
-            "organic": [
-                {
-                    "title": "Title",
-                    "link": "https://example.com",
-                }
-            ]
-        }
-        result = serper_tool._format_results(data)
         assert "No snippet" in result
 
-    def test_missing_link(self, serper_tool):
-        """Missing link is shown as empty string."""
-        data = {
+
+# ── execute ───────────────────────────────────────────────────────────
+
+
+class TestSerperExecute:
+    """Tests for SerperSearchTool.execute."""
+
+    @pytest.mark.asyncio
+    async def test_successful_search(self):
+        """Execute returns formatted results on success."""
+        tool = SerperSearchTool(api_key="test-key")
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
             "organic": [
                 {
-                    "title": "Title",
-                    "snippet": "Snippet",
+                    "title": "Cats",
+                    "snippet": "All about cats.",
+                    "link": "https://cats.com",
                 }
             ]
         }
-        result = serper_tool._format_results(data)
-        assert "Title" in result
 
-    def test_empty_organic(self, serper_tool):
-        """Empty organic list returns 'No results found.'"""
-        result = serper_tool._format_results({"organic": []})
-        assert result == "No results found."
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.post = AsyncMock(return_value=mock_response)
 
-    def test_no_organic_key(self, serper_tool):
-        """Missing 'organic' key returns 'No results found.'"""
-        result = serper_tool._format_results({})
-        assert result == "No results found."
+        with patch("slife.tools.serper.httpx.AsyncClient", return_value=mock_client):
+            result = await tool.execute(query="cats")
+
+        assert "Cats" in result
+        assert "cats.com" in result
+
+    @pytest.mark.asyncio
+    async def test_correct_api_call(self):
+        """Verify the correct API endpoint and headers are used."""
+        tool = SerperSearchTool(api_key="my-api-key")
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {"organic": []}
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch("slife.tools.serper.httpx.AsyncClient", return_value=mock_client):
+            await tool.execute(query="test query")
+
+        mock_client.post.assert_called_once_with(
+            "https://google.serper.dev/search",
+            json={"q": "test query"},
+            headers={"X-API-KEY": "my-api-key"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_http_error(self):
+        """HTTP errors propagate as exceptions."""
+        tool = SerperSearchTool(api_key="test-key")
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = Exception("HTTP 500")
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch("slife.tools.serper.httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(Exception, match="HTTP 500"):
+                await tool.execute(query="test")

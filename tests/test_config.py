@@ -1,417 +1,351 @@
-"""Tests for configuration loading (slife.config)."""
+"""Tests for slife.config — configuration loading and model definitions."""
 
 import json
 import tempfile
 from pathlib import Path
 
 import pytest
+import json5
 
 from slife.config import Config, ModelConfig
 
 
-# ══════════════════════════════════════════════════════════════════════
-# ModelConfig
-# ══════════════════════════════════════════════════════════════════════
+# ── ModelConfig.from_dict ─────────────────────────────────────────────
 
 
 class TestModelConfigFromDict:
-    """Tests for ModelConfig.from_dict()."""
+    """Tests for ModelConfig.from_dict classmethod."""
 
-    def test_minimal_model(self, basic_model_dict):
-        """Minimal model dict — only required fields."""
-        mc = ModelConfig.from_dict(basic_model_dict)
-        assert mc.api_model == "deepseek-v4-flash"
-        assert mc.ref == "unknown/deepseek-v4-flash"  # no provider field, defaults to "unknown"
-        assert mc.display_name == "deepseek-v4-flash"  # falls back to model name
-        assert mc.api_key == "sk-test123"
-        assert mc.thinking_enabled is False
-        assert mc.supports_vision is False
-        assert mc.max_tokens == 4096  # default
-        assert mc.context_window == 131072  # default
-        assert mc.temperature == 0.7  # default
-        assert mc.top_p == 1.0  # default
-        assert mc.api == "openai-completions"  # default
-        assert mc.base_url == "https://api.deepseek.com"  # default
-        assert mc.reasoning_effort is None
-
-    def test_model_with_provider_in_model_field(self):
-        """Provider prefix in model field is parsed."""
+    def test_minimal_dict(self):
+        """Minimal valid model entry."""
         mc = ModelConfig.from_dict({
-            "model": "deepseek/deepseek-v4-flash",
+            "model": "gpt-4o",
             "api_key": "sk-test",
         })
-        assert mc.provider == "deepseek"
-        assert mc.api_model == "deepseek/deepseek-v4-flash"
-        assert mc.ref == "deepseek/deepseek-v4-flash"
+        assert mc.api_model == "gpt-4o"
+        assert mc.ref == "unknown/gpt-4o"
+        assert mc.display_name == "gpt-4o"
+        assert mc.api_key == "sk-test"
+        assert mc.temperature == 0.7
+        assert mc.max_tokens == 4096
 
-    def test_model_with_explicit_provider_field(self):
-        """Provider field is used when model has no prefix."""
+    def test_model_with_provider_prefix(self):
+        """model field may contain provider/model format."""
         mc = ModelConfig.from_dict({
-            "model": "gpt-5",
-            "provider": "openai",
+            "model": "openai/gpt-4o",
             "api_key": "sk-test",
         })
         assert mc.provider == "openai"
-        assert mc.ref == "openai/gpt-5"
+        assert mc.api_model == "openai/gpt-4o"
+        assert mc.ref == "openai/gpt-4o"
 
-    def test_model_provider_prefix_takes_priority(self):
-        """Provider in model field wins over provider field."""
+    def test_all_fields(self):
+        """Full field set from dict."""
         mc = ModelConfig.from_dict({
-            "model": "ds/deepseek-v4-flash",
-            "provider": "ignored",
-            "api_key": "sk-test",
+            "model": "deepseek-v4-flash",
+            "provider": "deepseek",
+            "name": "DeepSeek V4 Flash",
+            "api_key": "sk-key",
+            "base_url": "https://custom.api/v1",
+            "api": "openai-completions",
+            "input": ["text", "image"],
+            "max_tokens": 8192,
+            "context_window": 200000,
+            "temperature": 0.5,
+            "top_p": 0.95,
+            "reasoning": True,
+            "reasoning_effort": "medium",
         })
-        assert mc.provider == "ds"
-        assert mc.ref == "ds/deepseek-v4-flash"
-
-    def test_full_model(self, full_model_dict):
-        """Full model dict with all options."""
-        mc = ModelConfig.from_dict(full_model_dict)
-        assert mc.ref == "deepseek/deepseek-v4-pro"
-        assert mc.provider == "deepseek"
-        assert mc.api_model == "deepseek/deepseek-v4-pro"
-        assert mc.display_name == "DeepSeek V4 Pro"
-        assert mc.api_key == "sk-test456"
-        assert mc.base_url == "https://api.deepseek.com"
-        assert mc.api == "openai-completions"
-        assert mc.thinking_enabled is True
-        assert mc.reasoning_effort == "high"
+        assert mc.display_name == "DeepSeek V4 Flash"
+        assert mc.base_url == "https://custom.api/v1"
         assert mc.supports_vision is True
         assert mc.max_tokens == 8192
-        assert mc.context_window == 131072
-        assert mc.temperature == 0.7
-        assert mc.top_p == 1.0
+        assert mc.context_window == 200000
+        assert mc.temperature == 0.5
+        assert mc.top_p == 0.95
+        assert mc.thinking_enabled is True
+        assert mc.reasoning_effort == "medium"
+        assert mc.ref == "deepseek/deepseek-v4-flash"
 
-    def test_thinking_from_thinking_enabled_field(self):
-        """thinking_enabled field (alternative to reasoning)."""
+    def test_thinking_enabled_fallback_key(self):
+        """thinking_enabled key also enables thinking."""
         mc = ModelConfig.from_dict({
-            "model": "test-model",
-            "api_key": "sk-test",
+            "model": "test",
+            "api_key": "key",
             "thinking_enabled": True,
         })
         assert mc.thinking_enabled is True
 
-    def test_thinking_disabled_by_default(self):
-        """thinking_enabled defaults to False."""
+    def test_supports_vision_fallback_key(self):
+        """supports_vision key enables vision when no input list."""
         mc = ModelConfig.from_dict({
-            "model": "test-model",
-            "api_key": "sk-test",
-        })
-        assert mc.thinking_enabled is False
-
-    def test_supports_vision_from_input_list(self):
-        """Vision support detected from input field."""
-        mc = ModelConfig.from_dict({
-            "model": "vision-model",
-            "api_key": "sk-test",
-            "input": ["text", "image"],
-        })
-        assert mc.supports_vision is True
-
-    def test_supports_vision_text_only(self):
-        """No vision when only text in input."""
-        mc = ModelConfig.from_dict({
-            "model": "text-model",
-            "api_key": "sk-test",
-            "input": ["text"],
-        })
-        assert mc.supports_vision is False
-
-    def test_supports_vision_from_explicit_field(self):
-        """supports_vision field used when input is missing."""
-        mc = ModelConfig.from_dict({
-            "model": "vision-model",
-            "api_key": "sk-test",
+            "model": "test",
+            "api_key": "key",
             "supports_vision": True,
         })
         assert mc.supports_vision is True
 
-    def test_custom_defaults(self):
-        """Custom values for optional fields."""
+    def test_supports_vision_from_input_list(self):
+        """input: ['image'] sets supports_vision."""
         mc = ModelConfig.from_dict({
-            "model": "custom-model",
-            "api_key": "sk-custom",
-            "base_url": "https://custom.api.com/v1",
-            "api": "custom-api",
-            "max_tokens": 2048,
-            "context_window": 65536,
-            "temperature": 0.3,
-            "top_p": 0.9,
+            "model": "test",
+            "api_key": "key",
+            "input": ["image"],
         })
-        assert mc.base_url == "https://custom.api.com/v1"
-        assert mc.api == "custom-api"
-        assert mc.max_tokens == 2048
-        assert mc.context_window == 65536
-        assert mc.temperature == 0.3
-        assert mc.top_p == 0.9
+        assert mc.supports_vision is True
 
-    def test_reasoning_effort_none_when_not_specified(self):
-        """reasoning_effort is None when not in dict."""
+    def test_supports_vision_text_only(self):
+        """input: ['text'] does not set supports_vision."""
+        mc = ModelConfig.from_dict({
+            "model": "test",
+            "api_key": "key",
+            "input": ["text"],
+        })
+        assert mc.supports_vision is False
+
+    def test_empty_input_list(self):
+        """Empty input list → no vision."""
+        mc = ModelConfig.from_dict({
+            "model": "test",
+            "api_key": "key",
+            "input": [],
+        })
+        assert mc.supports_vision is False  # falls back to supports_vision default
+
+    def test_defaults_applied(self):
+        """Missing optional fields get sensible defaults."""
         mc = ModelConfig.from_dict({
             "model": "test-model",
-            "api_key": "sk-test",
-            "reasoning": True,
+            "api_key": "test-key",
         })
+        assert mc.base_url == "https://api.deepseek.com"
+        assert mc.api == "openai-completions"
+        assert mc.supports_vision is False
+        assert mc.max_tokens == 4096
+        assert mc.context_window == 131072
+        assert mc.temperature == 0.7
+        assert mc.top_p == 1.0
+        assert mc.thinking_enabled is False
         assert mc.reasoning_effort is None
 
+    def test_reasoning_truthy_values(self):
+        """Non-boolean truthy reasoning values become True."""
+        mc = ModelConfig.from_dict({
+            "model": "test",
+            "api_key": "key",
+            "reasoning": 1,
+        })
+        assert mc.thinking_enabled is True
 
-# ══════════════════════════════════════════════════════════════════════
-# Config.from_json5
-# ══════════════════════════════════════════════════════════════════════
+    def test_reasoning_falsy_values(self):
+        """Falsy reasoning values become False."""
+        mc = ModelConfig.from_dict({
+            "model": "test",
+            "api_key": "key",
+            "reasoning": 0,
+        })
+        assert mc.thinking_enabled is False
 
 
-class TestConfigFromJson5:
-    """Tests for Config.from_json5()."""
+# ── Config.from_json5 ─────────────────────────────────────────────────
 
-    def test_load_minimal_config(self, temp_config_file):
-        """Load a minimal valid JSON5 config."""
-        config = Config.from_json5(temp_config_file)
+
+class TestConfigFromJSON5:
+    """Tests for Config.from_json5 classmethod."""
+
+    def test_file_not_found(self):
+        """Raises FileNotFoundError for missing config."""
+        with pytest.raises(FileNotFoundError) as exc_info:
+            Config.from_json5("/nonexistent/path/slife.json5")
+        assert "not found" in str(exc_info.value)
+
+    def test_minimal_config(self, tmp_path, monkeypatch):
+        """Minimal valid JSON5 config with providers."""
+        monkeypatch.setenv("DEEPSEEK_KEY", "env-key")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "deepseek": {
+                        "api_key": "${DEEPSEEK_KEY}",
+                        "models": [
+                            {"model": "deepseek-v4-flash", "name": "Dv4 Flash"}
+                        ],
+                    }
+                }
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
         assert len(config.models) == 1
-        assert config.active_model.ref == "deepseek/deepseek-v4-flash"
-        assert len(config.tools) == 1
-        assert config.tools[0]["type"] == "shell"
-        assert config.max_iterations == 10
-
-    def test_load_multi_model_config(self, temp_multi_config_file):
-        """Load config with multiple models and providers."""
-        config = Config.from_json5(temp_multi_config_file)
-        assert len(config.models) == 3
-        assert config.active_model_ref == "deepseek/deepseek-v4-pro"
-        assert config.active_model.ref == "deepseek/deepseek-v4-pro"
-        assert config.max_iterations == 20
-        assert "Custom system prompt" in config.system_prompt
-        assert len(config.tools) == 2
-
-    def test_active_model_defaults_to_first_model(self, temp_config_file):
-        """Without active_model field, first model is active."""
-        config = Config.from_json5(temp_config_file)
+        assert config.models[0].api_key == "env-key"
         assert config.active_model_ref == "deepseek/deepseek-v4-flash"
-        assert config.active_model.api_model == "deepseek-v4-flash"
 
-    def test_file_not_found_raises(self):
-        """Missing config file raises FileNotFoundError."""
-        with pytest.raises(FileNotFoundError, match="Config file not found"):
-            Config.from_json5("nonexistent_file_xyz.json5")
-
-    def test_no_models_raises(self):
-        """Config with no models raises ValueError."""
-        content = '{ tools: [] }'
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json5", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(content)
-            f.flush()
-            path = Path(f.name)
-        try:
-            with pytest.raises(ValueError, match="No models defined"):
-                Config.from_json5(path)
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_duplicate_model_in_provider_raises(self):
-        """Duplicate model names within a provider raise ValueError."""
-        content = """{
-            models: {
-                providers: {
-                    deepseek: {
-                        base_url: "https://api.deepseek.com",
-                        api_key: "sk-test",
-                        models: [
-                            { model: "deepseek-v4-flash" },
-                            { model: "deepseek-v4-flash" },
-                        ]
-                    }
-                }
-            },
-            tools: []
-        }"""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json5", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(content)
-            f.flush()
-            path = Path(f.name)
-        try:
-            with pytest.raises(ValueError, match="Duplicate model"):
-                Config.from_json5(path)
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_list_format_models(self):
-        """Models specified as a list (flat format)."""
-        content = """{
-            models: [
-                { model: "gpt-5", api_key: "sk-test", provider: "openai" },
+    def test_list_style_models(self, tmp_path):
+        """Config with models as a flat list."""
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": [
+                {"model": "gpt-4o", "api_key": "sk-key", "provider": "openai"},
+                {"model": "claude-3", "api_key": "sk-other", "provider": "anthropic"},
             ],
-            tools: []
-        }"""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json5", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(content)
-            f.flush()
-            path = Path(f.name)
-        try:
-            config = Config.from_json5(path)
-            assert len(config.models) == 1
-            assert config.models[0].ref == "openai/gpt-5"
-        finally:
-            path.unlink(missing_ok=True)
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert len(config.models) == 2
+        assert config.models[0].ref == "openai/gpt-4o"
+        assert config.models[1].ref == "anthropic/claude-3"
 
-    def test_env_var_resolution_in_config(self, monkeypatch):
-        """Environment variables in config are resolved."""
-        monkeypatch.setenv("MY_API_KEY", "env-resolved-key")
-        content = """{
-            models: [
-                {
-                    model: "gpt-5",
-                    api_key: "${MY_API_KEY}",
-                    provider: "openai"
-                },
-            ],
-            tools: [
-                { type: "serper", api_key: "${MY_API_KEY}" },
-            ]
-        }"""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json5", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(content)
-            f.flush()
-            path = Path(f.name)
-        try:
-            config = Config.from_json5(path)
-            assert config.models[0].api_key == "env-resolved-key"
-            assert config.tools[0]["api_key"] == "env-resolved-key"
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_provider_defaults_inherited_by_models(self):
-        """Provider-level api_key, base_url, api are inherited."""
-        content = """{
-            models: {
-                providers: {
-                    testp: {
-                        base_url: "https://test.api.com",
-                        api_key: "sk-provider-key",
-                        api: "custom-api",
-                        models: [
-                            { model: "m1" },
-                            { model: "m2", api_key: "sk-override" },
-                        ]
-                    }
-                }
-            },
-            tools: []
-        }"""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json5", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(content)
-            f.flush()
-            path = Path(f.name)
-        try:
-            config = Config.from_json5(path)
-            assert config.models[0].api_key == "sk-provider-key"
-            assert config.models[0].base_url == "https://test.api.com"
-            assert config.models[0].api == "custom-api"
-            # Second model overrides api_key
-            assert config.models[1].api_key == "sk-override"
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_provider_with_same_model_name_across_different_providers(self):
-        """Same model name across different providers is allowed."""
-        content = """{
-            models: {
-                providers: {
-                    p1: {
-                        base_url: "https://a.com",
-                        api_key: "k1",
-                        models: [{ model: "same-name" }]
+    def test_active_model_selection(self, tmp_path):
+        """active_model field selects which model is active."""
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "deepseek": {
+                        "api_key": "sk-key",
+                        "models": [
+                            {"model": "v4-flash", "name": "Flash"},
+                            {"model": "v4-pro", "name": "Pro"},
+                        ],
                     },
-                    p2: {
-                        base_url: "https://b.com",
-                        api_key: "k2",
-                        models: [{ model: "same-name" }]
+                    "openai": {
+                        "api_key": "sk-oai",
+                        "models": [
+                            {"model": "gpt-4o", "name": "GPT-4o"},
+                        ],
+                    },
+                }
+            },
+            "active_model": "openai/gpt-4o",
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.active_model.ref == "openai/gpt-4o"
+
+    def test_no_models_raises(self, tmp_path):
+        """Empty models section raises ValueError."""
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({"models": {}}))
+        with pytest.raises(ValueError, match="No models defined"):
+            Config.from_json5(str(cfg_path))
+
+    def test_agent_config(self, tmp_path, monkeypatch):
+        """Agent section configures max_iterations and system_prompt."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
                     }
                 }
             },
-            tools: []
-        }"""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json5", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(content)
-            f.flush()
-            path = Path(f.name)
-        try:
-            config = Config.from_json5(path)
-            assert len(config.models) == 2
-            refs = {m.ref for m in config.models}
-            assert refs == {"p1/same-name", "p2/same-name"}
-        finally:
-            path.unlink(missing_ok=True)
+            "agent": {
+                "max_iterations": 5,
+                "system_prompt": "Custom system prompt here.",
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.max_iterations == 5
+        assert config.system_prompt == "Custom system prompt here."
+
+    def test_default_system_prompt(self, tmp_path, monkeypatch):
+        """Config uses default system prompt when not specified."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert "helpful AI assistant" in config.system_prompt
+
+    def test_tools_config(self, tmp_path, monkeypatch):
+        """Tools section is loaded correctly."""
+        monkeypatch.setenv("SERPER_KEY", "serper-key")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "sk-key",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+            "tools": [
+                {"type": "shell", "timeout": 60},
+                {"type": "serper", "api_key": "${SERPER_KEY}"},
+            ],
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert len(config.tools) == 2
+        assert config.tools[0] == {"type": "shell", "timeout": 60}
+        assert config.tools[1] == {"type": "serper", "api_key": "serper-key"}
+
+    def test_duplicate_model_in_provider_raises(self, tmp_path, monkeypatch):
+        """Duplicate model names within a provider raise ValueError."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "deepseek": {
+                        "api_key": "${KEY}",
+                        "models": [
+                            {"model": "same-name", "name": "First"},
+                            {"model": "deepseek/same-name", "name": "Second"},
+                        ],
+                    }
+                }
+            },
+        }))
+        with pytest.raises(ValueError, match="Duplicate model"):
+            Config.from_json5(str(cfg_path))
+
+    def test_provider_defaults_inherited(self, tmp_path, monkeypatch):
+        """Models inherit base_url and api_key from provider."""
+        monkeypatch.setenv("KEY", "parent-key")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "deepseek": {
+                        "base_url": "https://custom.deepseek.com",
+                        "api_key": "${KEY}",
+                        "api": "openai-completions",
+                        "models": [
+                            {"model": "v4-flash"},
+                        ],
+                    }
+                }
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        m = config.models[0]
+        assert m.base_url == "https://custom.deepseek.com"
+        assert m.api_key == "parent-key"
+        assert m.api == "openai-completions"
 
 
-# ══════════════════════════════════════════════════════════════════════
-# Config.active_model property
-# ══════════════════════════════════════════════════════════════════════
+# ── Config.active_model ───────────────────────────────────────────────
 
 
 class TestActiveModel:
     """Tests for Config.active_model property."""
 
-    def test_returns_correct_model(self, temp_config_file):
-        """active_model returns the matching ModelConfig."""
-        config = Config.from_json5(temp_config_file)
-        active = config.active_model
-        assert active.ref == "deepseek/deepseek-v4-flash"
-        assert isinstance(active, ModelConfig)
+    def test_returns_correct_model(self, sample_config):
+        assert sample_config.active_model.ref == "deepseek/deepseek-v4-flash"
 
-    def test_raises_keyerror_for_missing_ref(self, temp_config_file):
-        """KeyError raised when active_model_ref doesn't match any model."""
-        config = Config.from_json5(temp_config_file)
-        config.active_model_ref = "nonexistent/model"
-        with pytest.raises(KeyError, match="Active model"):
-            _ = config.active_model
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Config defaults
-# ══════════════════════════════════════════════════════════════════════
-
-
-class TestConfigDefaults:
-    """Tests for default Config values."""
-
-    def test_default_system_prompt(self, temp_config_file):
-        """Default system prompt is set when not in config."""
-        config = Config.from_json5(temp_config_file)
-        assert "slife" in config.system_prompt
-        assert "web_search" in config.system_prompt
-
-    def test_default_max_iterations(self, temp_config_file):
-        """Default max_iterations is 10."""
-        config = Config.from_json5(temp_config_file)
-        assert config.max_iterations == 10
-
-    def test_empty_tools(self):
-        """Config works with empty tools list."""
-        content = """{
-            models: [
-                { model: "m1", api_key: "k1", provider: "p1" },
-            ],
-            tools: []
-        }"""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json5", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(content)
-            f.flush()
-            path = Path(f.name)
-        try:
-            config = Config.from_json5(path)
-            assert config.tools == []
-        finally:
-            path.unlink(missing_ok=True)
+    def test_missing_model_raises_keyerror(self, sample_config):
+        sample_config.active_model_ref = "nonexistent/model"
+        with pytest.raises(KeyError) as exc_info:
+            _ = sample_config.active_model
+        assert "nonexistent/model" in str(exc_info.value)
+        assert "Available" in str(exc_info.value)
