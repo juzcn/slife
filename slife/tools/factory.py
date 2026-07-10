@@ -9,6 +9,7 @@ from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
 from slife.tools.serper import SerperSearchTool
 from slife.tools.shell import ShellTool
+from slife.tools.skill import ListSkillsTool, UseSkillTool
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,10 @@ logger = logging.getLogger(__name__)
 _TOOL_BUILDERS = {
     "serper": lambda cfg: SerperSearchTool(api_key=cfg["api_key"]),
     "shell": lambda cfg: ShellTool(timeout=cfg.get("timeout", 30)),
+    "skill": lambda cfg: [
+        ListSkillsTool(skills_dir=cfg.get("skills_dir", "skills")),
+        UseSkillTool(skills_dir=cfg.get("skills_dir", "skills")),
+    ],
 }
 
 
@@ -52,7 +57,10 @@ def create_tools_from_config(tool_entries: list[dict]) -> ToolRegistry:
             continue
 
         logger.info("Creating tool: type=%s", tool_type)
-        tool = builder(entry)
-        registry.register(tool)
+        result = builder(entry)
+        # Support builders that return a single tool or a list of tools
+        tools = result if isinstance(result, list) else [result]
+        for tool in tools:
+            registry.register(tool)
 
     return registry

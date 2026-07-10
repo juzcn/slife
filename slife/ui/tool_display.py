@@ -40,6 +40,8 @@ class _ToolMeta:
 _TOOL_META: dict[str, _ToolMeta] = {
     "execute_shell": _ToolMeta("Running command", "Ran command", "command"),
     "web_search":    _ToolMeta("Searching web",  "Searched web",  "query"),
+    "list_skills":   _ToolMeta("Listing skills",  "Listed skills",  ""),
+    "use_skill":     _ToolMeta("Loading skill",   "Loaded skill",   "skill_name"),
     "read_file":     _ToolMeta("Reading file",   "Read file",     "file_path"),
     "write_file":    _ToolMeta("Writing file",   "Wrote file",    "file_path"),
     "grep":          _ToolMeta("Searching code", "Searched code", "pattern"),

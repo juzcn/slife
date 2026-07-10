@@ -58,5 +58,6 @@
   tools: [
     { type: "serper", api_key: "${SERPER_API_KEY}" },
     { type: "shell", timeout: 30 },
+    { type: "skill", skills_dir: "skills" },
   ],
 }
