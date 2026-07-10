@@ -95,6 +95,9 @@ class Config:
     max_iterations: int = 10
     system_prompt: str = (
         "You are slife, a helpful AI assistant with access to tools. "
+        "Use list_skills to discover available operation manuals, "
+        "and use_skill to load a specific manual when a task matches "
+        "a skill's description. "
         "Use web_search to find current information from the web. "
         "Use execute_shell to run shell commands on the user's system. "
         "Think step by step and use tools when needed. "

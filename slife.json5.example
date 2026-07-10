@@ -8,7 +8,7 @@
 
   agent: {
     max_iterations: 10,
-    system_prompt: "You are slife, a helpful AI assistant with access to tools.\nUse web_search to find current information from the web.\nUse execute_shell to run shell commands on the user's system.\nThink step by step and use tools when needed.\nWhen you have enough information, answer the user directly.",
+    system_prompt: "You are slife, a helpful AI assistant with access to tools.\nUse list_skills to discover available operation manuals, and use_skill to load a specific manual when a task matches a skill's description.\nUse web_search to find current information from the web.\nUse execute_shell to run shell commands on the user's system.\nThink step by step and use tools when needed.\nWhen you have enough information, answer the user directly.",
   },
 
   // ── Models ───────────────────────────────────────────────────
