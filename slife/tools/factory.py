@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Map of tool type string → factory function
 _TOOL_BUILDERS = {
-    "serper": lambda cfg: SerperSearchTool(api_key=cfg["api_key"]),
+    "serper": lambda cfg: SerperSearchTool(),
     "shell": lambda cfg: ShellTool(timeout=cfg.get("timeout", 30)),
     "skill": lambda cfg: [
         ListSkillsTool(skills_dir=cfg.get("skills_dir", "skills")),

@@ -35,12 +35,11 @@ class TestCreateToolsFromConfig:
     def test_serper_tool(self):
         """Serper tool is created from config."""
         registry = create_tools_from_config([
-            {"type": "serper", "api_key": "test-api-key"},
+            {"type": "serper"},
         ])
         tools = registry.list_tools()
         assert len(tools) == 1
         assert tools[0].name == "web_search"
-        assert tools[0].api_key == "test-api-key"
 
     def test_multiple_tools(self):
         """Multiple tools are created from config."""

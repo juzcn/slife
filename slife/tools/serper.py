@@ -1,6 +1,7 @@
 """Serper.dev web search tool."""
 
 import logging
+import os
 
 import httpx
 
@@ -10,7 +11,11 @@ logger = logging.getLogger(__name__)
 
 
 class SerperSearchTool(Tool):
-    """Search the web via Serper.dev (Google Search API)."""
+    """Search the web via Serper.dev (Google Search API).
+
+    Reads SERPER_API_KEY from the environment (set via env section
+    in slife.json5).
+    """
 
     name = "web_search"
     description = (
@@ -29,17 +34,15 @@ class SerperSearchTool(Tool):
         "required": ["query"],
     }
 
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-
     async def execute(self, query: str) -> str:
         """Execute a web search via the Serper API."""
+        api_key = os.environ.get("SERPER_API_KEY", "")
         logger.debug("Search: %.100s", query)
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
                 "https://google.serper.dev/search",
                 json={"q": query},
-                headers={"X-API-KEY": self.api_key},
+                headers={"X-API-KEY": api_key},
             )
             response.raise_for_status()
             data = response.json()
