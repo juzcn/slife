@@ -99,7 +99,12 @@ class Config:
         "Use execute_shell to run shell commands on the user's system. "
         "Available skill manuals are listed below. "
         "When a user request matches a skill's description, "
-        "call use_skill(name) to load its full instructions. "
+        "call use_skill(name) to load its full instructions, "
+        "then follow those instructions exactly. "
+        "If a loaded skill requires an API key, environment setup, "
+        "or other prerequisites that are not available, "
+        "tell the user what they need to configure and stop — "
+        "do not silently fall back to a generic tool. "
         "Think step by step and use tools when needed. "
         "When you have enough information, answer the user directly."
     )
