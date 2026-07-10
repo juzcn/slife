@@ -86,9 +86,10 @@ class TestAssistantMessage:
         msg._buffer = "Hello, user!"
         msg.update = MagicMock()
         msg._refresh_display()
-        rendered = msg.update.call_args[0][0]
-        assert "Hello, user!" in rendered
-        assert "Thinking" not in rendered
+        content = msg.update.call_args[0][0]
+        text = content.plain
+        assert "Hello, user!" in text
+        assert "Thinking" not in text
 
     def test_refresh_display_with_thinking(self):
         msg = self._make_msg()
@@ -97,10 +98,11 @@ class TestAssistantMessage:
         msg._buffer = "Done"
         msg.update = MagicMock()
         msg._refresh_display()
-        rendered = msg.update.call_args[0][0]
-        assert "Thinking" in rendered
-        assert "Step by step" in rendered
-        assert "Done" in rendered
+        content = msg.update.call_args[0][0]
+        text = content.plain
+        assert "Thinking" in text
+        assert "Step by step" in text
+        assert "Done" in text
 
     def test_refresh_display_long_thinking_truncated(self):
         msg = self._make_msg()
@@ -108,7 +110,9 @@ class TestAssistantMessage:
         msg._has_thinking = True
         msg.update = MagicMock()
         msg._refresh_display()
-        assert "..." in msg.update.call_args[0][0]
+        content = msg.update.call_args[0][0]
+        text = content.plain
+        assert "..." in text
 
     def test_refresh_display_with_usage(self):
         msg = self._make_msg()
@@ -116,9 +120,10 @@ class TestAssistantMessage:
         msg._usage = TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
         msg.update = MagicMock()
         msg._refresh_display()
-        rendered = msg.update.call_args[0][0]
-        assert "150" in rendered
-        assert "tokens" in rendered
+        content = msg.update.call_args[0][0]
+        text = content.plain
+        assert "150" in text
+        assert "tokens" in text
 
     def test_refresh_display_empty_without_thinking(self):
         """Empty state without thinking shows ellipsis."""
@@ -127,7 +132,9 @@ class TestAssistantMessage:
         msg._has_thinking = False
         msg.update = MagicMock()
         msg._refresh_display()
-        assert "…" in msg.update.call_args[0][0]
+        content = msg.update.call_args[0][0]
+        text = content.plain
+        assert "…" in text
 
     def test_refresh_display_full(self):
         """Full display with thinking, text, and usage."""
@@ -138,12 +145,13 @@ class TestAssistantMessage:
         msg._usage = TokenUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30)
         msg.update = MagicMock()
         msg._refresh_display()
-        rendered = msg.update.call_args[0][0]
-        assert "Analyzing..." in rendered
-        assert "The answer is 42." in rendered
-        assert "30" in rendered
-        assert "20" in rendered
-        assert "10" in rendered
+        content = msg.update.call_args[0][0]
+        text = content.plain
+        assert "Analyzing..." in text
+        assert "The answer is 42." in text
+        assert "30" in text
+        assert "20" in text
+        assert "10" in text
 
 
 # ── ChatView logic ────────────────────────────────────────────────────

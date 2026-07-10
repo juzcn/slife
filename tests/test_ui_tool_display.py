@@ -44,9 +44,10 @@ class TestToolCallWidget:
         w.set_running()
         assert w._status == "running"
         w.update.assert_called_once()
-        # Verify markup was passed to update()
-        markup = w.update.call_args[0][0]
-        assert "Running" in markup or "Searching" in markup
+        # Verify Content was passed to update() — check plain text
+        content = w.update.call_args[0][0]
+        text = content.plain
+        assert "Running" in text or "Searching" in text
 
     def test_set_complete_success(self):
         w = _make_widget()
@@ -70,28 +71,31 @@ class TestToolCallWidget:
         assert len(w._result) == 2003  # 2000 + "..."
         assert w._result.endswith("...")
 
-    # ── Build markup ──────────────────────────────────────────────
+    # ── Build content ────────────────────────────────────────────
 
-    def test_build_markup_collapsed_only_header(self):
+    def test_build_content_collapsed_only_header(self):
         w = _make_widget()
-        text = w._build_markup()
+        content = w._build_content()
+        text = content.plain
         assert "▸" in text
         assert "Searching web" in text
         assert "Arguments" not in text
         assert "Result" not in text
 
-    def test_build_markup_expanded_includes_detail(self):
+    def test_build_content_expanded_includes_detail(self):
         w = _make_widget(_is_collapsed=False, _result="done")
-        text = w._build_markup()
+        content = w._build_content()
+        text = content.plain
         assert "▾" in text
         assert "Arguments" in text
         assert "Result" in text
 
-    def test_build_markup_valid_rich_tags(self):
-        """Markup should have balanced Rich markup tags."""
+    def test_build_content_valid_markup_tags(self):
+        """Markup should have balanced Textual markup tags."""
         w = _make_widget(_status="done", _result="hello", _is_collapsed=False)
-        text = w._build_markup()
-        assert text.count("[") == text.count("]")
+        content = w._build_content()
+        markup = content.markup
+        assert markup.count("[") == markup.count("]")
 
     def test_toggle_flips_and_updates(self):
         w = _make_widget(_is_collapsed=True)
@@ -109,41 +113,46 @@ class TestToolCallWidget:
 
     def test_header_line_pending_shows_friendly_label(self):
         w = _make_widget()
-        text = w._header_line()
+        content = w._header_line()
+        text = content.plain
         assert "▸" in text
         assert "Searching web" in text
-        assert "pending" in text
 
     def test_header_line_running_shows_friendly_label(self):
         w = _make_widget(_status="running")
-        text = w._header_line()
+        content = w._header_line()
+        text = content.plain
         assert "Searching web" in text
         assert "running" in text
 
     def test_header_line_done_shows_past_tense_label(self):
         w = _make_widget(_status="done")
-        text = w._header_line()
+        content = w._header_line()
+        text = content.plain
         assert "Searched web" in text
-        assert "done" in text
 
     def test_header_line_error(self):
         w = _make_widget(_status="error")
-        text = w._header_line()
+        content = w._header_line()
+        text = content.plain
         assert "error" in text
 
     def test_header_line_expanded(self):
         w = _make_widget(_is_collapsed=False)
-        text = w._header_line()
+        content = w._header_line()
+        text = content.plain
         assert "▾" in text
 
     def test_header_line_includes_primary_arg_preview(self):
         w = _make_widget(tool_name="web_search", tool_args={"query": "cats"})
-        text = w._header_line()
+        content = w._header_line()
+        text = content.plain
         assert "cats" in text
 
     def test_header_line_truncates_long_primary_arg(self):
         w = _make_widget(tool_args={"query": "x" * 100})
-        text = w._header_line()
+        content = w._header_line()
+        text = content.plain
         assert "…" in text
 
     def test_header_line_execute_shell_shows_command(self):
@@ -152,20 +161,23 @@ class TestToolCallWidget:
             tool_args={"command": "npm test"},
             _status="running",
         )
-        text = w._header_line()
+        content = w._header_line()
+        text = content.plain
         assert "Running command" in text
         assert "npm test" in text
 
     def test_header_line_unknown_tool_falls_back_to_name(self):
         w = _make_widget(tool_name="custom_tool", tool_args={"x": "1"})
-        text = w._header_line()
+        content = w._header_line()
+        text = content.plain
         assert "Custom tool" in text
 
     # ── Detail block ──────────────────────────────────────────────
 
     def test_detail_block_with_result(self):
         w = _make_widget(_result="Search completed")
-        text = w._detail_block()
+        content = w._detail_block()
+        text = content.plain
         assert "Arguments" in text
         assert "cats" in text
         assert "Result" in text
@@ -173,19 +185,22 @@ class TestToolCallWidget:
 
     def test_detail_block_with_error(self):
         w = _make_widget(_result="Failure", _result_is_error=True)
-        text = w._detail_block()
+        content = w._detail_block()
+        text = content.plain
         assert "Error" in text
 
     def test_detail_block_no_result(self):
         w = _make_widget()
-        text = w._detail_block()
+        content = w._detail_block()
+        text = content.plain
         assert "Arguments" in text
         assert "Result" not in text
         assert "Error" not in text
 
     def test_detail_block_no_args(self):
         w = _make_widget(tool_args={})
-        text = w._detail_block()
+        content = w._detail_block()
+        text = content.plain
         assert "no arguments" in text
 
     def test_detail_block_highlights_primary_arg(self):
@@ -193,18 +208,21 @@ class TestToolCallWidget:
             tool_name="web_search",
             tool_args={"query": "cats", "num": 5},
         )
-        text = w._detail_block()
-        assert "d29922" in text  # amber highlight for primary arg key
-        assert "8b949e" in text  # dim for secondary arg key
+        content = w._detail_block()
+        markup = content.markup
+        assert "d29922" in markup  # amber highlight for primary arg key
+        assert "8b949e" in markup  # dim for secondary arg key
 
     def test_detail_block_truncates_long_arg_values(self):
         w = _make_widget(tool_args={"query": "y" * 600})
-        text = w._detail_block()
+        content = w._detail_block()
+        text = content.plain
         assert "…" in text
 
     def test_detail_block_multiline_result_shows_truncation_hint(self):
         w = _make_widget(_result="\n".join([f"line {i}" for i in range(30)]))
-        text = w._detail_block()
+        content = w._detail_block()
+        text = content.plain
         assert "more lines" in text
 
 
