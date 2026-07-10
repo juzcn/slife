@@ -107,8 +107,10 @@ class Config:
         "then follow those instructions exactly. "
         "If a loaded skill requires an API key, environment setup, "
         "or other prerequisites that are not available, "
-        "tell the user what they need to configure and stop — "
-        "do not silently fall back to a generic tool. "
+        "tell the user to add the missing variable to the env "
+        "section of slife.json5 like: env: { KEY: \"value\" }, "
+        "then restart slife. Do not silently fall back to a "
+        "generic tool. "
         "Think step by step and use tools when needed. "
         "When you have enough information, answer the user directly."
     )
