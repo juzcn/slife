@@ -30,7 +30,7 @@ class ChatView(VerticalScroll):
 
     def add_system_message(self, text: str) -> None:
         """Add a system/status message."""
-        msg = Static(text, classes="system-message")
+        msg = Static(_escape(text), classes="system-message")
         self.mount(msg)
         self.scroll_end(animate=False)
 
@@ -39,10 +39,10 @@ class UserMessage(Static):
     """User message — "> text" prefix style, no label."""
 
     def __init__(self, text: str, images: list[str] | None = None):
-        parts = [f"[bold #d97706]>[/bold #d97706] {text}"]
+        parts = [f"[bold #d97706]>[/bold #d97706] {_escape(text)}"]
         if images:
             file_list = ", ".join(images)
-            parts.append(f" [dim]# 📎 {file_list}[/dim]")
+            parts.append(f" [dim]# 📎 {_escape(file_list)}[/dim]")
         super().__init__("".join(parts))
         self.add_class("user-message")
 
