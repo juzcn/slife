@@ -1,6 +1,9 @@
 # Project config (contains local settings)
 slife.json5
 
+# Runtime logs
+logs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

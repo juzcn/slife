@@ -64,6 +64,7 @@
   // ── Tools ────────────────────────────────────────────────────
 
   tools: [
+    { type: "platform" },
     { type: "serper" },
     { type: "shell", timeout: 30 },
     { type: "skill", skills_dir: "skills" },

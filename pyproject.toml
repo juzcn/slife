@@ -1,7 +1,12 @@
 [project]
 name = "slife"
 version = "0.1.0"
-description = "Silicon-based life based on LLM"
+description = "Terminal-based AI agent — a function-calling loop with minimum harness"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "juzcn", email = "zhangjun@cueb.edu.cn" },
+]
 requires-python = ">=3.13"
 dependencies = [
     "textual>=1.0.0",
@@ -10,6 +15,20 @@ dependencies = [
     "json5>=0.15.0",
     "jinja2>=3.1.0",
 ]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Terminals",
+]
+
+[project.urls]
+Homepage = "https://github.com/juzcn/slife"
+Repository = "https://github.com/juzcn/slife"
 
 [project.scripts]
 slife = "slife:main"
