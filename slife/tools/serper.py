@@ -18,17 +18,13 @@ class SerperSearchTool(Tool):
     """
 
     name = "web_search"
-    description = (
-        "Search the web using Google. "
-        "Returns organic search results with titles, snippets, and links. "
-        "Use this to find current information, news, or facts on the web."
-    )
+    description = "Search the web via Google. Returns titles, snippets, and links."
     parameters = {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "The search query to look up on the web",
+                "description": "Search query",
             },
         },
         "required": ["query"],

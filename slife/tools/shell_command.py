@@ -13,33 +13,33 @@ class GetShellCommandTool(Tool):
 
     name = "get_shell_command"
     description = (
-        "Build a platform-correct shell command ready to paste into execute_shell. "
-        "Use this to translate skill examples (which may use bash syntax) into "
-        "commands that work on this OS."
+        "Get the correct shell command for the current operating system. "
+        "Always call this before execute_shell — never guess a command directly, "
+        "because syntax differs between Windows (cmd) and Unix (bash). "
+        "Supports: "
+        "list_files — list directory contents; "
+        "run_script — run a Python script with JSON arguments; "
+        "check_env — check if an environment variable is set; "
+        "install — install a Python package via uv pip."
     )
     parameters = {
         "type": "object",
         "properties": {
             "run_script": {
                 "type": "string",
-                "description": (
-                    "Script path and JSON arguments to run. "
-                    "Pass the script path followed by the JSON string, e.g. "
-                    '"skills/search.py {\\"query\\":\\"hello\\"}". '
-                    "Returns a complete command with correct Python and quoting."
-                ),
+                "description": "Script path + JSON args, e.g. 'skills/search.py {\"query\":\"hello\"}'",
             },
             "check_env": {
                 "type": "string",
-                "description": "Check if an environment variable is set. Returns the check command.",
+                "description": "Env var name to check if set",
             },
             "install": {
                 "type": "string",
-                "description": "Install a Python package. Returns the install command.",
+                "description": "Package name to install via uv pip",
             },
             "list_files": {
                 "type": "boolean",
-                "description": "Get the command to list files in a directory.",
+                "description": "Return the command to list directory contents",
             },
         },
         "required": [],

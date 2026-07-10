@@ -113,13 +113,7 @@ class ListSkillsTool(Tool):
     """List all available skills with their names and descriptions."""
 
     name = "list_skills"
-    description = (
-        "List all available skills (natural-language operation manuals). "
-        "Each skill is a how-to guide the assistant can follow — some "
-        "provide step-by-step instructions, others include executable "
-        "commands. Use this to discover what capabilities are available "
-        "before loading a specific skill with use_skill."
-    )
+    description = "List available skills and their descriptions."
     parameters = {
         "type": "object",
         "properties": {},
@@ -138,20 +132,13 @@ class UseSkillTool(Tool):
     """Load a specific skill's full documentation into context."""
 
     name = "use_skill"
-    description = (
-        "Load a skill's complete manual into the conversation context. "
-        "The returned document tells you what to do — it may include "
-        "step-by-step instructions, commands to run via execute_shell, "
-        "conventions to follow, or reference material. "
-        "Call list_skills first to see what skills are available, "
-        "then use_skill with the skill name to load the one you need."
-    )
+    description = "Load a skill's full instructions into context. Call list_skills first."
     parameters = {
         "type": "object",
         "properties": {
             "skill_name": {
                 "type": "string",
-                "description": "Name of the skill to load, as shown by list_skills.",
+                "description": "Skill name from list_skills",
             },
         },
         "required": ["skill_name"],

@@ -95,8 +95,6 @@ class Config:
     tools: list[dict]
     env: dict = None  # type: ignore[assignment]
     max_iterations: int = 10
-    system_prompt: str = ""
-
     @property
     def active_model(self) -> ModelConfig:
         """Return the currently active model configuration."""
@@ -211,7 +209,4 @@ class Config:
             tools=tools,
             env=env_section,
             max_iterations=agent.get("max_iterations", 10),
-            system_prompt=agent.get(
-                "system_prompt", cls.system_prompt
-            ).strip(),
         )

@@ -228,7 +228,7 @@ class TestConfigFromJSON5:
             Config.from_json5(str(cfg_path))
 
     def test_agent_config(self, tmp_path, monkeypatch):
-        """Agent section configures max_iterations and system_prompt."""
+        """Agent section configures max_iterations."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({
@@ -242,29 +242,10 @@ class TestConfigFromJSON5:
             },
             "agent": {
                 "max_iterations": 5,
-                "system_prompt": "Custom system prompt here.",
             },
         }))
         config = Config.from_json5(str(cfg_path))
         assert config.max_iterations == 5
-        assert config.system_prompt == "Custom system prompt here."
-
-    def test_default_system_prompt(self, tmp_path, monkeypatch):
-        """Config uses default system prompt when not specified."""
-        monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
-            "models": {
-                "providers": {
-                    "d": {
-                        "api_key": "${KEY}",
-                        "models": [{"model": "m"}],
-                    }
-                }
-            },
-        }))
-        config = Config.from_json5(str(cfg_path))
-        assert config.system_prompt == ""
 
     def test_tools_config(self, tmp_path, monkeypatch):
         """Tools section is loaded correctly."""

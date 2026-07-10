@@ -28,8 +28,7 @@ class AgentService:
             tool_registry=self.tool_registry,
             max_iterations=config.max_iterations,
         )
-        system_prompt = build_system_prompt(config.system_prompt)
-        self.conversation = Conversation(system_prompt=system_prompt)
+        self.conversation = Conversation(system_prompt=build_system_prompt())
         self.session_usage = TokenUsage()
 
     @property

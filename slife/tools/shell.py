@@ -12,19 +12,13 @@ class ShellTool(Tool):
     """Execute shell commands on the user's system."""
 
     name = "execute_shell"
-    description = (
-        "Execute a shell command on the user's system. "
-        "Returns stdout and stderr combined. "
-        "Use this to run commands, read files, list directories, "
-        "or interact with the system. "
-        "On Windows, commands run in cmd.exe; on Unix, in sh."
-    )
+    description = "Run a shell command. Returns stdout + stderr."
     parameters = {
         "type": "object",
         "properties": {
             "command": {
                 "type": "string",
-                "description": "The shell command to execute",
+                "description": "Command to run",
             },
         },
         "required": ["command"],

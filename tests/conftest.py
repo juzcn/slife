@@ -90,7 +90,6 @@ def sample_config(sample_model_config):
             {"type": "shell", "timeout": 30},
         ],
         max_iterations=10,
-        system_prompt="You are slife, a helpful AI assistant.",
     )
 
 
@@ -259,7 +258,7 @@ def make_async_iter(items):
 # ── JSON5 config builders ─────────────────────────────────────────────
 
 
-def build_json5_config(models=None, active_model=None, tools=None, agent=None, system_prompt=None):
+def build_json5_config(models=None, active_model=None, tools=None, agent=None):
     """Build a minimal JSON5-serializable config dict for testing."""
     cfg = {
         "models": models or {
@@ -281,6 +280,4 @@ def build_json5_config(models=None, active_model=None, tools=None, agent=None, s
     }
     if agent is not None:
         cfg["agent"] = agent
-    if system_prompt is not None:
-        cfg.setdefault("agent", {})["system_prompt"] = system_prompt
     return cfg
