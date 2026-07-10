@@ -14,6 +14,7 @@ Model refs: "provider-id/model-name"
 
 import json5
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -192,12 +193,16 @@ class Config:
         )
 
         agent = raw.get("agent", {})
+
+        # Parse env section first — inject into os.environ so tools can
+        # reference these vars via ${VAR} syntax during resolution.
+        env_section = resolve_env(raw.get("env", {}))
+        for key, value in env_section.items():
+            os.environ[key] = str(value)
+        logger.info("Env vars in config: %d", len(env_section))
+
         tools = resolve_env(raw.get("tools", []))
         logger.info("Tool entries in config: %d", len(tools))
-
-        # Parse env section — resolved, applied to os.environ by main()
-        env_section = resolve_env(raw.get("env", {}))
-        logger.info("Env vars in config: %d", len(env_section))
 
         return cls(
             models=all_models,

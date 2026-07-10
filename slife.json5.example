@@ -8,6 +8,7 @@
   // Set here to make them available to tools and shell commands.
 
   env: {
+    SERPER_API_KEY: "${SERPER_API_KEY}",
     // BAIDU_API_KEY: "your-baidu-api-key",
   },
 
