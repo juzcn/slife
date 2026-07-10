@@ -65,8 +65,7 @@ class LLMClient:
             base_url=model.base_url,
         )
         logger.debug(
-            "LLM client init: provider=%s model=%s base_url=%s "
-            "thinking=%s max_tokens=%d",
+            "LLM client: %s/%s @ %s (thinking=%s max_tokens=%d)",
             model.provider,
             model.api_model,
             model.base_url,
@@ -123,6 +122,19 @@ class LLMClient:
 
         return kwargs
 
+    # ── Usage extraction ──────────────────────────────────────────
+
+    @staticmethod
+    def _usage_from_response(usage_obj) -> TokenUsage:
+        """Extract TokenUsage from an API usage object (may be None)."""
+        if usage_obj:
+            return TokenUsage(
+                prompt_tokens=usage_obj.prompt_tokens or 0,
+                completion_tokens=usage_obj.completion_tokens or 0,
+                total_tokens=usage_obj.total_tokens or 0,
+            )
+        return TokenUsage()
+
     # ── Batch (non-streaming) ─────────────────────────────────────
 
     async def chat(
@@ -142,13 +154,9 @@ class LLMClient:
         kwargs = self._build_kwargs(messages, tools)
         response = await self.client.chat.completions.create(**kwargs)
 
-        usage = TokenUsage()
-        if hasattr(response, "usage") and response.usage:
-            usage = TokenUsage(
-                prompt_tokens=response.usage.prompt_tokens or 0,
-                completion_tokens=response.usage.completion_tokens or 0,
-                total_tokens=response.usage.total_tokens or 0,
-            )
+        usage = self._usage_from_response(
+            response.usage if hasattr(response, "usage") else None
+        )
 
         return response, usage
 
@@ -181,7 +189,7 @@ class LLMClient:
         kwargs["stream_options"] = {"include_usage": True}
 
         logger.debug(
-            "Streaming API call: model=%s messages=%d tools=%d",
+            "Streaming: model=%s messages=%d tools=%d",
             self.model_config.api_model,
             len(messages),
             len(tools) if tools else 0,
@@ -224,10 +232,6 @@ class LLMClient:
 
             # Usage (final chunk with stream_options.include_usage)
             if hasattr(event, "usage") and event.usage:
-                usage = TokenUsage(
-                    prompt_tokens=event.usage.prompt_tokens or 0,
-                    completion_tokens=event.usage.completion_tokens or 0,
-                    total_tokens=event.usage.total_tokens or 0,
-                )
-                logger.debug("Stream finished: %s", usage)
+                usage = self._usage_from_response(event.usage)
+                logger.debug("Stream done: %s", usage)
                 yield StreamChunk(usage=usage)

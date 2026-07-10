@@ -35,7 +35,7 @@ class ShellTool(Tool):
 
     async def execute(self, command: str) -> str:
         """Execute a shell command and return its output."""
-        logger.info("Shell: %.200s", command)
+        logger.debug("Shell exec: %.200s", command)
 
         process = await asyncio.create_subprocess_shell(
             command,
@@ -67,7 +67,7 @@ class ShellTool(Tool):
             )
 
         logger.debug(
-            "Shell exit=%d stdout=%d stderr=%d",
+            "Shell done: exit=%d stdout=%d stderr=%d",
             process.returncode or 0,
             len(output),
             len(err_output),

@@ -41,10 +41,10 @@ class Conversation:
             for img_path in images:
                 parts.append(encode_image(img_path))
             self.messages.append({"role": "user", "content": parts})
-            logger.debug("User message: %.100s + %d images", content, len(images))
+            logger.debug("User: %.100s + %d images", content, len(images))
         else:
             self.messages.append({"role": "user", "content": content})
-            logger.debug("User message: %.100s", content)
+            logger.debug("User: %.100s", content)
 
     def add_assistant_message(
         self, content: str | None, tool_calls: list | None = None
@@ -58,15 +58,15 @@ class Conversation:
                 tc.get("function", {}).get("name", "?")
                 for tc in tool_calls
             ]
-            logger.debug("Assistant message: tool_calls=%s", tc_names)
+            logger.debug("Assistant: tool_calls=%s", tc_names)
         else:
-            logger.debug("Assistant message: %.200s", content or "")
+            logger.debug("Assistant: %.200s", content or "")
         self.messages.append(msg)
 
     def add_tool_result(self, tool_call_id: str, content: str) -> None:
         """Add a tool result message."""
         logger.debug(
-            "Tool result: id=%s content=%.200s",
+            "Tool result: %s → %.200s",
             tool_call_id,
             content,
         )
@@ -89,4 +89,4 @@ class Conversation:
             else None
         )
         self.messages = [system_msg] if system_msg else []
-        logger.debug("Conversation cleared: %d messages removed", old_count - len(self.messages))
+        logger.debug("Cleared: %d messages removed", old_count - len(self.messages))

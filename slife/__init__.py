@@ -27,17 +27,21 @@ def _session_log_path() -> Path:
     return LOG_DIR / f"slife_{ts}.log"
 
 
-def setup_logging(level: int = logging.DEBUG) -> None:
-    """Configure logging to both console (TUI) and file.
+def setup_logging(level: int = logging.DEBUG) -> tuple[Path, logging.Handler]:
+    """Configure logging to both console and file.
 
-    Console: INFO+ with minimal format (clean TUI startup).
+    Console: INFO+ during startup (before TUI), WARNING+ during TUI runtime.
     File:    DEBUG+ with timestamps for troubleshooting.
     Each session writes to a new logs/slife_YYYYMMDD_HHMMSS.log file.
+
+    Returns:
+        (log_path, console_handler) — caller should raise console to WARNING
+        before starting the TUI to prevent display corruption.
     """
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
 
-    # Console handler — minimal format for TUI startup messages
+    # Console handler — INFO during startup, caller raises to WARNING before TUI
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     console.setFormatter(logging.Formatter("%(message)s"))
@@ -55,22 +59,27 @@ def setup_logging(level: int = logging.DEBUG) -> None:
     )
     root.addHandler(file_handler)
 
-    return log_path
+    return log_path, console
 
 
 def main(config_path: str = "slife.json5"):
     """Entry point for the slife TUI application."""
-    log_path = setup_logging()
+    log_path, console_handler = setup_logging()
 
     logger.info("Log: %s", log_path)
-    logger.info("Loading config...")
+    logger.info("Loading config…")
     config = Config.from_json5(config_path)
 
     active = config.active_model
     logger.info("Model: %s (%s)", active.ref, active.display_name)
     logger.info("Thinking: %s", "on" if active.thinking_enabled else "off")
     logger.info("Tools: %d loaded", len(config.tools))
-    logger.info("Starting TUI...")
+
+    # Suppress console logging during TUI runtime to prevent display corruption.
+    # All messages still go to the per-session log file at DEBUG level.
+    console_handler.setLevel(logging.WARNING)
+
+    logger.info("Starting TUI…")
 
     app = SlifeApp(config)
     app.run()

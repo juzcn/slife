@@ -58,58 +58,36 @@ ChatView {
     text-style: italic;
 }
 
-/* ── Tool call containers ────────────────────────────────────── */
+/* ── Tool call display ───────────────────────────────────────── */
 
 .tool-call {
     margin: 0 1 1 2;
     padding: 0 1;
     border: solid #30363d;
     background: #161b22;
-}
-
-.tool-call > Static {
-    padding: 0;
-}
-
-.tool-call-header {
-    color: #d29922;
-    text-style: bold;
-}
-
-.tool-detail {
-    margin: 0;
-    padding: 1;
-    background: #0d1117;
-    color: #c9d1d9;
-    overflow-x: auto;
+    color: #e6edf3;
     height: auto;
-    border-top: dashed #30363d;
+    min-height: 1;
 }
 
-/* ── Input bar (bottom docked) ───────────────────────────────── */
+/* ── Input (bottom docked) ────────────────────────────────────── */
 
-InputBar {
+#user-input {
     dock: bottom;
-    height: auto;
-    padding: 0 1 1 1;
-    background: #0d1117;
-    border-top: solid #30363d;
-}
-
-InputBar Input {
     width: 100%;
     height: 3;
+    padding: 1 1;
     background: #0d1117;
     color: #e6edf3;
     border: none;
-    padding: 1 1;
+    border-top: solid #30363d;
 }
 
-InputBar Input:focus {
+#user-input:focus {
     border: none;
 }
 
-InputBar Input > .input--placeholder {
+#user-input > .input--placeholder {
     color: #484f58;
 }
 

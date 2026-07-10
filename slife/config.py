@@ -116,7 +116,7 @@ class Config:
     def from_json5(cls, path: str | Path = "slife.json5") -> "Config":
         """Load from JSON5 file with provider→model hierarchy."""
         path = Path(path)
-        logger.debug("Loading config from %s", path)
+        logger.info("Loading config from %s", path)
         if not path.exists():
             raise FileNotFoundError(
                 f"Config file not found: {path}\n"
@@ -127,6 +127,7 @@ class Config:
         models_section = raw.get("models", {})
 
         all_models: list[ModelConfig] = []
+        providers: dict = {}
 
         if isinstance(models_section, dict):
             providers = models_section.get("providers", {})
@@ -170,7 +171,7 @@ class Config:
                 "No models defined. Add models.providers.<id>.models[]."
             )
 
-        logger.debug(
+        logger.info(
             "Parsed %d models across %d providers",
             len(all_models),
             len(providers) if isinstance(models_section, dict) else 0,
@@ -178,7 +179,7 @@ class Config:
 
         agent = raw.get("agent", {})
         tools = resolve_env(raw.get("tools", []))
-        logger.debug("Tool entries in config: %d", len(tools))
+        logger.info("Tool entries in config: %d", len(tools))
 
         return cls(
             models=all_models,

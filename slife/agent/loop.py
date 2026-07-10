@@ -280,10 +280,9 @@ class AgentLoop:
         total_usage = TokenUsage()
 
         logger.info(
-            "Agent loop start: input=%.100s images=%d max_iters=%d",
+            "Request: %.100s (images=%d)",
             user_input,
             len(images) if images else 0,
-            self.max_iterations,
         )
 
         for i in range(self.max_iterations):
@@ -299,8 +298,8 @@ class AgentLoop:
                 tool_calls = self._build_tool_calls_from_deltas(
                     result.tool_accum
                 )
-                logger.info(
-                    "Tool calls: %s",
+                logger.debug(
+                    "LLM requested tools: %s",
                     [(tc.name, _truncate_args(tc.arguments)) for tc in tool_calls],
                 )
                 conversation.add_assistant_message(
@@ -315,7 +314,7 @@ class AgentLoop:
                 content=result.content or ""
             )
             logger.info(
-                "Agent loop done: text=%.200s %s",
+                "Response: %.200s (%s)",
                 result.content,
                 total_usage,
             )

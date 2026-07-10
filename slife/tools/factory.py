@@ -51,7 +51,7 @@ def create_tools_from_config(tool_entries: list[dict]) -> ToolRegistry:
             )
             continue
 
-        logger.debug("Creating tool: type=%s", tool_type)
+        logger.info("Creating tool: type=%s", tool_type)
         tool = builder(entry)
         registry.register(tool)
 

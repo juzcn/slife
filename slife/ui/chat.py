@@ -1,7 +1,7 @@
 """Chat view widgets for the slife TUI — Claude Code CLI style."""
 
-from textual.containers import Container, VerticalScroll
-from textual.widgets import Input, Static
+from textual.containers import VerticalScroll
+from textual.widgets import Static
 
 from slife.agent.llm_client import TokenUsage
 
@@ -111,11 +111,3 @@ class AssistantMessage(Static):
         self.update("\n".join(parts) if parts else "")
 
 
-class InputBar(Container):
-    """Bottom input bar — minimal, prompt-style."""
-
-    def compose(self):
-        yield Input(
-            placeholder="Message slife…",
-            id="user-input",
-        )

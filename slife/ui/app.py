@@ -1,7 +1,7 @@
 """Textual TUI application for slife — Claude Code CLI style."""
 
 from textual.app import App, ComposeResult
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
@@ -15,7 +15,7 @@ from slife.agent.loop import (
 )
 from slife.agent.multimodal import parse_file_attachments
 from slife.tools.factory import create_tools_from_config
-from slife.ui.chat import ChatView, InputBar, AssistantMessage
+from slife.ui.chat import ChatView, AssistantMessage
 from slife.ui.tool_display import ToolCallWidget
 
 
@@ -83,16 +83,19 @@ class _TUIHandler:
 
     def __init__(self, app: "SlifeApp"):
         self._app = app
+        self._chat_view = app.query_one("#chat-view", ChatView)
 
     async def on_thinking_chunk(self, chunk: str) -> None:
         """Stream a thinking/reasoning token to the active assistant widget."""
         if self._app._active_assistant:
             self._app._active_assistant.append_thinking(chunk)
+            self._chat_view.scroll_end(animate=False)
 
     async def on_text_chunk(self, chunk: str) -> None:
         """Stream a text token to the active assistant widget."""
         if self._app._active_assistant:
             self._app._active_assistant.append_text(chunk)
+            self._chat_view.scroll_end(animate=False)
 
     async def on_tool_call(self, tool_call: ToolCallInfo) -> None:
         """Mount a tool call widget in the chat view."""
@@ -101,10 +104,9 @@ class _TUIHandler:
             tool_args=tool_call.arguments,
             tool_call_id=tool_call.id,
         )
-        chat_view = self._app.query_one("#chat-view", ChatView)
-        chat_view.mount(widget)
+        self._chat_view.mount(widget)
         widget.set_running()
-        chat_view.scroll_end(animate=False)
+        self._chat_view.scroll_end(animate=False)
         self._app._tool_widgets[tool_call.id] = widget
 
     async def on_tool_result(
@@ -114,6 +116,7 @@ class _TUIHandler:
         widget = self._app._tool_widgets.get(tool_call_id)
         if widget:
             widget.set_complete(result, is_error)
+            self._chat_view.scroll_end(animate=False)
 
     async def on_token_usage(self, usage: TokenUsage) -> None:
         """Update session usage and refresh status bar."""
@@ -121,6 +124,7 @@ class _TUIHandler:
         if self._app._active_assistant:
             self._app._active_assistant.set_token_usage(usage)
         self._app._update_status()
+        self._chat_view.scroll_end(animate=False)
 
 
 # ── Status bar ─────────────────────────────────────────────────────
@@ -186,7 +190,10 @@ class SlifeApp(App):
     def compose(self) -> ComposeResult:
         """Minimal layout: chat fills screen, input + status docked at bottom."""
         yield ChatView(id="chat-view")
-        yield InputBar(id="input-bar")
+        yield Input(
+            placeholder="Message slife…",
+            id="user-input",
+        )
         yield StatusBar(id="status-bar")
 
     def on_mount(self) -> None:

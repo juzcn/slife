@@ -20,7 +20,7 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         """Register a tool instance."""
         self._tools[tool.name] = tool
-        logger.debug("Tool registered: %s", tool.name)
+        logger.info("Tool registered: %s", tool.name)
 
     def get(self, name: str) -> Tool | None:
         """Get a tool by name, or None if not found."""
@@ -46,10 +46,10 @@ class ToolRegistry:
             logger.warning("Tool not found: %s", name)
             return f"Error: Unknown tool '{name}'"
         try:
-            logger.debug("Tool execute: %s args=%s", name, kwargs)
+            logger.debug("Execute %s(%s)", name, kwargs)
             result = await tool.execute(**kwargs)
-            logger.debug("Tool result: %s → %.200s", name, result)
+            logger.debug("Result  %s → %.200s", name, result)
             return result
         except Exception as e:
-            logger.error("Tool error: %s → %s", name, e)
+            logger.warning("Tool error: %s → %s", name, e)
             return f"Error executing {name}: {e}"
