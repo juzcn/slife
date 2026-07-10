@@ -45,16 +45,10 @@ class GetShellCommandTool(Tool):
         "required": [],
     }
 
-    async def execute(
-        self,
-        run_script: str | None = None,
-        check_env: str | None = None,
-        install: str | None = None,
-        list_files: bool = False,
-    ) -> str:
+    async def execute(self, **kwargs) -> str:
         return get_shell_command(
-            run_script=run_script,
-            check_env=check_env,
-            install=install,
-            list_files=list_files,
+            run_script=kwargs.get("run_script"),
+            check_env=kwargs.get("check_env"),
+            install=kwargs.get("install"),
+            list_files=kwargs.get("list_files", False),
         )

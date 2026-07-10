@@ -16,6 +16,8 @@ def _make_widget(**kwargs):
         w.tool_name = kwargs.get("tool_name", "web_search")
         w.tool_args = kwargs.get("tool_args", {"query": "cats"})
         w.tool_call_id = kwargs.get("tool_call_id", "call_abc")
+        w._iteration = kwargs.get("_iteration", 1)
+        w._max_iterations = kwargs.get("_max_iterations", 10)
         w._is_collapsed = kwargs.get("_is_collapsed", True)
         w._status = kwargs.get("_status", "pending")
         w._result = kwargs.get("_result", "")
@@ -171,6 +173,28 @@ class TestToolCallWidget:
         content = w._header_line()
         text = content.plain
         assert "Custom tool" in text
+
+    # ── Iteration counter ─────────────────────────────────────────
+
+    def test_header_line_includes_iteration(self):
+        w = _make_widget(_iteration=3, _max_iterations=10)
+        content = w._header_line()
+        text = content.plain
+        assert "3/10" in text
+
+    def test_header_line_iteration_zero_hidden(self):
+        """When iteration is 0 (default/not set), no counter shown."""
+        w = _make_widget(_iteration=0, _max_iterations=10)
+        content = w._header_line()
+        text = content.plain
+        assert "0/10" not in text
+        assert "/" not in text or "0/" not in text
+
+    def test_header_line_iteration_first_of_ten(self):
+        w = _make_widget(_iteration=1, _max_iterations=10)
+        content = w._header_line()
+        text = content.plain
+        assert "1/10" in text
 
     # ── Detail block ──────────────────────────────────────────────
 

@@ -264,7 +264,7 @@ class TestConfigFromJSON5:
             },
         }))
         config = Config.from_json5(str(cfg_path))
-        assert "helpful AI assistant" in config.system_prompt
+        assert config.system_prompt == ""
 
     def test_tools_config(self, tmp_path, monkeypatch):
         """Tools section is loaded correctly."""

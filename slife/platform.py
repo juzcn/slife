@@ -7,7 +7,7 @@ command string that the LLM can paste directly into execute_shell.
 
 import sys
 
-_IS_WIN = sys.platform == "win32"
+IS_WINDOWS = sys.platform == "win32"
 
 
 def get_shell_command(
@@ -70,12 +70,12 @@ def _run_script_cmd(input_str: str) -> str:
         script = input_str[:split_at].strip()
         args = input_str[split_at:].strip()
 
-    python = "python" if _IS_WIN else "python3"
+    python = "python" if IS_WINDOWS else "python3"
 
     if not args:
         return f"{python} {script}"
 
-    if _IS_WIN:
+    if IS_WINDOWS:
         # Force UTF-8 to avoid GBK encoding errors with Chinese output.
         # chcp sets console code page; -X utf8 forces Python to use UTF-8 for pipes/stdio.
         escaped = args.replace("\\", "\\\\").replace('"', '\\"')
@@ -86,7 +86,7 @@ def _run_script_cmd(input_str: str) -> str:
 
 
 def _check_env_cmd(name: str) -> str:
-    return f"echo %{name}%" if _IS_WIN else f"echo ${name}"
+    return f"echo %{name}%" if IS_WINDOWS else f"echo ${name}"
 
 
 def _install_cmd(package: str) -> str:
@@ -94,4 +94,4 @@ def _install_cmd(package: str) -> str:
 
 
 def _list_files_cmd() -> str:
-    return "dir" if _IS_WIN else "ls"
+    return "dir" if IS_WINDOWS else "ls"

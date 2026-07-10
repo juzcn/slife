@@ -60,6 +60,21 @@ def setup_logging(level: int = logging.DEBUG) -> tuple[Path, logging.Handler]:
     )
     root.addHandler(file_handler)
 
+    # Silence noisy third-party HTTP/logging libraries.
+    # These dump full request/response bodies at DEBUG — thousands of
+    # characters per API call. slife's own DEBUG output is sufficient.
+    for noisy in (
+        "openai._base_client",
+        "httpcore.connection",
+        "httpcore.http11",
+        "httpcore.proxy",
+        "httpcore._synchronization",
+        "httpx",
+        "asyncio",
+        "urllib3",
+    ):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     return log_path, console
 
 
@@ -71,11 +86,15 @@ def main(config_path: str = "slife.json5"):
     logger.info("Loading config…")
     config = Config.from_json5(config_path)
 
-    # Apply env vars from config to the process environment
+    # Log env vars from config (already applied to os.environ by Config.from_json5)
     if config.env:
         for key, value in config.env.items():
-            os.environ[key] = str(value)
-            logger.info("Env: %s = %s", key, value)
+            # Mask API key values: only log the key name and first/last chars
+            if any(hint in key.upper() for hint in ("KEY", "SECRET", "TOKEN", "PASSWORD")):
+                masked = str(value)[:4] + "…" + str(value)[-4:] if len(str(value)) > 8 else "***"
+                logger.info("Env: %s = %s", key, masked)
+            else:
+                logger.info("Env: %s = %s", key, value)
 
     active = config.active_model
     logger.info("Model: %s (%s)", active.ref, active.display_name)
@@ -90,3 +109,12 @@ def main(config_path: str = "slife.json5"):
 
     app = SlifeApp(config)
     app.run()
+
+    # Session ended — log summary
+    usage = app.service.session_usage
+    logger.info(
+        "Session ended — total tokens: %s (prompt=%s, completion=%s)",
+        usage.total_tokens,
+        usage.prompt_tokens,
+        usage.completion_tokens,
+    )

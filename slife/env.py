@@ -6,8 +6,27 @@ recursively resolving through dicts and lists.
 
 import os
 import re
+from typing import TypeVar, overload
+
+_T = TypeVar("_T")
 
 _ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::-([^}]*))?\}")
+
+
+@overload
+def resolve_env(value: str) -> str: ...
+
+
+@overload
+def resolve_env(value: dict[str, _T]) -> dict[str, _T]: ...
+
+
+@overload
+def resolve_env(value: list[_T]) -> list[_T]: ...
+
+
+@overload
+def resolve_env(value: _T) -> _T: ...
 
 
 def resolve_env(value):

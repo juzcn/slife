@@ -7,7 +7,7 @@ import logging
 
 from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
-from slife.tools.platform import GetShellCommandTool
+from slife.tools.shell_command import GetShellCommandTool
 from slife.tools.serper import SerperSearchTool
 from slife.tools.shell import ShellTool
 from slife.tools.skill import ListSkillsTool, UseSkillTool

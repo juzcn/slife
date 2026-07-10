@@ -51,7 +51,8 @@ _TOOL_META: dict[str, _ToolMeta] = {
     "write_file":    _ToolMeta("Writing file",   "Wrote file",    "file_path"),
     "grep":          _ToolMeta("Searching code", "Searched code", "pattern"),
     "glob":          _ToolMeta("Finding files",  "Found files",   "pattern"),
-    "web_fetch":     _ToolMeta("Fetching URL",   "Fetched URL",   "url"),
+    "web_fetch":         _ToolMeta("Fetching URL",            "Fetched URL",            "url"),
+    "get_shell_command": _ToolMeta("Building shell command", "Built shell command",    "run_script"),
 }
 
 # Max preview length for the primary argument value in the header.
@@ -149,10 +150,14 @@ class ToolCallWidget(Static):
         tool_name: str,
         tool_args: dict,
         tool_call_id: str,
+        iteration: int = 0,
+        max_iterations: int = 10,
     ):
         self.tool_name = tool_name
         self.tool_args = tool_args
         self.tool_call_id = tool_call_id
+        self._iteration = iteration
+        self._max_iterations = max_iterations
         self._is_collapsed = True
         self._status: str = "running"
         self._result: str = ""
@@ -225,6 +230,13 @@ class ToolCallWidget(Static):
 
         # Status text
         content = content + _lit("  ") + _lit(label_text, style=color)
+
+        # Iteration counter (e.g. "1/10")
+        if self._iteration > 0:
+            content = content + _lit(
+                f"  ({self._iteration}/{self._max_iterations})",
+                style="#484f58",
+            )
 
         return content
 

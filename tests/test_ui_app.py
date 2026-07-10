@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from slife.config import Config, ModelConfig
 from slife.agent.llm_client import TokenUsage
 from slife.agent.loop import ToolCallInfo, AgentResult, MaxIterationsExceeded
-from slife.ui.app import AgentService, StatusBar, _TUIHandler
+from slife.agent.service import AgentService
+from slife.ui.app import StatusBar
+from slife.ui.handler import TUIHandler
 
 
 # ── AgentService ──────────────────────────────────────────────────────
@@ -86,11 +88,11 @@ class TestAgentService:
         assert call_kwargs["images"] == ["img.png"]
 
 
-# ── _TUIHandler ───────────────────────────────────────────────────────
+# ── TUIHandler ───────────────────────────────────────────────────────
 
 
 class TestTUIHandler:
-    """Tests for _TUIHandler — uses fully mocked app."""
+    """Tests for TUIHandler — uses fully mocked app."""
 
     def _make_app_mock(self):
         app = MagicMock()
@@ -101,7 +103,7 @@ class TestTUIHandler:
     @pytest.mark.asyncio
     async def test_on_thinking_chunk(self):
         app = self._make_app_mock()
-        handler = _TUIHandler(app)
+        handler = TUIHandler(app)
         await handler.on_thinking_chunk("Hmm...")
         app._active_assistant.append_thinking.assert_called_once_with("Hmm...")
 
@@ -109,13 +111,13 @@ class TestTUIHandler:
     async def test_on_thinking_chunk_no_active_assistant(self):
         app = self._make_app_mock()
         app._active_assistant = None
-        handler = _TUIHandler(app)
+        handler = TUIHandler(app)
         await handler.on_thinking_chunk("Hmm...")
 
     @pytest.mark.asyncio
     async def test_on_text_chunk(self):
         app = self._make_app_mock()
-        handler = _TUIHandler(app)
+        handler = TUIHandler(app)
         await handler.on_text_chunk("Hello")
         app._active_assistant.append_text.assert_called_once_with("Hello")
 
@@ -123,7 +125,7 @@ class TestTUIHandler:
     async def test_on_text_chunk_no_active_assistant(self):
         app = self._make_app_mock()
         app._active_assistant = None
-        handler = _TUIHandler(app)
+        handler = TUIHandler(app)
         await handler.on_text_chunk("text")
 
     @pytest.mark.asyncio
@@ -133,13 +135,13 @@ class TestTUIHandler:
         mock_chat_view = MagicMock()
         app.query_one.return_value = mock_chat_view
 
-        with patch("slife.ui.app.ToolCallWidget") as mock_widget_cls:
+        with patch("slife.ui.handler.ToolCallWidget") as mock_widget_cls:
             mock_widget = MagicMock()
             mock_widget.tool_name = "web_search"
             mock_widget.tool_call_id = "c1"
             mock_widget_cls.return_value = mock_widget
 
-            handler = _TUIHandler(app)
+            handler = TUIHandler(app)
             tc = ToolCallInfo(id="c1", name="web_search", arguments={"query": "cats"})
             await handler.on_tool_call(tc)
 
@@ -151,7 +153,7 @@ class TestTUIHandler:
         app = self._make_app_mock()
         mock_widget = MagicMock()
         app._tool_widgets = {"c1": mock_widget}
-        handler = _TUIHandler(app)
+        handler = TUIHandler(app)
         await handler.on_tool_result("c1", "Search results", is_error=False)
         mock_widget.set_complete.assert_called_once_with("Search results", False)
 
@@ -160,7 +162,7 @@ class TestTUIHandler:
         app = self._make_app_mock()
         mock_widget = MagicMock()
         app._tool_widgets = {"c1": mock_widget}
-        handler = _TUIHandler(app)
+        handler = TUIHandler(app)
         await handler.on_tool_result("c1", "Error: failed", is_error=True)
         mock_widget.set_complete.assert_called_once_with("Error: failed", True)
 
@@ -168,14 +170,14 @@ class TestTUIHandler:
     async def test_on_tool_result_missing_widget(self):
         app = self._make_app_mock()
         app._tool_widgets = {}
-        handler = _TUIHandler(app)
+        handler = TUIHandler(app)
         await handler.on_tool_result("unknown", "result", False)
 
     @pytest.mark.asyncio
     async def test_on_token_usage(self):
         app = self._make_app_mock()
         app.service = MagicMock()
-        handler = _TUIHandler(app)
+        handler = TUIHandler(app)
         usage = TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
         await handler.on_token_usage(usage)
         assert app.service.session_usage == usage

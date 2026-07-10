@@ -95,34 +95,7 @@ class Config:
     tools: list[dict]
     env: dict = None  # type: ignore[assignment]
     max_iterations: int = 10
-    system_prompt: str = (
-        "You are slife, a helpful AI assistant with access to tools. "
-        "Use web_search to find current information from the web. "
-        "Use execute_shell to run shell commands on the user's system. "
-        "Before running shell commands, call get_shell_command to get "
-        "the correct syntax for this OS. When a skill asks you to run a "
-        "script with JSON arguments, use "
-        "get_shell_command(run_script='script.py {json}') — it returns "
-        "a complete command with the correct Python interpreter and "
-        "quoting for this platform. Also use check_env, install, or "
-        "list_files parameters as needed. "
-        "To install Python packages, use: uv pip install <package>. "
-        "Available skill manuals are listed below. "
-        "When a user request matches a skill's description, "
-        "call use_skill(name) to load its full instructions, "
-        "then follow those instructions exactly. "
-        "Skill command examples may use bash syntax (python3, "
-        "single quotes, $VAR) — always translate via "
-        "get_shell_command before executing. "
-        "If a loaded skill requires an API key, environment setup, "
-        "or other prerequisites that are not available, "
-        "tell the user to add the missing variable to the env "
-        "section of slife.json5 like: env: { KEY: \"value\" }, "
-        "then restart slife. Do not silently fall back to a "
-        "generic tool. "
-        "Think step by step and use tools when needed. "
-        "When you have enough information, answer the user directly."
-    )
+    system_prompt: str = ""
 
     @property
     def active_model(self) -> ModelConfig:
@@ -154,8 +127,12 @@ class Config:
 
         if isinstance(models_section, dict):
             providers = models_section.get("providers", {})
+            if not isinstance(providers, dict):
+                providers = {}
 
             for provider_id, provider_cfg in providers.items():
+                if not isinstance(provider_cfg, dict):
+                    continue
                 provider_cfg = resolve_env(provider_cfg)
                 base_url = provider_cfg.get("base_url", "")
                 api_key = provider_cfg.get("api_key", "")
@@ -163,7 +140,12 @@ class Config:
 
                 seen_ids: set[str] = set()
 
-                for m in provider_cfg.get("models", []):
+                models = provider_cfg.get("models", [])
+                if not isinstance(models, list):
+                    continue
+                for m in models:
+                    if not isinstance(m, dict):
+                        continue
                     m = resolve_env(m)
                     m.setdefault("api_key", api_key)
                     m.setdefault("base_url", base_url)
@@ -186,6 +168,8 @@ class Config:
 
         elif isinstance(models_section, list):
             for m in models_section:
+                if not isinstance(m, dict):
+                    continue
                 m = resolve_env(m)
                 all_models.append(ModelConfig.from_dict(m))
 
@@ -200,16 +184,25 @@ class Config:
             len(providers) if isinstance(models_section, dict) else 0,
         )
 
-        agent = raw.get("agent", {})
+        agent_raw = raw.get("agent", {})
+        if not isinstance(agent_raw, dict):
+            agent_raw = {}
+        agent = agent_raw
 
         # Parse env section first — inject into os.environ so tools can
         # reference these vars via ${VAR} syntax during resolution.
-        env_section = resolve_env(raw.get("env", {}))
+        env_raw = raw.get("env", {})
+        if not isinstance(env_raw, dict):
+            env_raw = {}
+        env_section = resolve_env(env_raw)
         for key, value in env_section.items():
             os.environ[key] = str(value)
         logger.info("Env vars in config: %d", len(env_section))
 
-        tools = resolve_env(raw.get("tools", []))
+        tools_raw = raw.get("tools", [])
+        if not isinstance(tools_raw, list):
+            tools_raw = []
+        tools = resolve_env(tools_raw)
         logger.info("Tool entries in config: %d", len(tools))
 
         return cls(

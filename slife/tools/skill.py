@@ -73,12 +73,6 @@ def get_skills_summary(skills_dir: str | Path = "skills") -> str:
     return "\n".join(lines)
 
 
-def _list_skills(skills_dir: Path) -> str:
-    """Legacy wrapper for Tool class."""
-    result = get_skills_summary(skills_dir)
-    return result if result else "No skills available."
-
-
 def _read_skill(skills_dir: Path, skill_name: str) -> str:
     """Find and return the full SKILL.md content for a named skill.
 
@@ -136,7 +130,8 @@ class ListSkillsTool(Tool):
         self.skills_dir = Path(skills_dir)
 
     async def execute(self) -> str:
-        return _list_skills(self.skills_dir)
+        result = get_skills_summary(self.skills_dir)
+        return result if result else "No skills available."
 
 
 class UseSkillTool(Tool):

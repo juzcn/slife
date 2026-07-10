@@ -12,17 +12,6 @@ from slife.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 
-def _truncate_args(args: dict, max_len: int = 80) -> dict:
-    """Truncate long argument values for readable log output."""
-    result = {}
-    for k, v in args.items():
-        s = str(v)
-        if len(s) > max_len:
-            s = s[:max_len] + "…"
-        result[k] = s
-    return result
-
-
 # ── Types ──────────────────────────────────────────────────────────
 
 
@@ -66,8 +55,14 @@ class AgentEventHandler(Protocol):
         """Called with each text token as it arrives from the LLM."""
         ...
 
-    async def on_tool_call(self, tool_call: ToolCallInfo) -> None:
-        """Called before a tool is executed."""
+    async def on_tool_call(
+        self, tool_call: ToolCallInfo, iteration: int = 0, max_iterations: int = 10
+    ) -> None:
+        """Called before a tool is executed.
+
+        iteration: 1-based current iteration number.
+        max_iterations: configured maximum iterations.
+        """
         ...
 
     async def on_tool_result(
@@ -121,6 +116,17 @@ class AgentLoop:
         self.max_iterations = max_iterations
 
     # ── Tool call helpers ──────────────────────────────────────────
+
+    @staticmethod
+    def _truncate_args(args: dict, max_len: int = 80) -> dict:
+        """Truncate long argument values for readable log output."""
+        result = {}
+        for k, v in args.items():
+            s = str(v)
+            if len(s) > max_len:
+                s = s[:max_len] + "…"
+            result[k] = s
+        return result
 
     @staticmethod
     def _serialize_tool_calls(tool_calls: list[ToolCallInfo]) -> list[dict]:
@@ -231,6 +237,7 @@ class AgentLoop:
         tool_calls: list[ToolCallInfo],
         conversation: Conversation,
         handler: AgentEventHandler | None,
+        iteration: int = 0,
     ) -> None:
         """Execute a batch of tool calls and record results.
 
@@ -239,7 +246,11 @@ class AgentLoop:
         """
         for tc in tool_calls:
             if handler:
-                await handler.on_tool_call(tc)
+                await handler.on_tool_call(
+                    tc,
+                    iteration=iteration,
+                    max_iterations=self.max_iterations,
+                )
 
             result = await self.tool_registry.execute(
                 tc.name, **tc.arguments
@@ -300,13 +311,15 @@ class AgentLoop:
                 )
                 logger.debug(
                     "LLM requested tools: %s",
-                    [(tc.name, _truncate_args(tc.arguments)) for tc in tool_calls],
+                    [(tc.name, self._truncate_args(tc.arguments)) for tc in tool_calls],
                 )
                 conversation.add_assistant_message(
                     content=result.content or None,
                     tool_calls=self._serialize_tool_calls(tool_calls),
                 )
-                await self._execute_tools(tool_calls, conversation, handler)
+                await self._execute_tools(
+                    tool_calls, conversation, handler, iteration=i + 1
+                )
                 continue
 
             # No tool calls — final response

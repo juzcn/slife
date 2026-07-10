@@ -16,7 +16,7 @@
 
   agent: {
     max_iterations: 10,
-    // system_prompt: "..."  // uncomment to override the default prompt
+
   },
 
   // ── Models ───────────────────────────────────────────────────

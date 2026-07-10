@@ -4,145 +4,12 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, Static
 
 from slife.config import Config
-from slife.agent.llm_client import LLMClient, TokenUsage
-from slife.agent.conversation import Conversation
-from slife.agent.loop import (
-    AgentLoop,
-    AgentEventHandler,
-    ToolCallInfo,
-    AgentResult,
-    MaxIterationsExceeded,
-)
+from slife.agent.service import AgentService
+from slife.agent.loop import MaxIterationsExceeded
 from slife.agent.multimodal import parse_file_attachments
-from slife.tools.factory import create_tools_from_config
-from slife.tools.skill import get_skills_summary
 from slife.ui.chat import ChatView, AssistantMessage
+from slife.ui.handler import TUIHandler
 from slife.ui.tool_display import ToolCallWidget
-
-
-# ── Agent service layer ────────────────────────────────────────────
-
-
-class AgentService:
-    """Wires together LLM client, tools, conversation, and agent loop.
-
-    Owns the agent's runtime state. The TUI delegates to this service
-    rather than directly managing agent internals.
-    """
-
-    def __init__(self, config: Config):
-        self.config = config
-        self.tool_registry = create_tools_from_config(config.tools)
-        self.llm_client = LLMClient(config.active_model)
-        self.agent_loop = AgentLoop(
-            llm_client=self.llm_client,
-            tool_registry=self.tool_registry,
-            max_iterations=config.max_iterations,
-        )
-        # Build system prompt with skills injected at startup
-        system_prompt = self._build_system_prompt(config)
-        self.conversation = Conversation(system_prompt=system_prompt)
-        self.session_usage = TokenUsage()
-
-    @staticmethod
-    def _build_system_prompt(config: Config) -> str:
-        """Build the system prompt, injecting available skills at startup."""
-        skills_summary = get_skills_summary()
-        if skills_summary:
-            return (
-                f"{config.system_prompt}\n\n"
-                f"## Available Skill Manuals\n"
-                f"The following operation manuals are available. "
-                f"When a user's request matches a skill's description, "
-                f"call use_skill(name) to load it:\n\n"
-                f"{skills_summary}"
-            )
-        return config.system_prompt
-
-    @property
-    def model_display_name(self) -> str:
-        """Human-readable name of the active model."""
-        return self.config.active_model.display_name
-
-    @property
-    def thinking_enabled(self) -> bool:
-        """Whether thinking/reasoning mode is active."""
-        return self.config.active_model.thinking_enabled
-
-    def clear(self) -> None:
-        """Reset conversation history and session usage."""
-        self.conversation.clear()
-        self.session_usage = TokenUsage()
-
-    async def process_message(
-        self,
-        user_input: str,
-        images: list[str] | None,
-        handler: AgentEventHandler,
-    ) -> AgentResult:
-        """Run the agent loop for a user message via streaming."""
-        return await self.agent_loop.run(
-            user_input=user_input,
-            conversation=self.conversation,
-            images=images,
-            handler=handler,
-        )
-
-
-# ── TUI → Agent event bridge ───────────────────────────────────────
-
-
-class _TUIHandler:
-    """Bridges AgentEventHandler callbacks to the Textual TUI.
-
-    Implements the AgentEventHandler protocol — receives real-time
-    streaming events from the agent loop and updates TUI widgets.
-    """
-
-    def __init__(self, app: "SlifeApp"):
-        self._app = app
-        self._chat_view = app.query_one("#chat-view", ChatView)
-
-    async def on_thinking_chunk(self, chunk: str) -> None:
-        """Stream a thinking/reasoning token to the active assistant widget."""
-        if self._app._active_assistant:
-            self._app._active_assistant.append_thinking(chunk)
-            self._chat_view.scroll_end(animate=False)
-
-    async def on_text_chunk(self, chunk: str) -> None:
-        """Stream a text token to the active assistant widget."""
-        if self._app._active_assistant:
-            self._app._active_assistant.append_text(chunk)
-            self._chat_view.scroll_end(animate=False)
-
-    async def on_tool_call(self, tool_call: ToolCallInfo) -> None:
-        """Mount a tool call widget in the chat view."""
-        widget = ToolCallWidget(
-            tool_name=tool_call.name,
-            tool_args=tool_call.arguments,
-            tool_call_id=tool_call.id,
-        )
-        self._chat_view.mount(widget)
-        widget.set_running()
-        self._chat_view.scroll_end(animate=False)
-        self._app._tool_widgets[tool_call.id] = widget
-
-    async def on_tool_result(
-        self, tool_call_id: str, result: str, is_error: bool
-    ) -> None:
-        """Update a tool call widget with its result."""
-        widget = self._app._tool_widgets.get(tool_call_id)
-        if widget:
-            widget.set_complete(result, is_error)
-            self._chat_view.scroll_end(animate=False)
-
-    async def on_token_usage(self, usage: TokenUsage) -> None:
-        """Update session usage and refresh status bar."""
-        self._app.service.session_usage = usage
-        if self._app._active_assistant:
-            self._app._active_assistant.set_token_usage(usage)
-        self._app._update_status()
-        self._chat_view.scroll_end(animate=False)
 
 
 # ── Status bar ─────────────────────────────────────────────────────
@@ -289,7 +156,7 @@ class SlifeApp(App):
         self._active_assistant = chat_view.add_assistant_message()
         self._tool_widgets.clear()
 
-        handler = _TUIHandler(self)
+        handler = TUIHandler(self)
 
         try:
             await self.service.process_message(
