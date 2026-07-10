@@ -92,6 +92,7 @@ class Config:
     models: list[ModelConfig]
     active_model_ref: str
     tools: list[dict]
+    env: dict = None  # type: ignore[assignment]
     max_iterations: int = 10
     system_prompt: str = (
         "You are slife, a helpful AI assistant with access to tools. "
@@ -192,10 +193,15 @@ class Config:
         tools = resolve_env(raw.get("tools", []))
         logger.info("Tool entries in config: %d", len(tools))
 
+        # Parse env section — resolved, applied to os.environ by main()
+        env_section = resolve_env(raw.get("env", {}))
+        logger.info("Env vars in config: %d", len(env_section))
+
         return cls(
             models=all_models,
             active_model_ref=raw.get("active_model", all_models[0].ref),
             tools=tools,
+            env=env_section,
             max_iterations=agent.get("max_iterations", 10),
             system_prompt=agent.get(
                 "system_prompt", cls.system_prompt

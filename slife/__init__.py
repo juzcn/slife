@@ -9,6 +9,7 @@ Usage:
 """
 
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -69,6 +70,12 @@ def main(config_path: str = "slife.json5"):
     logger.info("Log: %s", log_path)
     logger.info("Loading config…")
     config = Config.from_json5(config_path)
+
+    # Apply env vars from config to the process environment
+    if config.env:
+        for key, value in config.env.items():
+            os.environ[key] = str(value)
+            logger.info("Env: %s = %s", key, value)
 
     active = config.active_model
     logger.info("Model: %s (%s)", active.ref, active.display_name)

@@ -4,6 +4,13 @@
   // ═══════════════════════════════════════════════════════════════
   // API keys: set as environment variables, reference with ${VAR}.
 
+  // ── Environment variables ────────────────────────────────────
+  // Set here to make them available to tools and shell commands.
+
+  env: {
+    // BAIDU_API_KEY: "your-baidu-api-key",
+  },
+
   // ── Agent defaults ───────────────────────────────────────────
 
   agent: {
