@@ -1,12 +1,26 @@
 """Function-calling agent loop with real-time streaming and thinking support."""
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Protocol
 
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.conversation import Conversation
 from slife.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
+
+
+def _truncate_args(args: dict, max_len: int = 80) -> dict:
+    """Truncate long argument values for readable log output."""
+    result = {}
+    for k, v in args.items():
+        s = str(v)
+        if len(s) > max_len:
+            s = s[:max_len] + "…"
+        result[k] = s
+    return result
 
 
 # ── Types ──────────────────────────────────────────────────────────
@@ -265,7 +279,15 @@ class AgentLoop:
         conversation.add_user_message(user_input, images=images)
         total_usage = TokenUsage()
 
-        for _ in range(self.max_iterations):
+        logger.info(
+            "Agent loop start: input=%.100s images=%d max_iters=%d",
+            user_input,
+            len(images) if images else 0,
+            self.max_iterations,
+        )
+
+        for i in range(self.max_iterations):
+            logger.debug("Iteration %d/%d", i + 1, self.max_iterations)
             result = await self._process_stream(conversation, handler)
 
             total_usage = total_usage + result.usage
@@ -277,6 +299,10 @@ class AgentLoop:
                 tool_calls = self._build_tool_calls_from_deltas(
                     result.tool_accum
                 )
+                logger.info(
+                    "Tool calls: %s",
+                    [(tc.name, _truncate_args(tc.arguments)) for tc in tool_calls],
+                )
                 conversation.add_assistant_message(
                     content=result.content or None,
                     tool_calls=self._serialize_tool_calls(tool_calls),
@@ -287,6 +313,11 @@ class AgentLoop:
             # No tool calls — final response
             conversation.add_assistant_message(
                 content=result.content or ""
+            )
+            logger.info(
+                "Agent loop done: text=%.200s %s",
+                result.content,
+                total_usage,
             )
             return AgentResult(text=result.content, usage=total_usage)
 

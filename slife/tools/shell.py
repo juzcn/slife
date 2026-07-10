@@ -1,8 +1,11 @@
 """Shell command execution tool."""
 
 import asyncio
+import logging
 
 from slife.tools.base import Tool
+
+logger = logging.getLogger(__name__)
 
 
 class ShellTool(Tool):
@@ -32,6 +35,8 @@ class ShellTool(Tool):
 
     async def execute(self, command: str) -> str:
         """Execute a shell command and return its output."""
+        logger.info("Shell: %.200s", command)
+
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
@@ -45,6 +50,7 @@ class ShellTool(Tool):
         except asyncio.TimeoutError:
             process.kill()
             await process.wait()
+            logger.warning("Shell timed out after %ds: %.200s", self.timeout, command)
             return f"Error: Command timed out after {self.timeout}s"
 
         output = stdout.decode("utf-8", errors="replace")
@@ -60,4 +66,10 @@ class ShellTool(Tool):
                 "(no output)"
             )
 
+        logger.debug(
+            "Shell exit=%d stdout=%d stderr=%d",
+            process.returncode or 0,
+            len(output),
+            len(err_output),
+        )
         return result

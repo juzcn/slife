@@ -3,12 +3,15 @@
 Supports both batch (chat) and real-time streaming (chat_stream) modes.
 """
 
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 
 from slife.config import ModelConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -60,6 +63,15 @@ class LLMClient:
         self.client = AsyncOpenAI(
             api_key=model.api_key,
             base_url=model.base_url,
+        )
+        logger.debug(
+            "LLM client init: provider=%s model=%s base_url=%s "
+            "thinking=%s max_tokens=%d",
+            model.provider,
+            model.api_model,
+            model.base_url,
+            model.thinking_enabled,
+            model.max_tokens,
         )
 
     def _is_deepseek(self) -> bool:
@@ -168,6 +180,13 @@ class LLMClient:
         kwargs["stream"] = True
         kwargs["stream_options"] = {"include_usage": True}
 
+        logger.debug(
+            "Streaming API call: model=%s messages=%d tools=%d",
+            self.model_config.api_model,
+            len(messages),
+            len(tools) if tools else 0,
+        )
+
         stream = await self.client.chat.completions.create(**kwargs)
 
         async for event in stream:
@@ -205,8 +224,10 @@ class LLMClient:
 
             # Usage (final chunk with stream_options.include_usage)
             if hasattr(event, "usage") and event.usage:
-                yield StreamChunk(usage=TokenUsage(
+                usage = TokenUsage(
                     prompt_tokens=event.usage.prompt_tokens or 0,
                     completion_tokens=event.usage.completion_tokens or 0,
                     total_tokens=event.usage.total_tokens or 0,
-                ))
+                )
+                logger.debug("Stream finished: %s", usage)
+                yield StreamChunk(usage=usage)

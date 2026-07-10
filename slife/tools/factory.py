@@ -3,12 +3,14 @@
 Maps JSON5 tool entries to Tool instances. Add new tool types here.
 """
 
-import warnings
+import logging
 
 from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
 from slife.tools.serper import SerperSearchTool
 from slife.tools.shell import ShellTool
+
+logger = logging.getLogger(__name__)
 
 # Map of tool type string → factory function
 _TOOL_BUILDERS = {
@@ -37,17 +39,19 @@ def create_tools_from_config(tool_entries: list[dict]) -> ToolRegistry:
     for entry in tool_entries:
         tool_type = entry.get("type", "")
         if not tool_type:
-            warnings.warn(f"Tool entry missing 'type': {entry}")
+            logger.warning("Tool entry missing 'type': %s", entry)
             continue
 
         builder = _TOOL_BUILDERS.get(tool_type)
         if builder is None:
-            warnings.warn(
-                f"Unknown tool type '{tool_type}'. "
-                f"Available: {list(_TOOL_BUILDERS.keys())}"
+            logger.warning(
+                "Unknown tool type '%s'. Available: %s",
+                tool_type,
+                list(_TOOL_BUILDERS.keys()),
             )
             continue
 
+        logger.debug("Creating tool: type=%s", tool_type)
         tool = builder(entry)
         registry.register(tool)
 

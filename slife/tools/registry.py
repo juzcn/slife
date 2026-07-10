@@ -1,6 +1,10 @@
 """Tool registry for managing and executing tools."""
 
+import logging
+
 from slife.tools.base import Tool
+
+logger = logging.getLogger(__name__)
 
 
 class ToolRegistry:
@@ -16,6 +20,7 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         """Register a tool instance."""
         self._tools[tool.name] = tool
+        logger.debug("Tool registered: %s", tool.name)
 
     def get(self, name: str) -> Tool | None:
         """Get a tool by name, or None if not found."""
@@ -38,8 +43,13 @@ class ToolRegistry:
         """
         tool = self.get(name)
         if not tool:
+            logger.warning("Tool not found: %s", name)
             return f"Error: Unknown tool '{name}'"
         try:
-            return await tool.execute(**kwargs)
+            logger.debug("Tool execute: %s args=%s", name, kwargs)
+            result = await tool.execute(**kwargs)
+            logger.debug("Tool result: %s → %.200s", name, result)
+            return result
         except Exception as e:
+            logger.error("Tool error: %s → %s", name, e)
             return f"Error executing {name}: {e}"

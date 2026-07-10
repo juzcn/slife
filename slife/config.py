@@ -13,10 +13,13 @@ Model refs: "provider-id/model-name"
 """
 
 import json5
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from slife.env import resolve_env
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -113,6 +116,7 @@ class Config:
     def from_json5(cls, path: str | Path = "slife.json5") -> "Config":
         """Load from JSON5 file with provider→model hierarchy."""
         path = Path(path)
+        logger.debug("Loading config from %s", path)
         if not path.exists():
             raise FileNotFoundError(
                 f"Config file not found: {path}\n"
@@ -166,8 +170,15 @@ class Config:
                 "No models defined. Add models.providers.<id>.models[]."
             )
 
+        logger.debug(
+            "Parsed %d models across %d providers",
+            len(all_models),
+            len(providers) if isinstance(models_section, dict) else 0,
+        )
+
         agent = raw.get("agent", {})
         tools = resolve_env(raw.get("tools", []))
+        logger.debug("Tool entries in config: %d", len(tools))
 
         return cls(
             models=all_models,

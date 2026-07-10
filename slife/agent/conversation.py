@@ -3,7 +3,11 @@
 Supports multimodal messages (text + images) for vision-capable models.
 """
 
+import logging
+
 from slife.agent.multimodal import encode_image
+
+logger = logging.getLogger(__name__)
 
 
 class Conversation:
@@ -17,6 +21,7 @@ class Conversation:
         self.messages: list[dict] = []
         if system_prompt:
             self.messages.append({"role": "system", "content": system_prompt})
+            logger.debug("Conversation init: system prompt set (%.100s)", system_prompt)
 
     def add_user_message(
         self, content: str, images: list[str] | None = None
@@ -36,8 +41,10 @@ class Conversation:
             for img_path in images:
                 parts.append(encode_image(img_path))
             self.messages.append({"role": "user", "content": parts})
+            logger.debug("User message: %.100s + %d images", content, len(images))
         else:
             self.messages.append({"role": "user", "content": content})
+            logger.debug("User message: %.100s", content)
 
     def add_assistant_message(
         self, content: str | None, tool_calls: list | None = None
@@ -47,10 +54,22 @@ class Conversation:
         msg["content"] = content if content is not None else ""
         if tool_calls:
             msg["tool_calls"] = tool_calls
+            tc_names = [
+                tc.get("function", {}).get("name", "?")
+                for tc in tool_calls
+            ]
+            logger.debug("Assistant message: tool_calls=%s", tc_names)
+        else:
+            logger.debug("Assistant message: %.200s", content or "")
         self.messages.append(msg)
 
     def add_tool_result(self, tool_call_id: str, content: str) -> None:
         """Add a tool result message."""
+        logger.debug(
+            "Tool result: id=%s content=%.200s",
+            tool_call_id,
+            content,
+        )
         self.messages.append({
             "role": "tool",
             "tool_call_id": tool_call_id,
@@ -63,9 +82,11 @@ class Conversation:
 
     def clear(self) -> None:
         """Clear conversation, preserving system prompt if present."""
+        old_count = len(self.messages)
         system_msg = (
             self.messages[0]
             if self.messages and self.messages[0]["role"] == "system"
             else None
         )
         self.messages = [system_msg] if system_msg else []
+        logger.debug("Conversation cleared: %d messages removed", old_count - len(self.messages))

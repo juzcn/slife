@@ -5,5 +5,9 @@
   "[json5]": {
     "editor.tabSize": 2,
     "editor.insertSpaces": true
+  },
+  "[log]": {
+    "editor.wordWrap": "on",
+    "editor.quickSuggestions": false
   }
 }

@@ -1,7 +1,7 @@
 """Tests for slife.tools.factory — config-driven tool loading."""
 
+import logging
 import pytest
-import warnings
 
 from slife.tools.factory import create_tools_from_config
 
@@ -51,40 +51,35 @@ class TestCreateToolsFromConfig:
         names = {t.name for t in registry.list_tools()}
         assert names == {"execute_shell", "web_search"}
 
-    def test_unknown_tool_type_warns(self):
+    def test_unknown_tool_type_warns(self, caplog):
         """Unknown tool type logs a warning and is skipped."""
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with caplog.at_level(logging.WARNING):
             registry = create_tools_from_config([
                 {"type": "unknown_tool_xyz"},
             ])
-            assert len(w) == 1
-            assert "Unknown tool type" in str(w[0].message)
         assert registry.list_tools() == []
+        assert "Unknown tool type" in caplog.text
 
-    def test_missing_type_field_warns(self):
+    def test_missing_type_field_warns(self, caplog):
         """Entry without 'type' field logs a warning."""
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with caplog.at_level(logging.WARNING):
             registry = create_tools_from_config([
                 {"timeout": 30},
             ])
-            assert len(w) == 1
-            assert "missing" in str(w[0].message).lower()
         assert registry.list_tools() == []
+        assert "missing" in caplog.text.lower()
 
-    def test_mixed_valid_and_invalid(self):
+    def test_mixed_valid_and_invalid(self, caplog):
         """Valid tools are created even if some entries are invalid."""
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with caplog.at_level(logging.WARNING):
             registry = create_tools_from_config([
                 {"type": "shell"},
                 {"type": "bad_type"},
                 {},
                 {"type": "serper", "api_key": "k"},
             ])
-            # Two warnings for bad_type and missing type
-            assert len(w) == 2
-
+        # One warning for bad_type, one for missing type
         names = {t.name for t in registry.list_tools()}
         assert names == {"execute_shell", "web_search"}
+        assert "Unknown tool type" in caplog.text
+        assert "missing" in caplog.text.lower()

@@ -1,8 +1,12 @@
 """Serper.dev web search tool."""
 
+import logging
+
 import httpx
 
 from slife.tools.base import Tool
+
+logger = logging.getLogger(__name__)
 
 
 class SerperSearchTool(Tool):
@@ -30,6 +34,7 @@ class SerperSearchTool(Tool):
 
     async def execute(self, query: str) -> str:
         """Execute a web search via the Serper API."""
+        logger.info("Web search: %.100s", query)
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
                 "https://google.serper.dev/search",
@@ -38,6 +43,8 @@ class SerperSearchTool(Tool):
             )
             response.raise_for_status()
             data = response.json()
+            count = len(data.get("organic", []))
+            logger.debug("Search results: %d organic results for '%s'", count, query[:50])
             return self._format_results(data)
 
     def _format_results(self, data: dict) -> str:
