@@ -1,12 +1,16 @@
 """Tool call display widget — Claude Code CLI style with human-friendly labels.
 
 Design: single Static widget, no child widgets, no compose/query complexity.
-All rendering is done by building a markup string and calling self.update().
+All rendering is done by building a Content tree and calling self.update().
+
+Safety: user data (args, results) is placed in Content.from_text(markup=False),
+so special characters like &, [, ] are never interpreted as markup —
+eliminating MarkupError crashes from search results containing URLs, JSON, etc.
 """
 
 from dataclasses import dataclass
 
-from rich.markup import escape as _escape
+from textual.content import Content
 from textual.widgets import Static
 
 _counter: int = 0
@@ -77,20 +81,50 @@ def _primary_arg_value(tool_name: str, tool_args: dict) -> str | None:
 # ── Status display constants ─────────────────────────────────────────
 
 _STATUS_ICON: dict[str, str] = {
-    "running": "[#d29922]◌[/]",
-    "done":    "[#3fb950]●[/]",
-    "error":   "[#f85149]●[/]",
-    "pending": "[#484f58]◌[/]",
+    "running": "◌",
+    "done":    "●",
+    "error":   "●",
+    "pending": "◌",
 }
 
-_STATUS_TEXT: dict[str, str] = {
-    "running": "[#d29922]running[/]",
-    "done":    "[#3fb950]done[/]",
-    "error":   "[#f85149]error[/]",
-    "pending": "[#484f58]pending[/]",
+_STATUS_COLOR: dict[str, str] = {
+    "running": "#d29922",
+    "done":    "#3fb950",
+    "error":   "#f85149",
+    "pending": "#484f58",
+}
+
+_STATUS_LABEL: dict[str, str] = {
+    "running": "running",
+    "done":    "done",
+    "error":   "error",
+    "pending": "pending",
 }
 
 _STATUS_DEFAULT = "pending"
+
+
+# ── Safe Content builders ────────────────────────────────────────────
+
+def _mc(text: str) -> Content:
+    """Build Content from a **controlled** markup string.
+
+    Only use for strings we construct ourselves (labels, section headers).
+    Never pass user data or tool output through this function.
+    """
+    return Content.from_markup(text)
+
+
+def _lit(text: str, style: str = "") -> Content:
+    """Build Content from arbitrary text — NEVER parsed as markup.
+
+    This is the safe path for all user data: command output, search results,
+    file contents, etc. Characters like &, [, ] are rendered literally.
+    """
+    c = Content.from_text(text, markup=False)
+    if style:
+        c = c.stylize(style)
+    return c
 
 
 # ── Widget ───────────────────────────────────────────────────────────
@@ -103,7 +137,9 @@ class ToolCallWidget(Static):
       - Extends Static directly: self.update() renders everything.
       - No compose(), no child widgets, no query_one/get_child_by_id.
       - No on_mount() needed — the widget is self-contained.
-      - Collapsed/expanded rendering is just different markup strings.
+      - Collapsed/expanded rendering is just different Content objects.
+      - User data goes through _lit() (Content.from_text(markup=False))
+        so special characters never cause MarkupError.
 
     Claude Code style: amber header line, expandable detail below.
     """
@@ -122,9 +158,9 @@ class ToolCallWidget(Static):
         self._result: str = ""
         self._result_is_error: bool = False
         self._suffix = _unique_suffix()
-        # Pass initial markup to parent so the widget has content
+        # Pass initial Content to parent so the widget has content
         # from the moment it's mounted — no self.update() in __init__.
-        super().__init__(self._build_markup())
+        super().__init__(self._build_content())
         self.add_class("tool-call")
 
     # ── Public API ─────────────────────────────────────────────────
@@ -132,19 +168,19 @@ class ToolCallWidget(Static):
     def set_running(self) -> None:
         """Indicate the tool is currently executing."""
         self._status = "running"
-        self.update(self._build_markup())
+        self.update(self._build_content())
 
     def set_complete(self, result: str, is_error: bool = False) -> None:
         """Indicate the tool has completed with a result."""
         self._status = "error" if is_error else "done"
         self._result = result[:2000] + "..." if len(result) > 2000 else result
         self._result_is_error = is_error
-        self.update(self._build_markup())
+        self.update(self._build_content())
 
     def toggle(self) -> None:
         """Toggle the detail area visibility."""
         self._is_collapsed = not self._is_collapsed
-        self.update(self._build_markup())
+        self.update(self._build_content())
 
     def on_click(self) -> None:
         """Toggle detail on click."""
@@ -152,77 +188,89 @@ class ToolCallWidget(Static):
 
     # ── Rendering ──────────────────────────────────────────────────
 
-    def _build_markup(self) -> str:
-        """Build the full markup string for the widget."""
-        parts = [self._header_line()]
+    def _build_content(self) -> Content:
+        """Build the full Content tree for the widget."""
+        content = self._header_line()
 
         if not self._is_collapsed:
-            parts.append(self._detail_block())
+            content = content + _mc("\n") + self._detail_block()
 
-        return "\n".join(parts)
+        return content
 
-    # ── Markup builders ────────────────────────────────────────────
+    # ── Content builders ────────────────────────────────────────────
 
-    def _header_line(self) -> str:
+    def _header_line(self) -> Content:
         """Build the one-line header with status icon, label, and arg preview."""
-        icon = _STATUS_ICON.get(self._status, _STATUS_ICON[_STATUS_DEFAULT])
-        status = _STATUS_TEXT.get(self._status, _STATUS_TEXT[_STATUS_DEFAULT])
+        status = self._status
+        color = _STATUS_COLOR.get(status, _STATUS_COLOR[_STATUS_DEFAULT])
+        icon = _STATUS_ICON.get(status, _STATUS_ICON[_STATUS_DEFAULT])
+        label_text = _STATUS_LABEL.get(status, _STATUS_LABEL[_STATUS_DEFAULT])
         indicator = "▾" if not self._is_collapsed else "▸"
-        label = _friendly_label(self.tool_name, self._status)
+        label = _friendly_label(self.tool_name, status)
 
-        parts = [f"{indicator} {icon} [bold #d29922]{label}[/bold #d29922]"]
+        # Indicator
+        content = _lit(indicator + " ")
+        # Status icon (colored)
+        content = content + _lit(icon + " ", style=color)
+        # Label (bold amber)
+        content = content + _mc(f"[bold #d29922]{label}[/bold #d29922]")
 
+        # Primary arg preview (user data — safe path)
         primary = _primary_arg_value(self.tool_name, self.tool_args)
         if primary:
-            short = _escape(primary[:_PRIMARY_ARG_MAX])
+            short = primary[:_PRIMARY_ARG_MAX]
             if len(primary) > _PRIMARY_ARG_MAX:
                 short += "…"
-            parts.append(f": [#8b949e]{short}[/#8b949e]")
+            content = content + _mc(": ") + _lit(short, style="#8b949e")
 
-        parts.extend(["  ", status])
-        return "".join(parts)
+        # Status text
+        content = content + _lit("  ") + _lit(label_text, style=color)
 
-    def _detail_block(self) -> str:
-        """Build the expandable detail block with args and result."""
-        lines: list[str] = []
+        return content
+
+    def _detail_block(self) -> Content:
+        """Build the expandable detail block with args and result.
+
+        All user data (arg values, result text) goes through _lit()
+        which uses Content.from_text(markup=False) — completely safe
+        against MarkupError from &, [, ] in command output.
+        """
+        content = Content()
 
         # ── Arguments ────────────────────────────────────────────
         if self.tool_args:
-            lines.append("[bold #8b949e]Arguments[/bold #8b949e]")
+            content = content + _mc("[bold #8b949e]Arguments[/bold #8b949e]\n")
             meta = _TOOL_META.get(self.tool_name)
             primary_key = meta.primary_arg if meta else None
             for key, value in self.tool_args.items():
-                val_str = _escape(str(value))
+                val_str = str(value)
                 if len(val_str) > 500:
                     val_str = val_str[:500] + "…"
-                if key == primary_key:
-                    lines.append(
-                        f"  [#d29922]{key}[/#d29922] = [#e6edf3]{val_str}[/#e6edf3]"
-                    )
-                else:
-                    lines.append(
-                        f"  [#8b949e]{key}[/#8b949e] = [#c9d1d9]{val_str}[/#c9d1d9]"
-                    )
+                key_style = "#d29922" if key == primary_key else "#8b949e"
+                val_style = "#e6edf3" if key == primary_key else "#c9d1d9"
+                content = content + _mc(f"  [{key_style}]{key}[/{key_style}] = ")
+                content = content + _lit(val_str, style=val_style)
+                content = content + _mc("\n")
         else:
-            lines.append("[#8b949e](no arguments)[/#8b949e]")
+            content = content + _mc("[#8b949e](no arguments)[/#8b949e]")
 
         # ── Result ───────────────────────────────────────────────
         if self._result:
-            lines.append("")
-            escaped_result = _escape(self._result)
+            content = content + _mc("\n")
             if self._result_is_error:
-                lines.append("[bold #f85149]Error[/bold #f85149]")
-                lines.append(f"[#f85149]{escaped_result}[/#f85149]")
+                content = content + _mc("[bold #f85149]Error[/bold #f85149]\n")
+                content = content + _lit(self._result, style="#f85149")
             else:
-                result_lines = escaped_result.split("\n")
-                lines.append("[bold #8b949e]Result[/bold #8b949e]")
+                result_lines = self._result.split("\n")
+                content = content + _mc("[bold #8b949e]Result[/bold #8b949e]\n")
                 if len(result_lines) > 20:
                     result_display = "\n".join(result_lines[:20])
-                    lines.append(f"[#c9d1d9]{result_display}[/#c9d1d9]")
-                    lines.append(
+                    content = content + _lit(result_display, style="#c9d1d9")
+                    content = content + _mc("\n")
+                    content = content + _mc(
                         f"[#484f58]… {len(result_lines) - 20} more lines …[/#484f58]"
                     )
                 else:
-                    lines.append(f"[#c9d1d9]{escaped_result}[/#c9d1d9]")
+                    content = content + _lit(self._result, style="#c9d1d9")
 
-        return "\n".join(lines)
+        return content

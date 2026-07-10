@@ -7,6 +7,7 @@ import logging
 
 from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
+from slife.tools.platform import GetShellCommandTool
 from slife.tools.serper import SerperSearchTool
 from slife.tools.shell import ShellTool
 from slife.tools.skill import ListSkillsTool, UseSkillTool
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Map of tool type string → factory function
 _TOOL_BUILDERS = {
+    "platform": lambda cfg: GetShellCommandTool(),
     "serper": lambda cfg: SerperSearchTool(),
     "shell": lambda cfg: ShellTool(timeout=cfg.get("timeout", 30)),
     "skill": lambda cfg: [

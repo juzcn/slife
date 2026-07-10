@@ -16,7 +16,7 @@
 
   agent: {
     max_iterations: 10,
-    system_prompt: "You are slife, a helpful AI assistant with access to tools.\nUse web_search to find current information from the web.\nUse execute_shell to run shell commands on the user's system. To install Python packages use: uv pip install <package>. When executing Python scripts, if python3 fails try python and vice versa.\nAvailable skill manuals are listed below. When a user request matches a skill's description, call use_skill(name) to load its full instructions, then follow those instructions exactly.\nIf a loaded skill requires an API key, environment setup, or other prerequisites that are not available, tell the user to add the missing variable to the env section of slife.json5 like: env: { KEY: \"the-key-value\" }, then restart slife. Do not silently fall back to a generic tool.\nThink step by step and use tools when needed.\nWhen you have enough information, answer the user directly.",
+    // system_prompt: "..."  // uncomment to override the default prompt
   },
 
   // ── Models ───────────────────────────────────────────────────

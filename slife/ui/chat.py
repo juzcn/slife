@@ -1,7 +1,7 @@
 """Chat view widgets for the slife TUI — Claude Code CLI style."""
 
-from rich.markup import escape as _escape
 from textual.containers import VerticalScroll
+from textual.content import Content
 from textual.widgets import Static
 
 from slife.agent.llm_client import TokenUsage
@@ -30,7 +30,8 @@ class ChatView(VerticalScroll):
 
     def add_system_message(self, text: str) -> None:
         """Add a system/status message."""
-        msg = Static(_escape(text), classes="system-message")
+        content = Content.from_text(text, markup=False)
+        msg = Static(content, classes="system-message")
         self.mount(msg)
         self.scroll_end(animate=False)
 
@@ -39,11 +40,17 @@ class UserMessage(Static):
     """User message — "> text" prefix style, no label."""
 
     def __init__(self, text: str, images: list[str] | None = None):
-        parts = [f"[bold #d97706]>[/bold #d97706] {_escape(text)}"]
+        # Build safe Content: ">" prefix styled, text as literal
+        content = Content.from_text("> ", markup=False).stylize("bold #d97706")
+        content = content + Content.from_text(text, markup=False)
         if images:
             file_list = ", ".join(images)
-            parts.append(f" [dim]# 📎 {_escape(file_list)}[/dim]")
-        super().__init__("".join(parts))
+            content = (
+                content
+                + Content.from_text(" # 📎 ", markup=False).stylize("dim")
+                + Content.from_text(file_list, markup=False).stylize("dim")
+            )
+        super().__init__(content)
         self.add_class("user-message")
 
 
@@ -52,6 +59,10 @@ class AssistantMessage(Static):
 
     Claude Code style: no "Assistant:" label, thinking in dim italic,
     response text cleanly presented, token usage shown subtly.
+
+    All user-facing text goes through Content.from_text(markup=False)
+    so special characters (&, [, ]) are rendered literally — no
+    MarkupError from URLs or code in the assistant's output.
     """
 
     def __init__(self):
@@ -79,36 +90,32 @@ class AssistantMessage(Static):
         self._refresh_display()
 
     def _refresh_display(self) -> None:
-        """Rebuild the display in Claude Code style."""
-        parts = []
+        """Rebuild the display in Claude Code style using safe Content objects."""
+        content = Content()
 
         # Thinking block — dim italic, subtle header
         if self._has_thinking:
-            thinking_display = _escape(
+            content = content + Content.from_markup("[dim italic]⟐ Thinking…[/dim italic]\n")
+            thinking_display = (
                 self._thinking[:500] + "..."
                 if len(self._thinking) > 500
                 else self._thinking
             )
-            parts.append(
-                f"[dim italic]⟐ Thinking…[/dim italic]\n"
-                f"[dim]{thinking_display}[/dim]"
-            )
-            parts.append("")
+            content = content + Content.from_text(thinking_display, markup=False).stylize("dim")
+            content = content + Content.from_text("\n\n", markup=False)
 
-        # Response text — clean, no label
+        # Response text — clean, no label, safe from markup parsing
         if self._buffer:
-            parts.append(_escape(self._buffer))
+            content = content + Content.from_text(self._buffer, markup=False)
         elif not self._has_thinking:
-            parts.append("[dim]…[/dim]")
+            content = content + Content.from_markup("[dim]…[/dim]")
 
         # Token usage — very subtle
         if self._usage:
-            parts.append(
+            content = content + Content.from_markup(
                 f"\n[dim]↑ {self._usage.total_tokens:,} tokens "
                 f"(in: {self._usage.prompt_tokens:,}, "
                 f"out: {self._usage.completion_tokens:,})[/dim]"
             )
 
-        self.update("\n".join(parts) if parts else "")
-
-
+        self.update(content if content else "")
