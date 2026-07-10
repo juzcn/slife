@@ -45,20 +45,22 @@ def _parse_frontmatter(content: str) -> tuple[dict, str]:
     return fm, body
 
 
-def _list_skills(skills_dir: Path) -> str:
+def get_skills_summary(skills_dir: str | Path = "skills") -> str:
     """Scan skills_dir and return name + description for each skill.
 
     Only directories containing a SKILL.md are considered valid skills.
+    Returns empty string if no skills are found.
     """
+    skills_dir = Path(skills_dir)
     if not skills_dir.exists():
-        return "No skills directory found."
+        return ""
 
     entries = sorted(
         d for d in skills_dir.iterdir()
         if d.is_dir() and (d / "SKILL.md").exists()
     )
     if not entries:
-        return "No skills available."
+        return ""
 
     lines = []
     for d in entries:
@@ -69,6 +71,12 @@ def _list_skills(skills_dir: Path) -> str:
         lines.append(f"- **{name}**: {desc}")
 
     return "\n".join(lines)
+
+
+def _list_skills(skills_dir: Path) -> str:
+    """Legacy wrapper for Tool class."""
+    result = get_skills_summary(skills_dir)
+    return result if result else "No skills available."
 
 
 def _read_skill(skills_dir: Path, skill_name: str) -> str:

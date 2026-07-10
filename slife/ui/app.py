@@ -15,6 +15,7 @@ from slife.agent.loop import (
 )
 from slife.agent.multimodal import parse_file_attachments
 from slife.tools.factory import create_tools_from_config
+from slife.tools.skill import get_skills_summary
 from slife.ui.chat import ChatView, AssistantMessage
 from slife.ui.tool_display import ToolCallWidget
 
@@ -38,8 +39,25 @@ class AgentService:
             tool_registry=self.tool_registry,
             max_iterations=config.max_iterations,
         )
-        self.conversation = Conversation(system_prompt=config.system_prompt)
+        # Build system prompt with skills injected at startup
+        system_prompt = self._build_system_prompt(config)
+        self.conversation = Conversation(system_prompt=system_prompt)
         self.session_usage = TokenUsage()
+
+    @staticmethod
+    def _build_system_prompt(config: Config) -> str:
+        """Build the system prompt, injecting available skills at startup."""
+        skills_summary = get_skills_summary()
+        if skills_summary:
+            return (
+                f"{config.system_prompt}\n\n"
+                f"## Available Skill Manuals\n"
+                f"The following operation manuals are available. "
+                f"When a user's request matches a skill's description, "
+                f"call use_skill(name) to load it:\n\n"
+                f"{skills_summary}"
+            )
+        return config.system_prompt
 
     @property
     def model_display_name(self) -> str:
