@@ -1,32 +1,14 @@
 """Shared test fixtures and mocks for the slife test suite."""
 
-import os
-import json
-import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-from dataclasses import dataclass, field
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from slife.config import Config, ModelConfig
 from slife.agent.llm_client import TokenUsage, StreamChunk
 from slife.agent.conversation import Conversation
-from slife.agent.loop import ToolCallInfo, AgentResult
 from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
-
-
-# ── Environment helpers ───────────────────────────────────────────────
-
-
-@pytest.fixture
-def clean_env(monkeypatch):
-    """Remove slife-related env vars for isolated tests."""
-    for key in list(os.environ.keys()):
-        if key.startswith("SLIFE_") or key.startswith("TEST_"):
-            monkeypatch.delenv(key, raising=False)
-    yield
 
 
 # ── Model config fixtures ─────────────────────────────────────────────
@@ -134,12 +116,6 @@ def empty_conversation():
 def zero_usage():
     """Empty token usage."""
     return TokenUsage()
-
-
-@pytest.fixture
-def sample_usage():
-    """Typical token usage values."""
-    return TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
 
 
 # ── Tool registry fixtures ────────────────────────────────────────────
@@ -250,20 +226,6 @@ class _MockUsage:
         self.prompt_tokens = prompt_tokens
         self.completion_tokens = completion_tokens
         self.total_tokens = total_tokens
-
-
-class _MockResponse:
-    """Mock for a non-streaming API response."""
-    def __init__(self, content=None, tool_calls=None, usage=None):
-        self.choices = [
-            type("Choice", (), {
-                "message": type("Message", (), {
-                    "content": content,
-                    "tool_calls": tool_calls,
-                })()
-            })()
-        ]
-        self.usage = usage or _MockUsage()
 
 
 @pytest.fixture
