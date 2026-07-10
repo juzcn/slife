@@ -6,6 +6,7 @@ All rendering is done by building a markup string and calling self.update().
 
 from dataclasses import dataclass
 
+from rich.markup import escape as _escape
 from textual.widgets import Static
 
 _counter: int = 0
@@ -173,7 +174,7 @@ class ToolCallWidget(Static):
 
         primary = _primary_arg_value(self.tool_name, self.tool_args)
         if primary:
-            short = primary[:_PRIMARY_ARG_MAX]
+            short = _escape(primary[:_PRIMARY_ARG_MAX])
             if len(primary) > _PRIMARY_ARG_MAX:
                 short += "…"
             parts.append(f": [#8b949e]{short}[/#8b949e]")
@@ -191,7 +192,7 @@ class ToolCallWidget(Static):
             meta = _TOOL_META.get(self.tool_name)
             primary_key = meta.primary_arg if meta else None
             for key, value in self.tool_args.items():
-                val_str = str(value)
+                val_str = _escape(str(value))
                 if len(val_str) > 500:
                     val_str = val_str[:500] + "…"
                 if key == primary_key:
@@ -208,11 +209,12 @@ class ToolCallWidget(Static):
         # ── Result ───────────────────────────────────────────────
         if self._result:
             lines.append("")
+            escaped_result = _escape(self._result)
             if self._result_is_error:
                 lines.append("[bold #f85149]Error[/bold #f85149]")
-                lines.append(f"[#f85149]{self._result}[/#f85149]")
+                lines.append(f"[#f85149]{escaped_result}[/#f85149]")
             else:
-                result_lines = self._result.split("\n")
+                result_lines = escaped_result.split("\n")
                 lines.append("[bold #8b949e]Result[/bold #8b949e]")
                 if len(result_lines) > 20:
                     result_display = "\n".join(result_lines[:20])
@@ -221,6 +223,6 @@ class ToolCallWidget(Static):
                         f"[#484f58]… {len(result_lines) - 20} more lines …[/#484f58]"
                     )
                 else:
-                    lines.append(f"[#c9d1d9]{self._result}[/#c9d1d9]")
+                    lines.append(f"[#c9d1d9]{escaped_result}[/#c9d1d9]")
 
         return "\n".join(lines)

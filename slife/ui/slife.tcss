@@ -68,6 +68,7 @@ ChatView {
     color: #e6edf3;
     height: auto;
     min-height: 1;
+    overflow: hidden;
 }
 
 /* ── Input (bottom docked) ────────────────────────────────────── */

@@ -1,5 +1,6 @@
 """Chat view widgets for the slife TUI — Claude Code CLI style."""
 
+from rich.markup import escape as _escape
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
@@ -83,7 +84,7 @@ class AssistantMessage(Static):
 
         # Thinking block — dim italic, subtle header
         if self._has_thinking:
-            thinking_display = (
+            thinking_display = _escape(
                 self._thinking[:500] + "..."
                 if len(self._thinking) > 500
                 else self._thinking
@@ -96,7 +97,7 @@ class AssistantMessage(Static):
 
         # Response text — clean, no label
         if self._buffer:
-            parts.append(self._buffer)
+            parts.append(_escape(self._buffer))
         elif not self._has_thinking:
             parts.append("[dim]…[/dim]")
 
