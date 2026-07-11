@@ -235,12 +235,24 @@ class MCPClient:
         if self._process and self._owns_process:
             try:
                 if self._process.returncode is None:
-                    self._process.terminate()
+                    # Close stdin to signal EOF to the wrapper
+                    if self._process.stdin:
+                        try:
+                            self._process.stdin.close()
+                        except Exception:
+                            pass
+
+                    # Wait briefly for graceful exit
                     try:
-                        await asyncio.wait_for(self._process.wait(), timeout=3.0)
+                        await asyncio.wait_for(self._process.wait(), timeout=2.0)
                     except asyncio.TimeoutError:
-                        self._process.kill()
-                        await self._process.wait()
+                        # Graceful exit timed out — force terminate
+                        self._process.terminate()
+                        try:
+                            await asyncio.wait_for(self._process.wait(), timeout=3.0)
+                        except asyncio.TimeoutError:
+                            self._process.kill()
+                            await self._process.wait()
             except ProcessLookupError:
                 pass
             self._process = None
