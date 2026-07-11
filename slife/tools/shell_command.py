@@ -17,7 +17,6 @@ class GetShellCommandTool(Tool):
         "Always call this before execute_shell — never guess a command directly, "
         "because syntax differs between Windows (cmd) and Unix (bash). "
         "Supports: "
-        "list_files — list directory contents; "
         "run_script — run a Python script with JSON arguments; "
         "check_env — check if an environment variable is set; "
         "install — install a Python package via uv pip."
@@ -37,10 +36,6 @@ class GetShellCommandTool(Tool):
                 "type": "string",
                 "description": "Package name to install via uv pip",
             },
-            "list_files": {
-                "type": "boolean",
-                "description": "Return the command to list directory contents",
-            },
         },
         "required": [],
     }
@@ -50,5 +45,4 @@ class GetShellCommandTool(Tool):
             run_script=kwargs.get("run_script"),
             check_env=kwargs.get("check_env"),
             install=kwargs.get("install"),
-            list_files=kwargs.get("list_files", False),
         )

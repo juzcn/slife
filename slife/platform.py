@@ -14,7 +14,6 @@ def get_shell_command(
     run_script: str | None = None,
     check_env: str | None = None,
     install: str | None = None,
-    list_files: bool = False,
 ) -> str:
     """Return platform-correct shell command(s) for the given operation(s).
 
@@ -27,7 +26,6 @@ def get_shell_command(
             Returns a complete ready-to-run command with correct quoting.
         check_env: Environment variable name to check.
         install: Python package name to install.
-        list_files: Get the command to list directory contents.
 
     Returns:
         One or more ready-to-execute command strings.
@@ -42,9 +40,6 @@ def get_shell_command(
 
     if install is not None:
         results.append(_install_cmd(install))
-
-    if list_files:
-        results.append(_list_files_cmd())
 
     return "\n".join(results) if results else "No action specified."
 
@@ -91,7 +86,3 @@ def _check_env_cmd(name: str) -> str:
 
 def _install_cmd(package: str) -> str:
     return f"uv pip install {package}"
-
-
-def _list_files_cmd() -> str:
-    return "dir" if IS_WINDOWS else "ls"

@@ -21,3 +21,10 @@ class TestBuild:
     def test_config_reference(self):
         assert "slife.json5" in build()
         assert "env:" in build()
+
+    def test_mcp_reference(self):
+        """Prompt mentions MCP management tools — project-specific knowledge."""
+        result = build()
+        assert "mcp_add_server" in result
+        assert "mcp_list_tools" in result
+        assert "mcp_call_tool" in result

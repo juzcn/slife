@@ -87,6 +87,43 @@ class ModelConfig:
 
 
 @dataclass
+class MCPConfig:
+    """Configuration for the MCP wrapper and external MCP servers."""
+
+    enabled: bool = False
+    wrapper_command: str = "uv"
+    wrapper_args: list = None  # type: ignore[assignment]
+    servers: dict[str, dict] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.wrapper_args is None:
+            self.wrapper_args = ["run", "python", "-m", "slife_mcp.server"]
+        if self.servers is None:
+            self.servers = {}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MCPConfig":
+        """Parse mcp config section from JSON5 config."""
+        if not isinstance(data, dict):
+            return cls()
+
+        wrapper = data.get("wrapper", {})
+        if not isinstance(wrapper, dict):
+            wrapper = {}
+
+        servers = data.get("servers", {})
+        if not isinstance(servers, dict):
+            servers = {}
+
+        return cls(
+            enabled=True,
+            wrapper_command=wrapper.get("command", "uv"),
+            wrapper_args=wrapper.get("args", ["run", "python", "-m", "slife_mcp.server"]),
+            servers=servers,
+        )
+
+
+@dataclass
 class Config:
     """Top-level configuration for slife."""
 
@@ -95,6 +132,11 @@ class Config:
     tools: list[dict]
     env: dict = None  # type: ignore[assignment]
     max_iterations: int = 10
+    mcp_config: MCPConfig = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.mcp_config is None:
+            self.mcp_config = MCPConfig()
     @property
     def active_model(self) -> ModelConfig:
         """Return the currently active model configuration."""
@@ -203,10 +245,22 @@ class Config:
         tools = resolve_env(tools_raw)
         logger.info("Tool entries in config: %d", len(tools))
 
+        # Parse MCP section
+        mcp_raw = raw.get("mcp", {})
+        mcp_config = MCPConfig.from_dict(mcp_raw)
+        if mcp_config.enabled:
+            logger.info(
+                "MCP: enabled, wrapper=%s %s, servers=%d",
+                mcp_config.wrapper_command,
+                " ".join(mcp_config.wrapper_args),
+                len(mcp_config.servers),
+            )
+
         return cls(
             models=all_models,
             active_model_ref=raw.get("active_model", all_models[0].ref),
             tools=tools,
             env=env_section,
             max_iterations=agent.get("max_iterations", 10),
+            mcp_config=mcp_config,
         )

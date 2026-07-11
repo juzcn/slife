@@ -81,15 +81,28 @@ class SlifeApp(App):
         )
         yield StatusBar(id="status-bar")
 
-    def on_mount(self) -> None:
-        """Initialize status bar with model info."""
+    async def on_mount(self) -> None:
+        """Initialize status bar and start MCP integration."""
         status = self.query_one("#status-bar", StatusBar)
         status.update_info(
             model=self.service.model_display_name,
             thinking=self.service.thinking_enabled,
         )
 
+        # Start MCP wrapper in the background
+        if self.service.config.mcp_config.enabled:
+            self.run_worker(
+                self.service.start_mcp(),
+                exclusive=False,
+                group="mcp-startup",
+            )
+
     # ── Actions ──────────────────────────────────────────────────
+
+    async def action_quit(self) -> None:
+        """Quit the app, shutting down MCP wrapper first."""
+        await self.service.stop_mcp()
+        await super().action_quit()
 
     def action_clear_chat(self) -> None:
         """Clear chat history and conversation."""

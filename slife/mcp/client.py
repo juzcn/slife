@@ -1,0 +1,281 @@
+"""MCP client — connects to slife-mcp wrapper via stdio or HTTP transport.
+
+Uses asyncio subprocess + asyncio.Queue adapters + ClientSession.
+"""
+
+import asyncio
+import logging
+import shutil
+import sys
+from typing import Any
+
+import httpx
+from mcp import ClientSession, types
+from mcp.client.stdio import get_default_environment
+from mcp.shared.message import SessionMessage
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_WRAPPER_URL = "http://127.0.0.1:9876/mcp"
+
+
+def _resolve_command(command: str) -> str:
+    if sys.platform == "win32" and not command.lower().endswith((".exe", ".cmd", ".bat")):
+        resolved = shutil.which(command) or shutil.which(command + ".cmd") or shutil.which(command + ".exe")
+        if resolved:
+            return resolved
+    return command
+
+
+# ── asyncio.Queue adapters — implement anyio stream protocol on asyncio primitives ──
+
+class _ReadAdapter:
+    """Wraps asyncio.Queue for ClientSession read stream."""
+
+    def __init__(self, queue: asyncio.Queue):
+        self._queue = queue
+
+    async def receive(self):
+        return await self._queue.get()
+
+    async def aclose(self):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await self.receive()
+
+
+class _WriteAdapter:
+    """Wraps asyncio.Queue for ClientSession write stream."""
+
+    def __init__(self, queue: asyncio.Queue):
+        self._queue = queue
+
+    async def send(self, msg):
+        await self._queue.put(msg)
+
+    async def aclose(self):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+
+# ── MCPClient ────────────────────────────────────────────────────────
+
+
+class MCPClient:
+    """MCP client for the slife-mcp wrapper."""
+
+    def __init__(self):
+        self._session: ClientSession | None = None
+        self._connected: bool = False
+        self._owns_process: bool = False
+        self._process: asyncio.subprocess.Process | None = None
+        self._read_task: asyncio.Task | None = None
+        self._write_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._stdin_queue: asyncio.Queue | None = None
+        self._stdout_queue: asyncio.Queue | None = None
+        self._read_adapter: _ReadAdapter | None = None
+        self._write_adapter: _WriteAdapter | None = None
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def connect_stdio(
+        self, command: str, args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        """Connect by spawning the slife-mcp wrapper as a child process."""
+        if self._connected:
+            logger.warning("MCP client already connected.")
+            return
+
+        exe = _resolve_command(command)
+        merged_env = get_default_environment()
+        if env:
+            merged_env = {**merged_env, **env}
+
+        logger.info("Connecting to slife-mcp (stdio): %s %s", exe, " ".join(args or []))
+
+        self._process = await asyncio.create_subprocess_exec(
+            exe, *(args or []),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=merged_env or None,
+        )
+
+        self._stdout_queue = asyncio.Queue()
+        self._stdin_queue = asyncio.Queue()
+        self._read_adapter = _ReadAdapter(self._stdout_queue)
+        self._write_adapter = _WriteAdapter(self._stdin_queue)
+
+        self._read_task = asyncio.create_task(self._bridge_stdout())
+        self._write_task = asyncio.create_task(self._bridge_stdin())
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
+
+        self._session = ClientSession(self._read_adapter, self._write_adapter)
+        await self._session.__aenter__()
+        await self._session.initialize()
+
+        self._connected = True
+        self._owns_process = True
+        logger.info("Connected to slife-mcp wrapper (stdio).")
+
+    async def _bridge_stdout(self) -> None:
+        assert self._process and self._process.stdout and self._stdout_queue
+        try:
+            while True:
+                line = await self._process.stdout.readline()
+                if not line:
+                    break
+                line_str = line.decode("utf-8", errors="replace").strip()
+                if not line_str:
+                    continue
+                try:
+                    message = types.JSONRPCMessage.model_validate_json(line_str)
+                    await self._stdout_queue.put(SessionMessage(message))
+                except Exception:
+                    pass
+        except asyncio.CancelledError:
+            pass
+
+    async def _bridge_stdin(self) -> None:
+        assert self._process and self._process.stdin and self._stdin_queue
+        try:
+            while True:
+                session_message = await self._stdin_queue.get()
+                json_str = session_message.message.model_dump_json(
+                    by_alias=True, exclude_none=True
+                )
+                self._process.stdin.write((json_str + "\n").encode("utf-8"))
+                await self._process.stdin.drain()
+        except asyncio.CancelledError:
+            pass
+
+    async def _drain_stderr(self) -> None:
+        assert self._process and self._process.stderr
+        try:
+            while True:
+                line = await self._process.stderr.readline()
+                if not line:
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    async def connect_http(self, url: str = DEFAULT_WRAPPER_URL) -> None:
+        if self._connected:
+            logger.warning("MCP client already connected.")
+            return
+        logger.info("Connecting to slife-mcp via HTTP: %s", url)
+        from mcp.client.streamable_http import streamablehttp_client
+        transport = streamablehttp_client(url)
+        read_stream, write_stream, _ = await transport.__aenter__()
+        self._session = ClientSession(read_stream, write_stream)
+        await self._session.__aenter__()
+        await self._session.initialize()
+        self._connected = True
+        self._owns_process = False
+        logger.info("Connected to slife-mcp wrapper (HTTP).")
+
+    async def connect_streams(self, read_stream, write_stream) -> None:
+        if self._connected:
+            logger.warning("MCP client already connected.")
+            return
+        logger.info("Connecting to slife-mcp via existing streams.")
+        self._session = ClientSession(read_stream, write_stream)
+        await self._session.__aenter__()
+        await self._session.initialize()
+        self._connected = True
+        self._owns_process = False
+        logger.info("Connected to slife-mcp wrapper (streams).")
+
+    async def disconnect(self) -> None:
+        self._connected = False
+
+        for task in (self._read_task, self._write_task, self._stderr_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._read_task = self._write_task = self._stderr_task = None
+        self._stdout_queue = self._stdin_queue = None
+        self._read_adapter = self._write_adapter = None
+
+        # Close session (skip __aexit__ to avoid anyio cancel scope issues)
+        if self._session:
+            self._session = None
+
+        if self._process and self._owns_process:
+            try:
+                if self._process.returncode is None:
+                    self._process.terminate()
+                    try:
+                        await asyncio.wait_for(self._process.wait(), timeout=3.0)
+                    except asyncio.TimeoutError:
+                        self._process.kill()
+                        await self._process.wait()
+            except ProcessLookupError:
+                pass
+            self._process = None
+
+        logger.info("Disconnected from slife-mcp wrapper.")
+
+    @staticmethod
+    async def is_wrapper_running(url: str = DEFAULT_WRAPPER_URL) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(url.replace("/mcp", "/health"))
+                return resp.status_code < 500
+        except Exception:
+            return False
+
+    async def list_tools(self) -> list[dict]:
+        self._ensure_connected()
+        result = await self._session.list_tools()
+        return [
+            {"name": t.name, "description": t.description or "", "inputSchema": t.inputSchema}
+            for t in result.tools
+        ]
+
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> str:
+        self._ensure_connected()
+        args = arguments or {}
+        result = await self._session.call_tool(name, args)
+        parts: list[str] = []
+        for block in result.content:
+            if hasattr(block, "text"):
+                parts.append(block.text)
+            elif hasattr(block, "data"):
+                parts.append(f"[binary data: {len(block.data)} bytes]")
+            else:
+                parts.append(str(block))
+        return "\n".join(parts)
+
+    async def ping(self) -> bool:
+        try:
+            await self._session.send_ping()
+            return True
+        except Exception:
+            return False
+
+    def _ensure_connected(self) -> None:
+        if not self._connected or self._session is None:
+            raise RuntimeError("MCP client is not connected.")
