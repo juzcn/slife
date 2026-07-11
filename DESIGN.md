@@ -66,7 +66,7 @@ It's a chat window with tools. The LLM is in control.
 │  slife/agent/loop.py — streaming function-calling    │
 │  Emits: thinking chunks, text chunks, tool events     │
 ├────────────┬──────────────────┬──────────────────────┤
-│ Native     │ MCP              │ Skills               │
+│ Native     │ MCP Client       │ Skills               │
 │ Tools      │ slife/mcp/       │ slife/tools/skill.py │
 │ shell.py   │ client.py        │ skills/ directory    │
 │ shell_     │ process.py       │                      │
@@ -78,6 +78,11 @@ It's a chat window with tools. The LLM is in control.
 │  Config (JSON5)                                      │
 │  slife/config.py — env resolution, model parsing     │
 └──────────────────────────────────────────────────────┘
+
+                    slife agent ──── stdio/HTTP ──── slife-mcp
+                    (slife/)                          (slife_mcp/)
+                                                     Independent MCP proxy
+                                                     pip install slife-mcp
 ```
 
 ## Agent Loop
@@ -113,38 +118,54 @@ Validation happens at class definition time via `__init_subclass__` — every `T
 
 Tool loading (`slife/tools/factory.py`): `_TOOL_BUILDERS` maps config `type` strings to factory functions. Each builder receives the config entry dict and returns a `Tool` or list of `Tool` instances. Unknown types log a warning and are skipped.
 
-### MCP Integration
+## MCP Integration (slife-mcp)
 
-slife-mcp wrapper (`slife_mcp/server.py`) is an independent MCP server process:
+slife-mcp is an **independent MCP proxy service** — it manages persistent connections to external MCP servers and exposes their tools through a single endpoint. It has zero dependency on slife and can be published as a standalone PyPI package (`pip install slife-mcp`).
 
 ```
-slife agent ←→ slife-mcp wrapper (FastMCP, stdio/HTTP)
-                   ├── fs (filesystem MCP, via npx)
-                   ├── brave-search (via npx)
-                   └── ... (any MCP server)
+               stdio / HTTP
+slife agent  ←────────────→  slife-mcp (FastMCP)
+                                  ├── filesystem MCP (npx)
+                                  ├── serper MCP (npx)
+                                  └── ... (any MCP server)
 ```
 
-**Wrapper management tools**: `mcp_add_server` / `mcp_remove_server` / `mcp_list_servers` / `mcp_list_tools` / `mcp_call_tool` / `mcp_reload`
+### slife side (`slife/mcp/`)
+
+**MCPClient** (`client.py`): connects to the wrapper via stdio (child process) or HTTP (standalone). Uses `asyncio.Queue` adapters to bridge subprocess pipes to MCP's `ClientSession`. `disconnect()` decomposed into four phases: cancel bridge tasks, reset state, clean up transport, terminate owned process.
+
+**MCPProxyTool** (`tool_adapter.py`): adapts MCP tools to slife's `Tool` ABC. Sets `name`/`description`/`parameters` at instance level via `object.__setattr__` (class-level attrs are placeholders for `__init_subclass__` validation). Tool names are prefixed with server name: `"filesystem__read_file"`.
+
+**MCPWrapperProcess** (`process.py`): manages the wrapper child process lifecycle — start, create client from existing streams, graceful stop (stdin close → SIGTERM → SIGKILL escalation).
+
+**Startup flow** (`AgentService.start_mcp`):
+1. `_connect_mcp_wrapper()` — probe `wrapper_url`, connect via HTTP or fall back to spawning child process
+2. `_register_mcp_wrapper_tools()` — discover wrapper management tools, create proxies
+3. `_auto_connect_mcp_servers()` — connect to pre-configured servers, discover external tools
+
+**Wrapper connection**: slife always probes `mcp.wrapper.url` (default `http://127.0.0.1:9876/mcp`) first. If an HTTP wrapper is running, slife connects to it. If not, slife spawns the wrapper as a child process via stdio. The `wrapper_url` is always set — no guessing.
+
+### slife-mcp side (`slife_mcp/`)
+
+An independent FastMCP server. Auto-detects transport mode via `sys.stdin.isatty()`:
+
+| stdin | Mode | Trigger |
+|-------|------|---------|
+| PIPE | stdio | Spawned by slife as child process |
+| TTY  | HTTP | Run from terminal (`slife-mcp`) |
+
+When run from a terminal, reads `mcp.wrapper.url` from `slife.json5` to determine host/port. `--host`/`--port` CLI flags override the config value.
+
+**Management tools**: `mcp_add_server` / `mcp_remove_server` / `mcp_list_servers` / `mcp_list_tools` / `mcp_call_tool` / `mcp_reload`
+
+**Connection pool** (`connection.py`): raw asyncio JSON-RPC over subprocess pipes. No anyio, no `ClientSession` — avoids TaskGroup conflicts with FastMCP.
 
 External MCP servers use standard config format (compatible with Claude Desktop):
 ```json
 {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"]}
 ```
 
-**MCPClient** (`slife/mcp/client.py`): connects to the wrapper via stdio (child process) or HTTP (standalone). Uses `asyncio.Queue` adapters to bridge subprocess pipes to MCP's `ClientSession`. `disconnect()` is decomposed into four phases: cancel bridge tasks, reset state, clean up transport, terminate owned process.
-
-**MCPProxyTool** (`slife/mcp/tool_adapter.py`): adapts MCP tools to slife's `Tool` ABC. Sets `name`/`description`/`parameters` at instance level via `object.__setattr__` (class-level attrs are placeholders for `__init_subclass__` validation). Tool names are prefixed with server name: `"filesystem__read_file"`.
-
-**MCPWrapperProcess** (`slife/mcp/process.py`): manages the wrapper child process lifecycle — start, create client from existing streams, graceful stop (stdin close → SIGTERM → SIGKILL escalation).
-
-**Startup flow** (`AgentService.start_mcp`):
-1. `_connect_mcp_wrapper()` — probe HTTP, fall back to spawning child process
-2. `_register_mcp_wrapper_tools()` — discover wrapper management tools, create proxies
-3. `_auto_connect_mcp_servers()` — connect to pre-configured servers, discover external tools
-
-**Connection pool** (`slife_mcp/connection.py`): raw asyncio JSON-RPC over subprocess pipes. No anyio, no `ClientSession` — avoids TaskGroup conflicts with FastMCP.
-
-**Standalone mode**: `python -m slife_mcp.server --config slife.json5` — reads `mcp.wrapper.url` for host/port, runs as an independent HTTP service. `--host`/`--port` override config values.
+**Standalone package**: `slife_mcp/pyproject.toml` — published as `slife-mcp` on PyPI. Dependencies: `fastmcp` + `json5`. Entry point: `slife-mcp = slife_mcp.server:main`.
 
 ## Config Loading
 
@@ -155,6 +176,8 @@ External MCP servers use standard config format (compatible with Claude Desktop)
 3. **Tools & MCP**: Parsed with the same `_parse_section()` helper, eliminating repetitive isinstance+fallback blocks.
 
 `${ENV_VAR}` and `${ENV_VAR:-default}` resolution (`slife/env.py`) works recursively through dicts and lists.
+
+**MCPConfig**: `wrapper_url` always has a value (default `http://127.0.0.1:9876/mcp`). From config: `mcp.wrapper.url`. MCP is enabled when servers are configured, `enabled: true` is explicit, or a custom wrapper is defined.
 
 ## UI
 
@@ -186,7 +209,7 @@ slife/
     shell.py           #   execute_shell (subprocess with timeout)
     shell_command.py   #   get_shell_command (platform-aware)
     skill.py           #   list_skills / use_skill (shared _iter_skills)
-  mcp/                 # MCP client integration
+  mcp/                 # MCP client (slife side)
     client.py          #   stdio/HTTP client with asyncio.Queue adapters
     tool_adapter.py    #   MCP → slife Tool adapter (MCPProxyTool)
     process.py         #   Child process lifecycle manager
@@ -198,9 +221,11 @@ slife/
   config.py            # JSON5 config loading (ModelConfig, MCPConfig, Config)
   env.py               # ${ENV_VAR} and ${ENV_VAR:-default} resolution
   platform.py          # OS detection, shell syntax (Windows/Unix)
-slife_mcp/             # Independent MCP wrapper server (FastMCP)
-  server.py            #   Management tools & HTTP/stdio transport
+slife_mcp/             # Independent MCP proxy (publishable as slife-mcp)
+  server.py            #   FastMCP server, auto-detect HTTP/stdio
   connection.py        #   asyncio JSON-RPC connection pool
+  pyproject.toml       #   Standalone package config
+  README.md            #   Standalone package docs
 skills/                # Skill plugins (on-demand documentation)
-tests/                 # pytest suite (326 tests, asyncio_mode=strict)
+tests/                 # pytest suite (331 tests, asyncio_mode=strict)
 ```
