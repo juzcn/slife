@@ -72,115 +72,125 @@ class AgentService:
         is already running (via HTTP); if not, spawns one as a child
         process via stdio.
         """
-        mcp_config = self.config.mcp_config
-        if not mcp_config.enabled:
+        if not self.config.mcp_config.enabled:
             logger.debug("MCP not enabled in config.")
             return
 
+        logger.info("Starting MCP integration...")
+        await self._connect_mcp_wrapper()
+        await self._register_mcp_wrapper_tools()
+        await self._auto_connect_mcp_servers()
+        logger.info("MCP integration complete. %d total tools registered.",
+                     len(self.tool_registry.list_tools()))
+
+    # ── MCP private helpers ──────────────────────────────────────────
+
+    async def _connect_mcp_wrapper(self) -> None:
+        """Detect or spawn the MCP wrapper and establish a connection."""
         from slife.mcp.client import MCPClient, DEFAULT_WRAPPER_URL
         from slife.mcp.process import MCPWrapperProcess
-        from slife.mcp.tool_adapter import create_proxy_tools
 
-        logger.info("Starting MCP integration...")
-
-        # 1. Detect: try connecting to an already-running standalone wrapper
         if await MCPClient.is_wrapper_running(DEFAULT_WRAPPER_URL):
             logger.info("Found running MCP wrapper, connecting via HTTP...")
             self._mcp_client = MCPClient()
             await self._mcp_client.connect_http(DEFAULT_WRAPPER_URL)
         else:
             logger.info("No running MCP wrapper found, starting as child process...")
+            mcp_cfg = self.config.mcp_config
             self._mcp_process = MCPWrapperProcess(
-                command=mcp_config.wrapper_command,
-                args=mcp_config.wrapper_args,
+                command=mcp_cfg.wrapper_command,
+                args=mcp_cfg.wrapper_args,
             )
             await self._mcp_process.start()
             self._mcp_client = await self._mcp_process.create_client()
 
-        # 3. Register wrapper management tools
+    async def _register_mcp_wrapper_tools(self) -> None:
+        """Discover and register wrapper management tools as proxy tools.
+
+        Excludes mcp_call_tool — external MCP tools are registered
+        directly with full schemas, so the LLM never needs to call
+        mcp_call_tool manually. (It still exists on the wrapper for
+        internal routing by MCPProxyTool.execute.)
+        """
+        from slife.mcp.tool_adapter import create_proxy_tools
+
         wrapper_tools = await self._mcp_client.list_tools()
         logger.info(
             "MCP wrapper tools discovered: %s",
             [t["name"] for t in wrapper_tools],
         )
 
-        # 4. Create proxy tools for wrapper management tools
-        #    Exclude mcp_call_tool — external MCP tools are now
-        #    registered directly with full schemas, so the LLM
-        #    never needs to call mcp_call_tool manually.
-        #    (mcp_call_tool still exists on the wrapper for
-        #    internal routing by MCPProxyTool.execute.)
-        tagged_tools = [
+        tagged = [
             {**t, "server": "mcp"}
             for t in wrapper_tools
             if t["name"] != "mcp_call_tool"
         ]
 
-        # Persist callbacks: keep slife.json5 in sync with runtime changes
-        async def _persist_server(name: str, command: str, args: list[str], env: dict | None = None):
-            self.config.save_mcp_server(name, command, args, env)
-
-        async def _unpersist_server(name: str):
-            self.config.remove_mcp_server(name)
-
         proxy_tools = create_proxy_tools(
-            self._mcp_client, tagged_tools,
-            on_server_added=_persist_server,
-            on_server_removed=_unpersist_server,
+            self._mcp_client, tagged,
+            on_server_added=self._persist_server,
+            on_server_removed=self._unpersist_server,
         )
         for tool in proxy_tools:
             self.tool_registry.register(tool)
         logger.info("Registered %d MCP wrapper tools.", len(proxy_tools))
 
-        # 5. Auto-connect to pre-configured MCP servers
-        servers = mcp_config.servers
-        if servers:
-            logger.info("Auto-connecting to %d configured MCP servers...", len(servers))
-            for server_name, server_cfg in servers.items():
-                try:
-                    result = await self._mcp_client.call_tool(
-                        "mcp_add_server",
-                        {
-                            "name": server_name,
-                            "command": server_cfg.get("command", ""),
-                            "args": server_cfg.get("args", []),
-                            "env": server_cfg.get("env"),
-                        },
-                    )
-                    logger.info("Server '%s': %s", server_name, result)
-                except Exception as e:
-                    logger.error(
-                        "Failed to auto-connect server '%s': %s", server_name, e
-                    )
+    async def _auto_connect_mcp_servers(self) -> None:
+        """Auto-connect to pre-configured MCP servers and discover
+        their tools."""
+        from slife.mcp.tool_adapter import create_proxy_tools
 
-            # 6. Discover and register proxy tools for all external servers
+        servers = self.config.mcp_config.servers
+        if not servers:
+            return
+
+        logger.info("Auto-connecting to %d configured MCP servers...", len(servers))
+        for name, cfg in servers.items():
             try:
-                tools_json = await self._mcp_client.call_tool(
-                    "mcp_list_tools", {}
+                result = await self._mcp_client.call_tool(
+                    "mcp_add_server",
+                    {
+                        "name": name,
+                        "command": cfg.get("command", ""),
+                        "args": cfg.get("args", []),
+                        "env": cfg.get("env"),
+                    },
                 )
-                tools_data = json.loads(tools_json)
-                external_tools = tools_data.get("tools", [])
-
-                if external_tools:
-                    proxy_tools = create_proxy_tools(
-                        self._mcp_client, external_tools,
-                        on_server_added=_persist_server,
-                        on_server_removed=_unpersist_server,
-                    )
-                    for tool in proxy_tools:
-                        self.tool_registry.register(tool)
-                    logger.info(
-                        "Registered %d MCP external tools from %d servers.",
-                        len(proxy_tools),
-                        len({t["server"] for t in external_tools}),
-                    )
-                else:
-                    logger.info("No external MCP tools discovered.")
+                logger.info("Server '%s': %s", name, result)
             except Exception as e:
-                logger.error("Error during MCP tool discovery: %s", e)
+                logger.error("Failed to auto-connect server '%s': %s", name, e)
 
-        logger.info("MCP integration complete. %d total tools registered.",
-                     len(self.tool_registry.list_tools()))
+        # Discover and register proxy tools for all external servers
+        try:
+            tools_json = await self._mcp_client.call_tool("mcp_list_tools", {})
+            tools_data = json.loads(tools_json)
+            external = tools_data.get("tools", [])
+
+            if external:
+                proxy_tools = create_proxy_tools(
+                    self._mcp_client, external,
+                    on_server_added=self._persist_server,
+                    on_server_removed=self._unpersist_server,
+                )
+                for tool in proxy_tools:
+                    self.tool_registry.register(tool)
+                logger.info(
+                    "Registered %d MCP external tools from %d servers.",
+                    len(proxy_tools),
+                    len({t["server"] for t in external}),
+                )
+            else:
+                logger.info("No external MCP tools discovered.")
+        except Exception as e:
+            logger.error("Error during MCP tool discovery: %s", e)
+
+    async def _persist_server(self, name: str, command: str, args: list[str], env: dict | None = None):
+        """Callback: persist a newly-added MCP server to config file."""
+        self.config.save_mcp_server(name, command, args, env)
+
+    async def _unpersist_server(self, name: str):
+        """Callback: remove a server from config file."""
+        self.config.remove_mcp_server(name)
 
     async def stop_mcp(self) -> None:
         """Shut down the MCP wrapper and clean up."""

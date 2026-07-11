@@ -124,3 +124,128 @@ class TestMainModule:
 
             import slife.__main__
             assert hasattr(slife.__main__, 'main')
+
+
+class TestMainEnvLogging:
+    """Tests for env var logging in main() — key masking."""
+
+    @staticmethod
+    def _make_config(**kwargs):
+        """Build a minimal config for env logging tests."""
+        from slife.config import Config, ModelConfig
+        mc = ModelConfig(
+            ref="deepseek/ds",
+            provider="deepseek",
+            api_model="ds",
+            display_name="DS",
+            api_key="k",
+        )
+        return Config(models=[mc], active_model_ref="deepseek/ds", tools=[], **kwargs)
+
+    def test_env_key_masked(self):
+        """API keys are masked in log output."""
+        cfg = self._make_config(env={"DEEPSEEK_KEY": "sk-1234567890abcdef"})
+
+        with patch("slife.Config.from_json5", return_value=cfg):
+            with patch("slife.SlifeApp") as mock_app_cls:
+                mock_app = MagicMock()
+                mock_app_cls.return_value = mock_app
+
+                with patch("slife.logger") as mock_logger:
+                    from slife import main
+                    main()
+
+                info_texts = [str(c) for c in mock_logger.info.call_args_list]
+                env_line = [t for t in info_texts if "DEEPSEEK_KEY" in t]
+                assert len(env_line) == 1
+                # Should be masked — not contain the full key
+                assert "sk-1234567890abcdef" not in env_line[0]
+
+    def test_env_secret_short_value_masked(self):
+        """Short secret values (<8 chars) get fully masked."""
+        cfg = self._make_config(env={"API_SECRET": "abc"})
+
+        with patch("slife.Config.from_json5", return_value=cfg):
+            with patch("slife.SlifeApp") as mock_app_cls:
+                mock_app = MagicMock()
+                mock_app_cls.return_value = mock_app
+
+                with patch("slife.logger") as mock_logger:
+                    from slife import main
+                    main()
+
+                info_texts = [str(c) for c in mock_logger.info.call_args_list]
+                env_line = [t for t in info_texts if "API_SECRET" in t]
+                assert len(env_line) == 1
+                assert "***" in env_line[0]
+
+    def test_env_non_secret_logged_plain(self):
+        """Non-secret env vars are logged without masking."""
+        cfg = self._make_config(env={"MY_VAR": "hello_world"})
+
+        with patch("slife.Config.from_json5", return_value=cfg):
+            with patch("slife.SlifeApp") as mock_app_cls:
+                mock_app = MagicMock()
+                mock_app_cls.return_value = mock_app
+
+                with patch("slife.logger") as mock_logger:
+                    from slife import main
+                    main()
+
+                info_texts = [str(c) for c in mock_logger.info.call_args_list]
+                env_line = [t for t in info_texts if "MY_VAR" in t]
+                assert len(env_line) == 1
+                assert "hello_world" in env_line[0]
+
+    def test_env_token_masked(self):
+        """TOKEN in key name triggers masking."""
+        cfg = self._make_config(env={"GITHUB_TOKEN": "ghp_1234567890abcdefgh"})
+
+        with patch("slife.Config.from_json5", return_value=cfg):
+            with patch("slife.SlifeApp") as mock_app_cls:
+                mock_app = MagicMock()
+                mock_app_cls.return_value = mock_app
+
+                with patch("slife.logger") as mock_logger:
+                    from slife import main
+                    main()
+
+                info_texts = [str(c) for c in mock_logger.info.call_args_list]
+                env_line = [t for t in info_texts if "GITHUB_TOKEN" in t]
+                assert len(env_line) == 1
+                assert "ghp_1234567890abcdefgh" not in env_line[0]
+
+    def test_env_password_masked(self):
+        """PASSWORD in key name triggers masking."""
+        cfg = self._make_config(env={"DB_PASSWORD": "supersecret123"})
+
+        with patch("slife.Config.from_json5", return_value=cfg):
+            with patch("slife.SlifeApp") as mock_app_cls:
+                mock_app = MagicMock()
+                mock_app_cls.return_value = mock_app
+
+                with patch("slife.logger") as mock_logger:
+                    from slife import main
+                    main()
+
+                info_texts = [str(c) for c in mock_logger.info.call_args_list]
+                env_line = [t for t in info_texts if "DB_PASSWORD" in t]
+                assert len(env_line) == 1
+                assert "supersecret123" not in env_line[0]
+
+    def test_no_env_vars_silent(self):
+        """When config.env is empty, no env log lines are emitted."""
+        cfg = self._make_config(env={})
+
+        with patch("slife.Config.from_json5", return_value=cfg):
+            with patch("slife.SlifeApp") as mock_app_cls:
+                mock_app = MagicMock()
+                mock_app_cls.return_value = mock_app
+
+                with patch("slife.logger") as mock_logger:
+                    from slife import main
+                    main()
+
+                info_texts = [str(c) for c in mock_logger.info.call_args_list]
+                env_lines = [t for t in info_texts if "Env:" in t]
+                assert len(env_lines) == 0

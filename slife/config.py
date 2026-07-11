@@ -15,6 +15,7 @@ Model refs: "provider-id/model-name"
 import json5
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,34 +92,51 @@ class MCPConfig:
     """Configuration for the MCP wrapper and external MCP servers."""
 
     enabled: bool = False
-    wrapper_command: str = "uv"
+    # Default: use the same Python interpreter that runs slife.
+    # Avoids 'uv run' which can hit Windows file-lock errors when
+    # uv tries to manage cached .exe wrappers.
+    wrapper_command: str = sys.executable
     wrapper_args: list = None  # type: ignore[assignment]
     servers: dict[str, dict] = None  # type: ignore[assignment]
 
     def __post_init__(self):
         if self.wrapper_args is None:
-            self.wrapper_args = ["run", "python", "-m", "slife_mcp.server"]
+            self.wrapper_args = ["-m", "slife_mcp.server"]
         if self.servers is None:
             self.servers = {}
 
     @classmethod
     def from_dict(cls, data: dict) -> "MCPConfig":
-        """Parse mcp config section from JSON5 config."""
+        """Parse mcp config section from JSON5 config.
+
+        MCP is enabled when:
+          - 'enabled: true' is set explicitly, OR
+          - servers are configured (non-empty servers dict), OR
+          - a custom wrapper is configured (wrapper.command or wrapper.args).
+        An absent mcp section or empty mcp dict leaves MCP disabled.
+        """
         if not isinstance(data, dict):
             return cls()
-
-        wrapper = data.get("wrapper", {})
-        if not isinstance(wrapper, dict):
-            wrapper = {}
 
         servers = data.get("servers", {})
         if not isinstance(servers, dict):
             servers = {}
 
+        wrapper = data.get("wrapper", {})
+        if not isinstance(wrapper, dict):
+            wrapper = {}
+
+        explicit_enabled = data.get("enabled")
+        has_servers = len(servers) > 0
+        has_wrapper_cfg = bool(wrapper.get("command") or wrapper.get("args"))
+
+        if not explicit_enabled and not has_servers and not has_wrapper_cfg:
+            return cls()
+
         return cls(
             enabled=True,
-            wrapper_command=wrapper.get("command", "uv"),
-            wrapper_args=wrapper.get("args", ["run", "python", "-m", "slife_mcp.server"]),
+            wrapper_command=wrapper.get("command", sys.executable),
+            wrapper_args=wrapper.get("args", ["-m", "slife_mcp.server"]),
             servers=servers,
         )
 
@@ -183,6 +201,85 @@ class Config:
             f"Available: {[m.ref for m in self.models]}"
         )
 
+    # ── Parsing helpers ──────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_models_section(models_section) -> tuple[list[ModelConfig], int]:
+        """Parse the models section into ModelConfig instances.
+
+        Supports both dict (providers) and flat-list formats.
+
+        Returns:
+            (models, provider_count) — provider_count is 0 for list format.
+        """
+        if isinstance(models_section, dict):
+            return Config._parse_provider_models(models_section)
+        elif isinstance(models_section, list):
+            models = []
+            for m in models_section:
+                if not isinstance(m, dict):
+                    continue
+                models.append(ModelConfig.from_dict(resolve_env(m)))
+            return models, 0
+        return [], 0
+
+    @staticmethod
+    def _parse_provider_models(models_section: dict) -> tuple[list[ModelConfig], int]:
+        """Parse provider-style models section.
+
+        Each provider has shared api_key/base_url/api that models inherit.
+        """
+        providers = models_section.get("providers", {})
+        if not isinstance(providers, dict):
+            return [], 0
+
+        all_models: list[ModelConfig] = []
+
+        for provider_id, provider_cfg in providers.items():
+            if not isinstance(provider_cfg, dict):
+                continue
+
+            provider_cfg = resolve_env(provider_cfg)
+            defaults = {
+                "api_key": provider_cfg.get("api_key", ""),
+                "base_url": provider_cfg.get("base_url", ""),
+                "api": provider_cfg.get("api", "openai-completions"),
+            }
+
+            model_list = provider_cfg.get("models", [])
+            if not isinstance(model_list, list):
+                continue
+
+            seen_ids: set[str] = set()
+            for m in model_list:
+                if not isinstance(m, dict):
+                    continue
+                m = resolve_env(m)
+                for key, value in defaults.items():
+                    m.setdefault(key, value)
+                m.setdefault("provider", provider_id)
+
+                local_id = m["model"].split("/", 1)[-1]
+                if local_id in seen_ids:
+                    raise ValueError(
+                        f"Duplicate model '{local_id}' in provider "
+                        f"'{provider_id}'. Model names must be unique "
+                        f"within a provider."
+                    )
+                seen_ids.add(local_id)
+                all_models.append(ModelConfig.from_dict(m))
+
+        return all_models, len(providers)
+
+    @staticmethod
+    def _parse_section(raw: dict, key: str, expected_type, default):
+        """Safely extract a typed section from parsed JSON5, returning
+        default if the value is missing or of the wrong type."""
+        value = raw.get(key, default)
+        return value if isinstance(value, expected_type) else default
+
+    # ── Main loader ─────────────────────────────────────────────────
+
     @classmethod
     def from_json5(cls, path: str | Path = "slife.json5") -> "Config":
         """Load from JSON5 file with provider→model hierarchy."""
@@ -195,94 +292,37 @@ class Config:
             )
 
         raw = json5.loads(path.read_text(encoding="utf-8"))
-        models_section = raw.get("models", {})
 
-        all_models: list[ModelConfig] = []
-        providers: dict = {}
-
-        if isinstance(models_section, dict):
-            providers = models_section.get("providers", {})
-            if not isinstance(providers, dict):
-                providers = {}
-
-            for provider_id, provider_cfg in providers.items():
-                if not isinstance(provider_cfg, dict):
-                    continue
-                provider_cfg = resolve_env(provider_cfg)
-                base_url = provider_cfg.get("base_url", "")
-                api_key = provider_cfg.get("api_key", "")
-                api = provider_cfg.get("api", "openai-completions")
-
-                seen_ids: set[str] = set()
-
-                models = provider_cfg.get("models", [])
-                if not isinstance(models, list):
-                    continue
-                for m in models:
-                    if not isinstance(m, dict):
-                        continue
-                    m = resolve_env(m)
-                    m.setdefault("api_key", api_key)
-                    m.setdefault("base_url", base_url)
-                    m.setdefault("api", api)
-                    m.setdefault("provider", provider_id)
-
-                    # The 'model' field is both the id and the API model name
-                    model_name = m["model"]
-                    local_id = model_name.split("/", 1)[-1]
-
-                    if local_id in seen_ids:
-                        raise ValueError(
-                            f"Duplicate model '{local_id}' in provider "
-                            f"'{provider_id}'. Model names must be unique "
-                            f"within a provider."
-                        )
-                    seen_ids.add(local_id)
-
-                    all_models.append(ModelConfig.from_dict(m))
-
-        elif isinstance(models_section, list):
-            for m in models_section:
-                if not isinstance(m, dict):
-                    continue
-                m = resolve_env(m)
-                all_models.append(ModelConfig.from_dict(m))
-
+        # Models
+        all_models, provider_count = cls._parse_models_section(
+            raw.get("models", {})
+        )
         if not all_models:
             raise ValueError(
                 "No models defined. Add models.providers.<id>.models[]."
             )
-
         logger.info(
             "Parsed %d models across %d providers",
             len(all_models),
-            len(providers) if isinstance(models_section, dict) else 0,
+            provider_count,
         )
 
-        agent_raw = raw.get("agent", {})
-        if not isinstance(agent_raw, dict):
-            agent_raw = {}
-        agent = agent_raw
+        # Agent
+        agent = cls._parse_section(raw, "agent", dict, {})
+        max_iterations = agent.get("max_iterations", 10)
 
-        # Parse env section first — inject into os.environ so tools can
-        # reference these vars via ${VAR} syntax during resolution.
-        env_raw = raw.get("env", {})
-        if not isinstance(env_raw, dict):
-            env_raw = {}
-        env_section = resolve_env(env_raw)
+        # Env — inject into os.environ so tools can reference vars via ${VAR}
+        env_section = resolve_env(cls._parse_section(raw, "env", dict, {}))
         for key, value in env_section.items():
             os.environ[key] = str(value)
         logger.info("Env vars in config: %d", len(env_section))
 
-        tools_raw = raw.get("tools", [])
-        if not isinstance(tools_raw, list):
-            tools_raw = []
-        tools = resolve_env(tools_raw)
+        # Tools
+        tools = resolve_env(cls._parse_section(raw, "tools", list, []))
         logger.info("Tool entries in config: %d", len(tools))
 
-        # Parse MCP section
-        mcp_raw = raw.get("mcp", {})
-        mcp_config = MCPConfig.from_dict(mcp_raw)
+        # MCP
+        mcp_config = MCPConfig.from_dict(raw.get("mcp", {}))
         if mcp_config.enabled:
             logger.info(
                 "MCP: enabled, wrapper=%s %s, servers=%d",
@@ -296,7 +336,7 @@ class Config:
             active_model_ref=raw.get("active_model", all_models[0].ref),
             tools=tools,
             env=env_section,
-            max_iterations=agent.get("max_iterations", 10),
+            max_iterations=max_iterations,
             mcp_config=mcp_config,
         )
         config._path = path

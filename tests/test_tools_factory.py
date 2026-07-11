@@ -73,3 +73,49 @@ class TestCreateToolsFromConfig:
         assert names == {"execute_shell", "get_shell_command"}
         assert "Unknown tool type" in caplog.text
         assert "missing" in caplog.text.lower()
+
+
+class TestGetShellCommandTool:
+    """Tests for GetShellCommandTool.execute()."""
+
+    @pytest.mark.asyncio
+    async def test_execute_run_script(self):
+        """execute() returns platform command for run_script."""
+        from slife.tools.shell_command import GetShellCommandTool
+        tool = GetShellCommandTool()
+        result = await tool.execute(run_script="script.py {}")
+        assert "python" in result
+        assert "script.py" in result
+
+    @pytest.mark.asyncio
+    async def test_execute_check_env(self):
+        """execute() returns platform command for check_env."""
+        from slife.tools.shell_command import GetShellCommandTool
+        tool = GetShellCommandTool()
+        result = await tool.execute(check_env="MY_VAR")
+        assert "MY_VAR" in result
+
+    @pytest.mark.asyncio
+    async def test_execute_install(self):
+        """execute() returns install command for a package."""
+        from slife.tools.shell_command import GetShellCommandTool
+        tool = GetShellCommandTool()
+        result = await tool.execute(install="requests")
+        assert "uv pip install requests" in result
+
+    @pytest.mark.asyncio
+    async def test_execute_no_args(self):
+        """execute() with no args returns fallback message."""
+        from slife.tools.shell_command import GetShellCommandTool
+        tool = GetShellCommandTool()
+        result = await tool.execute()
+        assert "No action specified" in result
+
+    @pytest.mark.asyncio
+    async def test_execute_multiple_actions(self):
+        """Multiple actions produce multiple lines."""
+        from slife.tools.shell_command import GetShellCommandTool
+        tool = GetShellCommandTool()
+        result = await tool.execute(check_env="PATH", install="pytest")
+        lines = result.split("\n")
+        assert len(lines) == 2

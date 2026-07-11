@@ -249,7 +249,14 @@ class MCPClient:
 
     async def disconnect(self) -> None:
         self._connected = False
+        await self._cancel_bridge_tasks()
+        self._reset_state()
+        await self._cleanup_transport()
+        await self._terminate_owned_process()
+        logger.info("Disconnected from slife-mcp wrapper.")
 
+    async def _cancel_bridge_tasks(self) -> None:
+        """Cancel all bridge tasks and wait for them to finish."""
         for task in (self._read_task, self._write_task, self._stderr_task):
             if task and not task.done():
                 task.cancel()
@@ -257,15 +264,16 @@ class MCPClient:
                     await task
                 except asyncio.CancelledError:
                     pass
+
+    def _reset_state(self) -> None:
+        """Reset all connection-related state to initial values."""
         self._read_task = self._write_task = self._stderr_task = None
         self._stdout_queue = self._stdin_queue = None
         self._read_adapter = self._write_adapter = None
+        self._session = None  # Skip __aexit__ to avoid anyio cancel scope issues
 
-        # Close session (skip __aexit__ to avoid anyio cancel scope issues)
-        if self._session:
-            self._session = None
-
-        # Clean up HTTP transport if present
+    async def _cleanup_transport(self) -> None:
+        """Clean up HTTP transport if present."""
         if self._transport:
             try:
                 await self._transport.__aexit__(None, None, None)
@@ -273,32 +281,32 @@ class MCPClient:
                 pass
             self._transport = None
 
-        if self._process and self._owns_process:
-            try:
-                if self._process.returncode is None:
-                    # Close stdin to signal EOF to the wrapper
-                    if self._process.stdin:
-                        try:
-                            self._process.stdin.close()
-                        except Exception:
-                            pass
-
-                    # Wait briefly for graceful exit
+    async def _terminate_owned_process(self) -> None:
+        """Gracefully terminate the child process if we own it."""
+        if not self._process or not self._owns_process:
+            return
+        try:
+            if self._process.returncode is None:
+                # Close stdin to signal EOF to the wrapper
+                if self._process.stdin:
                     try:
-                        await asyncio.wait_for(self._process.wait(), timeout=2.0)
-                    except asyncio.TimeoutError:
-                        # Graceful exit timed out — force terminate
-                        self._process.terminate()
-                        try:
-                            await asyncio.wait_for(self._process.wait(), timeout=3.0)
-                        except asyncio.TimeoutError:
-                            self._process.kill()
-                            await self._process.wait()
-            except ProcessLookupError:
-                pass
-            self._process = None
+                        self._process.stdin.close()
+                    except Exception:
+                        pass
 
-        logger.info("Disconnected from slife-mcp wrapper.")
+                # Wait briefly for graceful exit, then escalate
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    self._process.terminate()
+                    try:
+                        await asyncio.wait_for(self._process.wait(), timeout=3.0)
+                    except asyncio.TimeoutError:
+                        self._process.kill()
+                        await self._process.wait()
+        except ProcessLookupError:
+            pass
+        self._process = None
 
     @staticmethod
     async def is_wrapper_running(url: str = DEFAULT_WRAPPER_URL) -> bool:
@@ -307,9 +315,11 @@ class MCPClient:
         Probes the /mcp endpoint — any HTTP response (even an error)
         means the server is listening. Only a connection failure means
         the server is not running.
+
+        Uses a short timeout (0.5s) since this is a localhost probe.
         """
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with httpx.AsyncClient(timeout=0.5) as client:
                 resp = await client.get(url)
                 return resp.status_code < 500
         except Exception:

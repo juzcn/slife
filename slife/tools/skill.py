@@ -45,27 +45,40 @@ def _parse_frontmatter(content: str) -> tuple[dict, str]:
     return fm, body
 
 
+def _iter_skills(skills_dir: Path) -> list[tuple[Path, dict, str]]:
+    """Scan skills_dir and return (directory, frontmatter, body) for each skill.
+
+    Only directories containing a SKILL.md are considered valid skills.
+    Returns empty list if skills_dir does not exist.
+    """
+    if not skills_dir.exists():
+        return []
+
+    result = []
+    for d in sorted(skills_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        md = d / "SKILL.md"
+        if not md.exists():
+            continue
+        content = md.read_text(encoding="utf-8")
+        fm, body = _parse_frontmatter(content)
+        result.append((d, fm, body))
+    return result
+
+
 def get_skills_summary(skills_dir: str | Path = "skills") -> str:
     """Scan skills_dir and return name + description for each skill.
 
     Only directories containing a SKILL.md are considered valid skills.
     Returns empty string if no skills are found.
     """
-    skills_dir = Path(skills_dir)
-    if not skills_dir.exists():
-        return ""
-
-    entries = sorted(
-        d for d in skills_dir.iterdir()
-        if d.is_dir() and (d / "SKILL.md").exists()
-    )
-    if not entries:
+    skills = _iter_skills(Path(skills_dir))
+    if not skills:
         return ""
 
     lines = []
-    for d in entries:
-        content = (d / "SKILL.md").read_text(encoding="utf-8")
-        fm, _ = _parse_frontmatter(content)
+    for d, fm, _body in skills:
         name = fm.get("name", d.name)
         desc = fm.get("description", "(no description)")
         lines.append(f"- **{name}**: {desc}")
@@ -78,33 +91,18 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
 
     Matches by frontmatter 'name' field first, then by directory name.
     """
-    if not skills_dir.exists():
+    skills = _iter_skills(skills_dir)
+    if not skills:
         return f"Skills directory not found: {skills_dir}"
 
-    for d in sorted(skills_dir.iterdir()):
-        if not d.is_dir():
-            continue
-        md = d / "SKILL.md"
-        if not md.exists():
-            continue
-
-        content = md.read_text(encoding="utf-8")
-        fm, _ = _parse_frontmatter(content)
+    for d, fm, _body in skills:
         if fm.get("name") == skill_name or d.name == skill_name:
+            content = (d / "SKILL.md").read_text(encoding="utf-8")
             logger.info("Loaded skill: %s", skill_name)
             return content
 
     # Build hint with available names
-    available = []
-    for d in sorted(skills_dir.iterdir()):
-        if not d.is_dir():
-            continue
-        md = d / "SKILL.md"
-        if not md.exists():
-            continue
-        fm, _ = _parse_frontmatter(md.read_text(encoding="utf-8"))
-        available.append(f"  - {fm.get('name', d.name)}")
-
+    available = [f"  - {fm.get('name', d.name)}" for d, fm, _body in skills]
     hint = "\n".join(available) if available else "  (none)"
     return f"Skill '{skill_name}' not found.\n\nAvailable skills:\n{hint}"
 

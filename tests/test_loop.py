@@ -96,6 +96,47 @@ class TestSerializeToolCalls:
         assert "café" in result[0]["function"]["arguments"]
 
 
+# ── _truncate_args ────────────────────────────────────────────────────
+
+
+class TestTruncateArgs:
+    """Tests for AgentLoop._truncate_args static method."""
+
+    def test_short_args_unchanged(self):
+        """Values under max_len are returned unchanged."""
+        result = AgentLoop._truncate_args({"key": "short value"})
+        assert result["key"] == "short value"
+
+    def test_long_args_truncated(self):
+        """Values over max_len are truncated with ellipsis."""
+        long_value = "x" * 100
+        result = AgentLoop._truncate_args({"key": long_value})
+        assert result["key"] == "x" * 80 + "…"
+
+    def test_exact_max_len_unchanged(self):
+        """Values exactly at max_len are not truncated."""
+        exact = "y" * 80
+        result = AgentLoop._truncate_args({"key": exact})
+        assert result["key"] == exact
+
+    def test_custom_max_len(self):
+        """Custom max_len is respected."""
+        result = AgentLoop._truncate_args({"a": "1234567890"}, max_len=5)
+        assert result["a"] == "12345…"
+
+    def test_multiple_keys_mixed(self):
+        """Mixed short/long keys in one call."""
+        long_val = "a" * 100
+        result = AgentLoop._truncate_args({"short": "hi", "long": long_val})
+        assert result["short"] == "hi"
+        assert result["long"] == "a" * 80 + "…"
+
+    def test_non_string_values(self):
+        """Non-string values are stringified before length check."""
+        result = AgentLoop._truncate_args({"num": 42})
+        assert result["num"] == "42"
+
+
 # ── _build_tool_calls_from_deltas ─────────────────────────────────────
 
 

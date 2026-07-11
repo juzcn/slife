@@ -25,6 +25,13 @@ class TestAgentService:
         assert service.conversation is not None
         assert service.session_usage.total_tokens == 0
 
+    def test_mcp_disabled_initially(self, sample_config):
+        """MCP is not enabled until start_mcp is called."""
+        service = AgentService(sample_config)
+        assert service.mcp_enabled is False
+        assert service._mcp_client is None
+        assert service._mcp_process is None
+
     def test_model_display_name(self, sample_config):
         service = AgentService(sample_config)
         assert service.model_display_name == "DeepSeek V4 Flash"
@@ -86,6 +93,70 @@ class TestAgentService:
 
         call_kwargs = service.agent_loop.run.call_args[1]
         assert call_kwargs["images"] == ["img.png"]
+
+
+# ── AgentService MCP ───────────────────────────────────────────────────
+
+
+class TestAgentServiceMCP:
+    """Tests for AgentService MCP start/stop methods."""
+
+    @pytest.mark.asyncio
+    async def test_start_mcp_disabled_config(self, sample_config):
+        """start_mcp returns early when MCP is disabled."""
+        sample_config.mcp_config.enabled = False
+        service = AgentService(sample_config)
+
+        await service.start_mcp()
+
+        assert service._mcp_client is None
+
+    @pytest.mark.asyncio
+    async def test_stop_mcp_nothing_running(self, sample_config):
+        """stop_mcp is safe when nothing is connected."""
+        service = AgentService(sample_config)
+
+        await service.stop_mcp()
+
+        assert service._mcp_client is None
+        assert service._mcp_process is None
+
+    @pytest.mark.asyncio
+    async def test_stop_mcp_with_client(self, sample_config):
+        """stop_mcp disconnects client and stops process cleanly."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.disconnect = AsyncMock()
+        mock_process = AsyncMock()
+        mock_process.stop = AsyncMock()
+
+        service._mcp_client = mock_client
+        service._mcp_process = mock_process
+
+        await service.stop_mcp()
+
+        mock_client.disconnect.assert_awaited_once()
+        mock_process.stop.assert_awaited_once()
+        assert service._mcp_client is None
+        assert service._mcp_process is None
+
+    @pytest.mark.asyncio
+    async def test_stop_mcp_handles_errors(self, sample_config):
+        """stop_mcp handles disconnect/stop errors gracefully."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.disconnect = AsyncMock(side_effect=RuntimeError("oops"))
+        mock_process = AsyncMock()
+        mock_process.stop = AsyncMock(side_effect=OSError("fail"))
+
+        service._mcp_client = mock_client
+        service._mcp_process = mock_process
+
+        # Should not raise
+        await service.stop_mcp()
+
+        assert service._mcp_client is None
+        assert service._mcp_process is None
 
 
 # ── TUIHandler ───────────────────────────────────────────────────────

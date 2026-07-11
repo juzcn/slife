@@ -129,10 +129,8 @@ class SlifeApp(App):
 
     # ── Input handling ────────────────────────────────────────────
 
-    def on_input_submitted(self, event) -> None:
+    def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user pressing Enter in the input field."""
-        from textual.widgets import Input
-
         if not isinstance(event, Input.Submitted):
             return
 

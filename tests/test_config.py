@@ -1,6 +1,7 @@
 """Tests for slife.config — configuration loading and model definitions."""
 
 import json
+import logging
 import tempfile
 from pathlib import Path
 
@@ -330,3 +331,418 @@ class TestActiveModel:
             _ = sample_config.active_model
         assert "nonexistent/model" in str(exc_info.value)
         assert "Available" in str(exc_info.value)
+
+
+# ── MCPConfig.from_dict ────────────────────────────────────────────────
+
+
+class TestMCPConfigFromDict:
+    """Tests for MCPConfig.from_dict edge cases."""
+
+    def test_non_dict_returns_default(self):
+        """Non-dict input returns default MCPConfig."""
+        from slife.config import MCPConfig
+        result = MCPConfig.from_dict("not a dict")
+        assert result.enabled is False
+
+    def test_list_returns_default(self):
+        """List input returns default MCPConfig."""
+        from slife.config import MCPConfig
+        result = MCPConfig.from_dict([1, 2, 3])
+        assert result.enabled is False
+
+    def test_non_dict_wrapper(self):
+        """Non-dict wrapper with no servers stays disabled (malformed config)."""
+        from slife.config import MCPConfig
+        result = MCPConfig.from_dict({"wrapper": "not-a-dict"})
+        assert result.enabled is False
+
+    def test_non_dict_servers(self):
+        """Non-dict servers field uses empty dict."""
+        from slife.config import MCPConfig
+        result = MCPConfig.from_dict({"servers": [1, 2]})
+        assert result.servers == {}
+
+    def test_custom_wrapper(self):
+        """Custom wrapper command and args are parsed."""
+        from slife.config import MCPConfig
+        result = MCPConfig.from_dict({
+            "wrapper": {
+                "command": "python",
+                "args": ["-m", "my_mcp"],
+            },
+        })
+        assert result.wrapper_command == "python"
+        assert result.wrapper_args == ["-m", "my_mcp"]
+
+    def test_servers_parsed(self):
+        """Server entries are parsed and stored."""
+        from slife.config import MCPConfig
+        result = MCPConfig.from_dict({
+            "servers": {
+                "fs": {"command": "npx", "args": ["-y", "server-filesystem"]},
+            },
+        })
+        assert "fs" in result.servers
+        assert result.servers["fs"]["command"] == "npx"
+
+
+# ── Config.save_mcp_server / remove_mcp_server ──────────────────────────
+
+
+class TestConfigMCPSaveRemove:
+    """Tests for Config.save_mcp_server and remove_mcp_server."""
+
+    def test_save_server_persists_to_file(self, tmp_path, monkeypatch):
+        """save_mcp_server writes to the JSON5 config file."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config._path is not None
+
+        config.save_mcp_server("fs", "npx", ["-y", "server-filesystem"],
+                               env={"NODE_ENV": "production"})
+
+        # Re-read config file to verify persistence
+        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        servers = raw["mcp"]["servers"]
+        assert "fs" in servers
+        assert servers["fs"]["command"] == "npx"
+        assert servers["fs"]["args"] == ["-y", "server-filesystem"]
+        assert servers["fs"]["env"] == {"NODE_ENV": "production"}
+        # In-memory state also updated
+        assert "fs" in config.mcp_config.servers
+
+    def test_save_server_without_env(self, tmp_path, monkeypatch):
+        """save_mcp_server works without env parameter."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+
+        config.save_mcp_server("test_srv", "echo", ["hello"])
+
+        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "test_srv" in raw["mcp"]["servers"]
+        assert "env" not in raw["mcp"]["servers"]["test_srv"]
+
+    def test_save_server_no_path_warns(self, caplog):
+        """save_mcp_server without _path logs warning but doesn't crash."""
+        from slife.config import Config, ModelConfig
+        mc = ModelConfig(
+            ref="test/m",
+            provider="test",
+            api_model="m",
+            display_name="M",
+            api_key="k",
+        )
+        config = Config(models=[mc], active_model_ref="test/m", tools=[])
+
+        with caplog.at_level(logging.WARNING):
+            config.save_mcp_server("fs", "cmd", ["arg"])
+        assert "No config path" in caplog.text
+
+    def test_remove_server_persists(self, tmp_path, monkeypatch):
+        """remove_mcp_server removes from file and in-memory state."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+            "mcp": {
+                "servers": {
+                    "to_remove": {"command": "echo", "args": ["bye"]},
+                    "to_keep": {"command": "echo", "args": ["hi"]},
+                }
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+
+        config.remove_mcp_server("to_remove")
+
+        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        servers = raw["mcp"]["servers"]
+        assert "to_remove" not in servers
+        assert "to_keep" in servers
+        assert "to_remove" not in config.mcp_config.servers
+
+    def test_remove_server_no_path_warns(self, caplog):
+        """remove_mcp_server without _path logs warning but doesn't crash."""
+        from slife.config import Config, ModelConfig
+        mc = ModelConfig(
+            ref="test/m",
+            provider="test",
+            api_model="m",
+            display_name="M",
+            api_key="k",
+        )
+        config = Config(models=[mc], active_model_ref="test/m", tools=[])
+
+        with caplog.at_level(logging.WARNING):
+            config.remove_mcp_server("nonexistent")
+        assert "No config path" in caplog.text
+
+
+# ── Config.from_json5 edge cases ────────────────────────────────────────
+
+
+class TestConfigEnvInjection:
+    """Tests for env section injection into os.environ."""
+
+    def test_env_section_injects_to_os_environ(self, tmp_path, monkeypatch):
+        """Values from the env section are injected into os.environ."""
+        monkeypatch.setenv("PROV_KEY", "sk-test")
+        # Remove test var if exists
+        monkeypatch.delenv("MY_TOOL_KEY", raising=False)
+
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p": {
+                        "api_key": "${PROV_KEY}",
+                        "models": [{"model": "m"}],
+                    },
+                },
+            },
+            "env": {
+                "MY_TOOL_KEY": "tool-secret-123",
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.env == {"MY_TOOL_KEY": "tool-secret-123"}
+
+
+class TestConfigFromJSON5EdgeCases:
+    """Tests for Config.from_json5 edge cases not covered elsewhere."""
+
+    def test_providers_not_dict(self, tmp_path, monkeypatch):
+        """Non-dict providers field is treated as empty."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": ["not", "a", "dict"],
+            },
+        }))
+        with pytest.raises(ValueError, match="No models defined"):
+            Config.from_json5(str(cfg_path))
+
+    def test_provider_cfg_not_dict(self, tmp_path, monkeypatch):
+        """Non-dict provider entry is skipped."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "bad_provider": "not a dict",
+                    "good_provider": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "valid_model"}],
+                    },
+                },
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert len(config.models) == 1
+        assert config.models[0].ref == "good_provider/valid_model"
+
+    def test_models_not_list(self, tmp_path, monkeypatch):
+        """Non-list models field in provider is skipped."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p1": {
+                        "api_key": "${KEY}",
+                        "models": "not-a-list",
+                    },
+                    "p2": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "real_model"}],
+                    },
+                },
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert len(config.models) == 1
+        assert config.models[0].ref == "p2/real_model"
+
+    def test_model_entry_not_dict(self, tmp_path, monkeypatch):
+        """Non-dict model entry in list is skipped."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p1": {
+                        "api_key": "${KEY}",
+                        "models": [
+                            "not-a-dict",
+                            {"model": "good_model"},
+                        ],
+                    },
+                },
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert len(config.models) == 1
+        assert config.models[0].ref == "p1/good_model"
+
+    def test_list_style_non_dict_entry(self, tmp_path):
+        """Non-dict entry in list-style models section is skipped."""
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": [
+                "not-a-dict",
+                {"model": "gpt-4o", "api_key": "sk-key"},
+            ],
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert len(config.models) == 1
+        assert config.models[0].ref == "unknown/gpt-4o"
+
+    def test_agent_not_dict(self, tmp_path, monkeypatch):
+        """Non-dict agent section uses defaults."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    },
+                },
+            },
+            "agent": "not-a-dict",
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.max_iterations == 10
+
+    def test_env_not_dict(self, tmp_path, monkeypatch):
+        """Non-dict env section uses empty dict."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    },
+                },
+            },
+            "env": "not-a-dict",
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.env == {}
+
+    def test_tools_not_list(self, tmp_path, monkeypatch):
+        """Non-list tools section uses empty list."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    },
+                },
+            },
+            "tools": "not-a-list",
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.tools == []
+
+    def test_mcp_section_parsed(self, tmp_path, monkeypatch):
+        """MCP section in config is parsed into MCPConfig."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    },
+                },
+            },
+            "mcp": {
+                "enabled": True,
+                "wrapper": {"command": "python", "args": ["-m", "slife_mcp"]},
+                "servers": {"srv1": {"command": "npx", "args": []}},
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.mcp_config.enabled is True
+        assert config.mcp_config.wrapper_command == "python"
+        assert "srv1" in config.mcp_config.servers
+
+    def test_mcp_disabled_when_absent(self, tmp_path, monkeypatch):
+        """MCP is disabled when no mcp section exists in config."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    },
+                },
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.mcp_config.enabled is False
+        assert config.mcp_config.servers == {}
+
+    def test_provider_models_empty_list(self, tmp_path, monkeypatch):
+        """Provider with empty models list contributes no models."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        # Only provider with real model so it's collected
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p1": {
+                        "api_key": "${KEY}",
+                        "models": [],
+                    },
+                    "p2": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "solo"}],
+                    },
+                },
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert len(config.models) == 1
+        assert config.models[0].ref == "p2/solo"

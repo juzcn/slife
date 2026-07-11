@@ -4,9 +4,16 @@ Receives real-time streaming events from the agent loop and updates
 TUI widgets (chat view, tool call widgets, status bar).
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from slife.agent.llm_client import TokenUsage
 from slife.agent.loop import ToolCallInfo
 from slife.ui.tool_display import ToolCallWidget
+
+if TYPE_CHECKING:
+    from slife.ui.app import SlifeApp
 
 
 class TUIHandler:
@@ -16,7 +23,7 @@ class TUIHandler:
     streaming events from the agent loop and updates TUI widgets.
     """
 
-    def __init__(self, app: "SlifeApp"):  # type: ignore[name-defined]  # noqa: F821
+    def __init__(self, app: SlifeApp):
         self._app = app
         self._chat_view = app.query_one("#chat-view")  # ChatView
 

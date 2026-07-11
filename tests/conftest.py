@@ -14,7 +14,7 @@ from slife.tools.registry import ToolRegistry
 # ── Model config fixtures ─────────────────────────────────────────────
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def sample_model_config():
     """A typical ModelConfig for testing."""
     return ModelConfig(
@@ -35,7 +35,7 @@ def sample_model_config():
     )
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def thinking_model_config():
     """Model config with thinking enabled."""
     return ModelConfig(
@@ -56,7 +56,7 @@ def thinking_model_config():
     )
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def openai_model_config():
     """Model config for a non-DeepSeek provider (OpenAI)."""
     return ModelConfig(
@@ -111,7 +111,7 @@ def empty_conversation():
 # ── Token usage fixtures ──────────────────────────────────────────────
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def zero_usage():
     """Empty token usage."""
     return TokenUsage()
@@ -153,13 +153,13 @@ class _FailingTool(Tool):
         raise RuntimeError(f"Intentional failure: {reason}")
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def echo_tool():
     """An echo test tool instance."""
     return _EchoTool()
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def failing_tool():
     """A failing test tool instance."""
     return _FailingTool()
@@ -174,7 +174,7 @@ def tool_registry(echo_tool, failing_tool):
     return registry
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def empty_registry():
     """An empty tool registry."""
     return ToolRegistry()

@@ -3,25 +3,30 @@
   // slife Configuration — OpenClaw-compatible JSON5 format
   // ═══════════════════════════════════════════════════════════════
   // API keys: set as environment variables, reference with ${VAR}.
+  //            Never put real keys in this file — use ${ENV_VAR}.
 
   // ── Environment variables ────────────────────────────────────
-  // Set here to make them available to tools and shell commands.
+  // Injected into os.environ so tools and shell commands can
+  // reference them via ${VAR} syntax.
 
   env: {
-    SERPER_API_KEY: "${SERPER_API_KEY}",
-    // BAIDU_API_KEY: "your-baidu-api-key",
+    // SERPER_API_KEY: "${SERPER_API_KEY}",
+    // BAIDU_API_KEY: "${BAIDU_API_KEY}",
   },
 
   // ── Agent defaults ───────────────────────────────────────────
 
   agent: {
     max_iterations: 10,
-
   },
 
   // ── Models ───────────────────────────────────────────────────
-  // model = API model name (doubles as local identifier, unique within provider)
-  // name  = display label
+  // provider/<id>: connection config shared by all models under it.
+  // model: API model name (doubles as local identifier within provider).
+  // name:  display label shown in the TUI status bar.
+  // reasoning: true → enable thinking/reasoning mode (DeepSeek V4).
+  // reasoning_effort: optional — "low" | "medium" | "high" | "xhigh" | "max".
+  // input: ["text", "image"] → supports vision (image attachment via /file).
 
   models: {
     mode: "merge",
@@ -56,17 +61,57 @@
           },
         ],
       },
+
+      // Example: OpenAI provider
+      // openai: {
+      //   base_url: "https://api.openai.com/v1",
+      //   api_key: "${OPENAI_API_KEY}",
+      //   api: "openai-completions",
+      //   models: [
+      //     { model: "gpt-4o", name: "GPT-4o" },
+      //   ],
+      // },
     },
   },
 
   active_model: "deepseek/deepseek-v4-pro",
 
   // ── Tools ────────────────────────────────────────────────────
+  // Each entry maps to a Tool subclass via slife/tools/factory.py.
+  //
+  //   platform — get_shell_command (OS-correct shell syntax)
+  //   shell    — execute_shell (run commands with timeout)
+  //   skill    — list_skills + use_skill (on-demand documentation)
 
   tools: [
     { type: "platform" },
-    { type: "serper" },
     { type: "shell", timeout: 30 },
     { type: "skill", skills_dir: "skills" },
   ],
+
+  // ── MCP Integration (optional) ────────────────────────────────
+  // The slife-mcp wrapper manages connections to external MCP
+  // servers. slife auto-starts the wrapper as a child process,
+  // or connects to a standalone instance via HTTP.
+  //
+  // Each server entry uses standard MCP format:
+  //   command — executable to run
+  //   args    — command-line arguments
+  //   env     — optional environment variables for the server process
+
+  // mcp: {
+  //   servers: {
+  //     filesystem: {
+  //       command: "npx",
+  //       args: ["-y", "@modelcontextprotocol/server-filesystem", "/allowed/path"],
+  //     },
+  //     serper: {
+  //       command: "npx",
+  //       args: ["-y", "serper-search-scrape-mcp-server"],
+  //       env: {
+  //         SERPER_API_KEY: "${SERPER_API_KEY}",
+  //       },
+  //     },
+  //   },
+  // },
 }

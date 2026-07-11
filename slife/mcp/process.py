@@ -29,25 +29,24 @@ class MCPWrapperProcess:
 
     def __init__(
         self,
-        command: str = "uv",
+        command: str | None = None,
         args: list[str] | None = None,
         server_module: str | None = None,
     ):
         """
         Args:
-            command: Executable to run (default: 'uv').
+            command: Executable to run (default: sys.executable).
             args: Override command args. If None, defaults to
-                  ['run', 'python', '-m', 'slife_mcp.server'].
+                  ['-m', 'slife_mcp.server'].
             server_module: Python module for the wrapper server
                   (default: 'slife_mcp.server').
         """
-        self._command = command
-        self._args = args or [
-            "run",
-            "python",
-            "-m",
-            server_module or _DEFAULT_SERVER_MODULE,
-        ]
+        self._command = command if command is not None else sys.executable
+        if args is not None:
+            self._args = args
+        else:
+            module = server_module or _DEFAULT_SERVER_MODULE
+            self._args = ["-m", module]
         self._process: asyncio.subprocess.Process | None = None
         self._running: bool = False
 
@@ -169,7 +168,11 @@ class MCPWrapperProcess:
             self._process = None
 
     async def _log_stderr(self) -> None:
-        """Read and log stderr from the wrapper process."""
+        """Read and log stderr from the wrapper process.
+
+        Logs at INFO level so startup failures (like uv file-lock
+        errors on Windows) are visible without needing --debug.
+        """
         if not self._process or not self._process.stderr:
             return
 
@@ -180,6 +183,10 @@ class MCPWrapperProcess:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()
                 if text:
-                    logger.debug("[wrapper] %s", text)
+                    # Log errors/warnings prominently, debug for the rest
+                    if any(marker in text.lower() for marker in ("error", "traceback", "fail", "exception")):
+                        logger.warning("[wrapper] %s", text)
+                    else:
+                        logger.info("[wrapper] %s", text)
         except Exception as e:
             logger.debug("Stderr reader stopped: %s", e)

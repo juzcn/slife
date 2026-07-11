@@ -1,6 +1,6 @@
 # slife
 
-Terminal-based AI agent — a function-calling loop with minimum harness. Chat with an LLM that can execute shell commands, search the web, load on-demand skills, and connect to MCP servers.
+Terminal-based AI agent — a function-calling loop with minimum harness. Chat with an LLM that can execute shell commands, load on-demand skills, and connect to MCP servers.
 
 ## Quick Start
 
@@ -39,7 +39,6 @@ Edit `slife.json5`. Key sections:
   tools: [
     { type: "platform" },
     { type: "shell", timeout: 30 },
-    { type: "serper" },
     { type: "skill", skills_dir: "skills" },
   ],
 
@@ -59,15 +58,16 @@ API keys use `${ENV_VAR}` syntax — set them in your environment, not in the co
 
 ## Tools
 
-| Tool | Type | What it does |
-|------|------|-------------|
+| Tool | Config Type | What it does |
+|------|-------------|-------------|
 | `execute_shell` | `shell` | Run shell commands on the host machine |
 | `get_shell_command` | `platform` | Translate intent into OS-correct shell syntax |
-| `web_search` | `serper` | Google Search via Serper.dev API |
 | `list_skills` | `skill` | List available skill plugins |
 | `use_skill` | `skill` | Load a skill's documentation into context |
 
 Add or remove tools from the `tools[]` list to control what the agent can do.
+
+Additional tool types (e.g. `serper` for web search) are registered in `slife/tools/factory.py` and can be enabled with a matching implementation.
 
 ### MCP Integration
 
@@ -115,8 +115,9 @@ To add a skill, create a directory under `skills/` with a `SKILL.md` file.
 ## Tips
 
 - **`/file image.png`** — attach an image for vision models
-- **`Ctrl+C`** — clear the conversation
-- **`Ctrl+Q`** — quit
+- **`Ctrl+L`** — clear the conversation
+- **`Ctrl+C`** — quit
+- **`Esc`** — focus the input field
 
 ## Design
 
@@ -130,37 +131,37 @@ See [DESIGN.md](DESIGN.md) for the full design rationale.
 
 ```
 slife/
-  agent/           # Core agent loop, LLM client, conversation
-    loop.py        #   Function-calling while-loop
-    llm_client.py  #   OpenAI-compatible streaming client
-    conversation.py#   Message history (OpenAI format)
-    service.py     #   Wiring: client + tools + loop + MCP
-    system_prompt.py#  Jinja2 template rendering
-  tools/           # Extensible tool system
-    base.py        #   Tool ABC
-    registry.py    #   Name → Tool lookup
-    factory.py     #   Config type → Tool instances
-    shell.py       #   execute_shell
-    shell_command.py#  get_shell_command (platform-aware)
-    serper.py      #   web_search (Serper.dev)
-    skill.py       #   list_skills / use_skill
-  mcp/             # MCP client integration
-    client.py      #   stdio/HTTP client
-    tool_adapter.py#   MCP → slife Tool adapter
-    process.py     #   Child process lifecycle
-  ui/              # Textual TUI
-    app.py         #   Main application
-    chat.py        #   Message widgets
-    handler.py     #   Streaming event → UI bridge
-    tool_display.py#   Tool call rendering
-  config.py        # JSON5 config loading
-  env.py           # ${ENV_VAR} resolution
-  platform.py      # OS detection, shell syntax
-slife_mcp/         # Independent MCP wrapper server
-  server.py        #   FastMCP server with management tools
-  connection.py    #   asyncio JSON-RPC connection pool
-skills/            # Skill plugins
-tests/             # pytest suite
+  agent/               # Core agent loop, LLM client, conversation
+    loop.py            #   Function-calling while-loop with streaming
+    llm_client.py      #   OpenAI-compatible streaming client
+    conversation.py    #   Message history (OpenAI format)
+    service.py         #   Wiring: client + tools + loop + MCP
+    system_prompt.py   #   Jinja2 template rendering
+    multimodal.py      #   Image encoding, /file attachment parsing
+  tools/               # Extensible tool system
+    base.py            #   Tool ABC
+    registry.py        #   Name → Tool lookup & execution
+    factory.py         #   Config type → Tool instances
+    shell.py           #   execute_shell (subprocess with timeout)
+    shell_command.py   #   get_shell_command (platform-aware)
+    skill.py           #   list_skills / use_skill
+  mcp/                 # MCP client integration
+    client.py          #   stdio/HTTP client with asyncio.Queue adapters
+    tool_adapter.py    #   MCP → slife Tool adapter (MCPProxyTool)
+    process.py         #   Child process lifecycle manager
+  ui/                  # Textual TUI (Claude Code CLI style)
+    app.py             #   Main application
+    chat.py            #   Message widgets
+    handler.py         #   Streaming event → UI bridge
+    tool_display.py    #   Tool call rendering (expandable widgets)
+  config.py            # JSON5 config loading (ModelConfig, MCPConfig, Config)
+  env.py               # ${ENV_VAR} and ${ENV_VAR:-default} resolution
+  platform.py          # OS detection, shell syntax (Windows/Unix)
+slife_mcp/             # Independent MCP wrapper server (FastMCP)
+  server.py            #   Management tools & HTTP/stdio transport
+  connection.py        #   asyncio JSON-RPC connection pool
+skills/                # Skill plugins (on-demand documentation)
+tests/                 # pytest suite (326 tests)
 ```
 
 ## Requirements
