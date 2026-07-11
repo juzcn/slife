@@ -12,6 +12,8 @@ Usage:
 import json
 import logging
 import sys
+from datetime import datetime
+from pathlib import Path
 
 from fastmcp import FastMCP
 
@@ -21,22 +23,48 @@ logger = logging.getLogger("slife_mcp")
 
 # ── Logging setup ───────────────────────────────────────────────────
 
-# Log to stderr so stdout (the MCP transport) stays clean.
-_stderr_handler = logging.StreamHandler(sys.stderr)
-_stderr_handler.setLevel(logging.DEBUG)
-_stderr_handler.setFormatter(
-    logging.Formatter(
+LOG_DIR = Path("logs")
+
+
+def _setup_logging() -> Path:
+    """Configure logging to both stderr and file.
+
+    stderr: DEBUG+ — captured by the parent slife process and logged
+            with [wrapper] prefix.
+    File:   DEBUG+ with timestamps — one file per session:
+            logs/slife_mcp_YYYYMMDD_HHMMSS.log
+    """
+    log_fmt = logging.Formatter(
         "%(asctime)s [%(levelname)-7s] %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-)
-_root = logging.getLogger()
-_root.setLevel(logging.DEBUG)
-_root.addHandler(_stderr_handler)
 
-# Silence noisy third-party loggers
-for _noisy in ("httpx", "httpcore", "openai", "asyncio", "urllib3"):
-    logging.getLogger(_noisy).setLevel(logging.WARNING)
+    _root = logging.getLogger()
+    _root.setLevel(logging.DEBUG)
+
+    # Stderr — captured by parent slife process for live debugging
+    _stderr = logging.StreamHandler(sys.stderr)
+    _stderr.setLevel(logging.DEBUG)
+    _stderr.setFormatter(log_fmt)
+    _root.addHandler(_stderr)
+
+    # File — persistent per-session log
+    LOG_DIR.mkdir(exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = LOG_DIR / f"slife_mcp_{ts}.log"
+    _file = logging.FileHandler(log_path, encoding="utf-8")
+    _file.setLevel(logging.DEBUG)
+    _file.setFormatter(log_fmt)
+    _root.addHandler(_file)
+
+    # Silence noisy third-party loggers
+    for _noisy in ("httpx", "httpcore", "openai", "asyncio", "urllib3"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+    return log_path
+
+
+_log_path = _setup_logging()
 
 # ── Global state ─────────────────────────────────────────────────────
 
@@ -295,6 +323,7 @@ def main():
     )
     args = parser.parse_args()
 
+    logger.info("Log: %s", _log_path)
     logger.info(
         "Starting slife-mcp wrapper server (transport=%s)...", args.transport
     )

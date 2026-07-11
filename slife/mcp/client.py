@@ -169,6 +169,38 @@ class MCPClient:
         except asyncio.CancelledError:
             pass
 
+    async def _bridge_reader(self, reader) -> None:
+        """Bridge from a raw asyncio StreamReader to the stdout queue."""
+        try:
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                line_str = line.decode("utf-8", errors="replace").strip()
+                if not line_str:
+                    continue
+                try:
+                    message = types.JSONRPCMessage.model_validate_json(line_str)
+                    await self._stdout_queue.put(SessionMessage(message))
+                except Exception:
+                    pass
+        except asyncio.CancelledError:
+            pass
+
+    async def _bridge_writer(self, writer) -> None:
+        """Bridge from the stdin queue to a raw asyncio StreamWriter."""
+        assert self._stdin_queue
+        try:
+            while True:
+                session_message = await self._stdin_queue.get()
+                json_str = session_message.message.model_dump_json(
+                    by_alias=True, exclude_none=True
+                )
+                writer.write((json_str + "\n").encode("utf-8"))
+                await writer.drain()
+        except asyncio.CancelledError:
+            pass
+
     async def _drain_stderr(self) -> None:
         assert self._process and self._process.stderr
         try:
@@ -199,7 +231,16 @@ class MCPClient:
             logger.warning("MCP client already connected.")
             return
         logger.info("Connecting to slife-mcp via existing streams.")
-        self._session = ClientSession(read_stream, write_stream)
+
+        self._stdout_queue = asyncio.Queue()
+        self._stdin_queue = asyncio.Queue()
+        self._read_adapter = _ReadAdapter(self._stdout_queue)
+        self._write_adapter = _WriteAdapter(self._stdin_queue)
+
+        self._read_task = asyncio.create_task(self._bridge_reader(read_stream))
+        self._write_task = asyncio.create_task(self._bridge_writer(write_stream))
+
+        self._session = ClientSession(self._read_adapter, self._write_adapter)
         await self._session.__aenter__()
         await self._session.initialize()
         self._connected = True

@@ -195,6 +195,9 @@ class MCPServerConnection:
                 line = await self._process.stderr.readline()
                 if not line:
                     break
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    logger.debug("[%s stderr] %s", self.config.name, text)
         except asyncio.CancelledError:
             pass
 
