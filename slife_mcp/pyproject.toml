@@ -1,0 +1,36 @@
+[project]
+name = "slife-mcp"
+version = "0.1.0"
+description = "Standalone MCP proxy service — manages persistent connections to external MCP servers"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "juzcn", email = "zhangjun@cueb.edu.cn" },
+]
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "json5>=0.15.0",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://github.com/juzcn/slife"
+Repository = "https://github.com/juzcn/slife"
+
+[project.scripts]
+slife-mcp = "slife_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["slife_mcp"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
