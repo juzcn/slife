@@ -8,6 +8,8 @@ so special characters like &, [, ] are never interpreted as markup —
 eliminating MarkupError crashes from search results containing URLs, JSON, etc.
 """
 
+import subprocess
+import sys
 from dataclasses import dataclass
 
 from textual.content import Content
@@ -142,8 +144,18 @@ class ToolCallWidget(Static):
       - User data goes through _lit() (Content.from_text(markup=False))
         so special characters never cause MarkupError.
 
+    Keyboard:
+      - Ctrl+Y — copy result (when widget is focused and expanded)
+      - Enter / Space — toggle expand/collapse
+
     Claude Code style: amber header line, expandable detail below.
     """
+
+    can_focus = True
+
+    BINDINGS = [
+        ("ctrl+y", "copy_result", "Copy result"),
+    ]
 
     def __init__(
         self,
@@ -189,6 +201,17 @@ class ToolCallWidget(Static):
 
     def on_click(self) -> None:
         """Toggle detail on click."""
+        self.toggle()
+
+    def action_copy_result(self) -> None:
+        """Copy the result (or arguments if no result yet) to clipboard."""
+        text = self._result if self._result else str(self.tool_args)
+        if not text:
+            return
+        _copy_to_clipboard(text)
+
+    def action_toggle(self) -> None:
+        """Toggle expand/collapse via keyboard."""
         self.toggle()
 
     # ── Rendering ──────────────────────────────────────────────────
@@ -286,3 +309,34 @@ class ToolCallWidget(Static):
                     content = content + _lit(self._result, style="#c9d1d9")
 
         return content
+
+
+# ── Clipboard helper ─────────────────────────────────────────────────
+
+
+def _copy_to_clipboard(text: str) -> None:
+    """Copy text to the system clipboard (cross-platform).
+
+    Uses platform-specific commands via subprocess so we don't
+    add an external dependency like pyperclip.
+    """
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["clip"],
+                input=text.encode("utf-8"),
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                check=False,
+            )
+        elif sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=False)
+        else:
+            # Linux — try wl-copy (Wayland) then xclip (X11)
+            for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"]):
+                try:
+                    subprocess.run(cmd, input=text.encode("utf-8"), check=False)
+                    break
+                except FileNotFoundError:
+                    continue
+    except Exception:
+        pass

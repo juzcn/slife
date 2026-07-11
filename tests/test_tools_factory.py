@@ -32,23 +32,14 @@ class TestCreateToolsFromConfig:
         tool = registry.list_tools()[0]
         assert tool.timeout == 30
 
-    def test_serper_tool(self):
-        """Serper tool is created from config."""
-        registry = create_tools_from_config([
-            {"type": "serper"},
-        ])
-        tools = registry.list_tools()
-        assert len(tools) == 1
-        assert tools[0].name == "web_search"
-
     def test_multiple_tools(self):
         """Multiple tools are created from config."""
         registry = create_tools_from_config([
             {"type": "shell", "timeout": 10},
-            {"type": "serper", "api_key": "key"},
+            {"type": "platform"},
         ])
         names = {t.name for t in registry.list_tools()}
-        assert names == {"execute_shell", "web_search"}
+        assert names == {"execute_shell", "get_shell_command"}
 
     def test_unknown_tool_type_warns(self, caplog):
         """Unknown tool type logs a warning and is skipped."""
@@ -75,10 +66,10 @@ class TestCreateToolsFromConfig:
                 {"type": "shell"},
                 {"type": "bad_type"},
                 {},
-                {"type": "serper", "api_key": "k"},
+                {"type": "platform"},
             ])
         # One warning for bad_type, one for missing type
         names = {t.name for t in registry.list_tools()}
-        assert names == {"execute_shell", "web_search"}
+        assert names == {"execute_shell", "get_shell_command"}
         assert "Unknown tool type" in caplog.text
         assert "missing" in caplog.text.lower()

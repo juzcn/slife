@@ -4,6 +4,7 @@ Owns the agent's runtime state. The TUI delegates to this service
 rather than directly managing agent internals.
 """
 
+import json
 import logging
 
 from slife.agent.system_prompt import build as build_system_prompt
@@ -104,11 +105,29 @@ class AgentService:
         )
 
         # 4. Create proxy tools for wrapper management tools
-        #    (mcp_add_server, mcp_remove_server, etc.)
+        #    Exclude mcp_call_tool — external MCP tools are now
+        #    registered directly with full schemas, so the LLM
+        #    never needs to call mcp_call_tool manually.
+        #    (mcp_call_tool still exists on the wrapper for
+        #    internal routing by MCPProxyTool.execute.)
         tagged_tools = [
-            {**t, "server": "mcp"} for t in wrapper_tools
+            {**t, "server": "mcp"}
+            for t in wrapper_tools
+            if t["name"] != "mcp_call_tool"
         ]
-        proxy_tools = create_proxy_tools(self._mcp_client, tagged_tools)
+
+        # Persist callbacks: keep slife.json5 in sync with runtime changes
+        async def _persist_server(name: str, command: str, args: list[str], env: dict | None = None):
+            self.config.save_mcp_server(name, command, args, env)
+
+        async def _unpersist_server(name: str):
+            self.config.remove_mcp_server(name)
+
+        proxy_tools = create_proxy_tools(
+            self._mcp_client, tagged_tools,
+            on_server_added=_persist_server,
+            on_server_removed=_unpersist_server,
+        )
         for tool in proxy_tools:
             self.tool_registry.register(tool)
         logger.info("Registered %d MCP wrapper tools.", len(proxy_tools))
@@ -129,38 +148,39 @@ class AgentService:
                         },
                     )
                     logger.info("Server '%s': %s", server_name, result)
-
-                    # Discover and register proxy tools from this server
-                    tools_result = await self._mcp_client.call_tool(
-                        "mcp_list_tools",
-                        {"server": server_name},
-                    )
-                    logger.debug("Tools from '%s': %s", server_name, tools_result)
                 except Exception as e:
                     logger.error(
                         "Failed to auto-connect server '%s': %s", server_name, e
                     )
 
-            # 6. Register all proxy tools from connected servers
+            # 6. Discover and register proxy tools for all external servers
             try:
-                all_tools_raw = await self._mcp_client.call_tool(
+                tools_json = await self._mcp_client.call_tool(
                     "mcp_list_tools", {}
                 )
-                logger.debug("All MCP tools: %s", all_tools_raw)
-            except Exception:
-                all_tools_raw = ""
+                tools_data = json.loads(tools_json)
+                external_tools = tools_data.get("tools", [])
 
-            # Parse tool list from the formatted output and register
-            # (This is approximate — we re-query via mcp_list_tools)
-            try:
-                tools_data = await self._mcp_client.call_tool(
-                    "mcp_list_tools", {}
-                )
-                # Use the internal pool to get structured data
-                # For now, just log that MCP is ready
-                logger.info("MCP integration complete. Use mcp_list_tools to explore.")
+                if external_tools:
+                    proxy_tools = create_proxy_tools(
+                        self._mcp_client, external_tools,
+                        on_server_added=_persist_server,
+                        on_server_removed=_unpersist_server,
+                    )
+                    for tool in proxy_tools:
+                        self.tool_registry.register(tool)
+                    logger.info(
+                        "Registered %d MCP external tools from %d servers.",
+                        len(proxy_tools),
+                        len({t["server"] for t in external_tools}),
+                    )
+                else:
+                    logger.info("No external MCP tools discovered.")
             except Exception as e:
                 logger.error("Error during MCP tool discovery: %s", e)
+
+        logger.info("MCP integration complete. %d total tools registered.",
+                     len(self.tool_registry.list_tools()))
 
     async def stop_mcp(self) -> None:
         """Shut down the MCP wrapper and clean up."""

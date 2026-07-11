@@ -34,22 +34,25 @@ class ToolRegistry:
         """Convert all registered tools to OpenAI function definitions."""
         return [t.to_openai_function() for t in self._tools.values()]
 
-    async def execute(self, name: str, **kwargs) -> str:
+    async def execute(self, tool_name: str, /, **kwargs) -> str:
         """Execute a tool by name, with error handling.
+
+        The tool_name parameter is positional-only (/) to prevent
+        collisions with tool arguments that happen to share the name.
 
         Returns:
             Tool result string, or error message string if tool not found
             or execution fails.
         """
-        tool = self.get(name)
+        tool = self.get(tool_name)
         if not tool:
-            logger.warning("Tool not found: %s", name)
-            return f"Error: Unknown tool '{name}'"
+            logger.warning("Tool not found: %s", tool_name)
+            return f"Error: Unknown tool '{tool_name}'"
         try:
-            logger.debug("Execute %s(%s)", name, kwargs)
+            logger.debug("Execute %s(%s)", tool_name, kwargs)
             result = await tool.execute(**kwargs)
-            logger.debug("Result  %s → %.200s", name, result)
+            logger.debug("Result  %s → %.200s", tool_name, result)
             return result
         except Exception as e:
-            logger.warning("Tool error: %s → %s", name, e)
-            return f"Error executing {name}: {e}"
+            logger.warning("Tool error: %s → %s", tool_name, e)
+            return f"Error executing {tool_name}: {e}"

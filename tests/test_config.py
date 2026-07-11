@@ -249,7 +249,7 @@ class TestConfigFromJSON5:
 
     def test_tools_config(self, tmp_path, monkeypatch):
         """Tools section is loaded correctly."""
-        monkeypatch.setenv("SERPER_KEY", "serper-key")
+        monkeypatch.setenv("MY_KEY", "my-key-value")
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({
             "models": {
@@ -262,13 +262,13 @@ class TestConfigFromJSON5:
             },
             "tools": [
                 {"type": "shell", "timeout": 60},
-                {"type": "serper", "api_key": "${SERPER_KEY}"},
+                {"type": "platform"},
             ],
         }))
         config = Config.from_json5(str(cfg_path))
         assert len(config.tools) == 2
         assert config.tools[0] == {"type": "shell", "timeout": 60}
-        assert config.tools[1] == {"type": "serper", "api_key": "serper-key"}
+        assert config.tools[1] == {"type": "platform"}
 
     def test_duplicate_model_in_provider_raises(self, tmp_path, monkeypatch):
         """Duplicate model names within a provider raise ValueError."""

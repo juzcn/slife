@@ -79,7 +79,22 @@ slife agent ←→ slife-mcp wrapper ←→ external MCP servers
 
 Configure servers under `mcp.servers` using standard MCP format (compatible with Claude Desktop configs). The wrapper exposes management tools (`mcp_add_server`, `mcp_list_tools`, `mcp_call_tool`, etc.) to control connections at runtime.
 
-The wrapper can run as a child process (auto-started by slife on launch) or standalone (`uv run python -m slife_mcp.server --transport http --port 9876`).
+**Two modes:**
+
+| Mode | Command | When to use |
+|------|---------|-------------|
+| Child process (default) | Auto-started by slife on launch | Normal use — no manual setup |
+| Standalone HTTP | `uv run python -m slife_mcp.server --transport http --port 9876` | Share MCP connections across clients, or debug independently |
+
+**Standalone CLI flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--transport` | `stdio` | `stdio` (child process) or `http` (standalone) |
+| `--port` | `9876` | HTTP listen port |
+| `--host` | `127.0.0.1` | HTTP listen address |
+
+On startup, slife probes `http://127.0.0.1:9876/mcp` first — if the wrapper is already running standalone, slife connects to it instead of spawning a child process.
 
 See [DESIGN.md](DESIGN.md) for architecture details.
 

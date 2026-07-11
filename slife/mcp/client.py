@@ -84,6 +84,7 @@ class MCPClient:
         self._connected: bool = False
         self._owns_process: bool = False
         self._process: asyncio.subprocess.Process | None = None
+        self._transport: Any = None  # HTTP transport context manager
         self._read_task: asyncio.Task | None = None
         self._write_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
@@ -184,8 +185,8 @@ class MCPClient:
             return
         logger.info("Connecting to slife-mcp via HTTP: %s", url)
         from mcp.client.streamable_http import streamablehttp_client
-        transport = streamablehttp_client(url)
-        read_stream, write_stream, _ = await transport.__aenter__()
+        self._transport = streamablehttp_client(url)
+        read_stream, write_stream, _ = await self._transport.__aenter__()
         self._session = ClientSession(read_stream, write_stream)
         await self._session.__aenter__()
         await self._session.initialize()
@@ -223,6 +224,14 @@ class MCPClient:
         if self._session:
             self._session = None
 
+        # Clean up HTTP transport if present
+        if self._transport:
+            try:
+                await self._transport.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._transport = None
+
         if self._process and self._owns_process:
             try:
                 if self._process.returncode is None:
@@ -240,9 +249,15 @@ class MCPClient:
 
     @staticmethod
     async def is_wrapper_running(url: str = DEFAULT_WRAPPER_URL) -> bool:
+        """Check if the slife-mcp wrapper is already running.
+
+        Probes the /mcp endpoint — any HTTP response (even an error)
+        means the server is listening. Only a connection failure means
+        the server is not running.
+        """
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
-                resp = await client.get(url.replace("/mcp", "/health"))
+                resp = await client.get(url)
                 return resp.status_code < 500
         except Exception:
             return False

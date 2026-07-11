@@ -87,7 +87,7 @@ class TestMainFunction:
 
     def test_main_logs_tool_count(self, mock_config):
         """Logs the number of loaded tools."""
-        mock_config.tools = [{"type": "shell"}, {"type": "serper", "api_key": "k"}]
+        mock_config.tools = [{"type": "shell"}, {"type": "platform"}]
 
         with patch("slife.Config.from_json5", return_value=mock_config):
             with patch("slife.SlifeApp") as mock_app_cls:

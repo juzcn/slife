@@ -31,15 +31,21 @@ class MCPProxyTool(Tool):
     description = "MCP proxy tool (placeholder)"
     parameters: dict = {"type": "object", "properties": {}}
 
-    def __init__(self, mcp_client, tool_info: dict):
+    def __init__(self, mcp_client, tool_info: dict, on_server_added=None, on_server_removed=None):
         """
         Args:
             mcp_client: MCPClient instance connected to the slife-mcp wrapper.
             tool_info: Dict with server, name, description, inputSchema.
+            on_server_added: Optional async callback(name, command, args, env)
+                invoked when mcp_add_server succeeds, for config persistence.
+            on_server_removed: Optional async callback(name)
+                invoked when mcp_remove_server succeeds, for config persistence.
         """
         self._mcp_client = mcp_client
         self._server = tool_info["server"]
         self._tool_name = tool_info["name"]
+        self._on_server_added = on_server_added
+        self._on_server_removed = on_server_removed
 
         # Namespaced tool name: "server__toolname"
         full_name = f"{self._server}__{self._tool_name}"
@@ -68,10 +74,27 @@ class MCPProxyTool(Tool):
             len(schema.get("properties", {})),
         )
 
+    def to_openai_function(self) -> dict:
+        """Convert to OpenAI function definition using instance-level values.
+
+        Overrides the base classmethod because MCPProxyTool sets its
+        name/description/parameters at instance level (not class level).
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
     async def execute(self, **kwargs) -> str:
         """Execute the tool by calling through the MCP wrapper.
 
-        Routes the call: slife → wrapper (mcp_call_tool) → external MCP server.
+        Two paths:
+          - Wrapper tools (server="mcp"): call the tool directly on the wrapper.
+          - External MCP server tools: route via mcp_call_tool.
         """
         logger.debug(
             "MCP proxy: %s/%s(%s)",
@@ -79,19 +102,49 @@ class MCPProxyTool(Tool):
             self._tool_name,
             kwargs,
         )
-        result = await self._mcp_client.call_tool(
-            "mcp_call_tool",
-            {
-                "server": self._server,
-                "tool_name": self._tool_name,
-                "arguments": json.dumps(kwargs, ensure_ascii=False),
-            },
-        )
+        if self._server == "mcp":
+            # Wrapper management tool — call directly
+            result = await self._mcp_client.call_tool(
+                self._tool_name, kwargs
+            )
+
+            # Persist newly added servers to config file
+            if self._tool_name == "mcp_add_server" and self._on_server_added:
+                try:
+                    parsed = json.loads(result)
+                    if parsed.get("status") == "connected":
+                        await self._on_server_added(
+                            name=kwargs.get("name", ""),
+                            command=kwargs.get("command", ""),
+                            args=kwargs.get("args", []),
+                            env=kwargs.get("env"),
+                        )
+                except (json.JSONDecodeError, Exception):
+                    pass
+
+            # Persist server removals to config file
+            if self._tool_name == "mcp_remove_server" and self._on_server_removed:
+                try:
+                    parsed = json.loads(result)
+                    if parsed.get("status") == "removed":
+                        await self._on_server_removed(name=kwargs.get("name", ""))
+                except (json.JSONDecodeError, Exception):
+                    pass
+        else:
+            # External MCP server tool — route through mcp_call_tool
+            result = await self._mcp_client.call_tool(
+                "mcp_call_tool",
+                {
+                    "server": self._server,
+                    "tool_name": self._tool_name,
+                    "arguments": json.dumps(kwargs, ensure_ascii=False),
+                },
+            )
         return result
 
 
 def create_proxy_tools(
-    mcp_client, tools: list[dict]
+    mcp_client, tools: list[dict], on_server_added=None, on_server_removed=None
 ) -> list[MCPProxyTool]:
     """Create MCPProxyTool instances from a list of tool info dicts.
 
@@ -99,8 +152,15 @@ def create_proxy_tools(
         mcp_client: MCPClient instance.
         tools: List of tool info dicts, each with:
             server, name, description, inputSchema.
+        on_server_added: Optional async callback(name, command, args, env)
+            invoked when mcp_add_server succeeds.
+        on_server_removed: Optional async callback(name)
+            invoked when mcp_remove_server succeeds.
 
     Returns:
         List of MCPProxyTool instances ready for ToolRegistry registration.
     """
-    return [MCPProxyTool(mcp_client, t) for t in tools]
+    return [
+        MCPProxyTool(mcp_client, t, on_server_added=on_server_added, on_server_removed=on_server_removed)
+        for t in tools
+    ]

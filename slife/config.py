@@ -133,10 +133,45 @@ class Config:
     env: dict = None  # type: ignore[assignment]
     max_iterations: int = 10
     mcp_config: MCPConfig = None  # type: ignore[assignment]
+    _path: Path | None = None
 
     def __post_init__(self):
         if self.mcp_config is None:
             self.mcp_config = MCPConfig()
+
+    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None) -> None:
+        """Persist an MCP server to the config file."""
+        if not self._path:
+            logger.warning("No config path stored; cannot save MCP server '%s'.", name)
+            return
+
+        raw = json5.loads(self._path.read_text(encoding="utf-8"))
+        mcp_section = raw.setdefault("mcp", {})
+        servers = mcp_section.setdefault("servers", {})
+
+        server_entry: dict = {"command": command, "args": args}
+        if env:
+            server_entry["env"] = env
+        servers[name] = server_entry
+
+        self._path.write_text(json5.dumps(raw, indent=2), encoding="utf-8")
+        self.mcp_config.servers[name] = server_entry
+        logger.info("Saved MCP server '%s' to config.", name)
+
+    def remove_mcp_server(self, name: str) -> None:
+        """Remove an MCP server from the config file."""
+        if not self._path:
+            logger.warning("No config path stored; cannot remove MCP server '%s'.", name)
+            return
+
+        raw = json5.loads(self._path.read_text(encoding="utf-8"))
+        mcp_section = raw.get("mcp", {})
+        servers = mcp_section.get("servers", {})
+        if name in servers:
+            del servers[name]
+            self._path.write_text(json5.dumps(raw, indent=2), encoding="utf-8")
+            self.mcp_config.servers.pop(name, None)
+            logger.info("Removed MCP server '%s' from config.", name)
     @property
     def active_model(self) -> ModelConfig:
         """Return the currently active model configuration."""
@@ -256,7 +291,7 @@ class Config:
                 len(mcp_config.servers),
             )
 
-        return cls(
+        config = cls(
             models=all_models,
             active_model_ref=raw.get("active_model", all_models[0].ref),
             tools=tools,
@@ -264,3 +299,5 @@ class Config:
             max_iterations=agent.get("max_iterations", 10),
             mcp_config=mcp_config,
         )
+        config._path = path
+        return config

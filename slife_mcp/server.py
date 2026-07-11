@@ -169,23 +169,13 @@ async def mcp_list_tools(server: str | None = None) -> str:
         tools = _pool.list_all_tools(server_name=server)
         if not tools:
             if server:
-                return f"No tools available from server '{server}'. Check if it is connected (use mcp_list_servers)."
-            return "No tools available. Add and connect to MCP servers first (use mcp_add_server)."
+                return json.dumps({"tools": [], "server": server, "note": f"No tools from server '{server}'."})
+            return json.dumps({"tools": [], "note": "No tools available. Add MCP servers first."})
 
-        # Return a readable summary
-        lines = [f"Tools ({len(tools)} total):", ""]
-        for t in tools:
-            lines.append(f"  [{t['server']}] {t['name']}")
-            desc = t.get("description", "")
-            if desc:
-                # Truncate long descriptions
-                if len(desc) > 100:
-                    desc = desc[:97] + "..."
-                lines.append(f"      {desc}")
-        return "\n".join(lines)
+        return json.dumps({"tools": tools}, indent=2)
     except Exception as e:
         logger.exception("Failed to list tools")
-        return f"Error listing tools: {e}"
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool(
@@ -309,10 +299,15 @@ def main():
         "Starting slife-mcp wrapper server (transport=%s)...", args.transport
     )
 
-    if args.transport == "http":
-        mcp.run(transport="http", host=args.host, port=args.port)
-    else:
-        mcp.run(transport="stdio")
+    try:
+        if args.transport == "http":
+            mcp.run(transport="http", host=args.host, port=args.port)
+        else:
+            mcp.run(transport="stdio")
+    except KeyboardInterrupt:
+        logger.info("Shutting down slife-mcp wrapper server.")
+    finally:
+        logger.info("slife-mcp wrapper server stopped.")
 
 
 if __name__ == "__main__":
