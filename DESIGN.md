@@ -144,7 +144,7 @@ External MCP servers use standard config format (compatible with Claude Desktop)
 
 **Connection pool** (`slife_mcp/connection.py`): raw asyncio JSON-RPC over subprocess pipes. No anyio, no `ClientSession` — avoids TaskGroup conflicts with FastMCP.
 
-**Standalone mode**: `uv run python -m slife_mcp.server --transport http --port 9876`
+**Standalone mode**: `python -m slife_mcp.server --config slife.json5` — reads `mcp.wrapper.url` for host/port, runs as an independent HTTP service. `--host`/`--port` override config values.
 
 ## Config Loading
 

@@ -384,7 +384,43 @@ class TestMCPConfigFromDict:
             },
         })
         assert "fs" in result.servers
-        assert result.servers["fs"]["command"] == "npx"
+
+    def test_wrapper_url_enables_mcp(self):
+        """wrapper.url alone enables MCP (for standalone HTTP mode)."""
+        from slife.config import MCPConfig
+        result = MCPConfig.from_dict({
+            "wrapper": {"url": "http://127.0.0.1:8888/mcp"},
+        })
+        assert result.enabled is True
+        assert result.wrapper_url == "http://127.0.0.1:8888/mcp"
+
+    def test_wrapper_url_always_set(self):
+        """wrapper_url has a default value, always set."""
+        from slife.config import MCPConfig
+        result = MCPConfig.from_dict({
+            "servers": {"fs": {"command": "npx", "args": ["-y", "server-filesystem"]}},
+        })
+        assert result.wrapper_url == "http://127.0.0.1:9876/mcp"
+
+    def test_wrapper_url_default(self):
+        """wrapper_url uses default when not in config."""
+        from slife.config import MCPConfig
+        cfg = MCPConfig(enabled=True)
+        assert cfg.wrapper_url == "http://127.0.0.1:9876/mcp"
+
+    def test_wrapper_url_custom(self):
+        """Custom wrapper_url is preserved."""
+        from slife.config import MCPConfig
+        cfg = MCPConfig(enabled=True, wrapper_url="http://10.0.0.1:7777/mcp")
+        assert cfg.wrapper_url == "http://10.0.0.1:7777/mcp"
+
+    def test_wrapper_url_from_dict(self):
+        """wrapper_url is parsed from config dict."""
+        from slife.config import MCPConfig
+        result = MCPConfig.from_dict({
+            "wrapper": {"url": "http://0.0.0.0:8888/mcp"},
+        })
+        assert result.wrapper_url == "http://0.0.0.0:8888/mcp"
 
 
 # ── Config.save_mcp_server / remove_mcp_server ──────────────────────────

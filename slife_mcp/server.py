@@ -295,48 +295,104 @@ async def mcp_reload(server: str | None = None) -> str:
 # ── Entry point ──────────────────────────────────────────────────────
 
 
+def _parse_url(url: str) -> tuple[str, int]:
+    """Parse host and port from a wrapper URL like http://127.0.0.1:9876/mcp."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 9876
+    return host, port
+
+
+def _read_host_port_from_config(config_path: str) -> tuple[str, int] | None:
+    """Read wrapper.url from slife.json5, parse host/port from it.
+
+    Returns (host, port) or None if config is missing or incomplete.
+    """
+    try:
+        import json5
+        raw = json5.loads(Path(config_path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.error("Config file not found: %s", config_path)
+        return None
+    except (ValueError, OSError) as e:
+        logger.error("Cannot parse config %s: %s", config_path, e)
+        return None
+
+    wrapper = raw.get("mcp", {}).get("wrapper", {})
+    if not isinstance(wrapper, dict) or "url" not in wrapper:
+        logger.error(
+            "mcp.wrapper.url is not set in %s. "
+            "Add it: mcp: { wrapper: { url: \"http://127.0.0.1:9876/mcp\" } }",
+            config_path,
+        )
+        return None
+
+    host, port = _parse_url(str(wrapper["url"]))
+    logger.info("Read from config: host=%s port=%d", host, port)
+    return host, port
+
+
 def main():
     """Run the slife-mcp wrapper server.
 
-    Supports both stdio (for child-process mode) and HTTP (for standalone mode).
-    Use --transport http --port 9876 for standalone mode.
+    Auto-detects transport mode:
+      - Piped stdin (slife child process) → stdio mode
+      - Terminal → reads slife.json5 → HTTP mode
+
+    Examples:
+      python -m slife_mcp.server                           # auto-detect
+      python -m slife_mcp.server --port 8888               # HTTP, override port
+      python -m slife_mcp.server --host 0.0.0.0 --port 9876
     """
     import argparse
 
     parser = argparse.ArgumentParser(description="slife-mcp wrapper server")
     parser.add_argument(
-        "--transport",
-        choices=("stdio", "http"),
-        default="stdio",
-        help="Transport mode: stdio (child process) or http (standalone)",
-    )
-    parser.add_argument(
         "--port",
         type=int,
-        default=9876,
-        help="HTTP port for standalone mode (default: 9876)",
+        default=None,
+        help="HTTP port (overrides config)",
     )
     parser.add_argument(
         "--host",
-        default="127.0.0.1",
-        help="HTTP host for standalone mode (default: 127.0.0.1)",
+        default=None,
+        help="HTTP host (overrides config)",
     )
     args = parser.parse_args()
 
     logger.info("Log: %s", _log_path)
-    logger.info(
-        "Starting slife-mcp wrapper server (transport=%s)...", args.transport
-    )
 
-    try:
-        if args.transport == "http":
-            mcp.run(transport="http", host=args.host, port=args.port)
-        else:
-            mcp.run(transport="stdio")
-    except KeyboardInterrupt:
-        logger.info("Shutting down slife-mcp wrapper server.")
-    finally:
-        logger.info("slife-mcp wrapper server stopped.")
+    # Auto-detect: piped stdin → stdio (slife child process), TTY → HTTP
+    if not sys.stdin.isatty():
+        logger.info("Starting slife-mcp wrapper server (transport=stdio)...")
+        mcp.run(transport="stdio")
+        return
+
+    # Terminal mode — read host/port from slife.json5
+    config_path = "slife.json5"
+    if not Path(config_path).exists():
+        logger.error(
+            "slife.json5 not found. Either:\n"
+            "  - Create slife.json5 with mcp.wrapper.url, or\n"
+            "  - Use --host/--port to specify the HTTP endpoint."
+        )
+        sys.exit(1)
+
+    cfg = _read_host_port_from_config(config_path)
+    if cfg is None:
+        logger.error(
+            "Cannot determine host/port. "
+            "Set mcp.wrapper.url in slife.json5 or use --host/--port."
+        )
+        sys.exit(1)
+
+    host = args.host if args.host is not None else cfg[0]
+    port = args.port if args.port is not None else cfg[1]
+
+    logger.info("Starting slife-mcp wrapper server (transport=http)...")
+    logger.info("HTTP endpoint: http://%s:%d/mcp", host, port)
+    mcp.run(transport="http", host=host, port=port)
 
 
 if __name__ == "__main__":

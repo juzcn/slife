@@ -84,15 +84,15 @@ Configure servers under `mcp.servers` using standard MCP format (compatible with
 | Mode | Command | When to use |
 |------|---------|-------------|
 | Child process (default) | Auto-started by slife on launch | Normal use — no manual setup |
-| Standalone HTTP | `uv run python -m slife_mcp.server --transport http --port 9876` | Share MCP connections across clients, or debug independently |
+| Standalone HTTP | `python -m slife_mcp.server --config slife.json5` | Independent service, share across clients |
 
-**Standalone CLI flags:**
+**Standalone CLI:**
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--transport` | `stdio` | `stdio` (child process) or `http` (standalone) |
-| `--port` | `9876` | HTTP listen port |
-| `--host` | `127.0.0.1` | HTTP listen address |
+| Flag | Description |
+|------|-------------|
+| `--config slife.json5` | Path to config — reads `mcp.wrapper.url` for host/port |
+| `--host` | Override host from config |
+| `--port` | Override port from config |
 
 On startup, slife probes `http://127.0.0.1:9876/mcp` first — if the wrapper is already running standalone, slife connects to it instead of spawning a child process.
 

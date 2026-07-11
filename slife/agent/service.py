@@ -86,17 +86,23 @@ class AgentService:
     # ── MCP private helpers ──────────────────────────────────────────
 
     async def _connect_mcp_wrapper(self) -> None:
-        """Detect or spawn the MCP wrapper and establish a connection."""
-        from slife.mcp.client import MCPClient, DEFAULT_WRAPPER_URL
+        """Detect or spawn the MCP wrapper and establish a connection.
+
+        Always probes wrapper_url first. If an HTTP wrapper is
+        already running, connects via HTTP. Otherwise spawns the
+        wrapper as a child process via stdio.
+        """
+        from slife.mcp.client import MCPClient
         from slife.mcp.process import MCPWrapperProcess
 
-        if await MCPClient.is_wrapper_running(DEFAULT_WRAPPER_URL):
-            logger.info("Found running MCP wrapper, connecting via HTTP...")
+        mcp_cfg = self.config.mcp_config
+
+        if await MCPClient.is_wrapper_running(mcp_cfg.wrapper_url):
+            logger.info("Found running MCP wrapper at %s, connecting via HTTP...", mcp_cfg.wrapper_url)
             self._mcp_client = MCPClient()
-            await self._mcp_client.connect_http(DEFAULT_WRAPPER_URL)
+            await self._mcp_client.connect_http(mcp_cfg.wrapper_url)
         else:
             logger.info("No running MCP wrapper found, starting as child process...")
-            mcp_cfg = self.config.mcp_config
             self._mcp_process = MCPWrapperProcess(
                 command=mcp_cfg.wrapper_command,
                 args=mcp_cfg.wrapper_args,

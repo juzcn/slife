@@ -97,6 +97,11 @@ class MCPConfig:
     # uv tries to manage cached .exe wrappers.
     wrapper_command: str = sys.executable
     wrapper_args: list = None  # type: ignore[assignment]
+    # HTTP endpoint for the MCP wrapper. Always set — slife probes this
+    # URL first, falls back to spawning a child process via stdio.
+    # The wrapper server also reads this when started standalone:
+    #   python -m slife_mcp.server --transport http [--config slife.json5]
+    wrapper_url: str = "http://127.0.0.1:9876/mcp"
     servers: dict[str, dict] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -112,7 +117,8 @@ class MCPConfig:
         MCP is enabled when:
           - 'enabled: true' is set explicitly, OR
           - servers are configured (non-empty servers dict), OR
-          - a custom wrapper is configured (wrapper.command or wrapper.args).
+          - a custom wrapper is configured (wrapper.command, wrapper.args,
+            or wrapper.url).
         An absent mcp section or empty mcp dict leaves MCP disabled.
         """
         if not isinstance(data, dict):
@@ -128,7 +134,9 @@ class MCPConfig:
 
         explicit_enabled = data.get("enabled")
         has_servers = len(servers) > 0
-        has_wrapper_cfg = bool(wrapper.get("command") or wrapper.get("args"))
+        has_wrapper_cfg = bool(
+            wrapper.get("command") or wrapper.get("args") or wrapper.get("url")
+        )
 
         if not explicit_enabled and not has_servers and not has_wrapper_cfg:
             return cls()
@@ -137,6 +145,7 @@ class MCPConfig:
             enabled=True,
             wrapper_command=wrapper.get("command", sys.executable),
             wrapper_args=wrapper.get("args", ["-m", "slife_mcp.server"]),
+            wrapper_url=wrapper.get("url", "http://127.0.0.1:9876/mcp"),
             servers=servers,
         )
 

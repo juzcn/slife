@@ -91,8 +91,14 @@
 
   // ── MCP Integration (optional) ────────────────────────────────
   // The slife-mcp wrapper manages connections to external MCP
-  // servers. slife auto-starts the wrapper as a child process,
-  // or connects to a standalone instance via HTTP.
+  // servers. Two modes:
+  //
+  //   Child process (default): slife auto-starts the wrapper.
+  //     Uses wrapper.command + wrapper.args to spawn.
+  //
+  //   Standalone HTTP: you start the wrapper manually, slife
+  //     connects to it. Set wrapper.url to the MCP endpoint.
+  //     Start the wrapper: python -m slife_mcp.server --transport http
   //
   // Each server entry uses standard MCP format:
   //   command — executable to run
@@ -100,6 +106,14 @@
   //   env     — optional environment variables for the server process
 
   // mcp: {
+  //   // wrapper.url — slife probes this URL first, falls back to
+  //   // child process. The wrapper server reads it via --config:
+  //   //   python -m slife_mcp.server --config slife.json5
+  //   //
+  //   // wrapper: {
+  //   //   url: "http://127.0.0.1:9876/mcp",
+  //   // },
+  //
   //   servers: {
   //     filesystem: {
   //       command: "npx",
