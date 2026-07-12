@@ -13,6 +13,8 @@ IS_WINDOWS = sys.platform == "win32"
 def get_shell_command(
     run_script: str | None = None,
     install: str | None = None,
+    check_installed: str | None = None,
+    download_file: str | None = None,
 ) -> str:
     """Return platform-correct shell command(s) for the given operation(s).
 
@@ -24,6 +26,11 @@ def get_shell_command(
             "skills/search.py {\"query\":\"hello\"}".
             Returns a complete ready-to-run command with correct quoting.
         install: Python package name to install.
+        check_installed: CLI name to check (e.g. "yt-dlp", "npx").
+            Returns a command that prints the path if found, or NOT_FOUND.
+        download_file: URL to download, optionally followed by output name.
+            E.g. "https://example.com/file.zip" or
+            "https://example.com/file.zip output.zip".
 
     Returns:
         One or more ready-to-execute command strings.
@@ -35,6 +42,12 @@ def get_shell_command(
 
     if install is not None:
         results.append(_install_cmd(install))
+
+    if check_installed is not None:
+        results.append(_check_installed_cmd(check_installed))
+
+    if download_file is not None:
+        results.append(_download_cmd(download_file))
 
     return "\n".join(results) if results else "No action specified."
 
@@ -78,3 +91,41 @@ def _run_script_cmd(input_str: str) -> str:
 
 def _install_cmd(package: str) -> str:
     return f"uv pip install {package}"
+
+
+def _download_cmd(input_str: str) -> str:
+    """Build a file download command using curl.
+
+    input_str format: "<url>" or "<url> <output_name>"
+
+    curl is bundled with Windows 10+ and all Unix systems — a single
+    command avoids the LLM guessing winget/choco/apt/wget/etc.
+    -L follows redirects.
+    """
+    parts = input_str.strip().split(maxsplit=1)
+    url = parts[0]
+    output = parts[1] if len(parts) > 1 else ""
+
+    if output:
+        return f'curl -L -o "{output}" "{url}"'
+    else:
+        return f'curl -L -O "{url}"'
+
+
+def _check_installed_cmd(name: str) -> str:
+    """Build a platform-correct command to check if a CLI is installed.
+
+    Returns a command that prints the tool's path if found on PATH,
+    or "NOT_FOUND" if not. Works for any CLI executable.
+
+    On Windows, where.exe is the native equivalent of Unix which.
+    On Unix, command -v is preferred over which (it's a shell builtin,
+    so it works even if which is not installed).
+    """
+    if IS_WINDOWS:
+        # where.exe: prints all matches on PATH, or returns error with no output
+        # 2>nul suppresses stderr; || runs if the previous command failed
+        return f'where {name} 2>nul || echo NOT_FOUND'
+    else:
+        # command -v: POSIX-compliant, prints path or returns non-zero
+        return f'command -v {name} || echo NOT_FOUND'

@@ -15,7 +15,9 @@ class GetShellCommandTool(Tool):
     description = (
         "Get the correct shell command for the current operating system. "
         "Supports: run_script — run a Python script with JSON arguments; "
-        "install — install a Python package via uv pip."
+        "install — install a Python package via uv pip; "
+        "check_installed — check if a CLI tool is on PATH; "
+        "download_file — download a file via curl."
     )
     parameters = {
         "type": "object",
@@ -28,6 +30,14 @@ class GetShellCommandTool(Tool):
                 "type": "string",
                 "description": "Package name to install via uv pip",
             },
+            "check_installed": {
+                "type": "string",
+                "description": "CLI name to check, e.g. 'yt-dlp', 'npx', 'docker'. Returns path if found or NOT_FOUND.",
+            },
+            "download_file": {
+                "type": "string",
+                "description": "URL to download, optionally followed by output name. E.g. 'https://example.com/file.zip' or 'https://example.com/file.zip output.zip'.",
+            },
         },
         "required": [],
     }
@@ -36,4 +46,6 @@ class GetShellCommandTool(Tool):
         return get_shell_command(
             run_script=kwargs.get("run_script"),
             install=kwargs.get("install"),
+            check_installed=kwargs.get("check_installed"),
+            download_file=kwargs.get("download_file"),
         )

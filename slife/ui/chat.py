@@ -8,9 +8,17 @@ from slife.agent.llm_client import TokenUsage
 
 
 class ChatView(VerticalScroll):
-    """Scrollable container for chat messages."""
+    """Scrollable container for chat messages.
 
-    can_focus = False
+    can_focus is True so the ScrollView itself can receive focus and
+    process keyboard scroll bindings (PageUp/PageDown/Home/End).
+    When focusable children exist inside the scroll container, Textual
+    may route arrow keys to focus navigation instead of scrolling;
+    keeping the container itself focusable ensures its scroll bindings
+    are always active in the key-binding resolution chain.
+    """
+
+    can_focus = True
 
     def add_user_message(
         self, text: str, images: list[str] | None = None
@@ -74,7 +82,7 @@ class AssistantMessage(Static):
       - Click to toggle thinking collapse/expand.
     """
 
-    can_focus = True
+    can_focus = False  # on_click toggles thinking; no keyboard bindings, so no need for focus
 
     def __init__(self):
         super().__init__("")
