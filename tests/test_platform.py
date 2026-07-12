@@ -1,102 +1,100 @@
-"""Tests for slife.platform — platform-aware shell command generation."""
+"""Tests for slife.platform — platform detection and Python script runner."""
 
 import sys
 import pytest
-from unittest.mock import patch
 
 from slife.platform import (
-    get_shell_command,
-    _run_script_cmd,
-    _install_cmd,
+    run_python_script,
     IS_WINDOWS,
+    get_os_info,
 )
 
 
-# ── get_shell_command ──────────────────────────────────────────────────
+# ── run_python_script ──────────────────────────────────────────────────
 
 
-class TestGetShellCommand:
-    """Tests for get_shell_command main entry point."""
-
-    def test_no_args_returns_fallback(self):
-        result = get_shell_command()
-        assert result == "No action specified."
-
-    def test_run_script(self):
-        result = get_shell_command(run_script="myscript.py {}")
-        assert "python" in result
-        assert "myscript.py" in result
-
-    def test_install(self):
-        result = get_shell_command(install="requests")
-        assert "uv pip install requests" in result
-
-    def test_multiple_actions(self):
-        result = get_shell_command(
-            run_script="s.py {}",
-            install="pytest",
-        )
-        lines = result.split("\n")
-        assert len(lines) == 2
-
-
-# ── _run_script_cmd ────────────────────────────────────────────────────
-
-
-class TestRunScriptCmd:
-    """Tests for _run_script_cmd helper."""
+class TestRunPythonScript:
+    """Tests for run_python_script."""
 
     def test_no_json_args(self):
         """Script without JSON args (no braces/brackets)."""
-        result = _run_script_cmd("script.py")
+        result = run_python_script("script.py")
         assert "script.py" in result
         assert "python" in result
-        assert "{" not in result  # No JSON arg quoting
+        assert "{" not in result
 
     def test_with_json_braces(self):
         """Script with JSON args in braces."""
-        result = _run_script_cmd('script.py {"key": "value"}')
+        result = run_python_script('script.py {"key": "value"}')
         assert "script.py" in result
-        # On Windows, quotes are escaped; on Unix, single-quoted
         assert "key" in result
         assert "value" in result
 
     def test_with_json_brackets(self):
         """Script with JSON args in brackets."""
-        result = _run_script_cmd("script.py [1, 2, 3]")
+        result = run_python_script("script.py [1, 2, 3]")
         assert "script.py" in result
 
     def test_empty_string(self):
-        result = _run_script_cmd("")
+        result = run_python_script("")
         assert "python" in result
 
     def test_cmd_normalization(self):
         """Direct command (not script path) works."""
-        result = _run_script_cmd("echo hello")
+        result = run_python_script("echo hello")
         assert "echo hello" in result
-
-
-# ── _install_cmd ───────────────────────────────────────────────────────
-
-
-class TestInstallCmd:
-    """Tests for _install_cmd helper."""
-
-    def test_install(self):
-        result = _install_cmd("requests")
-        assert result == "uv pip install requests"
-
-    def test_install_with_version(self):
-        result = _install_cmd("pytest>=7")
-        assert result == "uv pip install pytest>=7"
 
 
 # ── Platform detection ──────────────────────────────────────────────────
 
 
 class TestPlatformDetection:
-    """Tests for IS_WINDOWS flag."""
+    """Tests for IS_WINDOWS flag and get_os_info."""
 
     def test_is_windows_matches_sys_platform(self):
         """IS_WINDOWS matches sys.platform == 'win32'."""
         assert IS_WINDOWS == (sys.platform == "win32")
+
+    def test_get_os_info_returns_known_os(self):
+        """get_os_info returns one of the expected OS names."""
+        os_name = get_os_info()
+        assert os_name in ("Windows", "Linux", "macOS", "FreeBSD", "OpenBSD", "NetBSD", "SunOS")
+
+    def test_get_os_info_matches_platform_system(self):
+        """get_os_info derives from platform.system()."""
+        import platform as _platform
+        system = _platform.system()
+        os_name = get_os_info()
+        if system == "Darwin":
+            assert os_name == "macOS"
+        elif system == "Windows":
+            assert os_name == "Windows"
+        elif system == "Linux":
+            assert os_name == "Linux"
+        else:
+            assert os_name == system
+
+
+class TestGetOsInfoTool:
+    """Tests for the standalone GetOsInfoTool."""
+
+    @pytest.mark.asyncio
+    async def test_execute_returns_os_name(self):
+        """Tool returns a known OS name."""
+        from slife.tools.os_info import GetOsInfoTool
+        tool = GetOsInfoTool()
+        result = await tool.execute()
+        assert result in ("Windows", "Linux", "macOS")
+
+
+class TestRunPythonScriptTool:
+    """Tests for the standalone RunPythonScriptTool."""
+
+    @pytest.mark.asyncio
+    async def test_execute_returns_command(self):
+        """Tool returns a command containing python and the script name."""
+        from slife.tools.run_python_script import RunPythonScriptTool
+        tool = RunPythonScriptTool()
+        result = await tool.execute(script="myscript.py {}")
+        assert "python" in result
+        assert "myscript.py" in result

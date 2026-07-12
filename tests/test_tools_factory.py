@@ -39,7 +39,7 @@ class TestCreateToolsFromConfig:
             {"type": "platform"},
         ])
         names = {t.name for t in registry.list_tools()}
-        assert names == {"execute_shell", "get_shell_command"}
+        assert names == {"execute_shell", "run_python_script", "get_os_info"}
 
     def test_unknown_tool_type_warns(self, caplog):
         """Unknown tool type logs a warning and is skipped."""
@@ -68,46 +68,29 @@ class TestCreateToolsFromConfig:
                 {},
                 {"type": "platform"},
             ])
-        # One warning for bad_type, one for missing type
         names = {t.name for t in registry.list_tools()}
-        assert names == {"execute_shell", "get_shell_command"}
+        assert names == {"execute_shell", "run_python_script", "get_os_info"}
         assert "Unknown tool type" in caplog.text
         assert "missing" in caplog.text.lower()
 
 
-class TestGetShellCommandTool:
-    """Tests for GetShellCommandTool.execute()."""
+class TestRunPythonScriptTool:
+    """Tests for RunPythonScriptTool.execute()."""
 
     @pytest.mark.asyncio
-    async def test_execute_run_script(self):
-        """execute() returns platform command for run_script."""
-        from slife.tools.shell_command import GetShellCommandTool
-        tool = GetShellCommandTool()
-        result = await tool.execute(run_script="script.py {}")
+    async def test_execute_returns_command(self):
+        """execute() returns platform command for a script."""
+        from slife.tools.run_python_script import RunPythonScriptTool
+        tool = RunPythonScriptTool()
+        result = await tool.execute(script="script.py {}")
         assert "python" in result
         assert "script.py" in result
 
     @pytest.mark.asyncio
-    async def test_execute_install(self):
-        """execute() returns install command for a package."""
-        from slife.tools.shell_command import GetShellCommandTool
-        tool = GetShellCommandTool()
-        result = await tool.execute(install="requests")
-        assert "uv pip install requests" in result
-
-    @pytest.mark.asyncio
-    async def test_execute_no_args(self):
-        """execute() with no args returns fallback message."""
-        from slife.tools.shell_command import GetShellCommandTool
-        tool = GetShellCommandTool()
-        result = await tool.execute()
-        assert "No action specified" in result
-
-    @pytest.mark.asyncio
-    async def test_execute_multiple_actions(self):
-        """Multiple actions produce multiple lines."""
-        from slife.tools.shell_command import GetShellCommandTool
-        tool = GetShellCommandTool()
-        result = await tool.execute(run_script="s.py {}", install="pytest")
-        lines = result.split("\n")
-        assert len(lines) == 2
+    async def test_execute_with_json_args(self):
+        """execute() handles JSON args."""
+        from slife.tools.run_python_script import RunPythonScriptTool
+        tool = RunPythonScriptTool()
+        result = await tool.execute(script='script.py {"key": "value"}')
+        assert "script.py" in result
+        assert "key" in result

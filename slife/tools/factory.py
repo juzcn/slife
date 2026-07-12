@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING
 
 from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
-from slife.tools.shell_command import GetShellCommandTool
+from slife.tools.run_python_script import RunPythonScriptTool
+from slife.tools.os_info import GetOsInfoTool
 from slife.tools.shell import ShellTool
 from slife.tools.skill import ListSkillsTool, UseSkillTool, AddSkillTool, RemoveSkillTool
 
@@ -21,7 +22,10 @@ logger = logging.getLogger(__name__)
 # Map of tool type string → factory function
 # Each builder receives (cfg_dict, config) where config may be None.
 _TOOL_BUILDERS = {
-    "platform": lambda cfg, config: GetShellCommandTool(),
+    "platform": lambda cfg, config: [
+        RunPythonScriptTool(),
+        GetOsInfoTool(),
+    ],
     "shell": lambda cfg, config: ShellTool(timeout=cfg.get("timeout", 30)),
     "skill": lambda cfg, config: [
         ListSkillsTool(skills_dir=cfg.get("skills_dir", "skills")),

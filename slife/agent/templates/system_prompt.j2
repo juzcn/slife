@@ -5,6 +5,12 @@ slife itself and may break it.
 
 Your tools are organized into these categories:
 
+  Platform — call get_os_info before writing any platform-specific shell
+  command (file paths, package managers, env var syntax, etc.). For
+  running Python scripts with JSON arguments, always use run_python_script
+  instead of writing the command directly — quoting rules differ between
+  Windows and Unix and are easy to get wrong.
+
   Skills — reusable instruction manuals stored under the skills/ directory.
   Each skill is a folder containing a SKILL.md with YAML frontmatter (name
   + description). Use list_skills to discover and use_skill to load. To

@@ -54,7 +54,8 @@ _TOOL_META: dict[str, _ToolMeta] = {
     "grep":          _ToolMeta("Searching code", "Searched code", "pattern"),
     "glob":          _ToolMeta("Finding files",  "Found files",   "pattern"),
     "web_fetch":         _ToolMeta("Fetching URL",            "Fetched URL",            "url"),
-    "get_shell_command": _ToolMeta("Building shell command", "Built shell command",    "run_script"),
+    "run_python_script": _ToolMeta("Building python command", "Built python command",  "script"),
+    "get_os_info":       _ToolMeta("Checking OS",             "Checked OS",             ""),
 }
 
 # Max preview length for the primary argument value in the header.

@@ -249,8 +249,9 @@ class TestAssistantMessage:
 class TestChatView:
     """Tests for ChatView methods that don't need full Textual."""
 
-    def test_can_focus_is_false(self):
+    def test_can_focus_is_true(self):
+        """ChatView needs focus to receive keyboard scroll bindings."""
         with patch("slife.ui.chat.VerticalScroll.__init__", return_value=None):
             from slife.ui.chat import ChatView
             view = ChatView()
-            assert view.can_focus is False
+            assert view.can_focus is True
