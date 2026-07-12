@@ -5,33 +5,16 @@ env: section. Changes are persisted to disk AND injected into os.environ immedia
 — no restart needed.
 """
 
-import json5
 import logging
 import os
 from pathlib import Path
 
+from slife.tools._config_io import read_config, write_config
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_PREFIX = "<YOUR_"
-
-
-def _read_config(path: Path) -> dict:
-    """Read and parse slife.json5. Returns the raw dict (may be empty)."""
-    try:
-        return json5.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        logger.warning("Config file not found: %s", path)
-        return {}
-    except (ValueError, OSError) as e:
-        logger.error("Cannot parse config %s: %s", path, e)
-        return {}
-
-
-def _write_config(path: Path, raw: dict) -> None:
-    """Write the raw dict back to slife.json5 with indent=2 formatting."""
-    path.write_text(json5.dumps(raw, indent=2, trailing_commas=False), encoding="utf-8")
 
 
 def _env_section(raw: dict) -> dict:
@@ -87,20 +70,20 @@ class ConfigEnvSetTool(Tool):
     async def execute(self, **kwargs) -> str:
         key: str = kwargs.get("key", "")
         value: str = kwargs.get("value", "")
-        raw = _read_config(self._config_path)
+        raw = read_config(self._config_path)
         env = _env_section(raw)
 
         if value:
             env[key] = value
             os.environ[key] = str(value)
-            _write_config(self._config_path, raw)
+            write_config(self._config_path, raw)
             logger.info("Env set: %s (persisted + active)", key)
             return f"[OK] {key} set and active immediately."
         else:
             placeholder = f"<YOUR_{key.upper().strip('<>')}>"
             env[key] = placeholder
             os.environ[key] = placeholder
-            _write_config(self._config_path, raw)
+            write_config(self._config_path, raw)
             logger.info("Env set: %s = placeholder (persisted + active)", key)
             return (
                 f"[OK] {key} set to placeholder '{placeholder}'.\n"
@@ -134,7 +117,7 @@ class ConfigEnvGetTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         key: str = kwargs.get("key", "")
-        raw = _read_config(self._config_path)
+        raw = read_config(self._config_path)
         env = _env_section(raw)
 
         if key:
@@ -181,7 +164,7 @@ class ConfigEnvRemoveTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         key: str = kwargs["key"]
-        raw = _read_config(self._config_path)
+        raw = read_config(self._config_path)
         env = _env_section(raw)
 
         if key not in env:
@@ -189,6 +172,6 @@ class ConfigEnvRemoveTool(Tool):
 
         del env[key]
         os.environ.pop(key, None)
-        _write_config(self._config_path, raw)
+        write_config(self._config_path, raw)
         logger.info("Env removed: %s (from config + os.environ)", key)
         return f"[OK] {key} removed from slife.json5 and deactivated."

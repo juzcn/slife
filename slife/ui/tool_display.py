@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from textual.content import Content
 from textual.widgets import Static
 
+from slife.platform import IS_WINDOWS
+
 _counter: int = 0
 
 
@@ -322,7 +324,7 @@ def _copy_to_clipboard(text: str) -> None:
     add an external dependency like pyperclip.
     """
     try:
-        if sys.platform == "win32":
+        if IS_WINDOWS:
             subprocess.run(
                 ["clip"],
                 input=text.encode("utf-8"),

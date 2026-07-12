@@ -14,32 +14,15 @@ Flow:
   3. Next session → cli_list_tools shows it, LLM knows what it is
 """
 
-import json5
 import logging
 from pathlib import Path
 
+from slife.tools._config_io import read_config, write_config
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
 _CLI_TOOLS_KEY = "cli_tools"
-
-
-def _read_config(path: Path) -> dict:
-    """Read and parse slife.json5."""
-    try:
-        return json5.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        logger.warning("Config file not found: %s", path)
-        return {}
-    except (ValueError, OSError) as e:
-        logger.error("Cannot parse config %s: %s", path, e)
-        return {}
-
-
-def _write_config(path: Path, raw: dict) -> None:
-    """Write raw dict back to slife.json5."""
-    path.write_text(json5.dumps(raw, indent=2, trailing_commas=False), encoding="utf-8")
 
 
 def _cli_section(raw: dict) -> dict:
@@ -54,7 +37,7 @@ def _cli_section(raw: dict) -> dict:
 
 def get_cli_tools_summary(config_path: Path) -> str:
     """Return a formatted summary of registered CLI tools."""
-    raw = _read_config(config_path)
+    raw = read_config(config_path)
     cli_tools = raw.get(_CLI_TOOLS_KEY, {})
     if not isinstance(cli_tools, dict) or not cli_tools:
         return "No CLI tools registered."
@@ -124,7 +107,7 @@ class CliAddTool(Tool):
         description: str = kwargs["description"]
         install: str = kwargs.get("install", "")
 
-        raw = _read_config(self._config_path)
+        raw = read_config(self._config_path)
         cli_tools = _cli_section(raw)
 
         entry: dict = {"command": command, "description": description}
@@ -133,7 +116,7 @@ class CliAddTool(Tool):
 
         is_update = name in cli_tools
         cli_tools[name] = entry
-        _write_config(self._config_path, raw)
+        write_config(self._config_path, raw)
 
         action = "Updated" if is_update else "Registered"
         logger.info("CLI tool %s: %s", "updated" if is_update else "added", name)
@@ -166,14 +149,14 @@ class CliRemoveTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
-        raw = _read_config(self._config_path)
+        raw = read_config(self._config_path)
         cli_tools = raw.get(_CLI_TOOLS_KEY, {})
 
         if not isinstance(cli_tools, dict) or name not in cli_tools:
             return f"CLI tool '{name}' is not registered."
 
         del cli_tools[name]
-        _write_config(self._config_path, raw)
+        write_config(self._config_path, raw)
         logger.info("CLI tool removed: %s", name)
         return f"[OK] Removed CLI tool '{name}'."
 

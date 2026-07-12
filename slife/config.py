@@ -201,6 +201,7 @@ class Config:
             self._path.write_text(json5.dumps(raw, indent=2), encoding="utf-8")
             self.mcp_config.servers.pop(name, None)
             logger.info("Removed MCP server '%s' from config.", name)
+
     @property
     def active_model(self) -> ModelConfig:
         """Return the currently active model configuration."""

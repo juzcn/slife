@@ -6,7 +6,6 @@ Uses asyncio subprocess + asyncio.Queue adapters + ClientSession.
 import asyncio
 import logging
 import shutil
-import sys
 from typing import Any
 
 import httpx
@@ -14,13 +13,15 @@ from mcp import ClientSession, types
 from mcp.client.stdio import get_default_environment
 from mcp.shared.message import SessionMessage
 
+from slife.platform import IS_WINDOWS
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_WRAPPER_URL = "http://127.0.0.1:9876/mcp"
 
 
 def _resolve_command(command: str) -> str:
-    if sys.platform == "win32" and not command.lower().endswith((".exe", ".cmd", ".bat")):
+    if IS_WINDOWS and not command.lower().endswith((".exe", ".cmd", ".bat")):
         resolved = shutil.which(command) or shutil.which(command + ".cmd") or shutil.which(command + ".exe")
         if resolved:
             return resolved

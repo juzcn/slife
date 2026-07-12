@@ -9,6 +9,8 @@ import logging
 import signal
 import sys
 
+from slife.platform import IS_WINDOWS
+
 logger = logging.getLogger(__name__)
 
 # Default wrapper module path
@@ -142,7 +144,7 @@ class MCPWrapperProcess:
                     pass
 
             # Graceful termination
-            if sys.platform == "win32":
+            if IS_WINDOWS:
                 self._process.terminate()
             else:
                 self._process.send_signal(signal.SIGTERM)
