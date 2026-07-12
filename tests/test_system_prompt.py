@@ -23,8 +23,8 @@ class TestBuild:
         assert "env:" in build()
 
     def test_mcp_reference(self):
-        """Prompt mentions MCP management tools — project-specific knowledge."""
+        """Prompt mentions mcp_add_server and config_env_set — the
+        project-specific conventions the LLM cannot discover from schemas."""
         result = build()
         assert "mcp_add_server" in result
-        assert "mcp_list_tools" in result
-        assert "mcp_call_tool" in result
+        assert "config_env_set" in result

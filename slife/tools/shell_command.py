@@ -18,7 +18,6 @@ class GetShellCommandTool(Tool):
         "because syntax differs between Windows (cmd) and Unix (bash). "
         "Supports: "
         "run_script — run a Python script with JSON arguments; "
-        "check_env — check if an environment variable is set; "
         "install — install a Python package via uv pip."
     )
     parameters = {
@@ -27,10 +26,6 @@ class GetShellCommandTool(Tool):
             "run_script": {
                 "type": "string",
                 "description": "Script path + JSON args, e.g. 'skills/search.py {\"query\":\"hello\"}'",
-            },
-            "check_env": {
-                "type": "string",
-                "description": "Env var name to check if set",
             },
             "install": {
                 "type": "string",
@@ -43,6 +38,5 @@ class GetShellCommandTool(Tool):
     async def execute(self, **kwargs) -> str:
         return get_shell_command(
             run_script=kwargs.get("run_script"),
-            check_env=kwargs.get("check_env"),
             install=kwargs.get("install"),
         )

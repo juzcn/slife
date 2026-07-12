@@ -7,7 +7,6 @@ from unittest.mock import patch
 from slife.platform import (
     get_shell_command,
     _run_script_cmd,
-    _check_env_cmd,
     _install_cmd,
     IS_WINDOWS,
 )
@@ -23,18 +22,10 @@ class TestGetShellCommand:
         result = get_shell_command()
         assert result == "No action specified."
 
-    def test_all_none_returns_fallback(self):
-        result = get_shell_command(run_script=None, check_env=None, install=None)
-        assert result == "No action specified."
-
     def test_run_script(self):
         result = get_shell_command(run_script="myscript.py {}")
         assert "python" in result
         assert "myscript.py" in result
-
-    def test_check_env(self):
-        result = get_shell_command(check_env="MY_VAR")
-        assert "MY_VAR" in result
 
     def test_install(self):
         result = get_shell_command(install="requests")
@@ -42,22 +33,11 @@ class TestGetShellCommand:
 
     def test_multiple_actions(self):
         result = get_shell_command(
-            check_env="PATH",
+            run_script="s.py {}",
             install="pytest",
         )
         lines = result.split("\n")
         assert len(lines) == 2
-        assert "PATH" in lines[0]
-        assert "uv pip install" in lines[1]
-
-    def test_all_three_actions(self):
-        result = get_shell_command(
-            run_script="s.py {}",
-            check_env="X",
-            install="pkg",
-        )
-        lines = result.split("\n")
-        assert len(lines) == 3
 
 
 # ── _run_script_cmd ────────────────────────────────────────────────────
@@ -94,22 +74,6 @@ class TestRunScriptCmd:
         """Direct command (not script path) works."""
         result = _run_script_cmd("echo hello")
         assert "echo hello" in result
-
-
-# ── _check_env_cmd ─────────────────────────────────────────────────────
-
-
-class TestCheckEnvCmd:
-    """Tests for _check_env_cmd helper."""
-
-    def test_unix_style(self):
-        if not IS_WINDOWS:
-            result = _check_env_cmd("MY_VAR")
-            assert result == "echo $MY_VAR"
-
-    def test_format_has_env_name(self):
-        result = _check_env_cmd("SOME_VAR")
-        assert "SOME_VAR" in result
 
 
 # ── _install_cmd ───────────────────────────────────────────────────────

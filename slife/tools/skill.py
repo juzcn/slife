@@ -121,7 +121,7 @@ class ListSkillsTool(Tool):
     def __init__(self, skills_dir: str = "skills"):
         self.skills_dir = Path(skills_dir)
 
-    async def execute(self) -> str:
+    async def execute(self, **kwargs) -> str:
         result = get_skills_summary(self.skills_dir)
         return result if result else "No skills available."
 
@@ -145,5 +145,6 @@ class UseSkillTool(Tool):
     def __init__(self, skills_dir: str = "skills"):
         self.skills_dir = Path(skills_dir)
 
-    async def execute(self, skill_name: str) -> str:
+    async def execute(self, **kwargs) -> str:
+        skill_name: str = kwargs["skill_name"]
         return _read_skill(self.skills_dir, skill_name)

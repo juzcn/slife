@@ -88,14 +88,6 @@ class TestGetShellCommandTool:
         assert "script.py" in result
 
     @pytest.mark.asyncio
-    async def test_execute_check_env(self):
-        """execute() returns platform command for check_env."""
-        from slife.tools.shell_command import GetShellCommandTool
-        tool = GetShellCommandTool()
-        result = await tool.execute(check_env="MY_VAR")
-        assert "MY_VAR" in result
-
-    @pytest.mark.asyncio
     async def test_execute_install(self):
         """execute() returns install command for a package."""
         from slife.tools.shell_command import GetShellCommandTool
@@ -116,6 +108,6 @@ class TestGetShellCommandTool:
         """Multiple actions produce multiple lines."""
         from slife.tools.shell_command import GetShellCommandTool
         tool = GetShellCommandTool()
-        result = await tool.execute(check_env="PATH", install="pytest")
+        result = await tool.execute(run_script="s.py {}", install="pytest")
         lines = result.split("\n")
         assert len(lines) == 2

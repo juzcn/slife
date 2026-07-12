@@ -119,8 +119,23 @@ class MCPProxyTool(Tool):
                             args=kwargs.get("args", []),
                             env=kwargs.get("env"),
                         )
-                except (json.JSONDecodeError, Exception):
-                    pass
+                    else:
+                        logger.info(
+                            "MCP server '%s' not persisted: status=%s error=%s",
+                            kwargs.get("name", "?"),
+                            parsed.get("status", "?"),
+                            parsed.get("error", "?"),
+                        )
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "MCP server '%s': could not parse result for persistence: %s",
+                        kwargs.get("name", "?"), result[:200],
+                    )
+                except Exception:
+                    logger.exception(
+                        "MCP server '%s': persistence callback failed",
+                        kwargs.get("name", "?"),
+                    )
 
             # Persist server removals to config file
             if self._tool_name == "mcp_remove_server" and self._on_server_removed:
@@ -128,8 +143,22 @@ class MCPProxyTool(Tool):
                     parsed = json.loads(result)
                     if parsed.get("status") == "removed":
                         await self._on_server_removed(name=kwargs.get("name", ""))
-                except (json.JSONDecodeError, Exception):
-                    pass
+                    else:
+                        logger.info(
+                            "MCP server '%s' not unpersisted: status=%s",
+                            kwargs.get("name", "?"),
+                            parsed.get("status", "?"),
+                        )
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "MCP server '%s': could not parse result for removal: %s",
+                        kwargs.get("name", "?"), result[:200],
+                    )
+                except Exception:
+                    logger.exception(
+                        "MCP server '%s': removal persistence callback failed",
+                        kwargs.get("name", "?"),
+                    )
         else:
             # External MCP server tool — route through mcp_call_tool
             result = await self._mcp_client.call_tool(

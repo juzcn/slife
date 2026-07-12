@@ -157,9 +157,9 @@ class Config:
     models: list[ModelConfig]
     active_model_ref: str
     tools: list[dict]
-    env: dict = None  # type: ignore[assignment]
+    env: dict | None = None
     max_iterations: int = 10
-    mcp_config: MCPConfig = None  # type: ignore[assignment]
+    mcp_config: MCPConfig | None = None
     _path: Path | None = None
 
     def __post_init__(self):

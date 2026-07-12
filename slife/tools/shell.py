@@ -27,7 +27,8 @@ class ShellTool(Tool):
     def __init__(self, timeout: int = 30):
         self.timeout = timeout
 
-    async def execute(self, command: str) -> str:
+    async def execute(self, **kwargs) -> str:
+        command: str = kwargs["command"]
         """Execute a shell command and return its output."""
         logger.debug("Shell exec: %.200s", command)
 

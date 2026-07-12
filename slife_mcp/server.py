@@ -89,8 +89,14 @@ mcp = FastMCP(
 @mcp.tool(
     name="mcp_add_server",
     description=(
-        "Add and connect to an external MCP server using standard MCP "
-        "configuration format. Returns the server status and discovered tools."
+        "Add and connect to an external MCP server. IMPORTANT: some MCP servers "
+        "(like anyapi-mcp-server) are frameworks that require user-provided "
+        "configuration arguments (--spec, --base-url, etc.) before they work. "
+        "Research the server's documentation first — scrape its GitHub/npm page "
+        "to understand required args. If the server needs user input, ASK before "
+        "calling this tool. Never pass empty strings for required args. "
+        "Returns server status and discovered tools on success; on failure the "
+        "error includes the server's stderr which explains what went wrong."
     ),
 )
 async def mcp_add_server(
@@ -101,14 +107,21 @@ async def mcp_add_server(
 ) -> str:
     """Add and connect to an MCP server.
 
+    Before calling, research the server's docs to understand its args.
+    Some servers (like anyapi-mcp-server) are frameworks that require
+    user-provided --spec, --base-url, etc. — ASK the user for these.
+    Never pass empty strings for required arguments.
+
     Args:
         name: Unique name for this server (e.g. 'filesystem', 'brave-search').
         command: Executable to run (e.g. 'npx', 'python', 'uv').
         args: Command-line arguments (e.g. ['-y', '@modelcontextprotocol/server-filesystem', '/path']).
+            For config-required servers, include ALL required flags with real values from the user.
         env: Optional environment variables to pass to the server process.
 
     Returns:
-        Status message with list of discovered tools.
+        Status message with list of discovered tools. On failure, stderr is
+        included in the error to help diagnose the issue.
     """
     config = ServerConfig(
         name=name,

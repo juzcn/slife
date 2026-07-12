@@ -22,6 +22,25 @@ class ToolRegistry:
         self._tools[tool.name] = tool
         logger.info("Tool registered: %s", tool.name)
 
+    def unregister(self, name: str) -> bool:
+        """Remove a tool by name. Returns True if it existed."""
+        if name in self._tools:
+            del self._tools[name]
+            logger.info("Tool unregistered: %s", name)
+            return True
+        return False
+
+    def unregister_by_prefix(self, prefix: str) -> int:
+        """Remove all tools whose name starts with prefix (e.g. 'anyapi__').
+
+        Returns the number of tools removed.
+        """
+        to_remove = [name for name in self._tools if name.startswith(prefix)]
+        for name in to_remove:
+            del self._tools[name]
+            logger.info("Tool unregistered: %s", name)
+        return len(to_remove)
+
     def get(self, name: str) -> Tool | None:
         """Get a tool by name, or None if not found."""
         return self._tools.get(name)

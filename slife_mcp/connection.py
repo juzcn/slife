@@ -54,6 +54,7 @@ class MCPServerConnection:
         self._tools_cache: list[dict] = []
         self._error: str | None = None
         self._stderr_task: asyncio.Task | None = None
+        self._stderr_buffer: list[str] = []
 
     @property
     def status(self) -> ServerStatus:
@@ -74,6 +75,7 @@ class MCPServerConnection:
 
         self._status = ServerStatus.CONNECTING
         self._error = None
+        self._stderr_buffer.clear()
         logger.info(
             "Connecting to MCP server '%s': %s %s",
             self.config.name, self.config.command, " ".join(self.config.args),
@@ -136,7 +138,13 @@ class MCPServerConnection:
 
         except Exception as e:
             self._status = ServerStatus.FAILED
-            self._error = str(e)
+            # Include stderr output in the error so the LLM can understand
+            # why the server failed (e.g. missing required arguments).
+            stderr_tail = "".join(self._stderr_buffer[-20:]).strip()
+            if stderr_tail:
+                self._error = f"{e}\n\n[server stderr]\n{stderr_tail}"
+            else:
+                self._error = str(e)
             logger.error("Failed to connect to '%s': %s", self.config.name, e)
             await self._cleanup_resources()
 
@@ -197,6 +205,7 @@ class MCPServerConnection:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()
                 if text:
+                    self._stderr_buffer.append(text + "\n")
                     logger.debug("[%s stderr] %s", self.config.name, text)
         except asyncio.CancelledError:
             pass

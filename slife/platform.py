@@ -12,7 +12,6 @@ IS_WINDOWS = sys.platform == "win32"
 
 def get_shell_command(
     run_script: str | None = None,
-    check_env: str | None = None,
     install: str | None = None,
 ) -> str:
     """Return platform-correct shell command(s) for the given operation(s).
@@ -24,7 +23,6 @@ def get_shell_command(
         run_script: Script path + JSON args, e.g.
             "skills/search.py {\"query\":\"hello\"}".
             Returns a complete ready-to-run command with correct quoting.
-        check_env: Environment variable name to check.
         install: Python package name to install.
 
     Returns:
@@ -34,9 +32,6 @@ def get_shell_command(
 
     if run_script is not None:
         results.append(_run_script_cmd(run_script))
-
-    if check_env is not None:
-        results.append(_check_env_cmd(check_env))
 
     if install is not None:
         results.append(_install_cmd(install))
@@ -79,9 +74,6 @@ def _run_script_cmd(input_str: str) -> str:
         # bash: single quotes (no escaping needed for JSON)
         return f"{python} {script} '{args}'"
 
-
-def _check_env_cmd(name: str) -> str:
-    return f"echo %{name}%" if IS_WINDOWS else f"echo ${name}"
 
 
 def _install_cmd(package: str) -> str:

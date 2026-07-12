@@ -19,18 +19,32 @@ The LLM already knows: function calling, how to read tool schemas, how to format
 What the LLM *cannot* know:
 
 - The `list_skills` / `use_skill` flow — a slife-specific convention
-- That `slife.json5` has an `env:` section for setting API keys
-- That external tools are managed via `mcp_add_server` / `mcp_list_tools` / `mcp_call_tool`
+- That `slife.json5` has an `env:` section for setting API keys and env vars
+- That external MCP servers are managed via `mcp_add_server`
+- That some MCP servers need user-provided configuration arguments and must not be called with empty args
+- That `config_env_set` can write placeholders when a value isn't available yet
 
 The current system prompt (`slife/agent/templates/system_prompt.j2`):
 
 ```
 Use list_skills to discover available skills, then use_skill to load one.
-If an API key or environment variable is missing, guide the user to set it in slife.json5 under the env: section.
-Manage external MCP tools via mcp_add_server, mcp_list_tools, and mcp_call_tool.
+When adding an MCP server via mcp_add_server, research its requirements first
+-- don't pass empty args to servers that need configuration.
+Set missing API keys or other env vars via config_env_set with a placeholder
+in slife.json5 env: section.
 ```
 
-It is not a job description, not a manual, not a tutorial. It's a lookup table for facts the model has no other way to discover.
+### Design Principles
+
+1. **Project-specific only.** If the LLM can infer it from tool schemas or training data, it doesn't belong here.
+
+2. **Tool schemas over prompts.** Usage instructions live in function `description` and `parameters` — the prompt never repeats what a schema already says. `config_env_set`'s schema describes its parameters; the prompt only says *when* to use it.
+
+3. **Don't block on missing values.** When a tool or server needs an API key the user doesn't have yet, set a placeholder and move on. Never make the user provide a key before installation can proceed. This is a behavioral rule the LLM wouldn't discover from schemas alone.
+
+4. **Minimal is correct.** Every line must carry a fact the model has no other way to discover. If a line can be removed without losing project-specific knowledge, remove it.
+
+5. **Not a job description.** No personality, no tone, no "you are a helpful assistant." The prompt is a lookup table for slife-specific conventions.
 
 ## Tool Schemas Over Prompts
 
