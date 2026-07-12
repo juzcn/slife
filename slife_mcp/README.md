@@ -20,6 +20,10 @@ MCP clients ←→ slife-mcp ←→ external MCP servers (filesystem, search, ..
 
 slife-mcp maintains persistent connections to external MCP servers. Clients connect to slife-mcp and get access to all tools from all connected servers through a single endpoint.
 
+This supports any MCP-compatible server, including:
+- **Pre-built MCP servers** — filesystem, web search (Serper, Tavily), fetch, etc.
+- **REST API servers** — [anyapi-mcp-server](https://github.com/quiloos39/anyapi-mcp-server) converts OpenAPI specs to MCP tools, making any REST API (GitHub, Jira, GitLab, Slack…) callable as tools.
+
 ## Configuration
 
 Create `slife.json5` in your working directory:

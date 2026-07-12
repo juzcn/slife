@@ -28,6 +28,7 @@ _TOOL_BUILDERS = {
         UseSkillTool(skills_dir=cfg.get("skills_dir", "skills")),
     ],
     "config_env": lambda cfg, config: _build_config_env_tools(config),
+    "cli_manager": lambda cfg, config: _build_cli_manager_tools(config),
 }
 
 
@@ -43,6 +44,21 @@ def _build_config_env_tools(config: "Config | None") -> list[Tool]:
         ConfigEnvSetTool(config_path=config_path),
         ConfigEnvGetTool(config_path=config_path),
         ConfigEnvRemoveTool(config_path=config_path),
+    ]
+
+
+def _build_cli_manager_tools(config: "Config | None") -> list[Tool]:
+    """Build cli_add_tool, cli_remove_tool, cli_list_tools.
+
+    Uses config._path if available, otherwise defaults to slife.json5 in cwd.
+    """
+    from slife.tools.cli import CliAddTool, CliRemoveTool, CliListToolsTool
+
+    config_path: Path | None = config._path if config else None
+    return [
+        CliAddTool(config_path=config_path),
+        CliRemoveTool(config_path=config_path),
+        CliListToolsTool(config_path=config_path),
     ]
 
 

@@ -36,6 +36,7 @@ class ServerConfig:
     command: str
     args: list[str] = field(default_factory=list)
     env: dict[str, str] | None = None
+    description: str = ""
 
 
 class MCPServerConnection:
@@ -304,6 +305,7 @@ class ConnectionPool:
                 "name": name, "status": conn.status.value,
                 "tool_count": conn.tool_count, "error": conn.error,
                 "command": conn.config.command, "args": conn.config.args,
+                "description": conn.config.description,
             }
             for name, conn in self._connections.items()
         ]

@@ -205,7 +205,7 @@ class AgentService:
         except Exception as e:
             logger.error("Error during MCP tool discovery: %s", e)
 
-    async def _persist_server(self, name: str, command: str, args: list[str], env: dict | None = None):
+    async def _persist_server(self, name: str, command: str, args: list[str], env: dict | None = None, description: str = ""):
         """Callback: persist a newly-added (or updated) MCP server to config
         file and immediately discover and register its tools.
 
@@ -220,7 +220,7 @@ class AgentService:
             )
             self.tool_registry.unregister_by_prefix(f"{name}__")
 
-        self.config.save_mcp_server(name, command, args, env)
+        self.config.save_mcp_server(name, command, args, env, description)
         # Discover and register the new server's tools right away
         await self._discover_and_register_external_tools(server_name=name)
 

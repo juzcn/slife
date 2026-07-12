@@ -22,16 +22,32 @@ What the LLM *cannot* know:
 - That `slife.json5` has an `env:` section for setting API keys and env vars
 - That external MCP servers are managed via `mcp_add_server`
 - That some MCP servers need user-provided configuration arguments and must not be called with empty args
+- That `anyapi-mcp-server` is the recommended framework for connecting REST APIs
+- That after successfully installing and using a new CLI, it should be registered via `cli_add_tool`
 - That `config_env_set` can write placeholders when a value isn't available yet
 
 The current system prompt (`slife/agent/templates/system_prompt.j2`):
 
 ```
-Use list_skills to discover available skills, then use_skill to load one.
-When adding an MCP server via mcp_add_server, research its requirements first
--- don't pass empty args to servers that need configuration.
-Set missing API keys or other env vars via config_env_set with a placeholder
-in slife.json5 env: section.
+Your tools come from five sources:
+
+  Native functions & MCP servers — already in your tool list. Use directly.
+
+  Skills — call list_skills to discover, then use_skill to load one.
+
+  CLI tools — call cli_list_tools to see what's registered. After successfully
+  installing and using any new CLI (on your own or at the user's request),
+  call cli_add_tool to register it with a description, invocation, and install
+  instructions.
+
+  REST APIs — when users ask to connect one, use the anyapi-mcp-server
+  framework to convert it to an MCP server
+  (npx -y anyapi-mcp-server).
+  Docs: https://github.com/quiloos39/anyapi-mcp-server
+
+Check config_env_get before asking the user for an API key -- the config may
+already have it. Set missing keys via config_env_set with a placeholder in
+slife.json5 env: section.
 ```
 
 ### Design Principles
@@ -49,6 +65,29 @@ in slife.json5 env: section.
 ## Tool Schemas Over Prompts
 
 Anything expressible in the function schema (`name`, `description`, `parameters`) stays in the function schema. The system prompt does not describe tools.
+
+### Schema vs Prompt: A Clear Boundary
+
+| Layer | Responsibility | Example |
+|---|---|---|
+| **Schema** (`description`, `parameters`) | **What the tool does** — its capability, inputs, outputs, side effects | "Persist an environment variable to slife.json5 and inject it into os.environ immediately. Omit value to write a placeholder." |
+| **System prompt** | **When to use it** — the scenario, workflow rule, or project convention | "Set missing API keys via config_env_set with a placeholder in slife.json5 env: section." |
+
+**Rules:**
+
+1. **Schema never says "Always call this before…" or "Use when…"** — those are scenario rules. They belong in the system prompt.
+2. **Prompt never repeats parameter details** — if the schema says `key` expects `UPPER_SNAKE_CASE`, the prompt doesn't say it again.
+3. **Schema is self-contained** — a new model reading only the function definition should understand the tool's capability without guessing.
+4. **Prompt is the workflow map** — it tells the model which tool to reach for in which situation, but not how the tool works.
+
+**Before/after example — `config_env_set`:**
+
+| | Before (mixed) | After (separated) |
+|---|---|---|
+| Schema description | "Persist an environment variable… Use when storing API keys, tokens, or other config the system needs at runtime." | "Persist an environment variable to slife.json5 and inject into os.environ immediately. Omit value to write a placeholder." |
+| System prompt | (nothing about this scenario) | "Set missing API keys via config_env_set with a placeholder." |
+
+The schema now describes pure capability. The prompt now tells the model *when* this tool is the right answer.
 
 ## Skills: Progressive Disclosure
 
@@ -79,13 +118,16 @@ It's a chat window with tools. The LLM is in control.
 │  Agent Loop                                          │
 │  slife/agent/loop.py — streaming function-calling    │
 │  Emits: thinking chunks, text chunks, tool events     │
-├────────────┬──────────────────┬──────────────────────┤
-│ Native     │ MCP Client       │ Skills               │
-│ Tools      │ slife/mcp/       │ slife/tools/skill.py │
-│ shell.py   │ client.py        │ skills/ directory    │
-│ shell_     │ process.py       │                      │
-│ command.py │ tool_adapter.py  │                      │
-├────────────┴──────────────────┴──────────────────────┤
+├──────────┬──────────────┬──────────────┬─────────────────────┬──────────────────┤
+│ Native   │ Skills       │ MCP Tools    │ RESTful API Tools   │ CLI Tools        │
+│ Tools    │ skill.py     │ slife/mcp/   │ (via MCP)           │ cli.py           │
+│ shell.py │ skills/ dir  │ client.py    │ anyapi-mcp-server   │ cli_add_tool     │
+│ shell_   │              │ process.py   │ OpenAPI spec →      │ cli_remove_tool  │
+│ command. │              │ tool_        │ MCP tools at        │ cli_list_tools   │
+│ py       │              │ adapter.py   │ runtime             │                  │
+│ config_  │              │              │                     │                  │
+│ env.py   │              │              │                     │                  │
+├──────────┴──────────────┴──────────────┴─────────────────────┴──────────────────┤
 │  LLM Client (AsyncOpenAI)                            │
 │  slife/agent/llm_client.py — streaming + thinking    │
 ├──────────────────────────────────────────────────────┤
@@ -95,13 +137,17 @@ It's a chat window with tools. The LLM is in control.
 
                     slife agent ──── stdio/HTTP ──── slife-mcp
                     (slife/)                          (slife_mcp/)
-                                                     Independent MCP proxy
-                                                     pip install slife-mcp
+                                                     │
+                                                     ├── filesystem MCP (npx)
+                                                     ├── serper MCP (npx)
+                                                     ├── anyapi-mcp-server (npx)
+                                                     │     └── GitHub REST API
+                                                     └── ... (any MCP server)
 ```
 
 ## Agent Loop
 
-Single function-calling loop. All tools (native, MCP, skills) are registered as OpenAI functions in one `ToolRegistry`. The LLM decides what to call and when.
+Single function-calling loop. All tools (native functions, skills, MCP, RESTful API, CLI) are registered as OpenAI functions in one `ToolRegistry`. The LLM decides what to call and when.
 
 ```
 User Input → Conversation.add_user_message()
@@ -122,15 +168,72 @@ User Input → Conversation.add_user_message()
 
 Validation happens at class definition time via `__init_subclass__` — every `Tool` subclass must define non-empty `name`, `description`, and `parameters`.
 
-### Native Tools
+Tool loading (`slife/tools/factory.py`): `_TOOL_BUILDERS` maps config `type` strings to factory functions. Each builder receives the config entry dict and returns a `Tool` or list of `Tool` instances. Unknown types log a warning and are skipped.
+
+slife supports four categories of tools, all unified under the `Tool` ABC and registered in a single `ToolRegistry`. The LLM sees no difference between them — all are OpenAI function definitions.
+
+### 1. Native Function Tools
+
+Built-in tools implemented directly in Python. Each maps to a config `type`:
 
 | Tool | Config Type | Implementation |
 |---|---|---|
 | `execute_shell` | `"shell"` | `asyncio.create_subprocess_shell`, configurable timeout |
 | `get_shell_command` | `"platform"` | Platform-aware command builder (cmd.exe on Windows, bash on Unix) |
-| `list_skills` / `use_skill` | `"skill"` | SKILL.md progressive disclosure (YAML frontmatter + markdown body) |
+| `config_env_set` / `config_env_get` / `config_env_remove` | `"config_env"` | Read/write env vars in `slife.json5` |
 
-Tool loading (`slife/tools/factory.py`): `_TOOL_BUILDERS` maps config `type` strings to factory functions. Each builder receives the config entry dict and returns a `Tool` or list of `Tool` instances. Unknown types log a warning and are skipped.
+### 2. Skills
+
+On-demand documentation plugins. Configured via `type: "skill"` — produces two tools:
+
+| Tool | Config Type | Implementation |
+|---|---|---|
+| `list_skills` | `"skill"` | Discover available SKILL.md files under `skills_dir` |
+| `use_skill` | `"skill"` | Load a skill's full markdown body into context |
+
+Skills are discovered by scanning directories under `skills/` for `SKILL.md` files with YAML frontmatter (`name`, `description`). The shared `_iter_skills()` helper in `slife/tools/skill.py` handles directory scanning and frontmatter parsing once, used by both `get_skills_summary` and `_read_skill`.
+
+This is a **progressive disclosure** pattern: skill names and one-line descriptions are always visible, but the full instructions are only loaded on demand via `use_skill`. This keeps context lean until the knowledge is needed.
+
+### 3. MCP Tools
+
+External MCP servers connected through [slife-mcp](https://pypi.org/project/slife-mcp/) — an independent MCP proxy service. Each external server's tools are adapted to the `Tool` ABC via `MCPProxyTool` and registered with a `{server}__` prefix (e.g. `filesystem__read_file`, `serper__search`).
+
+MCP tools are not configured via `tools[]` — they are discovered dynamically when slife-mcp connects to configured servers. See the MCP Integration section below.
+
+### 4. RESTful API Tools (anyapi-mcp-server)
+
+REST APIs are converted to MCP tools via [anyapi-mcp-server](https://github.com/quiloos39/anyapi-mcp-server), which generates tools from OpenAPI specifications at runtime. These are regular MCP servers from slife's perspective — configured in `mcp.servers` with `command: "npx"` and `args` specifying the `--spec` URL, `--base-url`, and any required headers.
+
+Example — exposing the GitHub REST API as callable tools:
+```json5
+github: {
+  command: "npx",
+  args: [
+    "-y", "anyapi-mcp-server",
+    "--name", "github",
+    "--spec", "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml",
+    "--base-url", "https://api.github.com",
+    "--header", "Authorization: Bearer ${GITHUB_TOKEN}",
+  ],
+}
+```
+
+This produces tools like `github__list_repos`, `github__create_issue`, etc. — the LLM can call any endpoint described by the OpenAPI spec. The same pattern works for any REST API with an OpenAPI spec (Jira, GitLab, Slack, etc.).
+
+### 5. CLI Tools
+
+External CLI commands the LLM discovers at runtime and registers for future use. Configured via `type: "cli_manager"` — produces three management tools:
+
+| Tool | Description |
+|---|---|
+| `cli_add_tool` | Register a CLI with name, command, description, and optional install instructions |
+| `cli_remove_tool` | Remove a registered CLI |
+| `cli_list_tools` | List all registered CLI tools |
+
+This follows the same self-service pattern as `mcp_add_server`: after successfully installing and using a CLI (whether the LLM discovered it or the user asked for it), the LLM calls `cli_add_tool` to persist it. Registered CLIs survive restarts — stored in `slife.json5` → `cli_tools:`.
+
+The tools themselves don't execute commands. The LLM uses `execute_shell` for that — these tools only manage the discovery registry. Design rationale: the LLM already knows how to run shell commands and parse `--help` output; the only thing it can't do is remember a CLI across sessions. That's what `cli_add_tool` provides.
 
 ## MCP Integration (slife-mcp)
 
@@ -181,6 +284,27 @@ External MCP servers use standard config format (compatible with Claude Desktop)
 
 **Standalone package**: `slife_mcp/pyproject.toml` — published as `slife-mcp` on PyPI. Dependencies: `fastmcp` + `json5`. Entry point: `slife-mcp = slife_mcp.server:main`.
 
+### RESTful API via anyapi-mcp-server
+
+[anyapi-mcp-server](https://github.com/quiloos39/anyapi-mcp-server) is an MCP server that converts any OpenAPI specification into callable MCP tools at runtime. It's configured like any other MCP server in `mcp.servers`, with `--spec` pointing to the API's OpenAPI spec and `--base-url` set to the API's base endpoint:
+
+```json5
+github: {
+  command: "npx",
+  args: [
+    "-y", "anyapi-mcp-server",
+    "--name", "github",
+    "--spec", "https://raw.githubusercontent.com/.../api.github.com.yaml",
+    "--base-url", "https://api.github.com",
+    "--header", "Authorization: Bearer ${GITHUB_TOKEN}",
+  ],
+}
+```
+
+Each OpenAPI endpoint becomes a tool named `{name}__{operationId}` (e.g. `github__repos_list_for_authenticated_user`). The LLM can call any endpoint described by the spec — no per-endpoint code needed.
+
+This pattern works for any REST API with an OpenAPI specification: Jira, GitLab, Slack, Stripe, etc. The system prompt guides the LLM to use this framework when users ask to connect a REST API.
+
 ## Config Loading
 
 `Config.from_json5()` (`slife/config.py`) parses the JSON5 file in structured phases:
@@ -216,13 +340,15 @@ slife/
     service.py         #   Wiring: client + tools + loop + MCP
     system_prompt.py   #   Jinja2 template rendering
     multimodal.py      #   Image encoding, /file attachment parsing
-  tools/               # Native tool implementations
+  tools/               # Tool implementations (5 categories)
     base.py            #   Tool ABC with __init_subclass__ validation
     registry.py        #   Name → Tool lookup & execution
     factory.py         #   Config type → Tool instances (TOOL_BUILDERS)
     shell.py           #   execute_shell (subprocess with timeout)
     shell_command.py   #   get_shell_command (platform-aware)
     skill.py           #   list_skills / use_skill (shared _iter_skills)
+    config_env.py      #   config_env_set/get/remove
+    cli.py             #   cli_add_tool / cli_remove_tool / cli_list_tools
   mcp/                 # MCP client (slife side)
     client.py          #   stdio/HTTP client with asyncio.Queue adapters
     tool_adapter.py    #   MCP → slife Tool adapter (MCPProxyTool)

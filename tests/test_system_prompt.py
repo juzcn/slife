@@ -5,7 +5,7 @@ from slife.agent.system_prompt import build
 
 class TestBuild:
     def test_renders_template(self):
-        assert build().startswith("Use list_skills")
+        assert build().startswith("Your tools come from five sources")
 
     def test_no_platform_leak(self):
         result = build()
@@ -23,8 +23,23 @@ class TestBuild:
         assert "env:" in build()
 
     def test_mcp_reference(self):
-        """Prompt mentions mcp_add_server and config_env_set — the
+        """Prompt mentions anyapi-mcp-server and config_env_set — the
         project-specific conventions the LLM cannot discover from schemas."""
         result = build()
-        assert "mcp_add_server" in result
+        assert "anyapi-mcp-server" in result
         assert "config_env_set" in result
+
+    def test_five_tool_categories(self):
+        """Prompt describes all 5 tool categories and their discovery mechanisms."""
+        result = build()
+        assert "five sources" in result
+        assert "Native functions" in result
+        assert "MCP servers" in result
+        assert "Skills" in result
+        assert "CLI tools" in result
+        assert "REST APIs" in result
+        # Discovery mechanisms
+        assert "list_skills" in result
+        assert "use_skill" in result
+        assert "cli_list_tools" in result
+        assert "cli_add_tool" in result

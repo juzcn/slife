@@ -104,6 +104,7 @@ async def mcp_add_server(
     command: str,
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
+    description: str = "",
 ) -> str:
     """Add and connect to an MCP server.
 
@@ -118,6 +119,8 @@ async def mcp_add_server(
         args: Command-line arguments (e.g. ['-y', '@modelcontextprotocol/server-filesystem', '/path']).
             For config-required servers, include ALL required flags with real values from the user.
         env: Optional environment variables to pass to the server process.
+        description: Human-readable description of what this server provides
+            (e.g. 'GitHub REST API — issues, PRs, repos, etc.').
 
     Returns:
         Status message with list of discovered tools. On failure, stderr is
@@ -128,6 +131,7 @@ async def mcp_add_server(
         command=command,
         args=args or [],
         env=env,
+        description=description,
     )
 
     try:

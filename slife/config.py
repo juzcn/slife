@@ -166,7 +166,7 @@ class Config:
         if self.mcp_config is None:
             self.mcp_config = MCPConfig()
 
-    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None) -> None:
+    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "") -> None:
         """Persist an MCP server to the config file."""
         if not self._path:
             logger.warning("No config path stored; cannot save MCP server '%s'.", name)
@@ -177,6 +177,8 @@ class Config:
         servers = mcp_section.setdefault("servers", {})
 
         server_entry: dict = {"command": command, "args": args}
+        if description:
+            server_entry["description"] = description
         if env:
             server_entry["env"] = env
         servers[name] = server_entry

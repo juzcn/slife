@@ -14,10 +14,7 @@ class GetShellCommandTool(Tool):
     name = "get_shell_command"
     description = (
         "Get the correct shell command for the current operating system. "
-        "Always call this before execute_shell — never guess a command directly, "
-        "because syntax differs between Windows (cmd) and Unix (bash). "
-        "Supports: "
-        "run_script — run a Python script with JSON arguments; "
+        "Supports: run_script — run a Python script with JSON arguments; "
         "install — install a Python package via uv pip."
     )
     parameters = {

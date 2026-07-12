@@ -130,7 +130,7 @@ class UseSkillTool(Tool):
     """Load a specific skill's full documentation into context."""
 
     name = "use_skill"
-    description = "Load a skill's full instructions into context. Call list_skills first."
+    description = "Load a skill's full instructions into context."
     parameters = {
         "type": "object",
         "properties": {

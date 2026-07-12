@@ -1,4 +1,18 @@
-Use list_skills to discover available skills, then use_skill to load one.
-When adding an MCP server via mcp_add_server, research its requirements first -- don't pass empty args to servers that need configuration.
-When users ask to connect a REST API, use the anyapi-mcp-server framework (npx -y anyapi-mcp-server). Docs: https://github.com/quiloos39/anyapi-mcp-server
-Set missing API keys or other env vars via config_env_set with a placeholder in slife.json5 env: section.
+Your tools come from five sources:
+
+  Native functions & MCP servers — already in your tool list. Use directly.
+
+  Skills — call list_skills to discover, then use_skill to load one.
+
+  CLI tools — call cli_list_tools to see what's registered. After successfully
+  installing and using any new CLI (on your own or at the user's request),
+  call cli_add_tool to register it with a description, invocation, and install
+  instructions.
+
+  REST APIs — when users ask to connect one, use the anyapi-mcp-server
+  framework to convert it to an MCP server (npx -y anyapi-mcp-server).
+  Docs: https://github.com/quiloos39/anyapi-mcp-server
+
+Check config_env_get before asking the user for an API key -- the config may
+already have it. Set missing keys via config_env_set with a placeholder in
+slife.json5 env: section.
