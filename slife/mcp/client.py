@@ -140,6 +140,8 @@ class MCPClient:
 
     async def _bridge_stdout(self) -> None:
         assert self._process and self._process.stdout and self._stdout_queue
+        # Allow lines up to 10 MB — tool schemas can be large
+        self._process.stdout._limit = 10 * 1024 * 1024
         try:
             while True:
                 line = await self._process.stdout.readline()
@@ -176,6 +178,8 @@ class MCPClient:
 
     async def _bridge_reader(self, reader) -> None:
         """Bridge from a raw asyncio StreamReader to the stdout queue."""
+        # Allow lines up to 10 MB — tool schemas can be large
+        reader._limit = 10 * 1024 * 1024
         try:
             while True:
                 line = await reader.readline()
