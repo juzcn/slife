@@ -88,6 +88,9 @@ class SlifeApp(App):
             thinking=self.service.thinking_enabled,
         )
 
+        # Focus input on startup
+        self.query_one("#user-input").focus()
+
         # Start MCP wrapper in the background
         if self.service.config.mcp_config.enabled:
             self.run_worker(

@@ -11,7 +11,7 @@ from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
 from slife.tools.shell_command import GetShellCommandTool
 from slife.tools.shell import ShellTool
-from slife.tools.skill import ListSkillsTool, UseSkillTool
+from slife.tools.skill import ListSkillsTool, UseSkillTool, AddSkillTool, RemoveSkillTool
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -26,6 +26,8 @@ _TOOL_BUILDERS = {
     "skill": lambda cfg, config: [
         ListSkillsTool(skills_dir=cfg.get("skills_dir", "skills")),
         UseSkillTool(skills_dir=cfg.get("skills_dir", "skills")),
+        AddSkillTool(skills_dir=cfg.get("skills_dir", "skills")),
+        RemoveSkillTool(skills_dir=cfg.get("skills_dir", "skills")),
     ],
     "config_env": lambda cfg, config: _build_config_env_tools(config),
     "cli_manager": lambda cfg, config: _build_cli_manager_tools(config),

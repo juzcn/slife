@@ -6,6 +6,11 @@ Your tools come from five sources:
   Native functions & MCP servers — already in your tool list. Use directly.
 
   Skills — call list_skills to discover, then use_skill to load one.
+  To install a new skill: search for it, then use GitHub MCP or fetch MCP
+  to get the skill's files (SKILL.md + scripts, references, etc.), then
+  call add_skill to save them locally. Call remove_skill to delete one.
+  NEVER pip install skill dependencies into slife's own .venv — use uvx
+  to run them in isolation (like MCP), or tell the user to install them.
 
   CLI tools — call cli_list_tools to see what's registered. After successfully
   installing and using any new CLI (on your own or at the user's request),
