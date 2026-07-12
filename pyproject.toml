@@ -1,6 +1,6 @@
 [project]
 name = "slife"
-version = "0.1.1"
+version = "0.1.2"
 description = "Terminal-based AI agent — a function-calling loop with minimum harness"
 readme = "README.md"
 license = { text = "MIT" }
@@ -36,6 +36,15 @@ slife = "slife:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["slife"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/slife",
+    "/skills",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+]
 
 [build-system]
 requires = ["hatchling"]

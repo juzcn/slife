@@ -1,6 +1,6 @@
 [project]
 name = "slife-mcp"
-version = "0.1.1"
+version = "0.1.2"
 description = "Standalone MCP proxy service — manages persistent connections to external MCP servers"
 readme = "README.md"
 license = { text = "MIT" }
@@ -29,7 +29,10 @@ Repository = "https://github.com/juzcn/slife"
 slife-mcp = "slife_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["slife_mcp"]
+"force-include" = { "__init__.py" = "slife_mcp/__init__.py", "connection.py" = "slife_mcp/connection.py", "server.py" = "slife_mcp/server.py" }
+
+[tool.hatch.build.targets.sdist]
+include = ["/*.py", "/README.md", "/pyproject.toml"]
 
 [build-system]
 requires = ["hatchling"]
