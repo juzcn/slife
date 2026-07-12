@@ -55,10 +55,8 @@ class ConfigEnvSetTool(Tool):
 
     name = "config_env_set"
     description = (
-        "Persist an environment variable to slife.json5 and inject into the "
-        "current process immediately. No restart required. "
-        "If the user hasn't provided a real value yet, omit 'value' "
-        "to write a placeholder — the user can fill it in later."
+        "Persist an environment variable to config and inject into the "
+        "current process immediately."
     )
     parameters = {
         "type": "object",
@@ -109,11 +107,7 @@ class ConfigEnvGetTool(Tool):
     """Read environment variables from slife.json5's env: section."""
 
     name = "config_env_get"
-    description = (
-        "Read environment variables persisted in slife.json5. "
-        "Pass 'key' to fetch a single value, or omit to list all. "
-        "Flags placeholder values with [PLACEHOLDER]."
-    )
+    description = "Read environment variables from config."
     parameters = {
         "type": "object",
         "properties": {
@@ -155,10 +149,7 @@ class ConfigEnvRemoveTool(Tool):
     """Remove an environment variable from slife.json5 and os.environ."""
 
     name = "config_env_remove"
-    description = (
-        "Remove an environment variable from slife.json5 and unset it in the "
-        "current process."
-    )
+    description = "Remove an environment variable from config."
     parameters = {
         "type": "object",
         "properties": {

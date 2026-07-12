@@ -115,7 +115,7 @@ class ListSkillsTool(Tool):
     """List all available skills with their names and descriptions."""
 
     name = "list_skills"
-    description = "List available skills and their descriptions."
+    description = "List installed skills."
     parameters = {
         "type": "object",
         "properties": {},
@@ -171,9 +171,7 @@ class AddSkillTool(Tool):
 
     name = "add_skill"
     description = (
-        "Write a skill folder to the local skills directory. "
-        "Provide either individual files or a base64-encoded archive. "
-        "The skill is discovered by list_skills on the next call."
+        "Install a new skill from individual files or a zip/tar.gz archive."
     )
     parameters = {
         "type": "object",
@@ -313,10 +311,7 @@ class RemoveSkillTool(Tool):
     """
 
     name = "remove_skill"
-    description = (
-        "Remove a skill and its SKILL.md file. Use list_skills to see "
-        "what's available. This deletes the skill directory."
-    )
+    description = "Remove an installed skill."
     parameters = {
         "type": "object",
         "properties": {

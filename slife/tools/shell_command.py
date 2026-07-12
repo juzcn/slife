@@ -15,7 +15,6 @@ class GetShellCommandTool(Tool):
     description = (
         "Get the correct shell command for the current operating system. "
         "Supports: run_script — run a Python script with JSON arguments; "
-        "install — install a Python package via uv pip; "
         "check_installed — check if a CLI tool is on PATH; "
         "download_file — download a file via curl."
     )
@@ -25,10 +24,6 @@ class GetShellCommandTool(Tool):
             "run_script": {
                 "type": "string",
                 "description": "Script path + JSON args, e.g. 'skills/search.py {\"query\":\"hello\"}'",
-            },
-            "install": {
-                "type": "string",
-                "description": "Package name to install via uv pip",
             },
             "check_installed": {
                 "type": "string",
@@ -45,7 +40,6 @@ class GetShellCommandTool(Tool):
     async def execute(self, **kwargs) -> str:
         return get_shell_command(
             run_script=kwargs.get("run_script"),
-            install=kwargs.get("install"),
             check_installed=kwargs.get("check_installed"),
             download_file=kwargs.get("download_file"),
         )

@@ -12,7 +12,6 @@ IS_WINDOWS = sys.platform == "win32"
 
 def get_shell_command(
     run_script: str | None = None,
-    install: str | None = None,
     check_installed: str | None = None,
     download_file: str | None = None,
 ) -> str:
@@ -25,7 +24,6 @@ def get_shell_command(
         run_script: Script path + JSON args, e.g.
             "skills/search.py {\"query\":\"hello\"}".
             Returns a complete ready-to-run command with correct quoting.
-        install: Python package name to install.
         check_installed: CLI name to check (e.g. "yt-dlp", "npx").
             Returns a command that prints the path if found, or NOT_FOUND.
         download_file: URL to download, optionally followed by output name.
@@ -39,9 +37,6 @@ def get_shell_command(
 
     if run_script is not None:
         results.append(_run_script_cmd(run_script))
-
-    if install is not None:
-        results.append(_install_cmd(install))
 
     if check_installed is not None:
         results.append(_check_installed_cmd(check_installed))
@@ -87,10 +82,6 @@ def _run_script_cmd(input_str: str) -> str:
         # bash: single quotes (no escaping needed for JSON)
         return f"{python} {script} '{args}'"
 
-
-
-def _install_cmd(package: str) -> str:
-    return f"uv pip install {package}"
 
 
 def _download_cmd(input_str: str) -> str:

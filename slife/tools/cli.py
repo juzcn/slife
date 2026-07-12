@@ -84,10 +84,7 @@ class CliAddTool(Tool):
     """
 
     name = "cli_add_tool"
-    description = (
-        "Register an external CLI command so it can be discovered via cli_list_tools "
-        "in future conversations. Persists to slife.json5 so it survives restarts."
-    )
+    description = "Register an external CLI command."
     parameters = {
         "type": "object",
         "properties": {
@@ -142,10 +139,7 @@ class CliRemoveTool(Tool):
     """Remove a previously registered CLI tool."""
 
     name = "cli_remove_tool"
-    description = (
-        "Remove a CLI tool from the registry. Use cli_list_tools to see "
-        "what's currently registered. Does not uninstall the CLI itself."
-    )
+    description = "Remove a registered CLI tool."
     parameters = {
         "type": "object",
         "properties": {
@@ -178,11 +172,7 @@ class CliListToolsTool(Tool):
     """List all registered CLI tools."""
 
     name = "cli_list_tools"
-    description = (
-        "List all registered external CLI tools. "
-        "These are commands the user or LLM has registered via cli_add_tool "
-        "— they are not built-in shell commands."
-    )
+    description = "List registered external CLI tools."
     parameters = {
         "type": "object",
         "properties": {},
