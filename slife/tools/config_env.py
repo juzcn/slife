@@ -79,6 +79,11 @@ class ConfigEnvSetTool(Tool):
     def __init__(self, config_path: Path | None = None):
         self._config_path = config_path or Path("slife.json5")
 
+    @classmethod
+    def from_config(cls, cfg, config):
+        path = config._path if config else None
+        return cls(config_path=path)
+
     async def execute(self, **kwargs) -> str:
         key: str = kwargs.get("key", "")
         value: str = kwargs.get("value", "")
@@ -122,6 +127,11 @@ class ConfigEnvGetTool(Tool):
     def __init__(self, config_path: Path | None = None):
         self._config_path = config_path or Path("slife.json5")
 
+    @classmethod
+    def from_config(cls, cfg, config):
+        path = config._path if config else None
+        return cls(config_path=path)
+
     async def execute(self, **kwargs) -> str:
         key: str = kwargs.get("key", "")
         raw = _read_config(self._config_path)
@@ -163,6 +173,11 @@ class ConfigEnvRemoveTool(Tool):
 
     def __init__(self, config_path: Path | None = None):
         self._config_path = config_path or Path("slife.json5")
+
+    @classmethod
+    def from_config(cls, cfg, config):
+        path = config._path if config else None
+        return cls(config_path=path)
 
     async def execute(self, **kwargs) -> str:
         key: str = kwargs["key"]

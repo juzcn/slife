@@ -113,6 +113,11 @@ class CliAddTool(Tool):
     def __init__(self, config_path: Path | None = None):
         self._config_path = config_path or Path("slife.json5")
 
+    @classmethod
+    def from_config(cls, cfg, config):
+        path = config._path if config else None
+        return cls(config_path=path)
+
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         command: str = kwargs["command"]
@@ -154,6 +159,11 @@ class CliRemoveTool(Tool):
     def __init__(self, config_path: Path | None = None):
         self._config_path = config_path or Path("slife.json5")
 
+    @classmethod
+    def from_config(cls, cfg, config):
+        path = config._path if config else None
+        return cls(config_path=path)
+
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         raw = _read_config(self._config_path)
@@ -181,6 +191,11 @@ class CliListToolsTool(Tool):
 
     def __init__(self, config_path: Path | None = None):
         self._config_path = config_path or Path("slife.json5")
+
+    @classmethod
+    def from_config(cls, cfg, config):
+        path = config._path if config else None
+        return cls(config_path=path)
 
     async def execute(self, **kwargs) -> str:
         result = get_cli_tools_summary(self._config_path)

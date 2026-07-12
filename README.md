@@ -36,13 +36,11 @@ Edit `slife.json5`. Key sections:
   },
   active_model: "deepseek/deepseek-v4-pro",
   agent: { max_iterations: 10 },
-  tools: [
-    { type: "platform" },
-    { type: "shell", timeout: 30 },
-    { type: "skill", skills_dir: "skills" },
-    { type: "config_env" },
-    { type: "cli_manager" },
-  ],
+
+  // Tools are auto-discovered — no tools[] config needed.
+  // Add entries only to override defaults or disable tools:
+  //   { name: "execute_shell", timeout: 60 },
+  //   { name: "list_skills", enabled: false },
 
   // MCP integration (optional)
   mcp: {
@@ -69,24 +67,30 @@ slife supports four categories of tools. All are unified as OpenAI function defi
 
 ### 1. Native Functions
 
-Built-in tools configured via `tools[]` in `slife.json5`:
+All tools in `slife/tools/` are auto-discovered at startup — no `tools[]` config required. Use `slife.json5` only to override defaults (e.g. shell timeout) or disable a tool.
 
-| Tool | Config Type | What it does |
-|------|-------------|-------------|
-| `execute_shell` | `shell` | Run shell commands on the host machine |
-| `get_shell_command` | `platform` | Translate intent into OS-correct shell syntax |
-| `config_env_set` | `config_env` | Set env vars in slife.json5 |
-| `config_env_get` | `config_env` | Read env vars from slife.json5 |
-| `config_env_remove` | `config_env` | Remove env vars from slife.json5 |
+| Tool | What it does |
+|------|-------------|
+| `execute_shell` | Run shell commands on the host machine |
+| `run_python_script` | Platform-correct Python invocation with JSON args |
+| `get_os_info` | Return current OS name (Windows/Linux/macOS) |
+| `config_env_set` | Set env vars in slife.json5 + inject immediately |
+| `config_env_get` | Read env vars from slife.json5 |
+| `config_env_remove` | Remove env vars from slife.json5 + os.environ |
+| `cli_add_tool` | Register a CLI for future discovery |
+| `cli_remove_tool` | Remove a registered CLI |
+| `cli_list_tools` | List all registered CLI tools |
 
 ### 2. Skills
 
-On-demand documentation plugins — the agent loads them only when needed:
+On-demand documentation plugins — the agent loads them only when needed. Four tools auto-discovered from `slife/tools/skill.py`:
 
-| Tool | Config Type | What it does |
-|------|-------------|-------------|
-| `list_skills` | `skill` | List available skill plugins |
-| `use_skill` | `skill` | Load a skill's documentation into context |
+| Tool | What it does |
+|------|-------------|
+| `list_skills` | List available skill plugins |
+| `use_skill` | Load a skill's documentation into context |
+| `add_skill` | Install a skill from files or archive |
+| `remove_skill` | Remove an installed skill |
 
 Skills live under `skills/` — each is a directory with a `SKILL.md` file. See the [Skills](#skills) section below.
 
@@ -119,15 +123,15 @@ This produces tools like `github__list_repos`, `github__create_issue`, etc. Work
 
 On-demand CLI discovery. The LLM runs `--help` to learn any unfamiliar CLI, then registers it for future sessions:
 
-| Tool | Config Type | What it does |
-|------|-------------|-------------|
-| `cli_add_tool` | `cli_manager` | Register a CLI with name, description, and install instructions |
-| `cli_remove_tool` | `cli_manager` | Remove a registered CLI |
-| `cli_list_tools` | `cli_manager` | List all registered CLIs |
+| Tool | What it does |
+|------|-------------|
+| `cli_add_tool` | Register a CLI with name, description, and install instructions |
+| `cli_remove_tool` | Remove a registered CLI |
+| `cli_list_tools` | List all registered CLIs |
 
 Registered CLIs are persisted to `slife.json5` → `cli_tools:`. The tools themselves don't execute commands — the LLM uses `execute_shell` for that. They just ensure the LLM remembers specialized CLIs across sessions.
 
-Add or remove native tools from the `tools[]` list to control what the agent can do. MCP and RESTful API tools are managed through `mcp.servers` configuration.
+All native tools are auto-discovered at startup. Use `slife.json5`'s optional `tools` array only to override defaults or disable individual tools by name. MCP and RESTful API tools are managed through `mcp.servers` configuration.
 
 ### MCP Integration
 
@@ -201,14 +205,15 @@ slife/
     service.py         #   Wiring: client + tools + loop + MCP
     system_prompt.py   #   Jinja2 template rendering
     multimodal.py      #   Image encoding, /file attachment parsing
-  tools/               # Extensible tool system (5 categories)
+  tools/               # Extensible tool system (5 categories, auto-discovered)
     base.py            #   Tool ABC with __init_subclass__ validation
     registry.py        #   Name → Tool lookup & execution
-    factory.py         #   Config type → Tool instances (TOOL_BUILDERS)
+    factory.py         #   Auto-discovery via pkgutil + __subclasses__()
     shell.py           #   execute_shell (subprocess with timeout)
-    shell_command.py   #   get_shell_command (platform-aware)
-    skill.py           #   list_skills / use_skill (progressive disclosure)
-    config_env.py      #   config_env_set/get/remove
+    run_python_script.py  #   run_python_script (platform-aware)
+    os_info.py         #   get_os_info (current OS)
+    skill.py           #   list_skills / use_skill / add_skill / remove_skill
+    config_env.py      #   config_env_set / get / remove
     cli.py             #   cli_add_tool / cli_remove_tool / cli_list_tools
   mcp/                 # MCP client (slife side)
     client.py          #   stdio/HTTP client with asyncio.Queue adapters

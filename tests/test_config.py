@@ -262,14 +262,14 @@ class TestConfigFromJSON5:
                 }
             },
             "tools": [
-                {"type": "shell", "timeout": 60},
-                {"type": "platform"},
+                {"name": "execute_shell", "timeout": 60},
+                {"name": "run_python_script"},
             ],
         }))
         config = Config.from_json5(str(cfg_path))
         assert len(config.tools) == 2
-        assert config.tools[0] == {"type": "shell", "timeout": 60}
-        assert config.tools[1] == {"type": "platform"}
+        assert config.tools[0] == {"name": "execute_shell", "timeout": 60}
+        assert config.tools[1] == {"name": "run_python_script"}
 
     def test_duplicate_model_in_provider_raises(self, tmp_path, monkeypatch):
         """Duplicate model names within a provider raise ValueError."""

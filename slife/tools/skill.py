@@ -125,6 +125,10 @@ class ListSkillsTool(Tool):
     def __init__(self, skills_dir: str = "skills"):
         self.skills_dir = Path(skills_dir)
 
+    @classmethod
+    def from_config(cls, cfg, config):
+        return cls(skills_dir=cfg.get("skills_dir", "skills"))
+
     async def execute(self, **kwargs) -> str:
         result = get_skills_summary(self.skills_dir)
         return result if result else "No skills available."
@@ -148,6 +152,10 @@ class UseSkillTool(Tool):
 
     def __init__(self, skills_dir: str = "skills"):
         self.skills_dir = Path(skills_dir)
+
+    @classmethod
+    def from_config(cls, cfg, config):
+        return cls(skills_dir=cfg.get("skills_dir", "skills"))
 
     async def execute(self, **kwargs) -> str:
         skill_name: str = kwargs["skill_name"]
@@ -209,6 +217,10 @@ class AddSkillTool(Tool):
 
     def __init__(self, skills_dir: str = "skills"):
         self.skills_dir = Path(skills_dir)
+
+    @classmethod
+    def from_config(cls, cfg, config):
+        return cls(skills_dir=cfg.get("skills_dir", "skills"))
 
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
@@ -325,6 +337,10 @@ class RemoveSkillTool(Tool):
 
     def __init__(self, skills_dir: str = "skills"):
         self.skills_dir = Path(skills_dir)
+
+    @classmethod
+    def from_config(cls, cfg, config):
+        return cls(skills_dir=cfg.get("skills_dir", "skills"))
 
     async def execute(self, **kwargs) -> str:
         skill_name: str = kwargs["skill_name"]

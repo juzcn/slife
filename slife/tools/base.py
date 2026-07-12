@@ -1,7 +1,10 @@
 """Abstract base classes for the tool system."""
 
 from abc import ABC, abstractmethod
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from slife.config import Config
 
 
 class Tool(ABC):
@@ -37,6 +40,16 @@ class Tool(ABC):
             Result string to send back to the LLM.
         """
         ...
+
+    @classmethod
+    def from_config(cls, cfg: dict, config: "Config | None") -> "Tool":
+        """Create tool instance from config override dict.
+
+        The default implementation calls cls() with no arguments.
+        Override in subclasses that need constructor parameters
+        (e.g. timeout, skills_dir).
+        """
+        return cls()
 
     @classmethod
     def to_openai_function(cls) -> dict:

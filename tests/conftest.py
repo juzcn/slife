@@ -87,7 +87,7 @@ def sample_config(sample_model_config):
         models=[sample_model_config],
         active_model_ref="deepseek/deepseek-v4-flash",
         tools=[
-            {"type": "shell", "timeout": 30},
+            {"name": "execute_shell", "timeout": 30},
         ],
         max_iterations=10,
     )

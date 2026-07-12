@@ -118,16 +118,16 @@ It's a chat window with tools. The LLM is in control.
 │  Agent Loop                                          │
 │  slife/agent/loop.py — streaming function-calling    │
 │  Emits: thinking chunks, text chunks, tool events     │
-├──────────┬──────────────┬──────────────┬─────────────────────┬──────────────────┤
-│ Native   │ Skills       │ MCP Tools    │ RESTful API Tools   │ CLI Tools        │
-│ Tools    │ skill.py     │ slife/mcp/   │ (via MCP)           │ cli.py           │
-│ shell.py │ skills/ dir  │ client.py    │ anyapi-mcp-server   │ cli_add_tool     │
-│ shell_   │              │ process.py   │ OpenAPI spec →      │ cli_remove_tool  │
-│ command. │              │ tool_        │ MCP tools at        │ cli_list_tools   │
-│ py       │              │ adapter.py   │ runtime             │                  │
-│ config_  │              │              │                     │                  │
-│ env.py   │              │              │                     │                  │
 ├──────────┴──────────────┴──────────────┴─────────────────────┴──────────────────┤
+│  Native Tools (auto-discovered from slife/tools/*)                               │
+│  shell.py  run_python_script.py  os_info.py  config_env.py  cli.py  skill.py    │
+│                                                                                  │
+│  Skills          MCP Tools          RESTful API Tools                            │
+│  skills/ dir     slife/mcp/         (via MCP + anyapi-mcp-server)                │
+│  SKILL.md files  client.py         OpenAPI spec → MCP tools at runtime           │
+│                  process.py                                                      │
+│                  tool_adapter.py                                                 │
+├──────────────────────────────────────────────────────────────────────────────────┤
 │  LLM Client (AsyncOpenAI)                            │
 │  slife/agent/llm_client.py — streaming + thinking    │
 ├──────────────────────────────────────────────────────┤
@@ -168,32 +168,40 @@ User Input → Conversation.add_user_message()
 
 Validation happens at class definition time via `__init_subclass__` — every `Tool` subclass must define non-empty `name`, `description`, and `parameters`.
 
-Tool loading (`slife/tools/factory.py`): `_TOOL_BUILDERS` maps config `type` strings to factory functions. Each builder receives the config entry dict and returns a `Tool` or list of `Tool` instances. Unknown types log a warning and are skipped.
+Tool loading (`slife/tools/factory.py`): all modules in `slife.tools.*` are imported via `pkgutil.iter_modules`, then `Tool.__subclasses__()` discovers every valid subclass automatically. No manual registry — new tools are picked up as soon as their module exists in the package. The `slife.json5` `tools` array is optional: use it only to override defaults (`{name: "execute_shell", timeout: 60}`) or disable a tool (`{name: "execute_shell", enabled: false}`). Each entry matches against `Tool.name` — every tool has a unique name, so overrides are always per-tool.
 
-slife supports four categories of tools, all unified under the `Tool` ABC and registered in a single `ToolRegistry`. The LLM sees no difference between them — all are OpenAI function definitions.
+slife supports five categories of tools, all unified under the `Tool` ABC and registered in a single `ToolRegistry`. The LLM sees no difference between them — all are OpenAI function definitions.
 
 ### 1. Native Function Tools
 
-Built-in tools implemented directly in Python. Each maps to a config `type`:
+Built-in tools implemented directly in Python, auto-discovered from `slife/tools/*.py`. Config overrides match by `Tool.name`:
 
-| Tool | Config Type | Implementation |
-|---|---|---|
-| `execute_shell` | `"shell"` | `asyncio.create_subprocess_shell`, configurable timeout |
-| `get_shell_command` | `"platform"` | Platform-aware command builder (cmd.exe on Windows, bash on Unix) |
-| `config_env_set` / `config_env_get` / `config_env_remove` | `"config_env"` | Read/write env vars in `slife.json5` |
+| Tool | Implementation |
+|---|---|
+| `execute_shell` | `asyncio.create_subprocess_shell`, configurable timeout |
+| `run_python_script` | Platform-correct Python invocation with JSON args |
+| `get_os_info` | Return current OS name (Windows/Linux/macOS) |
+| `config_env_set` | Write env vars to `slife.json5` + inject immediately |
+| `config_env_get` | Read env vars from `slife.json5` |
+| `config_env_remove` | Remove env vars from `slife.json5` + os.environ |
+| `cli_add_tool` | Register a CLI for future discovery |
+| `cli_remove_tool` | Remove a registered CLI |
+| `cli_list_tools` | List all registered CLI tools |
 
 ### 2. Skills
 
-On-demand documentation plugins. Configured via `type: "skill"` — produces two tools:
+On-demand documentation plugins — four tools in `slife/tools/skill.py`:
 
-| Tool | Config Type | Implementation |
-|---|---|---|
-| `list_skills` | `"skill"` | Discover available SKILL.md files under `skills_dir` |
-| `use_skill` | `"skill"` | Load a skill's full markdown body into context |
+| Tool | Implementation |
+|---|---|
+| `list_skills` | Discover available SKILL.md files under `skills_dir` |
+| `use_skill` | Load a skill's full markdown body into context |
+| `add_skill` | Install a skill from files or a zip/tar.gz archive |
+| `remove_skill` | Remove an installed skill |
 
-Skills are discovered by scanning directories under `skills/` for `SKILL.md` files with YAML frontmatter (`name`, `description`). The shared `_iter_skills()` helper in `slife/tools/skill.py` handles directory scanning and frontmatter parsing once, used by both `get_skills_summary` and `_read_skill`.
+Skills are discovered by scanning directories under `skills/` for `SKILL.md` files with YAML frontmatter (`name`, `description`). The shared `_iter_skills()` helper in `slife/tools/skill.py` handles directory scanning and frontmatter parsing once, used by all four skill tools.
 
-This is a **progressive disclosure** pattern: skill names and one-line descriptions are always visible, but the full instructions are only loaded on demand via `use_skill`. This keeps context lean until the knowledge is needed.
+This is a **progressive disclosure** pattern: skill names and one-line descriptions are always visible, but the full instructions are only loaded on demand via `use_skill`. This keeps context lean until the knowledge is needed. `add_skill` and `remove_skill` let the LLM manage the skills directory at runtime.
 
 ### 3. MCP Tools
 
@@ -223,7 +231,7 @@ This produces tools like `github__list_repos`, `github__create_issue`, etc. — 
 
 ### 5. CLI Tools
 
-External CLI commands the LLM discovers at runtime and registers for future use. Configured via `type: "cli_manager"` — produces three management tools:
+External CLI commands the LLM discovers at runtime and registers for future use — three management tools in `slife/tools/cli.py`:
 
 | Tool | Description |
 |---|---|
@@ -340,14 +348,15 @@ slife/
     service.py         #   Wiring: client + tools + loop + MCP
     system_prompt.py   #   Jinja2 template rendering
     multimodal.py      #   Image encoding, /file attachment parsing
-  tools/               # Tool implementations (5 categories)
+  tools/               # Tool implementations (5 categories, auto-discovered)
     base.py            #   Tool ABC with __init_subclass__ validation
     registry.py        #   Name → Tool lookup & execution
-    factory.py         #   Config type → Tool instances (TOOL_BUILDERS)
+    factory.py         #   Auto-discovery via pkgutil + __subclasses__()
     shell.py           #   execute_shell (subprocess with timeout)
-    shell_command.py   #   get_shell_command (platform-aware)
-    skill.py           #   list_skills / use_skill (shared _iter_skills)
-    config_env.py      #   config_env_set/get/remove
+    run_python_script.py  #   run_python_script (platform-aware)
+    os_info.py         #   get_os_info (current OS)
+    skill.py           #   list_skills / use_skill / add_skill / remove_skill
+    config_env.py      #   config_env_set / get / remove
     cli.py             #   cli_add_tool / cli_remove_tool / cli_list_tools
   mcp/                 # MCP client (slife side)
     client.py          #   stdio/HTTP client with asyncio.Queue adapters

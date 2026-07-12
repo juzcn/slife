@@ -328,9 +328,8 @@ class Config:
             os.environ[key] = str(value)
         logger.info("Env vars in config: %d", len(env_section))
 
-        # Tools
+        # Tools (optional — auto-discovery handles defaults)
         tools = resolve_env(cls._parse_section(raw, "tools", list, []))
-        logger.info("Tool entries in config: %d", len(tools))
 
         # MCP
         mcp_config = MCPConfig.from_dict(raw.get("mcp", {}))

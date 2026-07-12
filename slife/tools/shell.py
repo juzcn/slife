@@ -27,6 +27,10 @@ class ShellTool(Tool):
     def __init__(self, timeout: int = 30):
         self.timeout = timeout
 
+    @classmethod
+    def from_config(cls, cfg, config):
+        return cls(timeout=cfg.get("timeout", 30))
+
     async def execute(self, **kwargs) -> str:
         command: str = kwargs["command"]
         """Execute a shell command and return its output."""

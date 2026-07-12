@@ -1,13 +1,12 @@
 {
   // ═══════════════════════════════════════════════════════════════
-  // slife Configuration — OpenClaw-compatible JSON5 format
+  // slife Configuration
   // ═══════════════════════════════════════════════════════════════
-  // API keys: set as environment variables, reference with ${VAR}.
-  //            Never put real keys in this file — use ${ENV_VAR}.
+  // Copy this file to slife.json5 and edit.
+  // API keys: use ${ENV_VAR} references — never put real keys here.
 
   // ── Environment variables ────────────────────────────────────
-  // Injected into os.environ so tools and shell commands can
-  // reference them via ${VAR} syntax.
+  // Injected into os.environ so tools and ${VAR} references work.
 
   env: {
     // SERPER_API_KEY: "${SERPER_API_KEY}",
@@ -21,12 +20,11 @@
   },
 
   // ── Models ───────────────────────────────────────────────────
-  // provider/<id>: connection config shared by all models under it.
-  // model: API model name (doubles as local identifier within provider).
-  // name:  display label shown in the TUI status bar.
-  // reasoning: true → enable thinking/reasoning mode (DeepSeek V4).
-  // reasoning_effort: optional — "low" | "medium" | "high" | "xhigh" | "max".
-  // input: ["text", "image"] → supports vision (image attachment via /file).
+  // provider: connection config shared by all models under it.
+  //   model:     API model name (doubles as id within provider).
+  //   name:      display label shown in the TUI status bar.
+  //   reasoning: true → enable thinking mode.
+  //   input:     ["text", "image"] → vision support (/file attach).
 
   models: {
     mode: "merge",
@@ -62,7 +60,6 @@
         ],
       },
 
-      // Example: OpenAI provider
       // openai: {
       //   base_url: "https://api.openai.com/v1",
       //   api_key: "${OPENAI_API_KEY}",
@@ -77,39 +74,21 @@
   active_model: "deepseek/deepseek-v4-pro",
 
   // ── Tools ────────────────────────────────────────────────────
-  // Each entry maps to a Tool subclass via slife/tools/factory.py.
+  // All tools in slife/tools/ are auto-discovered at startup.
+  // Add entries here only to override defaults or disable tools.
+  // Each entry matches by tool name:
   //
-  //   platform — get_shell_command (OS-correct shell syntax)
-  //   shell    — execute_shell (run commands with timeout)
-  //   skill    — list_skills + use_skill (on-demand documentation)
-
-  tools: [
-    { type: "platform" },
-    { type: "shell", timeout: 30 },
-    { type: "skill", skills_dir: "skills" },
-  ],
+  //   { name: "execute_shell", timeout: 60 },
+  //   { name: "list_skills", enabled: false },
 
   // ── MCP Integration (optional) ────────────────────────────────
-  // The slife-mcp wrapper manages connections to external MCP
-  // servers. Two modes:
+  // slife-mcp connects to external MCP servers. Two modes:
+  //   Child process — slife auto-starts the wrapper (default).
+  //   Standalone HTTP — start manually, slife connects via wrapper.url.
   //
-  //   Child process (default): slife auto-starts the wrapper.
-  //     Uses wrapper.command + wrapper.args to spawn.
-  //
-  //   Standalone HTTP: you start the wrapper manually, slife
-  //     connects to it. Set wrapper.url to the MCP endpoint.
-  //     Start the wrapper: python -m slife_mcp.server --transport http
-  //
-  // Each server entry uses standard MCP format:
-  //   command — executable to run
-  //   args    — command-line arguments
-  //   env     — optional environment variables for the server process
+  // Each server: { command, args, env? } — standard MCP format.
 
   // mcp: {
-  //   // wrapper.url — slife probes this URL first, falls back to
-  //   // child process. The wrapper server reads it via --config:
-  //   //   python -m slife_mcp.server --config slife.json5
-  //   //
   //   // wrapper: {
   //   //   url: "http://127.0.0.1:9876/mcp",
   //   // },
