@@ -176,8 +176,8 @@ class SlifeApp(App):
                 handler=handler,
             )
         except MaxIterationsExceeded as e:
-            chat_view.add_system_message(f"[#f85149]✗ {e}[/#f85149]")
+            chat_view.add_system_message(f"✗ {e}", color="#f85149")
         except Exception as e:
-            chat_view.add_system_message(f"[#f85149]✗ Error: {e}[/#f85149]")
+            chat_view.add_system_message(f"✗ Error: {e}", color="#f85149")
         finally:
             self._active_assistant = None

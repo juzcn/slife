@@ -28,9 +28,11 @@ class ChatView(VerticalScroll):
         self.scroll_end(animate=False)
         return msg
 
-    def add_system_message(self, text: str) -> None:
+    def add_system_message(self, text: str, color: str | None = None) -> None:
         """Add a system/status message."""
         content = Content.from_text(text, markup=False)
+        if color:
+            content = content.stylize(color)
         msg = Static(content, classes="system-message")
         self.mount(msg)
         self.scroll_end(animate=False)
