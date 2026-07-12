@@ -65,7 +65,16 @@ class AssistantMessage(Static):
     All user-facing text goes through Content.from_text(markup=False)
     so special characters (&, [, ]) are rendered literally — no
     MarkupError from URLs or code in the assistant's output.
+
+    Lifecycle:
+      - Created by TUIHandler per iteration, receives streaming chunks.
+      - After tool calls complete, handler calls finalize(intermediate=True)
+        to collapse thinking and hide token usage for non-final iterations.
+      - The final iteration stays expanded so the user sees the answer.
+      - Click to toggle thinking collapse/expand.
     """
+
+    can_focus = True
 
     def __init__(self):
         super().__init__("")
@@ -74,6 +83,8 @@ class AssistantMessage(Static):
         self._thinking = ""
         self._has_thinking = False
         self._usage: TokenUsage | None = None
+        self._is_thinking_collapsed: bool = False
+        self._show_usage: bool = True
 
     def append_thinking(self, chunk: str) -> None:
         """Append a chunk of reasoning/thinking content."""
@@ -91,11 +102,41 @@ class AssistantMessage(Static):
         self._usage = usage
         self._refresh_display()
 
+    def finalize(self, intermediate: bool = False) -> None:
+        """Mark this message as complete.
+
+        Args:
+            intermediate: True for non-final iterations (collapse thinking,
+                          hide usage). False for the final response (keep
+                          thinking expanded, show usage).
+        """
+        if intermediate:
+            self._is_thinking_collapsed = True
+            self._show_usage = False
+        self._refresh_display()
+
+    def on_click(self) -> None:
+        """Toggle thinking collapse/expand on click."""
+        if self._has_thinking:
+            self._is_thinking_collapsed = not self._is_thinking_collapsed
+            self._refresh_display()
+
     def _refresh_display(self) -> None:
         """Rebuild the display in Claude Code style using safe Content objects."""
         content = Content()
 
-        # Thinking block — dim italic, subtle header
+        # Thinking block — collapsed: one-line summary
+        if self._has_thinking and self._is_thinking_collapsed:
+            n = len(self._thinking)
+            indicator = "▸"
+            content = content + Content.from_markup(
+                f"[dim italic]⟐ Thinking ({n} chars) {indicator}[/dim italic]"
+            )
+            # Collapsed: nothing else shown — no text, no usage
+            self.update(content if content else "")
+            return
+
+        # Thinking block — expanded: dim italic, subtle header
         if self._has_thinking:
             content = content + Content.from_markup("[dim italic]⟐ Thinking…[/dim italic]\n")
             thinking_display = (
@@ -112,8 +153,8 @@ class AssistantMessage(Static):
         elif not self._has_thinking:
             content = content + Content.from_markup("[dim]…[/dim]")
 
-        # Token usage — very subtle
-        if self._usage:
+        # Token usage — very subtle, only when show_usage is True
+        if self._usage and self._show_usage:
             content = content + Content.from_markup(
                 f"\n[dim]↑ {self._usage.total_tokens:,} tokens "
                 f"(in: {self._usage.prompt_tokens:,}, "

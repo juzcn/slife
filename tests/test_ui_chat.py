@@ -50,6 +50,8 @@ class TestAssistantMessage:
             msg._thinking = ""
             msg._has_thinking = False
             msg._usage = None
+            msg._is_thinking_collapsed = False
+            msg._show_usage = True
             return msg
 
     def test_initial_state(self):
@@ -152,6 +154,93 @@ class TestAssistantMessage:
         assert "30" in text
         assert "20" in text
         assert "10" in text
+
+    # ── Finalize / collapse ──────────────────────────────────────────
+
+    def test_finalize_intermediate(self):
+        """finalize(intermediate=True) collapses thinking and hides usage."""
+        msg = self._make_msg()
+        msg._has_thinking = True
+        msg._thinking = "reasoning"
+        msg.update = MagicMock()
+        msg.finalize(intermediate=True)
+        assert msg._is_thinking_collapsed is True
+        assert msg._show_usage is False
+
+    def test_finalize_final(self):
+        """finalize(intermediate=False) keeps thinking expanded and usage visible."""
+        msg = self._make_msg()
+        msg.update = MagicMock()
+        msg.finalize(intermediate=False)
+        assert msg._is_thinking_collapsed is False
+        assert msg._show_usage is True
+
+    def test_on_click_toggles_collapse(self):
+        """Click toggles the collapse state."""
+        msg = self._make_msg()
+        msg._has_thinking = True
+        msg.update = MagicMock()
+        assert msg._is_thinking_collapsed is False
+        msg.on_click()
+        assert msg._is_thinking_collapsed is True
+        msg.on_click()
+        assert msg._is_thinking_collapsed is False
+
+    def test_on_click_no_thinking_noop(self):
+        """Click is a no-op when there is no thinking to collapse."""
+        msg = self._make_msg()
+        msg._has_thinking = False
+        msg.update = MagicMock()
+        msg.on_click()
+        assert msg._is_thinking_collapsed is False
+
+    def test_collapsed_display_shows_summary(self):
+        """Collapsed display shows only the one-line summary."""
+        msg = self._make_msg()
+        msg._thinking = "Step by step reasoning"
+        msg._has_thinking = True
+        msg._is_thinking_collapsed = True
+        msg._buffer = "The answer"
+        msg._usage = TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        msg.update = MagicMock()
+        msg._refresh_display()
+        content = msg.update.call_args[0][0]
+        text = content.plain
+        assert "Thinking" in text
+        assert "22 chars" in text
+        assert "▸" in text
+        # Collapsed: no text buffer, no usage
+        assert "The answer" not in text
+        assert "tokens" not in text
+
+    def test_collapsed_display_no_text_no_usage(self):
+        """Verify collapsed display excludes text content and token usage."""
+        msg = self._make_msg()
+        msg._thinking = "x"
+        msg._has_thinking = True
+        msg._is_thinking_collapsed = True
+        msg._buffer = "should not appear"
+        msg._usage = TokenUsage(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        msg._show_usage = True  # collapse should override this
+        msg.update = MagicMock()
+        msg._refresh_display()
+        content = msg.update.call_args[0][0]
+        text = content.plain
+        assert "should not appear" not in text
+        assert "tokens" not in text
+
+    def test_expanded_display_no_collapse_indicator(self):
+        """Expanded thinking does not show collapse indicator ▸."""
+        msg = self._make_msg()
+        msg._thinking = "x"
+        msg._has_thinking = True
+        msg._is_thinking_collapsed = False
+        msg.update = MagicMock()
+        msg._refresh_display()
+        content = msg.update.call_args[0][0]
+        text = content.plain
+        assert "▸" not in text
+        assert "Thinking" in text
 
 
 # ── ChatView logic ────────────────────────────────────────────────────

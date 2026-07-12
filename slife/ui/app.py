@@ -7,7 +7,7 @@ from slife.config import Config
 from slife.agent.service import AgentService
 from slife.agent.loop import MaxIterationsExceeded
 from slife.agent.multimodal import parse_file_attachments
-from slife.ui.chat import ChatView, AssistantMessage
+from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
 from slife.ui.tool_display import ToolCallWidget
 
@@ -70,7 +70,6 @@ class SlifeApp(App):
 
         # TUI state for tracking active widgets during streaming
         self._tool_widgets: dict[str, ToolCallWidget] = {}
-        self._active_assistant: AssistantMessage | None = None
 
     def compose(self) -> ComposeResult:
         """Minimal layout: chat fills screen, input + status docked at bottom."""
@@ -163,8 +162,6 @@ class SlifeApp(App):
         chat_view: ChatView,
     ) -> None:
         """Run the agent loop and stream results to the TUI."""
-        # Create the assistant message widget that will receive streaming content
-        self._active_assistant = chat_view.add_assistant_message()
         self._tool_widgets.clear()
 
         handler = TUIHandler(self)
@@ -175,9 +172,10 @@ class SlifeApp(App):
                 images=images if images else None,
                 handler=handler,
             )
+            handler.finalize_current()
         except MaxIterationsExceeded as e:
+            handler.finalize_current()
             chat_view.add_system_message(f"✗ {e}", color="#f85149")
         except Exception as e:
+            handler.finalize_current()
             chat_view.add_system_message(f"✗ Error: {e}", color="#f85149")
-        finally:
-            self._active_assistant = None
