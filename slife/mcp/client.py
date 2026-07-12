@@ -152,9 +152,14 @@ class MCPClient:
                     message = types.JSONRPCMessage.model_validate_json(line_str)
                     await self._stdout_queue.put(SessionMessage(message))
                 except Exception:
-                    pass
+                    logger.debug(
+                        "Failed to parse stdout line as JSON-RPC: %s",
+                        line_str[:200], exc_info=True,
+                    )
         except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.warning("_bridge_stdout task crashed", exc_info=True)
 
     async def _bridge_stdin(self) -> None:
         assert self._process and self._process.stdin and self._stdin_queue
@@ -183,9 +188,14 @@ class MCPClient:
                     message = types.JSONRPCMessage.model_validate_json(line_str)
                     await self._stdout_queue.put(SessionMessage(message))
                 except Exception:
-                    pass
+                    logger.debug(
+                        "Failed to parse reader line as JSON-RPC: %s",
+                        line_str[:200], exc_info=True,
+                    )
         except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.warning("_bridge_reader task crashed", exc_info=True)
 
     async def _bridge_writer(self, writer) -> None:
         """Bridge from the stdin queue to a raw asyncio StreamWriter."""
