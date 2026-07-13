@@ -100,6 +100,12 @@
       // Enable when you have a GITHUB_TOKEN.  anyapi-mcp-server
       // converts any OpenAPI spec into MCP tools — swap --spec and
       // --base-url to connect other REST APIs (Jira, Slack, etc.).
+      //
+      // disclosure: "lazy" is available for servers that expose many
+      // tools (e.g. native MCP servers with one tool per endpoint).
+      // Lazy servers connect at startup but don't register their tools
+      // until the LLM calls mcp_activate_server.
+      //
       // github: {
       //   command: "npx",
       //   args: [

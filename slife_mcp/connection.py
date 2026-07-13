@@ -37,6 +37,7 @@ class ServerConfig:
     args: list[str] = field(default_factory=list)
     env: dict[str, str] | None = None
     description: str = ""
+    active: bool = True  # False = connected but tools not disclosed yet
 
 
 class MCPServerConnection:
@@ -49,6 +50,7 @@ class MCPServerConnection:
     def __init__(self, config: ServerConfig):
         self.config = config
         self._status = ServerStatus.DISCONNECTED
+        self._active = config.active
         self._process: asyncio.subprocess.Process | None = None
         self._next_id: int = 0
         self._lock = asyncio.Lock()
@@ -62,12 +64,20 @@ class MCPServerConnection:
         return self._status
 
     @property
+    def active(self) -> bool:
+        return self._active
+
+    @property
     def tool_count(self) -> int:
         return len(self._tools_cache)
 
     @property
     def error(self) -> str | None:
         return self._error
+
+    def set_active(self, value: bool) -> None:
+        """Toggle whether this server's tools are disclosed."""
+        self._active = value
 
     async def connect(self) -> None:
         if self._status == ServerStatus.CONNECTED:
@@ -306,20 +316,80 @@ class ConnectionPool:
                 "tool_count": conn.tool_count, "error": conn.error,
                 "command": conn.config.command, "args": conn.config.args,
                 "description": conn.config.description,
+                "active": conn.active,
             }
             for name, conn in self._connections.items()
         ]
 
-    def list_all_tools(self, server_name: str | None = None) -> list[dict]:
-        result = []
-        servers = [server_name] if server_name else list(self._connections.keys())
-        for name in servers:
-            conn = self._connections.get(name)
-            if conn is None or conn.status != ServerStatus.CONNECTED:
-                continue
-            for tool in conn.list_tools():
-                result.append({**tool, "server": name, "full_name": f"{name}__{tool['name']}"})
-        return result
+    def list_all_tools(self, server_name: str) -> list[dict]:
+        """List all tools from a specific server, regardless of active state."""
+        conn = self._connections.get(server_name)
+        if conn is None or conn.status != ServerStatus.CONNECTED:
+            return []
+        return [
+            {**tool, "server": server_name, "full_name": f"{server_name}__{tool['name']}"}
+            for tool in conn.list_tools()
+        ]
+
+    async def activate_server(self, name: str) -> dict:
+        """Activate a connected-but-inactive server and return its tools.
+
+        Returns:
+            dict with status, server, tool_count, tools list.
+        """
+        conn = self._connections.get(name)
+        if conn is None:
+            return {"status": "error", "server": name, "error": f"Server '{name}' not found."}
+        if conn.status != ServerStatus.CONNECTED:
+            return {"status": "error", "server": name, "error": f"Server '{name}' is not connected (status: {conn.status.value})."}
+        if conn.active:
+            tools = conn.list_tools()
+            return {
+                "status": "already_active",
+                "server": name,
+                "tool_count": len(tools),
+                "tools": [t["name"] for t in tools],
+            }
+        conn.set_active(True)
+        tools = conn.list_tools()
+        return {
+            "status": "activated",
+            "server": name,
+            "tool_count": len(tools),
+            "tools": [t["name"] for t in tools],
+        }
+
+    def check_server(self, name: str) -> dict:
+        """Return status snapshot for a single server.
+
+        Returns:
+            dict with name, status, active, tool_count, description, error.
+        """
+        conn = self._connections.get(name)
+        if conn is None:
+            return {"name": name, "status": "not_found"}
+        return {
+            "name": name,
+            "status": conn.status.value,
+            "active": conn.active,
+            "tool_count": conn.tool_count,
+            "description": conn.config.description,
+            "error": conn.error,
+        }
+
+    async def deactivate_server(self, name: str) -> dict:
+        """Deactivate a connected server, hiding its tools from discovery.
+
+        Returns:
+            dict with status, server, tool_count.
+        """
+        conn = self._connections.get(name)
+        if conn is None:
+            return {"status": "error", "server": name, "error": f"Server '{name}' not found."}
+        if not conn.active:
+            return {"status": "already_inactive", "server": name, "tool_count": conn.tool_count}
+        conn.set_active(False)
+        return {"status": "deactivated", "server": name, "tool_count": conn.tool_count}
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict) -> str:
         conn = self._connections.get(server_name)

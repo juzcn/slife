@@ -31,7 +31,7 @@ class MCPProxyTool(Tool):
     description = "MCP proxy tool (placeholder)"
     parameters: dict = {"type": "object", "properties": {}}
 
-    def __init__(self, mcp_client, tool_info: dict, on_server_added=None, on_server_removed=None):
+    def __init__(self, mcp_client, tool_info: dict, on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None):
         """
         Args:
             mcp_client: MCPClient instance connected to the slife-mcp wrapper.
@@ -40,12 +40,15 @@ class MCPProxyTool(Tool):
                 invoked when mcp_add_server succeeds, for config persistence.
             on_server_removed: Optional async callback(name)
                 invoked when mcp_remove_server succeeds, for config persistence.
+            on_server_disclosure_changed: Optional async callback(name, disclosure)
+                invoked when mcp_set_disclosure succeeds, to persist and update tools.
         """
         self._mcp_client = mcp_client
         self._server = tool_info["server"]
         self._tool_name = tool_info["name"]
         self._on_server_added = on_server_added
         self._on_server_removed = on_server_removed
+        self._on_server_disclosure_changed = on_server_disclosure_changed
 
         # Namespaced tool name: "server__toolname"
         full_name = f"{self._server}__{self._tool_name}"
@@ -143,6 +146,24 @@ class MCPProxyTool(Tool):
                         kwargs.get("name", "?"),
                     )
 
+            # Change disclosure mode → persist + register tools if eager
+            if self._tool_name == "mcp_set_disclosure" and self._on_server_disclosure_changed:
+                try:
+                    parsed = json.loads(result)
+                    new_disclosure = parsed.get("disclosure", "")
+                    if new_disclosure in ("eager", "lazy"):
+                        await self._on_server_disclosure_changed(
+                            name=kwargs.get("name", ""),
+                            disclosure=new_disclosure,
+                        )
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Disclosure change: could not parse result: %s",
+                        result[:200],
+                    )
+                except Exception:
+                    logger.exception("Disclosure change callback failed")
+
             # Persist server removals to config file
             if self._tool_name == "mcp_remove_server" and self._on_server_removed:
                 try:
@@ -179,7 +200,7 @@ class MCPProxyTool(Tool):
 
 
 def create_proxy_tools(
-    mcp_client, tools: list[dict], on_server_added=None, on_server_removed=None
+    mcp_client, tools: list[dict], on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None
 ) -> list[MCPProxyTool]:
     """Create MCPProxyTool instances from a list of tool info dicts.
 
@@ -191,11 +212,18 @@ def create_proxy_tools(
             invoked when mcp_add_server succeeds.
         on_server_removed: Optional async callback(name)
             invoked when mcp_remove_server succeeds.
+        on_server_disclosure_changed: Optional async callback(name, disclosure)
+            invoked when mcp_set_disclosure succeeds.
 
     Returns:
         List of MCPProxyTool instances ready for ToolRegistry registration.
     """
     return [
-        MCPProxyTool(mcp_client, t, on_server_added=on_server_added, on_server_removed=on_server_removed)
+        MCPProxyTool(
+            mcp_client, t,
+            on_server_added=on_server_added,
+            on_server_removed=on_server_removed,
+            on_server_disclosure_changed=on_server_disclosure_changed,
+        )
         for t in tools
     ]

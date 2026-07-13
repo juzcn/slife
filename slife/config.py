@@ -206,6 +206,33 @@ class Config:
             self.mcp_config.servers.pop(name, None)
             logger.info("Removed MCP server '%s' from config.", name)
 
+    def set_server_disclosure(self, name: str, disclosure: str) -> None:
+        """Persist disclosure mode for an MCP server to the config file.
+
+        Args:
+            name: Server name.
+            disclosure: 'eager' or 'lazy'.
+        """
+        if not self._path:
+            logger.warning("No config path stored; cannot set disclosure for '%s'.", name)
+            return
+
+        raw = json5.loads(self._path.read_text(encoding="utf-8"))
+        servers = raw.setdefault("mcp", {}).setdefault("servers", {})
+        if name in servers:
+            if disclosure == "eager":
+                servers[name].pop("disclosure", None)
+            else:
+                servers[name]["disclosure"] = disclosure
+            self._path.write_text(json5.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
+            # Update in-memory state
+            if name in self.mcp_config.servers:
+                if disclosure == "eager":
+                    self.mcp_config.servers[name].pop("disclosure", None)
+                else:
+                    self.mcp_config.servers[name]["disclosure"] = disclosure
+            logger.info("Set disclosure for '%s' to '%s'.", name, disclosure)
+
     @property
     def active_model(self) -> ModelConfig:
         """Return the currently active model configuration."""

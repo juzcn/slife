@@ -28,5 +28,11 @@ Tools
   To add more, research requirements first then call mcp_add_server.
   Include source provenance (type, url, version) when adding.
 
+  MCP servers default to eager (all tools loaded at startup).
+  Set disclosure: "lazy" in config for servers with many tools.
+  Lazy servers connect but don't auto-register their tools.
+  Use mcp_set_disclosure to switch modes — eager loads tools
+  immediately, lazy unregisters them to save context.
+
   REST APIs — connect via anyapi-mcp-server (pattern in slife.json5).
   Docs: https://github.com/quiloos39/anyapi-mcp-server

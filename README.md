@@ -45,7 +45,7 @@ On-demand documentation plugins under `skills/`. The agent loads them only when 
 
 External MCP servers connect through [slife-mcp](https://pypi.org/project/slife-mcp/) — an independent proxy that manages persistent connections. Tools are prefixed by server name (e.g. `filesystem__read_file`). REST APIs connect the same way via [anyapi-mcp-server](https://github.com/quiloos39/anyapi-mcp-server), which converts any OpenAPI spec to callable tools at runtime.
 
-Add servers at runtime with `mcp_add_server` or configure them in `slife.json5` → `mcp.servers`. See `slife.json5.example` for the commented github template.
+Add servers at runtime with `mcp_add_server` or pre-configure them in `slife.json5` → `mcp.servers`. Servers default to eager mode (all tools loaded at startup). For servers with many tools, use `disclosure: "lazy"` — the server connects but tools load on demand via `mcp_set_disclosure`, keeping context lean.
 
 ## Tips
 

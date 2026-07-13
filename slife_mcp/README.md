@@ -60,12 +60,29 @@ Once running, clients can call these tools to manage connections:
 
 | Tool | Description |
 |------|-------------|
-| `mcp_add_server` | Add and connect to an external MCP server at runtime |
+| `mcp_add_server` | Connect to an external MCP server (activate=false for lazy) |
 | `mcp_remove_server` | Disconnect and remove a server |
-| `mcp_list_servers` | List all configured servers with status |
-| `mcp_list_tools` | List all tools from connected servers |
+| `mcp_list_servers` | List all servers with status, tool count, and active state |
+| `mcp_list_tools` | List all tools from a server, even if inactive |
+| `mcp_check_server` | Check a single server's status and active state |
+| `mcp_set_disclosure` | Switch between eager (tools loaded) and lazy (tools on demand) |
 | `mcp_call_tool` | Call a tool on a connected server |
 | `mcp_reload` | Reconnect to refresh tool lists |
+
+### Progressive Disclosure
+
+Servers default to eager mode — all tools loaded at startup. For servers with many tools, use `activate: false` when adding or `disclosure: "lazy"` in config:
+
+```json5
+servers: {
+  "big-api": {
+    command: "npx", args: [...],
+    disclosure: "lazy",  // connect but don't load tools yet
+  }
+}
+```
+
+Lazy servers connect at startup but don't disclose tools. Clients browse tools with `mcp_list_tools({server: "big-api"})`, then call `mcp_set_disclosure({name: "big-api", disclosure: "eager"})` to load them.
 
 ## Transport Modes
 

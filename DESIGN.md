@@ -23,6 +23,7 @@ What the LLM *cannot* know:
 - That the pre-configured MCP servers (filesystem, fetch, duckduckgo-search)
 	  need no auth — the LLM can use them immediately without asking for keys
 - That external MCP servers are managed via `mcp_add_server`
+- That MCP servers can be eager (tools auto-loaded) or lazy (tools browsed then loaded on demand via `mcp_set_disclosure`)
 - That some MCP servers need user-provided configuration arguments and must not be called with empty args
 - That `anyapi-mcp-server` is the recommended framework for connecting REST APIs
 - That a commented github/anyapi-mcp-server template is in slife.json5 for when the user has a token
@@ -198,6 +199,8 @@ External MCP servers connected through [slife-mcp](https://pypi.org/project/slif
 
 MCP tools are not configured via `tools[]` — they are discovered dynamically when slife-mcp connects to configured servers. See the MCP Integration section below.
 
+**Progressive disclosure**: servers with many tools can use `disclosure: "lazy"` in config. They connect at startup but don't auto-register tools — the LLM browses them via `mcp_list_tools`, then loads them on demand with `mcp_set_disclosure`. This is the MCP equivalent of the skills `list_skills`/`use_skill` pattern.
+
 ### 4. RESTful API Tools (anyapi-mcp-server)
 
 REST APIs are converted to MCP tools via [anyapi-mcp-server](https://github.com/quiloos39/anyapi-mcp-server), which generates tools from OpenAPI specifications at runtime. These are regular MCP servers from slife's perspective — configured in `mcp.servers` with `command: "npx"` and `args` specifying the `--spec` URL, `--base-url`, and any required headers.
@@ -245,6 +248,27 @@ slife agent  ←────────────→  slife-mcp (FastMCP)
                                   └── ... (any MCP server)
 ```
 
+### Progressive Disclosure (lazy servers)
+
+MCP servers default to eager mode: all tools are discovered and registered at startup. Servers with many tools can be configured as lazy — they connect but don't register tools until the LLM explicitly requests them:
+
+```json5
+github: {
+  command: "npx", args: [...],
+  disclosure: "lazy",   // connect but don't auto-register tools
+}
+```
+
+The LLM workflow for lazy servers:
+1. `mcp_list_servers` — see server is connected with `active: false`
+2. `mcp_list_tools({server: "github"})` — browse available tools before deciding
+3. `mcp_set_disclosure({name: "github", disclosure: "eager"})` — load tools immediately
+
+All changes take effect immediately:
+- `eager` → registers tools, they appear in the next LLM request
+- `lazy` → unregisters tools, saving context. Server process stays connected — switch back to eager to reload.
+- `mcp_remove_server` → stops the server process, unregisters tools, persists removal. To recover, re-add the server.
+
 ### slife side (`slife/mcp/`)
 
 **MCPClient** (`client.py`): connects to the wrapper via stdio (child process) or HTTP (standalone). Uses `asyncio.Queue` adapters to bridge subprocess pipes to MCP's `ClientSession`. `disconnect()` decomposed into four phases: cancel bridge tasks, reset state, clean up transport, terminate owned process.
@@ -256,7 +280,7 @@ slife agent  ←────────────→  slife-mcp (FastMCP)
 **Startup flow** (`AgentService.start_mcp`):
 1. `_connect_mcp_wrapper()` — probe `wrapper_url`, connect via HTTP or fall back to spawning child process
 2. `_register_mcp_wrapper_tools()` — discover wrapper management tools, create proxies
-3. `_auto_connect_mcp_servers()` — connect to pre-configured servers, discover external tools
+3. `_auto_connect_mcp_servers()` — connect to pre-configured servers in parallel; eager servers get their tools discovered immediately, lazy servers connect but skip registration
 
 **Wrapper connection**: slife always probes `mcp.wrapper.url` (default `http://127.0.0.1:9876/mcp`) first. If an HTTP wrapper is running, slife connects to it. If not, slife spawns the wrapper as a child process via stdio. The `wrapper_url` is always set — no guessing.
 
@@ -271,7 +295,7 @@ An independent FastMCP server. Auto-detects transport mode via `sys.stdin.isatty
 
 When run from a terminal, reads `mcp.wrapper.url` from `slife.json5` to determine host/port. `--host`/`--port` CLI flags override the config value.
 
-**Management tools**: `mcp_add_server` / `mcp_remove_server` / `mcp_list_servers` / `mcp_list_tools` / `mcp_call_tool` / `mcp_reload`
+**Management tools**: `mcp_add_server` / `mcp_remove_server` / `mcp_list_servers` / `mcp_list_tools` / `mcp_check_server` / `mcp_set_disclosure` / `mcp_call_tool` / `mcp_reload`
 
 **Connection pool** (`connection.py`): raw asyncio JSON-RPC over subprocess pipes. No anyio, no `ClientSession` — avoids TaskGroup conflicts with FastMCP.
 

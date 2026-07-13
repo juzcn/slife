@@ -13,9 +13,8 @@ from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.conversation import Conversation
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
-from slife.tools.base import Tool
 from slife.tools.factory import create_tools_from_config
-from slife.tools.registry import ToolRegistry
+from slife.mcp.client import MCPClient
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +42,7 @@ class AgentService:
         self.session_usage = TokenUsage()
 
         # MCP integration state
-        self._mcp_client = None
+        self._mcp_client: MCPClient | None = None
         self._mcp_process = None
 
     @property
@@ -73,7 +72,9 @@ class AgentService:
         is already running (via HTTP); if not, spawns one as a child
         process via stdio.
         """
-        if not self.config.mcp_config.enabled:
+        mcp_cfg = self.config.mcp_config
+        assert mcp_cfg is not None  # guaranteed by Config.__post_init__
+        if not mcp_cfg.enabled:
             logger.debug("MCP not enabled in config.")
             return
 
@@ -93,10 +94,10 @@ class AgentService:
         already running, connects via HTTP. Otherwise spawns the
         wrapper as a child process via stdio.
         """
-        from slife.mcp.client import MCPClient
         from slife.mcp.process import MCPWrapperProcess
 
         mcp_cfg = self.config.mcp_config
+        assert mcp_cfg is not None
 
         if await MCPClient.is_wrapper_running(mcp_cfg.wrapper_url):
             logger.info("Found running MCP wrapper at %s, connecting via HTTP...", mcp_cfg.wrapper_url)
@@ -121,6 +122,7 @@ class AgentService:
         """
         from slife.mcp.tool_adapter import create_proxy_tools
 
+        assert self._mcp_client is not None
         wrapper_tools = await self._mcp_client.list_tools()
         logger.info(
             "MCP wrapper tools discovered: %s",
@@ -137,6 +139,7 @@ class AgentService:
             self._mcp_client, tagged,
             on_server_added=self._persist_server,
             on_server_removed=self._unpersist_server,
+            on_server_disclosure_changed=self._on_server_disclosure_changed,
         )
         for tool in proxy_tools:
             self.tool_registry.register(tool)
@@ -151,24 +154,35 @@ class AgentService:
         rather than sum(all-servers).  For 5 servers this cuts
         startup from ~18 s to ~9 s.
         """
-        servers = self.config.mcp_config.servers
+        mcp_cfg = self.config.mcp_config
+        assert mcp_cfg is not None
+        assert self._mcp_client is not None
+        servers = mcp_cfg.servers
         if not servers:
             return
 
         logger.info("Auto-connecting to %d configured MCP servers...", len(servers))
+        mcp_client = self._mcp_client  # narrow for closure
 
         async def _connect_one(name: str, cfg: dict) -> None:
             try:
-                result = await self._mcp_client.call_tool(
+                disclosure = cfg.get("disclosure", "eager")
+                activate = disclosure != "lazy"
+                result = await mcp_client.call_tool(
                     "mcp_add_server",
                     {
                         "name": name,
                         "command": cfg.get("command", ""),
                         "args": cfg.get("args", []),
                         "env": cfg.get("env"),
+                        "activate": activate,
                     },
                 )
-                logger.info("Server '%s': %s", name, result)
+                logger.info("Server '%s' (disclosure=%s): %s", name, disclosure, result)
+                # Eager servers: discover and register tools immediately.
+                # Lazy servers: connected but tools not registered yet.
+                if activate:
+                    await self._discover_and_register_external_tools(server_name=name)
             except Exception as e:
                 logger.error("Failed to auto-connect server '%s': %s", name, e)
 
@@ -176,22 +190,16 @@ class AgentService:
             *(_connect_one(name, cfg) for name, cfg in servers.items())
         )
 
-        # Discover and register proxy tools for all external servers
-        await self._discover_and_register_external_tools()
-
     # ── MCP tool discovery & registration ────────────────────────────
 
-    async def _discover_and_register_external_tools(self, server_name: str | None = None) -> None:
-        """Discover tools from connected MCP servers and register as proxy tools.
-
-        If server_name is provided, only discovers tools for that server.
-        Otherwise discovers tools from all connected servers.
-        """
+    async def _discover_and_register_external_tools(self, server_name: str) -> None:
+        """Discover tools from a specific MCP server and register as proxy tools."""
         from slife.mcp.tool_adapter import create_proxy_tools
 
+        assert self._mcp_client is not None
         try:
             tools_json = await self._mcp_client.call_tool(
-                "mcp_list_tools", {"server": server_name} if server_name else {}
+                "mcp_list_tools", {"server": server_name}
             )
             tools_data = json.loads(tools_json)
             external = tools_data.get("tools", [])
@@ -205,17 +213,13 @@ class AgentService:
                 for tool in proxy_tools:
                     self.tool_registry.register(tool)
                 logger.info(
-                    "Registered %d MCP external tools%s.",
-                    len(proxy_tools),
-                    f" from server '{server_name}'" if server_name else "",
+                    "Registered %d tools from server '%s'.",
+                    len(proxy_tools), server_name,
                 )
             else:
-                if server_name:
-                    logger.debug("No tools discovered for server '%s'.", server_name)
-                else:
-                    logger.info("No external MCP tools discovered.")
+                logger.debug("No tools discovered for server '%s'.", server_name)
         except Exception as e:
-            logger.error("Error during MCP tool discovery: %s", e)
+            logger.error("Error during MCP tool discovery for '%s': %s", server_name, e)
 
     async def _persist_server(self, name: str, command: str, args: list[str], env: dict | None = None, description: str = "", source: dict | None = None):
         """Callback: persist a newly-added (or updated) MCP server to config
@@ -225,7 +229,9 @@ class AgentService:
         are unregistered first — this handles reconfiguration of servers
         like anyapi-mcp-server when the user provides new args.
         """
-        existing = self.config.mcp_config.servers.get(name)
+        mcp_cfg = self.config.mcp_config
+        assert mcp_cfg is not None
+        existing = mcp_cfg.servers.get(name)
         if existing:
             logger.info(
                 "Server '%s' already configured — updating with new args.", name
@@ -237,13 +243,27 @@ class AgentService:
         await self._discover_and_register_external_tools(server_name=name)
 
     async def _unpersist_server(self, name: str):
-        """Callback: remove a server from config file and unregister its
-        proxy tools from the current session."""
+        """Callback: remove server from config and unregister its tools."""
         self.config.remove_mcp_server(name)
-        # Unregister any proxy tools belonging to this server
         removed = self.tool_registry.unregister_by_prefix(f"{name}__")
         if removed:
             logger.info("Unregistered %d tools from server '%s'.", removed, name)
+
+    async def _on_server_disclosure_changed(self, name: str, disclosure: str):
+        """Callback: persist disclosure change and update tool registration.
+
+        eager → immediately discover and register tools.
+        lazy → immediately unregister tools to save context.
+        """
+        logger.info("Server '%s' disclosure → %s", name, disclosure)
+        self.config.set_server_disclosure(name, disclosure)
+
+        if disclosure == "eager":
+            await self._discover_and_register_external_tools(server_name=name)
+        else:
+            removed = self.tool_registry.unregister_by_prefix(f"{name}__")
+            if removed:
+                logger.info("Unregistered %d tools from server '%s'.", removed, name)
 
     async def stop_mcp(self) -> None:
         """Shut down the MCP wrapper and clean up."""

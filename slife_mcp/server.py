@@ -15,6 +15,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from typing import Literal
+
 from fastmcp import FastMCP
 
 from slife_mcp.connection import ConnectionPool, ServerConfig
@@ -89,14 +91,14 @@ mcp = FastMCP(
 @mcp.tool(
     name="mcp_add_server",
     description=(
-        "Add and connect to an external MCP server. IMPORTANT: some MCP servers "
-        "(like anyapi-mcp-server) are frameworks that require user-provided "
-        "configuration arguments (--spec, --base-url, etc.) before they work. "
-        "Research the server's documentation first — scrape its GitHub/npm page "
-        "to understand required args. If the server needs user input, ASK before "
-        "calling this tool. Never pass empty strings for required args. "
-        "Returns server status and discovered tools on success; on failure the "
-        "error includes the server's stderr which explains what went wrong."
+        "Connect to an external MCP server and make its tools available. "
+        "Research the server's docs first — some servers (like anyapi-mcp-server) "
+        "require user-provided flags (--spec, --base-url). ASK the user for "
+        "these values; never pass empty strings for required args. "
+        "Set activate=false to connect without loading tools (use "
+        "mcp_set_disclosure later to load them on demand). "
+        "Returns the list of discovered tools on success; on failure the error "
+        "includes the server's stderr."
     ),
 )
 async def mcp_add_server(
@@ -105,33 +107,15 @@ async def mcp_add_server(
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
     description: str = "",
+    activate: bool = True,
 ) -> str:
-    """Add and connect to an MCP server.
-
-    Before calling, research the server's docs to understand its args.
-    Some servers (like anyapi-mcp-server) are frameworks that require
-    user-provided --spec, --base-url, etc. — ASK the user for these.
-    Never pass empty strings for required arguments.
-
-    Args:
-        name: Unique name for this server (e.g. 'filesystem', 'brave-search').
-        command: Executable to run (e.g. 'npx', 'python', 'uv').
-        args: Command-line arguments (e.g. ['-y', '@modelcontextprotocol/server-filesystem', '/path']).
-            For config-required servers, include ALL required flags with real values from the user.
-        env: Optional environment variables to pass to the server process.
-        description: Human-readable description of what this server provides
-            (e.g. 'GitHub REST API — issues, PRs, repos, etc.').
-
-    Returns:
-        Status message with list of discovered tools. On failure, stderr is
-        included in the error to help diagnose the issue.
-    """
     config = ServerConfig(
         name=name,
         command=command,
         args=args or [],
         env=env,
         description=description,
+        active=activate,
     )
 
     try:
@@ -166,12 +150,12 @@ async def mcp_add_server(
 @mcp.tool(
     name="mcp_remove_server",
     description=(
-        "Disconnect and remove an external MCP server by name. "
-        "Use mcp_list_servers to see connected servers."
+        "Remove an MCP server: stop its process, unregister all its tools, "
+        "and persist the removal to config so it won't auto-connect next startup."
     ),
 )
 async def mcp_remove_server(name: str) -> str:
-    """Disconnect and remove an MCP server.
+    """Stop and remove an MCP server.
 
     Args:
         name: Server name to remove.
@@ -186,7 +170,11 @@ async def mcp_remove_server(name: str) -> str:
 
 @mcp.tool(
     name="mcp_list_servers",
-    description="List all configured MCP servers with their connection status and tool counts.",
+    description=(
+        "List all configured MCP servers with their connection status, "
+        "tool counts, and active/inactive state. "
+        "Inactive servers (active=false) need mcp_set_disclosure to load their tools."
+    ),
 )
 async def mcp_list_servers() -> str:
     """List all configured MCP servers."""
@@ -199,28 +187,77 @@ async def mcp_list_servers() -> str:
 @mcp.tool(
     name="mcp_list_tools",
     description=(
-        "List all tools from connected MCP servers. "
-        "Optionally filter by server name. "
-        "Each tool's full_name includes the server prefix (e.g. 'filesystem__read_file')."
+        "List all tools an MCP server provides, even if the server is inactive. "
+        "Browse tools before deciding whether to activate the server. "
+        "Each tool name includes the server prefix (e.g. 'filesystem__read_file')."
     ),
 )
-async def mcp_list_tools(server: str | None = None) -> str:
-    """List tools from connected MCP servers.
+async def mcp_list_tools(server: str) -> str:
+    """List tools from an MCP server.
 
     Args:
-        server: Optional server name to filter by. If omitted, lists tools from all servers.
+        server: Server name (required). Use mcp_list_servers to discover server names.
     """
     try:
         tools = _pool.list_all_tools(server_name=server)
         if not tools:
-            if server:
-                return json.dumps({"tools": [], "server": server, "note": f"No tools from server '{server}'."})
-            return json.dumps({"tools": [], "note": "No tools available. Add MCP servers first."})
+            return json.dumps({"tools": [], "server": server, "note": f"No tools from server '{server}'."})
 
         return json.dumps({"tools": tools}, indent=2)
     except Exception as e:
         logger.exception("Failed to list tools")
         return json.dumps({"error": str(e)})
+
+
+@mcp.tool(
+    name="mcp_check_server",
+    description=(
+        "Check a single MCP server's status. "
+        "Returns connection state, active flag (active=true means tools are loaded), "
+        "tool count, and description. "
+        "Use before activating an inactive server to confirm it's connected."
+    ),
+)
+async def mcp_check_server(name: str) -> str:
+    result = _pool.check_server(name)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool(
+    name="mcp_set_disclosure",
+    description=(
+        "Switch an MCP server between eager and lazy mode. "
+        "eager: immediately load and register all tools (default). "
+        "lazy: immediately unregister tools to free context, persisted to config. "
+        "The server stays connected — switch back to eager to reload tools."
+    ),
+)
+async def mcp_set_disclosure(name: str, disclosure: Literal["eager", "lazy"]) -> str:
+    try:
+        if disclosure == "eager":
+            result = await _pool.activate_server(name)
+            result["disclosure"] = "eager"
+            return json.dumps(result, indent=2)
+        else:
+            conn = _pool.get_server(name)
+            if conn is None:
+                return json.dumps(
+                    {"status": "error", "server": name, "error": f"Server '{name}' not found."},
+                    indent=2,
+                )
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "server": name,
+                    "disclosure": "lazy",
+                    "tool_count": conn.tool_count,
+                    "note": "Tools unregistered immediately. Server stays connected — switch back to eager to reload.",
+                },
+                indent=2,
+            )
+    except Exception as e:
+        logger.exception("Failed to set disclosure for '%s'", name)
+        return json.dumps({"status": "error", "server": name, "error": str(e)}, indent=2)
 
 
 @mcp.tool(
@@ -257,8 +294,9 @@ async def mcp_call_tool(
 @mcp.tool(
     name="mcp_reload",
     description=(
-        "Reconnect to a server (or all servers) to refresh the tool list. "
-        "Useful after a server is updated or restarted."
+        "Reconnect to an MCP server to refresh its tool list. "
+        "Use after a server is updated or restarted. "
+        "If no server name given, reloads all connected servers."
     ),
 )
 async def mcp_reload(server: str | None = None) -> str:
