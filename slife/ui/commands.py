@@ -25,6 +25,11 @@ COMMANDS: list[SlashCommand] = [
         description="Attach an image for vision models",
         usage="/file <path>",
     ),
+    SlashCommand(
+        name="/exit",
+        description="Exit slife",
+        usage="/exit",
+    ),
 ]
 
 

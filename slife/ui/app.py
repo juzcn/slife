@@ -192,6 +192,11 @@ class SlifeApp(App):
         if not raw:
             return
 
+        # /exit — quit the app
+        if raw == "/exit":
+            self.run_worker(self.action_quit(), exclusive=True)
+            return
+
         event.input.clear()
 
         # Parse /file directives for multimodal
