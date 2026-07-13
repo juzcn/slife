@@ -17,7 +17,7 @@ class TestShellMetadata:
         assert ShellTool.name == "execute_shell"
 
     def test_description(self):
-        assert "Run a shell command" in ShellTool.description
+        assert "Execute a shell command" in ShellTool.description
 
     def test_parameters(self):
         params = ShellTool.parameters

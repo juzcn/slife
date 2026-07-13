@@ -1,6 +1,6 @@
 # slife
 
-Terminal-based AI agent — a function-calling loop with minimum harness. Chat with an LLM that can execute shell commands, load on-demand skills, connect to MCP servers, and call any REST API via OpenAPI specs.
+Terminal-based AI agent — a function-calling loop with minimum harness. Chat with an LLM that can execute shell commands, search the web, load on-demand skills, connect to MCP servers, and call any REST API via OpenAPI specs.
 
 ## Quick Start
 
@@ -10,7 +10,8 @@ uv sync
 
 # Configure
 cp slife.json5.example slife.json5
-# Edit slife.json5 — set your API keys via ${ENV_VAR} references
+# Edit slife.json5 — set your model's API key via ${DEEPSEEK_API_KEY}
+# The example includes the minimum bootstrap MCP servers — ready to use.
 
 # Run
 uv run slife
@@ -18,7 +19,7 @@ uv run slife
 
 ## Configuration
 
-Edit `slife.json5`. Key sections:
+Edit `slife.json5`.  The only key you need is your LLM provider's API key — the minimum bootstrap MCP servers (filesystem, fetch) need no auth.
 
 ```json5
 {
@@ -37,29 +38,24 @@ Edit `slife.json5`. Key sections:
   active_model: "deepseek/deepseek-v4-pro",
   agent: { max_iterations: 10 },
 
-  // Tools are auto-discovered — no tools[] config needed.
-  // Add entries only to override defaults or disable tools:
-  //   { name: "execute_shell", timeout: 60 },
-  //   { name: "list_skills", enabled: false },
-
-  // MCP integration (optional)
+  // Minimum bootstrap MCP servers (no API keys needed)
   mcp: {
-    // wrapper.url — slife probes this first, falls back to child process
-    wrapper: {
-      url: "http://127.0.0.1:9876/mcp",
-    },
     servers: {
-      "filesystem": {
+      filesystem: {
         command: "npx",
-        args: ["-y", "@modelcontextprotocol/server-filesystem", "/allowed/path"],
-        description: "Local filesystem operations — read, write, list files.",
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
+        description: "Local filesystem — read, write, list files.",
       },
+      fetch: {
+        command: "uvx",
+        args: ["mcp-server-fetch"],
+        description: "Fetch web pages and convert to markdown.",
+      },
+      // github: { … } — uncomment when you have GITHUB_TOKEN
     },
   },
 }
 ```
-
-API keys use `${ENV_VAR}` syntax — set them in your environment, not in the config file.
 
 ## Tools
 
@@ -71,15 +67,15 @@ All tools in `slife/tools/` are auto-discovered at startup — no `tools[]` conf
 
 | Tool | What it does |
 |------|-------------|
-| `execute_shell` | Run shell commands on the host machine |
-| `run_python_script` | Platform-correct Python invocation with JSON args |
-| `get_os_info` | Return current OS name (Windows/Linux/macOS) |
-| `config_env_set` | Set env vars in slife.json5 + inject immediately |
+| `execute_shell` | Execute a shell command and return its stdout and stderr |
+| `run_python_script` | Build a platform-correct shell command for Python with JSON args |
+| `get_os_info` | Return current OS: Windows, Linux, or macOS |
+| `config_env_set` | Write an env var to slife.json5 and inject into os.environ |
 | `config_env_get` | Read env vars from slife.json5 |
-| `config_env_remove` | Remove env vars from slife.json5 + os.environ |
-| `cli_add_tool` | Register a CLI for future discovery |
-| `cli_remove_tool` | Remove a registered CLI |
-| `cli_list_tools` | List all registered CLI tools |
+| `config_env_remove` | Delete an env var from slife.json5 and os.environ |
+| `cli_add_tool` | Persist a CLI to slife.json5 for future discovery |
+| `cli_remove_tool` | Delete a CLI registration from slife.json5 |
+| `cli_list_tools` | List all registered CLI tools with descriptions |
 
 ### 2. Skills
 
@@ -87,10 +83,10 @@ On-demand documentation plugins — the agent loads them only when needed. Four 
 
 | Tool | What it does |
 |------|-------------|
-| `list_skills` | List available skill plugins |
-| `use_skill` | Load a skill's documentation into context |
-| `add_skill` | Install a skill from files or archive |
-| `remove_skill` | Remove an installed skill |
+| `list_skills` | List all installed skills with names and descriptions |
+| `use_skill` | Return the full SKILL.md content for a named skill |
+| `add_skill` | Write skill files or extract an archive to the skills directory |
+| `remove_skill` | Delete a skill directory and all its contents |
 
 Skills live under `skills/` — each is a directory with a `SKILL.md` file. See the [Skills](#skills) section below.
 
@@ -102,7 +98,7 @@ See [MCP Integration](#mcp-integration) below.
 
 ### 4. RESTful API Tools
 
-Any REST API with an OpenAPI spec becomes callable via [anyapi-mcp-server](https://github.com/quiloos39/anyapi-mcp-server). Configure it as an MCP server pointing to the API's spec:
+Any REST API with an OpenAPI spec becomes callable via [anyapi-mcp-server](https://github.com/quiloos39/anyapi-mcp-server) — a core capability pre-configured as a commented template in `slife.json5`. Uncomment the `github` block when you have a `GITHUB_TOKEN`, or call `mcp_add_server` to connect other APIs (Jira, GitLab, Slack, Stripe…) using the same pattern:
 
 ```json5
 github: {

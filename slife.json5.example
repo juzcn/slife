@@ -1,40 +1,36 @@
 {
   // ═══════════════════════════════════════════════════════════════
-  // slife Configuration
+  // slife — Minimum Bootstrap Configuration
   // ═══════════════════════════════════════════════════════════════
-  // Copy this file to slife.json5 and edit.
-  // API keys: use ${ENV_VAR} references — never put real keys here.
+  // Copy to slife.json5 and edit.  The only key you need is your
+  // LLM provider's API key — everything else is optional and can
+  // be added later at runtime by the agent.
 
   // ── Environment variables ────────────────────────────────────
-  // Injected into os.environ so tools and ${VAR} references work.
-
+  // Injected into os.environ. Use ${VAR} syntax in mcp servers.
   env: {
+    // GITHUB_TOKEN: "${GITHUB_TOKEN}",
     // SERPER_API_KEY: "${SERPER_API_KEY}",
-    // BAIDU_API_KEY: "${BAIDU_API_KEY}",
   },
 
-  // ── Agent defaults ───────────────────────────────────────────
-
+  // ── Agent ────────────────────────────────────────────────────
   agent: {
     max_iterations: 10,
   },
 
   // ── Models ───────────────────────────────────────────────────
-  // provider: connection config shared by all models under it.
-  //   model:     API model name (doubles as id within provider).
-  //   name:      display label shown in the TUI status bar.
-  //   reasoning: true → enable thinking mode.
-  //   input:     ["text", "image"] → vision support (/file attach).
-
+  // provider: connection shared by all models under it.
+  //   model:   API model id (also used as lookup key).
+  //   name:    display label shown in the TUI status bar.
+  //   reasoning: true → enable extended thinking.
+  //   input:   ["text", "image"] → vision (/file attach).
   models: {
     mode: "merge",
-
     providers: {
       deepseek: {
         base_url: "https://api.deepseek.com",
         api_key: "${DEEPSEEK_API_KEY}",
         api: "openai-completions",
-
         models: [
           {
             model: "deepseek-v4-flash",
@@ -43,23 +39,17 @@
             input: ["text", "image"],
             context_window: 131072,
             max_tokens: 8192,
-            temperature: 0.7,
-            top_p: 1.0,
           },
           {
             model: "deepseek-v4-pro",
             name: "DeepSeek V4 Pro",
             reasoning: true,
-            // reasoning_effort: "high",
             input: ["text", "image"],
             context_window: 131072,
             max_tokens: 8192,
-            temperature: 0.7,
-            top_p: 1.0,
           },
         ],
       },
-
       // openai: {
       //   base_url: "https://api.openai.com/v1",
       //   api_key: "${OPENAI_API_KEY}",
@@ -74,37 +64,54 @@
   active_model: "deepseek/deepseek-v4-pro",
 
   // ── Tools ────────────────────────────────────────────────────
-  // All tools in slife/tools/ are auto-discovered at startup.
-  // Add entries here only to override defaults or disable tools.
-  // Each entry matches by tool name:
+  // All tools in slife/tools/ are auto-discovered.  Add entries
+  // here only to override defaults or disable a tool:
   //
   //   { name: "execute_shell", timeout: 60 },
-  //   { name: "list_skills", enabled: false },
 
-  // ── MCP Integration (optional) ────────────────────────────────
-  // slife-mcp connects to external MCP servers. Two modes:
-  //   Child process — slife auto-starts the wrapper (default).
-  //   Standalone HTTP — start manually, slife connects via wrapper.url.
-  //
-  // Each server: { command, args, env? } — standard MCP format.
+  // ── MCP servers (minimum bootstrap set) ──────────────────────
+  // These three need no API keys — file I/O, web fetch, and search.
+  // The agent can add more servers at runtime via mcp_add_server.
+  mcp: {
+    servers: {
+      filesystem: {
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
+        description: "Local filesystem — read, write, list, and search files.",
+      },
 
-  // mcp: {
-  //   // wrapper: {
-  //   //   url: "http://127.0.0.1:9876/mcp",
-  //   // },
-  //
-  //   servers: {
-  //     filesystem: {
-  //       command: "npx",
-  //       args: ["-y", "@modelcontextprotocol/server-filesystem", "/allowed/path"],
-  //     },
-  //     serper: {
-  //       command: "npx",
-  //       args: ["-y", "serper-search-scrape-mcp-server"],
-  //       env: {
-  //         SERPER_API_KEY: "${SERPER_API_KEY}",
-  //       },
-  //     },
-  //   },
-  // },
+      fetch: {
+        command: "uvx",
+        args: ["mcp-server-fetch"],
+        description: "Fetch web pages and convert them to markdown.",
+      },
+
+      "duckduckgo-search": {
+        command: "uvx",
+        args: [
+          "--with", "duckduckgo-mcp-server[browser]",
+          "duckduckgo-mcp-server",
+          "--fetch-backend", "auto",
+          "--search-backend", "auto",
+        ],
+        description: "DuckDuckGo web search — no API key needed.",
+      },
+
+      // Enable when you have a GITHUB_TOKEN.  anyapi-mcp-server
+      // converts any OpenAPI spec into MCP tools — swap --spec and
+      // --base-url to connect other REST APIs (Jira, Slack, etc.).
+      // github: {
+      //   command: "npx",
+      //   args: [
+      //     "-y", "anyapi-mcp-server",
+      //     "--name", "github",
+      //     "--spec", "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml",
+      //     "--base-url", "https://api.github.com",
+      //     "--header", "Authorization: Bearer ${GITHUB_TOKEN}",
+      //   ],
+      //   env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
+      //   description: "GitHub REST API via anyapi-mcp-server — repos, issues, PRs, users, search.",
+      // },
+    },
+  },
 }

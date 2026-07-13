@@ -183,7 +183,7 @@ class Config:
             server_entry["env"] = env
         servers[name] = server_entry
 
-        self._path.write_text(json5.dumps(raw, indent=2), encoding="utf-8")
+        self._path.write_text(json5.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
         self.mcp_config.servers[name] = server_entry
         logger.info("Saved MCP server '%s' to config.", name)
 
@@ -198,7 +198,7 @@ class Config:
         servers = mcp_section.get("servers", {})
         if name in servers:
             del servers[name]
-            self._path.write_text(json5.dumps(raw, indent=2), encoding="utf-8")
+            self._path.write_text(json5.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
             self.mcp_config.servers.pop(name, None)
             logger.info("Removed MCP server '%s' from config.", name)
 

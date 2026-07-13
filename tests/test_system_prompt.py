@@ -15,13 +15,15 @@ class TestBuild:
         assert "run_python_script" in result
 
     def test_tool_categories(self):
-        """Prompt describes all tool categories."""
+        """Prompt describes all tool categories under Tools section."""
         result = build()
         assert "Platform" in result
+        assert "Configuration" in result
+        assert "Tools" in result
         assert "Skills" in result
-        assert "CLI tools" in result
+        assert "CLI" in result
+        assert "MCP" in result
         assert "REST APIs" in result
-        assert "MCP servers" in result
 
     def test_config_reference(self):
         assert "slife.json5" in build()

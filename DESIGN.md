@@ -20,35 +20,49 @@ What the LLM *cannot* know:
 
 - The `list_skills` / `use_skill` flow — a slife-specific convention
 - That `slife.json5` has an `env:` section for setting API keys and env vars
+- That two MCP servers (filesystem, fetch) come pre-configured and need no auth
 - That external MCP servers are managed via `mcp_add_server`
 - That some MCP servers need user-provided configuration arguments and must not be called with empty args
 - That `anyapi-mcp-server` is the recommended framework for connecting REST APIs
+- That a commented github/anyapi-mcp-server template is in slife.json5 for when the user has a token
 - That after successfully installing and using a new CLI, it should be registered via `cli_add_tool`
 - That `config_env_set` can write placeholders when a value isn't available yet
-
 The current system prompt (`slife/agent/templates/system_prompt.j2`):
 
 ```
-Your tools come from five sources:
+You are slife. Always reply in the language the user used.
 
-  Native functions & MCP servers — already in your tool list. Use directly.
+slife is a uv-managed Python project. Any uv pip install will modify
+slife itself and may break it.
 
-  Skills — call list_skills to discover, then use_skill to load one.
+Platform
+  Call get_os_info before writing any platform-specific shell command.
+  Always use run_python_script instead of hand-writing Python shell
+  commands.
 
-  CLI tools — call cli_list_tools to see what's registered. After successfully
-  installing and using any new CLI (on your own or at the user's request),
-  call cli_add_tool to register it with a description, invocation, and install
-  instructions.
+Configuration
+  Call config_env_get before asking for an API key — it may already
+  be set.  When the user doesn't have a key yet, persist a placeholder
+  with config_env_set.
 
-  REST APIs — when users ask to connect one, use the anyapi-mcp-server
-  framework to convert it to an MCP server
-  (npx -y anyapi-mcp-server).
+Tools
+  Skills — list_skills, then use_skill to load.  Fetch files, then
+  add_skill to install.
+
+  CLI — test a new command, then cli_add_tool to persist.  Check
+  cli_list_tools first.
+
+  MCP — filesystem and fetch are pre-configured.  To add more, research
+  requirements first then call mcp_add_server.
+
+  REST APIs — connect via anyapi-mcp-server (pattern in slife.json5).
   Docs: https://github.com/quiloos39/anyapi-mcp-server
-
-Check config_env_get before asking the user for an API key -- the config may
-already have it. Set missing keys via config_env_set with a placeholder in
-slife.json5 env: section.
 ```
+
+Every line is a **when-to-use** rule.  Tool capabilities live in schemas;
+the prompt only tells the model which tool to reach for in each situation.
+Tools whose use is obvious from their schema alone (e.g. `execute_shell`)
+need no prompt entry.
 
 ### Design Principles
 
@@ -70,8 +84,8 @@ Anything expressible in the function schema (`name`, `description`, `parameters`
 
 | Layer | Responsibility | Example |
 |---|---|---|
-| **Schema** (`description`, `parameters`) | **What the tool does** — its capability, inputs, outputs, side effects | "Persist an environment variable to slife.json5 and inject it into os.environ immediately. Omit value to write a placeholder." |
-| **System prompt** | **When to use it** — the scenario, workflow rule, or project convention | "Set missing API keys via config_env_set with a placeholder in slife.json5 env: section." |
+| **Schema** (`description`, `parameters`) | **What the tool does** — its capability, inputs, outputs, side effects | "Write an environment variable to slife.json5 and inject it into os.environ immediately. If value is omitted, writes a <YOUR_KEY> placeholder." |
+| **System prompt** | **When to use it** — the scenario, workflow rule, or project convention | "Call config_env_get before asking for an API key — it may already be set. When the user doesn't have a key yet, persist a placeholder with config_env_set." |
 
 **Rules:**
 
@@ -184,9 +198,9 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 | `config_env_set` | Write env vars to `slife.json5` + inject immediately |
 | `config_env_get` | Read env vars from `slife.json5` |
 | `config_env_remove` | Remove env vars from `slife.json5` + os.environ |
-| `cli_add_tool` | Register a CLI for future discovery |
-| `cli_remove_tool` | Remove a registered CLI |
-| `cli_list_tools` | List all registered CLI tools |
+| `cli_add_tool` | Persist a CLI to `slife.json5` for future discovery |
+| `cli_remove_tool` | Delete a CLI registration from `slife.json5` |
+| `cli_list_tools` | List all registered CLI tools with descriptions |
 
 ### 2. Skills
 

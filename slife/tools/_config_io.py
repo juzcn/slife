@@ -25,4 +25,4 @@ def read_config(path: Path) -> dict:
 
 def write_config(path: Path, raw: dict) -> None:
     """Write a dict to a JSON5 config file with indent=2 formatting."""
-    path.write_text(json5.dumps(raw, indent=2, trailing_commas=False), encoding="utf-8")
+    path.write_text(json5.dumps(raw, indent=2, trailing_commas=False, ensure_ascii=False), encoding="utf-8")
