@@ -78,11 +78,50 @@ Anything expressible in the function schema (`name`, `description`, `parameters`
 
 The schema now describes pure capability. The prompt now tells the model *when* this tool is the right answer.
 
-## Skills: Progressive Disclosure
+## Progressive Disclosure
+
+Not all tools need to be in every LLM request. slife uses a two-level pattern for external capabilities: a lightweight summary tool always available, and a load tool that brings in the full capability on demand.
+
+### Summary
+
+| Category | Pattern | Summary Tool | Load Tool |
+|---|---|---|---|
+| **Skills** | Two-level, per-skill | `list_skills` | `use_skill` |
+| **MCP** (incl. REST APIs) | Two-level, per-server | `mcp_list_tools` / `mcp_list_servers` | `mcp_set_disclosure("eager")` |
+| **Native** | Always loaded | — | — |
+| **CLI** | Metadata-only, no schema cost | — | — |
+
+**Skills** and **MCP/REST** implement progressive disclosure because their content or tool count can be large — skills have long markdown bodies, MCP servers can expose dozens of tools. The summary tool returns a lightweight list; the load tool brings in the full capability.
+
+**Native tools** are always registered — they're few (~10), each is essential, and their schemas are small.
+
+**CLI tools** don't consume function definition slots — they're metadata entries in `slife.json5` that the LLM discovers via `cli_list_tools` (a text response). The actual execution goes through `execute_shell`.
+
+### Skills
 
 Some capabilities require domain knowledge too long for a system prompt. Skills load that knowledge on demand via `list_skills` / `use_skill`, keeping context lean until the knowledge is needed.
 
 Skills are discovered by scanning directories under `skills/` for `SKILL.md` files with YAML frontmatter (`name`, `description`). The shared `_iter_skills()` helper in `slife/tools/skill.py` handles directory scanning and frontmatter parsing once, used by both `get_skills_summary` and `_read_skill`.
+
+### MCP & REST APIs
+
+MCP servers default to eager mode: all tools are discovered and registered at startup. Servers with many tools can be configured as lazy — they connect but don't register tools until the LLM explicitly requests them:
+
+```json5
+{ disclosure: "lazy" }   // connect but don't auto-register tools
+```
+
+The LLM workflow for lazy servers:
+1. `mcp_list_servers` — see server is connected with `active: false`
+2. `mcp_list_tools({server: "name"})` — browse available tools before deciding
+3. `mcp_set_disclosure({name, disclosure: "eager"})` — load tools immediately
+
+All disclosure changes take effect immediately:
+- `eager` → registers tools, they appear in the next LLM request
+- `lazy` → unregisters tools, saving context. Server process stays connected — switch back to eager to reload.
+- `mcp_remove_server` → stops the server process, unregisters tools, persists removal. To recover, re-add the server.
+
+REST APIs (via anyapi-mcp-server) are regular MCP servers — they use the same lazy/eager mechanism with no special handling.
 
 ## Negative Space
 
@@ -180,7 +219,7 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 
 ### 2. Skills
 
-On-demand documentation plugins — four tools in `slife/tools/skill.py`:
+On-demand documentation plugins using progressive disclosure (see Progressive Disclosure section above). Four tools in `slife/tools/skill.py`:
 
 | Tool | Implementation |
 |---|---|
@@ -191,15 +230,11 @@ On-demand documentation plugins — four tools in `slife/tools/skill.py`:
 
 Skills are discovered by scanning directories under `skills/` for `SKILL.md` files with YAML frontmatter (`name`, `description`). The shared `_iter_skills()` helper in `slife/tools/skill.py` handles directory scanning and frontmatter parsing once, used by all four skill tools.
 
-This is a **progressive disclosure** pattern: skill names and one-line descriptions are always visible, but the full instructions are only loaded on demand via `use_skill`. This keeps context lean until the knowledge is needed. `add_skill` and `remove_skill` let the LLM manage the skills directory at runtime.
-
 ### 3. MCP Tools
 
 External MCP servers connected through [slife-mcp](https://pypi.org/project/slife-mcp/) — an independent MCP proxy service. Each external server's tools are adapted to the `Tool` ABC via `MCPProxyTool` and registered with a `{server}__` prefix (e.g. `filesystem__read_file`, `serper__search`).
 
-MCP tools are not configured via `tools[]` — they are discovered dynamically when slife-mcp connects to configured servers. See the MCP Integration section below.
-
-**Progressive disclosure**: servers with many tools can use `disclosure: "lazy"` in config. They connect at startup but don't auto-register tools — the LLM browses them via `mcp_list_tools`, then loads them on demand with `mcp_set_disclosure`. This is the MCP equivalent of the skills `list_skills`/`use_skill` pattern.
+MCP tools are not configured via `tools[]` — they are discovered dynamically when slife-mcp connects to configured servers. Supports progressive disclosure via `disclosure: "lazy"` (see Progressive Disclosure section above). See the MCP Integration section below for architecture details.
 
 ### 4. RESTful API Tools (anyapi-mcp-server)
 
@@ -247,27 +282,6 @@ slife agent  ←────────────→  slife-mcp (FastMCP)
                                   ├── serper MCP (npx)
                                   └── ... (any MCP server)
 ```
-
-### Progressive Disclosure (lazy servers)
-
-MCP servers default to eager mode: all tools are discovered and registered at startup. Servers with many tools can be configured as lazy — they connect but don't register tools until the LLM explicitly requests them:
-
-```json5
-github: {
-  command: "npx", args: [...],
-  disclosure: "lazy",   // connect but don't auto-register tools
-}
-```
-
-The LLM workflow for lazy servers:
-1. `mcp_list_servers` — see server is connected with `active: false`
-2. `mcp_list_tools({server: "github"})` — browse available tools before deciding
-3. `mcp_set_disclosure({name: "github", disclosure: "eager"})` — load tools immediately
-
-All changes take effect immediately:
-- `eager` → registers tools, they appear in the next LLM request
-- `lazy` → unregisters tools, saving context. Server process stays connected — switch back to eager to reload.
-- `mcp_remove_server` → stops the server process, unregisters tools, persists removal. To recover, re-add the server.
 
 ### slife side (`slife/mcp/`)
 
