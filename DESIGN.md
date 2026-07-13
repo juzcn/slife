@@ -20,44 +20,18 @@ What the LLM *cannot* know:
 
 - The `list_skills` / `use_skill` flow — a slife-specific convention
 - That `slife.json5` has an `env:` section for setting API keys and env vars
-- That two MCP servers (filesystem, fetch) come pre-configured and need no auth
+- That the pre-configured MCP servers (filesystem, fetch, duckduckgo-search)
+	  need no auth — the LLM can use them immediately without asking for keys
 - That external MCP servers are managed via `mcp_add_server`
 - That some MCP servers need user-provided configuration arguments and must not be called with empty args
 - That `anyapi-mcp-server` is the recommended framework for connecting REST APIs
 - That a commented github/anyapi-mcp-server template is in slife.json5 for when the user has a token
 - That after successfully installing and using a new CLI, it should be registered via `cli_add_tool`
 - That `config_env_set` can write placeholders when a value isn't available yet
-The current system prompt (`slife/agent/templates/system_prompt.j2`):
-
-```
-You are slife. Always reply in the language the user used.
-
-slife is a uv-managed Python project. Any uv pip install will modify
-slife itself and may break it.
-
-Platform
-  Call get_os_info before writing any platform-specific shell command.
-  Always use run_python_script instead of hand-writing Python shell
-  commands.
-
-Configuration
-  Call config_env_get before asking for an API key — it may already
-  be set.  When the user doesn't have a key yet, persist a placeholder
-  with config_env_set.
-
-Tools
-  Skills — list_skills, then use_skill to load.  Fetch files, then
-  add_skill to install.
-
-  CLI — test a new command, then cli_add_tool to persist.  Check
-  cli_list_tools first.
-
-  MCP — filesystem and fetch are pre-configured.  To add more, research
-  requirements first then call mcp_add_server.
-
-  REST APIs — connect via anyapi-mcp-server (pattern in slife.json5).
-  Docs: https://github.com/quiloos39/anyapi-mcp-server
-```
+The system prompt at `slife/agent/templates/system_prompt.j2` encodes these
+facts in four short sections — Platform, Configuration, and Tools (Skills /
+CLI / MCP / REST APIs).  That file is the authoritative source; the list
+above documents the rationale behind each entry.
 
 Every line is a **when-to-use** rule.  Tool capabilities live in schemas;
 the prompt only tells the model which tool to reach for in each situation.

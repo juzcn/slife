@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from slife.env import resolve_env
+from slife.tools._config_io import with_fetched_at
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,7 @@ class Config:
         if self.mcp_config is None:
             self.mcp_config = MCPConfig()
 
-    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "") -> None:
+    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None) -> None:
         """Persist an MCP server to the config file."""
         if not self._path:
             logger.warning("No config path stored; cannot save MCP server '%s'.", name)
@@ -181,6 +182,9 @@ class Config:
             server_entry["description"] = description
         if env:
             server_entry["env"] = env
+        source = with_fetched_at(source)
+        if source:
+            server_entry["source"] = source
         servers[name] = server_entry
 
         self._path.write_text(json5.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")

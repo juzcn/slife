@@ -36,7 +36,7 @@ class MCPProxyTool(Tool):
         Args:
             mcp_client: MCPClient instance connected to the slife-mcp wrapper.
             tool_info: Dict with server, name, description, inputSchema.
-            on_server_added: Optional async callback(name, command, args, env, description)
+            on_server_added: Optional async callback(name, command, args, env, description, source)
                 invoked when mcp_add_server succeeds, for config persistence.
             on_server_removed: Optional async callback(name)
                 invoked when mcp_remove_server succeeds, for config persistence.
@@ -103,6 +103,10 @@ class MCPProxyTool(Tool):
             kwargs,
         )
         if self._server == "mcp":
+            # Strip source from kwargs — wrapper doesn't need it,
+            # it's only for the persistence callback.
+            source = kwargs.pop("source", None) if isinstance(kwargs.get("source"), dict) else None
+
             # Wrapper management tool — call directly
             result = await self._mcp_client.call_tool(
                 self._tool_name, kwargs
@@ -119,6 +123,7 @@ class MCPProxyTool(Tool):
                             args=kwargs.get("args", []),
                             env=kwargs.get("env"),
                             description=kwargs.get("description", ""),
+                            source=source,
                         )
                     else:
                         logger.info(
@@ -182,7 +187,7 @@ def create_proxy_tools(
         mcp_client: MCPClient instance.
         tools: List of tool info dicts, each with:
             server, name, description, inputSchema.
-        on_server_added: Optional async callback(name, command, args, env, description)
+        on_server_added: Optional async callback(name, command, args, env, description, source)
             invoked when mcp_add_server succeeds.
         on_server_removed: Optional async callback(name)
             invoked when mcp_remove_server succeeds.

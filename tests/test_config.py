@@ -543,6 +543,75 @@ class TestConfigMCPSaveRemove:
             config.remove_mcp_server("nonexistent")
         assert "No config path" in caplog.text
 
+    def test_save_server_with_source(self, tmp_path, monkeypatch):
+        """save_mcp_server with source stores it in JSON5 with fetched_at."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+
+        config.save_mcp_server(
+            "gh", "npx",
+            ["-y", "anyapi-mcp-server", "--spec", "https://example.com/api.yaml"],
+            source={"url": "https://github.com/quiloos39/anyapi-mcp-server", "type": "mcp_package", "version": "1.2.0"},
+        )
+
+        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        server = raw["mcp"]["servers"]["gh"]
+        assert server["source"]["url"] == "https://github.com/quiloos39/anyapi-mcp-server"
+        assert server["source"]["type"] == "mcp_package"
+        assert server["source"]["version"] == "1.2.0"
+        assert "fetched_at" in server["source"]
+
+    def test_save_server_without_source(self, tmp_path, monkeypatch):
+        """save_mcp_server without source is backward compatible."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+
+        config.save_mcp_server("srv", "echo", ["hello"])
+        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "source" not in raw["mcp"]["servers"]["srv"]
+
+    def test_save_server_with_none_source(self, tmp_path, monkeypatch):
+        """save_mcp_server with source=None does not write source key."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+
+        config.save_mcp_server("srv", "echo", ["hello"], source=None)
+        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "source" not in raw["mcp"]["servers"]["srv"]
+
 
 # ── Config.from_json5 edge cases ────────────────────────────────────────
 

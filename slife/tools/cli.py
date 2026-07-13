@@ -17,7 +17,7 @@ Flow:
 import logging
 from pathlib import Path
 
-from slife.tools._config_io import read_config, write_config
+from slife.tools._config_io import now_iso, read_config, with_fetched_at, write_config
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -49,9 +49,20 @@ def get_cli_tools_summary(config_path: Path) -> str:
         desc = cfg.get("description", "(no description)")
         command = cfg.get("command", name)
         install = cfg.get("install", "")
+        source = cfg.get("source")
         line = f"- **{name}**: {desc}  \n  command: `{command}`"
         if install:
             line += f"  \n  install: `{install}`"
+        if isinstance(source, dict):
+            parts = []
+            if source.get("type"):
+                parts.append(source["type"])
+            if source.get("url"):
+                parts.append(source["url"])
+            if source.get("version"):
+                parts.append(f"v{source['version']}")
+            if parts:
+                line += f"  \n  source: {' — '.join(parts)}"
         lines.append(line)
 
     return "\n".join(lines)
@@ -93,6 +104,29 @@ class CliAddTool(Tool):
                 "description": "How to install this CLI if it's not already available "
                 "(e.g. 'npm install -g yldp', 'pip install yldp'). Omit if already installed globally.",
             },
+            "source": {
+                "type": "object",
+                "description": "Where this CLI was discovered. Provide so future updates "
+                "or source changes are traceable.",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL where the tool was found (repo, docs, package page).",
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "Source type: npm, pypi, github, url, cargo, apt, etc.",
+                    },
+                    "version": {
+                        "type": "string",
+                        "description": "Version string at install time (e.g. '1.2.3', 'v2.0.1').",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional note about this source (e.g. 'official npm package').",
+                    },
+                },
+            },
         },
         "required": ["name", "command", "description"],
     }
@@ -110,6 +144,7 @@ class CliAddTool(Tool):
         command: str = kwargs["command"]
         description: str = kwargs["description"]
         install: str = kwargs.get("install", "")
+        source: dict | None = kwargs.get("source")
 
         raw = read_config(self._config_path)
         cli_tools = _cli_section(raw)
@@ -117,6 +152,9 @@ class CliAddTool(Tool):
         entry: dict = {"command": command, "description": description}
         if install:
             entry["install"] = install
+        source = with_fetched_at(source)
+        if source:
+            entry["source"] = source
 
         is_update = name in cli_tools
         cli_tools[name] = entry

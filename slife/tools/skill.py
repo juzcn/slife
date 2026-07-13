@@ -6,9 +6,11 @@ add_skill:     从远程 URL 安装 skill（拉取文件写入 skills 目录）
 remove_skill:  删除一个 skill 目录及其内容
 """
 
+import json
 import logging
 from pathlib import Path
 
+from slife.tools._config_io import now_iso, with_fetched_at
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -83,7 +85,26 @@ def get_skills_summary(skills_dir: str | Path = "skills") -> str:
     for d, fm, _body in skills:
         name = fm.get("name", d.name)
         desc = fm.get("description", "(no description)")
-        lines.append(f"- **{name}**: {desc}")
+        line = f"- **{name}**: {desc}"
+        # Read source from _meta.json if present
+        meta_path = d / "_meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                src = meta.get("source")
+                if isinstance(src, dict):
+                    parts = []
+                    if src.get("type"):
+                        parts.append(src["type"])
+                    if src.get("url"):
+                        parts.append(src["url"])
+                    if src.get("version"):
+                        parts.append(f"v{src['version']}")
+                    if parts:
+                        line += f"  \n  source: {' — '.join(parts)}"
+            except (json.JSONDecodeError, OSError):
+                pass
+        lines.append(line)
 
     return "\n".join(lines)
 
@@ -221,6 +242,29 @@ class AddSkillTool(Tool):
                 "type": "string",
                 "description": "Base64-encoded .zip or .tar.gz. Decoded and extracted into skills/<name>/.",
             },
+            "source": {
+                "type": "object",
+                "description": "Where this skill was discovered. Provide so future updates "
+                "or source changes are traceable.",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL where the skill was found (repo, marketplace, docs).",
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "Source type: github, url, marketplace, etc.",
+                    },
+                    "version": {
+                        "type": "string",
+                        "description": "Version string at install time (e.g. 'v1.2.3', '0.5.2').",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional note about this source.",
+                    },
+                },
+            },
         },
         "required": ["name"],
     }
@@ -236,6 +280,7 @@ class AddSkillTool(Tool):
         name: str = kwargs["name"]
         files: list[dict] | None = kwargs.get("files")
         archive_b64: str | None = kwargs.get("archive")
+        source: dict | None = kwargs.get("source")
 
         if not files and not archive_b64:
             return (
@@ -258,9 +303,11 @@ class AddSkillTool(Tool):
 
         try:
             if archive_b64:
-                return self._install_from_archive(name, archive_b64, skill_dir)
+                result = self._install_from_archive(name, archive_b64, skill_dir)
             else:
-                return self._install_from_files(name, files, skill_dir)
+                result = self._install_from_files(name, files, skill_dir)
+            self._write_meta_json(skill_dir, source)
+            return result
         except Exception as e:
             import shutil
             shutil.rmtree(skill_dir, ignore_errors=True)
@@ -324,6 +371,30 @@ class AddSkillTool(Tool):
                 "this skill until a SKILL.md with proper frontmatter is added."
             )
         return msg
+
+    def _write_meta_json(self, skill_dir: Path, source: dict | None) -> None:
+        """Write _meta.json with source provenance to the skill directory.
+
+        Merges with existing _meta.json if present, preserving external
+        fields like ownerId or slug.
+        """
+        source = with_fetched_at(source)
+        if not source:
+            return
+
+        meta_path = skill_dir / "_meta.json"
+        existing: dict = {}
+        if meta_path.exists():
+            try:
+                existing = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        existing["source"] = source
+        meta_path.write_text(
+            json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        logger.debug("Wrote _meta.json with source for skill in %s", skill_dir)
 
 
 class RemoveSkillTool(Tool):

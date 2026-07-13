@@ -6,9 +6,27 @@ json5 read/write logic across tool modules.
 
 import json5
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def now_iso() -> str:
+    """Return current UTC time as ISO 8601 string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def with_fetched_at(source: dict | None) -> dict | None:
+    """Return a copy of source dict with fetched_at timestamp added.
+
+    Returns None if source is None or an empty dict.
+    """
+    if not source:
+        return None
+    result = dict(source)
+    result.setdefault("fetched_at", now_iso())
+    return result
 
 
 def read_config(path: Path) -> dict:
