@@ -1,6 +1,7 @@
 """Textual TUI application for slife — Claude Code CLI style."""
 
 from textual.app import App, ComposeResult
+from textual.message import Message
 from textual.widgets import Input, Static
 
 from slife.config import Config
@@ -8,8 +9,32 @@ from slife.agent.service import AgentService
 from slife.agent.loop import MaxIterationsExceeded
 from slife.agent.multimodal import parse_file_attachments
 from slife.ui.chat import ChatView
+from slife.ui.command_palette import CommandPalette
 from slife.ui.handler import TUIHandler
 from slife.ui.tool_display import ToolCallWidget
+
+
+# ── Custom input with slash-command completion ────────────────────
+
+
+class CommandInput(Input):
+    """Input widget with Tab-to-complete for slash commands."""
+
+    BINDINGS = [
+        ("tab", "complete_suggestion", "Complete"),
+    ]
+
+    def action_complete_suggestion(self) -> None:
+        """Complete the current slash suggestion, or pass Tab through."""
+        if self.value.startswith("/"):
+            self.post_message(CompleteSuggestion(self))
+        else:
+            # Not a slash command — let Tab do default focus navigation
+            self.app.action_focus_next()
+
+
+class CompleteSuggestion(Message):
+    """Posted when Tab is pressed — parent should complete the suggestion."""
 
 
 # ── Status bar ─────────────────────────────────────────────────────
@@ -74,7 +99,8 @@ class SlifeApp(App):
     def compose(self) -> ComposeResult:
         """Minimal layout: chat fills screen, input + status docked at bottom."""
         yield ChatView(id="chat-view")
-        yield Input(
+        yield CommandPalette(id="command-palette")
+        yield CommandInput(
             placeholder="Message slife…",
             id="user-input",
         )
@@ -129,10 +155,36 @@ class SlifeApp(App):
             thinking=self.service.thinking_enabled,
         )
 
+    # ── Slash-command completion ─────────────────────────────────
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Update the command palette when input value changes."""
+        palette = self.query_one("#command-palette", CommandPalette)
+        palette.show_suggestions(event.value)
+
+    def on_complete_suggestion(self) -> None:
+        """Complete the current slash command with the top suggestion."""
+        palette = self.query_one("#command-palette", CommandPalette)
+        if not palette.visible:
+            return
+
+        completion = palette.selected_text()
+        if not completion:
+            return
+
+        inp = self.query_one("#user-input", CommandInput)
+        inp.value = completion
+        inp.cursor_position = len(completion)
+        # Refresh palette with the completed value
+        palette.show_suggestions(completion)
+
     # ── Input handling ────────────────────────────────────────────
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user pressing Enter in the input field."""
+        # Hide palette on submit
+        self.query_one("#command-palette", CommandPalette).hide()
+
         if not isinstance(event, Input.Submitted):
             return
 
