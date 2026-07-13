@@ -4,7 +4,7 @@ import json5
 import pytest
 from pathlib import Path
 
-from slife.tools.cli import CliAddTool, CliRemoveTool, CliListToolsTool, get_cli_tools_summary
+from slife.tools.cli import CliAddTool, CliCheckInstalled, CliRemoveTool, CliListToolsTool, get_cli_tools_summary
 from slife.tools._config_io import with_fetched_at
 
 
@@ -289,3 +289,120 @@ class TestGetCliToolsSummary:
 
         summary = get_cli_tools_summary(cfg_path)
         assert "pypi" in summary
+
+
+# ── CliCheckInstalled ────────────────────────────────────────────────────
+
+
+class TestCliCheckInstalledMetadata:
+    """Metadata validation for CliCheckInstalled."""
+
+    def test_name(self):
+        assert CliCheckInstalled.name == "cli_check_installed"
+
+    def test_description(self):
+        assert "slife.json5" in CliCheckInstalled.description
+
+    def test_required_params(self):
+        required = CliCheckInstalled.parameters.get("required", [])
+        assert "commands" in required
+
+    def test_commands_param_is_array_of_strings(self):
+        props = CliCheckInstalled.parameters.get("properties", {})
+        commands = props.get("commands", {})
+        assert commands.get("type") == "array"
+        assert commands.get("items", {}).get("type") == "string"
+
+
+class TestCliCheckInstalledExecute:
+
+    @pytest.mark.asyncio
+    async def test_all_registered(self, tmp_path):
+        """All checked commands are registered."""
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "cli_tools": {
+                "npm": {"command": "npm", "description": "Node package manager", "install": "Download from nodejs.org"},
+                "uv": {"command": "uv", "description": "Python package manager", "source": {"type": "pypi", "url": "https://pypi.org/project/uv/"}},
+            },
+        }))
+
+        tool = CliCheckInstalled(config_path=cfg_path)
+        result = await tool.execute(commands=["npm", "uv"])
+        assert "2/2 registered" in result
+        assert "● npm" in result
+        assert "● uv" in result
+        assert "nodejs.org" in result
+        assert "pypi" in result
+
+    @pytest.mark.asyncio
+    async def test_none_registered(self, tmp_path):
+        """No checked commands are registered."""
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({"cli_tools": {}}))
+
+        tool = CliCheckInstalled(config_path=cfg_path)
+        result = await tool.execute(commands=["python", "git"])
+        assert "0/2 registered" in result
+        assert "○ python" in result
+        assert "○ git" in result
+        assert "not registered in config" in result
+
+    @pytest.mark.asyncio
+    async def test_mixed_registered(self, tmp_path):
+        """Some commands are registered, some are not."""
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "cli_tools": {
+                "npm": {"command": "npm", "description": "Node package manager"},
+            },
+        }))
+
+        tool = CliCheckInstalled(config_path=cfg_path)
+        result = await tool.execute(commands=["npm", "git"])
+        assert "1/2 registered" in result
+        assert "● npm" in result
+        assert "○ git" in result
+
+    @pytest.mark.asyncio
+    async def test_no_cli_tools_section(self, tmp_path):
+        """Config has no cli_tools section at all."""
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({}))
+
+        tool = CliCheckInstalled(config_path=cfg_path)
+        result = await tool.execute(commands=["npm"])
+        assert "0/1 registered" in result
+        assert "○ npm" in result
+
+    @pytest.mark.asyncio
+    async def test_cli_tools_not_dict(self, tmp_path):
+        """cli_tools is not a dict — should be handled gracefully."""
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({"cli_tools": []}))
+
+        tool = CliCheckInstalled(config_path=cfg_path)
+        result = await tool.execute(commands=["npm"])
+        assert "0/1 registered" in result
+
+    @pytest.mark.asyncio
+    async def test_shows_install_and_source_when_present(self, tmp_path):
+        """Result shows install instructions and source info when available."""
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "cli_tools": {
+                "gh": {
+                    "command": "gh",
+                    "description": "GitHub CLI",
+                    "install": "winget install GitHub.cli",
+                    "source": {"type": "github", "url": "https://cli.github.com/"},
+                },
+            },
+        }))
+
+        tool = CliCheckInstalled(config_path=cfg_path)
+        result = await tool.execute(commands=["gh"])
+        assert "● gh" in result
+        assert "winget install GitHub.cli" in result
+        assert "github" in result
+        assert "https://cli.github.com/" in result

@@ -175,15 +175,29 @@ class TestAssistantMessage:
         assert msg._is_thinking_collapsed is False
         assert msg._show_usage is True
 
-    def test_on_click_toggles_collapse(self):
-        """Click toggles the collapse state."""
+    def test_on_click_expands_only(self):
+        """Click expands collapsed thinking, but never collapses (avoids destroying text selection)."""
+        msg = self._make_msg()
+        msg._has_thinking = True
+        msg._is_thinking_collapsed = True
+        msg.update = MagicMock()
+        # Click when collapsed: expand
+        msg.on_click()
+        assert msg._is_thinking_collapsed is False
+        # Click when expanded: no-op (user may be selecting text)
+        msg._is_thinking_collapsed = False
+        msg.on_click()
+        assert msg._is_thinking_collapsed is False  # stays expanded
+
+    def test_keyboard_toggles_collapse(self):
+        """Enter/Space toggles thinking collapse both ways."""
         msg = self._make_msg()
         msg._has_thinking = True
         msg.update = MagicMock()
         assert msg._is_thinking_collapsed is False
-        msg.on_click()
+        msg.action_toggle_thinking()
         assert msg._is_thinking_collapsed is True
-        msg.on_click()
+        msg.action_toggle_thinking()
         assert msg._is_thinking_collapsed is False
 
     def test_on_click_no_thinking_noop(self):

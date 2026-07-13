@@ -15,13 +15,18 @@ Configuration
 
 Tools
   Skills — list_skills, then use_skill to load.  Fetch files, then
-  add_skill to install.
+  add_skill to install.  Always record provenance via the source
+  parameter (type, url, version).
 
-  CLI — test a new command, then cli_add_tool to persist.  Check
-  cli_list_tools first.
+  CLI — check cli_check_installed before running or installing a
+  command; it tells you whether slife already knows about it.
+  Test a new command, then cli_add_tool to persist.  Always include
+  the source parameter: where you found the tool
+  (type: pypi/npm/github/etc.), its URL, and the installed version.
 
   MCP — filesystem, fetch, and duckduckgo-search come pre-configured.
   To add more, research requirements first then call mcp_add_server.
+  Include source provenance (type, url, version) when adding.
 
   REST APIs — connect via anyapi-mcp-server (pattern in slife.json5).
   Docs: https://github.com/quiloos39/anyapi-mcp-server

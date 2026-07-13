@@ -82,7 +82,12 @@ class AssistantMessage(Static):
       - Click to toggle thinking collapse/expand.
     """
 
-    can_focus = False  # on_click toggles thinking; no keyboard bindings, so no need for focus
+    can_focus = True
+
+    BINDINGS = [
+        ("enter", "toggle_thinking", "Toggle thinking"),
+        ("space", "toggle_thinking", "Toggle thinking"),
+    ]
 
     def __init__(self):
         super().__init__("")
@@ -124,7 +129,18 @@ class AssistantMessage(Static):
         self._refresh_display()
 
     def on_click(self) -> None:
-        """Toggle thinking collapse/expand on click."""
+        """Expand thinking on click (never collapse — avoids destroying text selection).
+
+        When collapsed, any click expands so the user can read the content.
+        When expanded, clicks do nothing — the user may be selecting text
+        to copy. Use Enter/Space to toggle collapse instead.
+        """
+        if self._has_thinking and self._is_thinking_collapsed:
+            self._is_thinking_collapsed = False
+            self._refresh_display()
+
+    def action_toggle_thinking(self) -> None:
+        """Toggle thinking collapse/expand via keyboard."""
         if self._has_thinking:
             self._is_thinking_collapsed = not self._is_thinking_collapsed
             self._refresh_display()

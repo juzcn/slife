@@ -173,6 +173,7 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 | `config_env_get` | Read env vars from `slife.json5` |
 | `config_env_remove` | Remove env vars from `slife.json5` + os.environ |
 | `cli_add_tool` | Persist a CLI to `slife.json5` for future discovery |
+| `cli_check_installed` | Check if CLIs are already registered in `slife.json5` |
 | `cli_remove_tool` | Delete a CLI registration from `slife.json5` |
 | `cli_list_tools` | List all registered CLI tools with descriptions |
 
@@ -219,11 +220,12 @@ This produces tools like `github__list_repos`, `github__create_issue`, etc. — 
 
 ### 5. CLI Tools
 
-External CLI commands the LLM discovers at runtime and registers for future use — three management tools in `slife/tools/cli.py`:
+External CLI commands the LLM discovers at runtime and registers for future use — four management tools in `slife/tools/cli.py`:
 
 | Tool | Description |
 |---|---|
 | `cli_add_tool` | Register a CLI with name, command, description, and optional install instructions |
+| `cli_check_installed` | Check if CLI commands are already registered in `slife.json5` |
 | `cli_remove_tool` | Remove a registered CLI |
 | `cli_list_tools` | List all registered CLI tools |
 
@@ -345,7 +347,7 @@ slife/
     os_info.py         #   get_os_info (current OS)
     skill.py           #   list_skills / use_skill / add_skill / remove_skill
     config_env.py      #   config_env_set / get / remove
-    cli.py             #   cli_add_tool / cli_remove_tool / cli_list_tools
+    cli.py             #   cli_add_tool / cli_check_installed / cli_remove_tool / cli_list_tools
   mcp/                 # MCP client (slife side)
     client.py          #   stdio/HTTP client with asyncio.Queue adapters
     tool_adapter.py    #   MCP → slife Tool adapter (MCPProxyTool)

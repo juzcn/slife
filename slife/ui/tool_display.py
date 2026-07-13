@@ -203,8 +203,14 @@ class ToolCallWidget(Static):
         self.update(self._build_content())
 
     def on_click(self) -> None:
-        """Toggle detail on click."""
-        self.toggle()
+        """Expand detail on click (never collapse — avoids destroying text selection).
+
+        When collapsed, any click expands so the user can read args/results.
+        When expanded, clicks do nothing — the user may be selecting text
+        to copy. Use Enter/Space (or the toggle binding) to collapse instead.
+        """
+        if self._is_collapsed:
+            self.toggle()
 
     def action_copy_result(self) -> None:
         """Copy the result (or arguments if no result yet) to clipboard."""

@@ -35,7 +35,7 @@ Auto-discovered from `slife/tools/`. Use `slife.json5` only to override defaults
 | `run_python_script` | Platform-correct Python invocation with JSON args |
 | `get_os_info` | Return current OS: Windows, Linux, or macOS |
 | `config_env_set` / `get` / `remove` | Manage env vars in slife.json5 + os.environ |
-| `cli_add_tool` / `remove` / `list` | Register external CLIs for cross-session discovery |
+| `cli_add_tool` / `check_installed` / `remove` / `list` | Register, check, and discover external CLIs |
 
 ### Skills
 

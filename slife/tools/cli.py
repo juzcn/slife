@@ -1,8 +1,9 @@
 """CLI tool management — register external CLI commands for discovery.
 
-cli_add_tool:    register a CLI so the LLM can discover it next turn
-cli_remove_tool: remove a registered CLI
-cli_list_tools:  list all registered CLI tools
+cli_add_tool:          register a CLI so the LLM can discover it next turn
+cli_check_installed:   check whether a CLI command is installed on the system
+cli_remove_tool:       remove a registered CLI
+cli_list_tools:        list all registered CLI tools
 
 Registered CLIs are persisted to slife.json5 → cli_tools: section.
 The LLM calls these tools via execute_shell — these tools only manage
@@ -33,6 +34,7 @@ def _cli_section(raw: dict) -> dict:
         section = {}
         raw[_CLI_TOOLS_KEY] = section
     return section
+
 
 
 def get_cli_tools_summary(config_path: Path) -> str:
@@ -66,6 +68,85 @@ def get_cli_tools_summary(config_path: Path) -> str:
         lines.append(line)
 
     return "\n".join(lines)
+
+
+class CliCheckInstalled(Tool):
+    """Check whether CLI commands are registered in slife.json5.
+
+    Looks up command names in the cli_tools config section — this tells
+    you whether slife already knows about a CLI (its command, description,
+    install method) without running anything on the system.
+
+    Use before re-installing, before calling cli_add_tool, or when the
+    user asks "do I have X set up?".  Does NOT run the actual command.
+    """
+
+    name = "cli_check_installed"
+    description = (
+        "Check whether CLI commands are already registered in slife.json5. "
+        "Returns each command's registration status, its invocation, "
+        "description, install instructions, and source if recorded. "
+        "Use before installing or registering a CLI to avoid duplicates. "
+        "Does NOT run shell commands."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "commands": {
+                "type": "array",
+                "description": "One or more command names to check (e.g. ['npm', 'git', 'uv']).",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["commands"],
+    }
+
+    def __init__(self, config_path: Path | None = None):
+        self._config_path = config_path or Path("slife.json5")
+
+    @classmethod
+    def from_config(cls, cfg, config):
+        path = config._path if config else None
+        return cls(config_path=path)
+
+    async def execute(self, **kwargs) -> str:
+        commands: list[str] = kwargs["commands"]
+
+        raw = read_config(self._config_path)
+        cli_tools = raw.get(_CLI_TOOLS_KEY, {})
+        if not isinstance(cli_tools, dict):
+            cli_tools = {}
+
+        lines = []
+        found = 0
+        for cmd in commands:
+            entry = cli_tools.get(cmd)
+            if isinstance(entry, dict):
+                found += 1
+                source_info = ""
+                src = entry.get("source")
+                if isinstance(src, dict):
+                    parts = []
+                    if src.get("type"):
+                        parts.append(src["type"])
+                    if src.get("url"):
+                        parts.append(src["url"])
+                    if parts:
+                        source_info = f"  source: {' — '.join(parts)}"
+                install_info = ""
+                if entry.get("install"):
+                    install_info = f"\n  install: {entry['install']}"
+                line = (
+                    f"● {cmd} — {entry.get('command', cmd)}"
+                    f"{install_info}"
+                    f"{source_info}"
+                )
+            else:
+                line = f"○ {cmd} — not registered in config"
+            lines.append(line)
+
+        summary = f"{found}/{len(commands)} registered"
+        return summary + "\n" + "\n".join(lines)
 
 
 class CliAddTool(Tool):
