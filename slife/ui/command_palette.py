@@ -46,8 +46,8 @@ class CommandPalette(Vertical):
     }
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._items: list[str] = []
 
     # ── Public API ──────────────────────────────────────────────────

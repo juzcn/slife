@@ -27,7 +27,7 @@ class CommandInput(Input):
     def action_complete_suggestion(self) -> None:
         """Complete the current slash suggestion, or pass Tab through."""
         if self.value.startswith("/"):
-            self.post_message(CompleteSuggestion(self))
+            self.post_message(CompleteSuggestion())
         else:
             # Not a slash command — let Tab do default focus navigation
             self.app.action_focus_next()
