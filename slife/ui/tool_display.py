@@ -157,6 +157,7 @@ class ToolCallWidget(Static):
     can_focus = True
 
     BINDINGS = [
+        ("enter,space", "toggle", "Toggle detail"),
         ("ctrl+y", "copy_result", "Copy result"),
     ]
 
