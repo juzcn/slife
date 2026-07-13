@@ -7,7 +7,6 @@ rather than directly managing agent internals.
 import asyncio
 import json
 import logging
-import time as _time
 
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
@@ -16,7 +15,6 @@ from slife.agent.conversation import Conversation
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
 from slife.tools.factory import create_tools_from_config
 from slife.mcp.client import MCPClient
-from slife.logfmt import request_scope
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +44,6 @@ class AgentService:
         # MCP integration state
         self._mcp_client: MCPClient | None = None
         self._mcp_process = None
-
-        # Request counter for log correlation
-        self._req_count: int = 0
 
     @property
     def model_display_name(self) -> str:
@@ -294,7 +289,6 @@ class AgentService:
         handler: AgentEventHandler,
     ) -> AgentResult:
         """Run the agent loop for a user message via streaming."""
-        self._req_count += 1
         return await self.agent_loop.run(
             user_input=user_input,
             conversation=self.conversation,

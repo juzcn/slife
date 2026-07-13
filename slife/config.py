@@ -167,16 +167,29 @@ class Config:
         if self.mcp_config is None:
             self.mcp_config = MCPConfig()
 
+    # ── Config file I/O helpers ─────────────────────────────────────
+
+    def _read_config(self, action: str, server: str) -> dict | None:
+        """Read and parse the JSON5 config file. Returns None if no path."""
+        if not self._path:
+            logger.warning("config_no_path action=%s server=%s", action, server)
+            return None
+        return json5.loads(self._path.read_text(encoding="utf-8"))
+
+    def _write_config(self, raw: dict) -> None:
+        """Write the JSON5 config back to disk."""
+        assert self._path is not None
+        self._path.write_text(
+            json5.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
     def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None) -> None:
         """Persist an MCP server to the config file."""
-        if not self._path:
-            logger.warning("config_no_path action=save_mcp server=%s", name)
+        raw = self._read_config("save_mcp", name)
+        if raw is None:
             return
 
-        raw = json5.loads(self._path.read_text(encoding="utf-8"))
-        mcp_section = raw.setdefault("mcp", {})
-        servers = mcp_section.setdefault("servers", {})
-
+        servers = raw.setdefault("mcp", {}).setdefault("servers", {})
         server_entry: dict = {"command": command, "args": args}
         if description:
             server_entry["description"] = description
@@ -187,22 +200,20 @@ class Config:
             server_entry["source"] = source
         servers[name] = server_entry
 
-        self._path.write_text(json5.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
+        self._write_config(raw)
         self.mcp_config.servers[name] = server_entry
         logger.info("config_save_mcp server=%s", name)
 
     def remove_mcp_server(self, name: str) -> None:
         """Remove an MCP server from the config file."""
-        if not self._path:
-            logger.warning("config_no_path action=remove_mcp server=%s", name)
+        raw = self._read_config("remove_mcp", name)
+        if raw is None:
             return
 
-        raw = json5.loads(self._path.read_text(encoding="utf-8"))
-        mcp_section = raw.get("mcp", {})
-        servers = mcp_section.get("servers", {})
+        servers = raw.get("mcp", {}).get("servers", {})
         if name in servers:
             del servers[name]
-            self._path.write_text(json5.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
+            self._write_config(raw)
             self.mcp_config.servers.pop(name, None)
             logger.info("config_remove_mcp server=%s", name)
 
@@ -213,18 +224,17 @@ class Config:
             name: Server name.
             disclosure: 'eager' or 'lazy'.
         """
-        if not self._path:
-            logger.warning("config_no_path action=set_disclosure server=%s", name)
+        raw = self._read_config("set_disclosure", name)
+        if raw is None:
             return
 
-        raw = json5.loads(self._path.read_text(encoding="utf-8"))
         servers = raw.setdefault("mcp", {}).setdefault("servers", {})
         if name in servers:
             if disclosure == "eager":
                 servers[name].pop("disclosure", None)
             else:
                 servers[name]["disclosure"] = disclosure
-            self._path.write_text(json5.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
+            self._write_config(raw)
             # Update in-memory state
             if name in self.mcp_config.servers:
                 if disclosure == "eager":

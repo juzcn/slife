@@ -110,81 +110,12 @@ class MCPProxyTool(Tool):
             source = kwargs.pop("source", None) if isinstance(kwargs.get("source"), dict) else None
 
             # Wrapper management tool — call directly
-            result = await self._mcp_client.call_tool(
-                self._tool_name, kwargs
-            )
+            result = await self._mcp_client.call_tool(self._tool_name, kwargs)
 
-            # Persist newly added servers to config file
-            if self._tool_name == "mcp_add_server" and self._on_server_added:
-                try:
-                    parsed = json.loads(result)
-                    if parsed.get("status") == "connected":
-                        await self._on_server_added(
-                            name=kwargs.get("name", ""),
-                            command=kwargs.get("command", ""),
-                            args=kwargs.get("args", []),
-                            env=kwargs.get("env"),
-                            description=kwargs.get("description", ""),
-                            source=source,
-                        )
-                    else:
-                        logger.info(
-                            "mcp_not_persisted server=%s status=%s error=%s",
-                            kwargs.get("name", "?"),
-                            parsed.get("status", "?"),
-                            parsed.get("error", "?"),
-                        )
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "mcp_persist_parse_fail server=%s result=%.200s",
-                        kwargs.get("name", "?"), result[:200],
-                    )
-                except Exception:
-                    logger.exception(
-                        "mcp_persist_callback_failed server=%s",
-                        kwargs.get("name", "?"),
-                    )
-
-            # Change disclosure mode → persist + register tools if eager
-            if self._tool_name == "mcp_set_disclosure" and self._on_server_disclosure_changed:
-                try:
-                    parsed = json.loads(result)
-                    new_disclosure = parsed.get("disclosure", "")
-                    if new_disclosure in ("eager", "lazy"):
-                        await self._on_server_disclosure_changed(
-                            name=kwargs.get("name", ""),
-                            disclosure=new_disclosure,
-                        )
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "mcp_disclosure_parse_fail result=%.200s",
-                        result[:200],
-                    )
-                except Exception:
-                    logger.exception("mcp_disclosure_callback_failed")
-
-            # Persist server removals to config file
-            if self._tool_name == "mcp_remove_server" and self._on_server_removed:
-                try:
-                    parsed = json.loads(result)
-                    if parsed.get("status") == "removed":
-                        await self._on_server_removed(name=kwargs.get("name", ""))
-                    else:
-                        logger.info(
-                            "mcp_not_unpersisted server=%s status=%s",
-                            kwargs.get("name", "?"),
-                            parsed.get("status", "?"),
-                        )
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "mcp_removal_parse_fail server=%s result=%.200s",
-                        kwargs.get("name", "?"), result[:200],
-                    )
-                except Exception:
-                    logger.exception(
-                        "mcp_removal_callback_failed server=%s",
-                        kwargs.get("name", "?"),
-                    )
+            # Side-effect callbacks for config persistence
+            await self._handle_add_server(result, source, **kwargs)
+            await self._handle_set_disclosure(result, **kwargs)
+            await self._handle_remove_server(result, **kwargs)
         else:
             # External MCP server tool — route through mcp_call_tool
             result = await self._mcp_client.call_tool(
@@ -196,6 +127,85 @@ class MCPProxyTool(Tool):
                 },
             )
         return result
+
+    # ── Callback helpers ────────────────────────────────────────────
+
+    async def _handle_add_server(self, result: str, source: dict | None, **kwargs) -> None:
+        """Persist newly added MCP servers to config."""
+        if self._tool_name != "mcp_add_server" or not self._on_server_added:
+            return
+        try:
+            parsed = json.loads(result)
+            if parsed.get("status") == "connected":
+                await self._on_server_added(
+                    name=kwargs.get("name", ""),
+                    command=kwargs.get("command", ""),
+                    args=kwargs.get("args", []),
+                    env=kwargs.get("env"),
+                    description=kwargs.get("description", ""),
+                    source=source,
+                )
+            else:
+                logger.info(
+                    "mcp_not_persisted server=%s status=%s error=%s",
+                    kwargs.get("name", "?"),
+                    parsed.get("status", "?"),
+                    parsed.get("error", "?"),
+                )
+        except json.JSONDecodeError:
+            logger.warning(
+                "mcp_persist_parse_fail server=%s result=%.200s",
+                kwargs.get("name", "?"), result[:200],
+            )
+        except Exception:
+            logger.exception(
+                "mcp_persist_callback_failed server=%s",
+                kwargs.get("name", "?"),
+            )
+
+    async def _handle_set_disclosure(self, result: str, **kwargs) -> None:
+        """Persist disclosure changes and trigger eager tool registration."""
+        if self._tool_name != "mcp_set_disclosure" or not self._on_server_disclosure_changed:
+            return
+        try:
+            parsed = json.loads(result)
+            new_disclosure = parsed.get("disclosure", "")
+            if new_disclosure in ("eager", "lazy"):
+                await self._on_server_disclosure_changed(
+                    name=kwargs.get("name", ""),
+                    disclosure=new_disclosure,
+                )
+        except json.JSONDecodeError:
+            logger.warning(
+                "mcp_disclosure_parse_fail result=%.200s", result[:200],
+            )
+        except Exception:
+            logger.exception("mcp_disclosure_callback_failed")
+
+    async def _handle_remove_server(self, result: str, **kwargs) -> None:
+        """Persist MCP server removals to config."""
+        if self._tool_name != "mcp_remove_server" or not self._on_server_removed:
+            return
+        try:
+            parsed = json.loads(result)
+            if parsed.get("status") == "removed":
+                await self._on_server_removed(name=kwargs.get("name", ""))
+            else:
+                logger.info(
+                    "mcp_not_unpersisted server=%s status=%s",
+                    kwargs.get("name", "?"),
+                    parsed.get("status", "?"),
+                )
+        except json.JSONDecodeError:
+            logger.warning(
+                "mcp_removal_parse_fail server=%s result=%.200s",
+                kwargs.get("name", "?"), result[:200],
+            )
+        except Exception:
+            logger.exception(
+                "mcp_removal_callback_failed server=%s",
+                kwargs.get("name", "?"),
+            )
 
 
 def create_proxy_tools(

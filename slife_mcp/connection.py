@@ -7,11 +7,12 @@ ClientSession entirely to prevent TaskGroup conflicts with FastMCP.
 import asyncio
 import json
 import logging
-import shutil
-import sys
+import os
 import time as _time
 from dataclasses import dataclass, field
 from enum import Enum
+
+from slife.platform import resolve_command
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +22,6 @@ class ServerStatus(Enum):
     CONNECTING = "connecting"
     CONNECTED = "connected"
     FAILED = "failed"
-
-
-def _resolve_command(command: str) -> str:
-    if sys.platform == "win32" and not command.lower().endswith((".exe", ".cmd", ".bat")):
-        resolved = shutil.which(command) or shutil.which(command + ".cmd") or shutil.which(command + ".exe")
-        if resolved:
-            return resolved
-    return command
 
 
 @dataclass
@@ -95,11 +88,10 @@ class MCPServerConnection:
         )
 
         try:
-            exe = _resolve_command(self.config.command)
+            exe = resolve_command(self.config.command)
 
             # Build environment
-            import os as _os
-            env = dict(_os.environ)
+            env = dict(os.environ)
             if self.config.env:
                 env.update(self.config.env)
 

@@ -6,9 +6,11 @@ clean shutdown on exit. Supports auto-restart on crash.
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 
+from slife.logfmt import get_session_id
 from slife.platform import IS_WINDOWS
 
 logger = logging.getLogger(__name__)
@@ -78,10 +80,7 @@ class MCPWrapperProcess:
 
         try:
             # Pass session ID so wrapper can correlate its logs with ours
-            import os as _os
-            from slife.logfmt import get_session_id
-
-            env = dict(_os.environ)
+            env = dict(os.environ)
             env["SLIFE_SESSION_ID"] = get_session_id()
 
             self._process = await asyncio.create_subprocess_exec(

@@ -6,7 +6,6 @@ Uses asyncio subprocess + asyncio.Queue adapters + ClientSession.
 import asyncio
 import logging
 import os
-import shutil
 from typing import Any
 
 import httpx
@@ -15,19 +14,11 @@ from mcp.client.stdio import get_default_environment
 from mcp.shared.message import SessionMessage
 
 from slife.logfmt import get_session_id
-from slife.platform import IS_WINDOWS
+from slife.platform import resolve_command
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_WRAPPER_URL = "http://127.0.0.1:9876/mcp"
-
-
-def _resolve_command(command: str) -> str:
-    if IS_WINDOWS and not command.lower().endswith((".exe", ".cmd", ".bat")):
-        resolved = shutil.which(command) or shutil.which(command + ".cmd") or shutil.which(command + ".exe")
-        if resolved:
-            return resolved
-    return command
 
 
 # ── asyncio.Queue adapters — implement anyio stream protocol on asyncio primitives ──
@@ -109,7 +100,7 @@ class MCPClient:
             logger.warning("mcp_client_already_connected")
             return
 
-        exe = _resolve_command(command)
+        exe = resolve_command(command)
         merged_env = get_default_environment()
         merged_env["SLIFE_SESSION_ID"] = get_session_id()
         if env:
@@ -142,13 +133,17 @@ class MCPClient:
         self._owns_process = True
         logger.info("mcp_client_connected transport=stdio")
 
-    async def _bridge_stdout(self) -> None:
-        assert self._process and self._process.stdout and self._stdout_queue
+    async def _bridge_lines(self, reader, label: str = "stdout") -> None:
+        """Read JSON-RPC lines from a stream reader and push to stdout queue.
+
+        Shared by _bridge_stdout (subprocess) and _bridge_reader (streams).
+        """
+        assert self._stdout_queue
         # Allow lines up to 10 MB — tool schemas can be large
-        self._process.stdout._limit = 10 * 1024 * 1024
+        reader._limit = 10 * 1024 * 1024
         try:
             while True:
-                line = await self._process.stdout.readline()
+                line = await reader.readline()
                 if not line:
                     break
                 line_str = line.decode("utf-8", errors="replace").strip()
@@ -158,14 +153,18 @@ class MCPClient:
                     message = types.JSONRPCMessage.model_validate_json(line_str)
                     await self._stdout_queue.put(SessionMessage(message))
                 except Exception:
-                    logger.warning(
-                        "mcp_bridge_parse_fail line=%.200s",
-                        line_str,
+                    logger.debug(
+                        "mcp_bridge_parse_fail source=%s line=%.200s",
+                        label, line_str,
                     )
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.warning("mcp_bridge_stdout_crashed", exc_info=True)
+            logger.warning("mcp_bridge_crashed source=%s", label, exc_info=True)
+
+    async def _bridge_stdout(self) -> None:
+        assert self._process and self._process.stdout
+        await self._bridge_lines(self._process.stdout, label="stdout")
 
     async def _bridge_stdin(self) -> None:
         assert self._process and self._process.stdin and self._stdin_queue
@@ -182,28 +181,7 @@ class MCPClient:
 
     async def _bridge_reader(self, reader) -> None:
         """Bridge from a raw asyncio StreamReader to the stdout queue."""
-        # Allow lines up to 10 MB — tool schemas can be large
-        reader._limit = 10 * 1024 * 1024
-        try:
-            while True:
-                line = await reader.readline()
-                if not line:
-                    break
-                line_str = line.decode("utf-8", errors="replace").strip()
-                if not line_str:
-                    continue
-                try:
-                    message = types.JSONRPCMessage.model_validate_json(line_str)
-                    await self._stdout_queue.put(SessionMessage(message))
-                except Exception:
-                    logger.debug(
-                        "Failed to parse reader line as JSON-RPC: %s",
-                        line_str[:200], exc_info=True,
-                    )
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.warning("mcp_bridge_reader_crashed", exc_info=True)
+        await self._bridge_lines(reader, label="reader")
 
     async def _bridge_writer(self, writer) -> None:
         """Bridge from the stdin queue to a raw asyncio StreamWriter."""

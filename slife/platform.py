@@ -1,9 +1,23 @@
 """Platform detection and platform-aware utilities."""
 
+import shutil
 import sys
 import platform as _platform
 
 IS_WINDOWS = sys.platform == "win32"
+
+
+def resolve_command(command: str) -> str:
+    """Resolve a command name to its full path on Windows.
+
+    On Windows, appends .cmd/.exe extensions if needed and resolves
+    via shutil.which(). On other platforms, returns the command as-is.
+    """
+    if IS_WINDOWS and not command.lower().endswith((".exe", ".cmd", ".bat")):
+        resolved = shutil.which(command) or shutil.which(command + ".cmd") or shutil.which(command + ".exe")
+        if resolved:
+            return resolved
+    return command
 
 
 def get_os_info() -> str:
