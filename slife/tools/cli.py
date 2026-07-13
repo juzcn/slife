@@ -30,7 +30,7 @@ def _cli_section(raw: dict) -> dict:
     """Get or create the cli_tools: section."""
     section = raw.setdefault(_CLI_TOOLS_KEY, {})
     if not isinstance(section, dict):
-        logger.warning("Config cli_tools: section is not a dict — resetting.")
+        logger.warning("cli_config_not_dict")
         section = {}
         raw[_CLI_TOOLS_KEY] = section
     return section
@@ -242,7 +242,7 @@ class CliAddTool(Tool):
         write_config(self._config_path, raw)
 
         action = "Updated" if is_update else "Registered"
-        logger.info("CLI tool %s: %s", "updated" if is_update else "added", name)
+        logger.info("cli_%s name=%s", "updated" if is_update else "added", name)
         return f"[OK] {action} CLI tool '{name}'.\n  {description}"
 
 
@@ -280,7 +280,7 @@ class CliRemoveTool(Tool):
 
         del cli_tools[name]
         write_config(self._config_path, raw)
-        logger.info("CLI tool removed: %s", name)
+        logger.info("cli_removed name=%s", name)
         return f"[OK] Removed CLI tool '{name}'."
 
 

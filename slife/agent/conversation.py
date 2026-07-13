@@ -21,7 +21,7 @@ class Conversation:
         self.messages: list[dict] = []
         if system_prompt:
             self.messages.append({"role": "system", "content": system_prompt})
-            logger.debug("Conversation init: system prompt set (%.100s)", system_prompt)
+            logger.debug("conv_init sys_prompt_len=%d", len(system_prompt))
 
     def add_user_message(
         self, content: str, images: list[str] | None = None
@@ -41,10 +41,10 @@ class Conversation:
             for img_path in images:
                 parts.append(encode_image(img_path))
             self.messages.append({"role": "user", "content": parts})
-            logger.debug("User: %.100s + %d images", content, len(images))
+            logger.debug("conv_user text=%.80s imgs=%d", content, len(images))
         else:
             self.messages.append({"role": "user", "content": content})
-            logger.debug("User: %.100s", content)
+            logger.debug("conv_user text=%.80s", content)
 
     def add_assistant_message(
         self, content: str | None, tool_calls: list | None = None
@@ -58,17 +58,17 @@ class Conversation:
                 tc.get("function", {}).get("name", "?")
                 for tc in tool_calls
             ]
-            logger.debug("Assistant: tool_calls=%s", tc_names)
+            logger.debug("conv_assistant tool_calls=%s", tc_names)
         else:
-            logger.debug("Assistant: %.200s", content or "")
+            logger.debug("conv_assistant text_len=%d", len(content or ""))
         self.messages.append(msg)
 
     def add_tool_result(self, tool_call_id: str, content: str) -> None:
         """Add a tool result message."""
         logger.debug(
-            "Tool result: %s → %.200s",
+            "conv_tool_result id=%s result_len=%d",
             tool_call_id,
-            content,
+            len(content),
         )
         self.messages.append({
             "role": "tool",
@@ -89,4 +89,4 @@ class Conversation:
             else None
         )
         self.messages = [system_msg] if system_msg else []
-        logger.debug("Cleared: %d messages removed", old_count - len(self.messages))
+        logger.debug("conv_clear removed=%d", old_count - len(self.messages))

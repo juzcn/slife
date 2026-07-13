@@ -495,7 +495,7 @@ class TestConfigMCPSaveRemove:
 
         with caplog.at_level(logging.WARNING):
             config.save_mcp_server("fs", "cmd", ["arg"])
-        assert "No config path" in caplog.text
+        assert "config_no_path" in caplog.text
 
     def test_remove_server_persists(self, tmp_path, monkeypatch):
         """remove_mcp_server removes from file and in-memory state."""
@@ -541,7 +541,7 @@ class TestConfigMCPSaveRemove:
 
         with caplog.at_level(logging.WARNING):
             config.remove_mcp_server("nonexistent")
-        assert "No config path" in caplog.text
+        assert "config_no_path" in caplog.text
 
     def test_save_server_with_source(self, tmp_path, monkeypatch):
         """save_mcp_server with source stores it in JSON5 with fetched_at."""

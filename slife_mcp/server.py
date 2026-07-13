@@ -11,6 +11,7 @@ Usage:
 
 import json
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Literal
 from fastmcp import FastMCP
 
 from slife_mcp.connection import ConnectionPool, ServerConfig
+from slife.logfmt import SessionFormatter, set_session_id, FILE_LOG_FORMAT
 
 logger = logging.getLogger("slife_mcp")
 
@@ -32,13 +34,20 @@ def _setup_logging() -> Path:
     """Configure logging to both stderr and file.
 
     stderr: DEBUG+ — captured by the parent slife process and logged
-            with [wrapper] prefix.
-    File:   DEBUG+ with timestamps — one file per session:
+            with [wrapper] prefix. Uses plain formatter (parent already
+            has session/request context).
+    File:   DEBUG+ with session/request IDs — one file per session:
             logs/slife_mcp_YYYYMMDD_HHMMSS.log
     """
-    log_fmt = logging.Formatter(
-        "%(asctime)s [%(levelname)-7s] %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+    # Adopt parent session ID from environment
+    _sid = os.environ.get("SLIFE_SESSION_ID", "")
+    if _sid:
+        set_session_id(_sid)
+
+    # Stderr — plain format (parent slife adds session/request context)
+    _stderr_fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)-5s] %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
     )
 
     _root = logging.getLogger()
@@ -47,21 +56,26 @@ def _setup_logging() -> Path:
     # Stderr — captured by parent slife process for live debugging
     _stderr = logging.StreamHandler(sys.stderr)
     _stderr.setLevel(logging.DEBUG)
-    _stderr.setFormatter(log_fmt)
+    _stderr.setFormatter(_stderr_fmt)
     _root.addHandler(_stderr)
 
-    # File — persistent per-session log
+    # File — persistent per-session log with session/request IDs
     LOG_DIR.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = LOG_DIR / f"slife_mcp_{ts}.log"
     _file = logging.FileHandler(log_path, encoding="utf-8")
     _file.setLevel(logging.DEBUG)
-    _file.setFormatter(log_fmt)
+    _file.setFormatter(SessionFormatter(FILE_LOG_FORMAT))
     _root.addHandler(_file)
 
     # Silence noisy third-party loggers
     for _noisy in ("httpx", "httpcore", "openai", "asyncio", "urllib3"):
         logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+    # Silence FastMCP — its ASCII art logo and per-request DEBUG spam
+    # are noise in the log file. Errors still surface via slife_mcp logger.
+    for _fastmcp in ("mcp.server.lowlevel.server", "fastmcp"):
+        logging.getLogger(_fastmcp).setLevel(logging.WARNING)
 
     return log_path
 
@@ -98,7 +112,9 @@ mcp = FastMCP(
         "Set activate=false to connect without loading tools (use "
         "mcp_set_disclosure later to load them on demand). "
         "Returns the list of discovered tools on success; on failure the error "
-        "includes the server's stderr."
+        "includes the server's stderr. "
+        "Include source provenance when the server is installed from a known "
+        "registry — helps track where tools came from for future maintenance."
     ),
 )
 async def mcp_add_server(
@@ -108,6 +124,7 @@ async def mcp_add_server(
     env: dict[str, str] | None = None,
     description: str = "",
     activate: bool = True,
+    source: dict | None = None,
 ) -> str:
     config = ServerConfig(
         name=name,
@@ -143,7 +160,7 @@ async def mcp_add_server(
                 indent=2,
             )
     except Exception as e:
-        logger.exception("Failed to add server '%s'", name)
+        logger.exception("mcp_add_failed server=%s", name)
         return json.dumps({"status": "error", "server": name, "error": str(e)}, indent=2)
 
 
@@ -164,7 +181,7 @@ async def mcp_remove_server(name: str) -> str:
         await _pool.remove_server(name)
         return json.dumps({"status": "removed", "server": name}, indent=2)
     except Exception as e:
-        logger.exception("Failed to remove server '%s'", name)
+        logger.exception("mcp_remove_failed server=%s", name)
         return json.dumps({"status": "error", "server": name, "error": str(e)}, indent=2)
 
 
@@ -205,7 +222,7 @@ async def mcp_list_tools(server: str) -> str:
 
         return json.dumps({"tools": tools}, indent=2)
     except Exception as e:
-        logger.exception("Failed to list tools")
+        logger.exception("mcp_list_tools_failed")
         return json.dumps({"error": str(e)})
 
 
@@ -256,7 +273,7 @@ async def mcp_set_disclosure(name: str, disclosure: Literal["eager", "lazy"]) ->
                 indent=2,
             )
     except Exception as e:
-        logger.exception("Failed to set disclosure for '%s'", name)
+        logger.exception("mcp_disclosure_failed server=%s", name)
         return json.dumps({"status": "error", "server": name, "error": str(e)}, indent=2)
 
 
@@ -368,10 +385,10 @@ def _read_host_port_from_config(config_path: str) -> tuple[str, int] | None:
         import json5
         raw = json5.loads(Path(config_path).read_text(encoding="utf-8"))
     except FileNotFoundError:
-        logger.error("Config file not found: %s", config_path)
+        logger.error("config_not_found path=%s", config_path)
         return None
     except (ValueError, OSError) as e:
-        logger.error("Cannot parse config %s: %s", config_path, e)
+        logger.error("config_parse_error path=%s err=%s", config_path, e)
         return None
 
     wrapper = raw.get("mcp", {}).get("wrapper", {})
@@ -384,7 +401,7 @@ def _read_host_port_from_config(config_path: str) -> tuple[str, int] | None:
         return None
 
     host, port = _parse_url(str(wrapper["url"]))
-    logger.info("Read from config: host=%s port=%d", host, port)
+    logger.info("config_read host=%s port=%d", host, port)
     return host, port
 
 
@@ -416,11 +433,11 @@ def main():
     )
     args = parser.parse_args()
 
-    logger.info("Log: %s", _log_path)
+    logger.info("log_path=%s", _log_path)
 
     # Auto-detect: piped stdin → stdio (slife child process), TTY → HTTP
     if not sys.stdin.isatty():
-        logger.info("Starting slife-mcp wrapper server (transport=stdio)...")
+        logger.info("mcp_start transport=stdio")
         mcp.run(transport="stdio")
         return
 
@@ -445,8 +462,7 @@ def main():
     host = args.host if args.host is not None else cfg[0]
     port = args.port if args.port is not None else cfg[1]
 
-    logger.info("Starting slife-mcp wrapper server (transport=http)...")
-    logger.info("HTTP endpoint: http://%s:%d/mcp", host, port)
+    logger.info("mcp_start transport=http host=%s port=%s", host, port)
     mcp.run(transport="http", host=host, port=port)
 
 

@@ -21,7 +21,7 @@ def _env_section(raw: dict) -> dict:
     """Get or create the env: section, ensuring it's a dict."""
     env = raw.setdefault("env", {})
     if not isinstance(env, dict):
-        logger.warning("Config env: section is not a dict — resetting.")
+        logger.warning("env_config_not_dict")
         env = {}
         raw["env"] = env
     return env
@@ -78,14 +78,14 @@ class ConfigEnvSetTool(Tool):
             env[key] = value
             os.environ[key] = str(value)
             write_config(self._config_path, raw)
-            logger.info("Env set: %s (persisted + active)", key)
+            logger.info("env_set key=%s", key)
             return f"[OK] {key} set and active immediately."
         else:
             placeholder = f"<YOUR_{key.upper().strip('<>')}>"
             env[key] = placeholder
             os.environ[key] = placeholder
             write_config(self._config_path, raw)
-            logger.info("Env set: %s = placeholder (persisted + active)", key)
+            logger.info("env_set_placeholder key=%s", key)
             return (
                 f"[OK] {key} set to placeholder '{placeholder}'.\n"
                 f"  Edit slife.json5 → env: → {key} to fill in your real value."
@@ -181,5 +181,5 @@ class ConfigEnvRemoveTool(Tool):
         del env[key]
         os.environ.pop(key, None)
         write_config(self._config_path, raw)
-        logger.info("Env removed: %s (from config + os.environ)", key)
+        logger.info("env_removed key=%s", key)
         return f"[OK] {key} removed from slife.json5 and deactivated."

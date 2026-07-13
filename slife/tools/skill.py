@@ -121,7 +121,7 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
     for d, fm, _body in skills:
         if fm.get("name") == skill_name or d.name == skill_name:
             content = (d / "SKILL.md").read_text(encoding="utf-8")
-            logger.info("Loaded skill: %s", skill_name)
+            logger.info("skill_loaded name=%s", skill_name)
             return content
 
     # Build hint with available names
@@ -311,7 +311,7 @@ class AddSkillTool(Tool):
         except Exception as e:
             import shutil
             shutil.rmtree(skill_dir, ignore_errors=True)
-            logger.exception("Failed to install skill '%s'", name)
+            logger.exception("skill_install_failed name=%s", name)
             return f"[FAIL] Error installing skill '{name}': {e}"
 
     def _install_from_files(self, name: str, files: list[dict], skill_dir: Path) -> str:
@@ -322,7 +322,7 @@ class AddSkillTool(Tool):
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(f["content"], encoding="utf-8")
             count += 1
-            logger.debug("Wrote: %s", f["path"])
+            logger.debug("skill_wrote_file path=%s", f["path"])
 
         has_skill_md = (skill_dir / "SKILL.md").exists()
         msg = f"[OK] Installed skill '{name}' ({count} files) → {skill_dir}"
@@ -394,7 +394,7 @@ class AddSkillTool(Tool):
         meta_path.write_text(
             json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        logger.debug("Wrote _meta.json with source for skill in %s", skill_dir)
+        logger.debug("skill_meta_written dir=%s", skill_dir)
 
 
 class RemoveSkillTool(Tool):
@@ -435,7 +435,7 @@ class RemoveSkillTool(Tool):
             if fm.get("name") == skill_name or d.name == skill_name:
                 import shutil
                 shutil.rmtree(d)
-                logger.info("Removed skill: %s (dir: %s)", skill_name, d)
+                logger.info("skill_removed name=%s", skill_name)
                 return f"[OK] Removed skill '{skill_name}' (deleted {d})."
 
         # 2) Try matching by directory name directly (handles git clones
@@ -444,7 +444,7 @@ class RemoveSkillTool(Tool):
         if direct.exists() and direct.is_dir():
             import shutil
             shutil.rmtree(direct)
-            logger.info("Removed directory: %s (no SKILL.md)", direct)
+            logger.info("skill_dir_removed path=%s", direct)
             return (
                 f"[OK] Removed directory '{skill_name}' ({direct}).\n"
                 f"Note: it had no SKILL.md — may not have been a valid skill."

@@ -9,6 +9,7 @@ import json
 import logging
 import shutil
 import sys
+import time as _time
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -81,15 +82,16 @@ class MCPServerConnection:
 
     async def connect(self) -> None:
         if self._status == ServerStatus.CONNECTED:
-            logger.info("Server '%s' already connected.", self.config.name)
+            logger.info("mcp_already_connected server=%s", self.config.name)
             return
 
         self._status = ServerStatus.CONNECTING
         self._error = None
         self._stderr_buffer.clear()
+        t0 = _time.monotonic()
         logger.info(
-            "Connecting to MCP server '%s': %s %s",
-            self.config.name, self.config.command, " ".join(self.config.args),
+            "mcp_connect server=%s cmd=%s",
+            self.config.name, self.config.command,
         )
 
         try:
@@ -120,8 +122,8 @@ class MCPServerConnection:
 
             # Validate protocol version
             server_info = init_result.get("serverInfo", {})
-            logger.info(
-                "Server '%s' initialized: %s %s",
+            logger.debug(
+                "mcp_initialized server=%s remote=%s ver=%s",
                 self.config.name,
                 server_info.get("name", "unknown"),
                 server_info.get("version", ""),
@@ -142,9 +144,10 @@ class MCPServerConnection:
             ]
 
             self._status = ServerStatus.CONNECTED
+            elapsed = (_time.monotonic() - t0) * 1000
             logger.info(
-                "Server '%s' connected — %d tools discovered.",
-                self.config.name, len(self._tools_cache),
+                "mcp_connected server=%s tools=%d took_ms=%.0f",
+                self.config.name, len(self._tools_cache), elapsed,
             )
 
         except Exception as e:
@@ -156,7 +159,7 @@ class MCPServerConnection:
                 self._error = f"{e}\n\n[server stderr]\n{stderr_tail}"
             else:
                 self._error = str(e)
-            logger.error("Failed to connect to '%s': %s", self.config.name, e)
+            logger.error("mcp_connect_failed server=%s err=%s", self.config.name, e)
             await self._cleanup_resources()
 
     async def _request(self, method: str, params: dict) -> dict:
@@ -186,7 +189,7 @@ class MCPServerConnection:
                 try:
                     response = json.loads(resp_line.decode("utf-8", errors="replace"))
                 except json.JSONDecodeError:
-                    logger.debug("Invalid JSON from '%s': %.100s", self.config.name, resp_line)
+                    logger.debug("mcp_invalid_json server=%s line=%.100s", self.config.name, resp_line)
                     continue
 
                 if response.get("id") == req_id:
@@ -217,16 +220,16 @@ class MCPServerConnection:
                 text = line.decode("utf-8", errors="replace").rstrip()
                 if text:
                     self._stderr_buffer.append(text + "\n")
-                    logger.debug("[%s stderr] %s", self.config.name, text)
+                    logger.debug("mcp_stderr server=%s line=%s", self.config.name, text)
         except asyncio.CancelledError:
             pass
 
     async def disconnect(self) -> None:
-        logger.info("Disconnecting from '%s'...", self.config.name)
+        logger.info("mcp_disconnect server=%s", self.config.name)
         await self._cleanup_resources()
         self._status = ServerStatus.DISCONNECTED
         self._tools_cache = []
-        logger.info("Server '%s' disconnected.", self.config.name)
+        logger.info("mcp_disconnected server=%s", self.config.name)
 
     async def _cleanup_resources(self) -> None:
         if self._stderr_task and not self._stderr_task.done():
@@ -267,7 +270,7 @@ class MCPServerConnection:
                 f"Server '{self.config.name}' is not connected (status: {self._status.value})"
             )
 
-        logger.debug("Calling tool '%s' on '%s'", tool_name, self.config.name)
+        logger.debug("mcp_tool_call server=%s tool=%s", self.config.name, tool_name)
         result = await self._request("tools/call", {
             "name": tool_name,
             "arguments": arguments,
@@ -293,7 +296,7 @@ class ConnectionPool:
 
     async def add_server(self, config: ServerConfig) -> MCPServerConnection:
         if config.name in self._connections:
-            logger.info("Replacing existing server '%s'...", config.name)
+            logger.info("mcp_replace server=%s", config.name)
             await self.remove_server(config.name)
         conn = MCPServerConnection(config=config)
         self._connections[config.name] = conn
@@ -398,11 +401,11 @@ class ConnectionPool:
         try:
             return await conn.call_tool(tool_name, arguments)
         except Exception as e:
-            logger.error("Tool call failed: %s/%s: %s", server_name, tool_name, e)
+            logger.error("mcp_tool_call_failed server=%s tool=%s err=%s", server_name, tool_name, e)
             return f"Error calling '{tool_name}' on '{server_name}': {e}"
 
     async def shutdown(self) -> None:
-        logger.info("Shutting down connection pool (%d servers)...", len(self._connections))
+        logger.info("mcp_shutdown servers=%d", len(self._connections))
         for name in list(self._connections.keys()):
             await self.remove_server(name)
-        logger.info("Connection pool shut down.")
+        logger.info("mcp_shutdown_done")

@@ -34,10 +34,10 @@ def read_config(path: Path) -> dict:
     try:
         return json5.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        logger.warning("Config file not found: %s", path)
+        logger.warning("config_not_found path=%s", path)
         return {}
     except (ValueError, OSError) as e:
-        logger.error("Cannot parse config %s: %s", path, e)
+        logger.error("config_parse_error path=%s err=%s", path, e)
         return {}
 
 

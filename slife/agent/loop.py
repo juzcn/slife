@@ -2,12 +2,14 @@
 
 import json
 import logging
+import time as _time
 from dataclasses import dataclass
 from typing import Protocol
 
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.conversation import Conversation
 from slife.tools.registry import ToolRegistry
+from slife.logfmt import request_scope
 
 logger = logging.getLogger(__name__)
 
@@ -289,48 +291,59 @@ class AgentLoop:
         """
         conversation.add_user_message(user_input, images=images)
         total_usage = TokenUsage()
+        t_request = _time.monotonic()
 
-        logger.info(
-            "Request: %.100s (images=%d)",
-            user_input,
-            len(images) if images else 0,
-        )
+        n_imgs = len(images) if images else 0
+        logger.info("req_start msg=%.100s imgs=%d", user_input, n_imgs)
 
-        for i in range(self.max_iterations):
-            logger.debug("Iteration %d/%d", i + 1, self.max_iterations)
-            result = await self._process_stream(conversation, handler)
+        with request_scope(user_input[:50]):
+            for i in range(self.max_iterations):
+                t_iter = _time.monotonic()
+                logger.debug("iter=%d/%d", i + 1, self.max_iterations)
+                result = await self._process_stream(conversation, handler)
 
-            total_usage = total_usage + result.usage
-            if handler:
-                await handler.on_token_usage(total_usage)
+                total_usage = total_usage + result.usage
+                if handler:
+                    await handler.on_token_usage(total_usage)
 
-            # Tool calls?
-            if result.tool_accum:
-                tool_calls = self._build_tool_calls_from_deltas(
-                    result.tool_accum
-                )
-                logger.debug(
-                    "LLM requested tools: %s",
-                    [(tc.name, self._truncate_args(tc.arguments)) for tc in tool_calls],
-                )
+                # Tool calls?
+                if result.tool_accum:
+                    tool_calls = self._build_tool_calls_from_deltas(
+                        result.tool_accum
+                    )
+                    logger.debug(
+                        "tool_calls=%d iter=%d names=%s",
+                        len(tool_calls),
+                        i + 1,
+                        [tc.name for tc in tool_calls],
+                    )
+                    conversation.add_assistant_message(
+                        content=result.content or None,
+                        tool_calls=self._serialize_tool_calls(tool_calls),
+                    )
+                    await self._execute_tools(
+                        tool_calls, conversation, handler, iteration=i + 1
+                    )
+                    logger.debug(
+                        "iter_done iter=%d took_ms=%.0f",
+                        i + 1,
+                        (_time.monotonic() - t_iter) * 1000,
+                    )
+                    continue
+
+                # No tool calls — final response
                 conversation.add_assistant_message(
-                    content=result.content or None,
-                    tool_calls=self._serialize_tool_calls(tool_calls),
+                    content=result.content or ""
                 )
-                await self._execute_tools(
-                    tool_calls, conversation, handler, iteration=i + 1
+                t_total = (_time.monotonic() - t_request) * 1000
+                logger.info(
+                    "response tok_p=%d tok_c=%d tok_t=%d took_ms=%.0f text=%.200s",
+                    total_usage.prompt_tokens,
+                    total_usage.completion_tokens,
+                    total_usage.total_tokens,
+                    t_total,
+                    result.content,
                 )
-                continue
-
-            # No tool calls — final response
-            conversation.add_assistant_message(
-                content=result.content or ""
-            )
-            logger.info(
-                "Response: %.200s (%s)",
-                result.content,
-                total_usage,
-            )
-            return AgentResult(text=result.content, usage=total_usage)
+                return AgentResult(text=result.content, usage=total_usage)
 
         raise MaxIterationsExceeded(self.max_iterations)

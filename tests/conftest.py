@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from slife.config import Config, ModelConfig
-from slife.agent.llm_client import TokenUsage, StreamChunk
+from slife.agent.llm_client import TokenUsage
 from slife.agent.conversation import Conversation
 from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry

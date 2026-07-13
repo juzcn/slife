@@ -5,6 +5,7 @@ Uses asyncio subprocess + asyncio.Queue adapters + ClientSession.
 
 import asyncio
 import logging
+import os
 import shutil
 from typing import Any
 
@@ -13,6 +14,7 @@ from mcp import ClientSession, types
 from mcp.client.stdio import get_default_environment
 from mcp.shared.message import SessionMessage
 
+from slife.logfmt import get_session_id
 from slife.platform import IS_WINDOWS
 
 logger = logging.getLogger(__name__)
@@ -104,15 +106,16 @@ class MCPClient:
     ) -> None:
         """Connect by spawning the slife-mcp wrapper as a child process."""
         if self._connected:
-            logger.warning("MCP client already connected.")
+            logger.warning("mcp_client_already_connected")
             return
 
         exe = _resolve_command(command)
         merged_env = get_default_environment()
+        merged_env["SLIFE_SESSION_ID"] = get_session_id()
         if env:
             merged_env = {**merged_env, **env}
 
-        logger.info("Connecting to slife-mcp (stdio): %s %s", exe, " ".join(args or []))
+        logger.info("mcp_client_connect transport=stdio cmd=%s", exe)
 
         self._process = await asyncio.create_subprocess_exec(
             exe, *(args or []),
@@ -137,7 +140,7 @@ class MCPClient:
 
         self._connected = True
         self._owns_process = True
-        logger.info("Connected to slife-mcp wrapper (stdio).")
+        logger.info("mcp_client_connected transport=stdio")
 
     async def _bridge_stdout(self) -> None:
         assert self._process and self._process.stdout and self._stdout_queue
@@ -155,14 +158,14 @@ class MCPClient:
                     message = types.JSONRPCMessage.model_validate_json(line_str)
                     await self._stdout_queue.put(SessionMessage(message))
                 except Exception:
-                    logger.debug(
-                        "Failed to parse stdout line as JSON-RPC: %s",
-                        line_str[:200], exc_info=True,
+                    logger.warning(
+                        "mcp_bridge_parse_fail line=%.200s",
+                        line_str,
                     )
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.warning("_bridge_stdout task crashed", exc_info=True)
+            logger.warning("mcp_bridge_stdout_crashed", exc_info=True)
 
     async def _bridge_stdin(self) -> None:
         assert self._process and self._process.stdin and self._stdin_queue
@@ -200,7 +203,7 @@ class MCPClient:
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.warning("_bridge_reader task crashed", exc_info=True)
+            logger.warning("mcp_bridge_reader_crashed", exc_info=True)
 
     async def _bridge_writer(self, writer) -> None:
         """Bridge from the stdin queue to a raw asyncio StreamWriter."""
@@ -228,9 +231,9 @@ class MCPClient:
 
     async def connect_http(self, url: str = DEFAULT_WRAPPER_URL) -> None:
         if self._connected:
-            logger.warning("MCP client already connected.")
+            logger.warning("mcp_client_already_connected")
             return
-        logger.info("Connecting to slife-mcp via HTTP: %s", url)
+        logger.info("mcp_client_connect transport=http url=%s", url)
         from mcp.client.streamable_http import streamablehttp_client
         self._transport = streamablehttp_client(url)
         read_stream, write_stream, _ = await self._transport.__aenter__()
@@ -239,13 +242,13 @@ class MCPClient:
         await self._session.initialize()
         self._connected = True
         self._owns_process = False
-        logger.info("Connected to slife-mcp wrapper (HTTP).")
+        logger.info("mcp_client_connected transport=http")
 
     async def connect_streams(self, read_stream, write_stream) -> None:
         if self._connected:
-            logger.warning("MCP client already connected.")
+            logger.warning("mcp_client_already_connected")
             return
-        logger.info("Connecting to slife-mcp via existing streams.")
+        logger.info("mcp_client_connect transport=streams")
 
         self._stdout_queue = asyncio.Queue()
         self._stdin_queue = asyncio.Queue()
@@ -260,7 +263,7 @@ class MCPClient:
         await self._session.initialize()
         self._connected = True
         self._owns_process = False
-        logger.info("Connected to slife-mcp wrapper (streams).")
+        logger.info("mcp_client_connected transport=streams")
 
     async def disconnect(self) -> None:
         self._connected = False
@@ -268,7 +271,7 @@ class MCPClient:
         self._reset_state()
         await self._cleanup_transport()
         await self._terminate_owned_process()
-        logger.info("Disconnected from slife-mcp wrapper.")
+        logger.info("mcp_client_disconnected")
 
     async def _cancel_bridge_tasks(self) -> None:
         """Cancel all bridge tasks and wait for them to finish."""

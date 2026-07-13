@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from slife.config import Config
+from slife.logfmt import init_session_id, SessionFormatter, FILE_LOG_FORMAT
 from slife.ui.app import SlifeApp
 
 logger = logging.getLogger("slife")
@@ -32,7 +33,7 @@ def setup_logging(level: int = logging.DEBUG) -> tuple[Path, logging.Handler]:
     """Configure logging to both console and file.
 
     Console: INFO+ during startup (before TUI), WARNING+ during TUI runtime.
-    File:    DEBUG+ with timestamps for troubleshooting.
+    File:    DEBUG+ with timestamps, session/request IDs for troubleshooting.
     Each session writes to a new logs/slife_YYYYMMDD_HHMMSS.log file.
 
     Returns:
@@ -40,6 +41,18 @@ def setup_logging(level: int = logging.DEBUG) -> tuple[Path, logging.Handler]:
         before starting the TUI to prevent display corruption.
     """
     root = logging.getLogger()
+
+    # Dedup: skip if handlers already set up (e.g. tests calling main() repeatedly)
+    if root.handlers:
+        # Find the first StreamHandler that writes to stderr
+        console = next(
+            (h for h in root.handlers if isinstance(h, logging.StreamHandler)
+             and getattr(h, 'stream', None) is not None),
+            None
+        )
+        if console is not None:
+            return _session_log_path(), console
+
     root.setLevel(logging.DEBUG)
 
     # Console handler — INFO during startup, caller raises to WARNING before TUI
@@ -48,16 +61,11 @@ def setup_logging(level: int = logging.DEBUG) -> tuple[Path, logging.Handler]:
     console.setFormatter(logging.Formatter("%(message)s"))
     root.addHandler(console)
 
-    # File handler — detailed format with timestamps, one file per session
+    # File handler — detailed format with session/request IDs, one per session
     log_path = _session_log_path()
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setLevel(level)
-    file_handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s [%(levelname)-7s] %(name)s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-    )
+    file_handler.setFormatter(SessionFormatter(FILE_LOG_FORMAT))
     root.addHandler(file_handler)
 
     # Silence noisy third-party HTTP/logging libraries.
@@ -82,8 +90,12 @@ def main(config_path: str = "slife.json5"):
     """Entry point for the slife TUI application."""
     log_path, console_handler = setup_logging()
 
-    logger.info("Log: %s", log_path)
-    logger.info("Loading config…")
+    # Generate session ID — shared with MCP subprocess via env var
+    sid = init_session_id()
+    os.environ["SLIFE_SESSION_ID"] = sid
+
+    logger.info("log_path=%s", log_path)
+    logger.info("config loading…")
     config = Config.from_json5(config_path)
 
     # Log env vars from config (already applied to os.environ by Config.from_json5)
@@ -92,20 +104,20 @@ def main(config_path: str = "slife.json5"):
             # Mask API key values: only log the key name and first/last chars
             if any(hint in key.upper() for hint in ("KEY", "SECRET", "TOKEN", "PASSWORD")):
                 masked = str(value)[:4] + "…" + str(value)[-4:] if len(str(value)) > 8 else "***"
-                logger.info("Env: %s = %s", key, masked)
+                logger.info("env %s=%s", key, masked)
             else:
-                logger.info("Env: %s = %s", key, value)
+                logger.info("env %s=%s", key, value)
 
     active = config.active_model
-    logger.info("Model: %s (%s)", active.ref, active.display_name)
-    logger.info("Thinking: %s", "on" if active.thinking_enabled else "off")
-    logger.info("Tools: %d loaded", len(config.tools))
+    logger.info("model=%s provider=%s", active.ref, active.display_name)
+    logger.info("thinking=%s", "on" if active.thinking_enabled else "off")
+    logger.info("tools=%d", len(config.tools))
 
     # Suppress console logging during TUI runtime to prevent display corruption.
     # All messages still go to the per-session log file at DEBUG level.
     console_handler.setLevel(logging.WARNING)
 
-    logger.info("Starting TUI…")
+    logger.info("tui starting…")
 
     app = SlifeApp(config)
     app.run()
@@ -113,8 +125,8 @@ def main(config_path: str = "slife.json5"):
     # Session ended — log summary
     usage = app.service.session_usage
     logger.info(
-        "Session ended — total tokens: %s (prompt=%s, completion=%s)",
-        usage.total_tokens,
+        "session_end tok_p=%s tok_c=%s tok_t=%s",
         usage.prompt_tokens,
         usage.completion_tokens,
+        usage.total_tokens,
     )

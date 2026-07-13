@@ -71,7 +71,7 @@ class MCPProxyTool(Tool):
         object.__setattr__(self, "parameters", schema)
 
         logger.debug(
-            "Created proxy tool: %s (server=%s, args=%d)",
+            "proxy_created name=%s server=%s params=%d",
             full_name,
             self._server,
             len(schema.get("properties", {})),
@@ -100,10 +100,9 @@ class MCPProxyTool(Tool):
           - External MCP server tools: route via mcp_call_tool.
         """
         logger.debug(
-            "MCP proxy: %s/%s(%s)",
+            "mcp_proxy_call server=%s tool=%s",
             self._server,
             self._tool_name,
-            kwargs,
         )
         if self._server == "mcp":
             # Strip source from kwargs — wrapper doesn't need it,
@@ -130,19 +129,19 @@ class MCPProxyTool(Tool):
                         )
                     else:
                         logger.info(
-                            "MCP server '%s' not persisted: status=%s error=%s",
+                            "mcp_not_persisted server=%s status=%s error=%s",
                             kwargs.get("name", "?"),
                             parsed.get("status", "?"),
                             parsed.get("error", "?"),
                         )
                 except json.JSONDecodeError:
                     logger.warning(
-                        "MCP server '%s': could not parse result for persistence: %s",
+                        "mcp_persist_parse_fail server=%s result=%.200s",
                         kwargs.get("name", "?"), result[:200],
                     )
                 except Exception:
                     logger.exception(
-                        "MCP server '%s': persistence callback failed",
+                        "mcp_persist_callback_failed server=%s",
                         kwargs.get("name", "?"),
                     )
 
@@ -158,11 +157,11 @@ class MCPProxyTool(Tool):
                         )
                 except json.JSONDecodeError:
                     logger.warning(
-                        "Disclosure change: could not parse result: %s",
+                        "mcp_disclosure_parse_fail result=%.200s",
                         result[:200],
                     )
                 except Exception:
-                    logger.exception("Disclosure change callback failed")
+                    logger.exception("mcp_disclosure_callback_failed")
 
             # Persist server removals to config file
             if self._tool_name == "mcp_remove_server" and self._on_server_removed:
@@ -172,18 +171,18 @@ class MCPProxyTool(Tool):
                         await self._on_server_removed(name=kwargs.get("name", ""))
                     else:
                         logger.info(
-                            "MCP server '%s' not unpersisted: status=%s",
+                            "mcp_not_unpersisted server=%s status=%s",
                             kwargs.get("name", "?"),
                             parsed.get("status", "?"),
                         )
                 except json.JSONDecodeError:
                     logger.warning(
-                        "MCP server '%s': could not parse result for removal: %s",
+                        "mcp_removal_parse_fail server=%s result=%.200s",
                         kwargs.get("name", "?"), result[:200],
                     )
                 except Exception:
                     logger.exception(
-                        "MCP server '%s': removal persistence callback failed",
+                        "mcp_removal_callback_failed server=%s",
                         kwargs.get("name", "?"),
                     )
         else:

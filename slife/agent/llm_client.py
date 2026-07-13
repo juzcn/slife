@@ -4,6 +4,7 @@ Supports both batch (chat) and real-time streaming (chat_stream) modes.
 """
 
 import logging
+import time as _time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -65,10 +66,9 @@ class LLMClient:
             base_url=model.base_url,
         )
         logger.debug(
-            "LLM client: %s/%s @ %s (thinking=%s max_tokens=%d)",
-            model.provider,
+            "llm_init model=%s provider=%s thinking=%s max_tok=%d",
             model.api_model,
-            model.base_url,
+            model.provider,
             model.thinking_enabled,
             model.max_tokens,
         )
@@ -188,8 +188,9 @@ class LLMClient:
         kwargs["stream"] = True
         kwargs["stream_options"] = {"include_usage": True}
 
+        t0 = _time.monotonic()
         logger.debug(
-            "Streaming: model=%s messages=%d tools=%d",
+            "stream_start model=%s msgs=%d tools=%d",
             self.model_config.api_model,
             len(messages),
             len(tools) if tools else 0,
@@ -233,5 +234,12 @@ class LLMClient:
             # Usage (final chunk with stream_options.include_usage)
             if hasattr(event, "usage") and event.usage:
                 usage = self._usage_from_response(event.usage)
-                logger.debug("Stream done: %s", usage)
+                elapsed = (_time.monotonic() - t0) * 1000
+                logger.debug(
+                    "stream_done tok_p=%d tok_c=%d tok_t=%d took_ms=%.0f",
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    usage.total_tokens,
+                    elapsed,
+                )
                 yield StreamChunk(usage=usage)

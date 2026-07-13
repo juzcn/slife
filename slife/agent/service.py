@@ -7,6 +7,7 @@ rather than directly managing agent internals.
 import asyncio
 import json
 import logging
+import time as _time
 
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
@@ -15,6 +16,7 @@ from slife.agent.conversation import Conversation
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
 from slife.tools.factory import create_tools_from_config
 from slife.mcp.client import MCPClient
+from slife.logfmt import request_scope
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,9 @@ class AgentService:
         # MCP integration state
         self._mcp_client: MCPClient | None = None
         self._mcp_process = None
+
+        # Request counter for log correlation
+        self._req_count: int = 0
 
     @property
     def model_display_name(self) -> str:
@@ -75,15 +80,14 @@ class AgentService:
         mcp_cfg = self.config.mcp_config
         assert mcp_cfg is not None  # guaranteed by Config.__post_init__
         if not mcp_cfg.enabled:
-            logger.debug("MCP not enabled in config.")
+            logger.debug("mcp_not_enabled")
             return
 
-        logger.info("Starting MCP integration...")
+        logger.info("mcp_init start")
         await self._connect_mcp_wrapper()
         await self._register_mcp_wrapper_tools()
         await self._auto_connect_mcp_servers()
-        logger.info("MCP integration complete. %d total tools registered.",
-                     len(self.tool_registry.list_tools()))
+        logger.info("mcp_init_done tools=%d", len(self.tool_registry.list_tools()))
 
     # ── MCP private helpers ──────────────────────────────────────────
 
@@ -100,11 +104,11 @@ class AgentService:
         assert mcp_cfg is not None
 
         if await MCPClient.is_wrapper_running(mcp_cfg.wrapper_url):
-            logger.info("Found running MCP wrapper at %s, connecting via HTTP...", mcp_cfg.wrapper_url)
+            logger.info("mcp_wrapper_found url=%s transport=http", mcp_cfg.wrapper_url)
             self._mcp_client = MCPClient()
             await self._mcp_client.connect_http(mcp_cfg.wrapper_url)
         else:
-            logger.info("No running MCP wrapper found, starting as child process...")
+            logger.info("mcp_wrapper_spawn transport=stdio")
             self._mcp_process = MCPWrapperProcess(
                 command=mcp_cfg.wrapper_command,
                 args=mcp_cfg.wrapper_args,
@@ -124,8 +128,8 @@ class AgentService:
 
         assert self._mcp_client is not None
         wrapper_tools = await self._mcp_client.list_tools()
-        logger.info(
-            "MCP wrapper tools discovered: %s",
+        logger.debug(
+            "mcp_wrapper_tools names=%s",
             [t["name"] for t in wrapper_tools],
         )
 
@@ -143,7 +147,7 @@ class AgentService:
         )
         for tool in proxy_tools:
             self.tool_registry.register(tool)
-        logger.info("Registered %d MCP wrapper tools.", len(proxy_tools))
+        logger.debug("mcp_wrapper_tools_registered count=%d", len(proxy_tools))
 
     async def _auto_connect_mcp_servers(self) -> None:
         """Auto-connect to pre-configured MCP servers and discover
@@ -161,7 +165,7 @@ class AgentService:
         if not servers:
             return
 
-        logger.info("Auto-connecting to %d configured MCP servers...", len(servers))
+        logger.info("mcp_auto_connect servers=%d", len(servers))
         mcp_client = self._mcp_client  # narrow for closure
 
         async def _connect_one(name: str, cfg: dict) -> None:
@@ -178,13 +182,13 @@ class AgentService:
                         "activate": activate,
                     },
                 )
-                logger.info("Server '%s' (disclosure=%s): %s", name, disclosure, result)
+                logger.debug("mcp_server_connected name=%s disclosure=%s result=%s", name, disclosure, result)
                 # Eager servers: discover and register tools immediately.
                 # Lazy servers: connected but tools not registered yet.
                 if activate:
                     await self._discover_and_register_external_tools(server_name=name)
             except Exception as e:
-                logger.error("Failed to auto-connect server '%s': %s", name, e)
+                logger.error("mcp_auto_connect_failed server=%s err=%s", name, e)
 
         await asyncio.gather(
             *(_connect_one(name, cfg) for name, cfg in servers.items())
@@ -212,14 +216,14 @@ class AgentService:
                 )
                 for tool in proxy_tools:
                     self.tool_registry.register(tool)
-                logger.info(
-                    "Registered %d tools from server '%s'.",
-                    len(proxy_tools), server_name,
+                logger.debug(
+                    "mcp_tools_registered server=%s count=%d",
+                    server_name, len(proxy_tools),
                 )
             else:
-                logger.debug("No tools discovered for server '%s'.", server_name)
+                logger.debug("mcp_no_tools server=%s", server_name)
         except Exception as e:
-            logger.error("Error during MCP tool discovery for '%s': %s", server_name, e)
+            logger.error("mcp_discover_failed server=%s err=%s", server_name, e)
 
     async def _persist_server(self, name: str, command: str, args: list[str], env: dict | None = None, description: str = "", source: dict | None = None):
         """Callback: persist a newly-added (or updated) MCP server to config
@@ -233,8 +237,8 @@ class AgentService:
         assert mcp_cfg is not None
         existing = mcp_cfg.servers.get(name)
         if existing:
-            logger.info(
-                "Server '%s' already configured — updating with new args.", name
+            logger.debug(
+                "mcp_server_update name=%s", name
             )
             self.tool_registry.unregister_by_prefix(f"{name}__")
 
@@ -247,7 +251,7 @@ class AgentService:
         self.config.remove_mcp_server(name)
         removed = self.tool_registry.unregister_by_prefix(f"{name}__")
         if removed:
-            logger.info("Unregistered %d tools from server '%s'.", removed, name)
+            logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
 
     async def _on_server_disclosure_changed(self, name: str, disclosure: str):
         """Callback: persist disclosure change and update tool registration.
@@ -255,7 +259,7 @@ class AgentService:
         eager → immediately discover and register tools.
         lazy → immediately unregister tools to save context.
         """
-        logger.info("Server '%s' disclosure → %s", name, disclosure)
+        logger.info("mcp_disclosure name=%s disclosure=%s", name, disclosure)
         self.config.set_server_disclosure(name, disclosure)
 
         if disclosure == "eager":
@@ -263,7 +267,7 @@ class AgentService:
         else:
             removed = self.tool_registry.unregister_by_prefix(f"{name}__")
             if removed:
-                logger.info("Unregistered %d tools from server '%s'.", removed, name)
+                logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
 
     async def stop_mcp(self) -> None:
         """Shut down the MCP wrapper and clean up."""
@@ -271,17 +275,17 @@ class AgentService:
             try:
                 await self._mcp_client.disconnect()
             except Exception as e:
-                logger.debug("Error disconnecting MCP client: %s", e)
+                logger.debug("mcp_disconnect_error err=%s", e)
             self._mcp_client = None
 
         if self._mcp_process:
             try:
                 await self._mcp_process.stop()
             except Exception as e:
-                logger.debug("Error stopping MCP process: %s", e)
+                logger.debug("mcp_process_stop_error err=%s", e)
             self._mcp_process = None
 
-        logger.info("MCP integration shut down.")
+        logger.info("mcp_shutdown")
 
     async def process_message(
         self,
@@ -290,6 +294,7 @@ class AgentService:
         handler: AgentEventHandler,
     ) -> AgentResult:
         """Run the agent loop for a user message via streaming."""
+        self._req_count += 1
         return await self.agent_loop.run(
             user_input=user_input,
             conversation=self.conversation,

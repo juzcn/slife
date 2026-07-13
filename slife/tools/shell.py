@@ -37,7 +37,7 @@ class ShellTool(Tool):
     async def execute(self, **kwargs) -> str:
         """Execute a shell command and return its output."""
         command: str = kwargs["command"]
-        logger.debug("Shell exec: %.200s", command)
+        logger.debug("shell_exec cmd=%.200s", command)
 
         process = await asyncio.create_subprocess_shell(
             command,
@@ -52,7 +52,7 @@ class ShellTool(Tool):
         except asyncio.TimeoutError:
             process.kill()
             await process.wait()
-            logger.warning("Shell timed out after %ds: %.200s", self.timeout, command)
+            logger.warning("shell_timeout timeout=%ds cmd=%.200s", self.timeout, command)
             return f"Error: Command timed out after {self.timeout}s"
 
         output = stdout.decode("utf-8", errors="replace")
@@ -69,7 +69,7 @@ class ShellTool(Tool):
             )
 
         logger.debug(
-            "Shell done: exit=%d stdout=%d stderr=%d",
+            "shell_done exit=%d out_len=%d err_len=%d",
             process.returncode or 0,
             len(output),
             len(err_output),

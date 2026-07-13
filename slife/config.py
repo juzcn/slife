@@ -170,7 +170,7 @@ class Config:
     def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None) -> None:
         """Persist an MCP server to the config file."""
         if not self._path:
-            logger.warning("No config path stored; cannot save MCP server '%s'.", name)
+            logger.warning("config_no_path action=save_mcp server=%s", name)
             return
 
         raw = json5.loads(self._path.read_text(encoding="utf-8"))
@@ -189,12 +189,12 @@ class Config:
 
         self._path.write_text(json5.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
         self.mcp_config.servers[name] = server_entry
-        logger.info("Saved MCP server '%s' to config.", name)
+        logger.info("config_save_mcp server=%s", name)
 
     def remove_mcp_server(self, name: str) -> None:
         """Remove an MCP server from the config file."""
         if not self._path:
-            logger.warning("No config path stored; cannot remove MCP server '%s'.", name)
+            logger.warning("config_no_path action=remove_mcp server=%s", name)
             return
 
         raw = json5.loads(self._path.read_text(encoding="utf-8"))
@@ -204,7 +204,7 @@ class Config:
             del servers[name]
             self._path.write_text(json5.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
             self.mcp_config.servers.pop(name, None)
-            logger.info("Removed MCP server '%s' from config.", name)
+            logger.info("config_remove_mcp server=%s", name)
 
     def set_server_disclosure(self, name: str, disclosure: str) -> None:
         """Persist disclosure mode for an MCP server to the config file.
@@ -214,7 +214,7 @@ class Config:
             disclosure: 'eager' or 'lazy'.
         """
         if not self._path:
-            logger.warning("No config path stored; cannot set disclosure for '%s'.", name)
+            logger.warning("config_no_path action=set_disclosure server=%s", name)
             return
 
         raw = json5.loads(self._path.read_text(encoding="utf-8"))
@@ -231,7 +231,7 @@ class Config:
                     self.mcp_config.servers[name].pop("disclosure", None)
                 else:
                     self.mcp_config.servers[name]["disclosure"] = disclosure
-            logger.info("Set disclosure for '%s' to '%s'.", name, disclosure)
+            logger.info("config_set_disclosure server=%s disclosure=%s", name, disclosure)
 
     @property
     def active_model(self) -> ModelConfig:
@@ -327,7 +327,7 @@ class Config:
     def from_json5(cls, path: str | Path = "slife.json5") -> "Config":
         """Load from JSON5 file with provider→model hierarchy."""
         path = Path(path)
-        logger.info("Loading config from %s", path)
+        logger.info("config_load path=%s", path)
         if not path.exists():
             raise FileNotFoundError(
                 f"Config file not found: {path}\n"
@@ -345,7 +345,7 @@ class Config:
                 "No models defined. Add models.providers.<id>.models[]."
             )
         logger.info(
-            "Parsed %d models across %d providers",
+            "config_models count=%d providers=%d",
             len(all_models),
             provider_count,
         )
@@ -358,7 +358,7 @@ class Config:
         env_section = resolve_env(cls._parse_section(raw, "env", dict, {}))
         for key, value in env_section.items():
             os.environ[key] = str(value)
-        logger.info("Env vars in config: %d", len(env_section))
+        logger.info("config_env_vars count=%d", len(env_section))
 
         # Tools (optional — auto-discovery handles defaults)
         tools = resolve_env(cls._parse_section(raw, "tools", list, []))
@@ -367,9 +367,8 @@ class Config:
         mcp_config = MCPConfig.from_dict(raw.get("mcp", {}))
         if mcp_config.enabled:
             logger.info(
-                "MCP: enabled, wrapper=%s %s, servers=%d",
+                "mcp_config wrapper=%s servers=%d",
                 mcp_config.wrapper_command,
-                " ".join(mcp_config.wrapper_args),
                 len(mcp_config.servers),
             )
 

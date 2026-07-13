@@ -1,6 +1,7 @@
 """Tool registry for managing and executing tools."""
 
 import logging
+import time as _time
 
 from slife.tools.base import Tool
 
@@ -20,13 +21,13 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         """Register a tool instance."""
         self._tools[tool.name] = tool
-        logger.info("Tool registered: %s", tool.name)
+        logger.debug("tool_registered name=%s", tool.name)
 
     def unregister(self, name: str) -> bool:
         """Remove a tool by name. Returns True if it existed."""
         if name in self._tools:
             del self._tools[name]
-            logger.info("Tool unregistered: %s", name)
+            logger.debug("tool_unregistered name=%s", name)
             return True
         return False
 
@@ -38,7 +39,7 @@ class ToolRegistry:
         to_remove = [name for name in self._tools if name.startswith(prefix)]
         for name in to_remove:
             del self._tools[name]
-            logger.info("Tool unregistered: %s", name)
+            logger.debug("tool_unregistered name=%s", name)
         return len(to_remove)
 
     def get(self, name: str) -> Tool | None:
@@ -65,13 +66,18 @@ class ToolRegistry:
         """
         tool = self.get(tool_name)
         if not tool:
-            logger.warning("Tool not found: %s", tool_name)
+            logger.warning("tool_not_found name=%s", tool_name)
             return f"Error: Unknown tool '{tool_name}'"
         try:
-            logger.debug("Execute %s(%s)", tool_name, kwargs)
+            t0 = _time.monotonic()
+            logger.debug("tool_start name=%s", tool_name)
             result = await tool.execute(**kwargs)
-            logger.debug("Result  %s → %.200s", tool_name, result)
+            elapsed = (_time.monotonic() - t0) * 1000
+            logger.debug(
+                "tool_done name=%s took_ms=%.0f result_len=%d",
+                tool_name, elapsed, len(result),
+            )
             return result
         except Exception as e:
-            logger.warning("Tool error: %s → %s", tool_name, e)
+            logger.warning("tool_error name=%s err=%s", tool_name, e)
             return f"Error executing {tool_name}: {e}"

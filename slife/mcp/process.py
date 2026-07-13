@@ -69,37 +69,45 @@ class MCPWrapperProcess:
         Logs from the wrapper go to stderr and are captured.
         """
         if self._running:
-            logger.warning("MCP wrapper is already running (pid=%s).", self.pid)
+            logger.warning("wrapper_already_running pid=%s", self.pid)
             return
 
         logger.info(
-            "Starting MCP wrapper: %s %s", self._command, " ".join(self._args)
+            "wrapper_start cmd=%s args=%s", self._command, " ".join(self._args)
         )
 
         try:
+            # Pass session ID so wrapper can correlate its logs with ours
+            import os as _os
+            from slife.logfmt import get_session_id
+
+            env = dict(_os.environ)
+            env["SLIFE_SESSION_ID"] = get_session_id()
+
             self._process = await asyncio.create_subprocess_exec(
                 self._command,
                 *self._args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
             self._running = True
-            logger.info("MCP wrapper started (pid=%s).", self._process.pid)
+            logger.info("wrapper_started pid=%s", self._process.pid)
 
             # Start a background task to log stderr output
             asyncio.create_task(self._log_stderr())
 
         except FileNotFoundError as e:
             logger.error(
-                "Failed to start MCP wrapper: executable '%s' not found. %s",
+                "wrapper_exec_not_found cmd=%s err=%s",
                 self._command,
                 e,
             )
             self._running = False
             raise
         except Exception as e:
-            logger.error("Failed to start MCP wrapper: %s", e)
+            logger.error("wrapper_start_failed err=%s", e)
             self._running = False
             raise
 
@@ -133,7 +141,7 @@ class MCPWrapperProcess:
         if not self._process or not self._running:
             return
 
-        logger.info("Stopping MCP wrapper (pid=%s)...", self._process.pid)
+        logger.info("wrapper_stop pid=%s", self._process.pid)
 
         try:
             # Close stdin first to signal the process
@@ -152,19 +160,17 @@ class MCPWrapperProcess:
             # Wait for graceful exit
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=5.0)
-                logger.info("MCP wrapper exited gracefully.")
+                logger.info("wrapper_exited pid=%s", self._process.pid)
             except asyncio.TimeoutError:
-                logger.warning(
-                    "MCP wrapper didn't exit, force killing..."
-                )
+                logger.warning("wrapper_force_kill pid=%s", self._process.pid)
                 self._process.kill()
                 await self._process.wait()
-                logger.info("MCP wrapper killed.")
+                logger.info("wrapper_killed pid=%s", self._process.pid)
         except ProcessLookupError:
             # Process already exited
-            logger.debug("MCP wrapper process already gone.")
+            logger.debug("wrapper_already_gone")
         except Exception as e:
-            logger.error("Error stopping MCP wrapper: %s", e)
+            logger.error("wrapper_stop_error err=%s", e)
         finally:
             self._running = False
             self._process = None
@@ -172,8 +178,8 @@ class MCPWrapperProcess:
     async def _log_stderr(self) -> None:
         """Read and log stderr from the wrapper process.
 
-        Logs at INFO level so startup failures (like uv file-lock
-        errors on Windows) are visible without needing --debug.
+        Errors/warnings at WARNING; everything else at DEBUG.
+        Suppresses FastMCP ASCII art box-drawing lines.
         """
         if not self._process or not self._process.stderr:
             return
@@ -184,11 +190,20 @@ class MCPWrapperProcess:
                 if not line:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()
-                if text:
-                    # Log errors/warnings prominently, debug for the rest
-                    if any(marker in text.lower() for marker in ("error", "traceback", "fail", "exception")):
-                        logger.warning("[wrapper] %s", text)
-                    else:
-                        logger.info("[wrapper] %s", text)
+                if not text:
+                    continue
+
+                # Suppress FastMCP ASCII art (box-drawing characters)
+                if any(c in text for c in ("+---", "─", "│", "└", "├", "┬", "┴", "╭", "╮", "╯", "╰")):
+                    continue
+                # Suppress empty box lines with just spaces and pipes
+                if text.strip() and all(c in " |│" for c in text.strip()):
+                    continue
+
+                # Log errors/warnings prominently, debug for the rest
+                if any(marker in text.lower() for marker in ("error", "traceback", "fail", "exception")):
+                    logger.warning("[wrapper] %s", text)
+                else:
+                    logger.debug("[wrapper] %s", text)
         except Exception as e:
-            logger.debug("Stderr reader stopped: %s", e)
+            logger.debug("wrapper_stderr_reader_stopped err=%s", e)

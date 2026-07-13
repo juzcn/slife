@@ -40,12 +40,12 @@ def create_tools_from_config(
         if name:
             override_map[name] = entry
         else:
-            logger.warning("Tool override entry missing 'name': %s", entry)
+            logger.warning("tool_override_no_name entry=%s", entry)
 
     for tool_cls in _discover_tools():
         cfg = override_map.get(tool_cls.name, {})
         if cfg.get("enabled") is False:
-            logger.info("Tool disabled by config: %s", tool_cls.name)
+            logger.info("tool_disabled name=%s", tool_cls.name)
             continue
         tool = tool_cls.from_config(cfg, config)
         registry.register(tool)

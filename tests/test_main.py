@@ -83,7 +83,7 @@ class TestMainFunction:
                     main()
 
                 info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                assert any("off" in t for t in info_texts if "Thinking" in t)
+                assert any("off" in t for t in info_texts if "thinking" in t)
 
     def test_main_logs_tool_count(self, mock_config):
         """Logs the number of loaded tools."""
@@ -98,7 +98,7 @@ class TestMainFunction:
                     main()
 
                 info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                assert any("2" in t for t in info_texts if "Tools" in t)
+                assert any("2" in t for t in info_texts if "tools" in t)
 
 
 class TestMainModule:
@@ -247,5 +247,5 @@ class TestMainEnvLogging:
                     main()
 
                 info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                env_lines = [t for t in info_texts if "Env:" in t]
+                env_lines = [t for t in info_texts if "env " in t]
                 assert len(env_lines) == 0
