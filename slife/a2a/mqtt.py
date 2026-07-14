@@ -211,16 +211,32 @@ class MQTTAdapter:
             retain=msg.retain,
         )
 
+        logger.debug(
+            "a2a_mqtt_on_message topic=%s len=%d",
+            msg.topic, len(msg.payload),
+        )
+
         # Route to all matching subscribed queues
+        matched = False
         for topic_filter, queue in self._queues.items():
             if mqtt.topic_matches_sub(topic_filter, msg.topic):
+                matched = True
                 try:
                     queue.put_nowait(mqtt_msg)
+                    logger.debug(
+                        "a2a_mqtt_routed topic=%s -> filter=%s",
+                        msg.topic, topic_filter,
+                    )
                 except asyncio.QueueFull:
                     logger.warning(
                         "a2a_mqtt_queue_full filter=%s topic=%s",
                         topic_filter, msg.topic,
                     )
+        if not matched:
+            logger.debug(
+                "a2a_mqtt_no_match topic=%s queues=%s",
+                msg.topic, list(self._queues.keys()),
+            )
 
     # ── Helpers ───────────────────────────────────────────────────────
 

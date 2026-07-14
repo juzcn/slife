@@ -53,7 +53,7 @@ Two transports, one interface. The full A2A protocol toolset (14 tools) provides
 
 | Tool | Role |
 |------|------|
-| `a2a_list_agents` | Discover remote MQTT peers |
+| `a2a_list_agents` | List all agents on the MQTT mesh (includes self) |
 | `a2a_list_subagents` | List local subagent workers |
 | `a2a_send_task` | Send a task and wait for the result (sync) |
 | `a2a_send_task_async` | Fire-and-forget, returns task ID for polling |
@@ -73,6 +73,15 @@ Two transports, one interface. The full A2A protocol toolset (14 tools) provides
 | **Subagent** (stdin/stdout) | Always available | Local child processes for parallel work |
 
 Start with `--name my-agent` to join the MQTT mesh; subagents are always available.
+
+When `--name` is provided the agent identity flows through the entire UI:
+
+- **Prompt prefix** changes from `>` to `my-agent>` for your own messages.
+- **System prompt** includes your name so the LLM knows its identity.
+- **Remote tasks** from other agents appear as `other-agent> task…` and
+  stream responses to the chat view just like locally-typed messages.
+- **Log files** are named `logs/slife_my-agent_YYYYMMDD_HHMMSS.log` for
+  easy identification in multi-agent sessions.
 
 ## Tips
 

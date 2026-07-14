@@ -89,7 +89,8 @@ class TestA2AListAgentsTool:
         with patch(CLIENT_PATH, return_value=mock_client):
             tool = A2AListAgentsTool()
             result = await tool.execute()
-            assert "No remote agents" in result
+            # Now always includes self — never returns "No remote agents"
+            assert "(you)" in result
 
     @pytest.mark.asyncio
     async def test_with_peers(self):
@@ -108,6 +109,7 @@ class TestA2AListAgentsTool:
             assert "Peer 1" in result
             assert "peer-2" in result
             assert "idle" in result
+            assert "(you)" in result  # self is always listed
             assert "busy" in result
 
 

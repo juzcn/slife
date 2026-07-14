@@ -509,53 +509,97 @@ class A2AClient:
     # ── Inbox listener ────────────────────────────────────────────────
 
     async def _inbox_listener(self) -> None:
-        """Listen for incoming tasks on our inbox topic."""
+        """Listen for incoming tasks on our inbox topic.
+
+        Uses separate ``messages()`` async iterators for inbox and result
+        queues — the same pattern as :meth:`_peer_watchdog_loop`.  This
+        avoids creating/cancelling ``asyncio.Task`` objects on every poll
+        cycle, which leaks orphaned ``queue.get()`` tasks that silently
+        consume inbound messages.
+        """
         inbox_filter = f"slife/{self._agent_id}/tasks/inbox"
         result_filter = f"slife/{self._agent_id}/tasks/result"
 
-        # Combine messages from both filters
-        inbox_q = self._adapter._queues.get(inbox_filter)
-        result_q = self._adapter._queues.get(result_filter)
+        logger.debug(
+            "a2a_inbox_listener_start inbox=%s result=%s",
+            inbox_filter, result_filter,
+        )
 
-        while self._adapter.is_connected:
-            # Poll both queues
-            msg: MQTTMessage | None = None
+        # Merge both streams into a single queue we can select on
+        merged: asyncio.Queue[MQTTMessage] = asyncio.Queue()
+
+        async def forward(adapter, topic_filter):
+            """Forward every message from *topic_filter* into *merged*."""
             try:
-                msg = await asyncio.wait_for(
-                    self._wait_for_message(inbox_q, result_q), timeout=0.5,
+                async for msg in adapter.messages(topic_filter):
+                    await merged.put(msg)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning(
+                    "a2a_forward_error filter=%s", topic_filter, exc_info=True,
                 )
-            except asyncio.TimeoutError:
-                continue
 
-            if msg is None:
-                continue
+        f_inbox = asyncio.create_task(
+            forward(self._adapter, inbox_filter),
+        )
+        f_result = asyncio.create_task(
+            forward(self._adapter, result_filter),
+        )
 
-            if msg.topic == result_filter or "/tasks/result" in msg.topic:
-                await self._handle_result(msg)
-            else:
-                await self._handle_incoming_task(msg)
+        try:
+            while self._adapter.is_connected:
+                try:
+                    msg = await asyncio.wait_for(merged.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+
+                try:
+                    if msg.topic == result_filter or "/tasks/result" in msg.topic:
+                        await self._handle_result(msg)
+                    else:
+                        await self._handle_incoming_task(msg)
+                except Exception:
+                    logger.warning(
+                        "a2a_inbox_handler_error topic=%s", msg.topic, exc_info=True,
+                    )
+        finally:
+            f_inbox.cancel()
+            f_result.cancel()
 
     async def _wait_for_message(
         self,
         inbox_q: asyncio.Queue | None,
         result_q: asyncio.Queue | None,
     ) -> MQTTMessage | None:
-        """Wait for the next message from either queue."""
-        tasks = []
-        if inbox_q:
-            tasks.append(asyncio.create_task(inbox_q.get()))
-        if result_q:
-            tasks.append(asyncio.create_task(result_q.get()))
+        """Wait for the next message from either queue.
 
-        if not tasks:
-            await asyncio.sleep(0.5)
-            return None
+        Uses individual ``get()`` coroutines wrapped in tasks so we can
+        wait on both queues simultaneously.  The ``try/finally`` ensures
+        every task is cancelled on *any* exit path — including the
+        ``asyncio.wait_for`` timeout in :meth:`_inbox_listener`.  Without
+        this, orphaned ``get()`` tasks accumulate and silently consume
+        inbound messages, making A2A task delivery look broken.
+        """
+        tasks: list[asyncio.Task] = []
+        try:
+            if inbox_q is not None:
+                tasks.append(asyncio.create_task(inbox_q.get()))
+            if result_q is not None:
+                tasks.append(asyncio.create_task(result_q.get()))
 
-        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        return await done.pop()
+            if not tasks:
+                await asyncio.sleep(0.5)
+                return None
+
+            done, _ = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED,
+            )
+            return await done.pop()
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
 
     async def _handle_incoming_task(self, msg: MQTTMessage) -> None:
         """Process an incoming task request."""

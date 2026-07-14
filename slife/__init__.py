@@ -22,19 +22,27 @@ logger = logging.getLogger("slife")
 LOG_DIR = Path("logs")
 
 
-def _session_log_path() -> Path:
-    """Generate a timestamped log file path for this session."""
+def _session_log_path(agent_name: str | None = None) -> Path:
+    """Generate a timestamped log file path for this session.
+
+    Follows the same naming convention as sub-agent logs:
+    ``logs/slife_<name>_YYYYMMDD_HHMMSS.log``.
+    """
     LOG_DIR.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return LOG_DIR / f"slife_{ts}.log"
+    name = agent_name or "main"
+    return LOG_DIR / f"slife_{name}_{ts}.log"
 
 
-def setup_logging(level: int = logging.DEBUG) -> tuple[Path, logging.Handler]:
+def setup_logging(
+    agent_name: str | None = None,
+    level: int = logging.DEBUG,
+) -> tuple[Path, logging.Handler]:
     """Configure logging to both console and file.
 
     Console: INFO+ during startup (before TUI), WARNING+ during TUI runtime.
     File:    DEBUG+ with timestamps, session/request IDs for troubleshooting.
-    Each session writes to a new logs/slife_YYYYMMDD_HHMMSS.log file.
+    Each session writes to a new ``logs/slife_<name>_YYYYMMDD_HHMMSS.log`` file.
 
     Returns:
         (log_path, console_handler) — caller should raise console to WARNING
@@ -51,7 +59,7 @@ def setup_logging(level: int = logging.DEBUG) -> tuple[Path, logging.Handler]:
             None
         )
         if console is not None:
-            return _session_log_path(), console
+            return _session_log_path(agent_name), console
 
     root.setLevel(logging.DEBUG)
 
@@ -62,7 +70,7 @@ def setup_logging(level: int = logging.DEBUG) -> tuple[Path, logging.Handler]:
     root.addHandler(console)
 
     # File handler — detailed format with session/request IDs, one per session
-    log_path = _session_log_path()
+    log_path = _session_log_path(agent_name)
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setLevel(level)
     file_handler.setFormatter(SessionFormatter(FILE_LOG_FORMAT))
@@ -113,7 +121,7 @@ def main(config_path: str = "slife.json5", agent_name: str | None = None):
     if agent_name is None:
         agent_name = _parse_cli_name(_sys.argv)
 
-    log_path, console_handler = setup_logging()
+    log_path, console_handler = setup_logging(agent_name=agent_name)
 
     # Generate session ID — shared with MCP subprocess via env var
     sid = init_session_id()

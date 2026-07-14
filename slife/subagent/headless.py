@@ -76,7 +76,11 @@ async def _process(task_text: str, rpc_id, service) -> None:
     from slife.agent.loop import MaxIterationsExceeded
 
     logger.info("task_start id=%s task=%.100s", rpc_id, task_text)
-    conv = Conversation(system_prompt=build_system_prompt())
+    conv = Conversation(
+        system_prompt=build_system_prompt(
+            agent_name=os.environ.get("SLIFE_SUBAGENT_NAME"),
+        ),
+    )
 
     try:
         result = await service.agent_loop.run(user_input=task_text, conversation=conv, handler=None)

@@ -93,6 +93,13 @@ class SlifeApp(App):
         super().__init__()
         self.service = AgentService(config)
 
+        # Resolve assistant name prefix once (set on first user message)
+        a2a = config.a2a_config
+        agent_name = a2a.agent_name if a2a else None
+        self._assistant_prefix: str = (
+            f"{agent_name}> " if agent_name else "> "
+        )
+
         # TUI state for tracking active widgets during streaming
         self._tool_widgets: dict[str, ToolCallWidget] = {}
 
@@ -128,8 +135,14 @@ class SlifeApp(App):
         # Start A2A P2P mesh in the background (MQTT — remote peers)
         if self.service.config.a2a_config and self.service.config.a2a_config.enabled:
             self.service.on_a2a_activity(self._on_a2a_activity)
+            # Pass a handler factory so remote tasks stream to chat
+            # just like human-typed messages — fresh TUIHandler per task.
             self.run_worker(
-                self.service.start_a2a(),
+                self.service.start_a2a(
+                    handler_factory=lambda: TUIHandler(
+                        self, assistant_prefix=self._assistant_prefix
+                    ),
+                ),
                 exclusive=False,
                 group="a2a-startup",
             )
@@ -222,8 +235,12 @@ class SlifeApp(App):
         text, image_paths = parse_file_attachments(raw)
 
         chat_view = self.query_one("#chat-view", ChatView)
+        # Use agent name for assistant prefix, "You" for user prefix
+        user_prefix = "You> " if self._assistant_prefix else "> "
         chat_view.add_user_message(
-            text or raw, images=image_paths if image_paths else None
+            text or raw,
+            images=image_paths if image_paths else None,
+            prefix=user_prefix,
         )
 
         self.run_worker(
@@ -258,8 +275,9 @@ class SlifeApp(App):
 
         elif kind == "task_received":
             source = kwargs.get("source", "unknown")
-            content = kwargs.get("content", "")
-            chat_view.add_a2a_task_message(str(source), content)
+            content = kwargs.get("content", "").strip()
+            # Show as a normal user message with source as prefix
+            chat_view.add_user_message(content, prefix=f"{source}> ")
 
         elif kind == "task_completed":
             source = kwargs.get("source", "unknown")
@@ -279,7 +297,7 @@ class SlifeApp(App):
         """Run the agent loop and stream results to the TUI."""
         self._tool_widgets.clear()
 
-        handler = TUIHandler(self)
+        handler = TUIHandler(self, assistant_prefix=self._assistant_prefix)
 
         try:
             await self.service.process_message(

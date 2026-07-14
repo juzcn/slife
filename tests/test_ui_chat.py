@@ -52,6 +52,7 @@ class TestAssistantMessage:
             msg._usage = None
             msg._is_thinking_collapsed = False
             msg._show_usage = True
+            msg._name_prefix = None
             return msg
 
     def test_initial_state(self):

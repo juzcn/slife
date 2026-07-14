@@ -143,10 +143,11 @@ class A2AListAgentsTool(Tool):
             )
 
         peers = await client.list_agents()
-        if not peers:
-            return "No remote agents discovered on the MQTT mesh."
 
-        lines = [f"Remote agents ({len(peers)}):"]
+        lines = [f"Agents ({len(peers) + 1}):"]
+        # Include self
+        name = f" ({client._config.agent_name})" if client._config.agent_name else ""
+        lines.append(f"  - {client.agent_id}{name} [{client.status}] (you)")
         for c in peers:
             name = f" ({c.display_name})" if c.display_name else ""
             lines.append(f"  - {c.agent_id}{name} [{c.status}]")

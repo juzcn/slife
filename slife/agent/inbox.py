@@ -169,6 +169,19 @@ class ConversationStore:
         self._system_prompt = system_prompt
         self._convs: dict[AgentId, Conversation] = {}
         self._handler_factories: dict[AgentId, "AgentEventHandler | None"] = {}
+        self._default_handler_factory: "Callable[[], AgentEventHandler] | None" = (
+            None
+        )
+
+    def set_default_handler_factory(
+        self, factory: "Callable[[], AgentEventHandler]",
+    ) -> None:
+        """Set a factory that creates handlers for sources without one.
+
+        Called at startup so remote A2A tasks always have a handler
+        available, even before the first human message is typed.
+        """
+        self._default_handler_factory = factory
 
     def register_handler(
         self, source: AgentId, handler: "AgentEventHandler | None",
@@ -181,8 +194,21 @@ class ConversationStore:
         self._handler_factories[source] = handler
 
     def handler_for(self, source: AgentId) -> "AgentEventHandler | None":
-        """Return the handler for *source*, or None."""
-        return self._handler_factories.get(source)
+        """Return the handler for *source*.
+
+        Falls back to the human handler, then to the default factory,
+        so remote tasks always stream to the TUI chat view.
+        """
+        from slife.a2a.identity import HUMAN
+
+        handler = self._handler_factories.get(
+            source
+        ) or self._handler_factories.get(HUMAN)
+        if handler is not None:
+            return handler
+        if self._default_handler_factory is not None:
+            return self._default_handler_factory()
+        return None
 
     def get_or_create(self, source: AgentId) -> Conversation:
         """Get or create a conversation for *source*.

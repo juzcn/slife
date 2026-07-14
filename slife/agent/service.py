@@ -48,7 +48,11 @@ class AgentService:
             tool_registry=self.tool_registry,
             max_iterations=config.max_iterations,
         )
-        self.conversation = Conversation(system_prompt=build_system_prompt())
+        self.conversation = Conversation(
+            system_prompt=build_system_prompt(
+                agent_name=self.config.a2a_config.agent_name or None,
+            ),
+        )
         self.session_usage = TokenUsage()
 
         # MCP integration state
@@ -313,12 +317,19 @@ class AgentService:
 
     # ── A2A lifecycle ──────────────────────────────────────────────────
 
-    async def start_a2a(self) -> None:
+    async def start_a2a(
+        self, handler_factory: "Callable[[], Any] | None" = None,
+    ) -> None:
         """Connect to MQTT broker for remote agent P2P mesh.
 
         Called during app startup after MCP initialization.
         Probes for an existing broker, spawns one if configured.
         Registers unified A2A tools covering both MQTT and local transports.
+
+        Args:
+            handler_factory: Optional callable that creates a TUI handler
+                for each incoming A2A task.  When provided, remote tasks
+                stream to the chat view just like human-typed messages.
         """
         a2a_cfg = self.config.a2a_config
         if a2a_cfg is None or not a2a_cfg.enabled:
@@ -350,7 +361,9 @@ class AgentService:
         from slife.a2a.identity import HUMAN
 
         conversations = ConversationStore(
-            system_prompt=build_system_prompt(),
+            system_prompt=build_system_prompt(
+                agent_name=a2a_cfg.agent_name or None,
+            ),
         )
         conversations._convs[HUMAN] = self.conversation
 
@@ -360,6 +373,11 @@ class AgentService:
             a2a_client=self._a2a_client,
             on_activity=self._notify_a2a_activity,
         )
+
+        # Register handler factory so remote tasks always have a TUI
+        # handler — streams to chat like human-typed messages.
+        if handler_factory is not None:
+            conversations.set_default_handler_factory(handler_factory)
 
         # Wire A2A incoming tasks → Inbox
         self._a2a_client.on_incoming_task(self.inbox.post)
@@ -374,6 +392,15 @@ class AgentService:
         # (slife.tools.a2a) can discover the live client at call time.
         from slife.a2a.client import set_client
         set_client(self._a2a_client)
+
+    def set_inbox_handler_factory(self, factory) -> None:
+        """Register a factory that creates TUI handlers for inbox messages.
+
+        Called by the TUI layer so remote A2A tasks always have a handler
+        available, even before the first human message is typed.
+        """
+        if self.inbox is not None:
+            self.inbox._conversations.set_default_handler_factory(factory)
 
         logger.info("a2a_init_done tools=%d", len(self.tool_registry.list_tools()))
 

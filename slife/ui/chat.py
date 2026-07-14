@@ -21,17 +21,27 @@ class ChatView(VerticalScroll):
     can_focus = True
 
     def add_user_message(
-        self, text: str, images: list[str] | None = None
+        self,
+        text: str,
+        images: list[str] | None = None,
+        prefix: str = "> ",
     ) -> "UserMessage":
         """Add and return a user message widget."""
-        msg = UserMessage(text, images=images)
+        msg = UserMessage(text, images=images, prefix=prefix)
         self.mount(msg)
         self.scroll_end(animate=False)
         return msg
 
-    def add_assistant_message(self) -> "AssistantMessage":
-        """Add and return an assistant message widget (initially empty)."""
-        msg = AssistantMessage()
+    def add_assistant_message(
+        self, name_prefix: str | None = None
+    ) -> "AssistantMessage":
+        """Add and return an assistant message widget (initially empty).
+
+        Args:
+            name_prefix: Optional prefix like ``"Jack> "`` shown before
+                         the response text.  ``None`` means no prefix.
+        """
+        msg = AssistantMessage(name_prefix=name_prefix)
         self.mount(msg)
         self.scroll_end(animate=False)
         return msg
@@ -67,12 +77,20 @@ class ChatView(VerticalScroll):
 
 
 class UserMessage(Static):
-    """User message — "> text" prefix style, no label."""
+    """User message — ``prefix> text``, default prefix ``>``."""
 
-    def __init__(self, text: str, images: list[str] | None = None):
-        # Build safe Content: ">" prefix styled, text as literal
-        content = Content.from_text("> ", markup=False).stylize("bold #d97706")
-        content = content + Content.from_text(text, markup=False)
+    def __init__(
+        self,
+        text: str,
+        images: list[str] | None = None,
+        prefix: str = "> ",
+    ):
+        # Build as single string then style only the prefix portion.
+        # Avoids Content concatenation quirks that can insert newlines.
+        prefix_len = len(prefix)
+        content = Content.from_text(
+            f"{prefix}{text}", markup=False,
+        ).stylize("bold #d97706", start=0, end=prefix_len)
         if images:
             file_list = ", ".join(images)
             content = (
@@ -109,9 +127,10 @@ class AssistantMessage(Static):
         ("space", "toggle_thinking", "Toggle thinking"),
     ]
 
-    def __init__(self):
+    def __init__(self, name_prefix: str | None = None):
         super().__init__("")
         self.add_class("assistant-message")
+        self._name_prefix = name_prefix  # e.g. "Jack> " or None
         self._buffer = ""
         self._thinking = ""
         self._has_thinking = False
@@ -191,9 +210,15 @@ class AssistantMessage(Static):
             content = content + Content.from_text(thinking_display, markup=False).stylize("dim")
             content = content + Content.from_text("\n\n", markup=False)
 
-        # Response text — clean, no label, safe from markup parsing
+        # Response text — prepend name prefix when set, safe from markup parsing
         if self._buffer:
-            content = content + Content.from_text(self._buffer, markup=False)
+            if self._name_prefix:
+                prefix_len = len(self._name_prefix)
+                content = content + Content.from_text(
+                    f"{self._name_prefix}{self._buffer}", markup=False,
+                ).stylize("bold #d97706", start=0, end=prefix_len)
+            else:
+                content = content + Content.from_text(self._buffer, markup=False)
         elif not self._has_thinking:
             content = content + Content.from_markup("[dim]…[/dim]")
 

@@ -35,9 +35,10 @@ class TUIHandler:
     is always at the bottom of the chat.
     """
 
-    def __init__(self, app: SlifeApp):
+    def __init__(self, app: SlifeApp, assistant_prefix: str | None = None):
         self._app = app
         self._chat_view = app.query_one("#chat-view")  # ChatView
+        self._assistant_prefix = assistant_prefix
         self._current_assistant: AssistantMessage | None = None
         self._iteration_needs_new_message: bool = False
 
@@ -56,7 +57,9 @@ class TUIHandler:
             if self._current_assistant is not None:
                 self._current_assistant.finalize(intermediate=True)
             # Create fresh message for the new iteration
-            self._current_assistant = self._chat_view.add_assistant_message()
+            self._current_assistant = self._chat_view.add_assistant_message(
+                name_prefix=self._assistant_prefix,
+            )
             self._iteration_needs_new_message = False
 
     def finalize_current(self) -> None:

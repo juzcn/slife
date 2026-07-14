@@ -14,6 +14,8 @@ Everything else — reasoning, planning, tool selection, error recovery — is t
 
 **The system prompt contains only project-specific information not in the LLM's training data.**
 
+The prompt is rendered from `slife/agent/templates/system_prompt.j2` via Jinja2. When `--name <id>` is provided, the template receives `agent_name` and injects it: `` You are slife (your name is Freud) `` — giving each agent instance a distinct identity without adding noise when no name is set.
+
 The LLM already knows: function calling, how to read tool schemas, how to format tool calls, shell command syntax, error handling strategies, and what "assistant" means. Teaching any of this is noise.
 
 What the LLM *cannot* know:
@@ -401,6 +403,15 @@ broker connection details only — it never auto-enables A2A.
 - **BrokerManager** (`broker.py`): optional mosquitto auto-spawn
 - **TaskStore** (`a2a/task_store.py`): shared task-lifecycle tracking — records every send/result/cancel across both transports with status, timestamps, and result text. Singleton via `get_store()`.
 - **Inbox** (`agent/inbox.py`): unified message queue — serializes human + MQTT + subagent messages through `Inbox.run()` background processor. `ConversationStore` manages per-agent conversation state (persistent for human, one-shot for remotes).
+- **Inbox listener** uses `MQTTAdapter.messages()` async iterators (the same pattern as the peer watchdog loop) to consume inbox and result queues. Two forwarder tasks merge both streams into a single queue, avoiding the task-creation/cancellation cycle that previously leaked orphaned `asyncio.Queue.get()` tasks and silently consumed inbound messages.
+
+### Remote Task UI Integration
+
+When a remote task arrives via MQTT, it appears in the chat view **exactly like a locally-typed message**: the source agent's name becomes the prompt prefix (`Jack> task…`), the LLM's thinking and response stream to the chat, and tool calls render as collapsible widgets. This is achieved via:
+
+- **Handler factory** — `start_a2a()` accepts a `handler_factory` callable that creates fresh `TUIHandler` instances per task. The factory is set before the inbox starts, so even the first remote task has a handler.
+- **ConversationStore fallback** — `handler_for()` falls back: source-specific handler → human handler → default factory. This guarantees a handler is always available.
+- **UserMessage prefix** — `UserMessage` accepts a `prefix` parameter (default `"> "`). Human messages use the agent's own name, remote messages use the source agent's name. Built as a single Rich `Content` with range styling to avoid Content-concatenation newline artifacts.
 
 ### Subagent Transport (`slife/subagent/`)
 
@@ -458,6 +469,7 @@ checks for this and skips subagent manager creation to prevent recursive spawnin
 Textual TUI in **Claude Code CLI style**: minimal chrome, dark theme, clean message display.
 
 - **ChatView** — scrollable message container (user, assistant, system messages)
+- **UserMessage** — configurable prompt prefix; defaults to `> ` but becomes `Jack> ` when `--name Jack` is set, giving each agent instance a visible identity in the chat. Remote tasks from other agents use the source name as prefix.
 - **AssistantMessage** — streaming text with optional thinking block (dim italic, truncated at 500 chars)
 - **ToolCallWidget** — collapsible tool call display with header line (amber) and detail block. Single `Static` widget, no child widgets — all rendering via `Content` trees. User data goes through `Content.from_text(markup=False)` for safety.
 - **TUIHandler** — bridges `AgentEventHandler` callbacks to Textual widgets

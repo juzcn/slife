@@ -409,7 +409,7 @@ class Config:
         # A2A/MQTT — enabled only via --name CLI flag, json5 provides broker details
         a2a_config = A2AConfig.from_dict(raw.get("mqtt"), agent_name=agent_name)
         if a2a_config.enabled:
-            logger.info(
+            logger.debug(
                 "a2a_config id=%s broker=%s:%d",
                 a2a_config.agent_id,
                 a2a_config.broker_host,
