@@ -26,6 +26,20 @@ from slife.a2a.config import A2AConfig
 logger = logging.getLogger(__name__)
 
 
+def parse_cli_name(argv: list[str]) -> str | None:
+    """Extract ``--name <value>`` from CLI args.
+
+    Returns ``None`` when ``--name`` is not provided (A2A stays disabled).
+    """
+    args = argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--name" and i + 1 < len(args):
+            return args[i + 1]
+        i += 1
+    return None
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a single LLM model."""

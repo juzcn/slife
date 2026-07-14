@@ -9,7 +9,7 @@ import logging
 import os
 from pathlib import Path
 
-from slife.tools._config_io import read_config, write_config
+from slife.tools._config_io import _ConfigPathMixin, read_config, write_config
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ def _env_section(raw: dict) -> dict:
     return env
 
 
-class ConfigEnvSetTool(Tool):
+class ConfigEnvSetTool(_ConfigPathMixin, Tool):
     """Add or update an environment variable in slife.json5.
 
     Changes take effect immediately — injected into os.environ so the
@@ -60,14 +60,6 @@ class ConfigEnvSetTool(Tool):
         "required": ["key"],
     }
 
-    def __init__(self, config_path: Path | None = None):
-        self._config_path = config_path or Path("slife.json5")
-
-    @classmethod
-    def from_config(cls, cfg, config):
-        path = config._path if config else None
-        return cls(config_path=path)
-
     async def execute(self, **kwargs) -> str:
         key: str = kwargs.get("key", "")
         value: str = kwargs.get("value", "")
@@ -92,7 +84,7 @@ class ConfigEnvSetTool(Tool):
             )
 
 
-class ConfigEnvGetTool(Tool):
+class ConfigEnvGetTool(_ConfigPathMixin, Tool):
     """Read environment variables from slife.json5's env: section."""
 
     name = "config_env_get"
@@ -111,14 +103,6 @@ class ConfigEnvGetTool(Tool):
         },
         "required": [],
     }
-
-    def __init__(self, config_path: Path | None = None):
-        self._config_path = config_path or Path("slife.json5")
-
-    @classmethod
-    def from_config(cls, cfg, config):
-        path = config._path if config else None
-        return cls(config_path=path)
 
     async def execute(self, **kwargs) -> str:
         key: str = kwargs.get("key", "")
@@ -143,7 +127,7 @@ class ConfigEnvGetTool(Tool):
         return "slife.json5 env:\n" + "\n".join(lines)
 
 
-class ConfigEnvRemoveTool(Tool):
+class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):
     """Remove an environment variable from slife.json5 and os.environ."""
 
     name = "config_env_remove"
@@ -161,14 +145,6 @@ class ConfigEnvRemoveTool(Tool):
         },
         "required": ["key"],
     }
-
-    def __init__(self, config_path: Path | None = None):
-        self._config_path = config_path or Path("slife.json5")
-
-    @classmethod
-    def from_config(cls, cfg, config):
-        path = config._path if config else None
-        return cls(config_path=path)
 
     async def execute(self, **kwargs) -> str:
         key: str = kwargs["key"]

@@ -260,8 +260,9 @@ class SlifeApp(App):
             event = kwargs.get("event", "")
             if event == "online":
                 name = card.display_name or card.agent_id
+                extra = f" ({card.agent_id})" if card.display_name and card.display_name != card.agent_id else ""
                 chat_view.add_system_message(
-                    f"⚡ {name} ({card.agent_id}) online [{card.status}]",
+                    f"⚡ {name}{extra} online [{card.status}]",
                     color="#7c3aed",
                 )
             elif event == "offline":

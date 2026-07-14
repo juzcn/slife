@@ -266,16 +266,13 @@ class SubagentProcess:
         except Exception: pass  # CancelledError + pipe closure on shutdown
 
     async def _read_stderr(self) -> None:
-        if not self._process or not self._process.stderr: return
-        try:
-            while self._running and self._process and self._process.stderr:
-                line = await self._process.stderr.readline()
-                if not line: break
-                text = line.decode("utf-8", errors="replace").rstrip()
-                if not text: continue
-                lvl = logger.warning if any(m in text.lower() for m in ("error","traceback","fail","exception")) else logger.debug
-                lvl("[subagent:%s] %s", self._name, text)
-        except Exception: pass
+        from slife.logfmt import read_stderr_lines
+
+        async for text in read_stderr_lines(
+            self._process, lambda: self._running,
+        ):
+            lvl = logger.warning if any(m in text.lower() for m in ("error","traceback","fail","exception")) else logger.debug
+            lvl("[subagent:%s] %s", self._name, text)
 
 
 class SubagentManager:

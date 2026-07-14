@@ -180,29 +180,20 @@ class MCPWrapperProcess:
         Errors/warnings at WARNING; everything else at DEBUG.
         Suppresses FastMCP ASCII art box-drawing lines.
         """
-        if not self._process or not self._process.stderr:
-            return
+        from slife.logfmt import read_stderr_lines
 
-        try:
-            while self._running and self._process and self._process.stderr:
-                line = await self._process.stderr.readline()
-                if not line:
-                    break
-                text = line.decode("utf-8", errors="replace").rstrip()
-                if not text:
-                    continue
+        async for text in read_stderr_lines(
+            self._process, lambda: self._running,
+        ):
+            # Suppress FastMCP ASCII art (box-drawing characters)
+            if any(c in text for c in ("+---", "─", "│", "└", "├", "┬", "┴", "╭", "╮", "╯", "╰")):
+                continue
+            # Suppress empty box lines with just spaces and pipes
+            if text.strip() and all(c in " |│" for c in text.strip()):
+                continue
 
-                # Suppress FastMCP ASCII art (box-drawing characters)
-                if any(c in text for c in ("+---", "─", "│", "└", "├", "┬", "┴", "╭", "╮", "╯", "╰")):
-                    continue
-                # Suppress empty box lines with just spaces and pipes
-                if text.strip() and all(c in " |│" for c in text.strip()):
-                    continue
-
-                # Log errors/warnings prominently, debug for the rest
-                if any(marker in text.lower() for marker in ("error", "traceback", "fail", "exception")):
-                    logger.warning("[wrapper] %s", text)
-                else:
-                    logger.debug("[wrapper] %s", text)
-        except Exception as e:
-            logger.debug("wrapper_stderr_reader_stopped err=%s", e)
+            # Log errors/warnings prominently, debug for the rest
+            if any(marker in text.lower() for marker in ("error", "traceback", "fail", "exception")):
+                logger.warning("[wrapper] %s", text)
+            else:
+                logger.debug("[wrapper] %s", text)

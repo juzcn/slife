@@ -6,6 +6,7 @@ in slife's ToolRegistry and called like native tools.
 
 import json
 import logging
+from typing import ClassVar
 
 from slife.tools.base import Tool
 
@@ -30,6 +31,10 @@ class MCPProxyTool(Tool):
     name = "_mcp_proxy"
     description = "MCP proxy tool (placeholder)"
     parameters: dict = {"type": "object", "properties": {}}
+
+    # Excluded from auto-discovery — instances are created manually by
+    # create_proxy_tools() with per-server configuration.
+    _skip_auto_register: ClassVar[bool] = True
 
     def __init__(self, mcp_client, tool_info: dict, on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None):
         """

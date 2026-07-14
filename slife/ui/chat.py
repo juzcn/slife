@@ -184,50 +184,65 @@ class AssistantMessage(Static):
             self._is_thinking_collapsed = not self._is_thinking_collapsed
             self._refresh_display()
 
+    # ── Content builders (composed by _refresh_display) ──────────────
+
+    def _build_thinking_collapsed(self) -> Content:
+        """One-line thinking summary with character count."""
+        n = len(self._thinking)
+        return Content.from_markup(
+            f"[dim italic]⟐ Thinking ({n} chars) ▸[/dim italic]"
+        )
+
+    def _build_thinking_expanded(self) -> Content:
+        """Expanded thinking block, truncated at 500 chars."""
+        content = Content.from_markup("[dim italic]⟐ Thinking…[/dim italic]\n")
+        display = (
+            self._thinking[:500] + "..."
+            if len(self._thinking) > 500
+            else self._thinking
+        )
+        content = content + Content.from_text(display, markup=False).stylize("dim")
+        content = content + Content.from_text("\n\n", markup=False)
+        return content
+
+    def _build_response_text(self) -> Content:
+        """Build response text with optional name prefix styling."""
+        if self._name_prefix:
+            prefix_len = len(self._name_prefix)
+            return Content.from_text(
+                f"{self._name_prefix}{self._buffer}", markup=False,
+            ).stylize("bold #d97706", start=0, end=prefix_len)
+        return Content.from_text(self._buffer, markup=False)
+
+    def _build_usage_line(self) -> Content:
+        """Token usage footer line."""
+        return Content.from_markup(
+            f"\n[dim]↑ {self._usage.total_tokens:,} tokens "
+            f"(in: {self._usage.prompt_tokens:,}, "
+            f"out: {self._usage.completion_tokens:,})[/dim]"
+        )
+
     def _refresh_display(self) -> None:
         """Rebuild the display in Claude Code style using safe Content objects."""
-        content = Content()
-
-        # Thinking block — collapsed: one-line summary
+        # Collapsed thinking: show one-liner only, nothing else
         if self._has_thinking and self._is_thinking_collapsed:
-            n = len(self._thinking)
-            indicator = "▸"
-            content = content + Content.from_markup(
-                f"[dim italic]⟐ Thinking ({n} chars) {indicator}[/dim italic]"
-            )
-            # Collapsed: nothing else shown — no text, no usage
-            self.update(content if content else "")
+            self.update(self._build_thinking_collapsed())
             return
 
-        # Thinking block — expanded: dim italic, subtle header
-        if self._has_thinking:
-            content = content + Content.from_markup("[dim italic]⟐ Thinking…[/dim italic]\n")
-            thinking_display = (
-                self._thinking[:500] + "..."
-                if len(self._thinking) > 500
-                else self._thinking
-            )
-            content = content + Content.from_text(thinking_display, markup=False).stylize("dim")
-            content = content + Content.from_text("\n\n", markup=False)
+        content = Content()
 
-        # Response text — prepend name prefix when set, safe from markup parsing
+        # Expanded thinking block
+        if self._has_thinking:
+            content = content + self._build_thinking_expanded()
+
+        # Response text — or placeholder if no thinking shown
         if self._buffer:
-            if self._name_prefix:
-                prefix_len = len(self._name_prefix)
-                content = content + Content.from_text(
-                    f"{self._name_prefix}{self._buffer}", markup=False,
-                ).stylize("bold #d97706", start=0, end=prefix_len)
-            else:
-                content = content + Content.from_text(self._buffer, markup=False)
+            content = content + self._build_response_text()
         elif not self._has_thinking:
             content = content + Content.from_markup("[dim]…[/dim]")
 
-        # Token usage — very subtle, only when show_usage is True
+        # Token usage footer
         if self._usage and self._show_usage:
-            content = content + Content.from_markup(
-                f"\n[dim]↑ {self._usage.total_tokens:,} tokens "
-                f"(in: {self._usage.prompt_tokens:,}, "
-                f"out: {self._usage.completion_tokens:,})[/dim]"
-            )
+            content = content + self._build_usage_line()
 
         self.update(content if content else "")

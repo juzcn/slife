@@ -98,6 +98,12 @@ def _is_valid(cls) -> bool:
     CPython registers the class in __subclasses__() *before* calling
     __init_subclass__, so subclasses that fail validation (like test
     stubs) still appear here.  We re-check the required attributes.
+
+    Classes with ``_skip_auto_register = True`` (e.g. MCPProxyTool,
+    whose real name/description/parameters are set per-instance) are
+    excluded — they are created manually by their own factory functions.
     """
+    if getattr(cls, "_skip_auto_register", False):
+        return False
     name = getattr(cls, "name", "")
-    return bool(name) and name != "_mcp_proxy"
+    return bool(name)

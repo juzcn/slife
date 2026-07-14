@@ -18,7 +18,7 @@ Flow:
 import logging
 from pathlib import Path
 
-from slife.tools._config_io import now_iso, read_config, with_fetched_at, write_config
+from slife.tools._config_io import _ConfigPathMixin, now_iso, read_config, with_fetched_at, write_config
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ def get_cli_tools_summary(config_path: Path) -> str:
     return "\n".join(lines)
 
 
-class CliCheckInstalled(Tool):
+class CliCheckInstalled(_ConfigPathMixin, Tool):
     """Check whether CLI commands are registered in slife.json5.
 
     Looks up command names in the cli_tools config section — this tells
@@ -100,14 +100,6 @@ class CliCheckInstalled(Tool):
         },
         "required": ["commands"],
     }
-
-    def __init__(self, config_path: Path | None = None):
-        self._config_path = config_path or Path("slife.json5")
-
-    @classmethod
-    def from_config(cls, cfg, config):
-        path = config._path if config else None
-        return cls(config_path=path)
 
     async def execute(self, **kwargs) -> str:
         commands: list[str] = kwargs["commands"]
@@ -149,7 +141,7 @@ class CliCheckInstalled(Tool):
         return summary + "\n" + "\n".join(lines)
 
 
-class CliAddTool(Tool):
+class CliAddTool(_ConfigPathMixin, Tool):
     """Register a CLI tool so the LLM can discover it in future turns.
 
     Does NOT execute the CLI — just records its existence, what it does,
@@ -212,14 +204,6 @@ class CliAddTool(Tool):
         "required": ["name", "command", "description"],
     }
 
-    def __init__(self, config_path: Path | None = None):
-        self._config_path = config_path or Path("slife.json5")
-
-    @classmethod
-    def from_config(cls, cfg, config):
-        path = config._path if config else None
-        return cls(config_path=path)
-
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         command: str = kwargs["command"]
@@ -246,7 +230,7 @@ class CliAddTool(Tool):
         return f"[OK] {action} CLI tool '{name}'.\n  {description}"
 
 
-class CliRemoveTool(Tool):
+class CliRemoveTool(_ConfigPathMixin, Tool):
     """Remove a previously registered CLI tool."""
 
     name = "cli_remove_tool"
@@ -262,14 +246,6 @@ class CliRemoveTool(Tool):
         "required": ["name"],
     }
 
-    def __init__(self, config_path: Path | None = None):
-        self._config_path = config_path or Path("slife.json5")
-
-    @classmethod
-    def from_config(cls, cfg, config):
-        path = config._path if config else None
-        return cls(config_path=path)
-
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         raw = read_config(self._config_path)
@@ -284,7 +260,7 @@ class CliRemoveTool(Tool):
         return f"[OK] Removed CLI tool '{name}'."
 
 
-class CliListToolsTool(Tool):
+class CliListToolsTool(_ConfigPathMixin, Tool):
     """List all registered CLI tools."""
 
     name = "cli_list_tools"
@@ -297,14 +273,6 @@ class CliListToolsTool(Tool):
         "properties": {},
         "required": [],
     }
-
-    def __init__(self, config_path: Path | None = None):
-        self._config_path = config_path or Path("slife.json5")
-
-    @classmethod
-    def from_config(cls, cfg, config):
-        path = config._path if config else None
-        return cls(config_path=path)
 
     async def execute(self, **kwargs) -> str:
         result = get_cli_tools_summary(self._config_path)

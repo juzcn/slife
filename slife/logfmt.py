@@ -5,9 +5,10 @@ Provides:
   - Request ID for grouping log lines per user message
   - SessionFormatter with millisecond timestamps
   - contextvars-based — async-safe, no global mutation
+  - read_stderr_lines — shared async generator for subprocess stderr
 
 Usage:
-    from slife.logging import init_session_id, request_scope, SessionFormatter
+    from slife.logfmt import init_session_id, request_scope, SessionFormatter
 
     sid = init_session_id()
     fmt = SessionFormatter("%(asctime)s ... %(sid)s ... %(rid)s ...")
@@ -16,6 +17,7 @@ Usage:
         logger.info("something")  # automatically tagged with request id
 """
 
+import asyncio
 import contextvars
 import logging
 import secrets
@@ -142,3 +144,34 @@ def elapsed(
         parts = [f"{k}={v}" for k, v in extra.items()]
         parts.append(f"took_ms={ms:.0f}")
         logger.log(level, "%s_done %s", operation, " ".join(parts))
+
+
+# ── Stderr drain helper ───────────────────────────────────────────────
+
+
+async def read_stderr_lines(process, running_check=None):
+    """Async generator yielding decoded stderr lines from a subprocess.
+
+    Used by MCPWrapperProcess, BrokerManager, and SubagentProcess to
+    avoid duplicating the readline/decode/running-check loop.
+
+    Args:
+        process: An ``asyncio.subprocess.Process`` with a ``.stderr`` pipe.
+        running_check: Optional callable returning bool — when False, the
+                       generator stops.  Pass ``None`` to drain until EOF.
+
+    Yields:
+        Decoded, rstripped, non-empty stderr lines.
+    """
+    if not process or not process.stderr:
+        return
+    try:
+        while running_check is None or running_check():
+            line = await process.stderr.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", errors="replace").rstrip()
+            if text:
+                yield text
+    except (asyncio.CancelledError, Exception):
+        pass
