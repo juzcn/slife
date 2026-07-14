@@ -60,8 +60,7 @@ Two transports, one interface. The full A2A protocol toolset (14 tools) provides
 | `a2a_get_task_result` | Poll task status and result from TaskStore |
 | `a2a_list_tasks` | List all tasks with status/agent/transport filters |
 | `a2a_cancel_task` | Cancel a pending or in-flight task |
-| `a2a_subscribe_task` | Block until a task completes (push or poll) |
-| `a2a_push_notification` | Request push delivery of async results |
+| `a2a_subscribe_task` | Block until a task completes (event-driven or poll) |
 | `a2a_agent_card` | Introspect a specific agent's status |
 | `a2a_spawn_subagent` | Create a local worker with the same LLM + tools |
 | `a2a_stop_subagent` | Stop a locally-managed subagent |

@@ -11,7 +11,6 @@ from slife.tools.a2a import (  # noqa: F401
     A2ANotifyUserTool,
     A2ASendTaskAsyncTool,
     A2ASendTaskTool,
-    A2APushNotificationTool,
     A2ASubscribeTaskTool,
     SubagentSpawnTool,
     SubagentStopTool,

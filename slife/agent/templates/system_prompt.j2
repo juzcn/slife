@@ -36,7 +36,8 @@ Tools
   A2A — discover agents before delegating: a2a_list_agents for remote
   peers, a2a_list_subagents for local workers.  For parallel work,
   spawn subagents with a2a_spawn_subagent, then a2a_send_task_async
-  to fire tasks without waiting.  Collect results by polling
-  a2a_get_task_result or subscribing via a2a_push_notification then
-  a2a_subscribe_task.  Use a2a_broadcast for scatter/gather across
-  all agents.  Stop idle subagents with a2a_stop_subagent.
+  to fire tasks without waiting.  Collect results with
+  a2a_subscribe_task (waits for completion, event-driven — no
+  polling needed) or a2a_get_task_result (check once).
+  Use a2a_broadcast for scatter/gather across all agents.
+  Stop idle subagents with a2a_stop_subagent.

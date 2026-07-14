@@ -178,6 +178,9 @@ class MCPClient:
                 await self._process.stdin.drain()
         except asyncio.CancelledError:
             pass
+        except (ValueError, OSError, BrokenPipeError):
+            # Pipe closed during shutdown (e.g. Ctrl+C on Windows)
+            pass
 
     async def _bridge_reader(self, reader) -> None:
         """Bridge from a raw asyncio StreamReader to the stdout queue."""
@@ -196,6 +199,9 @@ class MCPClient:
                 await writer.drain()
         except asyncio.CancelledError:
             pass
+        except (ValueError, OSError, BrokenPipeError):
+            # Pipe closed during shutdown
+            pass
 
     async def _drain_stderr(self) -> None:
         assert self._process and self._process.stderr
@@ -205,6 +211,9 @@ class MCPClient:
                 if not line:
                     break
         except asyncio.CancelledError:
+            pass
+        except (ValueError, OSError, BrokenPipeError):
+            # Pipe closed during shutdown
             pass
 
     async def connect_http(self, url: str = DEFAULT_WRAPPER_URL) -> None:

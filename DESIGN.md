@@ -234,8 +234,7 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 | `a2a_get_task_result` | tasks/get | Poll task status from shared TaskStore |
 | `a2a_list_tasks` | tasks/list | Filterable task listing across all agents |
 | `a2a_cancel_task` | tasks/cancel | Best-effort cancellation |
-| `a2a_subscribe_task` | tasks/subscribe | Block until task completion (push/poll) |
-| `a2a_push_notification` | tasks/pushNotification | Configure push delivery of results |
+| `a2a_subscribe_task` | tasks/subscribe | Block until task completion (event-driven/poll) |
 | `a2a_agent_card` | — | Agent introspection (local or remote) |
 | `a2a_spawn_subagent` | — | Create local worker with same LLM + tools |
 | `a2a_stop_subagent` | — | Stop a locally-managed subagent |

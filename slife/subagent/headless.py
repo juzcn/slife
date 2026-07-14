@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 
 logger = logging.getLogger("slife.subagent")
@@ -61,8 +62,12 @@ def _write(result=None, error=None, rpc_id=None) -> None:
         msg["error"] = {"code": error.get("code", -32000), "message": error.get("message", "")}
     else:
         msg["result"] = result or {}
-    sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    # Write UTF-8 bytes directly to stdout buffer.  On Windows, sys.stdout
+    # defaults to GBK (or the system locale encoding) which cannot encode
+    # emoji and many Unicode characters — json.dumps(ensure_ascii=False)
+    # would then crash.  Writing raw UTF-8 bytes bypasses the text codec.
+    sys.stdout.buffer.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 async def _process(task_text: str, rpc_id, service) -> None:
@@ -102,9 +107,28 @@ async def run_headless(config_path: str = "slife.json5") -> None:
     _write(result={"ready": True})
     logger.info("ready")
 
+    # Read JSON-RPC lines from stdin.  On Windows, connect_read_pipe
+    # fails with OSError [WinError 6] (句柄无效) when sys.stdin is a
+    # pipe from a parent process — the IOCP registration in the
+    # ProactorEventLoop rejects the pipe handle.  We use a dedicated
+    # thread calling os.read() instead, which bypasses IOCP and works
+    # reliably on pipe handles across all platforms.
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader()
-    await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+
+    def _feed_stdin() -> None:
+        fd = sys.stdin.fileno()
+        while True:
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                data = b""
+            if not data:
+                break
+            loop.call_soon_threadsafe(reader.feed_data, data)
+        loop.call_soon_threadsafe(reader.feed_eof)
+
+    threading.Thread(target=_feed_stdin, daemon=True).start()
 
     try:
         while True:

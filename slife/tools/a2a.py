@@ -5,7 +5,7 @@ All tools are proper :class:`Tool` subclasses, auto-discovered by
 transport references (set by ``AgentService``) to reach the live
 :class:`A2AClient` and :class:`SubagentManager` at call time.
 
-Tool inventory (14 tools, A2A protocol aligned)
+Tool inventory (13 tools, A2A protocol aligned)
 ----------------------------------------------
 A2A method              slife tool                status
 message/send            a2a_send_task             full
@@ -14,7 +14,6 @@ tasks/get               a2a_get_task_result       full (TaskRecord)
 tasks/list              a2a_list_tasks            full (filterable)
 tasks/cancel            a2a_cancel_task           full
 tasks/subscribe         a2a_subscribe_task        blocking wait + poll
-tasks/pushNotification/set  a2a_push_notification         both transports (MQTT push / subagent event-driven)
 —                       a2a_list_agents           MQTT peers only
 —                       a2a_list_subagents        local workers only
 —                       a2a_spawn_subagent        agent lifecycle
@@ -22,6 +21,11 @@ tasks/pushNotification/set  a2a_push_notification         both transports (MQTT 
 —                       a2a_agent_card            agent introspection
 —                       a2a_notify_user           desktop alert
 —                       a2a_broadcast             scatter/gather
+
+Note: a2a_send_task_async internally registers an event-driven Future
+(local subagents) or subscribes to a reply topic (MQTT), so
+a2a_subscribe_task waits without polling.  No separate push-
+notification tool is needed.
 """
 
 from __future__ import annotations
@@ -262,9 +266,11 @@ class A2ASendTaskAsyncTool(Tool):
     name = "a2a_send_task_async"
     description = (
         "Send a task to an agent without waiting for the result. "
-        "Returns a task_id that can be polled later with a2a_get_task_result. "
-        "Use this for parallel work — send tasks to multiple agents, then "
-        "poll for results.  Works with local subagents and remote MQTT peers. "
+        "Returns a task_id immediately. "
+        "Use a2a_subscribe_task(task_id, agent_id) to wait for completion "
+        "(event-driven for local subagents — no polling overhead). "
+        "Alternatively use a2a_get_task_result for a one-shot status check. "
+        "Works with local subagents and remote MQTT peers. "
         "Use a2a_list_agents and a2a_list_subagents first to discover agents."
     )
     parameters: dict = {
@@ -293,12 +299,21 @@ class A2ASendTaskAsyncTool(Tool):
         if manager is not None and agent_id in manager.list():
             try:
                 rpc_id = await manager.send_task_async(agent_id, task)
+                # Register event-driven Future so a2a_subscribe_task
+                # returns immediately when the result arrives (no polling).
+                try:
+                    await manager.set_push_notification(
+                        agent_id, rpc_id,
+                        f"slife:local:notify:{rpc_id}",
+                    )
+                except Exception:
+                    pass  # notification setup is best-effort
                 return (
                     f"Task sent asynchronously.\n"
                     f"  Task ID: {rpc_id}\n"
                     f"  Agent: {agent_id}\n"
-                    f'  Use a2a_get_task_result with task_id="{rpc_id}" '
-                    f'and agent_id="{agent_id}" to check for the result.'
+                    f'  Use a2a_subscribe_task with task_id="{rpc_id}" '
+                    f'and agent_id="{agent_id}" to wait for the result.'
                 )
             except Exception as e:
                 return f"Error sending async task to subagent '{agent_id}': {e}"
@@ -307,12 +322,14 @@ class A2ASendTaskAsyncTool(Tool):
         if client is not None:
             try:
                 corr_id = await client.send_task_async(AgentId(agent_id), task)
+                # MQTT results arrive via the reply_to topic automatically —
+                # no extra notification setup needed.
                 return (
                     f"Task sent asynchronously.\n"
                     f"  Task ID: {corr_id}\n"
                     f"  Agent: {agent_id} (MQTT)\n"
-                    f'  Use a2a_get_task_result with task_id="{corr_id}" '
-                    f'and agent_id="{agent_id}" to check for the result.'
+                    f'  Use a2a_subscribe_task with task_id="{corr_id}" '
+                    f'and agent_id="{agent_id}" to wait for the result.'
                 )
             except Exception as e:
                 return f"Error sending async task to agent '{agent_id}': {e}"
@@ -329,10 +346,11 @@ class A2AGetTaskResultTool(Tool):
 
     name = "a2a_get_task_result"
     description = (
-        "Get the full status and result of a task. "
+        "Check the status and result of a task once (non-blocking). "
         "Returns the task record including status (pending/completed/failed/cancelled), "
         "timestamps, and result text. "
-        "Use after a2a_send_task_async or a2a_send_task to check task status. "
+        "Use after a2a_send_task_async to check if a task is done without waiting. "
+        "To wait for completion, use a2a_subscribe_task instead. "
         "For a list of all tasks, use a2a_list_tasks."
     )
     parameters: dict = {
@@ -555,12 +573,14 @@ class A2ASubscribeTaskTool(Tool):
 
     name = "a2a_subscribe_task"
     description = (
-        "Subscribe to a task and wait for its completion. "
+        "Wait for an async task to complete. "
         "Blocks until the task finishes (completed, failed, or cancelled) "
         "or the timeout is reached. "
-        "Use this when you need to wait for a specific task — it is more "
-        "efficient than polling with a2a_get_task_result. "
-        "Works with both local subagents and MQTT remote peers."
+        "Use after a2a_send_task_async to wait for the result. "
+        "For local subagents: event-driven (no polling — returns as soon "
+        "as the result arrives). "
+        "For MQTT peers: waits for reply via the result topic. "
+        "Prefer this over polling with a2a_get_task_result."
     )
     parameters: dict = {
         "type": "object",
@@ -857,93 +877,6 @@ class A2ANotifyUserTool(Tool):
         loop.run_in_executor(None, _desktop_notify, title, message)
 
         return f"Notification sent: [{title}] {message}"
-
-
-class A2APushNotificationTool(Tool):
-    """Request push delivery of async task results — no polling needed.
-
-    After a2a_send_task_async, call this to tell the agent to push the
-    result back when done instead of requiring a2a_get_task_result polling.
-
-    Works with both transports:
-    - MQTT remote agents: subscribes to *notify_topic*, agent pushes results there
-    - Local subagents: registers an event-driven Future so a2a_subscribe_task
-      returns immediately when the result arrives (no 500ms polling)
-    """
-
-    name = "a2a_push_notification"
-    description = (
-        "Request push delivery of a task result after a2a_send_task_async. "
-        "Instead of polling with a2a_get_task_result, the agent pushes the "
-        "result directly when done. "
-        "For MQTT remote agents, the result arrives on *notify_topic*. "
-        "For local subagents, a2a_subscribe_task becomes event-driven "
-        "(no polling delay). "
-        "Use this whenever you send an async task — it is more efficient "
-        "than repeatedly calling a2a_get_task_result."
-    )
-    parameters: dict = {
-        "type": "object",
-        "properties": {
-            "task_id": {
-                "type": "string",
-                "description": "The task_id to configure notifications for.",
-            },
-            "agent_id": {
-                "type": "string",
-                "description": "The agent that owns the task.",
-            },
-            "notify_topic": {
-                "type": "string",
-                "description": (
-                    "Topic to receive push updates on. "
-                    "For MQTT: an MQTT topic (e.g. 'slife/my-agent/tasks/notify'). "
-                    "For subagents: stored for MQTT bridging if available, "
-                    "or just enables event-driven a2a_subscribe_task. "
-                    "Defaults to 'slife/<current_agent>/tasks/notify/<task_id>' "
-                    "if omitted."
-                ),
-            },
-        },
-        "required": ["task_id", "agent_id"],
-    }
-
-    async def execute(
-        self, task_id: str = "", agent_id: str = "",
-        notify_topic: str = "", **kwargs,
-    ) -> str:
-        if err := _require_params(task_id=task_id, agent_id=agent_id):
-            return err
-
-        from slife.a2a.identity import AgentId
-        manager, client = _get_transports()
-        ok = False
-
-        # Default topic if not specified
-        if not notify_topic.strip():
-            from slife.a2a.client import _current_client as _cc
-            current_id = _cc.agent_id if _cc else "unknown"
-            notify_topic = f"slife/{current_id}/tasks/notify/{task_id}"
-
-        # Route to local subagent first
-        if manager is not None and agent_id in manager.list():
-            ok = await manager.set_push_notification(agent_id, task_id, notify_topic)
-
-        # Route to MQTT peer
-        if not ok and client is not None:
-            ok = await client.set_push_notification(task_id, notify_topic)
-
-        if ok:
-            return (
-                f"Push notification configured.\n"
-                f"  Task: {task_id}\n"
-                f"  Topic: {notify_topic}\n"
-                f"  Use a2a_subscribe_task to wait for updates."
-            )
-        return (
-            f"Task '{task_id}' not found. "
-            f"Use a2a_list_tasks to see active tasks."
-        )
 
 
 class A2ABroadcastTool(Tool):

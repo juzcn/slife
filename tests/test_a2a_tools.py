@@ -16,7 +16,6 @@ from slife.tools.a2a import (
     SubagentStopTool,
     A2AGetAgentCardTool,
     A2ANotifyUserTool,
-    A2APushNotificationTool,
     A2ABroadcastTool,
 )
 
@@ -42,7 +41,6 @@ TOOLS = [
     SubagentStopTool,
     A2AGetAgentCardTool,
     A2ANotifyUserTool,
-    A2APushNotificationTool,
     A2ABroadcastTool,
 ]
 
@@ -605,26 +603,6 @@ class TestA2ANotifyUserTool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# A2APushNotificationTool
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestA2APushNotificationTool:
-    @pytest.mark.asyncio
-    async def test_missing_params(self):
-        tool = A2APushNotificationTool()
-        result = await tool.execute(task_id="", agent_id="")
-        assert "Error" in result
-
-    @pytest.mark.asyncio
-    async def test_neither_transport_available(self):
-        with patch(MANAGER_PATH, return_value=None), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2APushNotificationTool()
-            result = await tool.execute(task_id="t1", agent_id="agent-1")
-            assert "not found" in result.lower()
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # A2ABroadcastTool
 # ═══════════════════════════════════════════════════════════════════════════

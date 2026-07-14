@@ -81,15 +81,22 @@ class SubagentProcess:
             *cmd, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
         self._running = True
+        # Start _read_stdout as the sole stdout reader — it will set
+        # self._ready when it receives the "ready" signal.  Do NOT call
+        # _read_one() concurrently: two readline() calls on the same
+        # StreamReader cause "readuntil() called while another coroutine
+        # is already waiting for incoming data".
         self._stdout_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._read_stderr())
         try:
-            first = await asyncio.wait_for(self._read_one(), timeout=30.0)
-            if first.get("result", {}).get("ready"):
-                self._ready.set(); logger.info("ready name=%s", self._name)
+            await asyncio.wait_for(self._ready.wait(), timeout=30.0)
+            logger.info("ready name=%s", self._name)
         except asyncio.TimeoutError:
             await self._stop_process()
             raise RuntimeError(f"Subagent '{self._name}' not ready within 30s")
+        except Exception:
+            await self._stop_process()
+            raise
 
     async def stop(self) -> None:
         await self._stop_process()
@@ -101,7 +108,9 @@ class SubagentProcess:
             if not f.done(): f.set_exception(RuntimeError(f"Subagent '{self._name}' stopped"))
         self._pending.clear()
         self._async_results.clear()
-        for t in (self._stdout_task, self._stderr_task):
+        stdout_task = self._stdout_task
+        stderr_task = self._stderr_task
+        for t in (stdout_task, stderr_task):
             if t and not t.done(): t.cancel()
         try:
             if self._process.stdin and self._process.returncode is None:
@@ -125,8 +134,12 @@ class SubagentProcess:
         except ProcessLookupError: pass
         finally:
             self._running = False; self._process = None
-            try: await t
-            except (asyncio.CancelledError, Exception): pass
+            # Await both reader tasks — they may have been cancelled or
+            # crashed due to pipe closure (Windows proactor).
+            for t in (stdout_task, stderr_task):
+                if t and not t.done():
+                    try: await t
+                    except (asyncio.CancelledError, Exception): pass
 
     async def send_task(self, task: str, timeout: float = 120.0) -> str:
         if not self.is_running or not self._process or not self._process.stdin:
@@ -198,11 +211,6 @@ class SubagentProcess:
             if not fut.done():
                 fut.set_result(msg)
 
-    async def _read_one(self) -> dict:
-        if not self._process or not self._process.stdout: raise RuntimeError("not started")
-        line = await self._process.stdout.readline()
-        return json.loads(line.decode("utf-8", errors="replace")) if line else {}
-
     async def _read_stdout(self) -> None:
         if not self._process or not self._process.stdout: return
         reader = self._process.stdout; reader._limit = 10 * 1024 * 1024
@@ -255,7 +263,7 @@ class SubagentProcess:
                                 params.get("pct", "?"),
                             )
                         self._resolve_push(task_id, msg)
-        except asyncio.CancelledError: pass
+        except Exception: pass  # CancelledError + pipe closure on shutdown
 
     async def _read_stderr(self) -> None:
         if not self._process or not self._process.stderr: return
