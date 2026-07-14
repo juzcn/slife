@@ -15,6 +15,7 @@ dependencies = [
     "json5>=0.15.0",
     "jinja2>=3.1.0",
     "fastmcp>=2.0.0",
+    "paho-mqtt>=2.0.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -63,7 +64,7 @@ minversion = "9.1"
 testpaths = ["tests"]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "module"
-addopts = "-v --tb=short --strict-markers --strict-config --dist worksteal --no-header"
+addopts = "-v --tb=short --strict-markers --strict-config --no-header"
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::pytest.PytestDeprecationWarning",

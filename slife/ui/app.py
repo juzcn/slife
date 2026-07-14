@@ -107,7 +107,7 @@ class SlifeApp(App):
         yield StatusBar(id="status-bar")
 
     async def on_mount(self) -> None:
-        """Initialize status bar and start MCP integration."""
+        """Initialize status bar and start MCP + A2A + Subagent integration."""
         status = self.query_one("#status-bar", StatusBar)
         status.update_info(
             model=self.service.model_display_name,
@@ -125,10 +125,29 @@ class SlifeApp(App):
                 group="mcp-startup",
             )
 
+        # Start A2A P2P mesh in the background (MQTT — remote peers)
+        if self.service.config.a2a_config and self.service.config.a2a_config.enabled:
+            self.service.on_a2a_activity(self._on_a2a_activity)
+            self.run_worker(
+                self.service.start_a2a(),
+                exclusive=False,
+                group="a2a-startup",
+            )
+
+        # Start subagent manager (local stdin/stdout — always available)
+        if self.service.config.subagent_config:
+            self.run_worker(
+                self.service.start_subagent(),
+                exclusive=False,
+                group="subagent-startup",
+            )
+
     # ── Actions ──────────────────────────────────────────────────
 
     async def action_quit(self) -> None:
-        """Quit the app, shutting down MCP wrapper first."""
+        """Quit the app, shutting down subagent, A2A, and MCP."""
+        await self.service.stop_subagent()
+        await self.service.stop_a2a()
         await self.service.stop_mcp()
         await super().action_quit()
 
@@ -212,6 +231,42 @@ class SlifeApp(App):
             exclusive=True,
             group="agent",
         )
+
+    # ── A2A activity (chat notifications) ───────────────────────────
+
+    async def _on_a2a_activity(self, kind: str, **kwargs) -> None:
+        """Handle A2A events by updating the chat view."""
+        chat_view = self.query_one("#chat-view", ChatView)
+
+        if kind == "agent_change":
+            card = kwargs.get("card")
+            event = kwargs.get("event", "")
+            if event == "online":
+                name = card.display_name or card.agent_id
+                chat_view.add_system_message(
+                    f"⚡ {name} ({card.agent_id}) online [{card.status}]",
+                    color="#7c3aed",
+                )
+            elif event == "offline":
+                chat_view.add_system_message(
+                    f"✗ {card.agent_id} offline", color="#6e7681",
+                )
+            elif event == "timeout":
+                chat_view.add_system_message(
+                    f"⏱ {card.agent_id} timed out", color="#d29922",
+                )
+
+        elif kind == "task_received":
+            source = kwargs.get("source", "unknown")
+            content = kwargs.get("content", "")
+            chat_view.add_a2a_task_message(str(source), content)
+
+        elif kind == "task_completed":
+            source = kwargs.get("source", "unknown")
+            result = kwargs.get("result", "")
+            chat_view.add_system_message(
+                f"✓ task from {source} completed", color="#3fb950",
+            )
 
     # ── Agent interaction ─────────────────────────────────────────
 

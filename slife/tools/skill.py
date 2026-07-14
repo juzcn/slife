@@ -132,7 +132,28 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
 
 
 
-class ListSkillsTool(Tool):
+# ═══════════════════════════════════════════════════════════════════════════
+# Mixin — shared __init__ + from_config for all skill tools
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class _SkillDirMixin:
+    """Shared skills_dir init and from_config — mixed into Tool subclasses."""
+
+    def __init__(self, skills_dir: str = "skills"):
+        self.skills_dir = Path(skills_dir)
+
+    @classmethod
+    def from_config(cls, cfg, config):
+        return cls(skills_dir=cfg.get("skills_dir", "skills"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool classes
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class ListSkillsTool(_SkillDirMixin, Tool):
     """List all available skills with their names and descriptions."""
 
     name = "list_skills"
@@ -147,19 +168,12 @@ class ListSkillsTool(Tool):
         "required": [],
     }
 
-    def __init__(self, skills_dir: str = "skills"):
-        self.skills_dir = Path(skills_dir)
-
-    @classmethod
-    def from_config(cls, cfg, config):
-        return cls(skills_dir=cfg.get("skills_dir", "skills"))
-
     async def execute(self, **kwargs) -> str:
         result = get_skills_summary(self.skills_dir)
         return result if result else "No skills available."
 
 
-class UseSkillTool(Tool):
+class UseSkillTool(_SkillDirMixin, Tool):
     """Load a specific skill's full documentation into context."""
 
     name = "use_skill"
@@ -178,19 +192,12 @@ class UseSkillTool(Tool):
         "required": ["skill_name"],
     }
 
-    def __init__(self, skills_dir: str = "skills"):
-        self.skills_dir = Path(skills_dir)
-
-    @classmethod
-    def from_config(cls, cfg, config):
-        return cls(skills_dir=cfg.get("skills_dir", "skills"))
-
     async def execute(self, **kwargs) -> str:
         skill_name: str = kwargs["skill_name"]
         return _read_skill(self.skills_dir, skill_name)
 
 
-class AddSkillTool(Tool):
+class AddSkillTool(_SkillDirMixin, Tool):
     """Install a skill by writing its files to the local skills directory.
 
     The agent is responsible for fetching the skill's files (e.g. via
@@ -268,13 +275,6 @@ class AddSkillTool(Tool):
         },
         "required": ["name"],
     }
-
-    def __init__(self, skills_dir: str = "skills"):
-        self.skills_dir = Path(skills_dir)
-
-    @classmethod
-    def from_config(cls, cfg, config):
-        return cls(skills_dir=cfg.get("skills_dir", "skills"))
 
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
@@ -397,7 +397,7 @@ class AddSkillTool(Tool):
         logger.debug("skill_meta_written dir=%s", skill_dir)
 
 
-class RemoveSkillTool(Tool):
+class RemoveSkillTool(_SkillDirMixin, Tool):
     """Remove a skill by deleting its directory and SKILL.md.
 
     Matches by frontmatter 'name' field first, then by directory name.
@@ -418,13 +418,6 @@ class RemoveSkillTool(Tool):
         },
         "required": ["skill_name"],
     }
-
-    def __init__(self, skills_dir: str = "skills"):
-        self.skills_dir = Path(skills_dir)
-
-    @classmethod
-    def from_config(cls, cfg, config):
-        return cls(skills_dir=cfg.get("skills_dir", "skills"))
 
     async def execute(self, **kwargs) -> str:
         skill_name: str = kwargs["skill_name"]

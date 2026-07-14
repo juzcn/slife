@@ -29,9 +29,13 @@ What the LLM *cannot* know:
 - That a commented github/anyapi-mcp-server template is in slife.json5 for when the user has a token
 - That after successfully installing and using a new CLI, it should be registered via `cli_add_tool`
 - That `config_env_set` can write placeholders when a value isn't available yet
+- That `a2a_list_agents` and `a2a_list_subagents` discover remote and local agents
+- That `a2a_send_task` can delegate work to any agent (local subagent or remote MQTT peer)
+- That `a2a_spawn_subagent` creates local workers for parallel computation
+
 The system prompt at `slife/agent/templates/system_prompt.j2` encodes these
-facts in four short sections — Platform, Configuration, and Tools (Skills /
-CLI / MCP / REST APIs).  That file is the authoritative source; the list
+facts in short sections — Platform, Configuration, and Tools (Skills /
+CLI / MCP / REST APIs / A2A).  That file is the authoritative source; the list
 above documents the rationale behind each entry.
 
 Every line is a **when-to-use** rule.  Tool capabilities live in schemas;
@@ -127,10 +131,9 @@ REST APIs (via anyapi-mcp-server) are regular MCP servers — they use the same 
 
 - **Not a framework** — no agent composition, pipelines, or orchestration
 - **Not a safety system** — no guardrails, approval gates, or sandboxing beyond the OS
-- **Not a multi-agent system** — single conversation, single model, single loop
 - **Not an automation engine** — no scheduled tasks, background workers, or event triggers
 
-It's a chat window with tools. The LLM is in control.
+It's a chat window with tools. The LLM is in control — including of multi-agent coordination via A2A.
 
 ## Architecture
 
@@ -140,8 +143,9 @@ It's a chat window with tools. The LLM is in control.
 │  slife/ui/app.py, chat.py, handler.py, tool_display.py│
 ├──────────────────────────────────────────────────────┤
 │  Agent Service                                       │
-│  slife/agent/service.py — wires client + tools + loop │
-│  Manages MCP lifecycle: connect → register → discover │
+│  slife/agent/service.py — wires client+tools+loop    │
+│  Manages MCP, A2A/MQTT, and subagent lifecycle       │
+│  Inbox: serializes human + MQTT + subagent messages   │
 ├──────────────────────────────────────────────────────┤
 │  Agent Loop                                          │
 │  slife/agent/loop.py — streaming function-calling    │
@@ -150,11 +154,11 @@ It's a chat window with tools. The LLM is in control.
 │  Native Tools (auto-discovered from slife/tools/*)                               │
 │  shell.py  run_python_script.py  os_info.py  config_env.py  cli.py  skill.py    │
 │                                                                                  │
-│  Skills          MCP Tools          RESTful API Tools                            │
-│  skills/ dir     slife/mcp/         (via MCP + anyapi-mcp-server)                │
-│  SKILL.md files  client.py         OpenAPI spec → MCP tools at runtime           │
-│                  process.py                                                      │
-│                  tool_adapter.py                                                 │
+│  Skills        MCP Tools        A2A Tools           RESTful API Tools            │
+│  skills/ dir   slife/mcp/      slife/a2a/           (via MCP+anyapi-mcp-server)  │
+│  SKILL.md      client.py       MQTT + subagent      OpenAPI→MCP tools at runtime │
+│                process.py      slife/subagent/                                    │
+│                tool_adapter.py                                                    │
 ├──────────────────────────────────────────────────────────────────────────────────┤
 │  LLM Client (AsyncOpenAI)                            │
 │  slife/agent/llm_client.py — streaming + thinking    │
@@ -163,14 +167,14 @@ It's a chat window with tools. The LLM is in control.
 │  slife/config.py — env resolution, model parsing     │
 └──────────────────────────────────────────────────────┘
 
-                    slife agent ──── stdio/HTTP ──── slife-mcp
-                    (slife/)                          (slife_mcp/)
-                                                     │
-                                                     ├── filesystem MCP (npx)
-                                                     ├── serper MCP (npx)
-                                                     ├── anyapi-mcp-server (npx)
-                                                     │     └── GitHub REST API
-                                                     └── ... (any MCP server)
+         slife agent ──── stdio/HTTP ──── slife-mcp
+         (slife/)                          (slife_mcp/)
+                                           │
+         slife agent ──── MQTT ────────── mosquitto ─── other slife instances
+         (slife/)         P2P mesh                        (remote peers)
+
+         slife agent ──── JSON-RPC 2.0 ─── subagent (headless)
+         (parent)           stdin/stdout        (child process)
 ```
 
 ## Agent Loop
@@ -198,7 +202,7 @@ Validation happens at class definition time via `__init_subclass__` — every `T
 
 Tool loading (`slife/tools/factory.py`): all modules in `slife.tools.*` are imported via `pkgutil.iter_modules`, then `Tool.__subclasses__()` discovers every valid subclass automatically. No manual registry — new tools are picked up as soon as their module exists in the package. The `slife.json5` `tools` array is optional: use it only to override defaults (`{name: "execute_shell", timeout: 60}`) or disable a tool (`{name: "execute_shell", enabled: false}`). Each entry matches against `Tool.name` — every tool has a unique name, so overrides are always per-tool.
 
-slife supports five categories of tools, all unified under the `Tool` ABC and registered in a single `ToolRegistry`. The LLM sees no difference between them — all are OpenAI function definitions.
+slife supports six categories of tools, all unified under the `Tool` ABC and registered in a single `ToolRegistry`. The LLM sees no difference between them — all are OpenAI function definitions.
 
 ### 1. Native Function Tools
 
@@ -217,7 +221,28 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 | `cli_remove_tool` | Delete a CLI registration from `slife.json5` |
 | `cli_list_tools` | List all registered CLI tools with descriptions |
 
-### 2. Skills
+### 2. A2A Tools
+
+14 auto-discovered tools in `slife/tools/a2a.py` implementing the full A2A protocol — discovery, task routing, lifecycle, and notifications. Shared helpers `_get_transports()` and `_require_params()` eliminate per-tool boilerplate. Transport routing is subagent-first (fast, local), MQTT fallback (network).
+
+| Tool | A2A method | Description |
+|------|-----------|-------------|
+| `a2a_list_agents` | — | Discover remote MQTT peers (requires A2A) |
+| `a2a_list_subagents` | — | List local subagent workers |
+| `a2a_send_task` | message/send | Send task and wait for result (sync) |
+| `a2a_send_task_async` | — | Fire-and-forget with task ID for polling |
+| `a2a_get_task_result` | tasks/get | Poll task status from shared TaskStore |
+| `a2a_list_tasks` | tasks/list | Filterable task listing across all agents |
+| `a2a_cancel_task` | tasks/cancel | Best-effort cancellation |
+| `a2a_subscribe_task` | tasks/subscribe | Block until task completion (push/poll) |
+| `a2a_push_notification` | tasks/pushNotification | Configure push delivery of results |
+| `a2a_agent_card` | — | Agent introspection (local or remote) |
+| `a2a_spawn_subagent` | — | Create local worker with same LLM + tools |
+| `a2a_stop_subagent` | — | Stop a locally-managed subagent |
+| `a2a_notify_user` | — | Fire desktop notification to operator |
+| `a2a_broadcast` | — | Scatter/gather — send to all known agents |
+
+### 3. Skills
 
 On-demand documentation plugins using progressive disclosure (see Progressive Disclosure section above). Four tools in `slife/tools/skill.py`:
 
@@ -228,15 +253,15 @@ On-demand documentation plugins using progressive disclosure (see Progressive Di
 | `add_skill` | Install a skill from files or a zip/tar.gz archive |
 | `remove_skill` | Remove an installed skill |
 
-Skills are discovered by scanning directories under `skills/` for `SKILL.md` files with YAML frontmatter (`name`, `description`). The shared `_iter_skills()` helper in `slife/tools/skill.py` handles directory scanning and frontmatter parsing once, used by all four skill tools.
+Skills are discovered by scanning directories under `skills/` for `SKILL.md` files with YAML frontmatter (`name`, `description`). The shared `_iter_skills()` helper in `slife/tools/skill.py` handles directory scanning and frontmatter parsing once, used by all four skill tools.  Common `__init__` and `from_config` logic is extracted into the `_SkillDirMixin` class, avoiding duplication across `ListSkillsTool`, `UseSkillTool`, `AddSkillTool`, and `RemoveSkillTool`.
 
-### 3. MCP Tools
+### 4. MCP Tools
 
 External MCP servers connected through [slife-mcp](https://pypi.org/project/slife-mcp/) — an independent MCP proxy service. Each external server's tools are adapted to the `Tool` ABC via `MCPProxyTool` and registered with a `{server}__` prefix (e.g. `filesystem__read_file`, `serper__search`).
 
 MCP tools are not configured via `tools[]` — they are discovered dynamically when slife-mcp connects to configured servers. Supports progressive disclosure via `disclosure: "lazy"` (see Progressive Disclosure section above). See the MCP Integration section below for architecture details.
 
-### 4. RESTful API Tools (anyapi-mcp-server)
+### 5. RESTful API Tools (anyapi-mcp-server)
 
 REST APIs are converted to MCP tools via [anyapi-mcp-server](https://github.com/quiloos39/anyapi-mcp-server), which generates tools from OpenAPI specifications at runtime. These are regular MCP servers from slife's perspective — configured in `mcp.servers` with `command: "npx"` and `args` specifying the `--spec` URL, `--base-url`, and any required headers.
 
@@ -256,7 +281,7 @@ github: {
 
 This produces tools like `github__list_repos`, `github__create_issue`, etc. — the LLM can call any endpoint described by the OpenAPI spec. The same pattern works for any REST API with an OpenAPI spec (Jira, GitLab, Slack, etc.).
 
-### 5. CLI Tools
+### 6. CLI Tools
 
 External CLI commands the LLM discovers at runtime and registers for future use — four management tools in `slife/tools/cli.py`:
 
@@ -341,6 +366,82 @@ Each OpenAPI endpoint becomes a tool named `{name}__{operationId}` (e.g. `github
 
 This pattern works for any REST API with an OpenAPI specification: Jira, GitLab, Slack, Stripe, etc. The system prompt guides the LLM to use this framework when users ask to connect a REST API.
 
+## A2A — Agent-to-Agent
+
+Two transports, unified interface. The LLM sees one agent pool.
+
+### Architecture
+
+```
+                    a2a_list_agents / a2a_send_task
+                           │
+            ┌──────────────┴──────────────┐
+            │                             │
+     MQTT Transport              Subagent Transport
+     (--name enables)            (always available)
+
+  ┌─────────────────┐       ┌──────────────────────┐
+  │ MQTT Broker      │       │ Parent Process        │
+  │ (mosquitto)      │       │  SubagentManager      │
+  │                  │       │  ├─ sub-1 (headless)  │
+  │ slife/+/presence │       │  │  JSON-RPC stdin/stdout
+  │ slife/+/inbox    │       │  ├─ sub-2 (headless)  │
+  │ slife/+/result   │       │  │  JSON-RPC stdin/stdout
+  └─────────────────┘       │  └─ ...               │
+                            └──────────────────────┘
+```
+
+### MQTT Transport (`slife/a2a/`)
+
+Remote slife instances discover each other and delegate tasks over MQTT.
+Enabled via `--name <id>` CLI flag. The `mqtt` config section provides
+broker connection details only — it never auto-enables A2A.
+
+- **MQTTAdapter** (`mqtt.py`): paho-mqtt → asyncio.Queue bridge with LWT
+- **A2AClient** (`client.py`): presence heartbeat, peer discovery, task routing
+- **BrokerManager** (`broker.py`): optional mosquitto auto-spawn
+- **TaskStore** (`a2a/task_store.py`): shared task-lifecycle tracking — records every send/result/cancel across both transports with status, timestamps, and result text. Singleton via `get_store()`.
+- **Inbox** (`agent/inbox.py`): unified message queue — serializes human + MQTT + subagent messages through `Inbox.run()` background processor. `ConversationStore` manages per-agent conversation state (persistent for human, one-shot for remotes).
+
+### Subagent Transport (`slife/subagent/`)
+
+Local child-process workers spawned via `asyncio.create_subprocess_exec`.
+Always available — no config toggle needed.
+
+- **headless.py**: slife without TUI, JSON-RPC 2.0 over stdin/stdout
+- **process.py**: `SubagentProcess` (pipe bridge + task dispatch), `SubagentManager` (spawn/stop/list)
+- **tools.py**: `a2a_spawn_subagent`, `a2a_stop_subagent` lifecycle tools
+- JSON-RPC methods: `tasks/send`, `shutdown`
+
+### Unified Tools (`slife/tools/a2a.py`)
+
+All 14 A2A tools are auto-discovered `Tool` subclasses in `slife/tools/a2a.py`.
+They resolve transports lazily at call time via two shared helpers:
+`_get_transports()` returns `(manager, client)` from module-level references
+set by `AgentService` at startup; `_require_params()` validates required
+arguments.  This eliminates the repeated three-line import stanza that
+previously appeared in every tool's `execute()` method.
+
+The tools use a consistent routing pattern — subagent first (fast, local),
+then MQTT fallback (network).  The LLM never needs to know which transport
+a given agent uses.
+
+### Protocol
+
+Subagent IPC uses JSON-RPC 2.0 per the A2A specification (§9):
+
+```
+→ {"jsonrpc":"2.0","method":"tasks/send","params":{"task":"…"},"id":"x"}
+← {"jsonrpc":"2.0","result":"…","id":"x"}
+```
+
+MQTT transport uses topic-based publish/subscribe with the same task semantics.
+
+### Nested Prevention
+
+Subagents set `SLIFE_SUBAGENT_NAME` in their environment. `start_subagent()`
+checks for this and skips subagent manager creation to prevent recursive spawning.
+
 ## Config Loading
 
 `Config.from_json5()` (`slife/config.py`) parses the JSON5 file in structured phases:
@@ -373,19 +474,35 @@ slife/
     loop.py            #   Function-calling while-loop with streaming
     llm_client.py      #   OpenAI-compatible streaming client
     conversation.py    #   Message history (OpenAI format)
-    service.py         #   Wiring: client + tools + loop + MCP
+    service.py         #   Wiring: client + tools + loop + MCP + A2A
     system_prompt.py   #   Jinja2 template rendering
     multimodal.py      #   Image encoding, /file attachment parsing
+    inbox.py           #   Unified message queue (human + MQTT + subagent)
+  a2a/                 # A2A: agent identity, MQTT, broker, TaskStore
+    identity.py        #   AgentId, AgentMessage
+    card.py            #   AgentCard
+    client.py          #   A2AClient — MQTT P2P mesh
+    mqtt.py            #   MQTTAdapter — paho-mqtt → asyncio bridge
+    broker.py          #   BrokerManager — mosquitto lifecycle
+    task_store.py      #   TaskRecord + TaskStore — task lifecycle tracking
+    config.py          #   A2AConfig (enabled via --name)
+    tools.py           #   Tool re-exports for backward compatibility
+  subagent/            # Subagent: local child processes
+    headless.py        #   JSON-RPC 2.0 runner (no TUI)
+    process.py         #   SubagentProcess + SubagentManager
+    tools.py           #   a2a_spawn_subagent, a2a_stop_subagent re-exports
   tools/               # Tool implementations (5 categories, auto-discovered)
     base.py            #   Tool ABC with __init_subclass__ validation
     registry.py        #   Name → Tool lookup & execution
     factory.py         #   Auto-discovery via pkgutil + __subclasses__()
+    a2a.py             #   14 A2A protocol tools (unified transports)
     shell.py           #   execute_shell (subprocess with timeout)
     run_python_script.py  #   run_python_script (platform-aware)
     os_info.py         #   get_os_info (current OS)
     skill.py           #   list_skills / use_skill / add_skill / remove_skill
     config_env.py      #   config_env_set / get / remove
     cli.py             #   cli_add_tool / cli_check_installed / cli_remove_tool / cli_list_tools
+    _config_io.py      #   Shared JSON5 read/write helpers
   mcp/                 # MCP client (slife side)
     client.py          #   stdio/HTTP client with asyncio.Queue adapters
     tool_adapter.py    #   MCP → slife Tool adapter (MCPProxyTool)
@@ -395,14 +512,17 @@ slife/
     chat.py            #   Message widgets (ChatView, AssistantMessage)
     handler.py         #   Streaming event → UI bridge (TUIHandler)
     tool_display.py    #   Tool call rendering (ToolCallWidget)
+    commands.py        #   Slash-command handling (/exit, etc.)
+    command_palette.py #   Slash-command completion dropdown
   config.py            # JSON5 config loading (ModelConfig, MCPConfig, Config)
   env.py               # ${ENV_VAR} and ${ENV_VAR:-default} resolution
   platform.py          # OS detection, shell syntax (Windows/Unix)
+  logfmt.py            # Structured logging with session/request IDs
 slife_mcp/             # Independent MCP proxy (publishable as slife-mcp)
   server.py            #   FastMCP server, auto-detect HTTP/stdio
   connection.py        #   asyncio JSON-RPC connection pool
   pyproject.toml       #   Standalone package config
   README.md            #   Standalone package docs
 skills/                # Skill plugins (on-demand documentation)
-tests/                 # pytest suite (331 tests, asyncio_mode=strict)
+tests/                 # pytest suite (583 tests, asyncio_mode=strict, 58% coverage)
 ```

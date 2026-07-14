@@ -15,18 +15,14 @@ Configuration
 
 Tools
   Skills — list_skills, then use_skill to load.  Fetch files, then
-  add_skill to install.  Always record provenance via the source
-  parameter (type, url, version).
+  add_skill to install.
 
   CLI — check cli_check_installed before running or installing a
   command; it tells you whether slife already knows about it.
-  Test a new command, then cli_add_tool to persist.  Always include
-  the source parameter: where you found the tool
-  (type: pypi/npm/github/etc.), its URL, and the installed version.
+  Test a new command, then cli_add_tool to persist.
 
   MCP — filesystem, fetch, and duckduckgo-search come pre-configured.
   To add more, research requirements first then call mcp_add_server.
-  Include source provenance (type, url, version) when adding.
 
   MCP servers default to eager (all tools loaded at startup).
   Set disclosure: "lazy" in config for servers with many tools.
@@ -36,3 +32,11 @@ Tools
 
   REST APIs — connect via anyapi-mcp-server (pattern in slife.json5).
   Docs: https://github.com/quiloos39/anyapi-mcp-server
+
+  A2A — discover agents before delegating: a2a_list_agents for remote
+  peers, a2a_list_subagents for local workers.  For parallel work,
+  spawn subagents with a2a_spawn_subagent, then a2a_send_task_async
+  to fire tasks without waiting.  Collect results by polling
+  a2a_get_task_result or subscribing via a2a_push_notification then
+  a2a_subscribe_task.  Use a2a_broadcast for scatter/gather across
+  all agents.  Stop idle subagents with a2a_stop_subagent.

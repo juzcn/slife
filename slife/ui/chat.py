@@ -45,6 +45,26 @@ class ChatView(VerticalScroll):
         self.mount(msg)
         self.scroll_end(animate=False)
 
+    def add_a2a_task_message(self, source: str, text: str) -> "UserMessage":
+        """Add an incoming A2A task from another agent.
+
+        Uses a left-arrow prefix and the source agent id so the operator
+        can see who delegated the task.  ``source`` is the remote agent's
+        id (e.g. ``"desk-01"``).
+        """
+        content = (
+            Content.from_text("← ", markup=False).stylize("bold #7c3aed")
+            + Content.from_text(source, markup=False).stylize("bold italic #a78bfa")
+            + Content.from_text(": ", markup=False).stylize("dim")
+            + Content.from_text(text, markup=False)
+        )
+        msg = UserMessage.__new__(UserMessage)
+        Static.__init__(msg, content)
+        msg.add_class("user-message")
+        self.mount(msg)
+        self.scroll_end(animate=False)
+        return msg
+
 
 class UserMessage(Static):
     """User message — "> text" prefix style, no label."""

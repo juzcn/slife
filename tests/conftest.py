@@ -165,9 +165,9 @@ def failing_tool():
     return _FailingTool()
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def tool_registry(echo_tool, failing_tool):
-    """Registry with both echo and failing tools registered."""
+    """Registry with both echo and failing tools registered (session-scoped, read-only)."""
     registry = ToolRegistry()
     registry.register(echo_tool)
     registry.register(failing_tool)
@@ -225,16 +225,6 @@ class _MockUsage:
         self.prompt_tokens = prompt_tokens
         self.completion_tokens = completion_tokens
         self.total_tokens = total_tokens
-
-
-@pytest.fixture
-def mock_openai_client():
-    """Create a mock AsyncOpenAI client with configurable responses."""
-    mock = MagicMock()
-    mock.chat = MagicMock()
-    mock.chat.completions = MagicMock()
-    mock.chat.completions.create = AsyncMock()
-    return mock
 
 
 # ── Async helpers ─────────────────────────────────────────────────────

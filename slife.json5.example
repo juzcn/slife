@@ -120,4 +120,26 @@
       // },
     },
   },
+
+  // ── MQTT broker (A2A remote peers) ─────────────────────────
+  // Only active when started with --name <agent-id> on the CLI.
+  // The json5 section provides broker connection details only.
+  mqtt: {
+    broker: {
+      host: "localhost",
+      port: 1883,
+      // command: "mosquitto",   // auto-spawn if not running
+    },
+    heartbeat_interval: 15,
+    heartbeat_timeout: 45,
+    task_timeout: 120,
+  },
+
+  // ── Subagents (local child processes) ───────────────────────
+  // Always available — spawn copies of this agent as worker
+  // processes that communicate via stdin/stdout pipes.
+  subagent: {
+    max_subagents: 5,
+    task_timeout: 120,
+  },
 }

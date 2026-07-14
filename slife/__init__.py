@@ -86,17 +86,42 @@ def setup_logging(level: int = logging.DEBUG) -> tuple[Path, logging.Handler]:
     return log_path, console
 
 
-def main(config_path: str = "slife.json5"):
-    """Entry point for the slife TUI application."""
+def _parse_cli_name(argv: list[str]) -> str | None:
+    """Extract ``--name <value>`` from CLI args.
+
+    Returns ``None`` when ``--name`` is not provided (A2A stays disabled).
+    """
+    args = argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--name" and i + 1 < len(args):
+            return args[i + 1]
+        i += 1
+    return None
+
+
+def main(config_path: str = "slife.json5", agent_name: str | None = None):
+    """Entry point for the slife TUI application.
+
+    Args:
+        config_path: Path to a slife.json5 configuration file.
+        agent_name: If provided, enables A2A and sets the agent identity.
+                    Equivalent to ``--name`` on the CLI.
+    """
+    # Parse --name from sys.argv when called via setuptools entry point
+    import sys as _sys
+    if agent_name is None:
+        agent_name = _parse_cli_name(_sys.argv)
+
     log_path, console_handler = setup_logging()
 
     # Generate session ID — shared with MCP subprocess via env var
     sid = init_session_id()
     os.environ["SLIFE_SESSION_ID"] = sid
 
-    logger.info("log_path=%s", log_path)
-    logger.info("config loading…")
-    config = Config.from_json5(config_path)
+    logger.debug("log_path=%s", log_path)
+    logger.debug("config loading…")
+    config = Config.from_json5(config_path, agent_name=agent_name)
 
     # Log env vars from config (already applied to os.environ by Config.from_json5)
     if config.env:
@@ -104,20 +129,20 @@ def main(config_path: str = "slife.json5"):
             # Mask API key values: only log the key name and first/last chars
             if any(hint in key.upper() for hint in ("KEY", "SECRET", "TOKEN", "PASSWORD")):
                 masked = str(value)[:4] + "…" + str(value)[-4:] if len(str(value)) > 8 else "***"
-                logger.info("env %s=%s", key, masked)
+                logger.debug("env %s=%s", key, masked)
             else:
-                logger.info("env %s=%s", key, value)
+                logger.debug("env %s=%s", key, value)
 
     active = config.active_model
-    logger.info("model=%s provider=%s", active.ref, active.display_name)
-    logger.info("thinking=%s", "on" if active.thinking_enabled else "off")
-    logger.info("tools=%d", len(config.tools))
+    logger.debug("model=%s provider=%s", active.ref, active.display_name)
+    logger.debug("thinking=%s", "on" if active.thinking_enabled else "off")
+    logger.debug("tools=%d", len(config.tools))
 
     # Suppress console logging during TUI runtime to prevent display corruption.
     # All messages still go to the per-session log file at DEBUG level.
     console_handler.setLevel(logging.WARNING)
 
-    logger.info("tui starting…")
+    logger.debug("tui starting…")
 
     app = SlifeApp(config)
     app.run()

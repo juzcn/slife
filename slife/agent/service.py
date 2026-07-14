@@ -2,6 +2,13 @@
 
 Owns the agent's runtime state. The TUI delegates to this service
 rather than directly managing agent internals.
+
+If MCP is enabled in config, also manages the MCP wrapper connection
+and registers MCP proxy tools.
+
+If A2A is enabled in config, manages the P2P agent mesh: connects to
+the MQTT broker, publishes presence, discovers peers, and routes tasks
+through a unified Inbox.
 """
 
 import asyncio
@@ -27,6 +34,9 @@ class AgentService:
 
     If MCP is enabled in config, also manages the MCP wrapper connection
     and registers MCP proxy tools.
+
+    If A2A is enabled, manages the P2P mesh: Inbox, A2AClient, and
+    per-source conversations.
     """
 
     def __init__(self, config: Config):
@@ -45,6 +55,13 @@ class AgentService:
         self._mcp_client: MCPClient | None = None
         self._mcp_process = None
 
+        # A2A integration state
+        self._a2a_client = None
+        self._a2a_broker = None
+        self._subagent_manager = None
+        self.inbox = None
+        self._on_a2a_callbacks: list = []  # callbacks for TUI notification
+
     @property
     def model_display_name(self) -> str:
         """Human-readable name of the active model."""
@@ -60,10 +77,22 @@ class AgentService:
         """Whether MCP wrapper integration is active."""
         return self._mcp_client is not None and self._mcp_client.is_connected
 
+    @property
+    def a2a_enabled(self) -> bool:
+        """Whether A2A P2P mesh is active."""
+        return self._a2a_client is not None and self._a2a_client.is_connected
+
+    @property
+    def subagent_manager(self):
+        """The SubagentManager, if A2A is enabled and subagent support is active."""
+        return self._subagent_manager
+
     def clear(self) -> None:
         """Reset conversation history and session usage."""
         self.conversation.clear()
         self.session_usage = TokenUsage()
+
+    # ── MCP lifecycle ──────────────────────────────────────────────────
 
     async def start_mcp(self) -> None:
         """Start the MCP wrapper and register its tools.
@@ -282,13 +311,207 @@ class AgentService:
 
         logger.info("mcp_shutdown")
 
+    # ── A2A lifecycle ──────────────────────────────────────────────────
+
+    async def start_a2a(self) -> None:
+        """Connect to MQTT broker for remote agent P2P mesh.
+
+        Called during app startup after MCP initialization.
+        Probes for an existing broker, spawns one if configured.
+        Registers unified A2A tools covering both MQTT and local transports.
+        """
+        a2a_cfg = self.config.a2a_config
+        if a2a_cfg is None or not a2a_cfg.enabled:
+            logger.debug("a2a_not_enabled")
+            return
+
+        logger.info("a2a_init start")
+
+        # Ensure broker is available (probe → optional spawn)
+        if a2a_cfg.broker_command:
+            from slife.a2a.broker import BrokerManager
+            self._a2a_broker = BrokerManager(
+                command=a2a_cfg.broker_command,
+                host=a2a_cfg.broker_host,
+                port=a2a_cfg.broker_port,
+            )
+            try:
+                await self._a2a_broker.ensure()
+            except Exception as e:
+                logger.warning("a2a_broker_ensure_failed err=%s", e)
+
+        # Create and connect the A2A client
+        from slife.a2a.client import A2AClient
+        self._a2a_client = A2AClient(a2a_cfg)
+        await self._a2a_client.connect()
+
+        # Set up the unified Inbox
+        from slife.agent.inbox import Inbox, ConversationStore
+        from slife.a2a.identity import HUMAN
+
+        conversations = ConversationStore(
+            system_prompt=build_system_prompt(),
+        )
+        conversations._convs[HUMAN] = self.conversation
+
+        self.inbox = Inbox(
+            agent_loop=self.agent_loop,
+            conversations=conversations,
+            a2a_client=self._a2a_client,
+            on_activity=self._notify_a2a_activity,
+        )
+
+        # Wire A2A incoming tasks → Inbox
+        self._a2a_client.on_incoming_task(self.inbox.post)
+
+        # Start the inbox background processor
+        self._inbox_task = asyncio.create_task(self.inbox.run())
+
+        # Start agent-change notifier (log + TUI notifications)
+        self._a2a_client.on_agent_change(self._on_agent_change)
+
+        # Set module-level transport reference so native A2A tools
+        # (slife.tools.a2a) can discover the live client at call time.
+        from slife.a2a.client import set_client
+        set_client(self._a2a_client)
+
+        logger.info("a2a_init_done tools=%d", len(self.tool_registry.list_tools()))
+
+    async def stop_a2a(self) -> None:
+        """Leave the P2P mesh and clean up."""
+        # Cancel inbox processing
+        if hasattr(self, "_inbox_task") and self._inbox_task:
+            self._inbox_task.cancel()
+            try:
+                await self._inbox_task
+            except asyncio.CancelledError:
+                pass
+
+        # Clear module-level transport reference
+        from slife.a2a.client import clear_client
+        clear_client()
+
+        self._a2a_client = None
+        self.inbox = None
+
+        # Stop broker if we spawned it
+        if self._a2a_broker:
+            try:
+                await self._a2a_broker.stop()
+            except Exception as e:
+                logger.debug("a2a_broker_stop_error err=%s", e)
+            self._a2a_broker = None
+
+        logger.info("a2a_shutdown")
+
+    # ── Subagent lifecycle ─────────────────────────────────────────────
+
+    async def start_subagent(self) -> None:
+        """Set up local subagent spawning (stdin/stdout pipes).
+
+        Skipped when running as a subagent ourselves (SLIFE_SUBAGENT_NAME
+        is set) — prevents recursive nested spawning.
+
+        Independent of A2A over MQTT — both transports coexist.
+        """
+        import os as _os
+        if _os.environ.get("SLIFE_SUBAGENT_NAME"):
+            logger.debug("subagent_skipped — running as subagent")
+            return
+
+        sub_cfg = self.config.subagent_config
+        if sub_cfg is None:
+            logger.debug("subagent_no_config")
+            return
+
+        logger.info("subagent_init start")
+
+        from slife.subagent.process import SubagentManager, set_manager
+        self._subagent_manager = SubagentManager(self.config)
+
+        # Set module-level transport reference so native subagent tools
+        # (slife.tools.a2a) can access the live manager at call time.
+        set_manager(self._subagent_manager)
+
+        logger.info("subagent_init_done tools=%d", len(self.tool_registry.list_tools()))
+
+    async def stop_subagent(self) -> None:
+        """Stop all local subagents and clean up."""
+        if self._subagent_manager:
+            try:
+                await self._subagent_manager.stop_all()
+            except Exception as e:
+                logger.debug("subagent_stop_all_error err=%s", e)
+            self._subagent_manager = None
+
+        # Clear module-level transport reference
+        from slife.subagent.process import clear_manager
+        clear_manager()
+
+        logger.info("subagent_shutdown")
+
+    async def _on_agent_change(self, card, event: str) -> None:
+        """Log agent presence changes and notify TUI callbacks."""
+        logger.info(
+            "a2a_peer_%s id=%s name=%s", event, card.agent_id, card.display_name,
+        )
+        await self._notify_a2a_activity(
+            "agent_change", card=card, event=event,
+        )
+
+    async def _notify_a2a_activity(self, kind: str, **kwargs) -> None:
+        """Fire all registered A2A activity callbacks."""
+        for cb in self._on_a2a_callbacks:
+            try:
+                await cb(kind, **kwargs)
+            except Exception:
+                pass
+
+    def on_a2a_activity(self, callback) -> None:
+        """Register a callback for A2A events (TUI notification).
+
+        Callback signature: ``async def cb(kind: str, **kwargs)``
+        where *kind* is ``"agent_change"``, ``"task_received"``, or
+        ``"task_completed"``.
+        """
+        self._on_a2a_callbacks.append(callback)
+
+    # ── Message processing ────────────────────────────────────────────
+
     async def process_message(
         self,
         user_input: str,
         images: list[str] | None,
         handler: AgentEventHandler,
     ) -> AgentResult:
-        """Run the agent loop for a user message via streaming."""
+        """Run the agent loop for a user message via streaming.
+
+        When the Inbox is active (A2A enabled), messages are routed
+        through the inbox for serialisation.  Otherwise the legacy
+        direct-call path is used.
+        """
+        if self.inbox is not None:
+            # Route through the unified inbox
+            from slife.a2a.identity import HUMAN, AgentMessage
+            from slife.agent.inbox import ConversationStore
+
+            # Register the TUI handler for human messages
+            conversations = self.inbox._conversations
+            conversations.register_handler(HUMAN, handler)
+
+            msg = AgentMessage(
+                source=HUMAN,
+                content=user_input,
+                images=images if images else [],
+            )
+            await self.inbox.post(msg)
+
+            # Return a placeholder — TUIHandler will update the UI
+            # as streaming events arrive.  The actual result is not
+            # available synchronously with the inbox model.
+            return AgentResult(text="", usage=TokenUsage())
+
+        # Legacy direct path (A2A disabled)
         return await self.agent_loop.run(
             user_input=user_input,
             conversation=self.conversation,

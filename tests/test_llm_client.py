@@ -1,7 +1,7 @@
 """Tests for slife.agent.llm_client — LLM client, token usage, and streaming."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock
 
 from slife.agent.llm_client import (
     LLMClient,
@@ -9,6 +9,14 @@ from slife.agent.llm_client import (
     StreamChunk,
 )
 from slife.config import ModelConfig
+from tests.conftest import (
+    _MockStreamEvent,
+    _MockDelta,
+    _MockUsage,
+    _MockToolCallDelta,
+    _MockFunctionDelta,
+    make_async_iter,
+)
 
 
 # ── TokenUsage ────────────────────────────────────────────────────────
@@ -249,14 +257,6 @@ class TestChatStream:
         """Stream content chunks are yielded correctly."""
         client = LLMClient(sample_model_config)
 
-        # Build mock stream events
-        from tests.conftest import (
-            _MockStreamEvent,
-            _MockDelta,
-            _MockUsage,
-            make_async_iter,
-        )
-
         events = make_async_iter([
             _MockStreamEvent(delta=_MockDelta(content="Hello")),
             _MockStreamEvent(delta=_MockDelta(content=" world")),
@@ -285,13 +285,6 @@ class TestChatStream:
         """Stream with reasoning/thinking content."""
         client = LLMClient(thinking_model_config)
 
-        from tests.conftest import (
-            _MockStreamEvent,
-            _MockDelta,
-            _MockUsage,
-            make_async_iter,
-        )
-
         events = make_async_iter([
             _MockStreamEvent(delta=_MockDelta(reasoning_content="Let me think...")),
             _MockStreamEvent(delta=_MockDelta(reasoning_content=" about this.")),
@@ -315,15 +308,6 @@ class TestChatStream:
     async def test_stream_tool_call_deltas(self, sample_model_config):
         """Stream with tool call deltas."""
         client = LLMClient(sample_model_config)
-
-        from tests.conftest import (
-            _MockStreamEvent,
-            _MockDelta,
-            _MockToolCallDelta,
-            _MockFunctionDelta,
-            _MockUsage,
-            make_async_iter,
-        )
 
         events = make_async_iter([
             _MockStreamEvent(delta=_MockDelta(tool_calls=[
@@ -367,13 +351,6 @@ class TestChatStream:
         """Events with no choices are skipped."""
         client = LLMClient(sample_model_config)
 
-        from tests.conftest import (
-            _MockStreamEvent,
-            _MockDelta,
-            _MockUsage,
-            make_async_iter,
-        )
-
         events = make_async_iter([
             _MockStreamEvent(),  # No choices
             _MockStreamEvent(delta=_MockDelta(content="valid")),
@@ -394,13 +371,6 @@ class TestChatStream:
         """Empty reasoning_content string not yielded (falsy)."""
         client = LLMClient(thinking_model_config)
 
-        from tests.conftest import (
-            _MockStreamEvent,
-            _MockDelta,
-            _MockUsage,
-            make_async_iter,
-        )
-
         events = make_async_iter([
             _MockStreamEvent(delta=_MockDelta(reasoning_content="")),
             _MockStreamEvent(delta=_MockDelta(content="OK")),
@@ -420,13 +390,6 @@ class TestChatStream:
     async def test_stream_passes_kwargs_correctly(self, sample_model_config):
         """Verify stream=True and stream_options are set."""
         client = LLMClient(sample_model_config)
-
-        from tests.conftest import (
-            _MockStreamEvent,
-            _MockDelta,
-            _MockUsage,
-            make_async_iter,
-        )
 
         events = make_async_iter([
             _MockStreamEvent(usage=_MockUsage(0, 0, 0)),

@@ -67,8 +67,8 @@ class TestMainFunction:
                     from slife import main
                     main()
 
-                info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                assert any("DeepSeek V4 Flash" in t for t in info_texts)
+                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+                assert any("DeepSeek V4 Flash" in t for t in debug_texts)
 
     def test_main_thinking_off(self, mock_config):
         """Logs 'thinking: off' when thinking is disabled."""
@@ -82,8 +82,8 @@ class TestMainFunction:
                     from slife import main
                     main()
 
-                info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                assert any("off" in t for t in info_texts if "thinking" in t)
+                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+                assert any("off" in t for t in debug_texts if "thinking" in t)
 
     def test_main_logs_tool_count(self, mock_config):
         """Logs the number of loaded tools."""
@@ -97,8 +97,8 @@ class TestMainFunction:
                     from slife import main
                     main()
 
-                info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                assert any("2" in t for t in info_texts if "tools" in t)
+                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+                assert any("2" in t for t in debug_texts if "tools" in t)
 
 
 class TestMainModule:
@@ -155,8 +155,8 @@ class TestMainEnvLogging:
                     from slife import main
                     main()
 
-                info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                env_line = [t for t in info_texts if "DEEPSEEK_KEY" in t]
+                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+                env_line = [t for t in debug_texts if "DEEPSEEK_KEY" in t]
                 assert len(env_line) == 1
                 # Should be masked — not contain the full key
                 assert "sk-1234567890abcdef" not in env_line[0]
@@ -174,8 +174,8 @@ class TestMainEnvLogging:
                     from slife import main
                     main()
 
-                info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                env_line = [t for t in info_texts if "API_SECRET" in t]
+                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+                env_line = [t for t in debug_texts if "API_SECRET" in t]
                 assert len(env_line) == 1
                 assert "***" in env_line[0]
 
@@ -192,8 +192,8 @@ class TestMainEnvLogging:
                     from slife import main
                     main()
 
-                info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                env_line = [t for t in info_texts if "MY_VAR" in t]
+                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+                env_line = [t for t in debug_texts if "MY_VAR" in t]
                 assert len(env_line) == 1
                 assert "hello_world" in env_line[0]
 
@@ -210,8 +210,8 @@ class TestMainEnvLogging:
                     from slife import main
                     main()
 
-                info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                env_line = [t for t in info_texts if "GITHUB_TOKEN" in t]
+                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+                env_line = [t for t in debug_texts if "GITHUB_TOKEN" in t]
                 assert len(env_line) == 1
                 assert "ghp_1234567890abcdefgh" not in env_line[0]
 
@@ -228,8 +228,8 @@ class TestMainEnvLogging:
                     from slife import main
                     main()
 
-                info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                env_line = [t for t in info_texts if "DB_PASSWORD" in t]
+                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+                env_line = [t for t in debug_texts if "DB_PASSWORD" in t]
                 assert len(env_line) == 1
                 assert "supersecret123" not in env_line[0]
 
@@ -246,6 +246,6 @@ class TestMainEnvLogging:
                     from slife import main
                     main()
 
-                info_texts = [str(c) for c in mock_logger.info.call_args_list]
-                env_lines = [t for t in info_texts if "env " in t]
+                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+                env_lines = [t for t in debug_texts if "env " in t]
                 assert len(env_lines) == 0

@@ -23,6 +23,10 @@ class Tool(ABC):
     description: ClassVar[str]
     parameters: ClassVar[dict]
 
+    # Set to True on tools that only work with the MQTT/A2A mesh.
+    # The factory skips registration when a2a_config is absent or disabled.
+    requires_a2a: ClassVar[bool] = False
+
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
         for attr in ("name", "description", "parameters"):

@@ -38,8 +38,7 @@ class ToolRegistry:
         """
         to_remove = [name for name in self._tools if name.startswith(prefix)]
         for name in to_remove:
-            del self._tools[name]
-            logger.debug("tool_unregistered name=%s", name)
+            self.unregister(name)
         return len(to_remove)
 
     def get(self, name: str) -> Tool | None:

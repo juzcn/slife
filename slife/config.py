@@ -21,6 +21,7 @@ from pathlib import Path
 
 from slife.env import resolve_env
 from slife.tools._config_io import with_fetched_at
+from slife.a2a.config import A2AConfig
 
 logger = logging.getLogger(__name__)
 
@@ -161,11 +162,15 @@ class Config:
     env: dict | None = None
     max_iterations: int = 10
     mcp_config: MCPConfig | None = None
+    a2a_config: A2AConfig | None = None
+    subagent_config: dict | None = None
     _path: Path | None = None
 
     def __post_init__(self):
         if self.mcp_config is None:
             self.mcp_config = MCPConfig()
+        if self.a2a_config is None:
+            self.a2a_config = A2AConfig()
 
     # ── Config file I/O helpers ─────────────────────────────────────
 
@@ -174,14 +179,14 @@ class Config:
         if not self._path:
             logger.warning("config_no_path action=%s server=%s", action, server)
             return None
-        return json5.loads(self._path.read_text(encoding="utf-8"))
+        from slife.tools._config_io import read_config
+        return read_config(self._path)
 
     def _write_config(self, raw: dict) -> None:
         """Write the JSON5 config back to disk."""
         assert self._path is not None
-        self._path.write_text(
-            json5.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        from slife.tools._config_io import write_config
+        write_config(self._path, raw)
 
     def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None) -> None:
         """Persist an MCP server to the config file."""
@@ -255,6 +260,17 @@ class Config:
         )
 
     # ── Parsing helpers ──────────────────────────────────────────────
+
+    @staticmethod
+    def _load_subagent_config(raw: dict) -> dict:
+        """Extract subagent config with defaults from parsed JSON5."""
+        sub_raw = raw.get("subagent")
+        if isinstance(sub_raw, dict):
+            return {
+                "max_subagents": sub_raw.get("max_subagents", 5),
+                "task_timeout": sub_raw.get("task_timeout", 120),
+            }
+        return {"max_subagents": 5, "task_timeout": 120}
 
     @staticmethod
     def _parse_models_section(models_section) -> tuple[list[ModelConfig], int]:
@@ -334,10 +350,18 @@ class Config:
     # ── Main loader ─────────────────────────────────────────────────
 
     @classmethod
-    def from_json5(cls, path: str | Path = "slife.json5") -> "Config":
-        """Load from JSON5 file with provider→model hierarchy."""
+    def from_json5(
+        cls, path: str | Path = "slife.json5", agent_name: str | None = None,
+    ) -> "Config":
+        """Load from JSON5 file with provider→model hierarchy.
+
+        Args:
+            path: Path to the JSON5 config file.
+            agent_name: If provided, enables A2A and sets this as the
+                        agent identity (``--name`` on the CLI).
+        """
         path = Path(path)
-        logger.info("config_load path=%s", path)
+        logger.debug("config_load path=%s", path)
         if not path.exists():
             raise FileNotFoundError(
                 f"Config file not found: {path}\n"
@@ -354,7 +378,7 @@ class Config:
             raise ValueError(
                 "No models defined. Add models.providers.<id>.models[]."
             )
-        logger.info(
+        logger.debug(
             "config_models count=%d providers=%d",
             len(all_models),
             provider_count,
@@ -368,7 +392,7 @@ class Config:
         env_section = resolve_env(cls._parse_section(raw, "env", dict, {}))
         for key, value in env_section.items():
             os.environ[key] = str(value)
-        logger.info("config_env_vars count=%d", len(env_section))
+        logger.debug("config_env_vars count=%d", len(env_section))
 
         # Tools (optional — auto-discovery handles defaults)
         tools = resolve_env(cls._parse_section(raw, "tools", list, []))
@@ -376,11 +400,29 @@ class Config:
         # MCP
         mcp_config = MCPConfig.from_dict(raw.get("mcp", {}))
         if mcp_config.enabled:
-            logger.info(
+            logger.debug(
                 "mcp_config wrapper=%s servers=%d",
                 mcp_config.wrapper_command,
                 len(mcp_config.servers),
             )
+
+        # A2A/MQTT — enabled only via --name CLI flag, json5 provides broker details
+        a2a_config = A2AConfig.from_dict(raw.get("mqtt"), agent_name=agent_name)
+        if a2a_config.enabled:
+            logger.info(
+                "a2a_config id=%s broker=%s:%d",
+                a2a_config.agent_id,
+                a2a_config.broker_host,
+                a2a_config.broker_port,
+            )
+
+        # Subagent — always available (no enabled flag), local stdin/stdout workers
+        subagent_config = cls._load_subagent_config(raw)
+        logger.debug(
+            "subagent_config max_subagents=%d task_timeout=%d",
+            subagent_config["max_subagents"],
+            subagent_config["task_timeout"],
+        )
 
         config = cls(
             models=all_models,
@@ -389,6 +431,8 @@ class Config:
             env=env_section,
             max_iterations=max_iterations,
             mcp_config=mcp_config,
+            a2a_config=a2a_config,
+            subagent_config=subagent_config,
         )
         config._path = path
         return config

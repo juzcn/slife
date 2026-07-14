@@ -178,3 +178,12 @@ class TestResolveEnvEdgeCases:
         """Pattern does not match without closing brace."""
         # This is just a literal string, not a pattern
         assert resolve_env("${NOT_CLOSED") == "${NOT_CLOSED"
+
+    def test_default_colon_brace_edge(self):
+        """Default with :-} (closing brace in default value)."""
+        result = resolve_env("${MISSING:-}")
+        assert result == ""
+
+    def test_bytes_passthrough(self):
+        """Bytes values pass through unchanged."""
+        assert resolve_env(b"raw \x00 bytes") == b"raw \x00 bytes"

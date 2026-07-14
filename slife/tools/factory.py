@@ -47,6 +47,14 @@ def create_tools_from_config(
         if cfg.get("enabled") is False:
             logger.info("tool_disabled name=%s", tool_cls.name)
             continue
+
+        # Skip tools that require the MQTT/A2A mesh when it's not enabled
+        if getattr(tool_cls, "requires_a2a", False):
+            a2a_cfg = getattr(config, "a2a_config", None) if config else None
+            if a2a_cfg is None or not a2a_cfg.enabled:
+                logger.debug("tool_skipped_no_a2a name=%s", tool_cls.name)
+                continue
+
         tool = tool_cls.from_config(cfg, config)
         registry.register(tool)
 

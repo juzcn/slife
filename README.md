@@ -1,6 +1,6 @@
 # slife
 
-Terminal-based AI agent — a function-calling loop with minimum harness. Chat with an LLM that can execute shell commands, search the web, load on-demand skills, connect to MCP servers, and call any REST API via OpenAPI specs.
+Terminal-based AI agent — a function-calling loop with minimum harness. Chat with an LLM that can execute shell commands, search the web, load on-demand skills, connect to MCP servers, call any REST API via OpenAPI specs, spawn subagents for parallel work, and communicate with other slife instances over MQTT.
 
 ## Quick Start
 
@@ -39,7 +39,7 @@ Auto-discovered from `slife/tools/`. Use `slife.json5` only to override defaults
 
 ### Skills
 
-On-demand documentation plugins under `skills/`. The agent loads them only when needed via `list_skills` / `use_skill`. Each skill is a directory with a `SKILL.md` file. Install new skills at runtime with `add_skill`.
+On-demand documentation plugins under `skills/`. The agent loads them only when needed via `list_skills` / `use_skill`. Each skill is a directory with a `SKILL.md` file. Install new skills at runtime with `add_skill` / `remove_skill`.
 
 ### MCP & REST APIs
 
@@ -47,11 +47,39 @@ External MCP servers connect through [slife-mcp](https://pypi.org/project/slife-
 
 Add servers at runtime with `mcp_add_server` or pre-configure them in `slife.json5` → `mcp.servers`. Servers default to eager mode (all tools loaded at startup). For servers with many tools, use `disclosure: "lazy"` — the server connects but tools load on demand via `mcp_set_disclosure`, keeping context lean.
 
+### A2A — Agent-to-Agent
+
+Two transports, one interface. The full A2A protocol toolset (14 tools) provides discovery, task routing, lifecycle management, and notifications:
+
+| Tool | Role |
+|------|------|
+| `a2a_list_agents` | Discover remote MQTT peers |
+| `a2a_list_subagents` | List local subagent workers |
+| `a2a_send_task` | Send a task and wait for the result (sync) |
+| `a2a_send_task_async` | Fire-and-forget, returns task ID for polling |
+| `a2a_get_task_result` | Poll task status and result from TaskStore |
+| `a2a_list_tasks` | List all tasks with status/agent/transport filters |
+| `a2a_cancel_task` | Cancel a pending or in-flight task |
+| `a2a_subscribe_task` | Block until a task completes (push or poll) |
+| `a2a_push_notification` | Request push delivery of async results |
+| `a2a_agent_card` | Introspect a specific agent's status |
+| `a2a_spawn_subagent` | Create a local worker with the same LLM + tools |
+| `a2a_stop_subagent` | Stop a locally-managed subagent |
+| `a2a_notify_user` | Fire a desktop notification to the human operator |
+| `a2a_broadcast` | Scatter/gather — send a task to all known agents |
+
+| Transport | Enable | Use case |
+|---|---|---|
+| **MQTT** | `--name <id>` CLI flag | Remote slife instances (P2P mesh) |
+| **Subagent** (stdin/stdout) | Always available | Local child processes for parallel work |
+
+Start with `--name my-agent` to join the MQTT mesh; subagents are always available.
+
 ## Tips
 
 - **`/file image.png`** — attach an image for vision models
+- **`/exit`** — quit the application
 - **`Ctrl+L`** — clear the conversation
-- **`Ctrl+C`** — quit
 - **`Esc`** — focus the input field
 
 ## Design
@@ -61,10 +89,17 @@ slife is a **minimum-harness agent**. The harness only does what the LLM cannot:
 ## Project Structure
 
 ```
-slife/          # Agent: loop, LLM client, native tools, TUI
-slife_mcp/      # Independent MCP proxy (pip install slife-mcp)
-skills/         # On-demand skill plugins
-tests/          # pytest suite
+slife/
+  agent/            # LLM client, conversation, function-calling loop, inbox
+  a2a/              # A2A: MQTT client, broker lifecycle, identity, TaskStore
+  subagent/         # Subagent: spawn, JSON-RPC IPC, process management
+  tools/            # All tools — native, skills, CLI, A2A (auto-discovered)
+    a2a.py          #   14 A2A protocol tools (unified transports)
+  mcp/              # MCP client (slife side)
+  ui/               # Textual TUI
+slife_mcp/          # Independent MCP proxy (pip install slife-mcp)
+skills/             # On-demand skill plugins
+tests/              # pytest suite (583 tests)
 ```
 
 ## Requirements

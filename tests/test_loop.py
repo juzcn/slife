@@ -1,8 +1,7 @@
 """Tests for slife.agent.loop — agent loop, streaming, and tool execution."""
 
-import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, patch
 
 from slife.agent.loop import (
     AgentLoop,
@@ -10,12 +9,8 @@ from slife.agent.loop import (
     AgentResult,
     MaxIterationsExceeded,
     AgentEventHandler,
-    _StreamResult,
 )
 from slife.agent.llm_client import LLMClient, TokenUsage, StreamChunk
-from slife.agent.conversation import Conversation
-from slife.tools.registry import ToolRegistry
-from slife.tools.base import Tool
 
 
 # ── ToolCallInfo ──────────────────────────────────────────────────────

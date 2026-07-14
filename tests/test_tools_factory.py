@@ -86,3 +86,26 @@ class TestRunPythonScriptTool:
         result = await tool.execute(script='script.py {"key": "value"}')
         assert "script.py" in result
         assert "key" in result
+
+
+class TestCreateToolsOverrideEdgeCases:
+    """Edge cases for create_tools_from_config overrides."""
+
+    def test_override_entry_without_name_logs_warning(self, caplog):
+        """Override entries without a 'name' key log a warning."""
+        registry = create_tools_from_config([
+            {"timeout": 60},  # No name!
+        ])
+        # Tool should still be discovered normally
+        assert registry.get("execute_shell") is not None
+        # Warning should be logged
+        assert any("tool_override_no_name" in r.message for r in caplog.records)
+
+    def test_a2a_tools_skipped_when_no_a2a_config(self):
+        """A2A tools with requires_a2a=True are skipped when A2A is disabled."""
+        registry = create_tools_from_config(None, config=None)
+        names = {t.name for t in registry.list_tools()}
+        # Only a2a_list_agents has requires_a2a=True
+        assert "a2a_list_agents" not in names
+        # Other A2A tools don't require A2A and are always registered
+        assert "a2a_send_task" in names
