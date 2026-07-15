@@ -1,10 +1,15 @@
 """Platform detection and platform-aware utilities."""
 
+import asyncio
+import logging
 import shutil
+import signal
 import sys
 import platform as _platform
 
 IS_WINDOWS = sys.platform == "win32"
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_command(command: str) -> str:
@@ -70,3 +75,54 @@ def run_python_script(input_str: str) -> str:
     else:
         # bash: single quotes (no escaping needed for JSON)
         return f"{python} {script} '{args}'"
+
+
+async def terminate_process(
+    process: asyncio.subprocess.Process,
+    *,
+    graceful_timeout: float = 3.0,
+    force_timeout: float = 5.0,
+    label: str = "",
+) -> None:
+    """Gracefully terminate an asyncio subprocess with escalating force.
+
+    1. Close stdin to signal EOF.
+    2. Send SIGTERM / ``terminate()``.
+    3. Wait *graceful_timeout* seconds for graceful exit.
+    4. Force-kill if still running.
+    5. Wait *force_timeout* seconds for kill to take effect.
+
+    Swallows ``ProcessLookupError`` (already exited) and logs otherwise.
+    """
+    if process is None:
+        return
+    try:
+        if process.returncode is None:
+            # Close stdin first to signal the process
+            if process.stdin:
+                try:
+                    process.stdin.close()
+                except Exception:
+                    pass
+
+            # Graceful termination
+            if IS_WINDOWS:
+                process.terminate()
+            else:
+                process.send_signal(signal.SIGTERM)
+
+            # Wait for graceful exit
+            try:
+                await asyncio.wait_for(process.wait(), timeout=graceful_timeout)
+                logger.debug("process_exited pid=%s label=%s", process.pid, label)
+            except asyncio.TimeoutError:
+                logger.warning("process_force_kill pid=%s label=%s", process.pid, label)
+                process.kill()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=force_timeout)
+                except asyncio.TimeoutError:
+                    pass  # Best effort
+    except ProcessLookupError:
+        pass  # Already exited
+    except Exception as e:
+        logger.debug("process_terminate_error label=%s err=%s", label, e)

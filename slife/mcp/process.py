@@ -7,11 +7,10 @@ clean shutdown on exit. Supports auto-restart on crash.
 import asyncio
 import logging
 import os
-import signal
 import sys
 
 from slife.logfmt import get_session_id
-from slife.platform import IS_WINDOWS
+from slife.platform import IS_WINDOWS, terminate_process
 
 logger = logging.getLogger(__name__)
 
@@ -132,47 +131,17 @@ class MCPWrapperProcess:
         return client
 
     async def stop(self) -> None:
-        """Stop the MCP wrapper child process gracefully.
-
-        Sends SIGTERM first, then SIGKILL after a timeout if the process
-        doesn't exit.
-        """
+        """Stop the MCP wrapper child process gracefully."""
         if not self._process or not self._running:
             return
 
         logger.info("wrapper_stop pid=%s", self._process.pid)
-
-        try:
-            # Close stdin first to signal the process
-            if self._process.stdin:
-                try:
-                    self._process.stdin.close()
-                except Exception:
-                    pass
-
-            # Graceful termination
-            if IS_WINDOWS:
-                self._process.terminate()
-            else:
-                self._process.send_signal(signal.SIGTERM)
-
-            # Wait for graceful exit
-            try:
-                await asyncio.wait_for(self._process.wait(), timeout=5.0)
-                logger.info("wrapper_exited pid=%s", self._process.pid)
-            except asyncio.TimeoutError:
-                logger.warning("wrapper_force_kill pid=%s", self._process.pid)
-                self._process.kill()
-                await self._process.wait()
-                logger.info("wrapper_killed pid=%s", self._process.pid)
-        except ProcessLookupError:
-            # Process already exited
-            logger.debug("wrapper_already_gone")
-        except Exception as e:
-            logger.error("wrapper_stop_error err=%s", e)
-        finally:
-            self._running = False
-            self._process = None
+        await terminate_process(
+            self._process, graceful_timeout=5.0, label="mcp_wrapper",
+        )
+        logger.info("wrapper_killed pid=%s", self._process.pid if self._process else "?")
+        self._running = False
+        self._process = None
 
     async def _log_stderr(self) -> None:
         """Read and log stderr from the wrapper process.

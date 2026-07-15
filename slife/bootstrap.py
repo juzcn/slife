@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from slife.logfmt import init_session_id, SessionFormatter, FILE_LOG_FORMAT
+from slife.logfmt import init_session_id, SessionFormatter, FILE_LOG_FORMAT, silence_noisy_loggers
 
 logger = logging.getLogger("slife")
 
@@ -71,18 +71,6 @@ def setup_logging(
     root.addHandler(file_handler)
 
     # Silence noisy third-party HTTP/logging libraries.
-    # These dump full request/response bodies at DEBUG — thousands of
-    # characters per API call. slife's own DEBUG output is sufficient.
-    for noisy in (
-        "openai._base_client",
-        "httpcore.connection",
-        "httpcore.http11",
-        "httpcore.proxy",
-        "httpcore._synchronization",
-        "httpx",
-        "asyncio",
-        "urllib3",
-    ):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    silence_noisy_loggers()
 
     return log_path, console

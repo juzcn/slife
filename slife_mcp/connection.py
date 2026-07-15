@@ -12,7 +12,7 @@ import time as _time
 from dataclasses import dataclass, field
 from enum import Enum
 
-from slife.platform import resolve_command
+from slife.platform import resolve_command, terminate_process
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +232,7 @@ class MCPServerConnection:
                 pass
         self._stderr_task = None
 
-        # Notify drain
+        # Drain stdin before termination
         if self._process and self._process.stdin:
             try:
                 self._process.stdin.write(b'')
@@ -240,18 +240,8 @@ class MCPServerConnection:
             except Exception:
                 pass
 
-        if self._process:
-            try:
-                if self._process.returncode is None:
-                    self._process.terminate()
-                    try:
-                        await asyncio.wait_for(self._process.wait(), timeout=3.0)
-                    except asyncio.TimeoutError:
-                        self._process.kill()
-                        await self._process.wait()
-            except ProcessLookupError:
-                pass
-            self._process = None
+        await terminate_process(self._process, label=f"mcp_conn:{self.config.name}")
+        self._process = None
 
     def list_tools(self) -> list[dict]:
         return list(self._tools_cache)

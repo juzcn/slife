@@ -28,7 +28,7 @@ _log_handler: logging.FileHandler | None = None
 
 def _setup_logging() -> Path:
     global _log_handler
-    from slife.logfmt import init_session_id, SessionFormatter, FILE_LOG_FORMAT
+    from slife.logfmt import init_session_id, SessionFormatter, FILE_LOG_FORMAT, silence_noisy_loggers
     sid = init_session_id(); os.environ["SLIFE_SESSION_ID"] = sid
     (log_dir := Path("logs")).mkdir(exist_ok=True)
     from datetime import datetime
@@ -40,8 +40,7 @@ def _setup_logging() -> Path:
     _log_handler.setLevel(logging.DEBUG)
     _log_handler.setFormatter(SessionFormatter(FILE_LOG_FORMAT))
     root.addHandler(_log_handler)
-    for mod in ("openai._base_client", "httpcore", "httpx", "asyncio", "urllib3"):
-        logging.getLogger(mod).setLevel(logging.WARNING)
+    silence_noisy_loggers()
     return log_path
 
 

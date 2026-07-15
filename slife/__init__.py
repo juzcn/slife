@@ -12,7 +12,7 @@ import logging
 import os
 
 from slife.bootstrap import setup_logging
-from slife.config import Config, parse_cli_name
+from slife.config import Config, parse_cli_agent, parse_cli_user
 from slife.logfmt import init_session_id
 from slife.ui.app import SlifeApp
 
@@ -25,22 +25,25 @@ def main(config_path: str = "slife.json5", agent_name: str | None = None):
     Args:
         config_path: Path to a slife.json5 configuration file.
         agent_name: If provided, enables A2A and sets the agent identity.
-                    Equivalent to ``--name`` on the CLI.
+                    Equivalent to ``--agent`` on the CLI.
     """
-    # Parse --name from sys.argv when called via setuptools entry point
+    # Parse --agent and --user from sys.argv when called via setuptools entry point
     import sys as _sys
     if agent_name is None:
-        agent_name = parse_cli_name(_sys.argv)
+        agent_name = parse_cli_agent(_sys.argv)
+
+    user = parse_cli_user(_sys.argv)
 
     log_path, console_handler = setup_logging(agent_name=agent_name)
 
     # Generate session ID — shared with MCP subprocess via env var
     sid = init_session_id()
     os.environ["SLIFE_SESSION_ID"] = sid
+    os.environ["SLIFE_USER"] = user
 
     logger.debug("log_path=%s", log_path)
     logger.debug("config loading…")
-    config = Config.from_json5(config_path, agent_name=agent_name)
+    config = Config.from_json5(config_path, agent_name=agent_name, user=user)
 
     # Log env vars from config (already applied to os.environ by Config.from_json5)
     if config.env:

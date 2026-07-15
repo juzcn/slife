@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from typing import Literal
@@ -21,66 +20,11 @@ from typing import Literal
 from fastmcp import FastMCP
 
 from slife_mcp.connection import ConnectionPool, ServerConfig
-from slife.logfmt import SessionFormatter, set_session_id, FILE_LOG_FORMAT
+from slife.server_utils import setup_server_logging, read_host_port_from_config
 
 logger = logging.getLogger("slife_mcp")
 
-# ── Logging setup ───────────────────────────────────────────────────
-
-LOG_DIR = Path("logs")
-
-
-def _setup_logging() -> Path:
-    """Configure logging to both stderr and file.
-
-    stderr: DEBUG+ — captured by the parent slife process and logged
-            with [wrapper] prefix. Uses plain formatter (parent already
-            has session/request context).
-    File:   DEBUG+ with session/request IDs — one file per session:
-            logs/slife_mcp_YYYYMMDD_HHMMSS.log
-    """
-    # Adopt parent session ID from environment
-    _sid = os.environ.get("SLIFE_SESSION_ID", "")
-    if _sid:
-        set_session_id(_sid)
-
-    # Stderr — plain format (parent slife adds session/request context)
-    _stderr_fmt = logging.Formatter(
-        "%(asctime)s [%(levelname)-5s] %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    _root = logging.getLogger()
-    _root.setLevel(logging.DEBUG)
-
-    # Stderr — captured by parent slife process for live debugging
-    _stderr = logging.StreamHandler(sys.stderr)
-    _stderr.setLevel(logging.DEBUG)
-    _stderr.setFormatter(_stderr_fmt)
-    _root.addHandler(_stderr)
-
-    # File — persistent per-session log with session/request IDs
-    LOG_DIR.mkdir(exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = LOG_DIR / f"slife_mcp_{ts}.log"
-    _file = logging.FileHandler(log_path, encoding="utf-8")
-    _file.setLevel(logging.DEBUG)
-    _file.setFormatter(SessionFormatter(FILE_LOG_FORMAT))
-    _root.addHandler(_file)
-
-    # Silence noisy third-party loggers
-    for _noisy in ("httpx", "httpcore", "openai", "asyncio", "urllib3"):
-        logging.getLogger(_noisy).setLevel(logging.WARNING)
-
-    # Silence FastMCP — its ASCII art logo and per-request DEBUG spam
-    # are noise in the log file. Errors still surface via slife_mcp logger.
-    for _fastmcp in ("mcp.server.lowlevel.server", "fastmcp"):
-        logging.getLogger(_fastmcp).setLevel(logging.WARNING)
-
-    return log_path
-
-
-_log_path = _setup_logging()
+_log_path = setup_server_logging("slife_mcp")
 
 # ── Global state ─────────────────────────────────────────────────────
 
@@ -367,44 +311,6 @@ async def mcp_reload(server: str | None = None) -> str:
 # ── Entry point ──────────────────────────────────────────────────────
 
 
-def _parse_url(url: str) -> tuple[str, int]:
-    """Parse host and port from a wrapper URL like http://127.0.0.1:9876/mcp."""
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    host = parsed.hostname or "127.0.0.1"
-    port = parsed.port or 9876
-    return host, port
-
-
-def _read_host_port_from_config(config_path: str) -> tuple[str, int] | None:
-    """Read wrapper.url from slife.json5, parse host/port from it.
-
-    Returns (host, port) or None if config is missing or incomplete.
-    """
-    try:
-        import json5
-        raw = json5.loads(Path(config_path).read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        logger.error("config_not_found path=%s", config_path)
-        return None
-    except (ValueError, OSError) as e:
-        logger.error("config_parse_error path=%s err=%s", config_path, e)
-        return None
-
-    wrapper = raw.get("mcp", {}).get("wrapper", {})
-    if not isinstance(wrapper, dict) or "url" not in wrapper:
-        logger.error(
-            "mcp.wrapper.url is not set in %s. "
-            "Add it: mcp: { wrapper: { url: \"http://127.0.0.1:9876/mcp\" } }",
-            config_path,
-        )
-        return None
-
-    host, port = _parse_url(str(wrapper["url"]))
-    logger.info("config_read host=%s port=%d", host, port)
-    return host, port
-
-
 def main():
     """Run the slife-mcp wrapper server.
 
@@ -451,7 +357,7 @@ def main():
         )
         sys.exit(1)
 
-    cfg = _read_host_port_from_config(config_path)
+    cfg = read_host_port_from_config(config_path, config_key="mcp.wrapper", default_port=9876)
     if cfg is None:
         logger.error(
             "Cannot determine host/port. "

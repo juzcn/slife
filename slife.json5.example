@@ -16,6 +16,15 @@
   // ── Agent ────────────────────────────────────────────────────
   agent: {
     max_iterations: 10,
+
+    // Context window management — keeps the active conversation
+    // within 20%-80% of the model's context window. When the
+    // conversation exceeds context_ceiling (80%), the oldest
+    // turns are trimmed down to context_floor (20%).
+    // Trimmed content stays in permanent memory and can be
+    // recalled via memory_search when needed.
+    context_floor: 0.2,
+    context_ceiling: 0.8,
   },
 
   // ── Models ───────────────────────────────────────────────────
@@ -141,5 +150,43 @@
   subagent: {
     max_subagents: 5,
     task_timeout: 120,
+  },
+
+  // ── Permanent Memory ────────────────────────────────────────
+  // Records every conversation like a diary with hybrid keyword
+  // (FTS5) + semantic (sqlite-vec) search. Also enables crash
+  // recovery — on restart, slife detects interrupted sessions
+  // and asks whether to restore or discard.
+  //
+  // The memory service runs as an independent MCP process
+  // (slife-memory), just like slife-mcp. It communicates via
+  // stdio (child process) or HTTP.
+  //
+  // User isolation: --user <name> on CLI. Defaults to "default".
+  // Each user gets their own isolated diary namespace.
+  //
+  // Embeddings: supports two backends:
+  //   1. Local GGUF model (offline, no API cost)
+  //   2. OpenAI-compatible API (requires api_key)
+  memory: {
+    enabled: true,
+
+    // SQLite database path
+    // db_path: "~/.slife/slife.db",
+
+    // HTTP endpoint for standalone slife-memory server.
+    // url: "http://127.0.0.1:9877/mcp",
+
+    // ── Embedding configuration ──────────────────────────────
+    embedding: {
+      // Backend 1: Local GGUF model (takes priority if gguf_path is set)
+      // model: "bge-m3",
+      // gguf_path: "C:\\OneDrive\\AI\\hf_KimChen_bge-m3-q4_k_m.gguf",
+      // dim: 1024,   // BGE-M3 → 1024; Nomic → 768; OpenAI-small → 1536
+
+      // Backend 2: OpenAI-compatible API (used when gguf_path is not set).
+      // API key inherits from models.providers.<first>.api_key.
+      // model: "text-embedding-3-small",
+    },
   },
 }

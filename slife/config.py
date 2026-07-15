@@ -26,18 +26,32 @@ from slife.a2a.config import A2AConfig
 logger = logging.getLogger(__name__)
 
 
-def parse_cli_name(argv: list[str]) -> str | None:
-    """Extract ``--name <value>`` from CLI args.
+def parse_cli_agent(argv: list[str]) -> str | None:
+    """Extract ``--agent <value>`` from CLI args.
 
-    Returns ``None`` when ``--name`` is not provided (A2A stays disabled).
+    Returns ``None`` when ``--agent`` is not provided (A2A stays disabled).
     """
     args = argv[1:]
     i = 0
     while i < len(args):
-        if args[i] == "--name" and i + 1 < len(args):
+        if args[i] == "--agent" and i + 1 < len(args):
             return args[i + 1]
         i += 1
     return None
+
+
+def parse_cli_user(argv: list[str]) -> str:
+    """Extract ``--user <value>`` from CLI args. Defaults to ``"default"``.
+
+    The user identity isolates memory on multi-user machines.
+    """
+    args = argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--user" and i + 1 < len(args):
+            return args[i + 1]
+        i += 1
+    return "default"
 
 
 @dataclass
@@ -167,6 +181,33 @@ class MCPConfig:
 
 
 @dataclass
+class MemoryConfig:
+    """Configuration for the slife-memory service."""
+
+    enabled: bool = True
+    url: str = "http://127.0.0.1:9877/mcp"
+    db_path: str = "~/.slife/slife.db"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dim: int = 1536
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MemoryConfig":
+        """Parse memory config section from JSON5 config."""
+        if not isinstance(data, dict):
+            return cls()
+        emb = data.get("embedding", {})
+        if not isinstance(emb, dict):
+            emb = {}
+        return cls(
+            enabled=data.get("enabled", True),
+            url=data.get("url", "http://127.0.0.1:9877/mcp"),
+            db_path=data.get("db_path", "~/.slife/slife.db"),
+            embedding_model=emb.get("model", "text-embedding-3-small"),
+            embedding_dim=emb.get("dim", 1536),
+        )
+
+
+@dataclass
 class Config:
     """Top-level configuration for slife."""
 
@@ -175,7 +216,11 @@ class Config:
     tools: list[dict]
     env: dict | None = None
     max_iterations: int = 10
+    context_floor: float = 0.2
+    context_ceiling: float = 0.8
+    user: str = "default"
     mcp_config: MCPConfig | None = None
+    memory_config: MemoryConfig | None = None
     a2a_config: A2AConfig | None = None
     subagent_config: dict | None = None
     _path: Path | None = None
@@ -183,6 +228,8 @@ class Config:
     def __post_init__(self):
         if self.mcp_config is None:
             self.mcp_config = MCPConfig()
+        if self.memory_config is None:
+            self.memory_config = MemoryConfig()
         if self.a2a_config is None:
             self.a2a_config = A2AConfig()
 
@@ -365,14 +412,18 @@ class Config:
 
     @classmethod
     def from_json5(
-        cls, path: str | Path = "slife.json5", agent_name: str | None = None,
+        cls, path: str | Path = "slife.json5",
+        agent_name: str | None = None,
+        user: str = "default",
     ) -> "Config":
         """Load from JSON5 file with provider→model hierarchy.
 
         Args:
             path: Path to the JSON5 config file.
             agent_name: If provided, enables A2A and sets this as the
-                        agent identity (``--name`` on the CLI).
+                        agent identity (``--agent`` on the CLI).
+            user: Memory isolation key (``--user`` on the CLI).
+                  Defaults to ``"default"``.
         """
         path = Path(path)
         logger.debug("config_load path=%s", path)
@@ -401,6 +452,8 @@ class Config:
         # Agent
         agent = cls._parse_section(raw, "agent", dict, {})
         max_iterations = agent.get("max_iterations", 10)
+        context_floor = agent.get("context_floor", 0.2)
+        context_ceiling = agent.get("context_ceiling", 0.8)
 
         # Env — inject into os.environ so tools can reference vars via ${VAR}
         env_section = resolve_env(cls._parse_section(raw, "env", dict, {}))
@@ -420,7 +473,15 @@ class Config:
                 len(mcp_config.servers),
             )
 
-        # A2A/MQTT — enabled only via --name CLI flag, json5 provides broker details
+        # Memory — permanent conversation storage with hybrid search
+        memory_config = MemoryConfig.from_dict(raw.get("memory", {}))
+        logger.debug(
+            "memory_config enabled=%s db=%s embed=%s",
+            memory_config.enabled, memory_config.db_path,
+            memory_config.embedding_model,
+        )
+
+        # A2A/MQTT — enabled only via --agent CLI flag, json5 provides broker details
         a2a_config = A2AConfig.from_dict(raw.get("mqtt"), agent_name=agent_name)
         if a2a_config.enabled:
             logger.debug(
@@ -444,7 +505,11 @@ class Config:
             tools=tools,
             env=env_section,
             max_iterations=max_iterations,
+            context_floor=context_floor,
+            context_ceiling=context_ceiling,
+            user=user,
             mcp_config=mcp_config,
+            memory_config=memory_config,
             a2a_config=a2a_config,
             subagent_config=subagent_config,
         )

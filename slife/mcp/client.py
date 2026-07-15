@@ -14,7 +14,7 @@ from mcp.client.stdio import get_default_environment
 from mcp.shared.message import SessionMessage
 
 from slife.logfmt import get_session_id
-from slife.platform import resolve_command
+from slife.platform import resolve_command, terminate_process
 
 logger = logging.getLogger(__name__)
 
@@ -290,27 +290,7 @@ class MCPClient:
         """Gracefully terminate the child process if we own it."""
         if not self._process or not self._owns_process:
             return
-        try:
-            if self._process.returncode is None:
-                # Close stdin to signal EOF to the wrapper
-                if self._process.stdin:
-                    try:
-                        self._process.stdin.close()
-                    except Exception:
-                        pass
-
-                # Wait briefly for graceful exit, then escalate
-                try:
-                    await asyncio.wait_for(self._process.wait(), timeout=2.0)
-                except asyncio.TimeoutError:
-                    self._process.terminate()
-                    try:
-                        await asyncio.wait_for(self._process.wait(), timeout=3.0)
-                    except asyncio.TimeoutError:
-                        self._process.kill()
-                        await self._process.wait()
-        except ProcessLookupError:
-            pass
+        await terminate_process(self._process, label="mcp_client")
         self._process = None
 
     @staticmethod

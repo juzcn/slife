@@ -14,6 +14,7 @@ through a unified Inbox.
 import asyncio
 import json
 import logging
+import sys
 
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
@@ -58,6 +59,11 @@ class AgentService:
         # MCP integration state
         self._mcp_client: MCPClient | None = None
         self._mcp_process = None
+
+        # Memory integration state
+        self._memory_client: MCPClient | None = None
+        self._memory_process = None
+        self._diary_rowid: int | None = None  # active diary rowid for updates
 
         # A2A integration state
         self._a2a_client = None
@@ -315,6 +321,201 @@ class AgentService:
 
         logger.info("mcp_shutdown")
 
+    # ── Memory lifecycle ──────────────────────────────────────────────
+
+    @property
+    def memory_enabled(self) -> bool:
+        """Whether the memory service is connected."""
+        return self._memory_client is not None and self._memory_client.is_connected
+
+    async def start_memory(self) -> int | None:
+        """Connect to the slife-memory service and open a diary.
+
+        Returns the diary rowid if successful, None if memory is disabled
+        or unavailable.
+
+        Called during app startup. Detects if a standalone slife-memory
+        is already running (via HTTP); if not, spawns one as a child
+        process via stdio.
+        """
+        mem_cfg = self.config.memory_config
+        if mem_cfg is None or not mem_cfg.enabled:
+            logger.debug("memory_not_enabled")
+            return None
+
+        logger.info("memory_init start")
+
+        try:
+            await self._connect_memory()
+            await self._register_memory_tools()
+
+            # Open a diary — detects interrupted sessions automatically
+            result = await self._memory_client.call_tool(
+                "memory_open_diary",
+                {
+                    "author": self.config.user,
+                    "who_helped": self.config.a2a_config.agent_name or "",
+                    "what_model": self.config.active_model.ref,
+                    "system_prompt": self.conversation.messages[0]["content"]
+                    if self.conversation.messages
+                    and self.conversation.messages[0]["role"] == "system"
+                    else "",
+                },
+            )
+
+            diary_info = json.loads(result)
+            self._diary_rowid = diary_info.get("rowid")
+            logger.info(
+                "memory_init_done rowid=%s interrupted=%s tools=%d",
+                self._diary_rowid,
+                diary_info.get("interrupted", False),
+                len(self.tool_registry.list_tools()),
+            )
+            return self._diary_rowid
+
+        except Exception as e:
+            logger.warning("memory_init_failed err=%s — continuing without memory", e)
+            self._diary_rowid = None
+            return None
+
+    async def _connect_memory(self) -> None:
+        """Detect or spawn the slife-memory service and establish a connection.
+
+        Always probes memory_url first. If an HTTP service is already
+        running, connects via HTTP. Otherwise spawns slife-memory as
+        a child process via stdio.
+        """
+        from slife.mcp.process import MCPWrapperProcess
+
+        mem_cfg = self.config.memory_config
+        assert mem_cfg is not None
+
+        if await MCPClient.is_wrapper_running(mem_cfg.url):
+            logger.info("memory_found url=%s transport=http", mem_cfg.url)
+            self._memory_client = MCPClient()
+            await self._memory_client.connect_http(mem_cfg.url)
+        else:
+            logger.info("memory_spawn transport=stdio")
+            self._memory_process = MCPWrapperProcess(
+                command=sys.executable,
+                args=["-m", "slife_memory.server"],
+                server_module="slife_memory.server",
+            )
+            await self._memory_process.start()
+            self._memory_client = await self._memory_process.create_client()
+
+    async def _register_memory_tools(self) -> None:
+        """Discover and register memory management tools as proxy tools."""
+        from slife.mcp.tool_adapter import create_proxy_tools
+
+        assert self._memory_client is not None
+        memory_tools = await self._memory_client.list_tools()
+        logger.debug(
+            "memory_tools names=%s",
+            [t["name"] for t in memory_tools],
+        )
+
+        tagged = [{**t, "server": "memory"} for t in memory_tools]
+
+        proxy_tools = create_proxy_tools(self._memory_client, tagged)
+        for tool in proxy_tools:
+            self.tool_registry.register(tool)
+        logger.debug("memory_tools_registered count=%d", len(proxy_tools))
+
+    async def stop_memory(self) -> None:
+        """Close the active diary and shut down the memory service."""
+        if self._memory_client and self._memory_client.is_connected:
+            # Close the diary before disconnecting
+            if self._diary_rowid is not None:
+                try:
+                    await self._memory_client.call_tool(
+                        "memory_close_diary",
+                        {"rowid": self._diary_rowid, "author": self.config.user},
+                    )
+                except Exception as e:
+                    logger.debug("memory_close_error err=%s", e)
+
+            try:
+                await self._memory_client.disconnect()
+            except Exception as e:
+                logger.debug("memory_disconnect_error err=%s", e)
+            self._memory_client = None
+            self._diary_rowid = None
+
+        if self._memory_process:
+            try:
+                await self._memory_process.stop()
+            except Exception as e:
+                logger.debug("memory_process_stop_error err=%s", e)
+            self._memory_process = None
+
+        logger.info("memory_shutdown")
+
+    async def save_to_memory(
+        self, turn_count: int | None = None, token_count: int | None = None,
+    ) -> None:
+        """Persist the current conversation to memory after a turn completes.
+
+        Also trims the active context if it exceeds the configured ceiling,
+        keeping the conversation within 20%-80% of the model's context window.
+
+        Safe to call even when memory is disabled — silently skips.
+        """
+        if not self.memory_enabled or self._diary_rowid is None:
+            return
+
+        try:
+            # Save full messages to diary BEFORE trimming
+            await self._memory_client.call_tool(
+                "memory_update_diary",
+                {
+                    "rowid": self._diary_rowid,
+                    "author": self.config.user,
+                    "messages": self.conversation.messages,
+                    "turn_count": turn_count or 0,
+                    "token_count": token_count or 0,
+                },
+            )
+        except Exception as e:
+            logger.debug("memory_save_error err=%s", e)
+
+        # Trim context if it exceeds the ceiling
+        context_window = self.config.active_model.context_window
+        self.conversation.trim_context(
+            context_window=context_window,
+            floor=self.config.context_floor,
+            ceiling=self.config.context_ceiling,
+        )
+
+    async def check_interrupted(self) -> dict | None:
+        """Check if there's an interrupted diary to restore.
+
+        Returns the diary info dict (with interrupted=True) or None.
+        Must be called after start_memory().
+        """
+        if not self.memory_enabled or self._diary_rowid is None:
+            return None
+
+        try:
+            result = await self._memory_client.call_tool(
+                "memory_open_diary",
+                {
+                    "author": self.config.user,
+                    "who_helped": self.config.a2a_config.agent_name or "",
+                    "what_model": self.config.active_model.ref,
+                    "system_prompt": "",
+                },
+            )
+            info = json.loads(result)
+            if info.get("interrupted"):
+                return info
+            # This was a fresh open — update our rowid
+            self._diary_rowid = info.get("rowid")
+            return None
+        except Exception as e:
+            logger.debug("check_interrupted_error err=%s", e)
+            return None
+
     # ── A2A lifecycle ──────────────────────────────────────────────────
 
     async def start_a2a(
@@ -539,9 +740,20 @@ class AgentService:
             return AgentResult(text="", usage=TokenUsage())
 
         # Legacy direct path (A2A disabled)
-        return await self.agent_loop.run(
+        result = await self.agent_loop.run(
             user_input=user_input,
             conversation=self.conversation,
             images=images,
             handler=handler,
         )
+
+        # Save to memory after each completed turn
+        turn_count = sum(
+            1 for m in self.conversation.messages if m.get("role") == "user"
+        )
+        await self.save_to_memory(
+            turn_count=turn_count,
+            token_count=self.session_usage.total_tokens,
+        )
+
+        return result

@@ -7,6 +7,7 @@ The harness does only what the LLM physically cannot do:
 1. **Execute tools** — the LLM requests function calls; the harness runs them and returns results.
 2. **Maintain conversation state** — the harness holds the message list and feeds it back each turn.
 3. **Stream responses** — the harness delivers tokens to the UI as they arrive.
+4. **Persist memory** — the harness saves every message, thinking block, and tool output so nothing is lost. The LLM decides what to recall and when.
 
 Everything else — reasoning, planning, tool selection, error recovery — is the LLM's job. The harness does not route, validate, retry, or second-guess.
 
@@ -14,7 +15,7 @@ Everything else — reasoning, planning, tool selection, error recovery — is t
 
 **The system prompt contains only project-specific information not in the LLM's training data.**
 
-The prompt is rendered from `slife/agent/templates/system_prompt.j2` via Jinja2. When `--name <id>` is provided, the template receives `agent_name` and injects it: `` You are slife (your name is Freud) `` — giving each agent instance a distinct identity without adding noise when no name is set.
+The prompt is rendered from `slife/agent/templates/system_prompt.j2` via Jinja2. When `--agent <id>` is provided, the template receives `agent_name` and injects it: `` You are slife (your name is Freud) `` — giving each agent instance a distinct identity without adding noise when no name is set.
 
 The LLM already knows: function calling, how to read tool schemas, how to format tool calls, shell command syntax, error handling strategies, and what "assistant" means. Teaching any of this is noise.
 
@@ -23,7 +24,7 @@ What the LLM *cannot* know:
 - The `list_skills` / `use_skill` flow — a slife-specific convention
 - That `slife.json5` has an `env:` section for setting API keys and env vars
 - That the pre-configured MCP servers (filesystem, fetch, duckduckgo-search)
-	  need no auth — the LLM can use them immediately without asking for keys
+      need no auth — the LLM can use them immediately without asking for keys
 - That external MCP servers are managed via `mcp_add_server`
 - That MCP servers can be eager (tools auto-loaded) or lazy (tools browsed then loaded on demand via `mcp_set_disclosure`)
 - That some MCP servers need user-provided configuration arguments and must not be called with empty args
@@ -34,10 +35,12 @@ What the LLM *cannot* know:
 - That `a2a_list_agents` and `a2a_list_subagents` discover remote and local agents
 - That `a2a_send_task` can delegate work to any agent (local subagent or remote MQTT peer)
 - That `a2a_spawn_subagent` creates local workers for parallel computation
+- That every conversation is permanently recorded — use `memory_search` to find past discussions, errors, and decisions before starting new work
+- That `memory_search` has three modes: `grep` for exact strings (error messages, code), `fts5` for keyword topics, `hybrid` for semantic similarity
 
 The system prompt at `slife/agent/templates/system_prompt.j2` encodes these
 facts in short sections — Platform, Configuration, and Tools (Skills /
-CLI / MCP / REST APIs / A2A).  That file is the authoritative source; the list
+CLI / MCP / REST APIs / A2A / Memory).  That file is the authoritative source; the list
 above documents the rationale behind each entry.
 
 Every line is a **when-to-use** rule.  Tool capabilities live in schemas;
@@ -92,10 +95,13 @@ Not all tools need to be in every LLM request. slife uses a two-level pattern fo
 
 | Category | Pattern | Summary Tool | Load Tool |
 |---|---|---|---|
+| **Memory** | Two-level | `memory_list_recent` / `memory_search` | `memory_open` |
 | **Skills** | Two-level, per-skill | `list_skills` | `use_skill` |
 | **MCP** (incl. REST APIs) | Two-level, per-server | `mcp_list_tools` / `mcp_list_servers` | `mcp_set_disclosure("eager")` |
 | **Native** | Always loaded | — | — |
 | **CLI** | Metadata-only, no schema cost | — | — |
+
+**Memory** tools follow the same pattern: `memory_list_recent` and `memory_search` return lightweight results (titles, summaries, snippets). `memory_open` loads the full conversation. `memory_search` supports three modes — `grep` (exact substring), `fts5` (keyword ranking), `hybrid` (fts5 + semantic vector search with RRF merge).
 
 **Skills** and **MCP/REST** implement progressive disclosure because their content or tool count can be large — skills have long markdown bodies, MCP servers can expose dozens of tools. The summary tool returns a lightweight list; the load tool brings in the full capability.
 
@@ -146,21 +152,22 @@ It's a chat window with tools. The LLM is in control — including of multi-agen
 ├──────────────────────────────────────────────────────┤
 │  Agent Service                                       │
 │  slife/agent/service.py — wires client+tools+loop    │
-│  Manages MCP, A2A/MQTT, and subagent lifecycle       │
+│  Manages MCP, Memory, A2A/MQTT, and subagent         │
 │  Inbox: serializes human + MQTT + subagent messages   │
 ├──────────────────────────────────────────────────────┤
 │  Agent Loop                                          │
 │  slife/agent/loop.py — streaming function-calling    │
 │  Emits: thinking chunks, text chunks, tool events     │
+│  Conversation: full context + context window trimming  │
 ├──────────┴──────────────┴──────────────┴─────────────────────┴──────────────────┤
 │  Native Tools (auto-discovered from slife/tools/*)                               │
 │  shell.py  run_python_script.py  os_info.py  config_env.py  cli.py  skill.py    │
 │                                                                                  │
-│  Skills        MCP Tools        A2A Tools           RESTful API Tools            │
-│  skills/ dir   slife/mcp/      slife/a2a/           (via MCP+anyapi-mcp-server)  │
-│  SKILL.md      client.py       MQTT + subagent      OpenAPI→MCP tools at runtime │
-│                process.py      slife/subagent/                                    │
-│                tool_adapter.py                                                    │
+│  Memory Tools    Skills        MCP Tools        A2A Tools                        │
+│  slife_memory/   skills/ dir   slife/mcp/      slife/a2a/                       │
+│  server.py       SKILL.md      client.py       MQTT + subagent                  │
+│  store.py                      process.py      slife/subagent/                  │
+│                                tool_adapter.py                                   │
 ├──────────────────────────────────────────────────────────────────────────────────┤
 │  LLM Client (AsyncOpenAI)                            │
 │  slife/agent/llm_client.py — streaming + thinking    │
@@ -172,6 +179,14 @@ It's a chat window with tools. The LLM is in control — including of multi-agen
          slife agent ──── stdio/HTTP ──── slife-mcp
          (slife/)                          (slife_mcp/)
                                            │
+         slife agent ──── stdio/HTTP ──── slife-memory
+         (slife/)                          (slife_memory/)
+                                           │
+                                    ~/.slife/slife.db
+                                      ├── diary
+                                      ├── diary_fts (FTS5)
+                                      └── diary_semantic (vec0)
+
          slife agent ──── MQTT ────────── mosquitto ─── other slife instances
          (slife/)         P2P mesh                        (remote peers)
 
@@ -181,20 +196,195 @@ It's a chat window with tools. The LLM is in control — including of multi-agen
 
 ## Agent Loop
 
-Single function-calling loop. All tools (native functions, skills, MCP, RESTful API, CLI) are registered as OpenAI functions in one `ToolRegistry`. The LLM decides what to call and when.
+Single function-calling loop. All tools (native functions, skills, MCP, RESTful API, CLI, memory) are registered as OpenAI functions in one `ToolRegistry`. The LLM decides what to call and when.
 
 ```
 User Input → Conversation.add_user_message()
   → loop: LLM stream → thinking/text chunks → handler callbacks
     → tool calls? → ToolRegistry.execute() → Conversation.add_tool_result() → loop
     → no tool calls? → response text → return
+    → save turn to diary (permanent memory)
+    → trim context if > 80% window (oldest turns → diary, keep 20%)
 ```
 
 - No hardcoded strategy, no preset workflows
 - Tools are capabilities, the LLM is the decision maker
 - Streaming output via `AgentEventHandler` protocol callbacks
-- MCP tools and native tools are equal — the LLM sees no difference
+- MCP tools, native tools, and memory tools are equal — the LLM sees no difference
 - Iteration limit (`max_iterations`) prevents infinite loops
+- **Context window management**: when the conversation exceeds 80% of the model's context window, the oldest turns are trimmed down to 20%. Trimmed content is archived in permanent memory — the LLM can recall it via `memory_search` when needed.
+
+### Context Window Management
+
+The active conversation stays within 20%–80% of the model's context window:
+
+```
+                context_window (e.g. 131072 tokens)
+┌──────────────────────────────────────────────────────────────┐
+│   trimmed (in diary)    │  current context      │  headroom  │
+│   recall via            │  20% ~ 80%            │  20%       │
+│   memory_search         │  LLM's working memory │            │
+└──────────────────────────────────────────────────────────────┘
+                           ↑                      ↑
+                       floor=0.2             ceiling=0.8
+```
+
+- **Save**: after each turn, the full conversation (including thinking + tool outputs) is written to the diary.
+- **Trim**: if tokens exceed `context_ceiling × window`, oldest complete turns are removed until tokens ≤ `context_floor × window`. Only the active Conversation is trimmed — the diary retains everything.
+- **Recall**: `memory_search` excludes the active diary (`status != '进行中'`), but trimmed content from the current session is in the diary and can be found.
+
+Configure in `slife.json5`:
+```json5
+agent: {
+    max_iterations: 10,
+    context_floor: 0.2,    // trim down to 20%
+    context_ceiling: 0.8,  // trigger trim at 80%
+}
+```
+
+## Permanent Memory (slife-memory)
+
+Conversations, tool outputs, errors, thinking — everything the agent sees is permanently recorded like a diary. The memory service runs as an **independent MCP process**, symmetrical to slife-mcp.
+
+### Why a Separate Process
+
+```
+slife crash ──→ slime-memory still alive ──→ marks diary as '意外中断'
+                                              │
+slife restart ──→ memory_open_diary() ──→ "Found interrupted session. Restore?"
+```
+
+If memory were in-process, a crash would race with the final write. A separate process observes the disconnection and marks the crash — no race window.
+
+### Architecture
+
+```
+                         MCP protocol
+slife agent ───────────────┼────────────────
+         │                 │                │
+    stdio/HTTP        stdio/HTTP       stdio/HTTP
+         │                 │                │
+    ┌─────────┐    ┌──────────────┐    ┌──────────────┐
+    │slife-mcp│    │slife-memory  │    │  future MCP  │
+    │ port    │    │ port 9877    │    │  services…   │
+    │ 9876    │    │              │    │              │
+    └─────────┘    └──────┬───────┘    └──────────────┘
+                          │
+                   ~/.slife/slife.db
+                     ├── diary            (one row = one conversation)
+                     ├── diary_fts (FTS5) (keyword search, BM25 ranking)
+                     └── diary_semantic   (vec0, cosine KNN)
+```
+
+### Diary Schema — Designed for LLM Readability
+
+```sql
+CREATE TABLE diary (
+    author         TEXT,     -- who (--user flag, default "default")
+    title          TEXT,     -- conversation title
+    created_at     TEXT,     -- when it started
+    updated_at     TEXT,     -- last update
+    status         TEXT,     -- '进行中' | '已完成' | '意外中断'
+
+    messages       TEXT,     -- full OpenAI-format conversation JSON
+                             -- includes: system prompt, user input,
+                             -- thinking blocks, tool calls + arguments,
+                             -- tool outputs, final responses
+
+    summary        TEXT,     -- 1-2 sentence gist of the conversation
+    tags           TEXT,     -- comma-separated topic tags
+    key_moments    TEXT,     -- important decisions, bugs found, insights
+
+    who_helped     TEXT,     -- agent name (--agent flag)
+    what_model     TEXT,     -- model used
+
+    how_many_turns   INTEGER,
+    how_many_tokens  INTEGER
+);
+```
+
+One row = one complete conversation. `messages` is a JSON array of all messages including thinking — a single `SELECT` restores the full state.
+
+### Memory Tools
+
+All tools take an `author` parameter for user isolation (`--user` on CLI, defaults to `"default"`).
+
+| Tier | Tool | What it does |
+|---|---|---|
+| **summary** | `memory_open_diary` | Start new conversation or detect interrupted one |
+| **summary** | `memory_close_diary` | Mark conversation complete, optionally add summary/tags |
+| **summary** | `memory_list_recent` | Flip through recent diary entries (titles + summaries) |
+| **summary** | `memory_update_diary` | Save conversation after each turn |
+| **search** | `memory_search` | Three modes: `grep` (exact string), `fts5` (keyword), `hybrid` (keyword + semantic) |
+| **load** | `memory_open` | Read a full conversation by rowid |
+| **load** | `memory_summarize` | Write title, summary, tags, key moments |
+| **load** | `memory_forget` | Delete a diary entry |
+
+### Search Modes
+
+| Mode | Backend | Best for | Example |
+|---|---|---|---|
+| `grep` | SQLite LIKE | Exact strings, error messages, code snippets | `"ConnectionError: timeout"` |
+| `fts5` | FTS5 index + BM25 | Topic/keyword search | `"MCP连接问题"` |
+| `hybrid` | FTS5 + vec0 KNN → RRF | Semantic similarity, fuzzy recall | `"上次怎么修的那个连接泄漏"` |
+
+All modes exclude the current active diary (`status != '进行中'`) — the LLM doesn't need to "recall" what's already in its context window.
+
+### Embeddings
+
+Semantic search (`hybrid` mode) uses vector embeddings. Two configurable backends:
+
+```json5
+memory: {
+    embedding: {
+        // Backend 1: local GGUF model (offline, no API cost)
+        gguf_path: "/path/to/bge-m3-q4_k_m.gguf",
+        model: "bge-m3",
+        dim: 1024,
+
+        // Backend 2: OpenAI-compatible API (falls back when no gguf_path)
+        // model: "text-embedding-3-small",
+    }
+}
+```
+
+If no embedding backend is configured, `hybrid` mode degrades to `fts5`-only — keyword search still works.
+
+### What Gets Saved
+
+Every turn, the full `Conversation.messages` list is written to the diary:
+
+| Content | In diary? | In API calls? |
+|---|---|---|
+| System prompt | ✅ | ✅ |
+| User input | ✅ | ✅ |
+| Assistant thinking | ✅ | ❌ (stripped by `to_openai_messages()`) |
+| Tool call name + arguments | ✅ | ✅ |
+| Tool execution output | ✅ | ✅ |
+| Assistant final response | ✅ | ✅ |
+| Image attachments | ✅ | ✅ |
+
+Thinking is stored in a `thinking` field on assistant messages — preserved for memory recall, stripped before sending to the API (not a standard OpenAI message field).
+
+### Crash Recovery
+
+```
+slife startup
+  → start_memory()           // connect or spawn slife-memory
+  → memory_open_diary()      // check for status='进行中'
+    ├─ none found → fresh diary created
+    └─ found! → returns interrupted=true + session info
+         → TUI shows recovery prompt:
+           ⚡ 发现中断的对话
+             「重构工具系统」
+             12 轮对话 · 2026-07-15 11:45
+             状态：意外中断 · 58,023 tokens
+             /restore — 从中断处继续
+             /discard — 丢弃，开始新对话
+             /preview — 查看对话内容
+```
+
+On restore: messages are deserialized from JSON → `Conversation` rebuilt → UI widgets rendered → LLM can continue exactly where it left off.
 
 ## Tool System
 
@@ -206,7 +396,18 @@ Tool loading (`slife/tools/factory.py`): all modules in `slife.tools.*` are impo
 
 slife supports six categories of tools, all unified under the `Tool` ABC and registered in a single `ToolRegistry`. The LLM sees no difference between them — all are OpenAI function definitions.
 
-### 1. Native Function Tools
+### 1. Memory Tools
+
+Permanent conversation storage with hybrid search (`slife_memory/`). Eight tools — four summary-level (always loaded), one search, three load-level. Memory tools are implemented as an independent MCP service, discovered by slife through the same `MCPClient` + `MCPProxyTool` pattern as all other MCP tools. The LLM uses them to search past conversations, recall context, and manage the diary.
+
+| Tool | Tier |
+|---|---|
+| `memory_open_diary` / `memory_close_diary` | summary |
+| `memory_list_recent` / `memory_update_diary` | summary |
+| `memory_search` (grep / fts5 / hybrid) | search |
+| `memory_open` / `memory_summarize` / `memory_forget` | load |
+
+### 2. Native Function Tools
 
 Built-in tools implemented directly in Python, auto-discovered from `slife/tools/*.py`. Config overrides match by `Tool.name`:
 
@@ -223,7 +424,7 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 | `cli_remove_tool` | Delete a CLI registration from `slife.json5` |
 | `cli_list_tools` | List all registered CLI tools with descriptions |
 
-### 2. A2A Tools
+### 3. A2A Tools
 
 14 auto-discovered tools in `slife/tools/a2a.py` implementing the full A2A protocol — discovery, task routing, lifecycle, and notifications. Shared helpers `_get_transports()` and `_require_params()` eliminate per-tool boilerplate. Transport routing is subagent-first (fast, local), MQTT fallback (network).
 
@@ -243,7 +444,7 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 | `a2a_notify_user` | — | Fire desktop notification to operator |
 | `a2a_broadcast` | — | Scatter/gather — send to all known agents |
 
-### 3. Skills
+### 4. Skills
 
 On-demand documentation plugins using progressive disclosure (see Progressive Disclosure section above). Four tools in `slife/tools/skill.py`:
 
@@ -256,13 +457,13 @@ On-demand documentation plugins using progressive disclosure (see Progressive Di
 
 Skills are discovered by scanning directories under `skills/` for `SKILL.md` files with YAML frontmatter (`name`, `description`). The shared `_iter_skills()` helper in `slife/tools/skill.py` handles directory scanning and frontmatter parsing once, used by all four skill tools.  Common `__init__` and `from_config` logic is extracted into the `_SkillDirMixin` class, avoiding duplication across `ListSkillsTool`, `UseSkillTool`, `AddSkillTool`, and `RemoveSkillTool`.
 
-### 4. MCP Tools
+### 5. MCP Tools
 
 External MCP servers connected through [slife-mcp](https://pypi.org/project/slife-mcp/) — an independent MCP proxy service. Each external server's tools are adapted to the `Tool` ABC via `MCPProxyTool` and registered with a `{server}__` prefix (e.g. `filesystem__read_file`, `serper__search`).
 
 MCP tools are not configured via `tools[]` — they are discovered dynamically when slife-mcp connects to configured servers. Supports progressive disclosure via `disclosure: "lazy"` (see Progressive Disclosure section above). See the MCP Integration section below for architecture details.
 
-### 5. RESTful API Tools (anyapi-mcp-server)
+### 6. RESTful API Tools (anyapi-mcp-server)
 
 REST APIs are converted to MCP tools via [anyapi-mcp-server](https://github.com/quiloos39/anyapi-mcp-server), which generates tools from OpenAPI specifications at runtime. These are regular MCP servers from slife's perspective — configured in `mcp.servers` with `command: "npx"` and `args` specifying the `--spec` URL, `--base-url`, and any required headers.
 
@@ -282,7 +483,7 @@ github: {
 
 This produces tools like `github__list_repos`, `github__create_issue`, etc. — the LLM can call any endpoint described by the OpenAPI spec. The same pattern works for any REST API with an OpenAPI spec (Jira, GitLab, Slack, etc.).
 
-### 6. CLI Tools
+### 7. CLI Tools
 
 External CLI commands the LLM discovers at runtime and registers for future use — four management tools in `slife/tools/cli.py`:
 
@@ -313,14 +514,16 @@ slife agent  ←────────────→  slife-mcp (FastMCP)
 
 **MCPClient** (`client.py`): connects to the wrapper via stdio (child process) or HTTP (standalone). Uses `asyncio.Queue` adapters to bridge subprocess pipes to MCP's `ClientSession`. `disconnect()` decomposed into four phases: cancel bridge tasks, reset state, clean up transport, terminate owned process.
 
-**MCPProxyTool** (`tool_adapter.py`): adapts MCP tools to slife's `Tool` ABC. Sets `name`/`description`/`parameters` at instance level via `object.__setattr__` (class-level attrs are placeholders for `__init_subclass__` validation). Tool names are prefixed with server name: `"filesystem__read_file"`.
+**MCPProxyTool** (`tool_adapter.py`): adapts MCP tools to slife's `Tool` ABC. Sets `name`/`description`/`parameters` at instance level via `object.__setattr__` (class-level attrs are placeholders for `__init_subclass__` validation). Tool names are prefixed with server name: `"filesystem__read_file"`. Used by both slife-mcp and slife-memory — same adapter, different servers.
 
-**MCPWrapperProcess** (`process.py`): manages the wrapper child process lifecycle — start, create client from existing streams, graceful stop (stdin close → SIGTERM → SIGKILL escalation).
+**MCPWrapperProcess** (`process.py`): manages the wrapper child process lifecycle — start, create client from existing streams, graceful stop (stdin close → SIGTERM → SIGKILL escalation). Generic — used for both slife-mcp and slife-memory.
 
 **Startup flow** (`AgentService.start_mcp`):
 1. `_connect_mcp_wrapper()` — probe `wrapper_url`, connect via HTTP or fall back to spawning child process
 2. `_register_mcp_wrapper_tools()` — discover wrapper management tools, create proxies
 3. `_auto_connect_mcp_servers()` — connect to pre-configured servers in parallel; eager servers get their tools discovered immediately, lazy servers connect but skip registration
+
+The same pattern is used for `start_memory()` — probe → connect HTTP or spawn stdio → discover tools → create proxies.
 
 **Wrapper connection**: slife always probes `mcp.wrapper.url` (default `http://127.0.0.1:9876/mcp`) first. If an HTTP wrapper is running, slife connects to it. If not, slife spawns the wrapper as a child process via stdio. The `wrapper_url` is always set — no guessing.
 
@@ -379,7 +582,7 @@ Two transports, unified interface. The LLM sees one agent pool.
             ┌──────────────┴──────────────┐
             │                             │
      MQTT Transport              Subagent Transport
-     (--name enables)            (always available)
+     (--agent enables)            (always available)
 
   ┌─────────────────┐       ┌──────────────────────┐
   │ MQTT Broker      │       │ Parent Process        │
@@ -395,7 +598,7 @@ Two transports, unified interface. The LLM sees one agent pool.
 ### MQTT Transport (`slife/a2a/`)
 
 Remote slife instances discover each other and delegate tasks over MQTT.
-Enabled via `--name <id>` CLI flag. The `mqtt` config section provides
+Enabled via `--agent <id>` CLI flag. The `mqtt` config section provides
 broker connection details only — it never auto-enables A2A.
 
 - **MQTTAdapter** (`mqtt.py`): paho-mqtt → asyncio.Queue bridge with LWT
@@ -452,6 +655,22 @@ MQTT transport uses topic-based publish/subscribe with the same task semantics.
 Subagents set `SLIFE_SUBAGENT_NAME` in their environment. `start_subagent()`
 checks for this and skips subagent manager creation to prevent recursive spawning.
 
+## User Isolation
+
+Multiple users on the same machine are isolated by `--user`:
+
+```bash
+slife --user alice              # alice's diary, alice's memories
+slife --user bob --agent bob    # bob's diary + A2A identity "bob"
+slife                            # default user, no A2A
+```
+
+`--user` and `--agent` are orthogonal:
+- `--user` → memory isolation key (who owns the diary)
+- `--agent` → A2A network identity (who I am on the MQTT mesh)
+
+Every memory tool takes an `author` parameter. The `diary` table uses `author` as the primary isolation column. `diary_semantic` (vec0) uses `author` as a partition key — KNN search is automatically scoped to one user with zero cross-user overhead.
+
 ## Config Loading
 
 `Config.from_json5()` (`slife/config.py`) parses the JSON5 file in structured phases:
@@ -464,16 +683,19 @@ checks for this and skips subagent manager creation to prevent recursive spawnin
 
 **MCPConfig**: `wrapper_url` always has a value (default `http://127.0.0.1:9876/mcp`). From config: `mcp.wrapper.url`. MCP is enabled when servers are configured, `enabled: true` is explicit, or a custom wrapper is defined.
 
+**MemoryConfig**: enabled by default (`memory.enabled: true`). `db_path` defaults to `~/.slife/slife.db`. Embedding backend auto-detected: local GGUF takes priority over API; if neither is configured, semantic search degrades gracefully (FTS5 still works).
+
 ## UI
 
 Textual TUI in **Claude Code CLI style**: minimal chrome, dark theme, clean message display.
 
 - **ChatView** — scrollable message container (user, assistant, system messages)
-- **UserMessage** — configurable prompt prefix; defaults to `> ` but becomes `Jack> ` when `--name Jack` is set, giving each agent instance a visible identity in the chat. Remote tasks from other agents use the source name as prefix.
-- **AssistantMessage** — streaming text with optional thinking block (dim italic, truncated at 500 chars)
+- **UserMessage** — configurable prompt prefix; defaults to `> ` but becomes `Jack> ` when `--agent Jack` is set, giving each agent instance a visible identity in the chat. Remote tasks from other agents use the source name as prefix.
+- **AssistantMessage** — streaming text with optional thinking block (dim italic, truncated at 500 chars). Click to expand, Enter/Space to toggle collapse.
 - **ToolCallWidget** — collapsible tool call display with header line (amber) and detail block. Single `Static` widget, no child widgets — all rendering via `Content` trees. User data goes through `Content.from_text(markup=False)` for safety.
 - **TUIHandler** — bridges `AgentEventHandler` callbacks to Textual widgets
 - **StatusBar** — shows model name, thinking indicator, token count, key bindings
+- **Recovery prompt** — on startup with an interrupted session, displays session info and offers `/restore` `/discard` `/preview` slash commands
 
 All user-facing text (tool output, search results, file contents) is rendered with `markup=False` to prevent `MarkupError` from special characters (`&`, `[`, `]`).
 
@@ -484,8 +706,8 @@ slife/
   agent/               # LLM client, conversation, function-calling loop
     loop.py            #   Function-calling while-loop with streaming
     llm_client.py      #   OpenAI-compatible streaming client
-    conversation.py    #   Message history (OpenAI format)
-    service.py         #   Wiring: client + tools + loop + MCP + A2A
+    conversation.py    #   Message history + context window trimming
+    service.py         #   Wiring: client + tools + loop + MCP + Memory + A2A
     system_prompt.py   #   Jinja2 template rendering
     multimodal.py      #   Image encoding, /file attachment parsing
     inbox.py           #   Unified message queue (human + MQTT + subagent)
@@ -496,13 +718,13 @@ slife/
     mqtt.py            #   MQTTAdapter — paho-mqtt → asyncio bridge
     broker.py          #   BrokerManager — mosquitto lifecycle
     task_store.py      #   TaskRecord + TaskStore — task lifecycle tracking
-    config.py          #   A2AConfig (enabled via --name)
+    config.py          #   A2AConfig (enabled via --agent)
     tools.py           #   Tool re-exports for backward compatibility
   subagent/            # Subagent: local child processes
     headless.py        #   JSON-RPC 2.0 runner (no TUI)
     process.py         #   SubagentProcess + SubagentManager
     tools.py           #   a2a_spawn_subagent, a2a_stop_subagent re-exports
-  tools/               # Tool implementations (5 categories, auto-discovered)
+  tools/               # Tool implementations (7 categories, auto-discovered)
     base.py            #   Tool ABC with __init_subclass__ validation
     registry.py        #   Name → Tool lookup & execution
     factory.py         #   Auto-discovery via pkgutil + __subclasses__()
@@ -514,26 +736,45 @@ slife/
     config_env.py      #   config_env_set / get / remove
     cli.py             #   cli_add_tool / cli_check_installed / cli_remove_tool / cli_list_tools
     _config_io.py      #   Shared JSON5 read/write helpers
-  mcp/                 # MCP client (slife side)
+  mcp/                 # MCP client (slife side — shared by slife-mcp & slife-memory)
     client.py          #   stdio/HTTP client with asyncio.Queue adapters
     tool_adapter.py    #   MCP → slife Tool adapter (MCPProxyTool)
     process.py         #   Child process lifecycle manager
   ui/                  # Textual TUI
-    app.py             #   Main application (SlifeApp)
+    app.py             #   Main application (SlifeApp) — memory + recovery UI
     chat.py            #   Message widgets (ChatView, AssistantMessage)
     handler.py         #   Streaming event → UI bridge (TUIHandler)
     tool_display.py    #   Tool call rendering (ToolCallWidget)
-    commands.py        #   Slash-command handling (/exit, etc.)
+    commands.py        #   Slash-command handling (/exit, /restore, etc.)
     command_palette.py #   Slash-command completion dropdown
-  config.py            # JSON5 config loading (ModelConfig, MCPConfig, Config)
+  config.py            # JSON5 config loading (ModelConfig, MCPConfig, MemoryConfig, Config)
   env.py               # ${ENV_VAR} and ${ENV_VAR:-default} resolution
   platform.py          # OS detection, shell syntax (Windows/Unix)
   logfmt.py            # Structured logging with session/request IDs
 slife_mcp/             # Independent MCP proxy (publishable as slife-mcp)
-  server.py            #   FastMCP server, auto-detect HTTP/stdio
+  server.py            #   FastMCP server — 8 management tools
   connection.py        #   asyncio JSON-RPC connection pool
   pyproject.toml       #   Standalone package config
   README.md            #   Standalone package docs
+slife_memory/          # Independent memory MCP service (publishable as slife-memory)
+  server.py            #   FastMCP server — 8 memory tools
+  store.py             #   SQLite + FTS5 + vec0 hybrid search
+  embeddings.py        #   GGUF local or OpenAI API embedding backend
+  search.py            #   RRF (Reciprocal Rank Fusion) merge
+  schema.sql           #   DDL — diary table + FTS5 + vec0
+  pyproject.toml       #   Standalone package config
+  README.md            #   Standalone package docs
 skills/                # Skill plugins (on-demand documentation)
-tests/                 # pytest suite (583 tests, asyncio_mode=strict, 58% coverage)
+tests/                 # pytest suite (577 tests, asyncio_mode=strict)
 ```
+
+## The Knowledge Base Effect
+
+A side effect of the memory architecture: **everything the agent sees becomes a knowledge base**. Tool outputs — file contents, web search results, API responses, error messages — are all stored in `diary.messages` and indexed by FTS5 + vec0. Over time, the diary becomes a searchable archive of everything the agent has encountered.
+
+The LLM can search its own past observations:
+- `memory_search(mode="grep", query="ConnectionError")` — find every past occurrence of a specific error
+- `memory_search(mode="fts5", query="MCP连接问题")` — find past discussions about a topic
+- `memory_search(mode="hybrid", query="那次修好的内存泄漏")` — find the conversation where a bug was fixed
+
+No separate knowledge base, no vector database, no indexing pipeline. The diary IS the knowledge base — every tool output, every thinking trace, every decision is recorded in its original context and searchable through the same interface.

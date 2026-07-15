@@ -318,6 +318,7 @@ class AgentLoop:
                         conversation.add_assistant_message(
                             content=result.content or None,
                             tool_calls=self._serialize_tool_calls(tool_calls),
+                            thinking=result.thinking or None,
                         )
                         await self._execute_tools(
                             tool_calls, conversation, handler, iteration=i + 1
@@ -326,7 +327,8 @@ class AgentLoop:
 
                     # No tool calls — final response
                     conversation.add_assistant_message(
-                        content=result.content or ""
+                        content=result.content or "",
+                        thinking=result.thinking or None,
                     )
                     t_total = (_time.monotonic() - t_request) * 1000
                     logger.info(

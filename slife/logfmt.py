@@ -39,6 +39,32 @@ FILE_LOG_FORMAT = (
     "%(asctime)s [%(levelname)-5s] %(name)-24s [s=%(sid)s] [r=%(rid)s] | %(message)s"
 )
 
+# Third-party loggers that should be silenced to WARNING to avoid
+# flooding the log file with HTTP request/response bodies.
+_NOISY_LOGGER_NAMES = (
+    "openai._base_client",
+    "httpcore.connection",
+    "httpcore.http11",
+    "httpcore.proxy",
+    "httpcore._synchronization",
+    "httpx",
+    "asyncio",
+    "urllib3",
+)
+
+
+def silence_noisy_loggers(extra: tuple[str, ...] = ()) -> None:
+    """Suppress DEBUG output from common third-party loggers.
+
+    These libraries dump full request/response bodies at DEBUG level,
+    making log files unreadable. slife's own DEBUG output is sufficient.
+
+    Args:
+        extra: Additional logger names to silence (e.g. FastMCP internals).
+    """
+    for name in (*_NOISY_LOGGER_NAMES, *extra):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
 # ── Session ID ──────────────────────────────────────────────────────────
 
 

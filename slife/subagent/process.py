@@ -10,13 +10,12 @@ import asyncio
 import json
 import logging
 import os
-import signal
 import sys
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from slife.platform import IS_WINDOWS
+from slife.platform import terminate_process
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -112,34 +111,19 @@ class SubagentProcess:
         stderr_task = self._stderr_task
         for t in (stdout_task, stderr_task):
             if t and not t.done(): t.cancel()
-        try:
-            if self._process.stdin and self._process.returncode is None:
-                try:
-                    shutdown = json.dumps({"jsonrpc":"2.0","method":"shutdown","id":None}) + "\n"
-                    self._process.stdin.write(shutdown.encode()); await self._process.stdin.drain()
-                except Exception: pass
-            if self._process.stdin:
-                try: self._process.stdin.close()
-                except Exception: pass
-            # Wait for graceful exit first (child needs time to flush + close log)
+        # Send JSON-RPC shutdown before terminating
+        if self._process.stdin and self._process.returncode is None:
             try:
-                await asyncio.wait_for(self._process.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
-                # Grace period expired — force kill
-                logger.warning("stop_force name=%s pid=%s", self._name, self._process.pid)
-                fn = self._process.terminate if IS_WINDOWS else lambda: self._process.send_signal(signal.SIGTERM)
-                fn()
-                try: await asyncio.wait_for(self._process.wait(), timeout=5.0)
-                except asyncio.TimeoutError: self._process.kill(); await self._process.wait()
-        except ProcessLookupError: pass
-        finally:
-            self._running = False; self._process = None
-            # Await both reader tasks — they may have been cancelled or
-            # crashed due to pipe closure (Windows proactor).
-            for t in (stdout_task, stderr_task):
-                if t and not t.done():
-                    try: await t
-                    except (asyncio.CancelledError, Exception): pass
+                shutdown = json.dumps({"jsonrpc":"2.0","method":"shutdown","id":None}) + "\n"
+                self._process.stdin.write(shutdown.encode()); await self._process.stdin.drain()
+            except Exception: pass
+        await terminate_process(self._process, label=f"subagent:{self._name}")
+        self._running = False; self._process = None
+        # Await both reader tasks
+        for t in (stdout_task, stderr_task):
+            if t and not t.done():
+                try: await t
+                except (asyncio.CancelledError, Exception): pass
 
     async def send_task(self, task: str, timeout: float = 120.0) -> str:
         if not self.is_running or not self._process or not self._process.stdin:

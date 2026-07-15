@@ -1,9 +1,9 @@
-"""Allow running as: python -m slife [--headless] [--name <agent-name>]"""
+"""Allow running as: python -m slife [--headless] [--agent <agent-name>]"""
 
 import sys
 
 from slife import main
-from slife.config import parse_cli_name
+from slife.config import parse_cli_agent
 
 
 def _has_headless_flag(argv: list[str]) -> bool:
@@ -19,4 +19,4 @@ if __name__ == "__main__":
         headless_argv = [a for a in sys.argv if a != "--headless"]
         headless_main(headless_argv[1:])
     else:
-        main(agent_name=parse_cli_name(sys.argv))
+        main(agent_name=parse_cli_agent(sys.argv))

@@ -1,0 +1,42 @@
+[project]
+name = "slife-memory"
+version = "0.1.0"
+description = "Permanent memory MCP service with hybrid search — records conversations like a diary with keyword (FTS5) and semantic (sqlite-vec) search"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "juzcn", email = "zhangjun@cueb.edu.cn" },
+]
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "aiosqlite>=0.20.0",
+    "sqlite-vec>=0.1.9",
+    "openai>=1.0.0",
+    "json5>=0.15.0",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://github.com/juzcn/slife"
+Repository = "https://github.com/juzcn/slife"
+
+[project.scripts]
+slife-memory = "slife_memory.server:main"
+
+[tool.hatch.build.targets.wheel]
+"force-include" = { "__init__.py" = "slife_memory/__init__.py", "store.py" = "slife_memory/store.py", "embeddings.py" = "slife_memory/embeddings.py", "search.py" = "slife_memory/search.py", "server.py" = "slife_memory/server.py", "schema.sql" = "slife_memory/schema.sql" }
+
+[tool.hatch.build.targets.sdist]
+include = ["/*.py", "/*.sql", "/README.md", "/pyproject.toml"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

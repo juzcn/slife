@@ -69,12 +69,12 @@ Two transports, one interface. The full A2A protocol toolset (14 tools) provides
 
 | Transport | Enable | Use case |
 |---|---|---|
-| **MQTT** | `--name <id>` CLI flag | Remote slife instances (P2P mesh) |
+| **MQTT** | `--agent <id>` CLI flag | Remote slife instances (P2P mesh) |
 | **Subagent** (stdin/stdout) | Always available | Local child processes for parallel work |
 
-Start with `--name my-agent` to join the MQTT mesh; subagents are always available.
+Start with `--agent my-agent` to join the MQTT mesh; subagents are always available.
 
-When `--name` is provided the agent identity flows through the entire UI:
+When `--agent` is provided the agent identity flows through the entire UI:
 
 - **Prompt prefix** changes from `>` to `my-agent>` for your own messages.
 - **System prompt** includes your name so the LLM knows its identity.
@@ -90,6 +90,37 @@ When `--name` is provided the agent identity flows through the entire UI:
 - **`Ctrl+L`** — clear the conversation
 - **`Esc`** — focus the input field
 
+### CLI Flags
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--agent <id>` | (off) | Enable A2A P2P mesh — join the MQTT broker with this agent identity |
+| `--user <id>` | `default` | Memory isolation key — separate diary namespaces on multi-user machines |
+
+### Permanent Memory & Knowledge Base
+
+slife records every conversation — user messages, thinking, tool calls, and tool outputs — like a diary in `~/.slife/slife.db`. On restart after a crash or exit, it detects interrupted sessions and offers to restore them. Everything the agent has ever seen is searchable.
+
+```bash
+slife --user alice              # alice's memories
+slife --user bob                # bob's memories (isolated)
+slife                           # default user
+```
+
+**Crash recovery**: `/restore` resumes exactly where you left off; `/discard` starts fresh; `/preview` peeks before deciding.
+
+**Memory search** — three modes via `memory_search`:
+
+| Mode | Backend | Use for |
+|---|---|---|
+| `grep` | SQLite LIKE | Exact strings: error messages, code, paths |
+| `fts5` | FTS5 + BM25 | Topics and keywords |
+| `hybrid` | FTS5 + vec0 → RRF | Fuzzy recall when you don't remember exact words |
+
+**The knowledge base effect**: every tool output — file contents, search results, API responses — flows through the conversation into the diary. Over time, it becomes a searchable archive of everything the agent has encountered. No separate vector database, no indexing pipeline.
+
+Memory runs as an independent MCP service (`slife-memory`), same architecture as `slife-mcp`. Context is automatically managed: the active conversation stays within 20%–80% of the model's window; older turns are trimmed but archived in the diary for later recall. See [DESIGN.md](DESIGN.md#permanent-memory-slifememory) for full architecture.
+
 ## Design
 
 slife is a **minimum-harness agent**. The harness only does what the LLM cannot: execute tools, maintain conversation state, and stream responses. The system prompt contains only project-specific facts not in the LLM's training data. See [DESIGN.md](DESIGN.md) for the full rationale and architecture.
@@ -101,13 +132,14 @@ slife/
   agent/            # LLM client, conversation, function-calling loop, inbox
   a2a/              # A2A: MQTT client, broker lifecycle, identity, TaskStore
   subagent/         # Subagent: spawn, JSON-RPC IPC, process management
-  tools/            # All tools — native, skills, CLI, A2A (auto-discovered)
+  tools/            # All tools — native, memory, skills, CLI, A2A (auto-discovered)
     a2a.py          #   14 A2A protocol tools (unified transports)
   mcp/              # MCP client (slife side)
   ui/               # Textual TUI
 slife_mcp/          # Independent MCP proxy (pip install slife-mcp)
+slife_memory/       # Independent memory MCP service (pip install slife-memory)
 skills/             # On-demand skill plugins
-tests/              # pytest suite (583 tests)
+tests/              # pytest suite (577 tests)
 ```
 
 ## Requirements

@@ -50,16 +50,16 @@ class A2AConfig:
     ) -> "A2AConfig":
         """Parse the ``mqtt`` section from slife.json5.
 
-        A2A over MQTT is enabled **only** when ``--name`` is passed on the
+        A2A over MQTT is enabled **only** when ``--agent`` is passed on the
         CLI (``agent_name`` is not ``None``).  The json5 ``mqtt`` section
         provides broker connection details — it never enables A2A on its own.
 
         Args:
             data: The ``mqtt`` dict from the JSON5 config, or ``None``.
-            agent_name: If provided (``--name`` on the CLI), enables A2A
+            agent_name: If provided (``--agent`` on the CLI), enables A2A
                         and uses this value as ``agent_id``.
         """
-        # --name is the only way to enable A2A over MQTT
+        # --agent is the only way to enable A2A over MQTT
         if agent_name is None:
             return cls()
 
