@@ -25,6 +25,10 @@
     // recalled via memory_search when needed.
     context_floor: 0.2,
     context_ceiling: 0.8,
+    // Max single tool result = tool_result_ceiling × context_window.
+    // 0.2 means a tool result can use at most 20% of context.
+    // Set 0 to disable (no limit — dangerous for large files).
+    tool_result_ceiling: 0.2,
   },
 
   // ── Models ───────────────────────────────────────────────────

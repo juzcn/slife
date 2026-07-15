@@ -111,18 +111,23 @@ class SessionStore:
         rowid = cursor.lastrowid
         logger.debug("turn_saved author=%s rowid=%s", author, rowid)
 
-        # Embed the full turn: user message + extracted assistant/tool text
-        embed_text = _turn_text_for_embedding(user_message, messages or [])
-        if embedder is not None and embedder.available and embed_text.strip():
-            try:
-                emb = await embedder.embed_one(embed_text)
-                if emb:
-                    await self.upsert_embedding(
-                        rowid=rowid, author=author, summary="", tags="",
-                        created_at=now, turn_embedding=emb,
-                    )
-            except Exception as e:
-                logger.debug("embedding_save_skipped rowid=%s err=%s", rowid, e)
+        # Embed the full turn text. Skip if it exceeds the model's token
+        # limit — semantic search misses this turn, but keyword (FTS5/grep)
+        # search still works.  No truncation: partial knowledge is misleading.
+        if embedder is not None and embedder.available:
+            embed_text = _turn_text_for_embedding(user_message, messages or [])
+            if embed_text.strip():
+                est_tokens = len(embed_text) // 4  # ~4 chars per token
+                if est_tokens <= embedder.max_tokens:
+                    try:
+                        emb = await embedder.embed_one(embed_text)
+                        if emb:
+                            await self.upsert_embedding(
+                                rowid=rowid, author=author, summary="", tags="",
+                                created_at=now, turn_embedding=emb,
+                            )
+                    except Exception as e:
+                        logger.debug("embedding_save_skipped rowid=%s err=%s", rowid, e)
 
         return rowid
 
@@ -490,27 +495,17 @@ def _split_sql(sql_text: str) -> list[str]:
 
 
 def _turn_text_for_embedding(user_message: str, messages: list[dict]) -> str:
-    """Extract semantically meaningful text from a turn for embedding.
+    """Extract turn text for embedding: user message + assistant + tool results.
 
-    Includes the user's question plus all assistant text content
-    and tool results — the complete semantic footprint of the turn.
-    Truncated to avoid exceeding embedding model token limits.
+    No truncation — the caller checks against the model's token limit
+    and skips embedding entirely if the text is too long.
     """
     parts = [user_message]
     for msg in messages:
-        if msg.get("role") == "assistant":
-            content = msg.get("content", "")
-            if content:
-                parts.append(content)
-        elif msg.get("role") == "tool":
-            content = msg.get("content", "")
-            if content:
-                # Tool results can be very long — take a reasonable prefix
-                parts.append(content[:500])
-    text = "\n".join(p for p in parts if p)
-    # Most embedding models have 512–8192 token limits.
-    # ~4 chars per token, 2000 chars ≈ 500 tokens is safe for all models.
-    return text[:2000]
+        content = msg.get("content", "")
+        if content and msg.get("role") in ("assistant", "tool"):
+            parts.append(content)
+    return "\n".join(p for p in parts if p)
 
 
 def _to_fts5_query(query: str) -> str:

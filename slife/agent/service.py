@@ -44,10 +44,17 @@ class AgentService:
         self.config = config
         self.tool_registry = create_tools_from_config(config.tools, config=config)
         self.llm_client = LLMClient(config.active_model)
+        # Max tool result = tool_result_ceiling × context_window × 3 chars/token
+        max_tool_result_chars = int(
+            config.tool_result_ceiling
+            * config.active_model.context_window
+            * 3
+        )
         self.agent_loop = AgentLoop(
             llm_client=self.llm_client,
             tool_registry=self.tool_registry,
             max_iterations=config.max_iterations,
+            max_tool_result_chars=max_tool_result_chars,
         )
         self.conversation = Conversation(
             system_prompt=build_system_prompt(

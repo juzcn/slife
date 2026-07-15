@@ -218,6 +218,7 @@ class Config:
     max_iterations: int = 10
     context_floor: float = 0.2
     context_ceiling: float = 0.8
+    tool_result_ceiling: float = 0.2  # max tool result = 20% of context window
     user: str = "default"
     mcp_config: MCPConfig | None = None
     memory_config: MemoryConfig | None = None
@@ -454,6 +455,7 @@ class Config:
         max_iterations = agent.get("max_iterations", 10)
         context_floor = agent.get("context_floor", 0.2)
         context_ceiling = agent.get("context_ceiling", 0.8)
+        tool_result_ceiling = agent.get("tool_result_ceiling", 0.2)
 
         # Env — inject into os.environ so tools can reference vars via ${VAR}
         env_section = resolve_env(cls._parse_section(raw, "env", dict, {}))
@@ -507,6 +509,7 @@ class Config:
             max_iterations=max_iterations,
             context_floor=context_floor,
             context_ceiling=context_ceiling,
+            tool_result_ceiling=tool_result_ceiling,
             user=user,
             mcp_config=mcp_config,
             memory_config=memory_config,

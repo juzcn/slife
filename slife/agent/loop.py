@@ -112,10 +112,12 @@ class AgentLoop:
         llm_client: LLMClient,
         tool_registry: ToolRegistry,
         max_iterations: int = 10,
+        max_tool_result_chars: int = 0,
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
         self.max_iterations = max_iterations
+        self.max_tool_result_chars = max_tool_result_chars
 
     # ── Tool call helpers ──────────────────────────────────────────
 
@@ -257,6 +259,11 @@ class AgentLoop:
             result = await self.tool_registry.execute(
                 tc.name, **tc.arguments
             )
+            # Truncate oversized tool results so a single large file
+            # read doesn't blow up the context window.
+            max_chars = self.max_tool_result_chars
+            if max_chars > 0 and len(result) > max_chars:
+                result = result[:max_chars] + f"\n…（已截断，原文 {len(result)} 字符）"
             is_error = result.startswith("Error")
 
             if handler:

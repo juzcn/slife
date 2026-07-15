@@ -15,24 +15,32 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Known embedding dimensions by model family
-_KNOWN_DIMS: dict[str, int] = {
-    "text-embedding-3-small": 1536,
-    "text-embedding-3-large": 3072,
-    "text-embedding-ada-002": 1536,
-    "bge-m3": 1024,
-    "bge-large": 1024,
-    "nomic-embed-text": 768,
+# Known embedding dimensions and token limits by model family
+_KNOWN_MODELS: dict[str, tuple[int, int]] = {
+    # (dimension, max_tokens)
+    "text-embedding-3-small": (1536, 8191),
+    "text-embedding-3-large": (3072, 8191),
+    "text-embedding-ada-002":  (1536, 8191),
+    "bge-m3":                  (1024, 8192),
+    "bge-large":               (1024, 512),
+    "nomic-embed-text":        (768,  8192),
 }
 
 
 def _guess_dim(model: str, gguf_path: str | None = None) -> int:
     """Guess the embedding dimension from the model name."""
-    for key, dim in _KNOWN_DIMS.items():
+    for key, (dim, _) in _KNOWN_MODELS.items():
         if key in model.lower():
             return dim
-    # Default for unknown models: 1024 (common for local models like BGE)
     return 1024
+
+
+def _guess_max_tokens(model: str) -> int:
+    """Guess the token limit from the model name."""
+    for key, (_, limit) in _KNOWN_MODELS.items():
+        if key in model.lower():
+            return limit
+    return 8192
 
 
 class EmbeddingClient:
@@ -167,6 +175,11 @@ class EmbeddingClient:
     def backend(self) -> str:
         """Which backend is in use: 'gguf', 'api', or ''."""
         return self._backend
+
+    @property
+    def max_tokens(self) -> int:
+        """Max tokens the model accepts for a single embedding."""
+        return _guess_max_tokens(self._model)
 
     async def embed(self, texts: list[str]) -> list[list[float]] | None:
         """Generate embeddings for a list of texts.

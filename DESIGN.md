@@ -406,6 +406,18 @@ All modes search the full diary including the active session. The LLM can distin
 
 **Reciprocal Rank Fusion (RRF):** hybrid mode merges keyword results and semantic results with RRF, producing a single ranked list. If no embedding backend is configured, hybrid degrades gracefully to FTS5-only.
 
+### Embedding
+
+When a turn is saved, the full text content (user message + all assistant text +
+all tool results) is concatenated and embedded via the configured backend.
+If the concatenated text exceeds the model's token limit (8192 for most models),
+the turn is **skipped** — no embedding is stored and semantic search won't find
+it.  Keyword search (FTS5 / grep) is unaffected and continues to work normally.
+
+No truncation.  Partial embeddings are misleading: an incomplete turn could
+match semantically but miss the critical detail the user is actually searching
+for.  Skipping is safer than truncating.
+
 ### What Gets Saved
 
 Each turn writes one row — user_message + the assistant's response messages.
