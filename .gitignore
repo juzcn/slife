@@ -222,3 +222,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# SQLite database files (may appear anywhere in the project)
+*.db
+*.db-shm
+*.db-wal

@@ -350,10 +350,11 @@ class SessionStore:
     async def _find_last_diary(
         self, author: str = "default", exclude_rowid: int | None = None,
     ) -> dict | None:
-        """Find the most recent diary entry regardless of status.
+        """Find the most recent diary with actual conversation turns.
 
-        Excludes *exclude_rowid* (the diary we just created).
-        Returns a dict or None if the diary is empty (no prior sessions).
+        Skips empty diaries (how_many_turns = 0) and the diary we just
+        created (*exclude_rowid*).  Returns None when there are no prior
+        sessions with real content.
         """
         assert self._conn is not None
         cursor = await self._conn.execute(
@@ -361,7 +362,7 @@ class SessionStore:
                       how_many_turns, how_many_tokens, who_helped, what_model,
                       trim_count
                FROM diary
-               WHERE author = ? AND rowid != ?
+               WHERE author = ? AND rowid != ? AND how_many_turns > 0
                ORDER BY updated_at DESC
                LIMIT 1""",
             (author, exclude_rowid or 0),
