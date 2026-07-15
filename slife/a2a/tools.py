@@ -1,4 +1,4 @@
-"""A2A tools — re-exported from slife.tools.a2a for backward compatibility."""
+"""A2A tools — re-exported from Slife.tools.a2a for backward compatibility."""
 
 from slife.tools.a2a import (  # noqa: F401
     A2ABroadcastTool,

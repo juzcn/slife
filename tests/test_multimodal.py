@@ -1,16 +1,14 @@
-"""Tests for slife.agent.multimodal — image encoding and file attachment parsing."""
+"""Tests for Slife.agent.multimodal — image encoding."""
 
 import base64
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
 from slife.agent.multimodal import (
     encode_image,
-    parse_file_attachments,
     _ensure_mimetypes,
-    _FILE_PATTERN,
 )
 
 
@@ -97,83 +95,6 @@ class TestEncodeImage:
         with patch("mimetypes.guess_type", return_value=("application/octet-stream", None)):
             result = encode_image(img)
             assert result["image_url"]["url"].startswith("data:image/png;base64,")
-
-
-# ── parse_file_attachments ────────────────────────────────────────────
-
-
-class TestParseFileAttachments:
-    """Tests for parse_file_attachments function."""
-
-    def test_no_file_directives(self):
-        """Text without /file directives passes through."""
-        text = "Hello, how are you?"
-        cleaned, paths = parse_file_attachments(text)
-        assert cleaned == "Hello, how are you?"
-        assert paths == []
-
-    def test_single_file_directive(self):
-        """Single /file directive is extracted."""
-        text = "Look at this:\n/file image.png\nWhat do you think?"
-        cleaned, paths = parse_file_attachments(text)
-        assert cleaned == "Look at this:\nWhat do you think?"
-        assert paths == ["image.png"]
-
-    def test_multiple_file_directives(self):
-        """Multiple /file directives all extracted."""
-        text = "/file a.png\n/file b.jpg\nDescribe these."
-        cleaned, paths = parse_file_attachments(text)
-        assert cleaned == "Describe these."
-        assert paths == ["a.png", "b.jpg"]
-
-    def test_file_paths_trimmed(self):
-        """File paths have whitespace stripped."""
-        text = "/file   path with spaces.png   "
-        cleaned, paths = parse_file_attachments(text)
-        assert paths == ["path with spaces.png"]
-
-    def test_only_file_directives(self):
-        """Text containing only /file directives returns empty string."""
-        text = "/file img1.png\n/file img2.png"
-        cleaned, paths = parse_file_attachments(text)
-        assert cleaned == ""
-        assert paths == ["img1.png", "img2.png"]
-
-    def test_empty_input(self):
-        """Empty string returns empty results."""
-        cleaned, paths = parse_file_attachments("")
-        assert cleaned == ""
-        assert paths == []
-
-    def test_file_directive_not_on_own_line(self):
-        """/file directive only matches when on its own line."""
-        text = "Some /file image.png inline text"
-        cleaned, paths = parse_file_attachments(text)
-        assert cleaned == "Some /file image.png inline text"
-        assert paths == []
-
-    def test_case_sensitive(self):
-        """/file is case-sensitive (must be lowercase)."""
-        text = "/File image.png"
-        cleaned, paths = parse_file_attachments(text)
-        assert paths == []
-
-
-# ── _FILE_PATTERN ─────────────────────────────────────────────────────
-
-
-class TestFilePattern:
-    """Tests for the regex pattern behavior."""
-
-    def test_pattern_matches_file_directive(self):
-        m = _FILE_PATTERN.match("/file path/to/file.txt")
-        assert m is not None
-        assert m.group(1) == "path/to/file.txt"
-
-    def test_pattern_does_not_match_similar(self):
-        assert _FILE_PATTERN.match(" /file leading space") is None
-        assert _FILE_PATTERN.match("/files plural") is None
-        assert _FILE_PATTERN.match("/file") is None  # No path after
 
 
 # ── _ensure_mimetypes ─────────────────────────────────────────────────

@@ -1,22 +1,16 @@
-"""Textual TUI application for slife — Claude Code CLI style."""
+"""Textual TUI application for Slife — Claude Code CLI style."""
 
 import json
 
 from textual.app import App, ComposeResult
-from textual.message import Message
 from textual.widgets import Input, Static
 
 from slife.config import Config
 from slife.agent.service import AgentService
 from slife.agent.loop import MaxIterationsExceeded
-from slife.agent.multimodal import parse_file_attachments
 from slife.ui.chat import ChatView
-from slife.ui.command_palette import CommandPalette
 from slife.ui.handler import TUIHandler
 from slife.ui.tool_display import ToolCallWidget
-
-
-# ── Custom input with slash-command completion ────────────────────
 
 
 def _safe_parse_args(raw: str) -> dict:
@@ -25,26 +19,6 @@ def _safe_parse_args(raw: str) -> dict:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return {"_raw": raw}
-
-
-class CommandInput(Input):
-    """Input widget with Tab-to-complete for slash commands."""
-
-    BINDINGS = [
-        ("tab", "complete_suggestion", "Complete"),
-    ]
-
-    def action_complete_suggestion(self) -> None:
-        """Complete the current slash suggestion, or pass Tab through."""
-        if self.value.startswith("/"):
-            self.post_message(CompleteSuggestion())
-        else:
-            # Not a slash command — let Tab do default focus navigation
-            self.app.action_focus_next()
-
-
-class CompleteSuggestion(Message):
-    """Posted when Tab is pressed — parent should complete the suggestion."""
 
 
 # ── Status bar ─────────────────────────────────────────────────────
@@ -85,7 +59,7 @@ class StatusBar(Static):
 
 
 class SlifeApp(App):
-    """Main Textual application for slife — an AI agent in the terminal.
+    """Main Textual application for Slife — an AI agent in the terminal.
 
     Claude Code CLI style: minimal chrome, dark theme, clean message display.
     Owns the UI; delegates agent orchestration to AgentService.
@@ -119,9 +93,8 @@ class SlifeApp(App):
     def compose(self) -> ComposeResult:
         """Minimal layout: chat fills screen, input + status docked at bottom."""
         yield ChatView(id="chat-view")
-        yield CommandPalette(id="command-palette")
-        yield CommandInput(
-            placeholder="Message slife…",
+        yield Input(
+            placeholder="Message Slife…",
             id="user-input",
         )
         yield StatusBar(id="status-bar")
@@ -236,64 +209,21 @@ class SlifeApp(App):
             thinking=self.service.thinking_enabled,
         )
 
-    # ── Slash-command completion ─────────────────────────────────
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        """Update the command palette when input value changes."""
-        palette = self.query_one("#command-palette", CommandPalette)
-        palette.show_suggestions(event.value)
-
-    def on_complete_suggestion(self) -> None:
-        """Complete the current slash command with the top suggestion."""
-        palette = self.query_one("#command-palette", CommandPalette)
-        if not palette.visible:
-            return
-
-        completion = palette.selected_text()
-        if not completion:
-            return
-
-        inp = self.query_one("#user-input", CommandInput)
-        inp.value = completion
-        inp.cursor_position = len(completion)
-        # Refresh palette with the completed value
-        palette.show_suggestions(completion)
-
     # ── Input handling ────────────────────────────────────────────
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user pressing Enter in the input field."""
-        # Hide palette on submit
-        self.query_one("#command-palette", CommandPalette).hide()
-
-        if not isinstance(event, Input.Submitted):
-            return
-
         raw = event.value.strip()
         if not raw:
             return
 
-        # /exit — quit the app
-        if raw == "/exit":
-            self.run_worker(self.action_quit(), exclusive=True)
-            return
-
         event.input.clear()
 
-        # Parse /file directives for multimodal
-        text, image_paths = parse_file_attachments(raw)
-
         chat_view = self.query_one("#chat-view", ChatView)
-        # Use agent name for assistant prefix, "You" for user prefix
-        user_prefix = "You> " if self._assistant_prefix else "> "
-        chat_view.add_user_message(
-            text or raw,
-            images=image_paths if image_paths else None,
-            prefix=user_prefix,
-        )
+        chat_view.add_user_message(raw)
 
         self.run_worker(
-            self._process_message(text or raw, image_paths, chat_view),
+            self._process_message(raw, None, chat_view),
             exclusive=True,
             group="agent",
         )

@@ -325,7 +325,7 @@ def main():
     """
     import argparse
 
-    parser = argparse.ArgumentParser(description="slife-mcp wrapper server")
+    parser = argparse.ArgumentParser(description="Slife-mcp wrapper server")
     parser.add_argument(
         "--port",
         type=int,
@@ -341,7 +341,7 @@ def main():
 
     logger.info("log_path=%s", _log_path)
 
-    # Auto-detect: piped stdin → stdio (slife child process), TTY → HTTP
+    # Auto-detect: piped stdin → stdio (Slife child process), TTY → HTTP
     if not sys.stdin.isatty():
         logger.info("mcp_start transport=stdio")
         mcp.run(transport="stdio")

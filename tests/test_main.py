@@ -1,11 +1,11 @@
-"""Tests for slife main entry point — mock heavy to avoid Textual init."""
+"""Tests for Slife main entry point — mock heavy to avoid Textual init."""
 
 import pytest
 from unittest.mock import MagicMock, patch
 
 
 class TestMainFunction:
-    """Tests for slife.main() — fully mocked."""
+    """Tests for Slife.main() — fully mocked."""
 
     @pytest.fixture
     def mock_config(self):
@@ -25,8 +25,8 @@ class TestMainFunction:
 
     def test_main_loads_config(self, mock_config):
         """main() loads config from the given path."""
-        with patch("slife.Config.from_json5", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=mock_config):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
@@ -37,8 +37,8 @@ class TestMainFunction:
 
     def test_main_default_config_path(self, mock_config):
         """main() uses slife.json5 by default."""
-        with patch("slife.Config.from_json5", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=mock_config):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app_cls.return_value.run = MagicMock()
 
                 from slife import main
@@ -46,8 +46,8 @@ class TestMainFunction:
 
     def test_main_creates_app_with_config(self, mock_config):
         """SlifeApp is created with the loaded config."""
-        with patch("slife.Config.from_json5", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=mock_config):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
@@ -58,12 +58,12 @@ class TestMainFunction:
 
     def test_main_logs_model_info(self, mock_config):
         """main() logs model info before starting TUI."""
-        with patch("slife.Config.from_json5", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=mock_config):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("Slife.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -74,11 +74,11 @@ class TestMainFunction:
         """Logs 'thinking: off' when thinking is disabled."""
         mock_config.models[0].thinking_enabled = False
 
-        with patch("slife.Config.from_json5", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=mock_config):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app_cls.return_value.run = MagicMock()
 
-                with patch("slife.logger") as mock_logger:
+                with patch("Slife.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -89,11 +89,11 @@ class TestMainFunction:
         """Logs the number of loaded tools."""
         mock_config.tools = [{"name": "execute_shell"}, {"name": "run_python_script"}]
 
-        with patch("slife.Config.from_json5", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=mock_config):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app_cls.return_value.run = MagicMock()
 
-                with patch("slife.logger") as mock_logger:
+                with patch("Slife.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -102,7 +102,7 @@ class TestMainFunction:
 
 
 class TestMainModule:
-    """Tests for python -m slife (__main__.py)."""
+    """Tests for python -m Slife (__main__.py)."""
 
     def test_main_module_import(self):
         """__main__.py module-level code executes main() with patches."""
@@ -116,9 +116,9 @@ class TestMainModule:
         )
         cfg = Config(models=[mc], active_model_ref="deepseek/ds", tools=[])
 
-        with patch("slife.Config.from_json5", return_value=cfg), \
-             patch("slife.SlifeApp") as mock_app_cls, \
-             patch("slife.logger"):
+        with patch("Slife.Config.from_json5", return_value=cfg), \
+             patch("Slife.SlifeApp") as mock_app_cls, \
+             patch("Slife.logger"):
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
 
@@ -146,12 +146,12 @@ class TestMainEnvLogging:
         """API keys are masked in log output."""
         cfg = self._make_config(env={"DEEPSEEK_KEY": "sk-1234567890abcdef"})
 
-        with patch("slife.Config.from_json5", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=cfg):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("Slife.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -165,12 +165,12 @@ class TestMainEnvLogging:
         """Short secret values (<8 chars) get fully masked."""
         cfg = self._make_config(env={"API_SECRET": "abc"})
 
-        with patch("slife.Config.from_json5", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=cfg):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("Slife.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -183,12 +183,12 @@ class TestMainEnvLogging:
         """Non-secret env vars are logged without masking."""
         cfg = self._make_config(env={"MY_VAR": "hello_world"})
 
-        with patch("slife.Config.from_json5", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=cfg):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("Slife.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -201,12 +201,12 @@ class TestMainEnvLogging:
         """TOKEN in key name triggers masking."""
         cfg = self._make_config(env={"GITHUB_TOKEN": "ghp_1234567890abcdefgh"})
 
-        with patch("slife.Config.from_json5", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=cfg):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("Slife.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -219,12 +219,12 @@ class TestMainEnvLogging:
         """PASSWORD in key name triggers masking."""
         cfg = self._make_config(env={"DB_PASSWORD": "supersecret123"})
 
-        with patch("slife.Config.from_json5", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=cfg):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("Slife.logger") as mock_logger:
                     from slife import main
                     main()
 
@@ -237,12 +237,12 @@ class TestMainEnvLogging:
         """When config.env is empty, no env log lines are emitted."""
         cfg = self._make_config(env={})
 
-        with patch("slife.Config.from_json5", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
+        with patch("Slife.Config.from_json5", return_value=cfg):
+            with patch("Slife.SlifeApp") as mock_app_cls:
                 mock_app = MagicMock()
                 mock_app_cls.return_value = mock_app
 
-                with patch("slife.logger") as mock_logger:
+                with patch("Slife.logger") as mock_logger:
                     from slife import main
                     main()
 

@@ -1,4 +1,4 @@
-"""Tests for slife.agent.llm_client — LLM client, token usage, and streaming."""
+"""Tests for Slife.agent.llm_client — LLM client, token usage, and streaming."""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock

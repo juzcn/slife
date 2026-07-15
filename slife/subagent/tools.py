@@ -1,4 +1,4 @@
-"""Subagent tools — re-exported from slife.tools.a2a for backward compatibility.
+"""Subagent tools — re-exported from Slife.tools.a2a for backward compatibility.
 
 The canonical tool definitions live in :mod:`slife.tools.a2a` as proper
 :class:`Tool` subclasses, auto-discovered by ``create_tools_from_config``.

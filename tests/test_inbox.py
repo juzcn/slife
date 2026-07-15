@@ -1,4 +1,4 @@
-"""Tests for slife.agent.inbox — ConversationStore and Inbox."""
+"""Tests for Slife.agent.inbox — ConversationStore and Inbox."""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -83,11 +83,11 @@ class TestAgentMessage:
             source=AgentId("agent-1"),
             content="task result",
             images=["img1.png"],
-            reply_to="slife/human/tasks",
+            reply_to="Slife/human/tasks",
             correlation_id="corr-123",
         )
         assert msg.images == ["img1.png"]
-        assert msg.reply_to == "slife/human/tasks"
+        assert msg.reply_to == "Slife/human/tasks"
         assert msg.correlation_id == "corr-123"
 
     def test_agent_id_new_type(self):

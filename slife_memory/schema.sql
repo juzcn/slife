@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════
---  slife 记忆库 — 像日记一样记录每一次对话
+--  Slife 记忆库 — 像日记一样记录每一次对话
 --
 --  设计原则：
 --    1. 一行 = 一次完整的对话（一本"笔记"），自包含、无需 JOIN
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS diary (
     -- ▼ 谁写的
     author         TEXT NOT NULL DEFAULT 'default',    -- 谁（--user）
 
-    -- ▼ 哪一本笔记（一次 slife 启动 → 退出的完整对话）
+    -- ▼ 哪一本笔记（一次 Slife 启动 → 退出的完整对话）
     title          TEXT,                              -- 对话标题，如"重构工具系统"
     created_at     TEXT NOT NULL,                     -- 对话开始时间
     updated_at     TEXT NOT NULL,                     -- 最后更新时间
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS diary (
 
     -- ▼ 笔记正文（给 LLM 看的——完整的 OpenAI 消息列表，JSON）
     --   [
-    --     {"role":"system","content":"你是 slife…"},
+    --     {"role":"system","content":"你是 Slife…"},
     --     {"role":"user","content":"帮我重构工具系统"},
     --     {"role":"assistant","content":null,"tool_calls":[…]},
     --     {"role":"tool","tool_call_id":"…","content":"…"},
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS about (
 );
 
 INSERT OR IGNORE INTO about VALUES ('version', '1');
-INSERT OR IGNORE INTO about VALUES ('description', 'slife 记忆库 — 以日记的方式记录每一次对话');
+INSERT OR IGNORE INTO about VALUES ('description', 'Slife 记忆库 — 以日记的方式记录每一次对话');
 
 
 -- ═══════════════════════════════════════════════════════════════

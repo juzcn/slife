@@ -1,4 +1,4 @@
-"""Tests for slife.a2a.broker — BrokerManager construction and lifecycle."""
+"""Tests for Slife.a2a.broker — BrokerManager construction and lifecycle."""
 
 import asyncio
 import pytest

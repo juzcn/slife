@@ -1,4 +1,4 @@
-"""Tests for slife.agent.loop — agent loop, streaming, and tool execution."""
+"""Tests for Slife.agent.loop — agent loop, streaming, and tool execution."""
 
 import pytest
 from unittest.mock import AsyncMock, patch

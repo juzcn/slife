@@ -1,4 +1,4 @@
-"""slife — Silicon-based life based on LLM.
+"""Slife — Silicon-based life based on LLM.
 
 A terminal-based AI agent with extensible tool system and multi-model support.
 Config: slife.json5 (JSON with comments, OpenClaw-style).
@@ -20,7 +20,7 @@ logger = logging.getLogger("slife")
 
 
 def main(config_path: str = "slife.json5", agent_name: str | None = None):
-    """Entry point for the slife TUI application.
+    """Entry point for the Slife TUI application.
 
     Args:
         config_path: Path to a slife.json5 configuration file.

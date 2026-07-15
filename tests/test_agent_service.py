@@ -1,4 +1,4 @@
-"""Tests for slife.agent.service — AgentService lifecycle and message processing."""
+"""Tests for Slife.agent.service — AgentService lifecycle and message processing."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
@@ -133,7 +133,7 @@ class TestAgentServiceMCPLifecycle:
         assert service._mcp_client is None
 
     @pytest.mark.asyncio
-    @patch("slife.agent.service.MCPClient.is_wrapper_running", return_value=True)
+    @patch("Slife.agent.service.MCPClient.is_wrapper_running", return_value=True)
     async def test_start_mcp_http(self, mock_probe):
         config = make_mock_config()
         # Enable MCP in config

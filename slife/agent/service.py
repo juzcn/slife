@@ -629,7 +629,7 @@ class AgentService:
         self._a2a_client.on_agent_change(self._on_agent_change)
 
         # Set module-level transport reference so native A2A tools
-        # (slife.tools.a2a) can discover the live client at call time.
+        # (Slife.tools.a2a) can discover the live client at call time.
         from slife.a2a.client import set_client
         set_client(self._a2a_client)
 
@@ -697,7 +697,7 @@ class AgentService:
         self._subagent_manager = SubagentManager(self.config)
 
         # Set module-level transport reference so native subagent tools
-        # (slife.tools.a2a) can access the live manager at call time.
+        # (Slife.tools.a2a) can access the live manager at call time.
         set_manager(self._subagent_manager)
 
         logger.info("subagent_init_done tools=%d", len(self.tool_registry.list_tools()))

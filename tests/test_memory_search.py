@@ -94,14 +94,14 @@ class TestMergeHybrid:
     def test_info_populated_from_keyword(self):
         kw = [{
             "rowid": 42, "title": "My Chat", "summary": "Great chat",
-            "tags": "ai,slife", "created_at": "2024-06-01T10:00:00",
+            "tags": "ai,Slife", "created_at": "2024-06-01T10:00:00",
             "how_many_turns": 5, "snippet": "matched text...",
         }]
         result = merge_hybrid(kw, [])
         r = result[0]
         assert r["title"] == "My Chat"
         assert r["summary"] == "Great chat"
-        assert r["tags"] == "ai,slife"
+        assert r["tags"] == "ai,Slife"
         assert r["created_at"] == "2024-06-01T10:00:00"
         assert r["how_many_turns"] == 5
         assert r["snippet"] == "matched text..."

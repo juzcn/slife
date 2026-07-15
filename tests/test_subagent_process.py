@@ -1,4 +1,4 @@
-"""Tests for slife.subagent.process — SubagentManager and SubagentProcess."""
+"""Tests for Slife.subagent.process — SubagentManager and SubagentProcess."""
 
 import asyncio
 import json

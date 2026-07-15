@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Module-level current-manager reference ───────────────────────────
 # Set by AgentService.start_subagent() / stop_subagent() so that native
-# tools (slife.tools.a2a) can look up the live SubagentManager.
+# tools (Slife.tools.a2a) can look up the live SubagentManager.
 _current_manager: "SubagentManager | None" = None
 
 
@@ -73,7 +73,7 @@ class SubagentProcess:
 
     async def start(self) -> None:
         if self._running: return
-        cmd = [sys.executable, "-m", "slife.subagent.headless", self._config_path]
+        cmd = [sys.executable, "-m", "Slife.subagent.headless", self._config_path]
         logger.info("spawn name=%s cmd=%s", self._name, " ".join(cmd))
         env = dict(os.environ); env["SLIFE_SUBAGENT_NAME"] = self._name
         self._process = await asyncio.create_subprocess_exec(
@@ -427,7 +427,7 @@ class SubagentManager:
                     "notify_topic": notify_topic,
                 })
                 await client._adapter.publish(
-                    f"slife/{agent_id}/tasks/inbox", setup, qos=1,
+                    f"Slife/{agent_id}/tasks/inbox", setup, qos=1,
                 )
             except Exception as e:
                 logger.debug("subagent_push_mqtt_bridge_failed err=%s", e)

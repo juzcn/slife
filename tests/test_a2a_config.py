@@ -1,4 +1,4 @@
-"""Tests for slife.a2a.config — A2AConfig and slife.a2a.card — AgentCard."""
+"""Tests for Slife.a2a.config — A2AConfig and Slife.a2a.card — AgentCard."""
 
 import pytest
 from unittest.mock import patch

@@ -1,4 +1,4 @@
-"""Tests for slife.tools.factory — auto-discovery tool loading."""
+"""Tests for Slife.tools.factory — auto-discovery tool loading."""
 
 import pytest
 

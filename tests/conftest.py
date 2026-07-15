@@ -1,4 +1,4 @@
-"""Shared test fixtures and mocks for the slife test suite."""
+"""Shared test fixtures and mocks for the Slife test suite."""
 
 from unittest.mock import AsyncMock, MagicMock
 

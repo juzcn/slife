@@ -1,4 +1,4 @@
-"""MCP client integration for slife.
+"""MCP client integration for Slife.
 
 Provides:
   - MCPClient: connects to the slife-mcp wrapper via stdio

@@ -139,7 +139,7 @@ class A2AListAgentsTool(Tool):
         if client is None:
             return (
                 "A2A MQTT mesh is not active. "
-                "Start slife with --agent <agent-name> to join the P2P mesh."
+                "Start Slife with --agent <agent-name> to join the P2P mesh."
             )
 
         peers = await client.list_agents()
@@ -305,7 +305,7 @@ class A2ASendTaskAsyncTool(Tool):
                 try:
                     await manager.set_push_notification(
                         agent_id, rpc_id,
-                        f"slife:local:notify:{rpc_id}",
+                        f"Slife:local:notify:{rpc_id}",
                     )
                 except Exception:
                     pass  # notification setup is best-effort
@@ -924,7 +924,7 @@ class A2ABroadcastTool(Tool):
             return (
                 "No agents available to broadcast to. "
                 "Use a2a_spawn_subagent to create a local worker, "
-                "or start slife with --agent <agent-name> to join the P2P mesh."
+                "or start Slife with --agent <agent-name> to join the P2P mesh."
             )
 
         lines = [f"Broadcast sent to {len(all_ids)} agent(s):"]

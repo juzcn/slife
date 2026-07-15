@@ -43,12 +43,12 @@ class MQTTAdapter:
 
         adapter = MQTTAdapter("desk-01")
         await adapter.connect("localhost", 1883)
-        await adapter.subscribe("slife/+/presence")
+        await adapter.subscribe("Slife/+/presence")
 
-        async for msg in adapter.messages("slife/+/presence"):
+        async for msg in adapter.messages("Slife/+/presence"):
             print(msg.topic, msg.payload)
 
-        await adapter.publish("slife/desk-01/presence", json.dumps(card))
+        await adapter.publish("Slife/desk-01/presence", json.dumps(card))
     """
 
     def __init__(self, client_id: str):
@@ -71,7 +71,7 @@ class MQTTAdapter:
         if self._connected:
             return
 
-        lwt_topic = f"slife/{self._client_id}/presence"
+        lwt_topic = f"Slife/{self._client_id}/presence"
         lwt_payload = json.dumps({"status": "offline"})
 
         self._client = mqtt.Client(
@@ -107,7 +107,7 @@ class MQTTAdapter:
 
         try:
             self._client.publish(
-                f"slife/{self._client_id}/presence",
+                f"Slife/{self._client_id}/presence",
                 json.dumps({"status": "offline"}),
                 qos=1,
                 retain=False,
@@ -141,7 +141,7 @@ class MQTTAdapter:
         self._last_publish_time = _time.monotonic()
 
     async def subscribe(self, topic: str, qos: int = 1) -> None:
-        """Subscribe to a topic (supports MQTT wildcards like ``slife/+/presence``)."""
+        """Subscribe to a topic (supports MQTT wildcards like ``Slife/+/presence``)."""
         if self._client is None:
             raise RuntimeError("MQTT not connected")
         self._client.subscribe(topic, qos=qos)

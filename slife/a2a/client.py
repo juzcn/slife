@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # ── Module-level current-client reference ────────────────────────────
 # Set by AgentService.start_a2a() / stop_a2a() so that native tools
-# (slife.tools.a2a) can look up the live transport without closures.
+# (Slife.tools.a2a) can look up the live transport without closures.
 _current_client: "A2AClient | None" = None
 
 
@@ -65,7 +65,7 @@ IncomingTaskCallback = Callable[[AgentMessage], Awaitable[None]]
 
 
 class A2AClient:
-    """P2P A2A client — each slife instance has one."""
+    """P2P A2A client — each Slife instance has one."""
 
     def __init__(self, config: A2AConfig):
         self._config = config
@@ -121,11 +121,11 @@ class A2AClient:
         await self._publish_presence("online")
 
         # Subscribe to peer presence
-        await self._adapter.subscribe("slife/+/presence")
+        await self._adapter.subscribe("Slife/+/presence")
 
         # Subscribe to own inbox + results
-        await self._adapter.subscribe(f"slife/{self._agent_id}/tasks/inbox")
-        await self._adapter.subscribe(f"slife/{self._agent_id}/tasks/result")
+        await self._adapter.subscribe(f"Slife/{self._agent_id}/tasks/inbox")
+        await self._adapter.subscribe(f"Slife/{self._agent_id}/tasks/result")
 
         # Start background loops
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -204,7 +204,7 @@ class A2AClient:
             "correlation_id": corr_id,
             "source": self._agent_id,
             "task": task,
-            "reply_to": f"slife/{self._agent_id}/tasks/result",
+            "reply_to": f"Slife/{self._agent_id}/tasks/result",
         })
 
         future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
@@ -216,7 +216,7 @@ class A2AClient:
         )
 
         await self._adapter.publish(
-            f"slife/{target}/tasks/inbox", payload, qos=1,
+            f"Slife/{target}/tasks/inbox", payload, qos=1,
         )
 
         try:
@@ -247,14 +247,14 @@ class A2AClient:
             "correlation_id": corr_id,
             "source": self._agent_id,
             "task": task,
-            "reply_to": f"slife/{self._agent_id}/tasks/result",
+            "reply_to": f"Slife/{self._agent_id}/tasks/result",
         })
         logger.debug(
             "a2a_send_task_async target=%s corr_id=%s task=%.80s",
             target, corr_id, task,
         )
         await self._adapter.publish(
-            f"slife/{target}/tasks/inbox", payload, qos=1,
+            f"Slife/{target}/tasks/inbox", payload, qos=1,
         )
         return corr_id
 
@@ -296,7 +296,7 @@ class A2AClient:
         })
         try:
             await self._adapter.publish(
-                f"slife/{target}/tasks/inbox", cancel_payload, qos=1,
+                f"Slife/{target}/tasks/inbox", cancel_payload, qos=1,
             )
         except Exception:
             pass
@@ -361,7 +361,7 @@ class A2AClient:
                 raise TimeoutError(f"Subscribe to task '{task_id}' timed out after {timeout}s")
 
         # Subscribe via MQTT progress topic — wait for result on result topic
-        progress_topic = f"slife/{self._agent_id}/tasks/result"
+        progress_topic = f"Slife/{self._agent_id}/tasks/result"
         try:
             await self._adapter.subscribe(progress_topic)
         except Exception:
@@ -413,7 +413,7 @@ class A2AClient:
         })
         try:
             await self._adapter.publish(
-                f"slife/{rec.agent_id}/tasks/inbox",
+                f"Slife/{rec.agent_id}/tasks/inbox",
                 config_payload, qos=1,
             )
         except Exception:
@@ -440,7 +440,7 @@ class A2AClient:
             "status": card.status,
         })
         await self._adapter.publish(
-            f"slife/{self._agent_id}/presence", payload, qos=1, retain=False,
+            f"Slife/{self._agent_id}/presence", payload, qos=1, retain=False,
         )
 
     async def _heartbeat_loop(self) -> None:
@@ -456,7 +456,7 @@ class A2AClient:
     async def _peer_watchdog_loop(self) -> None:
         """Listen for peer presence and prune stale entries."""
         timeout = self._config.heartbeat_timeout
-        async for msg in self._adapter.messages("slife/+/presence"):
+        async for msg in self._adapter.messages("Slife/+/presence"):
             try:
                 data = json.loads(msg.payload)
             except json.JSONDecodeError:
@@ -517,8 +517,8 @@ class A2AClient:
         cycle, which leaks orphaned ``queue.get()`` tasks that silently
         consume inbound messages.
         """
-        inbox_filter = f"slife/{self._agent_id}/tasks/inbox"
-        result_filter = f"slife/{self._agent_id}/tasks/result"
+        inbox_filter = f"Slife/{self._agent_id}/tasks/inbox"
+        result_filter = f"Slife/{self._agent_id}/tasks/result"
 
         logger.debug(
             "a2a_inbox_listener_start inbox=%s result=%s",

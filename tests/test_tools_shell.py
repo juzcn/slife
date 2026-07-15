@@ -1,4 +1,4 @@
-"""Tests for slife.tools.shell — shell command execution tool."""
+"""Tests for Slife.tools.shell — shell command execution tool."""
 
 import asyncio
 import pytest

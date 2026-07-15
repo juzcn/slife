@@ -1,11 +1,11 @@
-"""Tests for slife.agent.system_prompt."""
+"""Tests for Slife.agent.system_prompt."""
 
 from slife.agent.system_prompt import build
 
 
 class TestBuild:
     def test_starts_with_slife(self):
-        assert build().startswith("You are slife.")
+        assert build().startswith("You are Slife.")
 
     def test_platform_guidance(self):
         """Prompt tells LLM how to use platform tools."""

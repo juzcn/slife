@@ -1,4 +1,4 @@
-"""Tests for slife.config — configuration loading and model definitions."""
+"""Tests for Slife.config — configuration loading and model definitions."""
 
 import json
 import logging

@@ -1,4 +1,4 @@
-"""Tests for slife.tools._config_io — shared config file read/write helpers."""
+"""Tests for Slife.tools._config_io — shared config file read/write helpers."""
 
 import json5
 import logging

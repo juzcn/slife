@@ -1,4 +1,4 @@
-"""Configuration for slife agent — OpenClaw-compatible JSON5 format.
+"""Configuration for Slife agent — OpenClaw-compatible JSON5 format.
 
 Two-level model hierarchy:
   providers:
@@ -122,12 +122,12 @@ class MCPConfig:
     """Configuration for the MCP wrapper and external MCP servers."""
 
     enabled: bool = False
-    # Default: use the same Python interpreter that runs slife.
+    # Default: use the same Python interpreter that runs Slife.
     # Avoids 'uv run' which can hit Windows file-lock errors when
     # uv tries to manage cached .exe wrappers.
     wrapper_command: str = sys.executable
     wrapper_args: list = None  # type: ignore[assignment]
-    # HTTP endpoint for the MCP wrapper. Always set — slife probes this
+    # HTTP endpoint for the MCP wrapper. Always set — Slife probes this
     # URL first, falls back to spawning a child process via stdio.
     # The wrapper server also reads this when started standalone:
     #   python -m slife_mcp.server --transport http [--config slife.json5]
@@ -209,7 +209,7 @@ class MemoryConfig:
 
 @dataclass
 class Config:
-    """Top-level configuration for slife."""
+    """Top-level configuration for Slife."""
 
     models: list[ModelConfig]
     active_model_ref: str

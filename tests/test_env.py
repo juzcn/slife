@@ -1,4 +1,4 @@
-"""Tests for slife.env — environment variable resolution."""
+"""Tests for Slife.env — environment variable resolution."""
 
 import os
 

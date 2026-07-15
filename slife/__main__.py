@@ -1,4 +1,4 @@
-"""Allow running as: python -m slife [--headless] [--agent <agent-name>]"""
+"""Allow running as: python -m Slife [--headless] [--agent <agent-name>]"""
 
 import sys
 

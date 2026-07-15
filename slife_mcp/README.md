@@ -110,7 +110,7 @@ Lazy servers connect at startup but don't disclose tools. Clients browse tools w
 | Mode | Trigger | Use case |
 |------|---------|----------|
 | HTTP | TTY (terminal) with `slife.json5` | Standalone service, shared by multiple clients |
-| stdio | Piped stdin (child process) | Spawned by slife agent as a subprocess |
+| stdio | Piped stdin (child process) | Spawned by Slife agent as a subprocess |
 
 **Auto-detection logic:**
 
@@ -127,7 +127,7 @@ In stdio mode, the server reads/writes JSON-RPC messages on stdin/stdout — exa
 ```
 ┌──────────┐     HTTP/stdio     ┌───────────────┐     JSON-RPC      ┌──────────────────┐
 │  Client  │ ◄────────────────► │   slife-mcp   │ ◄───────────────► │  External MCP    │
-│ (slife)  │                    │   (FastMCP)   │     subprocess     │  servers          │
+│ (Slife)  │                    │   (FastMCP)   │     subprocess     │  servers          │
 └──────────┘                    │               │                    │  ┌─ filesystem   │
                                 │ ConnectionPool│                    │  ├─ serper       │
                                 │  ├─ conn #1   │───────────────────│  ├─ fetch        │

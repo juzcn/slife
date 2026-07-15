@@ -1,4 +1,4 @@
-"""Chat view widgets for the slife TUI — Claude Code CLI style."""
+"""Chat view widgets for the Slife TUI — Claude Code CLI style."""
 
 from textual.containers import VerticalScroll
 from textual.content import Content

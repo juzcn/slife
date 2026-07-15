@@ -1,1 +1,1 @@
-"""Test suite for slife."""
+"""Test suite for Slife."""

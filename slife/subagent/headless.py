@@ -1,4 +1,4 @@
-"""Headless slife — JSON-RPC 2.0 over stdin/stdout (A2A spec §9).
+"""Headless Slife — JSON-RPC 2.0 over stdin/stdout (A2A spec §9).
 
 Protocol::
 
@@ -19,7 +19,7 @@ import sys
 import threading
 from pathlib import Path
 
-logger = logging.getLogger("slife.subagent")
+logger = logging.getLogger("Slife.subagent")
 
 
 _log_handler: logging.FileHandler | None = None

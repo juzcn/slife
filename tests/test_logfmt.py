@@ -1,4 +1,4 @@
-"""Tests for slife.logfmt — structured logging, contextvars, timing, stderr."""
+"""Tests for Slife.logfmt — structured logging, contextvars, timing, stderr."""
 
 import asyncio
 import logging
@@ -42,7 +42,7 @@ class TestSessionId:
     def test_get_session_id_uninitialized(self):
         import contextvars
         token = contextvars.ContextVar("_reset", default="").set("")
-        # Fresh contextvar without the slife one — get_session_id returns placeholder
+        # Fresh contextvar without the Slife one — get_session_id returns placeholder
         # But we can't reset the actual module-level var without affecting other tests.
         # Instead verify the fallback behavior via direct check:
         # get_session_id returns '' initially if never called before

@@ -1,4 +1,4 @@
-"""Tests for slife.platform — platform detection and Python script runner."""
+"""Tests for Slife.platform — platform detection and Python script runner."""
 
 import sys
 import pytest

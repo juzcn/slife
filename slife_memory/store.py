@@ -31,7 +31,7 @@ def _serialize_f32(vector: list[float]) -> bytes:
 
 
 class SessionStore:
-    """Manages the slife memory database.
+    """Manages the Slife memory database.
 
     Usage::
 
@@ -43,7 +43,7 @@ class SessionStore:
             author="alice",
             who_helped="assistant",
             what_model="deepseek/deepseek-chat",
-            system_prompt="You are slife...",
+            system_prompt="You are Slife...",
         )
 
         # Save after each turn
@@ -197,7 +197,7 @@ class SessionStore:
             "diary_opened author=%s rowid=%s", author, rowid,
         )
 
-        # Always check for a restorable last session — slife is a
+        # Always check for a restorable last session — Slife is a
         # permanent-memory agent, so every restart should offer to
         # continue the previous conversation.
         last_diary = await self._find_last_diary(author, exclude_rowid=rowid)

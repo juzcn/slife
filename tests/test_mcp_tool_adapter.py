@@ -1,4 +1,4 @@
-"""Tests for slife.mcp.tool_adapter — MCPProxyTool and create_proxy_tools."""
+"""Tests for Slife.mcp.tool_adapter — MCPProxyTool and create_proxy_tools."""
 
 import json
 from unittest.mock import AsyncMock, MagicMock, patch

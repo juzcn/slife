@@ -1,4 +1,4 @@
-"""Tests for slife.bootstrap — logging setup and session initialization."""
+"""Tests for Slife.bootstrap — logging setup and session initialization."""
 
 import logging
 from pathlib import Path

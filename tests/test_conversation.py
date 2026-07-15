@@ -1,4 +1,4 @@
-"""Tests for slife.agent.conversation — conversation history management."""
+"""Tests for Slife.agent.conversation — conversation history management."""
 
 import pytest
 

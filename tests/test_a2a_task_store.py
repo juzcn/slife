@@ -1,4 +1,4 @@
-"""Tests for slife.a2a.task_store — TaskRecord and TaskStore."""
+"""Tests for Slife.a2a.task_store — TaskRecord and TaskStore."""
 
 import pytest
 

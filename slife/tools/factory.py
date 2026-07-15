@@ -62,7 +62,7 @@ def create_tools_from_config(
 
 
 def _discover_tools():
-    """Import all modules in slife.tools and yield every Tool subclass.
+    """Import all modules in Slife.tools and yield every Tool subclass.
 
     Uses pkgutil.iter_modules so new tool files are picked up
     automatically — no manual imports or registry entries needed.

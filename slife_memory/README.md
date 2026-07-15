@@ -1,6 +1,6 @@
 # slife-memory
 
-Permanent memory MCP service for [slife](https://github.com/juzcn/slife) — records every conversation like a diary with hybrid keyword + semantic search.
+Permanent memory MCP service for [Slife](https://github.com/juzcn/Slife) — records every conversation like a diary with hybrid keyword + semantic search.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ slife-memory is an **independent MCP service** — same pattern as slife-mcp. It
 ## Quick Start
 
 ```bash
-# As a child process (slife handles this automatically)
+# As a child process (Slife handles this automatically)
 uv run python -m slife_memory.server
 
 # As a standalone HTTP service
@@ -28,7 +28,7 @@ uv run python -m slife_memory.server
 
 ## Tools
 
-All tools take an `author` parameter for user isolation (maps to `--user` in slife).
+All tools take an `author` parameter for user isolation (maps to `--user` in Slife).
 
 | Tool | Tier | What it does |
 |---|---|---|
@@ -42,7 +42,7 @@ All tools take an `author` parameter for user isolation (maps to `--user` in sli
 
 ### Progressive Disclosure
 
-Tools follow the same tiered pattern as slife's skills and MCP tools:
+Tools follow the same tiered pattern as Slife's skills and MCP tools:
 
 1. **Summary tier** (always loaded): open/close/list/update — lightweight, always available
 2. **Search tier** (loaded when needed): `memory_search` — hybrid keyword + semantic
@@ -70,14 +70,14 @@ Embedding credentials are inherited from `models.providers` — same API key as 
 ## Recovery Flow
 
 ```
-slife startup
+Slife startup
   → memory_open_diary(author="alice")
     → checks for status='进行中'
     → if found: returns interrupted=true + session info
     → if not: creates fresh diary entry
 ```
 
-If a previous session is found (interrupted or completed), slife prompts the user to restore or start fresh.
+If a previous session is found (interrupted or completed), Slife prompts the user to restore or start fresh.
 
 ## Requirements
 

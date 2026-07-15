@@ -1,4 +1,4 @@
-"""Tests for slife.tools.cli — CLI tool registration with source tracking."""
+"""Tests for Slife.tools.cli — CLI tool registration with source tracking."""
 
 import json5
 import pytest

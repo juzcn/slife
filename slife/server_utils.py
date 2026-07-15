@@ -1,4 +1,4 @@
-"""Shared utilities for slife MCP server entry points.
+"""Shared utilities for Slife MCP server entry points.
 
 Used by slife_mcp.server and slife_memory.server to avoid duplicating
 URL parsing, config reading, and logging setup across services.

@@ -1,4 +1,4 @@
-"""Tests for slife.tools.base — abstract Tool base class."""
+"""Tests for Slife.tools.base — abstract Tool base class."""
 
 import pytest
 

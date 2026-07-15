@@ -1,4 +1,4 @@
-"""Tests for slife.tools.config_env — env var management tools."""
+"""Tests for Slife.tools.config_env — env var management tools."""
 
 import os
 from pathlib import Path

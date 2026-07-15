@@ -1,4 +1,4 @@
-"""Tests for slife.tools.skill — skill management with source tracking."""
+"""Tests for Slife.tools.skill — skill management with source tracking."""
 
 import json
 import json5

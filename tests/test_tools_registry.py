@@ -1,4 +1,4 @@
-"""Tests for slife.tools.registry — ToolRegistry."""
+"""Tests for Slife.tools.registry — ToolRegistry."""
 
 import pytest
 

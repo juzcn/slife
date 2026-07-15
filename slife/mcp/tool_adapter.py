@@ -1,4 +1,4 @@
-"""MCP tool adapter — bridges MCP tools into slife's Tool interface.
+"""MCP tool adapter — bridges MCP tools into Slife's Tool interface.
 
 Enables MCP tools (discovered via the slife-mcp wrapper) to be registered
 in slife's ToolRegistry and called like native tools.
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class MCPProxyTool(Tool):
-    """Adapts a single MCP tool to slife's Tool ABC.
+    """Adapts a single MCP tool to Slife's Tool ABC.
 
     An instance represents one tool from a connected external MCP server,
     made available to the LLM via slife's standard tool system.
