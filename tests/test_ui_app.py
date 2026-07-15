@@ -319,7 +319,7 @@ class TestTUIHandler:
         app._tool_widgets = {}
         mock_chat_view = app.query_one.return_value
 
-        with patch("Slife.ui.handler.ToolCallWidget") as mock_widget_cls:
+        with patch("slife.ui.handler.ToolCallWidget") as mock_widget_cls:
             mock_widget = MagicMock()
             mock_widget.tool_name = "web_search"
             mock_widget.tool_call_id = "c1"
@@ -367,7 +367,7 @@ class TestStatusBar:
     """Tests for StatusBar.update_info — pure logic test."""
 
     def test_update_info_minimal(self):
-        with patch("Slife.ui.app.Static.__init__", return_value=None):
+        with patch("slife.ui.app.Static.__init__", return_value=None):
             bar = StatusBar()
         bar.update = MagicMock()
         bar.update_info(model="GPT-4o")
@@ -375,7 +375,7 @@ class TestStatusBar:
         assert "GPT-4o" in text
 
     def test_update_info_full(self):
-        with patch("Slife.ui.app.Static.__init__", return_value=None):
+        with patch("slife.ui.app.Static.__init__", return_value=None):
             bar = StatusBar()
         bar.update = MagicMock()
         bar.update_info(model="DeepSeek V4", tokens=1500, thinking=True)
@@ -385,7 +385,7 @@ class TestStatusBar:
         assert "thinking" in text
 
     def test_update_info_no_model(self):
-        with patch("Slife.ui.app.Static.__init__", return_value=None):
+        with patch("slife.ui.app.Static.__init__", return_value=None):
             bar = StatusBar()
         bar.update = MagicMock()
         bar.update_info()
@@ -393,7 +393,7 @@ class TestStatusBar:
         assert "Ctrl+C" in text
 
     def test_update_info_no_tokens_hides_count(self):
-        with patch("Slife.ui.app.Static.__init__", return_value=None):
+        with patch("slife.ui.app.Static.__init__", return_value=None):
             bar = StatusBar()
         bar.update = MagicMock()
         bar.update_info(model="Test", tokens=0)

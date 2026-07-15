@@ -91,6 +91,8 @@ Every turn — user message, assistant thinking, tool calls and their outputs, f
 
 Memory runs as an **independent MCP service** (`slife-memory`), same architecture as slife-mcp. If Slife crashes, turns already saved are safe — no data loss.
 
+**Each turn is saved atomically when it completes.** If you press Ctrl+C mid-turn (while the LLM is still generating), the current turn is lost — only prior completed turns survive. This prevents partial, incomplete responses from polluting your knowledge base.
+
 **LLM tools:**
 
 | Tool | Description |

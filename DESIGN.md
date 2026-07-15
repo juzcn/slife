@@ -381,6 +381,8 @@ Slife restart ──→ get_recent_turns() ──→ rebuild conversation
 
 If memory were in-process, a crash would race with the final database write. A separate process observes the disconnection and marks the crash — no race window, no data loss.
 
+**Important:** memory is saved *at the end of each turn*, not mid-turn. If Slife crashes or the user presses Ctrl+C while the LLM is still generating a response (tools running, thinking in progress), that turn is **not saved** — there is no partial write. Only completed turns are persisted. This is by design: an incomplete turn would be misleading when recalled later.
+
 ### Diary Schema
 
 One row = one turn. No sessions, no status, no lifecycle — just time-ordered records.
@@ -459,9 +461,15 @@ Every restart automatically restores recent turns.  Since each turn is independe
 saved, recovery is simply: load the most recent N turns by rowid, extract their
 messages, rebuild the conversation.
 
-1. `save_to_memory()` extracts the just-completed turn's messages and INSERTs a row.
-2. On restart, `get_recent_turns(author, limit=50)` returns the last 50 turns.
-3. The UI rebuilds by concatenating all turn messages and recreating widgets.
+1. `save_to_memory()` is called **once per turn**, after `agent_loop.run()` completes
+   (i.e., after the LLM finishes its final response, not after each tool-call
+   iteration).  It extracts the just-completed turn's messages and INSERTs a row.
+2. If the user exits or crashes mid-turn — while the LLM is still calling tools,
+   reasoning, or streaming — the turn is **not saved**.  Only completed turns are
+   persisted.  On restart, the last partial turn is gone; work restarts from the
+   end of the previous completed turn.
+3. On restart, `get_recent_turns(author, limit=50)` returns the last 50 turns.
+4. The UI rebuilds by concatenating all turn messages and recreating widgets.
 
 No trim_count needed — each turn is its own row, immutable once written.
 If no prior turns exist, starts fresh.

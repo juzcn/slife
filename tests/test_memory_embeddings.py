@@ -7,7 +7,6 @@ import pytest
 from slife_memory.embeddings import (
     EmbeddingClient,
     _guess_dim,
-    _KNOWN_DIMS,
 )
 
 

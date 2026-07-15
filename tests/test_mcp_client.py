@@ -155,7 +155,7 @@ class TestMCPClientConnectHTTP:
     """Tests for connect_http."""
 
     @pytest.mark.asyncio
-    @patch("Slife.mcp.client.ClientSession")
+    @patch("slife.mcp.client.ClientSession")
     @patch("mcp.client.streamable_http.streamablehttp_client")
     async def test_connect_http_success(self, mock_streamable, mock_session_cls):
         mock_session = MagicMock()
@@ -187,7 +187,7 @@ class TestMCPClientConnectHTTP:
             mock_streamable.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("Slife.mcp.client.ClientSession")
+    @patch("slife.mcp.client.ClientSession")
     @patch("mcp.client.streamable_http.streamablehttp_client")
     async def test_connect_http_custom_url(self, mock_streamable, mock_session_cls):
         mock_session = MagicMock()

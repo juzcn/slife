@@ -93,29 +93,28 @@ class TestMergeHybrid:
 
     def test_info_populated_from_keyword(self):
         kw = [{
-            "rowid": 42, "title": "My Chat", "summary": "Great chat",
+            "rowid": 42, "user_message": "My Chat", "summary": "Great chat",
             "tags": "ai,Slife", "created_at": "2024-06-01T10:00:00",
-            "how_many_turns": 5, "snippet": "matched text...",
+            "snippet": "matched text...",
         }]
         result = merge_hybrid(kw, [])
         r = result[0]
-        assert r["title"] == "My Chat"
+        assert r["user_message"] == "My Chat"
         assert r["summary"] == "Great chat"
         assert r["tags"] == "ai,Slife"
         assert r["created_at"] == "2024-06-01T10:00:00"
-        assert r["how_many_turns"] == 5
         assert r["snippet"] == "matched text..."
         assert r["distance"] is None
 
     def test_info_populated_from_semantic(self):
         sem = [{
-            "rowid": 7, "title": "Semantic", "summary": "Sem summary",
-            "tags": "sem", "created_at": "2024-07-01", "how_many_turns": 3,
+            "rowid": 7, "user_message": "Semantic", "summary": "Sem summary",
+            "tags": "sem", "created_at": "2024-07-01",
             "distance": 0.123,
         }]
         result = merge_hybrid([], sem)
         r = result[0]
-        assert r["title"] == "Semantic"
+        assert r["user_message"] == "Semantic"
         assert r["distance"] == 0.123
         assert r["keyword_rank"] is None
         assert r["snippet"] == ""

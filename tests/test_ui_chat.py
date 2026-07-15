@@ -43,7 +43,7 @@ class TestAssistantMessage:
 
     def _make_msg(self):
         """Make a bare AssistantMessage with necessary attrs set."""
-        with patch("Slife.ui.chat.Static.__init__", return_value=None):
+        with patch("slife.ui.chat.Static.__init__", return_value=None):
             from slife.ui.chat import AssistantMessage
             msg = AssistantMessage.__new__(AssistantMessage)
             msg._buffer = ""
@@ -266,7 +266,7 @@ class TestChatView:
 
     def test_can_focus_is_true(self):
         """ChatView needs focus to receive keyboard scroll bindings."""
-        with patch("Slife.ui.chat.VerticalScroll.__init__", return_value=None):
+        with patch("slife.ui.chat.VerticalScroll.__init__", return_value=None):
             from slife.ui.chat import ChatView
             view = ChatView()
             assert view.can_focus is True

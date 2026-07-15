@@ -133,7 +133,7 @@ class TestAgentServiceMCPLifecycle:
         assert service._mcp_client is None
 
     @pytest.mark.asyncio
-    @patch("Slife.agent.service.MCPClient.is_wrapper_running", return_value=True)
+    @patch("slife.agent.service.MCPClient.is_wrapper_running", return_value=True)
     async def test_start_mcp_http(self, mock_probe):
         config = make_mock_config()
         # Enable MCP in config
@@ -204,19 +204,19 @@ class TestAgentServiceMemory:
         config.memory_config.enabled = False
         service = AgentService(config)
         result = await service.start_memory()
-        assert result is None
+        assert result is False
 
     @pytest.mark.asyncio
     async def test_save_to_memory_disabled_noop(self):
         service = AgentService(make_mock_config())
-        # Should not raise
-        await service.save_to_memory(turn_count=1, token_count=100)
+        # Should not raise — memory_enabled is False, so it returns early
+        await service.save_to_memory(user_message="test", token_count=100)
 
     @pytest.mark.asyncio
-    async def test_check_interrupted_disabled_returns_none(self):
+    async def test_save_to_memory_no_user_message(self):
         service = AgentService(make_mock_config())
-        result = await service.check_interrupted()
-        assert result is None
+        # Should not raise with no user_message
+        await service.save_to_memory()
 
     @pytest.mark.asyncio
     async def test_stop_memory_noop_when_disabled(self):
@@ -352,20 +352,13 @@ class TestAgentServiceStopMemory:
         service = AgentService(make_mock_config())
         mock_client = MagicMock()
         mock_client.is_connected = True
-        mock_client.call_tool = AsyncMock()
         mock_client.disconnect = AsyncMock()
         service._memory_client = mock_client
-        service._diary_rowid = 42
 
         await service.stop_memory()
 
-        mock_client.call_tool.assert_called_once_with(
-            "memory_close_diary",
-            {"rowid": 42, "author": service.config.user},
-        )
         mock_client.disconnect.assert_called_once()
         assert service._memory_client is None
-        assert service._diary_rowid is None
 
     @pytest.mark.asyncio
     async def test_stop_memory_with_process(self):

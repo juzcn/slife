@@ -25,7 +25,6 @@ class TestNow:
     def test_returns_iso_format(self):
         result = _now()
         assert "T" in result
-        assert "+" in result or result.endswith("Z")
 
 
 class TestSerializeF32:
@@ -128,15 +127,12 @@ class TestSessionStoreSetup:
 
         mock_connect.side_effect = _connect
 
-        # Patch sqlite_vec inside _load_vec_extension
         with patch("sqlite_vec.loadable_path", return_value="/path/to/vec"):
             store = SessionStore(Path("/tmp/test.db"))
             await store.setup()
 
         mock_connect.assert_called_once()
-        mock_conn.executescript.assert_called_once()
         mock_conn.commit.assert_called()
-
 
     @pytest.mark.asyncio
     @patch("pathlib.Path.mkdir")
@@ -158,11 +154,9 @@ class TestSessionStoreSetup:
         with patch("sqlite_vec.loadable_path", return_value="/path/to/vec"):
             store = SessionStore(Path("/tmp/test_idem.db"))
             await store.setup()
-            # Second setup should not raise — schema uses IF NOT EXISTS
             await store.setup()
 
         assert mock_connect.call_count == 2
-        assert mock_conn.executescript.call_count == 2
 
 
 class TestSessionStoreClose:
@@ -184,189 +178,98 @@ class TestSessionStoreClose:
         assert store._conn is None
 
 
-class TestSessionStoreOpenDiary:
-    """Tests for open_diary."""
+class TestSessionStoreSaveTurn:
+    """Tests for save_turn."""
 
     @pytest.mark.asyncio
-    async def test_open_diary_no_interrupted(self):
+    async def test_save_turn_basic(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
-        # 1st execute: find_interrupted → returns None
-        # 2nd execute: INSERT → returns cursor with lastrowid
-        # 3rd execute: _find_last_diary → returns None (no prior sessions)
-        mock_cursor_interrupted = AsyncMock()
-
-        async def _fetchone_none():
-            return None
-        mock_cursor_interrupted.fetchone = _fetchone_none
-
-        mock_cursor_last = AsyncMock()
-        mock_cursor_last.fetchone = _fetchone_none
-
-        mock_cursor_insert = MagicMock()
-        mock_cursor_insert.lastrowid = 42
-
-        async def _execute_side_effect(*args, **kwargs):
-            call_count = mock_conn.execute.call_count
-            if call_count == 1:
-                return mock_cursor_interrupted
-            elif call_count == 2:
-                return mock_cursor_insert
-            else:
-                return mock_cursor_last
-
-        mock_conn.execute = AsyncMock(side_effect=_execute_side_effect)
+        mock_cursor = MagicMock()
+        mock_cursor.lastrowid = 42
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
         mock_conn.commit = AsyncMock()
         store._conn = mock_conn
 
-        result = await store.open_diary(
+        rowid = await store.save_turn(
             author="testuser",
+            user_message="Hello",
+            token_count=10,
             who_helped="assistant",
             what_model="deepseek/flash",
-            system_prompt="You are helpful.",
         )
 
-        assert result["rowid"] == 42
-        assert result["interrupted"] is False
+        assert rowid == 42
+        mock_conn.execute.assert_called()
+        mock_conn.commit.assert_called()
 
     @pytest.mark.asyncio
-    async def test_open_diary_with_interrupted(self):
+    async def test_save_turn_with_embedder(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
-
-        interrupted_row = {
-            "rowid": 99, "author": "testuser", "title": "Previous",
-            "created_at": "2024-01-01T00:00:00", "updated_at": "2024-01-01T01:00:00",
-            "status": "进行中", "how_many_turns": 3, "how_many_tokens": 500,
-            "who_helped": "assistant", "what_model": "deepseek/flash",
-        }
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value=interrupted_row)
+        mock_cursor = MagicMock()
+        mock_cursor.lastrowid = 1
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        store._conn = mock_conn
-
-        result = await store.open_diary(author="testuser")
-
-        assert result["rowid"] == 99
-        assert result["interrupted"] is True
-        assert result["title"] == "Previous"
-
-
-class TestSessionStoreUpdateDiary:
-    """Tests for update_diary."""
-
-    @pytest.mark.asyncio
-    async def test_update_with_messages_and_counts(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock()
         mock_conn.commit = AsyncMock()
         store._conn = mock_conn
 
-        await store.update_diary(
-            rowid=1, author="user",
-            messages=[{"role": "user", "content": "hello"}],
-            turn_count=2, token_count=100,
+        mock_embedder = MagicMock()
+        mock_embedder.available = True
+        mock_embedder.max_tokens = 8192
+        mock_embedder.embed_one = AsyncMock(return_value=[0.1, 0.2, 0.3])
+
+        rowid = await store.save_turn(
+            author="testuser",
+            user_message="Hello",
+            embedder=mock_embedder,
         )
 
-        mock_conn.execute.assert_called_once()
-        mock_conn.commit.assert_called_once()
+        assert rowid == 1
+        mock_embedder.embed_one.assert_called()
 
     @pytest.mark.asyncio
-    async def test_update_messages_only(self):
+    async def test_save_turn_embedder_skip_on_overflow(self):
+        """When the turn text exceeds the model's token limit, skip embedding."""
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock()
+        mock_cursor = MagicMock()
+        mock_cursor.lastrowid = 1
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
         mock_conn.commit = AsyncMock()
         store._conn = mock_conn
 
-        await store.update_diary(
-            rowid=1, author="user",
-            messages=[{"role": "user", "content": "hi"}],
+        mock_embedder = MagicMock()
+        mock_embedder.available = True
+        mock_embedder.max_tokens = 1  # Very small limit
+
+        rowid = await store.save_turn(
+            author="testuser",
+            user_message="Hello world " * 500,  # Way over the limit
+            embedder=mock_embedder,
         )
 
-        mock_conn.execute.assert_called_once()
-        mock_conn.commit.assert_called_once()
+        assert rowid == 1
+        # embed_one should NOT have been called — text was too long
+        mock_embedder.embed_one.assert_not_called()
+
+
+class TestSessionStoreGetTurn:
+    """Tests for get_turn."""
 
     @pytest.mark.asyncio
-    async def test_update_counters_only(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock()
-        mock_conn.commit = AsyncMock()
-        store._conn = mock_conn
-
-        await store.update_diary(
-            rowid=1, author="user",
-            turn_count=5, token_count=200,
-        )
-
-        mock_conn.execute.assert_called_once()
-        mock_conn.commit.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_update_timestamp_only(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock()
-        mock_conn.commit = AsyncMock()
-        store._conn = mock_conn
-
-        await store.update_diary(rowid=1, author="user")
-        mock_conn.commit.assert_called_once()
-
-
-class TestSessionStoreCloseDiary:
-    """Tests for close_diary."""
-
-    @pytest.mark.asyncio
-    async def test_close_diary(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock()
-        mock_conn.commit = AsyncMock()
-        store._conn = mock_conn
-
-        await store.close_diary(rowid=1, author="user")
-
-        mock_conn.execute.assert_called_once()
-        mock_conn.commit.assert_called_once()
-
-
-class TestSessionStoreMarkCrashed:
-    """Tests for mark_crashed."""
-
-    @pytest.mark.asyncio
-    async def test_mark_crashed(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock()
-        mock_conn.commit = AsyncMock()
-        store._conn = mock_conn
-
-        await store.mark_crashed(rowid=1, author="user")
-
-        mock_conn.execute.assert_called_once()
-        mock_conn.commit.assert_called_once()
-
-
-class TestSessionStoreGetDiary:
-    """Tests for get_diary."""
-
-    @pytest.mark.asyncio
-    async def test_get_diary_found(self):
+    async def test_get_turn_found(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value={"rowid": 1, "title": "Test"})
+        mock_cursor.fetchone = AsyncMock(return_value={"rowid": 1, "user_message": "Hello"})
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.get_diary(rowid=1, author="user")
-        assert result == {"rowid": 1, "title": "Test"}
+        result = await store.get_turn(rowid=1, author="user")
+        assert result == {"rowid": 1, "user_message": "Hello"}
 
     @pytest.mark.asyncio
-    async def test_get_diary_not_found(self):
+    async def test_get_turn_not_found(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
@@ -374,8 +277,99 @@ class TestSessionStoreGetDiary:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.get_diary(rowid=999, author="user")
+        result = await store.get_turn(rowid=999, author="user")
         assert result is None
+
+
+class TestSessionStoreGetRecentTurns:
+    """Tests for get_recent_turns."""
+
+    @pytest.mark.asyncio
+    async def test_get_recent_turns(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": 1, "user_message": "Turn 1"},
+            {"rowid": 2, "user_message": "Turn 2"},
+        ])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        result = await store.get_recent_turns(author="user", limit=50)
+        assert len(result) == 2
+        assert result[0]["user_message"] == "Turn 1"
+        assert result[1]["user_message"] == "Turn 2"
+
+
+class TestSessionStoreHasTurns:
+    """Tests for has_turns."""
+
+    @pytest.mark.asyncio
+    async def test_has_turns_true(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone = AsyncMock(return_value=(1,))
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        result = await store.has_turns(author="user")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_has_turns_false(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone = AsyncMock(return_value=None)
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        result = await store.has_turns(author="user")
+        assert result is False
+
+
+class TestSessionStoreCountTurns:
+    """Tests for count_turns."""
+
+    @pytest.mark.asyncio
+    async def test_count_no_filter(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+
+        total_cursor = AsyncMock()
+        total_cursor.fetchone = AsyncMock(return_value=(42,))
+
+        mock_conn.execute = AsyncMock(return_value=total_cursor)
+        store._conn = mock_conn
+
+        result = await store.count_turns(author="user")
+        assert result["total"] == 42
+        assert result["filtered"] == 42
+
+    @pytest.mark.asyncio
+    async def test_count_with_fts5_query(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+
+        call_count = [0]
+
+        async def _execute_side_effect(*args, **kwargs):
+            call_count[0] += 1
+            cursor = AsyncMock()
+            if call_count[0] == 1:
+                cursor.fetchone = AsyncMock(return_value=(10,))
+            else:
+                cursor.fetchone = AsyncMock(return_value=(3,))
+            return cursor
+
+        mock_conn.execute = AsyncMock(side_effect=_execute_side_effect)
+        store._conn = mock_conn
+
+        result = await store.count_turns(author="user", query="hello", mode="fts5")
+        assert result["total"] == 10
+        assert result["filtered"] == 3
 
 
 class TestSessionStoreListRecent:
@@ -387,14 +381,16 @@ class TestSessionStoreListRecent:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 1, "title": "Chat 1"},
-            {"rowid": 2, "title": "Chat 2"},
+            {"rowid": 2, "user_message": "Chat 2"},
+            {"rowid": 1, "user_message": "Chat 1"},
         ])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
         result = await store.list_recent(author="user", limit=5)
         assert len(result) == 2
+        # Newest first
+        assert result[0]["rowid"] == 2
 
 
 class TestSessionStoreUpdateSummary:
@@ -410,8 +406,7 @@ class TestSessionStoreUpdateSummary:
 
         await store.update_summary(
             rowid=1, author="user",
-            title="My Chat", summary="Great conversation",
-            tags="ai,chat", key_moments="Found bug",
+            summary="Great conversation", tags="ai,chat",
         )
         mock_conn.commit.assert_called_once()
 
@@ -425,37 +420,147 @@ class TestSessionStoreUpdateSummary:
         mock_conn.execute.assert_not_called()
 
 
-
-
-class TestSessionStoreFindInterrupted:
-    """Tests for find_interrupted."""
+class TestSessionStoreSearchKeyword:
+    """Tests for search_keyword."""
 
     @pytest.mark.asyncio
-    async def test_find_interrupted_found(self):
+    async def test_search_keyword(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value={
-            "rowid": 5, "author": "user", "title": "Crashed",
-        })
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": 1, "user_message": "Hello world", "snippet": "Hello…", "rank": 0.1},
+        ])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.find_interrupted(author="user")
-        assert result is not None
-        assert result["rowid"] == 5
+        result = await store.search_keyword(author="user", query="hello")
+        assert len(result) == 1
+        assert result[0]["rowid"] == 1
 
     @pytest.mark.asyncio
-    async def test_find_interrupted_none(self):
+    async def test_search_keyword_handles_parse_error(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        import aiosqlite as aiosqlite_mod
+
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock(
+            side_effect=aiosqlite_mod.OperationalError("malformed MATCH expression")
+        )
+        store._conn = mock_conn
+
+        result = await store.search_keyword(author="user", query="bad!!query")
+        assert result == []
+
+
+class TestSessionStoreSearchGrep:
+    """Tests for search_grep."""
+
+    @pytest.mark.asyncio
+    async def test_search_grep(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value=None)
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": 1, "user_message": "Hello", "context": "Hello world"},
+        ])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.find_interrupted(author="user")
-        assert result is None
+        result = await store.search_grep(author="user", pattern="Hello")
+        assert len(result) == 1
+
+
+class TestSessionStoreSearchTime:
+    """Tests for search_time."""
+
+    @pytest.mark.asyncio
+    async def test_search_time(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": 1, "user_message": "Old turn"},
+        ])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        result = await store.search_time(
+            author="user",
+            since="2024-01-01",
+            until="2024-12-31",
+        )
+        assert len(result) == 1
+
+
+class TestSessionStoreSearchSemantic:
+    """Tests for search_semantic."""
+
+    @pytest.mark.asyncio
+    async def test_search_semantic(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": 1, "summary": "A chat", "distance": 0.5},
+        ])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        result = await store.search_semantic(
+            author="user",
+            embedding=[0.1, 0.2, 0.3],
+        )
+        assert len(result) == 1
+
+
+class TestSessionStoreUpsertEmbedding:
+    """Tests for upsert_embedding."""
+
+    @pytest.mark.asyncio
+    async def test_upsert_insert(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone = AsyncMock(return_value=None)  # No existing
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        mock_conn.commit = AsyncMock()
+        store._conn = mock_conn
+
+        await store.upsert_embedding(
+            rowid=1, author="user",
+            summary="", tags="", created_at="2024-01-01T00:00:00",
+            turn_embedding=[0.1, 0.2, 0.3],
+        )
+        assert mock_conn.execute.call_count == 2  # SELECT + INSERT
+        mock_conn.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_upsert_update_existing(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        # First call: check existing -> found; second: DELETE; third: INSERT
+        call_count = [0]
+
+        async def _side_effect(*args, **kwargs):
+            call_count[0] += 1
+            cursor = AsyncMock()
+            if call_count[0] == 1:
+                cursor.fetchone = AsyncMock(return_value={"rowid": 1})
+            else:
+                cursor.fetchone = AsyncMock(return_value=None)
+            return cursor
+
+        mock_conn.execute = AsyncMock(side_effect=_side_effect)
+        mock_conn.commit = AsyncMock()
+        store._conn = mock_conn
+
+        await store.upsert_embedding(
+            rowid=1, author="user",
+            summary="updated", tags="new", created_at="2024-01-01T00:00:00",
+            turn_embedding=[0.4, 0.5, 0.6],
+        )
+        assert mock_conn.execute.call_count == 3  # SELECT + DELETE + INSERT
 
 
 class TestSessionStoreHasEmbedding:

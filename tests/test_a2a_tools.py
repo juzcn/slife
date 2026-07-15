@@ -20,8 +20,8 @@ from slife.tools.a2a import (
 )
 
 # Patch paths: tools use lazy imports from Slife.a2a.client / Slife.subagent.process
-CLIENT_PATH = "Slife.a2a.client.get_client"
-MANAGER_PATH = "Slife.subagent.process.get_manager"
+CLIENT_PATH = "slife.a2a.client.get_client"
+MANAGER_PATH = "slife.subagent.process.get_manager"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Metadata tests — every tool
@@ -598,7 +598,7 @@ class TestA2ANotifyUserTool:
     @pytest.mark.asyncio
     async def test_notification_sent(self):
         tool = A2ANotifyUserTool()
-        with patch("Slife.tools.a2a._desktop_notify"):
+        with patch("slife.tools.a2a._desktop_notify"):
             result = await tool.execute(title="Test", message="Hello world")
         assert "Notification sent" in result
         assert "Test" in result

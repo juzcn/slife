@@ -10,7 +10,7 @@ def _make_widget(**kwargs):
     ToolCallWidget extends Static — we patch Static.__init__ to skip
     Textual's real constructor, then set up test state manually.
     """
-    with patch("Slife.ui.tool_display.Static.__init__", return_value=None):
+    with patch("slife.ui.tool_display.Static.__init__", return_value=None):
         from slife.ui.tool_display import ToolCallWidget
         w = ToolCallWidget.__new__(ToolCallWidget)
         w.tool_name = kwargs.get("tool_name", "web_search")
