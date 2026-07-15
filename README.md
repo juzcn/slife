@@ -87,9 +87,19 @@ External CLI commands the LLM discovers and registers for future use. After succ
 
 ### Memory & Knowledge Base
 
-Every conversation is permanently recorded in a SQLite database (`~/.slife/slife.db`) — user messages, assistant thinking, tool calls and their outputs, file contents, web pages, API responses, errors. It's all there, immutable and searchable.
+Every turn — user message, assistant thinking, tool calls and their outputs, file contents, web pages, API responses, errors — is permanently recorded as an independent, immutable row. No sessions, no lifecycle. Memory is a continuous time-ordered log.
 
-Memory runs as an **independent MCP service** (`slife-memory`), same architecture as slife-mcp. If Slife crashes, the memory service stays alive and marks the session as interrupted — no race condition, no data loss.
+Memory runs as an **independent MCP service** (`slife-memory`), same architecture as slife-mcp. If Slife crashes, turns already saved are safe — no data loss.
+
+**LLM tools:**
+
+| Tool | Description |
+|------|-------------|
+| `memory_count` | How much you know — total, by time range, or by search query |
+| `memory_search` | Four modes: grep, fts5, hybrid, time |
+| `memory_list_recent` | Browse recent turns |
+| `memory_open` | Load a turn's full messages by rowid |
+| `memory_summarize` | Annotate a turn with summary and tags |
 
 **Search modes:**
 
@@ -97,10 +107,12 @@ Memory runs as an **independent MCP service** (`slife-memory`), same architectur
 |------|---------|---------|
 | `grep` | SQLite LIKE | Exact strings: error messages, code snippets, file paths |
 | `fts5` | FTS5 + BM25 | Topic and keyword search |
-| `hybrid` | FTS5 + vec0 → RRF | Fuzzy recall — when you don't remember exact words |
+| `hybrid` | FTS5 + vec0 KNN → RRF | Semantic + keyword fusion |
 | `time` | SQLite range scan | Browse by date — when you know when but not what |
 
-Every restart automatically offers to restore the last session with its exact working context — even if Slife crashed.
+**Embedding:** Full turn text (user message + assistant + tool results) is embedded via a configurable backend (local GGUF or OpenAI API). If the text exceeds the model's token limit, embedding is skipped for that turn — keyword search still works, only semantic search misses it. No truncation.
+
+Every restart automatically restores recent turns.
 
 ```bash
 slife --user alice    # alice's knowledge

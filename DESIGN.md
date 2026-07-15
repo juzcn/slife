@@ -153,9 +153,16 @@ The active conversation stays within 20%–80% of the model's context window:
                        floor=0.2             ceiling=0.8
 ```
 
-- **Save**: after each turn, the full conversation is snapshotted (immutable), then the active context is trimmed to the working window. The cumulative `trim_count` is written alongside.
-- **Trim**: if tokens exceed `context_ceiling × window`, oldest complete turns are removed until tokens ≤ `context_floor × window`. Turns are never split — a turn starts with a user message and includes all following assistant and tool messages.
-- **Restore**: on restart, `trim_count` tells us exactly which messages to skip after the system prompt to recover the exact working context.
+- **Save**: after each turn, the turn is saved as a new row in memory. The active
+  context is then trimmed if it exceeds the ceiling.
+- **Trim**: if tokens exceed `context_ceiling × window`, oldest complete turns are
+  removed until tokens ≤ `context_floor × window`. Turns are never split — a turn
+  starts with a user message and includes all following assistant and tool messages.
+- **Tool result ceiling**: a single tool result (file read, web fetch, API response)
+  is capped at `tool_result_ceiling × context_window`. Default 0.2 (20%). Set to 0
+  to disable. Exceeded results are truncated with a notice.
+- **Restore**: on restart, recent turns are loaded by rowid and the conversation is
+  reconstructed. No `trim_count` needed — each turn is its own immutable row.
 
 Configure in `slife.json5`:
 ```json5
@@ -163,6 +170,7 @@ agent: {
     max_iterations: 10,
     context_floor: 0.2,
     context_ceiling: 0.8,
+    tool_result_ceiling: 0.2,   // max single tool result = 20% of context window
 }
 ```
 
@@ -566,7 +574,7 @@ All user-facing text (tool output, search results, file contents) is rendered wi
 
 1. **Models**: dispatches between provider-dict and flat-list formats. Provider defaults (api_key, base_url, api) are inherited by each model. Duplicate model IDs within a provider raise an error.
 2. **Env**: extracted and injected into `os.environ` so tools and subprocesses can reference values via `${VAR}`.
-3. **Agent**: `max_iterations`, `context_floor`, `context_ceiling`.
+3. **Agent**: `max_iterations`, `context_floor`, `context_ceiling`, `tool_result_ceiling`.
 4. **MCP**: enabled when servers are configured, `enabled: true` is explicit, or a custom wrapper is defined. `wrapper_url` always has a default (`http://127.0.0.1:9876/mcp`).
 5. **Memory**: enabled by default. Embedding backend auto-detected — local GGUF takes priority over API; if neither is configured, semantic search degrades gracefully.
 6. **A2A**: enabled only via `--agent` CLI flag. The `mqtt` config section provides broker connection details — it never auto-enables A2A.
