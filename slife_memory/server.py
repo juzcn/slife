@@ -50,8 +50,8 @@ def _get_db_path() -> Path:
 mcp = FastMCP(
     "slife-memory",
     instructions=(
-        "slife-memory — permanent conversation diary with hybrid search. "
-        "Every conversation is recorded as one diary row. "
+        "slife-memory — long-term knowledge with hybrid search. "
+        "Every session is permanently recorded as one row. "
         "LLM-visible tools: memory_list_recent, memory_search (grep/fts5/hybrid/time), "
         "memory_open, memory_summarize. "
         "All tools take an author parameter for --user isolation."
@@ -186,7 +186,9 @@ async def memory_update_diary(
 @mcp.tool(
     name="memory_list_recent",
     description=(
-        "List recent conversation diaries, newest first. "
+        "Browse your recent knowledge, newest first. "
+        "Each entry is a session of your work — reading files, writing code, "
+        "browsing the web, debugging problems. "
         "Returns rowid, title, summary, tags, created_at, turn/token counts. "
         "Lightweight — no full messages. Use memory_open to read a full entry."
     ),
@@ -208,9 +210,10 @@ async def memory_list_recent(
 @mcp.tool(
     name="memory_open",
     description=(
-        "Read a full conversation by rowid. "
-        "Returns the complete messages list (OpenAI JSON) plus title, summary, "
-        "tags, key_moments, and trim_count. "
+        "Retrieve a full session from your knowledge by rowid. "
+        "Returns the complete messages (OpenAI JSON) including every file "
+        "read, every web page fetched, and every line of code discussed — "
+        "plus title, summary, tags, key_moments, and trim_count. "
         "Find rowids via memory_list_recent or memory_search first."
     ),
 )
@@ -233,21 +236,26 @@ async def memory_open(rowid: int, author: str = "default") -> str:
 @mcp.tool(
     name="memory_search",
     description=(
-        "Search past conversations (excludes the active one). "
-        "Four modes: "
-        "'grep' — exact substring in full message text (error messages, code, "
-        "file paths). "
-        "'fts5' — keyword ranking via BM25 full-text index (topic search). "
-        "'hybrid' — fts5 + semantic vector search merged with RRF (default; "
-        "best for fuzzy recall when you don't remember exact words). "
-        "'time' — browse by time range, no text query needed. "
+        "Search your knowledge — everything you have ever read, written, "
+        "or discussed.  Files you opened, web pages you fetched, code you "
+        "saw, commands you ran, bugs you debugged — it's all in your "
+        "conversation history and searchable here.\n"
+        "\n"
+        "Four modes:\n"
+        "  'grep' — exact substring match (error messages, file paths, code).\n"
+        "  'fts5' — keyword ranking via BM25 (topic search).\n"
+        "  'hybrid' — fts5 + semantic merged with RRF (default; best when "
+        "you have a fuzzy idea of what you did).\n"
+        "  'time' — browse by date range, no query needed.\n"
+        "\n"
         "All modes accept since/until (ISO datetime, e.g. 2026-07-14T00:00:00) "
-        "to filter by created_at. YOU must convert relative time to ISO: "
-        "'yesterday' → compute yesterday's date; 'last week' → 7 days ago; "
-        "'this month' → first day of current month. Combine since+until for "
-        "a range. Omit both to search all time. "
-        "Use memory_open to read a full match."
-        "Use memory_open to read a full match."
+        "to filter by when you worked on it.  YOU must convert relative time "
+        "to ISO: 'yesterday' → compute the date; 'last week' → 7 days ago; "
+        "'this month' → first day of current month.  Combine since+until for "
+        "a range.  Omit both to search all time.\n"
+        "\n"
+        "Results are lightweight summaries.  Use memory_open to load the "
+        "full session when you find what you're looking for."
     ),
 )
 async def memory_search(
@@ -362,10 +370,11 @@ async def memory_search(
 @mcp.tool(
     name="memory_summarize",
     description=(
-        "Annotate a diary entry with title, summary, tags, and key moments. "
-        "Call when a conversation wraps up so it's findable later: "
-        "summary enables semantic search, tags enable topic search, "
-        "key_moments record important decisions or insights. "
+        "Synthesize and retain what you learned from this session. "
+        "Add a title, a one-paragraph summary, tags (comma-separated), "
+        "and key_moments — the decisions, insights, bugs, or discoveries "
+        "worth remembering.  This makes the knowledge findable later: "
+        "summary enables semantic search, tags enable topic filtering. "
         "All fields optional — only pass what you have. "
         "Does NOT modify the conversation messages."
     ),
