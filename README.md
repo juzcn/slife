@@ -125,6 +125,8 @@ Start with `--agent my-agent` to join the MQTT mesh. Remote tasks from other age
 
 The full A2A protocol toolset includes agent discovery, task routing (sync/async), task lifecycle management, broadcast (scatter/gather), and desktop notifications — 13 tools, all auto-discovered.
 
+Subagents are **ephemeral** — they live only while the parent Slife process is running. When Slife exits, all subagents are terminated. On restart, spawn new ones with `a2a_spawn_subagent`. Remote MQTT peers are likewise discovered fresh on each run — there is no persisted agent registry.
+
 ## Shortcuts
 
 | Key | Action |

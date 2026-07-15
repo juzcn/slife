@@ -98,11 +98,15 @@ class MCPProxyTool(Tool):
         }
 
     async def execute(self, **kwargs) -> str:
-        """Execute the tool by calling through the MCP wrapper.
+        """Execute the tool by calling through the appropriate MCP client.
 
-        Two paths:
-          - Wrapper tools (server="mcp"): call the tool directly on the wrapper.
-          - External MCP server tools: route via mcp_call_tool.
+        Three paths:
+          - Wrapper tools (server="mcp"): call directly, with config
+            persistence callbacks.
+          - Memory tools (server="memory"): call directly on the standalone
+            memory MCP client — no routing layer needed.
+          - External MCP server tools: route via mcp_call_tool on the
+            slife-mcp wrapper.
         """
         logger.debug(
             "mcp_proxy_call server=%s tool=%s",
@@ -121,6 +125,11 @@ class MCPProxyTool(Tool):
             await self._handle_add_server(result, source, **kwargs)
             await self._handle_set_disclosure(result, **kwargs)
             await self._handle_remove_server(result, **kwargs)
+        elif self._server == "memory":
+            # Memory tools — call directly on the memory MCP client.
+            # The memory service is standalone (not behind the MCP wrapper),
+            # so there's no mcp_call_tool routing layer.
+            result = await self._mcp_client.call_tool(self._tool_name, kwargs)
         else:
             # External MCP server tool — route through mcp_call_tool
             result = await self._mcp_client.call_tool(

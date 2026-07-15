@@ -30,7 +30,7 @@ def merge_hybrid(
 
     Returns:
         Merged list sorted by RRF score descending. Each entry has:
-        - rowid, title, summary, tags, created_at
+        - rowid, user_message, summary, tags, created_at
         - rrf_score: combined RRF score
         - keyword_rank: 1-based rank in keyword results (or None)
         - semantic_rank: 1-based rank in semantic results (or None)
@@ -50,12 +50,11 @@ def merge_hybrid(
         if rowid not in info:
             info[rowid] = {
                 "rowid": rowid,
-                "title": item.get("title", ""),
+                "user_message": item.get("user_message", ""),
                 "summary": item.get("summary", ""),
                 "tags": item.get("tags", ""),
                 "created_at": item.get("created_at", ""),
-                "how_many_turns": item.get("how_many_turns", 0),
-                "keyword_rank": rank,
+                                "keyword_rank": rank,
                 "semantic_rank": None,
                 "snippet": item.get("snippet", ""),
                 "distance": None,
@@ -70,12 +69,11 @@ def merge_hybrid(
         if rowid not in info:
             info[rowid] = {
                 "rowid": rowid,
-                "title": item.get("title", ""),
+                "user_message": item.get("user_message", ""),
                 "summary": item.get("summary", ""),
                 "tags": item.get("tags", ""),
                 "created_at": item.get("created_at", ""),
-                "how_many_turns": item.get("how_many_turns", 0),
-                "keyword_rank": None,
+                                "keyword_rank": None,
                 "semantic_rank": rank,
                 "snippet": "",
                 "distance": item.get("distance"),

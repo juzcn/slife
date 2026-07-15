@@ -50,6 +50,7 @@ _NOISY_LOGGER_NAMES = (
     "httpx",
     "asyncio",
     "urllib3",
+    "aiosqlite",       # dumps full SQL with messages JSON at DEBUG
 )
 
 

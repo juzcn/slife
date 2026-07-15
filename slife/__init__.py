@@ -34,7 +34,7 @@ def main(config_path: str = "slife.json5", agent_name: str | None = None):
 
     user = parse_cli_user(_sys.argv)
 
-    log_path, console_handler = setup_logging(agent_name=agent_name)
+    log_path, console_handler = setup_logging(user=user)
 
     # Generate session ID — shared with MCP subprocess via env var
     sid = init_session_id()
@@ -60,14 +60,18 @@ def main(config_path: str = "slife.json5", agent_name: str | None = None):
     logger.debug("thinking=%s", "on" if active.thinking_enabled else "off")
     logger.debug("tools=%d", len(config.tools))
 
-    # Suppress console logging during TUI runtime to prevent display corruption.
+    # Console logging is already at WARNING via setup_logging().
     # All messages still go to the per-session log file at DEBUG level.
-    console_handler.setLevel(logging.WARNING)
 
     logger.debug("tui starting…")
 
     app = SlifeApp(config)
-    app.run()
+    try:
+        app.run()
+    finally:
+        # Ensure child processes are cleaned up even on crash.
+        # action_quit() handles the normal path; this is the safety net.
+        app.service.kill_child_processes()
 
     # Session ended — log summary
     usage = app.service.session_usage

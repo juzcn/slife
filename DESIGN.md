@@ -339,7 +339,11 @@ Each endpoint becomes a tool named `{name}__{operationId}`. The pattern works fo
 
 ## Permanent Memory (slife-memory)
 
-Conversations, tool outputs, errors, thinking — everything the agent sees is permanently recorded like a diary. The memory service runs as an **independent MCP process**, symmetrical to slife-mcp.
+Every turn (user message + assistant response including thinking, tool calls,
+and tool results) is permanently recorded as an independent row.  There is no
+session concept, no lifecycle — memory is a continuous, time-ordered log of
+every exchange.  The memory service runs as an **independent MCP process**,
+symmetrical to slife-mcp.
 
 ### Architecture
 
@@ -354,48 +358,38 @@ slife agent ───────────────┼──────�
                     └──────┬───────┘
                            │
                     ~/.slife/slife.db
-                      ├── diary            (one row = one conversation)
+                      ├── diary            (one row = one turn)
                       ├── diary_fts (FTS5) (keyword search, BM25 ranking)
-                      └── diary_semantic   (vec0, cosine KNN)
+                      └── diary_semantic   (vec0, cosine KNN on turn text)
 ```
 
 ### Why a Separate Process
 
 ```
-slife crash ──→ slife-memory still alive ──→ marks diary as '意外中断'
+slife crash ──→ slife-memory still alive ──→ turns already persisted
                                               │
-Slife restart ──→ memory_open_diary() ──→ auto-restore last session
+Slife restart ──→ get_recent_turns() ──→ rebuild conversation
 ```
 
 If memory were in-process, a crash would race with the final database write. A separate process observes the disconnection and marks the crash — no race window, no data loss.
 
 ### Diary Schema
 
-One row = one complete conversation. Designed for LLM readability — column names are natural language, status values are Chinese prose, not machine codes.
+One row = one turn. No sessions, no status, no lifecycle — just time-ordered records.
 
 ```sql
 CREATE TABLE diary (
     author         TEXT,     -- who (--user flag)
-    title          TEXT,     -- conversation title
-    created_at     TEXT,     -- when it started
-    updated_at     TEXT,     -- last update
-    status         TEXT,     -- '进行中' | '已完成' | '意外中断'
+    user_message   TEXT,     -- what the user said
+    messages       TEXT,     -- assistant response JSON (thinking, tool calls, results, text)
 
-    messages       TEXT,     -- full OpenAI-format conversation JSON
-                             -- includes: system prompt, user input,
-                             -- thinking blocks, tool calls + arguments,
-                             -- tool outputs, final responses
-
-    summary        TEXT,     -- 1-2 sentence gist
+    summary        TEXT,     -- 1-2 sentence gist (LLM-written via memory_summarize)
     tags           TEXT,     -- comma-separated topic tags
-    key_moments    TEXT,     -- important decisions, bugs found, insights
 
+    created_at     TEXT,     -- when this turn happened
     who_helped     TEXT,     -- agent name (--agent flag)
     what_model     TEXT,     -- model used
-
-    how_many_turns   INTEGER,
-    how_many_tokens  INTEGER,
-    trim_count       INTEGER  -- cumulative messages trimmed (for exact restore)
+    token_count    INTEGER   -- tokens consumed by this turn
 );
 ```
 
@@ -408,25 +402,27 @@ CREATE TABLE diary (
 | `hybrid` | FTS5 + vec0 KNN → RRF | Semantic similarity, fuzzy recall | `"that memory leak fix"` |
 | `time` | SQLite range scan | Browse by date, no query needed | `since="2026-07-14"` |
 
-All modes exclude the current active diary (`status != '进行中'`) — the LLM doesn't need to "recall" what's already in its context window. Trimmed content from the current session IS in the diary and can be found via search.
+All modes search the full diary including the active session. The LLM can distinguish between results already in context and genuinely new findings — no need for the harness to pre-filter.
 
 **Reciprocal Rank Fusion (RRF):** hybrid mode merges keyword results and semantic results with RRF, producing a single ranked list. If no embedding backend is configured, hybrid degrades gracefully to FTS5-only.
 
 ### What Gets Saved
 
-Every turn, the full `Conversation.messages` list is written to the diary:
+Each turn writes one row — user_message + the assistant's response messages.
+System prompt is NOT stored per-turn (it's reconstructed on restore from the
+current config).  The `messages` JSON array contains:
 
 | Content | In diary? | In API calls? |
 |---------|-----------|---------------|
-| System prompt | ✅ | ✅ |
-| User input | ✅ | ✅ |
+| User input (separate column) | ✅ | ✅ |
 | Assistant thinking | ✅ | ❌ (stripped by `to_openai_messages()`) |
 | Tool call name + arguments | ✅ | ✅ |
 | Tool execution output | ✅ | ✅ |
 | Assistant final response | ✅ | ✅ |
 | Image attachments | ✅ | ✅ |
 
-Thinking is stored in a `thinking` field on assistant messages — preserved for memory recall, stripped before sending to the API (not a standard OpenAI message field).
+Thinking is stored in a `thinking` field on assistant messages — preserved
+for memory recall, stripped before sending to the API.
 
 ### Embeddings
 
@@ -439,21 +435,16 @@ Embedding config is managed at runtime via `memory_check_embedding`, `memory_set
 
 ### Session Recovery
 
-Every restart automatically offers to restore the last session with its **exact working context**.
+Every restart automatically restores recent turns.  Since each turn is independently
+saved, recovery is simply: load the most recent N turns by rowid, extract their
+messages, rebuild the conversation.
 
-1. `save_to_memory()` snapshots the full conversation (immutable), trims the active context, and records the cumulative `trim_count`.
-2. On restart, the last session's messages are loaded and `trim_count` tells us exactly which messages to skip after the system prompt to recover the working window.
+1. `save_to_memory()` extracts the just-completed turn's messages and INSERTs a row.
+2. On restart, `get_recent_turns(author, limit=50)` returns the last 50 turns.
+3. The UI rebuilds by concatenating all turn messages and recreating widgets.
 
-```
-Diary row:
-  messages = [sys, u1, a1, u2, a2, u3, a3, u4, a4]  ← full history (immutable)
-  trim_count = 4                                      ← u1,a1,u2,a2 were trimmed
-
-Restore:
-  working = [sys] + messages[5:] = [sys, u3, a3, u4, a4]  ← exact working context
-```
-
-The UI rebuild recreates `ToolCallWidget` instances (with results) and `AssistantMessage` widgets (with thinking blocks), matching the live conversation appearance. If no prior session exists, starts fresh.
+No trim_count needed — each turn is its own row, immutable once written.
+If no prior turns exist, starts fresh.
 
 ### User Isolation
 
@@ -512,6 +503,7 @@ Local child-process workers spawned via `asyncio.create_subprocess_exec`. Always
 - **SubagentProcess**: pipe bridge + task dispatch, pending futures for async results
 - **SubagentManager**: spawn/stop/list lifecycle, enforces `max_subagents` limit
 - **Nested prevention**: subagents set `SLIFE_SUBAGENT_NAME` in their environment; `start_subagent()` checks for this and skips creation to prevent recursive spawning
+- **Ephemeral by design**: subagents exist only while the parent process runs. When Slife exits, `SubagentManager.stop_all()` terminates every subagent. On restart, the LLM spawns fresh ones — there is no persisted subagent registry. This keeps subagents lightweight and stateless, with no cleanup burden across crashes.
 
 ### Unified Inbox
 

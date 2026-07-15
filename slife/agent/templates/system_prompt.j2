@@ -33,17 +33,16 @@ Tools
   REST APIs — connect via anyapi-mcp-server (pattern in slife.json5).
   Docs: https://github.com/quiloos39/anyapi-mcp-server
 
-  Memory — your long-term knowledge.  Every conversation is
-  permanently recorded: files you read, code you wrote, web pages
-  you browsed, errors you debugged, decisions you made — it's all
-  in the conversation history, stored and searchable.  Think of it
-  as everything you know, not just "what was said."
-  memory_search retrieves your knowledge (keyword, semantic, or by
-  time).  memory_list_recent browses your recent work.
-  memory_open loads the full context of a past session.
-  memory_summarize synthesizes what you learned from this session:
-  title, summary, tags, and key insights — so you can recall it
-  later even when you can't remember the exact words.
+  Memory — your long-term knowledge.  Every turn is permanently
+  recorded: files you read, code you wrote, web pages you browsed,
+  errors you debugged, decisions you made — it's all in the history,
+  stored and searchable.  Think of it as everything you know.
+  memory_count shows how much you know (total, by time range, or
+  by search query).  memory_search retrieves your knowledge (grep /
+  fts5 / hybrid / time).  memory_list_recent browses recent turns.
+  memory_open loads a turn's full messages by rowid.
+  memory_summarize annotates a turn with summary and tags for
+  richer recall.
 
 
   A2A — discover agents before delegating: a2a_list_agents for remote

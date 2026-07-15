@@ -73,7 +73,7 @@ class SubagentProcess:
 
     async def start(self) -> None:
         if self._running: return
-        cmd = [sys.executable, "-m", "Slife.subagent.headless", self._config_path]
+        cmd = [sys.executable, "-m", "slife.subagent.headless", self._config_path]
         logger.info("spawn name=%s cmd=%s", self._name, " ".join(cmd))
         env = dict(os.environ); env["SLIFE_SUBAGENT_NAME"] = self._name
         self._process = await asyncio.create_subprocess_exec(
@@ -255,8 +255,11 @@ class SubagentProcess:
         async for text in read_stderr_lines(
             self._process, lambda: self._running,
         ):
-            lvl = logger.warning if any(m in text.lower() for m in ("error","traceback","fail","exception")) else logger.debug
-            lvl("[subagent:%s] %s", self._name, text)
+            # Always DEBUG — subagent stderr is diagnostic only.
+            # Errors are already communicated via JSON-RPC on stdout;
+            # leaking stderr to the parent terminal at WARNING would
+            # pollute the TUI with raw error text the user shouldn't see.
+            logger.debug("[subagent:%s] %s", self._name, text)
 
 
 class SubagentManager:

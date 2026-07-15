@@ -63,10 +63,6 @@ class AgentService:
         # Memory integration state
         self._memory_client: MCPClient | None = None
         self._memory_process = None
-        self._diary_rowid: int | None = None  # active diary rowid for updates
-        self._diary_info: dict | None = None  # cached result from memory_open_diary
-        self._last_diary: dict | None = None  # last completed session (for restore)
-        self._trim_count: int = 0              # cumulative messages trimmed (for exact restore)
 
         # A2A integration state
         self._a2a_client = None
@@ -324,6 +320,53 @@ class AgentService:
 
         logger.info("mcp_shutdown")
 
+    def kill_child_processes(self) -> None:
+        """Synchronous best-effort child process cleanup.
+
+        Called from the finally block in main() — no event loop required.
+        Directly terminates known subprocesses so they don't become
+        orphans holding log file handles on Windows.
+        """
+        for proc_attr, label in [
+            ("_mcp_process", "mcp"),
+            ("_memory_process", "memory"),
+        ]:
+            wrapper = getattr(self, proc_attr, None)
+            if wrapper is None:
+                continue
+            p = getattr(wrapper, "_process", None)
+            if p is None:
+                continue
+            try:
+                p.terminate()
+            except Exception:
+                pass
+            try:
+                p.wait(timeout=3.0)
+            except Exception:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+
+        # Subagent manager cleanup
+        mgr = self._subagent_manager
+        if mgr is not None:
+            for name in list(mgr._subagents.keys()):
+                proc = mgr._subagents.get(name)
+                if proc is not None and proc._process is not None:
+                    try:
+                        proc._process.terminate()
+                    except Exception:
+                        pass
+                    try:
+                        proc._process.wait(timeout=2.0)
+                    except Exception:
+                        try:
+                            proc._process.kill()
+                        except Exception:
+                            pass
+
     # ── Memory lifecycle ──────────────────────────────────────────────
 
     @property
@@ -331,57 +374,22 @@ class AgentService:
         """Whether the memory service is connected."""
         return self._memory_client is not None and self._memory_client.is_connected
 
-    async def start_memory(self) -> int | None:
-        """Connect to the slife-memory service and open a diary.
-
-        Returns the diary rowid if successful, None if memory is disabled
-        or unavailable.
-
-        Called during app startup. Detects if a standalone slife-memory
-        is already running (via HTTP); if not, spawns one as a child
-        process via stdio.
-        """
+    async def start_memory(self) -> bool:
+        """Connect to slife-memory and register tools. Returns True on success."""
         mem_cfg = self.config.memory_config
         if mem_cfg is None or not mem_cfg.enabled:
             logger.debug("memory_not_enabled")
-            return None
+            return False
 
         logger.info("memory_init start")
-
         try:
             await self._connect_memory()
             await self._register_memory_tools()
-
-            # Open a diary — detects interrupted sessions automatically
-            result = await self._memory_client.call_tool(
-                "memory_open_diary",
-                {
-                    "author": self.config.user,
-                    "who_helped": self.config.a2a_config.agent_name or "",
-                    "what_model": self.config.active_model.ref,
-                    "system_prompt": self.conversation.messages[0]["content"]
-                    if self.conversation.messages
-                    and self.conversation.messages[0]["role"] == "system"
-                    else "",
-                },
-            )
-
-            diary_info = json.loads(result)
-            self._diary_rowid = diary_info.get("rowid")
-            self._diary_info = diary_info  # cache for check_interrupted()
-            self._last_diary = diary_info.get("last_diary")  # completed session to restore
-            logger.info(
-                "memory_init_done rowid=%s interrupted=%s last_diary=%s tools=%d",
-                self._diary_rowid,
-                diary_info.get("interrupted", False),
-                self._last_diary.get("rowid") if self._last_diary else None,
-                len(self.tool_registry.list_tools()),
-            )
-            return self._diary_rowid
-
+            logger.info("memory_init_done tools=%d", len(self.tool_registry.list_tools()))
+            return True
         except Exception as e:
             logger.warning("memory_init_failed err=%s — continuing without memory", e)
-            self._diary_rowid = None
+            return False
             return None
 
     async def _connect_memory(self) -> None:
@@ -413,9 +421,8 @@ class AgentService:
     async def _register_memory_tools(self) -> None:
         """Discover and register memory tools as proxy tools.
 
-        Harness-only lifecycle tools (open_diary, close_diary, update_diary)
-        are excluded — they are called programmatically by AgentService,
-        not by the LLM.
+        Harness-only tools (save_turn, get_recent_turns) are excluded —
+        they are called programmatically, not by the LLM.
         """
         from slife.mcp.tool_adapter import create_proxy_tools
 
@@ -428,9 +435,8 @@ class AgentService:
 
         # Harness lifecycle — never exposed to LLM
         _HARNESS_TOOLS = {
-            "memory_open_diary",
-            "memory_close_diary",
-            "memory_update_diary",
+            "memory_save_turn",
+            "memory_get_last_session",
         }
 
         tagged = [
@@ -445,24 +451,13 @@ class AgentService:
         logger.debug("memory_tools_registered count=%d", len(proxy_tools))
 
     async def stop_memory(self) -> None:
-        """Close the active diary and shut down the memory service."""
+        """Disconnect and shut down the memory service. No diary to close."""
         if self._memory_client and self._memory_client.is_connected:
-            # Close the diary before disconnecting
-            if self._diary_rowid is not None:
-                try:
-                    await self._memory_client.call_tool(
-                        "memory_close_diary",
-                        {"rowid": self._diary_rowid, "author": self.config.user},
-                    )
-                except Exception as e:
-                    logger.debug("memory_close_error err=%s", e)
-
             try:
                 await self._memory_client.disconnect()
             except Exception as e:
                 logger.debug("memory_disconnect_error err=%s", e)
             self._memory_client = None
-            self._diary_rowid = None
 
         if self._memory_process:
             try:
@@ -474,86 +469,59 @@ class AgentService:
         logger.info("memory_shutdown")
 
     async def save_to_memory(
-        self, turn_count: int | None = None, token_count: int | None = None,
+        self, user_message: str = "", token_count: int | None = None,
     ) -> None:
-        """Persist the current conversation to memory after a turn completes.
-
-        Captures the full messages BEFORE trimming (memory is immutable),
-        then trims the active context if it exceeds the configured ceiling.
-        Records the cumulative *trim_count* so restart can restore the
-        exact working context by skipping already-trimmed messages.
-        """
-        if not self.memory_enabled or self._diary_rowid is None:
+        """Save the just-completed turn as a new row in memory."""
+        if not self.memory_enabled:
             return
 
-        # Snapshot full conversation before trimming (immutable record)
-        full_messages = list(self.conversation.messages)
+        # Extract turn messages: everything after the matching user message
+        all_messages = list(self.conversation.messages)
+        turn_messages: list[dict] = []
+        for i in range(len(all_messages) - 1, -1, -1):
+            msg = all_messages[i]
+            if msg.get("role") == "user" and msg.get("content") == user_message:
+                turn_messages = all_messages[i + 1:]
+                break
 
-        # Trim the active context
+        # Trim active context
         context_window = self.config.active_model.context_window
-        trimmed = self.conversation.trim_context(
+        self.conversation.trim_context(
             context_window=context_window,
             floor=self.config.context_floor,
             ceiling=self.config.context_ceiling,
         )
-        self._trim_count += trimmed
 
-        # Save full messages + cumulative trim position
         try:
             await self._memory_client.call_tool(
-                "memory_update_diary",
+                "memory_save_turn",
                 {
-                    "rowid": self._diary_rowid,
                     "author": self.config.user,
-                    "messages": full_messages,
-                    "turn_count": turn_count or 0,
+                    "user_message": user_message,
+                    "messages": turn_messages,
                     "token_count": token_count or 0,
-                    "trim_count": self._trim_count,
+                    "who_helped": self.config.a2a_config.agent_name or "",
+                    "what_model": self.config.active_model.ref,
                 },
             )
         except Exception as e:
             logger.debug("memory_save_error err=%s", e)
 
-    async def check_interrupted(self) -> dict | None:
-        """Check if there's a diary to restore.
+    async def get_recent_turns(self, limit: int = 50) -> list[dict]:
+        """Load recent turns for restore. Returns [] if no turns."""
+        if not self.memory_enabled:
+            return []
 
-        Returns the interrupted diary, or the last completed diary
-        (slife is a permanent-memory agent — every restart should
-        offer to continue the previous conversation).
-
-        Returns None only when there is no prior session at all.
-        Must be called after start_memory().
-
-        Uses the result cached from start_memory()'s memory_open_diary
-        call — does NOT call memory_open_diary again, because a second
-        call would find the diary just opened by start_memory() and
-        incorrectly report it as interrupted.
-        """
-        if not self.memory_enabled or self._diary_info is None:
-            return None
-
-        # Interrupted session (crash) — always restore
-        if self._diary_info.get("interrupted"):
-            return self._diary_info
-
-        # Last completed session — offer to continue
-        if self._last_diary:
-            return {
-                "rowid": self._last_diary["rowid"],
-                "interrupted": False,
-                "restore": True,
-                "title": self._last_diary.get("title", ""),
-                "created_at": self._last_diary.get("created_at", ""),
-                "updated_at": self._last_diary.get("updated_at", ""),
-                "status": self._last_diary.get("status", ""),
-                "how_many_turns": self._last_diary.get("how_many_turns", 0),
-                "how_many_tokens": self._last_diary.get("how_many_tokens", 0),
-                "who_helped": self._last_diary.get("who_helped", ""),
-                "what_model": self._last_diary.get("what_model", ""),
-                "trim_count": self._last_diary.get("trim_count", 0),
-            }
-
-        return None
+        try:
+            result = await self._memory_client.call_tool(
+                "memory_get_recent_turns",
+                {"author": self.config.user, "limit": limit},
+            )
+            data = json.loads(result)
+            return data.get("turns", [])
+        except Exception as e:
+            logger.debug("get_recent_turns_error err=%s", e)
+            return []
 
     # ── A2A lifecycle ──────────────────────────────────────────────────
 
@@ -786,12 +754,9 @@ class AgentService:
             handler=handler,
         )
 
-        # Save to memory after each completed turn
-        turn_count = sum(
-            1 for m in self.conversation.messages if m.get("role") == "user"
-        )
+        # Save turn to memory — every turn is independent, no session concept
         await self.save_to_memory(
-            turn_count=turn_count,
+            user_message=user_input,
             token_count=self.session_usage.total_tokens,
         )
 

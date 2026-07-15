@@ -1,6 +1,7 @@
 """Textual TUI application for Slife — Claude Code CLI style."""
 
 import json
+import logging
 
 from textual.app import App, ComposeResult
 from textual.widgets import Input, Static
@@ -11,6 +12,8 @@ from slife.agent.loop import MaxIterationsExceeded
 from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
 from slife.ui.tool_display import ToolCallWidget
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_parse_args(raw: str) -> dict:
@@ -115,10 +118,10 @@ class SlifeApp(App):
             try:
                 await self.service.start_memory()
 
-                # Check for restorable session (interrupted or last completed)
-                diary = await self.service.check_interrupted()
-                if diary:
-                    self._recovery_info = diary
+                # Check for recent turns to restore
+                turns = await self.service.get_recent_turns()
+                if turns:
+                    self._recovery_info = {"turns": turns}
                     self.run_worker(
                         self._restore_session(),
                         exclusive=True,
@@ -161,38 +164,39 @@ class SlifeApp(App):
     # ── Actions ──────────────────────────────────────────────────
 
     async def action_quit(self) -> None:
-        """Quit the app, shutting down memory, subagent, A2A, and MCP."""
-        await self.service.stop_subagent()
-        await self.service.stop_a2a()
-        await self.service.stop_mcp()
-        await self.service.stop_memory()
+        """Quit the app, shutting down memory, subagent, A2A, and MCP.
+
+        All services are stopped in parallel with a timeout so a hung
+        subprocess doesn't prevent cleanup of the rest.  On Windows,
+        orphaned child processes would otherwise hold log file handles
+        indefinitely.
+        """
+        import asyncio
+
+        async def _stop(name: str, coro) -> None:
+            try:
+                await asyncio.wait_for(coro, timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("shutdown_timeout service=%s", name)
+            except Exception:
+                pass  # Best-effort cleanup
+
+        await asyncio.gather(
+            _stop("subagent", self.service.stop_subagent()),
+            _stop("a2a", self.service.stop_a2a()),
+            _stop("mcp", self.service.stop_mcp()),
+            _stop("memory", self.service.stop_memory()),
+        )
         await super().action_quit()
 
     def action_clear_chat(self) -> None:
-        """Clear chat history and start a fresh diary entry."""
-        # Close current diary and open a new one
-        if self.service.memory_enabled and self.service._diary_rowid is not None:
-            self.run_worker(
-                self._restart_diary(),
-                exclusive=True,
-                group="memory-restart",
-            )
+        """Clear chat history and start a fresh conversation."""
         self.service.clear()
         chat_view = self.query_one("#chat-view", ChatView)
         for child in list(chat_view.children):
             child.remove()
         self._tool_widgets.clear()
-
-    async def _restart_diary(self) -> None:
-        """Close the current diary and open a new one."""
-        try:
-            rowid = await self.service.start_memory()
-            if rowid:
-                self._show_system_message("📖 新对话已开始", color="#3fb950")
-        except Exception as e:
-            self._show_system_message(
-                f"⚠ 记忆服务异常: {e}", color="#d29922",
-            )
+        self._show_system_message("📖 新对话已开始", color="#3fb950")
 
     def action_focus_input(self) -> None:
         """Focus the input field."""
@@ -274,39 +278,47 @@ class SlifeApp(App):
         chat_view.add_system_message(text, color=color)
 
     async def _restore_session(self) -> None:
-        """Restore a previous session to its exact working context.
+        """Restore a previous session from turn-based memory.
 
-        The diary stores the full conversation history (immutable) plus
-        a *trim_count* — the cumulative number of messages trimmed from
-        the front.  Skipping those messages recovers the exact working
-        window the previous session had at its last save point.
-
-        Rebuilds the UI with proper ToolCallWidget and AssistantMessage
-        widgets (including thinking blocks) so the restored view matches
-        the live conversation appearance.
+        Loads all turns for the last session_id, concatenates their
+        messages, and rebuilds the UI.  Each turn is saved individually
+        so there's no trim_count — we load all turns and reconstruct
+        the full conversation from scratch.
         """
         if not self._recovery_info:
             return
 
-        diary = self._recovery_info
-        rowid = diary.get("rowid")
+        info = self._recovery_info
+        turns: list[dict] = info.get("turns", [])
 
-        # ── Phase 1: Load & pre-process all data ───────────────────
+        if not turns:
+            self._recovery_info = None
+            return
+
+        # ── Phase 1: Reconstruct full message list from turns ──────
         try:
-            result = await self.service._memory_client.call_tool(
-                "memory_open",
-                {"rowid": rowid, "author": self.service.config.user},
-            )
-            full = json.loads(result)
-            all_messages: list[dict] = json.loads(full.get("messages", "[]"))
-            trim_count: int = full.get("trim_count", 0)
+            # Get system prompt from current conversation
+            sys_msg = self.service.conversation.messages[0] if self.service.conversation.messages else None
 
-            # Recover the exact working context:
-            # system prompt (index 0 if present) + messages after skip
-            sys_end = 1 if all_messages and all_messages[0].get("role") == "system" else 0
-            working = all_messages[:sys_end] + all_messages[sys_end + trim_count:]
+            all_messages: list[dict] = []
+            if sys_msg and sys_msg.get("role") == "system":
+                all_messages.append(dict(sys_msg))
 
-            # Build tool-result lookup for matching widgets to results
+            for turn in turns:
+                user_msg_text = turn.get("user_message", "")
+                turn_messages_json = turn.get("messages", "[]")
+                turn_msgs: list[dict] = (
+                    json.loads(turn_messages_json)
+                    if isinstance(turn_messages_json, str) else turn_messages_json
+                )
+
+                all_messages.append({
+                    "role": "user",
+                    "content": user_msg_text,
+                })
+                all_messages.extend(turn_msgs)
+
+            # Build tool-result lookup
             tool_results: dict[str, str] = {}
             tool_errors: dict[str, bool] = {}
             for msg in all_messages:
@@ -316,13 +328,11 @@ class SlifeApp(App):
                         tool_results[tcid] = msg.get("content", "") or ""
                         tool_errors[tcid] = msg.get("is_error", False)
 
-            # Collect UI descriptors (built before state switch)
+            # Build UI ops
             from slife.ui.chat import UserMessage, AssistantMessage
             user_prefix = "You> " if self._assistant_prefix else "> "
             ui_ops: list[dict] = []
 
-            # Track assistant messages for intermediate/final classification:
-            # all but the LAST assistant message are intermediate (collapsed thinking)
             assistant_indices = [
                 i for i, m in enumerate(all_messages)
                 if m.get("role") == "assistant"
@@ -332,7 +342,7 @@ class SlifeApp(App):
             for idx, msg in enumerate(all_messages):
                 role = msg.get("role", "")
                 if role == "system":
-                    continue  # not shown in UI
+                    continue
 
                 elif role == "user":
                     ui_ops.append({
@@ -367,10 +377,6 @@ class SlifeApp(App):
                     })
 
                 elif role == "tool":
-                    # Tool results are rendered inside their ToolCallWidget —
-                    # but only if the matching tool_call has already been
-                    # emitted.  The sequential processing below handles
-                    # this via the tool_results lookup built above.
                     pass
 
         except Exception as e:
@@ -378,76 +384,55 @@ class SlifeApp(App):
             self._recovery_info = None
             return
 
-        # ── Phase 2: Switch state (only after data loaded OK) ──────
-        orphan_rowid = self.service._diary_rowid
-        if orphan_rowid and orphan_rowid != rowid and self.service._memory_client:
-            try:
-                await self.service._memory_client.call_tool(
-                    "memory_close_diary",
-                    {"rowid": orphan_rowid, "author": self.service.config.user},
-                )
-            except Exception:
-                pass
-
-        self.service._diary_rowid = rowid
-
+        # ── Phase 2: Switch state ──────────────────────────────────
         from slife.agent.conversation import Conversation
         self.service.conversation = Conversation()
-        self.service.conversation.messages = working
-        self.service._trim_count = trim_count
+        self.service.conversation.messages = all_messages
 
-        # ── Phase 3: Rebuild UI with proper widgets ────────────────
+        # ── Phase 3: Rebuild UI ────────────────────────────────────
         chat_view = self.query_one("#chat-view", ChatView)
         from slife.ui.chat import UserMessage, AssistantMessage
 
-        for op in ui_ops:
-            if op["type"] == "user":
-                chat_view.add_user_message(
-                    op["content"],
-                    images=op.get("images"),
-                    prefix=op["prefix"],
-                )
-
-            elif op["type"] == "assistant":
-                am = chat_view.add_assistant_message(
-                    name_prefix=op.get("name_prefix"),
-                )
-
-                # Restore thinking
-                thinking = op.get("thinking", "")
-                if thinking:
-                    am.append_thinking(thinking)
-
-                # Restore text
-                text = op.get("content", "")
-                if text:
-                    am.append_text(text)
-
-                # Finalize: intermediate → collapsed thinking; final → expanded
-                am.finalize(intermediate=not op.get("is_final", False))
-
-                # Recreate ToolCallWidget(s) with completed state
-                for tc in op.get("tool_calls", []):
-                    tcid = tc["id"]
-                    result = tool_results.get(tcid, "")
-                    is_error = tool_errors.get(tcid, False)
-
-                    widget = ToolCallWidget(
-                        tool_name=tc["name"],
-                        tool_args=tc["arguments"],
-                        tool_call_id=tcid,
+        with self.batch_update():
+            for op in ui_ops:
+                if op["type"] == "user":
+                    chat_view.add_user_message(
+                        op["content"],
+                        images=op.get("images"),
+                        prefix=op["prefix"],
                     )
-                    chat_view.mount(widget)
-                    widget.set_complete(result, is_error)
 
-        self._recovery_info = None
-        self._show_system_message("✅ 已恢复对话，继续吧", color="#3fb950")
+                elif op["type"] == "assistant":
+                    am = chat_view.add_assistant_message(
+                        name_prefix=op.get("name_prefix"),
+                    )
+                    thinking = op.get("thinking", "")
+                    if thinking:
+                        am.append_thinking(thinking)
+                    text = op.get("content", "")
+                    if text:
+                        am.append_text(text)
+                    am.finalize(intermediate=not op.get("is_final", False))
 
-        # Update status bar with restored token count
-        if full.get("how_many_tokens"):
-            self.service.session_usage.prompt_tokens = 0
-            self.service.session_usage.completion_tokens = 0
-            self.service.session_usage.total_tokens = full["how_many_tokens"]
+                    for tc in op.get("tool_calls", []):
+                        tcid = tc["id"]
+                        result = tool_results.get(tcid, "")
+                        is_error = tool_errors.get(tcid, False)
+                        widget = ToolCallWidget(
+                            tool_name=tc["name"],
+                            tool_args=tc["arguments"],
+                            tool_call_id=tcid,
+                        )
+                        chat_view.mount(widget)
+                        widget.set_complete(result, is_error)
+
+            self._recovery_info = None
+            self._show_system_message("✅ 已恢复对话，继续吧", color="#3fb950")
+
+        # Update status bar with token estimate from turns
+        total_tokens = sum(t.get("token_count", 0) for t in turns)
+        if total_tokens > 0:
+            self.service.session_usage.total_tokens = total_tokens
             self._update_status()
 
     # ── Agent interaction ─────────────────────────────────────────

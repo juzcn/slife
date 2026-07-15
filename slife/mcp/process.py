@@ -166,7 +166,9 @@ class MCPWrapperProcess:
     async def _log_stderr(self) -> None:
         """Read and log stderr from the wrapper process.
 
-        Errors/warnings at WARNING; everything else at DEBUG.
+        All lines at DEBUG — wrapper stderr is diagnostic only.
+        Errors are communicated via the MCP protocol on stdout;
+        leaking stderr to the parent terminal would pollute the TUI.
         Suppresses FastMCP ASCII art box-drawing lines.
         """
         from slife.logfmt import read_stderr_lines
@@ -181,8 +183,4 @@ class MCPWrapperProcess:
             if text.strip() and all(c in " |│" for c in text.strip()):
                 continue
 
-            # Log errors/warnings prominently, debug for the rest
-            if any(marker in text.lower() for marker in ("error", "traceback", "fail", "exception")):
-                logger.warning("[wrapper] %s", text)
-            else:
-                logger.debug("[wrapper] %s", text)
+            logger.debug("[wrapper] %s", text)

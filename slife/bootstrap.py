@@ -5,42 +5,41 @@ focused on ``main()``.
 """
 
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 
-from slife.logfmt import init_session_id, SessionFormatter, FILE_LOG_FORMAT, silence_noisy_loggers
+from slife.logfmt import SessionFormatter, FILE_LOG_FORMAT, silence_noisy_loggers
 
 logger = logging.getLogger("slife")
 
 LOG_DIR = Path("logs")
 
 
-def _session_log_path(agent_name: str | None = None) -> Path:
+def _session_log_path(user: str = "default") -> Path:
     """Generate a timestamped log file path for this session.
 
     Follows the same naming convention as sub-agent logs:
-    ``logs/YYYYMMDD_HHMMSS_slife_<name>.log``.
+    ``logs/YYYYMMDD_HHMMSS_slife_<user>.log``.
     """
     LOG_DIR.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    name = agent_name or "main"
-    return LOG_DIR / f"{ts}_slife_{name}.log"
+    return LOG_DIR / f"{ts}_slife_{user}.log"
 
 
 def setup_logging(
-    agent_name: str | None = None,
+    user: str = "default",
     level: int = logging.DEBUG,
 ) -> tuple[Path, logging.Handler]:
     """Configure logging to both console and file.
 
-    Console: INFO+ during startup (before TUI), WARNING+ during TUI runtime.
+    Console: WARNING+ only — keeps the terminal clean before Textual's
+             alternate screen activates and during TUI runtime.
     File:    DEBUG+ with timestamps, session/request IDs for troubleshooting.
-    Each session writes to a new ``logs/YYYYMMDD_HHMMSS_slife_<name>.log`` file.
+    Each session writes to a new ``logs/YYYYMMDD_HHMMSS_slife_<user>.log`` file.
 
     Returns:
-        (log_path, console_handler) — caller should raise console to WARNING
-        before starting the TUI to prevent display corruption.
+        (log_path, console_handler) — console is already at WARNING;
+        detailed output goes to the per-session log file.
     """
     root = logging.getLogger()
 
@@ -53,18 +52,22 @@ def setup_logging(
             None
         )
         if console is not None:
-            return _session_log_path(agent_name), console
+            return _session_log_path(user), console
 
     root.setLevel(logging.DEBUG)
 
-    # Console handler — INFO during startup, caller raises to WARNING before TUI
+    # Console handler — WARNING from the start to prevent terminal flash
+    # before Textual's alternate screen takes over.  Any log output on
+    # stderr between startup and TUI init is briefly visible to the user
+    # and disappears when the alternate screen activates, creating a
+    # jarring "flash" of text.
     console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
+    console.setLevel(logging.WARNING)
     console.setFormatter(logging.Formatter("%(message)s"))
     root.addHandler(console)
 
     # File handler — detailed format with session/request IDs, one per session
-    log_path = _session_log_path(agent_name)
+    log_path = _session_log_path(user)
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setLevel(level)
     file_handler.setFormatter(SessionFormatter(FILE_LOG_FORMAT))
