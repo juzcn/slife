@@ -53,7 +53,8 @@ mcp = FastMCP(
         "slife-memory — long-term knowledge with hybrid search. "
         "Every session is permanently recorded as one row. "
         "LLM-visible tools: memory_list_recent, memory_search (grep/fts5/hybrid/time), "
-        "memory_open, memory_summarize. "
+        "memory_open, memory_summarize, memory_check_embedding, "
+        "memory_set_embedding, memory_remove_embedding. "
         "All tools take an author parameter for --user isolation."
     ),
 )
@@ -414,6 +415,153 @@ async def memory_summarize(
         )
     except Exception as e:
         logger.exception("summarize_failed")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Embedding configuration tools
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@mcp.tool(
+    name="memory_check_embedding",
+    description=(
+        "Check the current embedding configuration status. "
+        "Embeddings enable semantic (hybrid) search over your knowledge. "
+        "Returns the active backend (gguf/api/none), model, dimension, "
+        "and whether embeddings are currently available. "
+        "If no embedding is configured, provides guidance on how to set one up."
+    ),
+)
+async def memory_check_embedding() -> str:
+    """Report current embedding configuration and availability."""
+    from slife_memory.embedding_config import make_check_report
+
+    try:
+        report = make_check_report()
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.exception("check_embedding_failed")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="memory_set_embedding",
+    description=(
+        "Configure the embedding backend for semantic search. "
+        "Only one backend can be active — this replaces any existing config.\n"
+        "\n"
+        "Backends:\n"
+        "  'gguf' — local GGUF model via llama-cpp (offline, no API cost). "
+        "Requires gguf_path pointing to a .gguf file.\n"
+        "  'api' — OpenAI-compatible API. Uses the api_key from "
+        "models.providers in slife.json5.\n"
+        "\n"
+        "Examples:\n"
+        "  backend=gguf model=bge-m3 gguf_path=/path/to/model.gguf dim=1024\n"
+        "  backend=api model=text-embedding-3-small\n"
+        "\n"
+        "The embedding takes effect immediately after this call — no restart needed."
+    ),
+)
+async def memory_set_embedding(
+    backend: str = "",
+    model: str = "bge-m3",
+    gguf_path: str | None = None,
+    dim: int = 0,
+) -> str:
+    """Set or change the embedding backend configuration."""
+    from slife_memory.embedding_config import (
+        write_embedding_config,
+        validate_gguf_path,
+        get_first_provider_api_key,
+        reload_embedder,
+    )
+
+    backend = backend.lower().strip()
+    if backend not in ("gguf", "api"):
+        return json.dumps(
+            {
+                "error": (
+                    f"不支持的后端 '{backend}'。"
+                    f"可选: 'gguf' (本地 GGUF 模型) 或 'api' (OpenAI API)"
+                )
+            },
+            ensure_ascii=False, indent=2,
+        )
+
+    cfg: dict = {"model": model}
+
+    if backend == "gguf":
+        if not gguf_path:
+            return json.dumps(
+                {"error": "GGUF 后端需要 gguf_path 参数"},
+                ensure_ascii=False, indent=2,
+            )
+        ok, msg = validate_gguf_path(gguf_path)
+        if not ok:
+            return json.dumps(
+                {"error": f"GGUF 文件校验失败: {msg}"},
+                ensure_ascii=False, indent=2,
+            )
+        cfg["gguf_path"] = msg  # msg is the resolved path
+        if dim > 0:
+            cfg["dim"] = dim
+
+    elif backend == "api":
+        api_key = get_first_provider_api_key()
+        if not api_key:
+            return json.dumps(
+                {
+                    "error": (
+                        "API 后端需要 api_key。在 slife.json5 → models.providers "
+                        "中为至少一个 provider 配置 api_key。"
+                    ),
+                },
+                ensure_ascii=False, indent=2,
+            )
+        if dim > 0:
+            cfg["dim"] = dim
+
+    try:
+        write_embedding_config(cfg)
+        status = await reload_embedder()
+        status["backend"] = backend
+        status["model"] = model
+        if gguf_path:
+            status["gguf_path"] = gguf_path
+        return json.dumps(status, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.exception("set_embedding_failed")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="memory_remove_embedding",
+    description=(
+        "Remove the embedding configuration. "
+        "After this, semantic (hybrid) search is disabled — "
+        "keyword search (grep / fts5 / time) continues to work normally. "
+        "You can re-enable embeddings later with memory_set_embedding."
+    ),
+)
+async def memory_remove_embedding() -> str:
+    """Remove embedding config and disable semantic search."""
+    from slife_memory.embedding_config import (
+        remove_embedding_config,
+        reload_embedder,
+    )
+
+    try:
+        remove_embedding_config()
+        status = await reload_embedder()
+        status["message"] = (
+            "Embedding 配置已移除。语义搜索 (hybrid 模式) 已禁用。"
+            "关键词搜索 (grep / fts5 / time) 仍可正常使用。"
+        )
+        return json.dumps(status, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.exception("remove_embedding_failed")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
