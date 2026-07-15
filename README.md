@@ -87,7 +87,7 @@ When `--agent` is provided the agent identity flows through the entire UI:
 
 - **`/file image.png`** — attach an image for vision models
 - **`/exit`** — quit the application
-- **`Ctrl+L`** — clear the conversation
+- **`Ctrl+L`** — clear the conversation and start a fresh diary entry
 - **`Esc`** — focus the input field
 
 ### CLI Flags
@@ -99,25 +99,24 @@ When `--agent` is provided the agent identity flows through the entire UI:
 
 ### Permanent Memory & Knowledge Base
 
-slife records every conversation — user messages, thinking, tool calls, and tool outputs — like a diary in `./slife.db`. Memory is immutable: conversations are never deleted or tampered with. Every restart offers to continue the last conversation, whether it ended cleanly or was interrupted.
+slife records every conversation — user messages, thinking, tool calls, and tool outputs — in `./slife.db`. Memory is your long-term knowledge: files you read, code you wrote, web pages you browsed, errors you debugged, decisions you made — it's all permanently stored and searchable. Every restart automatically restores the last conversation with its exact working context, whether it ended cleanly or was interrupted.
 
 ```bash
-slife --user alice              # alice's memories
-slife --user bob                # bob's memories (isolated)
+slife --user alice              # alice's knowledge
+slife --user bob                # bob's knowledge (isolated)
 slife                           # default user
 ```
 
-**Recovery**: `/restore` continues where you left off; `/new` starts fresh; `/preview` peeks before deciding.
-
-**Memory search** — three modes via `memory_search`:
+**Memory search** — four modes via `memory_search`:
 
 | Mode | Backend | Use for |
 |---|---|---|
 | `grep` | SQLite LIKE | Exact strings: error messages, code, paths |
 | `fts5` | FTS5 + BM25 | Topics and keywords |
 | `hybrid` | FTS5 + vec0 → RRF | Fuzzy recall when you don't remember exact words |
+| `time` | SQLite range scan | Browse by date when you know when but not what |
 
-**The knowledge base effect**: every tool output — file contents, search results, API responses — flows through the conversation into the diary. Over time, it becomes a searchable archive of everything the agent has encountered. No separate vector database, no indexing pipeline.
+**Why this is a knowledge base**: every tool output — file contents, search results, API responses, command output — flows through the conversation into memory. Over time, it becomes a searchable archive of everything you and the agent have encountered. No separate vector database, no indexing pipeline — the conversation IS the knowledge base.
 
 Memory runs as an independent MCP service (`slife-memory`), same architecture as `slife-mcp`. Context is automatically managed: the active conversation stays within 20%–80% of the model's window; older turns are trimmed but archived in the diary for later recall. See [DESIGN.md](DESIGN.md#permanent-memory-slifememory) for full architecture.
 

@@ -35,8 +35,7 @@ What the LLM *cannot* know:
 - That `a2a_list_agents` and `a2a_list_subagents` discover remote and local agents
 - That `a2a_send_task` can delegate work to any agent (local subagent or remote MQTT peer)
 - That `a2a_spawn_subagent` creates local workers for parallel computation
-- That every conversation is permanently recorded — use `memory_search` to find past discussions, errors, and decisions before starting new work
-- That `memory_search` has three modes: `grep` for exact strings (error messages, code), `fts5` for keyword topics, `hybrid` for semantic similarity
+- That every conversation is permanently recorded — your long-term knowledge: files read, code written, web pages browsed, bugs debugged.  Use `memory_search` (grep/fts5/hybrid/time) to recall anything you've encountered before starting new work
 
 The system prompt at `slife/agent/templates/system_prompt.j2` encodes these
 facts in short sections — Platform, Configuration, and Tools (Skills /
@@ -101,7 +100,7 @@ Not all tools need to be in every LLM request. slife uses a two-level pattern fo
 | **Native** | Always loaded | — | — |
 | **CLI** | Metadata-only, no schema cost | — | — |
 
-**Memory** tools follow the same pattern: `memory_list_recent` and `memory_search` return lightweight results (titles, summaries, snippets). `memory_open` loads the full conversation. `memory_search` supports three modes — `grep` (exact substring), `fts5` (keyword ranking), `hybrid` (fts5 + semantic vector search with RRF merge).
+**Memory** tools follow the same pattern: `memory_list_recent` and `memory_search` return lightweight results (titles, summaries, snippets). `memory_open` loads the full session. `memory_search` supports four modes — `grep` (exact substring), `fts5` (keyword ranking), `hybrid` (fts5 + semantic vector search with RRF merge), and `time` (browse by date range).
 
 **Skills** and **MCP/REST** implement progressive disclosure because their content or tool count can be large — skills have long markdown bodies, MCP servers can expose dozens of tools. The summary tool returns a lightweight list; the load tool brings in the full capability.
 
@@ -251,7 +250,7 @@ Conversations, tool outputs, errors, thinking — everything the agent sees is p
 ```
 slife crash ──→ slife-memory still alive ──→ marks diary as '意外中断'
                                               │
-slife restart ──→ memory_open_diary() ──→ "Found previous session. Restore?"
+slife restart ──→ memory_open_diary() ──→ auto-restore last session
 ```
 
 If memory were in-process, a crash would race with the final write. A separate process observes the disconnection and marks the crash — no race window.
@@ -313,11 +312,11 @@ All tools take an `author` parameter for user isolation (`--user` on CLI, defaul
 |---|---|---|
 | **summary** | `memory_open_diary` | Start new conversation or detect interrupted one |
 | **summary** | `memory_close_diary` | Mark conversation complete, optionally add summary/tags |
-| **summary** | `memory_list_recent` | Flip through recent diary entries (titles + summaries) |
+| **summary** | `memory_list_recent` | Browse recent knowledge sessions (titles + summaries) |
 | **summary** | `memory_update_diary` | Save conversation after each turn |
-| **search** | `memory_search` | Three modes: `grep` (exact string), `fts5` (keyword), `hybrid` (keyword + semantic) |
-| **load** | `memory_open` | Read a full conversation by rowid |
-| **load** | `memory_summarize` | Write title, summary, tags, key moments |
+| **search** | `memory_search` | Four modes: `grep` (exact), `fts5` (keyword), `hybrid` (semantic), `time` (date range) |
+| **load** | `memory_open` | Load a full session by rowid |
+| **load** | `memory_summarize` | Synthesize and retain what you learned |
 
 ### Search Modes
 
@@ -326,6 +325,7 @@ All tools take an `author` parameter for user isolation (`--user` on CLI, defaul
 | `grep` | SQLite LIKE | Exact strings, error messages, code snippets | `"ConnectionError: timeout"` |
 | `fts5` | FTS5 index + BM25 | Topic/keyword search | `"MCP连接问题"` |
 | `hybrid` | FTS5 + vec0 KNN → RRF | Semantic similarity, fuzzy recall | `"上次怎么修的那个连接泄漏"` |
+| `time` | SQLite range scan | Browse by date, no query needed | `since="2026-07-14"` |
 
 All modes exclude the current active diary (`status != '进行中'`) — the LLM doesn't need to "recall" what's already in its context window.
 
@@ -367,12 +367,12 @@ Thinking is stored in a `thinking` field on assistant messages — preserved for
 
 ### Session Recovery — Exact Working Context
 
-slife is a permanent-memory agent. Every restart offers to continue the last conversation, restoring its **exact working context** — the same set of messages that were in the active conversation window, not the full history.
+slife is a permanent-memory agent. Every restart automatically restores the last conversation, recovering its **exact working context** — the same set of messages that were in the active conversation window, not the full history.
 
 **How it works:**
 
 1. `save_to_memory()` snapshots the full conversation (immutable), trims the active context per `floor`/`ceiling`, then saves both the full messages and a cumulative `trim_count` — the number of messages trimmed from the front.
-2. On restore, `trim_count` tells us exactly which messages to skip after the system prompt to recover the working window.
+2. On restart, the last session is loaded and `trim_count` tells us exactly which messages to skip after the system prompt to recover the working window.
 
 ```
 Diary row:
@@ -389,19 +389,15 @@ slife startup
   → memory_open_diary()      // always creates a fresh diary
     ├─ also checks for last completed session
     └─ returns last_diary info if found
-         → TUI shows recovery prompt:
-           📒 上一次对话        (or ⚡ 发现中断的对话 if crashed)
-             「重构工具系统」
-             12 轮对话 · 2026-07-15 11:45
-             状态：已完成 · 58,023 tokens
-             /restore — 继续上次对话
-             /new — 开始新对话
-             /preview — 查看对话内容
+         → auto-restore: the auto-created empty diary is closed,
+           the last session is loaded, and trim_count messages
+           are skipped → exact working context recovered.
+           The Conversation is rebuilt with only the working
+           messages.  _trim_count is synced so future saves
+           continue accumulating correctly.
 ```
 
-On `/restore`: the auto-created empty diary is closed, messages are loaded, `trim_count` messages are skipped after the system prompt → exact working context is recovered. The Conversation is rebuilt with only the working messages. `_trim_count` is synced so future saves continue accumulating correctly.
-
-On `/new`: the recovery prompt is dismissed. The auto-created diary becomes the active session. Nothing is modified.
+The UI rebuild recreates `ToolCallWidget` instances (with results) and `AssistantMessage` widgets (with thinking blocks), matching the live conversation appearance. If no prior session exists, starts fresh.
 
 ## Tool System
 
@@ -415,7 +411,7 @@ slife supports six categories of tools, all unified under the `Tool` ABC and reg
 
 ### 1. Memory Tools
 
-Permanent conversation storage with hybrid search (`slife_memory/`). Seven tools — four summary-level (always loaded), one search, two load-level. Memory tools are implemented as an independent MCP service, discovered by slife through the same `MCPClient` + `MCPProxyTool` pattern as all other MCP tools. The LLM uses them to search past conversations, recall context, and manage the diary.
+Permanent long-term knowledge with hybrid search (`slife_memory/`). Seven tools — four harness-level (auto-managed), three LLM-visible. Memory tools are implemented as an independent MCP service, discovered by slife through the same `MCPClient` + `MCPProxyTool` pattern as all other MCP tools. The LLM uses them to search its knowledge, recall past sessions, and synthesize what it learned.
 
 | Tool | Tier |
 |---|---|
@@ -712,7 +708,7 @@ Textual TUI in **Claude Code CLI style**: minimal chrome, dark theme, clean mess
 - **ToolCallWidget** — collapsible tool call display with header line (amber) and detail block. Single `Static` widget, no child widgets — all rendering via `Content` trees. User data goes through `Content.from_text(markup=False)` for safety.
 - **TUIHandler** — bridges `AgentEventHandler` callbacks to Textual widgets
 - **StatusBar** — shows model name, thinking indicator, token count, key bindings
-- **Recovery prompt** — on startup, displays the last session info and offers `/restore` `/new` `/preview` slash commands
+- **Auto-restore** — on startup, automatically restores the last session's exact working context with full UI fidelity (ToolCallWidget + AssistantMessage + thinking blocks)
 
 All user-facing text (tool output, search results, file contents) is rendered with `markup=False` to prevent `MarkupError` from special characters (`&`, `[`, `]`).
 
@@ -762,7 +758,7 @@ slife/
     chat.py            #   Message widgets (ChatView, AssistantMessage)
     handler.py         #   Streaming event → UI bridge (TUIHandler)
     tool_display.py    #   Tool call rendering (ToolCallWidget)
-    commands.py        #   Slash-command handling (/exit, /restore, etc.)
+    commands.py        #   Slash-command handling (/exit, /file)
     command_palette.py #   Slash-command completion dropdown
   config.py            # JSON5 config loading (ModelConfig, MCPConfig, MemoryConfig, Config)
   env.py               # ${ENV_VAR} and ${ENV_VAR:-default} resolution
@@ -787,11 +783,12 @@ tests/                 # pytest suite (577 tests, asyncio_mode=strict)
 
 ## The Knowledge Base Effect
 
-A side effect of the memory architecture: **everything the agent sees becomes a knowledge base**. Tool outputs — file contents, web search results, API responses, error messages — are all stored in `diary.messages` and indexed by FTS5 + vec0. Over time, the diary becomes a searchable archive of everything the agent has encountered.
+The memory system IS a knowledge base. **Everything the agent encounters** — file contents, web search results, API responses, command output, errors, thinking, decisions — is permanently stored in `diary.messages` and indexed by FTS5 + vec0. Over time, this becomes a searchable archive of everything you and the agent have done.
 
-The LLM can search its own past observations:
+The LLM can recall its own past experience:
 - `memory_search(mode="grep", query="ConnectionError")` — find every past occurrence of a specific error
 - `memory_search(mode="fts5", query="MCP连接问题")` — find past discussions about a topic
 - `memory_search(mode="hybrid", query="那次修好的内存泄漏")` — find the conversation where a bug was fixed
+- `memory_search(mode="time", since="2026-07-14")` — browse everything from a specific date
 
-No separate knowledge base, no vector database, no indexing pipeline. The diary IS the knowledge base — every tool output, every thinking trace, every decision is recorded in its original context and searchable through the same interface.
+No separate knowledge base, no vector database, no indexing pipeline. The conversation IS the knowledge base — every observation, every reasoning trace, every decision is recorded in its original context and searchable through a single interface.
