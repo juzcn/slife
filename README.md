@@ -99,7 +99,7 @@ When `--agent` is provided the agent identity flows through the entire UI:
 
 ### Permanent Memory & Knowledge Base
 
-slife records every conversation — user messages, thinking, tool calls, and tool outputs — like a diary in `~/.slife/slife.db`. On restart after a crash or exit, it detects interrupted sessions and offers to restore them. Everything the agent has ever seen is searchable.
+slife records every conversation — user messages, thinking, tool calls, and tool outputs — like a diary in `./slife.db`. Memory is immutable: conversations are never deleted or tampered with. Every restart offers to continue the last conversation, whether it ended cleanly or was interrupted.
 
 ```bash
 slife --user alice              # alice's memories
@@ -107,7 +107,7 @@ slife --user bob                # bob's memories (isolated)
 slife                           # default user
 ```
 
-**Crash recovery**: `/restore` resumes exactly where you left off; `/discard` starts fresh; `/preview` peeks before deciding.
+**Recovery**: `/restore` continues where you left off; `/new` starts fresh; `/preview` peeks before deciding.
 
 **Memory search** — three modes via `memory_search`:
 

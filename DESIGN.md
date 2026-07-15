@@ -7,7 +7,7 @@ The harness does only what the LLM physically cannot do:
 1. **Execute tools** — the LLM requests function calls; the harness runs them and returns results.
 2. **Maintain conversation state** — the harness holds the message list and feeds it back each turn.
 3. **Stream responses** — the harness delivers tokens to the UI as they arrive.
-4. **Persist memory** — the harness saves every message, thinking block, and tool output so nothing is lost. The LLM decides what to recall and when.
+4. **Persist memory** — the harness saves every message, thinking block, and tool output so nothing is lost. Memory is immutable — never deleted or tampered with. The LLM decides what to recall and when.
 
 Everything else — reasoning, planning, tool selection, error recovery — is the LLM's job. The harness does not route, validate, retry, or second-guess.
 
@@ -229,8 +229,8 @@ The active conversation stays within 20%–80% of the model's context window:
                        floor=0.2             ceiling=0.8
 ```
 
-- **Save**: after each turn, the full conversation (including thinking + tool outputs) is written to the diary.
-- **Trim**: if tokens exceed `context_ceiling × window`, oldest complete turns are removed until tokens ≤ `context_floor × window`. Only the active Conversation is trimmed — the diary retains everything.
+- **Save**: after each turn, the full conversation is snapshotted (immutable record), then the active context is trimmed to the working window.  Both the full messages and the cumulative `trim_count` are written to the diary.
+- **Trim**: if tokens exceed `context_ceiling × window`, oldest complete turns are removed until tokens ≤ `context_floor × window`. The `trim_count` accumulates so restore can recover the exact working context.
 - **Recall**: `memory_search` excludes the active diary (`status != '进行中'`), but trimmed content from the current session is in the diary and can be found.
 
 Configure in `slife.json5`:
@@ -249,9 +249,9 @@ Conversations, tool outputs, errors, thinking — everything the agent sees is p
 ### Why a Separate Process
 
 ```
-slife crash ──→ slime-memory still alive ──→ marks diary as '意外中断'
+slife crash ──→ slife-memory still alive ──→ marks diary as '意外中断'
                                               │
-slife restart ──→ memory_open_diary() ──→ "Found interrupted session. Restore?"
+slife restart ──→ memory_open_diary() ──→ "Found previous session. Restore?"
 ```
 
 If memory were in-process, a crash would race with the final write. A separate process observes the disconnection and marks the crash — no race window.
@@ -318,7 +318,6 @@ All tools take an `author` parameter for user isolation (`--user` on CLI, defaul
 | **search** | `memory_search` | Three modes: `grep` (exact string), `fts5` (keyword), `hybrid` (keyword + semantic) |
 | **load** | `memory_open` | Read a full conversation by rowid |
 | **load** | `memory_summarize` | Write title, summary, tags, key moments |
-| **load** | `memory_forget` | Delete a diary entry |
 
 ### Search Modes
 
@@ -366,25 +365,43 @@ Every turn, the full `Conversation.messages` list is written to the diary:
 
 Thinking is stored in a `thinking` field on assistant messages — preserved for memory recall, stripped before sending to the API (not a standard OpenAI message field).
 
-### Crash Recovery
+### Session Recovery — Exact Working Context
+
+slife is a permanent-memory agent. Every restart offers to continue the last conversation, restoring its **exact working context** — the same set of messages that were in the active conversation window, not the full history.
+
+**How it works:**
+
+1. `save_to_memory()` snapshots the full conversation (immutable), trims the active context per `floor`/`ceiling`, then saves both the full messages and a cumulative `trim_count` — the number of messages trimmed from the front.
+2. On restore, `trim_count` tells us exactly which messages to skip after the system prompt to recover the working window.
+
+```
+Diary row:
+  messages = [sys, u1, a1, u2, a2, u3, a3, u4, a4]  ← full history (immutable)
+  trim_count = 4                                      ← u1,a1,u2,a2 were trimmed
+
+Restore:
+  working = [sys] + messages[5:] = [sys, u3, a3, u4, a4]  ← exact working context
+```
 
 ```
 slife startup
   → start_memory()           // connect or spawn slife-memory
-  → memory_open_diary()      // check for status='进行中'
-    ├─ none found → fresh diary created
-    └─ found! → returns interrupted=true + session info
+  → memory_open_diary()      // always creates a fresh diary
+    ├─ also checks for last completed session
+    └─ returns last_diary info if found
          → TUI shows recovery prompt:
-           ⚡ 发现中断的对话
+           📒 上一次对话        (or ⚡ 发现中断的对话 if crashed)
              「重构工具系统」
              12 轮对话 · 2026-07-15 11:45
-             状态：意外中断 · 58,023 tokens
-             /restore — 从中断处继续
-             /discard — 丢弃，开始新对话
+             状态：已完成 · 58,023 tokens
+             /restore — 继续上次对话
+             /new — 开始新对话
              /preview — 查看对话内容
 ```
 
-On restore: messages are deserialized from JSON → `Conversation` rebuilt → UI widgets rendered → LLM can continue exactly where it left off.
+On `/restore`: the auto-created empty diary is closed, messages are loaded, `trim_count` messages are skipped after the system prompt → exact working context is recovered. The Conversation is rebuilt with only the working messages. `_trim_count` is synced so future saves continue accumulating correctly.
+
+On `/new`: the recovery prompt is dismissed. The auto-created diary becomes the active session. Nothing is modified.
 
 ## Tool System
 
@@ -398,14 +415,14 @@ slife supports six categories of tools, all unified under the `Tool` ABC and reg
 
 ### 1. Memory Tools
 
-Permanent conversation storage with hybrid search (`slife_memory/`). Eight tools — four summary-level (always loaded), one search, three load-level. Memory tools are implemented as an independent MCP service, discovered by slife through the same `MCPClient` + `MCPProxyTool` pattern as all other MCP tools. The LLM uses them to search past conversations, recall context, and manage the diary.
+Permanent conversation storage with hybrid search (`slife_memory/`). Seven tools — four summary-level (always loaded), one search, two load-level. Memory tools are implemented as an independent MCP service, discovered by slife through the same `MCPClient` + `MCPProxyTool` pattern as all other MCP tools. The LLM uses them to search past conversations, recall context, and manage the diary.
 
 | Tool | Tier |
 |---|---|
 | `memory_open_diary` / `memory_close_diary` | summary |
 | `memory_list_recent` / `memory_update_diary` | summary |
 | `memory_search` (grep / fts5 / hybrid) | search |
-| `memory_open` / `memory_summarize` / `memory_forget` | load |
+| `memory_open` / `memory_summarize` | load |
 
 ### 2. Native Function Tools
 
@@ -695,7 +712,7 @@ Textual TUI in **Claude Code CLI style**: minimal chrome, dark theme, clean mess
 - **ToolCallWidget** — collapsible tool call display with header line (amber) and detail block. Single `Static` widget, no child widgets — all rendering via `Content` trees. User data goes through `Content.from_text(markup=False)` for safety.
 - **TUIHandler** — bridges `AgentEventHandler` callbacks to Textual widgets
 - **StatusBar** — shows model name, thinking indicator, token count, key bindings
-- **Recovery prompt** — on startup with an interrupted session, displays session info and offers `/restore` `/discard` `/preview` slash commands
+- **Recovery prompt** — on startup, displays the last session info and offers `/restore` `/new` `/preview` slash commands
 
 All user-facing text (tool output, search results, file contents) is rendered with `markup=False` to prevent `MarkupError` from special characters (`&`, `[`, `]`).
 
@@ -757,7 +774,7 @@ slife_mcp/             # Independent MCP proxy (publishable as slife-mcp)
   pyproject.toml       #   Standalone package config
   README.md            #   Standalone package docs
 slife_memory/          # Independent memory MCP service (publishable as slife-memory)
-  server.py            #   FastMCP server — 8 memory tools
+  server.py            #   FastMCP server — 7 memory tools
   store.py             #   SQLite + FTS5 + vec0 hybrid search
   embeddings.py        #   GGUF local or OpenAI API embedding backend
   search.py            #   RRF (Reciprocal Rank Fusion) merge

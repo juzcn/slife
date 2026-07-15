@@ -39,7 +39,6 @@ All tools take an `author` parameter for user isolation (maps to `--user` in sli
 | `memory_search` | search | Hybrid search (FTS5 + vec0 → RRF merge) |
 | `memory_open` | load | Read a full conversation by rowid |
 | `memory_summarize` | load | Write title/summary/tags/key-moments |
-| `memory_forget` | load | Delete a diary entry |
 
 ### Progressive Disclosure
 
@@ -47,7 +46,7 @@ Tools follow the same tiered pattern as slife's skills and MCP tools:
 
 1. **Summary tier** (always loaded): open/close/list/update — lightweight, always available
 2. **Search tier** (loaded when needed): `memory_search` — hybrid keyword + semantic
-3. **Load tier** (loaded on demand): `memory_open`, `memory_summarize`, `memory_forget`
+3. **Load tier** (loaded on demand): `memory_open`, `memory_summarize`
 
 ## Configuration
 
@@ -78,7 +77,7 @@ slife startup
     → if not: creates fresh diary entry
 ```
 
-If an interrupted session is found, slife prompts the user to restore or discard.
+If a previous session is found (interrupted or completed), slife prompts the user to restore or start fresh.
 
 ## Requirements
 

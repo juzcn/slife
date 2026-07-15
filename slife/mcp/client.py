@@ -20,6 +20,22 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_WRAPPER_URL = "http://127.0.0.1:9876/mcp"
 
+# Timeout for MCP initialize handshake — prevents hanging if the
+# child process crashes before starting its MCP server loop.
+_MCP_INIT_TIMEOUT = 10.0
+
+# ── Stream-closed sentinel ──────────────────────────────────────────
+# Pushed into the stdout queue when the child process stdout pipe closes
+# unexpectedly, to unblock any consumer waiting on the queue.
+
+
+class _StreamClosed(Exception):
+    """Raised when the child process stdout stream closes unexpectedly."""
+    pass
+
+
+_STREAM_CLOSED = _StreamClosed()
+
 
 # ── asyncio.Queue adapters — implement anyio stream protocol on asyncio primitives ──
 
@@ -30,7 +46,13 @@ class _ReadAdapter:
         self._queue = queue
 
     async def receive(self):
-        return await self._queue.get()
+        item = await self._queue.get()
+        if isinstance(item, _StreamClosed):
+            raise _StreamClosed(
+                "MCP child process stdout stream closed unexpectedly "
+                "— the process likely crashed during startup"
+            )
+        return item
 
     async def aclose(self):
         pass
@@ -125,9 +147,25 @@ class MCPClient:
         self._write_task = asyncio.create_task(self._bridge_stdin())
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 
-        self._session = ClientSession(self._read_adapter, self._write_adapter)
-        await self._session.__aenter__()
-        await self._session.initialize()
+        try:
+            self._session = ClientSession(self._read_adapter, self._write_adapter)
+            await self._session.__aenter__()
+            await asyncio.wait_for(
+                self._session.initialize(), timeout=_MCP_INIT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise asyncio.TimeoutError(
+                f"MCP initialize timed out after {_MCP_INIT_TIMEOUT}s — "
+                f"child process may have crashed during startup"
+            )
+        except Exception:
+            # Clean up the session context on failure
+            if self._session:
+                try:
+                    await self._session.__aexit__(None, None, None)
+                except Exception:
+                    pass
+            raise
 
         self._connected = True
         self._owns_process = True
@@ -145,6 +183,11 @@ class MCPClient:
             while True:
                 line = await reader.readline()
                 if not line:
+                    # EOF — child process stdout closed (likely crashed)
+                    if self._connected:
+                        # Unexpected EOF during operation
+                        logger.warning("mcp_bridge_eof source=%s", label)
+                    await self._stdout_queue.put(_STREAM_CLOSED)
                     break
                 line_str = line.decode("utf-8", errors="replace").strip()
                 if not line_str:
@@ -161,6 +204,7 @@ class MCPClient:
             pass
         except Exception:
             logger.warning("mcp_bridge_crashed source=%s", label, exc_info=True)
+            await self._stdout_queue.put(_STREAM_CLOSED)
 
     async def _bridge_stdout(self) -> None:
         assert self._process and self._process.stdout
@@ -224,9 +268,23 @@ class MCPClient:
         from mcp.client.streamable_http import streamablehttp_client
         self._transport = streamablehttp_client(url)
         read_stream, write_stream, _ = await self._transport.__aenter__()
-        self._session = ClientSession(read_stream, write_stream)
-        await self._session.__aenter__()
-        await self._session.initialize()
+        try:
+            self._session = ClientSession(read_stream, write_stream)
+            await self._session.__aenter__()
+            await asyncio.wait_for(
+                self._session.initialize(), timeout=_MCP_INIT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise asyncio.TimeoutError(
+                f"MCP initialize timed out after {_MCP_INIT_TIMEOUT}s"
+            )
+        except Exception:
+            if self._session:
+                try:
+                    await self._session.__aexit__(None, None, None)
+                except Exception:
+                    pass
+            raise
         self._connected = True
         self._owns_process = False
         logger.info("mcp_client_connected transport=http")
@@ -245,9 +303,25 @@ class MCPClient:
         self._read_task = asyncio.create_task(self._bridge_reader(read_stream))
         self._write_task = asyncio.create_task(self._bridge_writer(write_stream))
 
-        self._session = ClientSession(self._read_adapter, self._write_adapter)
-        await self._session.__aenter__()
-        await self._session.initialize()
+        try:
+            self._session = ClientSession(self._read_adapter, self._write_adapter)
+            await self._session.__aenter__()
+            await asyncio.wait_for(
+                self._session.initialize(), timeout=_MCP_INIT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise asyncio.TimeoutError(
+                f"MCP initialize timed out after {_MCP_INIT_TIMEOUT}s — "
+                f"child process may have crashed during startup"
+            )
+        except Exception:
+            if self._session:
+                try:
+                    await self._session.__aexit__(None, None, None)
+                except Exception:
+                    pass
+            raise
+
         self._connected = True
         self._owns_process = False
         logger.info("mcp_client_connected transport=streams")

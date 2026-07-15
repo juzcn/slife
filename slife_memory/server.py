@@ -50,14 +50,11 @@ def _get_db_path() -> Path:
 mcp = FastMCP(
     "slife-memory",
     instructions=(
-        "slife-memory is a permanent memory service for the slife agent. "
-        "It records every conversation like a diary — one row per complete chat. "
-        "Use memory_open_diary to start or resume a conversation. "
-        "Use memory_update_diary after each turn to persist messages. "
-        "Use memory_search to find past conversations by keyword or semantic similarity. "
-        "Use memory_list_recent to browse recent diary entries. "
-        "Use memory_open to read a full conversation. "
-        "All tools require an author parameter for user isolation."
+        "slife-memory — permanent conversation diary with hybrid search. "
+        "Every conversation is recorded as one diary row. "
+        "LLM-visible tools: memory_list_recent, memory_search (grep/fts5/hybrid/time), "
+        "memory_open, memory_summarize. "
+        "All tools take an author parameter for --user isolation."
     ),
 )
 
@@ -154,7 +151,9 @@ async def memory_close_diary(
         "Save the current conversation messages to the diary. "
         "Call this after each completed turn (user message + assistant response). "
         "Pass the full OpenAI-format messages list and updated turn/token counts. "
-        "This overwrites the messages for this diary entry — it's a save, not an append."
+        "This overwrites the messages for this diary entry — it's a save, not an append. "
+        "trim_count records how many messages have been trimmed from the front "
+        "(cumulative, used to restore the exact working context on restart)."
     ),
 )
 async def memory_update_diary(
@@ -163,6 +162,7 @@ async def memory_update_diary(
     messages: list[dict] | None = None,
     turn_count: int = 0,
     token_count: int = 0,
+    trim_count: int = 0,
 ) -> str:
     """Save conversation progress after each turn."""
     assert _store is not None
@@ -172,6 +172,7 @@ async def memory_update_diary(
             messages=messages,
             turn_count=turn_count,
             token_count=token_count,
+            trim_count=trim_count,
         )
         return json.dumps(
             {"status": "保存完成", "rowid": rowid, "turn_count": turn_count},
@@ -185,9 +186,9 @@ async def memory_update_diary(
 @mcp.tool(
     name="memory_list_recent",
     description=(
-        "Browse recent diary entries — like flipping through the pages of a journal. "
-        "Returns a lightweight list with title, summary, tags, date, and turn/token counts. "
-        "Does NOT return the full messages — use memory_open for that."
+        "List recent conversation diaries, newest first. "
+        "Returns rowid, title, summary, tags, created_at, turn/token counts. "
+        "Lightweight — no full messages. Use memory_open to read a full entry."
     ),
 )
 async def memory_list_recent(
@@ -207,10 +208,10 @@ async def memory_list_recent(
 @mcp.tool(
     name="memory_open",
     description=(
-        "Open a specific diary entry and read its full conversation. "
-        "Returns the complete messages (OpenAI format JSON), plus metadata "
-        "(title, summary, tags, key_moments). "
-        "Use memory_list_recent or memory_search to find the rowid first."
+        "Read a full conversation by rowid. "
+        "Returns the complete messages list (OpenAI JSON) plus title, summary, "
+        "tags, key_moments, and trim_count. "
+        "Find rowids via memory_list_recent or memory_search first."
     ),
 )
 async def memory_open(rowid: int, author: str = "default") -> str:
@@ -232,13 +233,20 @@ async def memory_open(rowid: int, author: str = "default") -> str:
 @mcp.tool(
     name="memory_search",
     description=(
-        "Search past conversations. Three modes: "
-        "'grep' — exact substring search (best for error messages, code, "
-        "specific strings). Like grep over the full conversation text. "
-        "'fts5' — keyword ranking via full-text index (best for topic search). "
-        "'hybrid' — fts5 + semantic vector search merged with RRF (default, "
-        "best for when you don't know the exact words). "
-        "Results exclude the current active conversation. "
+        "Search past conversations (excludes the active one). "
+        "Four modes: "
+        "'grep' — exact substring in full message text (error messages, code, "
+        "file paths). "
+        "'fts5' — keyword ranking via BM25 full-text index (topic search). "
+        "'hybrid' — fts5 + semantic vector search merged with RRF (default; "
+        "best for fuzzy recall when you don't remember exact words). "
+        "'time' — browse by time range, no text query needed. "
+        "All modes accept since/until (ISO datetime, e.g. 2026-07-14T00:00:00) "
+        "to filter by created_at. YOU must convert relative time to ISO: "
+        "'yesterday' → compute yesterday's date; 'last week' → 7 days ago; "
+        "'this month' → first day of current month. Combine since+until for "
+        "a range. Omit both to search all time. "
+        "Use memory_open to read a full match."
         "Use memory_open to read a full match."
     ),
 )
@@ -247,24 +255,41 @@ async def memory_search(
     query: str = "",
     mode: str = "hybrid",
     limit: int = 10,
+    since: str | None = None,
+    until: str | None = None,
 ) -> str:
-    """Search past conversations — grep / fts5 / hybrid."""
+    """Search past conversations — grep / fts5 / hybrid / time, with optional time range."""
     assert _store is not None
+
+    mode = mode.lower()
+    if mode not in ("grep", "fts5", "hybrid", "time"):
+        mode = "hybrid"
+
+    # time mode: no query needed
+    if mode == "time":
+        try:
+            hits = await _store.search_time(
+                author=author, limit=limit, since=since, until=until,
+            )
+            return json.dumps(
+                {"mode": "time", "since": since, "until": until, "results": hits},
+                ensure_ascii=False, indent=2,
+            )
+        except Exception as e:
+            logger.exception("search_time_failed")
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     if not query.strip():
         return json.dumps(
-            {"error": "query 不能为空"}, ensure_ascii=False,
+            {"error": "query 不能为空（time 模式不需要 query）"}, ensure_ascii=False,
         )
-
-    mode = mode.lower()
-    if mode not in ("grep", "fts5", "hybrid"):
-        mode = "hybrid"
 
     try:
         # ── grep: exact substring scan ──────────────────────────
         if mode == "grep":
             hits = await _store.search_grep(
                 author=author, pattern=query, limit=limit,
+                since=since, until=until,
             )
             if not hits:
                 return json.dumps(
@@ -281,6 +306,7 @@ async def memory_search(
         if mode == "fts5":
             hits = await _store.search_keyword(
                 author=author, query=query, limit=limit,
+                since=since, until=until,
             )
             if not hits:
                 return json.dumps(
@@ -296,6 +322,7 @@ async def memory_search(
         # ── hybrid: fts5 + semantic → RRF ──────────────────────
         keyword_hits = await _store.search_keyword(
             author=author, query=query, limit=limit * 2,
+            since=since, until=until,
         )
 
         semantic_hits: list[dict] = []
@@ -305,6 +332,7 @@ async def memory_search(
             if emb:
                 semantic_hits = await _store.search_semantic(
                     author=author, embedding=emb, limit=limit * 2,
+                    since=since, until=until,
                 )
                 semantic_available = True
 
@@ -334,11 +362,12 @@ async def memory_search(
 @mcp.tool(
     name="memory_summarize",
     description=(
-        "Write a title, summary, tags, or key moments for a diary entry. "
-        "Call this when a conversation wraps up to make it findable later. "
-        "The summary is used for semantic search — a good summary captures "
-        "the gist in 1-2 sentences. Tags are comma-separated keywords. "
-        "Key moments are important decisions, bugs found, or insights gained."
+        "Annotate a diary entry with title, summary, tags, and key moments. "
+        "Call when a conversation wraps up so it's findable later: "
+        "summary enables semantic search, tags enable topic search, "
+        "key_moments record important decisions or insights. "
+        "All fields optional — only pass what you have. "
+        "Does NOT modify the conversation messages."
     ),
 )
 async def memory_summarize(
@@ -376,28 +405,6 @@ async def memory_summarize(
         )
     except Exception as e:
         logger.exception("summarize_failed")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-@mcp.tool(
-    name="memory_forget",
-    description=(
-        "Delete a diary entry permanently. "
-        "Use with caution — this cannot be undone. "
-        "Find the rowid first with memory_list_recent or memory_search."
-    ),
-)
-async def memory_forget(rowid: int, author: str = "default") -> str:
-    """Delete a diary entry."""
-    assert _store is not None
-    try:
-        deleted = await _store.forget(rowid=rowid, author=author)
-        return json.dumps(
-            {"deleted": deleted, "rowid": rowid},
-            ensure_ascii=False, indent=2,
-        )
-    except Exception as e:
-        logger.exception("forget_failed")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

@@ -20,12 +20,12 @@ def _session_log_path(agent_name: str | None = None) -> Path:
     """Generate a timestamped log file path for this session.
 
     Follows the same naming convention as sub-agent logs:
-    ``logs/slife_<name>_YYYYMMDD_HHMMSS.log``.
+    ``logs/YYYYMMDD_HHMMSS_slife_<name>.log``.
     """
     LOG_DIR.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = agent_name or "main"
-    return LOG_DIR / f"slife_{name}_{ts}.log"
+    return LOG_DIR / f"{ts}_slife_{name}.log"
 
 
 def setup_logging(
@@ -36,7 +36,7 @@ def setup_logging(
 
     Console: INFO+ during startup (before TUI), WARNING+ during TUI runtime.
     File:    DEBUG+ with timestamps, session/request IDs for troubleshooting.
-    Each session writes to a new ``logs/slife_<name>_YYYYMMDD_HHMMSS.log`` file.
+    Each session writes to a new ``logs/YYYYMMDD_HHMMSS_slife_<name>.log`` file.
 
     Returns:
         (log_path, console_handler) — caller should raise console to WARNING

@@ -19,13 +19,12 @@ class TestSessionLogPath:
     def test_default_name_main(self, mock_mkdir):
         path = bootstrap._session_log_path()
         assert path.parent.name == "logs"
-        assert path.name.startswith("slife_main_")
-        assert path.name.endswith(".log")
+        assert path.name.endswith("_slife_main.log")
 
     @patch("pathlib.Path.mkdir")
     def test_custom_agent_name(self, mock_mkdir):
         path = bootstrap._session_log_path(agent_name="testbot")
-        assert "slife_testbot_" in str(path)
+        assert "_slife_testbot.log" in str(path)
 
     @patch("pathlib.Path.mkdir")
     def test_timestamp_format(self, mock_mkdir):

@@ -64,6 +64,9 @@ class AgentService:
         self._memory_client: MCPClient | None = None
         self._memory_process = None
         self._diary_rowid: int | None = None  # active diary rowid for updates
+        self._diary_info: dict | None = None  # cached result from memory_open_diary
+        self._last_diary: dict | None = None  # last completed session (for restore)
+        self._trim_count: int = 0              # cumulative messages trimmed (for exact restore)
 
         # A2A integration state
         self._a2a_client = None
@@ -365,10 +368,13 @@ class AgentService:
 
             diary_info = json.loads(result)
             self._diary_rowid = diary_info.get("rowid")
+            self._diary_info = diary_info  # cache for check_interrupted()
+            self._last_diary = diary_info.get("last_diary")  # completed session to restore
             logger.info(
-                "memory_init_done rowid=%s interrupted=%s tools=%d",
+                "memory_init_done rowid=%s interrupted=%s last_diary=%s tools=%d",
                 self._diary_rowid,
                 diary_info.get("interrupted", False),
+                self._last_diary.get("rowid") if self._last_diary else None,
                 len(self.tool_registry.list_tools()),
             )
             return self._diary_rowid
@@ -405,7 +411,12 @@ class AgentService:
             self._memory_client = await self._memory_process.create_client()
 
     async def _register_memory_tools(self) -> None:
-        """Discover and register memory management tools as proxy tools."""
+        """Discover and register memory tools as proxy tools.
+
+        Harness-only lifecycle tools (open_diary, close_diary, update_diary)
+        are excluded — they are called programmatically by AgentService,
+        not by the LLM.
+        """
         from slife.mcp.tool_adapter import create_proxy_tools
 
         assert self._memory_client is not None
@@ -415,7 +426,18 @@ class AgentService:
             [t["name"] for t in memory_tools],
         )
 
-        tagged = [{**t, "server": "memory"} for t in memory_tools]
+        # Harness lifecycle — never exposed to LLM
+        _HARNESS_TOOLS = {
+            "memory_open_diary",
+            "memory_close_diary",
+            "memory_update_diary",
+        }
+
+        tagged = [
+            {**t, "server": "memory"}
+            for t in memory_tools
+            if t["name"] not in _HARNESS_TOOLS
+        ]
 
         proxy_tools = create_proxy_tools(self._memory_client, tagged)
         for tool in proxy_tools:
@@ -456,65 +478,82 @@ class AgentService:
     ) -> None:
         """Persist the current conversation to memory after a turn completes.
 
-        Also trims the active context if it exceeds the configured ceiling,
-        keeping the conversation within 20%-80% of the model's context window.
-
-        Safe to call even when memory is disabled — silently skips.
+        Captures the full messages BEFORE trimming (memory is immutable),
+        then trims the active context if it exceeds the configured ceiling.
+        Records the cumulative *trim_count* so restart can restore the
+        exact working context by skipping already-trimmed messages.
         """
         if not self.memory_enabled or self._diary_rowid is None:
             return
 
+        # Snapshot full conversation before trimming (immutable record)
+        full_messages = list(self.conversation.messages)
+
+        # Trim the active context
+        context_window = self.config.active_model.context_window
+        trimmed = self.conversation.trim_context(
+            context_window=context_window,
+            floor=self.config.context_floor,
+            ceiling=self.config.context_ceiling,
+        )
+        self._trim_count += trimmed
+
+        # Save full messages + cumulative trim position
         try:
-            # Save full messages to diary BEFORE trimming
             await self._memory_client.call_tool(
                 "memory_update_diary",
                 {
                     "rowid": self._diary_rowid,
                     "author": self.config.user,
-                    "messages": self.conversation.messages,
+                    "messages": full_messages,
                     "turn_count": turn_count or 0,
                     "token_count": token_count or 0,
+                    "trim_count": self._trim_count,
                 },
             )
         except Exception as e:
             logger.debug("memory_save_error err=%s", e)
 
-        # Trim context if it exceeds the ceiling
-        context_window = self.config.active_model.context_window
-        self.conversation.trim_context(
-            context_window=context_window,
-            floor=self.config.context_floor,
-            ceiling=self.config.context_ceiling,
-        )
-
     async def check_interrupted(self) -> dict | None:
-        """Check if there's an interrupted diary to restore.
+        """Check if there's a diary to restore.
 
-        Returns the diary info dict (with interrupted=True) or None.
+        Returns the interrupted diary, or the last completed diary
+        (slife is a permanent-memory agent — every restart should
+        offer to continue the previous conversation).
+
+        Returns None only when there is no prior session at all.
         Must be called after start_memory().
+
+        Uses the result cached from start_memory()'s memory_open_diary
+        call — does NOT call memory_open_diary again, because a second
+        call would find the diary just opened by start_memory() and
+        incorrectly report it as interrupted.
         """
-        if not self.memory_enabled or self._diary_rowid is None:
+        if not self.memory_enabled or self._diary_info is None:
             return None
 
-        try:
-            result = await self._memory_client.call_tool(
-                "memory_open_diary",
-                {
-                    "author": self.config.user,
-                    "who_helped": self.config.a2a_config.agent_name or "",
-                    "what_model": self.config.active_model.ref,
-                    "system_prompt": "",
-                },
-            )
-            info = json.loads(result)
-            if info.get("interrupted"):
-                return info
-            # This was a fresh open — update our rowid
-            self._diary_rowid = info.get("rowid")
-            return None
-        except Exception as e:
-            logger.debug("check_interrupted_error err=%s", e)
-            return None
+        # Interrupted session (crash) — always restore
+        if self._diary_info.get("interrupted"):
+            return self._diary_info
+
+        # Last completed session — offer to continue
+        if self._last_diary:
+            return {
+                "rowid": self._last_diary["rowid"],
+                "interrupted": False,
+                "restore": True,
+                "title": self._last_diary.get("title", ""),
+                "created_at": self._last_diary.get("created_at", ""),
+                "updated_at": self._last_diary.get("updated_at", ""),
+                "status": self._last_diary.get("status", ""),
+                "how_many_turns": self._last_diary.get("how_many_turns", 0),
+                "how_many_tokens": self._last_diary.get("how_many_tokens", 0),
+                "who_helped": self._last_diary.get("who_helped", ""),
+                "what_model": self._last_diary.get("what_model", ""),
+                "trim_count": self._last_diary.get("trim_count", 0),
+            }
+
+        return None
 
     # ── A2A lifecycle ──────────────────────────────────────────────────
 

@@ -123,6 +123,26 @@ class MCPWrapperProcess:
                 "MCP wrapper is not running. Call start() first."
             )
 
+        # Check if the child process already died (e.g. startup crash).
+        # This prevents hanging in connect_streams() waiting for a
+        # handshake response from a dead process.
+        returncode = self._process.returncode
+        if returncode is not None:
+            stderr_tail = ""
+            if self._process.stderr:
+                try:
+                    remaining = await self._process.stderr.read()
+                    stderr_tail = remaining.decode(
+                        "utf-8", errors="replace",
+                    )[-2000:]
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"MCP child process (pid={self._process.pid}) exited "
+                f"with code {returncode} before completing the MCP "
+                f"handshake. stderr:\n{stderr_tail}"
+            )
+
         client = MCPClient()
         await client.connect_streams(
             read_stream=self._process.stdout,

@@ -113,7 +113,7 @@ def setup_server_logging(
 
     log_dir.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"{service_name}_{ts}.log"
+    log_path = log_dir / f"{ts}_{service_name}.log"
     _file = logging.FileHandler(log_path, encoding="utf-8")
     _file.setLevel(logging.DEBUG)
     _file.setFormatter(SessionFormatter(FILE_LOG_FORMAT))

@@ -33,6 +33,12 @@ Tools
   REST APIs — connect via anyapi-mcp-server (pattern in slife.json5).
   Docs: https://github.com/quiloos39/anyapi-mcp-server
 
+  Memory — conversations are auto-saved; diary lifecycle is
+  managed by the harness.  memory_search finds past conversations
+  (grep/fts5/hybrid/time).  memory_summarize annotates completed
+  conversations for future recall.
+
+
   A2A — discover agents before delegating: a2a_list_agents for remote
   peers, a2a_list_subagents for local workers.  For parallel work,
   spawn subagents with a2a_spawn_subagent, then a2a_send_task_async

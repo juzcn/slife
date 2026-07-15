@@ -34,7 +34,7 @@ def _setup_logging() -> Path:
     from datetime import datetime
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = os.environ.get("SLIFE_SUBAGENT_NAME", "subagent")
-    log_path = log_dir / f"slife_{name}_{ts}.log"
+    log_path = log_dir / f"{ts}_slife_{name}.log"
     root = logging.getLogger(); root.setLevel(logging.DEBUG)
     _log_handler = logging.FileHandler(log_path, encoding="utf-8")
     _log_handler.setLevel(logging.DEBUG)

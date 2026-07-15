@@ -138,6 +138,33 @@ class TestSessionStoreSetup:
         mock_conn.commit.assert_called()
 
 
+    @pytest.mark.asyncio
+    @patch("pathlib.Path.mkdir")
+    @patch("slife_memory.store.aiosqlite.connect")
+    async def test_setup_is_idempotent(self, mock_connect, mock_mkdir):
+        """Calling setup() twice on the same DB file should not fail."""
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock()
+        mock_conn.executescript = AsyncMock()
+        mock_conn.commit = AsyncMock()
+        mock_conn.enable_load_extension = AsyncMock()
+        mock_conn.load_extension = AsyncMock()
+
+        async def _connect(*args, **kwargs):
+            return mock_conn
+
+        mock_connect.side_effect = _connect
+
+        with patch("sqlite_vec.loadable_path", return_value="/path/to/vec"):
+            store = SessionStore(Path("/tmp/test_idem.db"))
+            await store.setup()
+            # Second setup should not raise — schema uses IF NOT EXISTS
+            await store.setup()
+
+        assert mock_connect.call_count == 2
+        assert mock_conn.executescript.call_count == 2
+
+
 class TestSessionStoreClose:
     """Tests for close."""
 
@@ -164,22 +191,29 @@ class TestSessionStoreOpenDiary:
     async def test_open_diary_no_interrupted(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
-        # First execute: find_interrupted → returns None
-        # Second execute: INSERT → returns cursor with lastrowid
+        # 1st execute: find_interrupted → returns None
+        # 2nd execute: INSERT → returns cursor with lastrowid
+        # 3rd execute: _find_last_diary → returns None (no prior sessions)
         mock_cursor_interrupted = AsyncMock()
 
         async def _fetchone_none():
             return None
         mock_cursor_interrupted.fetchone = _fetchone_none
 
+        mock_cursor_last = AsyncMock()
+        mock_cursor_last.fetchone = _fetchone_none
+
         mock_cursor_insert = MagicMock()
         mock_cursor_insert.lastrowid = 42
 
         async def _execute_side_effect(*args, **kwargs):
-            if mock_conn.execute.call_count == 1:
+            call_count = mock_conn.execute.call_count
+            if call_count == 1:
                 return mock_cursor_interrupted
-            else:
+            elif call_count == 2:
                 return mock_cursor_insert
+            else:
+                return mock_cursor_last
 
         mock_conn.execute = AsyncMock(side_effect=_execute_side_effect)
         mock_conn.commit = AsyncMock()
@@ -391,34 +425,6 @@ class TestSessionStoreUpdateSummary:
         mock_conn.execute.assert_not_called()
 
 
-class TestSessionStoreForget:
-    """Tests for forget."""
-
-    @pytest.mark.asyncio
-    async def test_forget_returns_true(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.rowcount = 1
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        mock_conn.commit = AsyncMock()
-        store._conn = mock_conn
-
-        result = await store.forget(rowid=1, author="user")
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_forget_returns_false(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.rowcount = 0
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        mock_conn.commit = AsyncMock()
-        store._conn = mock_conn
-
-        result = await store.forget(rowid=999, author="user")
-        assert result is False
 
 
 class TestSessionStoreFindInterrupted:

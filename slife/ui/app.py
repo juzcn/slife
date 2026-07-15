@@ -134,9 +134,9 @@ class SlifeApp(App):
             try:
                 await self.service.start_memory()
 
-                # Check for interrupted session
+                # Check for restorable session (interrupted or last completed)
                 diary = await self.service.check_interrupted()
-                if diary and diary.get("interrupted"):
+                if diary:
                     self._show_recovery_prompt(diary)
             except Exception as e:
                 self._show_system_message(
@@ -271,9 +271,9 @@ class SlifeApp(App):
             self.run_worker(self._restore_session(), exclusive=True)
             return
 
-        if raw == "/discard" and self._recovery_info:
+        if raw == "/new" and self._recovery_info:
             event.input.clear()
-            self.run_worker(self._discard_session(), exclusive=True)
+            self.run_worker(self._new_session(), exclusive=True)
             return
 
         if raw == "/preview" and self._recovery_info:
@@ -347,36 +347,66 @@ class SlifeApp(App):
         chat_view.add_system_message(text, color=color)
 
     def _show_recovery_prompt(self, diary: dict) -> None:
-        """Display the recovery prompt when an interrupted session is found."""
+        """Display the recovery prompt when a restorable session is found."""
         self._recovery_info = diary
 
         title = diary.get("title") or "(未命名)"
         turns = diary.get("how_many_turns", 0)
         updated = diary.get("updated_at", "")[:16]
         tokens = diary.get("how_many_tokens", 0)
-        status = diary.get("status", "意外中断")
+        status = diary.get("status", "")
+        interrupted = diary.get("interrupted", False)
+
+        if interrupted:
+            header = "⚡ 发现中断的对话"
+            action = "从中断处继续"
+            color = "#d29922"
+        else:
+            header = "📒 上一次对话"
+            action = "继续上次对话"
+            color = "#3fb950"
 
         chat_view = self.query_one("#chat-view", ChatView)
         chat_view.add_system_message(
-            f"⚡ 发现中断的对话\n"
+            f"{header}\n"
             f"\n"
             f"  「{title}」\n"
             f"  {turns} 轮对话 · {updated}\n"
             f"  状态：{status} · {tokens:,} tokens\n"
             f"\n"
-            f"  /restore — 从中断处继续\n"
-            f"  /discard — 丢弃，开始新对话\n"
+            f"  /restore — {action}\n"
+            f"  /new — 开始新对话\n"
             f"  /preview — 查看对话内容",
-            color="#d29922",
+            color=color,
         )
 
     async def _restore_session(self) -> None:
-        """Restore the interrupted session."""
+        """Restore a previous session to its exact working context.
+
+        The diary stores the full conversation history (immutable) plus
+        a *trim_count* — the cumulative number of messages trimmed from
+        the front.  Skipping those messages recovers the exact working
+        window the previous session had at its last save point.
+        """
         if not self._recovery_info:
             return
 
         diary = self._recovery_info
         rowid = diary.get("rowid")
+
+        # Close the auto-created empty diary (start_memory always creates
+        # one before we know whether the user wants to restore).  The old
+        # diary is never modified — we only clean up our own empty stub.
+        orphan_rowid = self.service._diary_rowid
+        if orphan_rowid and orphan_rowid != rowid and self.service._memory_client:
+            try:
+                await self.service._memory_client.call_tool(
+                    "memory_close_diary",
+                    {"rowid": orphan_rowid, "author": self.service.config.user},
+                )
+            except Exception:
+                pass
+
         self.service._diary_rowid = rowid
 
         # Load full diary entry
@@ -386,12 +416,21 @@ class SlifeApp(App):
                 {"rowid": rowid, "author": self.service.config.user},
             )
             full = json.loads(result)
-            messages = json.loads(full.get("messages", "[]"))
+            all_messages = json.loads(full.get("messages", "[]"))
+            trim_count = full.get("trim_count", 0)
 
-            # Rebuild Conversation
+            # Recover the exact working context:
+            # system prompt (index 0 if present) + messages after skip
+            sys_end = 1 if all_messages and all_messages[0].get("role") == "system" else 0
+            working = all_messages[:sys_end] + all_messages[sys_end + trim_count:]
+
+            # Rebuild Conversation with working set
             from slife.agent.conversation import Conversation
             self.service.conversation = Conversation()
-            self.service.conversation.messages = messages
+            self.service.conversation.messages = working
+
+            # Sync cumulative trim_count so future saves continue correctly
+            self.service._trim_count = trim_count
 
             # Rebuild UI from messages
             chat_view = self.query_one("#chat-view", ChatView)
@@ -441,28 +480,20 @@ class SlifeApp(App):
                 self.service.session_usage.total_tokens = full["how_many_tokens"]
                 self._update_status()
 
+
         except Exception as e:
             self._show_system_message(f"✗ 恢复失败: {e}", color="#f85149")
             self._recovery_info = None
 
-    async def _discard_session(self) -> None:
-        """Discard the interrupted session and start fresh."""
+    async def _new_session(self) -> None:
+        """Start fresh — keep the auto-created diary, clear recovery info.
+
+        Does NOT modify the old diary at all. Memory is immutable.
+        """
         if not self._recovery_info:
             return
 
-        try:
-            rowid = self._recovery_info.get("rowid")
-            await self.service._memory_client.call_tool(
-                "memory_close_diary",
-                {"rowid": rowid, "author": self.service.config.user},
-            )
-            self._show_system_message("🗑 已丢弃中断的对话", color="#6e7681")
-        except Exception:
-            pass
-
-        # Start a fresh diary
         self._recovery_info = None
-        rowid = await self.service.start_memory()
         self._show_system_message("📖 开始新对话", color="#3fb950")
 
     async def _preview_session(self) -> None:

@@ -115,6 +115,18 @@ class SessionStore:
         # aiosqlite's executescript runs in the worker thread.
         await self._conn.executescript(schema_sql)
         await self._conn.commit()
+
+        # Migrate existing databases that don't have trim_count yet.
+        # In development — no backward compatibility needed later.
+        try:
+            await self._conn.execute(
+                "ALTER TABLE diary ADD COLUMN trim_count INTEGER NOT NULL DEFAULT 0",
+            )
+            await self._conn.commit()
+            logger.debug("schema_migrated added trim_count")
+        except Exception:
+            pass  # column already exists
+
         logger.debug("schema_ready")
 
     async def close(self) -> None:
@@ -159,6 +171,7 @@ class SessionStore:
                 "how_many_tokens": interrupted["how_many_tokens"],
                 "who_helped": interrupted["who_helped"],
                 "what_model": interrupted["what_model"],
+                "trim_count": interrupted.get("trim_count", 0),
             }
 
         # No interrupted session — create a fresh one
@@ -183,6 +196,36 @@ class SessionStore:
         logger.info(
             "diary_opened author=%s rowid=%s", author, rowid,
         )
+
+        # Always check for a restorable last session — slife is a
+        # permanent-memory agent, so every restart should offer to
+        # continue the previous conversation.
+        last_diary = await self._find_last_diary(author, exclude_rowid=rowid)
+        if last_diary and last_diary.get("how_many_turns", 0) > 0:
+            return {
+                "rowid": rowid,
+                "interrupted": False,
+                "last_diary": {
+                    "rowid": last_diary["rowid"],
+                    "title": last_diary["title"],
+                    "created_at": last_diary["created_at"],
+                    "updated_at": last_diary["updated_at"],
+                    "status": last_diary["status"],
+                    "how_many_turns": last_diary["how_many_turns"],
+                    "how_many_tokens": last_diary["how_many_tokens"],
+                    "who_helped": last_diary["who_helped"],
+                    "what_model": last_diary["what_model"],
+                    "trim_count": last_diary.get("trim_count", 0),
+                },
+                "title": "",
+                "created_at": now,
+                "updated_at": now,
+                "how_many_turns": 0,
+                "how_many_tokens": 0,
+                "who_helped": who_helped,
+                "what_model": what_model,
+            }
+
         return {
             "rowid": rowid,
             "interrupted": False,
@@ -202,11 +245,16 @@ class SessionStore:
         messages: list[dict] | None = None,
         turn_count: int | None = None,
         token_count: int | None = None,
+        trim_count: int = 0,
     ) -> None:
         """Update a diary entry after each conversation turn.
 
         Overwrites the messages JSON and updates counters + timestamp.
         Called after each completed turn (user message + assistant response).
+
+        *trim_count* is the cumulative number of messages trimmed from the
+        front of the conversation (after the system prompt).  It is used
+        on restore to recover the exact working context.
         """
         assert self._conn is not None
 
@@ -214,28 +262,16 @@ class SessionStore:
 
         if messages is not None:
             messages_json = json.dumps(messages, ensure_ascii=False)
-            if turn_count is not None and token_count is not None:
-                await self._conn.execute(
-                    """UPDATE diary
-                       SET messages = ?, updated_at = ?,
-                           how_many_turns = ?, how_many_tokens = ?
-                       WHERE rowid = ? AND author = ?""",
-                    (messages_json, now, turn_count, token_count, rowid, author),
-                )
-            elif turn_count is not None:
-                await self._conn.execute(
-                    """UPDATE diary
-                       SET messages = ?, updated_at = ?, how_many_turns = ?
-                       WHERE rowid = ? AND author = ?""",
-                    (messages_json, now, turn_count, rowid, author),
-                )
-            else:
-                await self._conn.execute(
-                    """UPDATE diary
-                       SET messages = ?, updated_at = ?
-                       WHERE rowid = ? AND author = ?""",
-                    (messages_json, now, rowid, author),
-                )
+            await self._conn.execute(
+                """UPDATE diary
+                   SET messages = ?, updated_at = ?,
+                       how_many_turns = ?, how_many_tokens = ?,
+                       trim_count = ?
+                   WHERE rowid = ? AND author = ?""",
+                (messages_json, now,
+                 turn_count or 0, token_count or 0, trim_count,
+                 rowid, author),
+            )
         else:
             # Just bump the timestamp and optional counters
             if turn_count is not None and token_count is not None:
@@ -298,12 +334,37 @@ class SessionStore:
         assert self._conn is not None
         cursor = await self._conn.execute(
             """SELECT rowid, author, title, created_at, updated_at, status,
-                      how_many_turns, how_many_tokens, who_helped, what_model
+                      how_many_turns, how_many_tokens, who_helped, what_model,
+                      trim_count
                FROM diary
                WHERE author = ? AND status = '进行中'
                ORDER BY updated_at DESC
                LIMIT 1""",
             (author,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    async def _find_last_diary(
+        self, author: str = "default", exclude_rowid: int | None = None,
+    ) -> dict | None:
+        """Find the most recent diary entry regardless of status.
+
+        Excludes *exclude_rowid* (the diary we just created).
+        Returns a dict or None if the diary is empty (no prior sessions).
+        """
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            """SELECT rowid, author, title, created_at, updated_at, status,
+                      how_many_turns, how_many_tokens, who_helped, what_model,
+                      trim_count
+               FROM diary
+               WHERE author = ? AND rowid != ?
+               ORDER BY updated_at DESC
+               LIMIT 1""",
+            (author, exclude_rowid or 0),
         )
         row = await cursor.fetchone()
         if row is None:
@@ -373,36 +434,35 @@ class SessionStore:
         )
         await self._conn.commit()
 
-    async def forget(self, rowid: int, author: str = "default") -> bool:
-        """Delete a diary entry. Returns True if deleted, False if not found."""
-        assert self._conn is not None
-        cursor = await self._conn.execute(
-            "DELETE FROM diary WHERE rowid = ? AND author = ?",
-            (rowid, author),
-        )
-        await self._conn.commit()
-        deleted = cursor.rowcount > 0
-        if deleted:
-            logger.info("diary_forgotten author=%s rowid=%s", author, rowid)
-        return deleted
-
     # ── Search ──────────────────────────────────────────────────────
 
     async def search_keyword(
         self, author: str, query: str, limit: int = 20,
+        since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """Full-text keyword search via FTS5.
 
         Each result includes a snippet highlighting matching text.
+        *since* / *until* are ISO datetime strings for time-range filtering.
         """
         assert self._conn is not None
 
         # Escape FTS5 special characters and format for FTS5 query
         fts_query = _to_fts5_query(query)
 
+        # Build time filter clauses
+        time_clauses = ""
+        time_params: list[str] = []
+        if since:
+            time_clauses += " AND d.created_at >= ?"
+            time_params.append(since)
+        if until:
+            time_clauses += " AND d.created_at <= ?"
+            time_params.append(until)
+
         try:
             cursor = await self._conn.execute(
-                """SELECT d.rowid, d.title, d.summary, d.tags, d.created_at,
+                f"""SELECT d.rowid, d.title, d.summary, d.tags, d.created_at,
                           d.how_many_turns,
                           snippet(diary_fts, 4, '…', '…', '…', 60) AS snippet,
                           rank
@@ -410,10 +470,10 @@ class SessionStore:
                    JOIN diary d ON fts.rowid = d.rowid
                    WHERE diary_fts MATCH ?
                      AND fts.author = ?
-                     AND d.status != '进行中'
+                     AND d.status != '进行中'{time_clauses}
                    ORDER BY rank
                    LIMIT ?""",
-                (fts_query, author, limit),
+                (fts_query, author, *time_params, limit),
             )
             results = [dict(row) for row in await cursor.fetchall()]
             logger.debug(
@@ -428,14 +488,20 @@ class SessionStore:
 
     async def search_semantic(
         self, author: str, embedding: list[float], limit: int = 20,
+        since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """Semantic search via sqlite-vec KNN.
 
         Returns diary entries ranked by cosine distance to the query embedding.
+        *since* / *until* are ISO datetime strings — vec0 doesn't support
+        WHERE on auxiliary columns, so we post-filter in Python.
         """
         assert self._conn is not None
 
         vec_blob = _serialize_f32(embedding)
+
+        # Fetch more than needed to account for post-filtering
+        fetch_limit = limit * 3 if (since or until) else limit
 
         cursor = await self._conn.execute(
             """SELECT rowid, title, summary, tags, created_at, distance
@@ -444,16 +510,66 @@ class SessionStore:
                  AND author = ?
                  AND k = ?
                ORDER BY distance""",
-            (vec_blob, author, limit),
+            (vec_blob, author, fetch_limit),
         )
+
         results = [dict(row) for row in await cursor.fetchall()]
+
+        # Post-filter time range (vec0 doesn't support WHERE on +columns)
+        if since:
+            results = [r for r in results if r.get("created_at", "") >= since]
+        if until:
+            results = [r for r in results if r.get("created_at", "") <= until]
+        results = results[:limit]
+
         logger.debug(
             "search_semantic author=%s hits=%s", author, len(results),
         )
         return results
 
+    async def search_time(
+        self, author: str, limit: int = 20,
+        since: str | None = None, until: str | None = None,
+    ) -> list[dict]:
+        """Time-range browsing — list diary entries in a time window.
+
+        Returns lightweight summaries ordered by *created_at* DESC.
+        At least one of *since* / *until* should be provided.
+        """
+        assert self._conn is not None
+
+        clauses = ["author = ?", "status != '进行中'"]
+        params: list[str | int] = [author]
+
+        if since:
+            clauses.append("created_at >= ?")
+            params.append(since)
+        if until:
+            clauses.append("created_at <= ?")
+            params.append(until)
+
+        where = " AND ".join(clauses)
+        params.append(limit)
+
+        cursor = await self._conn.execute(
+            f"""SELECT rowid, title, summary, tags, created_at,
+                      how_many_turns, how_many_tokens
+               FROM diary
+               WHERE {where}
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            params,
+        )
+        results = [dict(row) for row in await cursor.fetchall()]
+        logger.debug(
+            "search_time author=%s since=%s until=%s hits=%s",
+            author, since, until, len(results),
+        )
+        return results
+
     async def search_grep(
         self, author: str, pattern: str, limit: int = 20,
+        since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """Exact substring search over the full messages JSON.
 
@@ -464,6 +580,8 @@ class SessionStore:
 
         Uses SQLite LIKE which does a full scan — appropriate for
         ad-hoc precise searches, not for ranking.
+
+        *since* / *until* are ISO datetime strings for time-range filtering.
         """
         assert self._conn is not None
 
@@ -471,8 +589,18 @@ class SessionStore:
         safe = pattern.replace("%", r"\%").replace("_", r"\_")
         like_pattern = f"%{safe}%"
 
+        # Build time filter clauses
+        time_clauses = ""
+        time_params: list[str] = []
+        if since:
+            time_clauses += " AND created_at >= ?"
+            time_params.append(since)
+        if until:
+            time_clauses += " AND created_at <= ?"
+            time_params.append(until)
+
         cursor = await self._conn.execute(
-            """SELECT rowid, title, summary, tags, created_at,
+            f"""SELECT rowid, title, summary, tags, created_at,
                       how_many_turns, updated_at,
                       -- Extract a window around the match
                       substr(messages,
@@ -481,10 +609,10 @@ class SessionStore:
                FROM diary
                WHERE author = ?
                  AND status != '进行中'
-                 AND messages LIKE ?
+                 AND messages LIKE ?{time_clauses}
                ORDER BY updated_at DESC
                LIMIT ?""",
-            (pattern, author, like_pattern, limit),
+            (pattern, author, like_pattern, *time_params, limit),
         )
         results = [dict(row) for row in await cursor.fetchall()]
         logger.debug(
