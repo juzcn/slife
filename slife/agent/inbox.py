@@ -122,6 +122,15 @@ class Inbox:
             if msg.reply_to and self._a2a_client:
                 await self._publish_reply(msg.reply_to, msg.correlation_id, result)
 
+            # Route reply to originating channel (WeChat, etc.)
+            if msg.on_reply is not None:
+                reply_text = result.text if hasattr(result, "text") else str(result)
+                try:
+                    await msg.on_reply(reply_text)
+                except Exception as e:
+                    logger.debug("on_reply_error channel=%s err=%s",
+                                 msg.metadata.get("channel", "?"), e)
+
         except Exception as e:
             logger.warning("inbox_process_error source=%s err=%s", msg.source, e)
             if is_remote and self._on_activity:
@@ -138,6 +147,12 @@ class Inbox:
                 await self._publish_reply(
                     msg.reply_to, msg.correlation_id, f"Error: {e}",
                 )
+            # Also notify channel on error
+            if msg.on_reply is not None:
+                try:
+                    await msg.on_reply(f"Error: {e}")
+                except Exception:
+                    pass
         finally:
             # Return to idle
             if self._a2a_client:

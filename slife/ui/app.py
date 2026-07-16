@@ -161,6 +161,14 @@ class SlifeApp(App):
                 group="subagent-startup",
             )
 
+        # Step 5: Start WeChat plugin (if enabled in config)
+        if self.service.config.wechat_config and self.service.config.wechat_config.enabled:
+            self.run_worker(
+                self.service.start_wechat(),
+                exclusive=False,
+                group="wechat-startup",
+            )
+
     # ── Actions ──────────────────────────────────────────────────
 
     async def action_quit(self) -> None:
@@ -186,6 +194,7 @@ class SlifeApp(App):
             _stop("a2a", self.service.stop_a2a()),
             _stop("mcp", self.service.stop_mcp()),
             _stop("memory", self.service.stop_memory()),
+            _stop("wechat", self.service.stop_wechat()),
         )
         await super().action_quit()
 

@@ -136,6 +136,111 @@ def _check_embedding_config() -> list[dict]:
     return results
 
 
+def _check_wechat_status(config=None) -> list[dict]:
+    """Check the WeChat plugin configuration and session state."""
+    results: list[dict] = []
+    import os
+    import time
+    from pathlib import Path
+
+    # Get config if not passed (tool runs outside AgentService context)
+    if config is None:
+        try:
+            from slife.config import Config, parse_cli_agent, parse_cli_user
+            import sys as _sys
+            user = parse_cli_user(_sys.argv)
+            agent = parse_cli_agent(_sys.argv)
+            # Try loading the config — may fail if no slife.json5 exists
+            cfg_path = Path("slife.json5")
+            if cfg_path.exists():
+                config = Config.from_json5(cfg_path, agent_name=agent, user=user)
+        except Exception:
+            pass
+
+    if config is None or config.wechat_config is None:
+        results.append({
+            "component": "wechat",
+            "level": "ok",
+            "key": "enabled",
+            "value": "unknown",
+            "hint": (
+                "WeChat plugin: config not available (no slife.json5?). "
+                "Default is enabled — will activate when config is loaded."
+            ),
+        })
+        return results
+
+    wc = config.wechat_config
+    if not wc.enabled:
+        results.append({
+            "component": "wechat",
+            "level": "ok",
+            "key": "enabled",
+            "value": "disabled",
+            "hint": (
+                "WeChat plugin is disabled in config (wechat.enabled: false). "
+                "Set wechat.enabled: true in slife.json5 to enable."
+            ),
+        })
+        return results
+
+    # Plugin is enabled — check session
+    try:
+        from slife.plugins.wechat.config import load_wechat_config
+        from slife.plugins.wechat.client import WechatClawbotClient
+        SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
+    except ImportError:
+        SESSION_MAX_AGE = 23 * 3600
+
+    wd = Path(os.environ.get("SLIFE_CONFIG_DIR", "."))
+    session = load_wechat_config(config.user, wd)
+
+    if not session.get("bot_token"):
+        results.append({
+            "component": "wechat",
+            "level": "ok",
+            "key": "status",
+            "value": "not_logged_in",
+            "hint": (
+                "WeChat plugin is enabled but not logged in. "
+                "Call wechat_login to scan QR code and connect. "
+                "Tools available: wechat_login, wechat_send_message, "
+                "wechat_check_status, wechat_logout."
+            ),
+        })
+        return results
+
+    saved_at = session.get("saved_at", 0)
+    age = time.time() - saved_at
+    remaining = max(0, SESSION_MAX_AGE - age)
+
+    if remaining <= 0:
+        results.append({
+            "component": "wechat",
+            "level": "warning",
+            "key": "status",
+            "value": "session_expired",
+            "hint": (
+                f"WeChat session expired ({age/3600:.1f}h old, max 23h). "
+                "Call wechat_login to re-scan QR code."
+            ),
+        })
+    else:
+        results.append({
+            "component": "wechat",
+            "level": "ok",
+            "key": "status",
+            "value": "logged_in",
+            "hint": (
+                f"WeChat logged in. Session age: {age/3600:.1f}h, "
+                f"remaining: {remaining/3600:.1f}h. "
+                "Tools: wechat_send_message, wechat_check_status, wechat_logout."
+            ),
+        })
+
+    return results
+
+
 # ── Grouping ───────────────────────────────────────────────────────
 
 
@@ -220,8 +325,9 @@ class SystemHealthTool(Tool):
         # Phase 2: Dynamic checks — run fresh every call
         runtime = _check_runtime_imports()
         embedding = _check_embedding_config()
+        wechat = _check_wechat_status()
 
-        all_entries = startup + runtime + embedding
+        all_entries = startup + runtime + embedding + wechat
         groups = _group_by_component(all_entries)
 
         # Build per-component status

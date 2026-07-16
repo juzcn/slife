@@ -1,5 +1,5 @@
-# Project config (contains local settings)
-slife.json5
+# Project config (contains local settings, tokens, per-user session data)
+*.json5
 
 # Runtime logs
 logs/

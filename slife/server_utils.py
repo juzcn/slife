@@ -25,9 +25,11 @@ def setup_server_logging(
 ) -> Path:
     """Configure shared logging for a server process (stderr + file).
 
-    - Adopts ``SLIFE_SESSION_ID`` from the parent environment.
+    - Adopts ``SLIFE_SESSION_ID`` and ``SLIFE_USER`` from the parent env.
     - stderr: DEBUG+ with plain formatter (parent adds session/request context).
     - File:    DEBUG+ with ``SessionFormatter``, one per session.
+    - File name includes *user* to avoid conflicts when multiple users
+      run in the same directory (e.g. ``logs/..._slife_mcp_default.log``).
     - Silences httpx/httpcore/openai/asyncio and FastMCP noise.
 
     Returns the log file path.
@@ -35,6 +37,8 @@ def setup_server_logging(
     _sid = os.environ.get("SLIFE_SESSION_ID", "")
     if _sid:
         set_session_id(_sid)
+
+    _user = os.environ.get("SLIFE_USER", "default")
 
     _stderr_fmt = logging.Formatter(
         "%(asctime)s [%(levelname)-5s] %(name)s | %(message)s",
@@ -54,7 +58,7 @@ def setup_server_logging(
 
     log_dir.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"{ts}_{service_name}.log"
+    log_path = log_dir / f"{ts}_{service_name}_{_user}.log"
     _file = logging.FileHandler(log_path, encoding="utf-8")
     _file.setLevel(logging.DEBUG)
     _file.setFormatter(SessionFormatter(FILE_LOG_FORMAT))

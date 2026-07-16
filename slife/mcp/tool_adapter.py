@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 _MCP_SERVER = "mcp"           # built-in MCP management server
 _MEMORY_SERVER = "memory"     # built-in memory service
+_WECHAT_SERVER = "wechat"     # built-in WeChat messaging plugin
 _MCP_ADD_SERVER = "mcp_add_server"
 _MCP_SET_DISCLOSURE = "mcp_set_disclosure"
 _MCP_REMOVE_SERVER = "mcp_remove_server"
@@ -132,6 +133,11 @@ class MCPProxyTool(Tool):
         elif self._server == _MEMORY_SERVER:
             # Memory tools — call directly on the memory MCP client.
             # The memory service is standalone (not behind the MCP wrapper),
+            # so there's no mcp_call_tool routing layer.
+            result = await self._mcp_client.call_tool(self._tool_name, kwargs)
+        elif self._server == _WECHAT_SERVER:
+            # WeChat tools — call directly on the wechat MCP client.
+            # The wechat service is standalone (not behind the MCP wrapper),
             # so there's no mcp_call_tool routing layer.
             result = await self._mcp_client.call_tool(self._tool_name, kwargs)
         else:

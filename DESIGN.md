@@ -93,7 +93,7 @@ What the LLM cannot know (and the prompt provides):
 
 Slife has a **plugin system** built on the MCP stdio protocol. A plugin is any FastMCP server spawned as a child process. It communicates via stdin/stdout, exposes tools through standard `list_tools` / `call_tool` MCP methods, and its tools are automatically registered in Slife's `ToolRegistry`.
 
-Both `slife-mcp` and `slife-memory` are built-in plugins using this exact mechanism:
+All three (slife-mcp, slife-memory, slife-wechat) are built-in plugins using this exact mechanism:
 
 ```
 Slife ── MCPClient (stdio) ──▶ MCPWrapperProcess ──▶ slife-mcp    (MCP proxy)
@@ -102,7 +102,10 @@ Slife ── MCPClient (stdio) ──▶ MCPWrapperProcess ──▶ slife-mcp  
   │                          │                         └── ... (any MCP server)
   │                          │
   │                          └── MCPWrapperProcess ──▶ slife-memory (diary DB)
-  │                                                    └── ~/.slife/slife.db
+  │                          │                         └── ~/.slife/slife.db
+  │                          │
+  │                          └── MCPWrapperProcess ──▶ slife-wechat (WeChat)
+  │                                                    └── iLink ClawBot API
   │
   └── MQTT ──── mosquitto ─── other Slife instances
   └── JSON-RPC 2.0 ─── subagent (headless)
@@ -159,13 +162,54 @@ async def my_plugin_save(data: str) -> str: ...
 
 `AgentService._register_memory_tools()` shows the pattern: call `list_tools()`, filter out harness names from a set, wrap the rest in `MCPProxyTool`.
 
-#### Third-Party Plugins
+#### slife-wechat — WeChat iLink Bridge
+
+Bi-directional WeChat messaging via the iLink ClawBot protocol. Enables
+Slfe to receive and reply to WeChat messages from a personal account.
+
+**Enable:** `wechat: { enabled: true }` in `slife.json5`.
+
+**Architecture:**
+```
+Phone WeChat ──▶ iLink API ◀── slife-wechat (FastMCP stdio)
+   ▲                ▲                │
+   │                │                ├── poll_updates() — long-poll getupdates (3s)
+   │                │                ├── send_message() — reply via sendmessage
+   │                │                └── send_typing() — typing indicator on phone
+   │                │
+   └── reply received ───────────────┘
+
+Service-side (AgentService._wechat_poll_loop):
+  1. call_tool("check_messages") every 5s → drains pending queue
+  2. send_typing(status=1) → "typing…" on phone
+  3. agent_loop.run() → LLM processes
+  4. send_message → iLink → phone
+  5. send_typing(status=2) → hide typing indicator
+```
+
+**Data flow:** incoming messages follow the official iLink bot pattern:
+`getupdates → getconfig → sendtyping(1) → AI → sendmessage → sendtyping(2)`
+
+**Session management:** bot token is saved in `wechat_<user>.json5` (gitignored).
+Auto-restored on startup via `check_status` → `try_restore_session()`.
+Session max age: ~23 hours, after which re-login (QR scan) is required.
+
+**No user_id config needed:** the WeChat user ID (`from_user_id`) and
+`context_token` are extracted from incoming messages — no manual configuration.
+
+**Per-call aiohttp sessions** eliminate event-loop-closed errors that occur
+when FastMCP's anyio-based event loop management is incompatible with
+cached `aiohttp.ClientSession` instances.
+
+**Reference:** [SiverKing/weixin-ClawBot-API](https://github.com/SiverKing/weixin-ClawBot-API) (MIT).
+
+### Third-Party Plugins
 
 Third-party plugin auto-loading from `slife.json5` is not yet implemented.
-Currently the two built-in plugins (slife-mcp, slife-memory) are hardcoded
-in `AgentService`.  The infrastructure — `MCPWrapperProcess`, `MCPClient`,
-`MCPProxyTool` — is generic and ready for external plugins once the config-
-driven startup loop is added.
+Currently the three built-in plugins (slife-mcp, slife-memory, slife-wechat)
+are hardcoded in `AgentService`.  The infrastructure — `MCPWrapperProcess`,
+`MCPClient`, `MCPProxyTool` — is generic and ready for external plugins once
+the config-driven startup loop is added.
 
 #### Plugin vs. MCP Server
 
@@ -719,6 +763,10 @@ slife/
       embedding_config.py #   Runtime embedding config management
       search.py         #     RRF (Reciprocal Rank Fusion) merge
       schema.sql        #     DDL — diary + FTS5 + vec0
+    wechat/             #   slife-wechat — WeChat iLink bridge
+      server.py         #     FastMCP server — 5 tools (login, send, check, status, logout)
+      client.py         #     iLink ClawBot protocol client (QR, poll, send, typing)
+      config.py         #     Per-user session persistence (wechat_<user>.json5)
 
   ui/                   # Textual TUI
     app.py              #   Main app (SlifeApp) — memory + recovery UI

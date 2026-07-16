@@ -71,6 +71,10 @@ class AgentService:
         self._memory_client: MCPClient | None = None
         self._memory_process = None
 
+        # WeChat integration state
+        self._wechat_client: MCPClient | None = None
+        self._wechat_process = None
+
         # A2A integration state
         self._a2a_client = None
         self._a2a_broker = None
@@ -359,6 +363,7 @@ class AgentService:
         for proc_attr, label in [
             ("_mcp_process", "mcp"),
             ("_memory_process", "memory"),
+            ("_wechat_process", "wechat"),
         ]:
             wrapper = getattr(self, proc_attr, None)
             if wrapper is None:
@@ -402,6 +407,11 @@ class AgentService:
     def memory_enabled(self) -> bool:
         """Whether the memory service is connected."""
         return self._memory_client is not None and self._memory_client.is_connected
+
+    @property
+    def wechat_enabled(self) -> bool:
+        """Whether the WeChat plugin is connected."""
+        return self._wechat_client is not None and self._wechat_client.is_connected
 
     async def start_memory(self) -> bool:
         """Connect to slife-memory and register tools. Returns True on success."""
@@ -498,15 +508,282 @@ class AgentService:
 
         logger.info("memory_shutdown")
 
-    async def save_to_memory(
-        self, user_message: str = "", token_count: int | None = None,
+    # ── WeChat lifecycle ───────────────────────────────────────────────
+
+    async def start_wechat(self) -> bool:
+        """Start the WeChat plugin if enabled in config. Returns True on success."""
+        wechat_cfg = self.config.wechat_config
+        if wechat_cfg is None or not wechat_cfg.enabled:
+            logger.debug("wechat_not_enabled")
+            return False
+
+        logger.info("wechat_init start")
+        try:
+            await self._connect_wechat()
+            await self._register_wechat_tools()
+            logger.info("wechat_init_done tools=%d", len(self.tool_registry.list_tools()))
+            from slife.health import record
+            record(
+                "wechat_service", "ok",
+                key="status", value="connected",
+                hint="WeChat plugin started and tools registered.",
+            )
+            return True
+        except Exception as e:
+            logger.warning("wechat_init_failed err=%s — continuing without WeChat", e)
+            from slife.health import record
+            record(
+                "wechat_service", "error",
+                key="status", value="failed",
+                hint=f"WeChat plugin failed to start: {e}. "
+                     "WeChat messaging is unavailable.",
+            )
+            return False
+
+    async def _connect_wechat(self) -> None:
+        """Spawn the slife-wechat service as a child process via stdio."""
+        from slife.mcp.process import MCPWrapperProcess
+
+        logger.info("wechat_spawn transport=stdio")
+        self._wechat_process = MCPWrapperProcess(
+            command=sys.executable,
+            args=["-m", "slife.plugins.wechat.server"],
+            server_module="slife.plugins.wechat.server",
+        )
+        await self._wechat_process.start()
+        self._wechat_client = await self._wechat_process.create_client()
+
+    async def _register_wechat_tools(self) -> None:
+        """Discover and register wechat tools as proxy tools.
+
+        Harness-only tools (wechat_poll_messages) are excluded —
+        they are called programmatically, not by the LLM.
+        """
+        from slife.mcp.tool_adapter import create_proxy_tools
+
+        assert self._wechat_client is not None
+        wechat_tools = await self._wechat_client.list_tools()
+        logger.debug(
+            "wechat_tools names=%s",
+            [t["name"] for t in wechat_tools],
+        )
+
+        # All wechat tools are LLM-visible — no harness exclusion needed.
+        # Incoming messages are collected by a background poll loop
+        # and surfaced via check_messages.
+
+        tagged = [
+            {**t, "server": "wechat"}
+            for t in wechat_tools
+        ]
+
+        proxy_tools = create_proxy_tools(self._wechat_client, tagged)
+        for tool in proxy_tools:
+            self.tool_registry.register(tool)
+        logger.debug("wechat_tools_registered count=%d", len(proxy_tools))
+
+        # Auto-restore session at startup (triggers server-side poll loop)
+        try:
+            await self._wechat_client.call_tool("check_status", {})
+            logger.debug("wechat_auto_restore_triggered")
+        except Exception:
+            pass
+
+        # Start background poll loop — injects WeChat messages into the inbox
+        self._wechat_poll_task = asyncio.create_task(self._wechat_poll_loop())
+
+    async def _wechat_poll_loop(self, interval: float = 5.0) -> None:
+        """Poll WeChat for new messages and inject them into the inbox
+        (or process directly when A2A inbox is not available).
+
+        Each WeChat message becomes an AgentMessage with an on_reply
+        callback — when the agent responds, the reply is automatically
+        forwarded back to WeChat.  TUI and WeChat are peer terminals.
+        """
+        import json as _json
+        from slife.a2a.identity import AgentMessage, HUMAN
+
+        logger.info("wechat_poll_loop_start interval=%.1fs", interval)
+
+        while self.wechat_enabled:
+            try:
+                assert self._wechat_client is not None
+
+                result = await self._wechat_client.call_tool(
+                    "check_messages", {},
+                )
+                data = _json.loads(result)
+                msgs = data.get("messages", [])
+
+                for m in msgs:
+                    from_id = m.get("to_user_id", "")
+                    ctx_token = m.get("context_token", "")
+                    text = m.get("text", "")
+
+                    if not text.strip():
+                        continue
+
+                    # Build reply callback — captures from_id/ctx_token
+                    wc = self._wechat_client  # local ref for closure
+
+                    async def _reply(reply_text: str,
+                                     uid=from_id, tok=ctx_token) -> None:
+                        try:
+                            await wc.call_tool("send_message", {
+                                "to_user_id": uid,
+                                "context_token": tok,
+                                "text": reply_text,
+                            })
+                            logger.debug("wechat_out to=%s len=%d", uid, len(reply_text))
+                        except Exception as e:
+                            logger.debug("wechat_reply_error err=%s", e)
+
+                    if self.inbox is not None:
+                        # A2A inbox path — serialised processing
+                        # Show typing indicator on phone
+                        try:
+                            await wc.call_tool("send_typing", {
+                                "to_user_id": from_id,
+                                "context_token": ctx_token,
+                                "status": 1,
+                            })
+                        except Exception:
+                            pass
+                        msg = AgentMessage(
+                            source=HUMAN,
+                            content=text,
+                            metadata={"channel": "wechat"},
+                            on_reply=_reply,
+                        )
+                        await self.inbox.post(msg)
+                        logger.debug("wechat_in from=%s text=%.100s", from_id, text)
+                    else:
+                        # No A2A — process directly via agent loop
+                        logger.debug("wechat_direct from=%s text=%.100s", from_id, text)
+                        asyncio.create_task(
+                            self._process_wechat_direct(from_id, text, _reply)
+                        )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug("wechat_poll_error err=%s", e)
+
+            await asyncio.sleep(interval)
+
+        logger.info("wechat_poll_loop_stop")
+
+    async def _process_wechat_direct(
+        self, from_id: str, text: str, reply_cb,
     ) -> None:
-        """Save the just-completed turn as a new row in memory."""
+        """Process a WeChat message directly through the agent loop
+        when no A2A inbox is available, and send the reply back.
+
+        Uses a dedicated conversation so WeChat tool-call history
+        does not interfere with the TUI conversation.
+
+        Follows the official iLink bot pattern:
+        send_typing(1) → AI processing → send_message → send_typing(2)
+        """
+        from slife.agent.conversation import Conversation
+        from slife.agent.system_prompt import build as build_system_prompt
+
+        wc = self._wechat_client
+        ctx = ""  # context_token comes from the message
+
+        # Show typing indicator on phone
+        try:
+            await wc.call_tool("send_typing", {
+                "to_user_id": from_id, "context_token": "", "status": 1,
+            })
+        except Exception:
+            pass
+
+        wechat_conv = Conversation(
+            system_prompt=build_system_prompt(
+                agent_name=self.config.a2a_config.agent_name or None,
+            ),
+        )
+        try:
+            result = await self.agent_loop.run(
+                user_input=text,
+                conversation=wechat_conv,
+                images=None,
+                handler=None,
+            )
+            reply_text = result.text if hasattr(result, "text") else str(result)
+            if reply_text.strip():
+                await reply_cb(reply_text)
+
+            # Save WeChat turn to memory (same as TUI turns)
+            await self.save_to_memory(
+                user_message=text,
+                token_count=result.usage.total_tokens,
+                conversation=wechat_conv,
+            )
+        except Exception as e:
+            logger.debug("wechat_direct_error err=%s", e)
+            try:
+                await reply_cb(f"抱歉，处理出错了：{e}")
+            except Exception:
+                pass
+        finally:
+            # Hide typing indicator (also handled in send_message, but
+            # ensure it's hidden even if send_message wasn't called)
+            try:
+                await wc.call_tool("send_typing", {
+                    "to_user_id": from_id, "context_token": "", "status": 2,
+                })
+            except Exception:
+                pass
+
+    async def stop_wechat(self) -> None:
+        """Shut down the WeChat plugin and clean up."""
+        if hasattr(self, "_wechat_poll_task") and self._wechat_poll_task:
+            self._wechat_poll_task.cancel()
+            try:
+                await self._wechat_poll_task
+            except asyncio.CancelledError:
+                pass
+            self._wechat_poll_task = None
+
+        if self._wechat_client and self._wechat_client.is_connected:
+            try:
+                await self._wechat_client.disconnect()
+            except Exception as e:
+                logger.debug("wechat_disconnect_error err=%s", e)
+            self._wechat_client = None
+
+        if self._wechat_process:
+            try:
+                await self._wechat_process.stop()
+            except Exception as e:
+                logger.debug("wechat_process_stop_error err=%s", e)
+            self._wechat_process = None
+
+        logger.info("wechat_shutdown")
+
+    async def save_to_memory(
+        self,
+        user_message: str = "",
+        token_count: int | None = None,
+        conversation: "Conversation | None" = None,
+    ) -> None:
+        """Save the just-completed turn as a new row in memory.
+
+        Args:
+            user_message: The user's input text.
+            token_count: Cumulative token usage for the turn.
+            conversation: The conversation to extract messages from.
+                Defaults to self.conversation (the TUI conversation).
+        """
         if not self.memory_enabled:
             return
 
+        conv = conversation if conversation is not None else self.conversation
+
         # Extract turn messages: everything after the matching user message
-        all_messages = list(self.conversation.messages)
+        all_messages = list(conv.messages)
         turn_messages: list[dict] = []
         for i in range(len(all_messages) - 1, -1, -1):
             msg = all_messages[i]
@@ -514,13 +791,14 @@ class AgentService:
                 turn_messages = all_messages[i + 1:]
                 break
 
-        # Trim active context
-        context_window = self.config.active_model.context_window
-        self.conversation.trim_context(
-            context_window=context_window,
-            floor=self.config.context_floor,
-            ceiling=self.config.context_ceiling,
-        )
+        # Trim active context (only for the persistent TUI conversation)
+        if conversation is None:
+            context_window = self.config.active_model.context_window
+            conv.trim_context(
+                context_window=context_window,
+                floor=self.config.context_floor,
+                ceiling=self.config.context_ceiling,
+            )
 
         try:
             await self._memory_client.call_tool(

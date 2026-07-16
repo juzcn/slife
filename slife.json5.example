@@ -208,4 +208,17 @@
       // model: "text-embedding-3-small",
     },
   },
+
+  // ── WeChat Integration ─────────────────────────────────────
+  // Optional iLink ClawBot plugin. Enabled by default — set
+  // enabled: false to opt out. The agent can log in via QR code,
+  // send WeChat messages, and poll for replies.
+  // Session tokens are stored per-user in wechat_<user>.json5
+  // (alongside slife.json5).
+  //
+  // Tools: wechat_login, wechat_send_message, wechat_check_status,
+  //        wechat_logout
+  wechat: {
+    enabled: true,
+  },
 }

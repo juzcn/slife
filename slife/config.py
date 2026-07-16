@@ -189,6 +189,29 @@ class MemoryConfig:
 
 
 @dataclass
+class WechatConfig:
+    """Configuration for the slife-wechat plugin.
+
+    Optional — only loaded when ``wechat.enabled`` is true.
+    Session tokens are stored per-user in ``wechat_<user>.json5``.
+    """
+
+    enabled: bool = True
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WechatConfig":
+        """Parse wechat config section from JSON5 config.
+
+        Defaults to enabled when the wechat section is absent — the plugin
+        is lightweight and only activates when wechat_login is called.
+        Set ``wechat: { enabled: false }`` to explicitly opt out.
+        """
+        if not isinstance(data, dict):
+            return cls()
+        return cls(enabled=data.get("enabled", True))
+
+
+@dataclass
 class Config:
     """Top-level configuration for Slife."""
 
@@ -203,6 +226,7 @@ class Config:
     user: str = "default"
     mcp_config: MCPConfig | None = None
     memory_config: MemoryConfig | None = None
+    wechat_config: WechatConfig | None = None
     a2a_config: A2AConfig | None = None
     subagent_config: dict | None = None
     _path: Path | None = None
@@ -212,6 +236,8 @@ class Config:
             self.mcp_config = MCPConfig()
         if self.memory_config is None:
             self.memory_config = MemoryConfig()
+        if self.wechat_config is None:
+            self.wechat_config = WechatConfig()
         if self.a2a_config is None:
             self.a2a_config = A2AConfig()
 
@@ -460,6 +486,18 @@ class Config:
             memory_config.embedding_model,
         )
 
+        # WeChat — optional plugin, enabled via wechat.enabled
+        wechat_config = WechatConfig.from_dict(raw.get("wechat", {}))
+        if wechat_config.enabled:
+            logger.debug("wechat_config enabled=true")
+            # Set config dir so the wechat server knows where to find per-user files
+            if not os.environ.get("SLIFE_CONFIG_DIR"):
+                os.environ["SLIFE_CONFIG_DIR"] = str(path.parent)
+            logger.debug(
+                "wechat_config dir=%s user=%s",
+                os.environ.get("SLIFE_CONFIG_DIR", "."), user,
+            )
+
         # A2A/MQTT — enabled only via --agent CLI flag, json5 provides broker details
         a2a_config = A2AConfig.from_dict(raw.get("mqtt"), agent_name=agent_name)
         if a2a_config.enabled:
@@ -490,6 +528,7 @@ class Config:
             user=user,
             mcp_config=mcp_config,
             memory_config=memory_config,
+            wechat_config=wechat_config,
             a2a_config=a2a_config,
             subagent_config=subagent_config,
         )

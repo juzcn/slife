@@ -126,12 +126,28 @@ See [DESIGN.md](DESIGN.md#permanent-memory-slife-memory) for the full memory arc
 
 ## Built-in Plugins
 
-Two plugins ship with Slife and are always enabled. Both use `MCPWrapperProcess` (spawn child process) + `MCPClient` (stdio transport) — their tools are discovered via `list_tools()` and registered as `MCPProxyTool` instances.
+Three plugins ship with Slife and are always enabled. All use `MCPWrapperProcess` (spawn child process) + `MCPClient` (stdio transport) — their tools are discovered via `list_tools()` and registered as `MCPProxyTool` instances.
 
 | Plugin | Path | Role |
 |--------|------|------|
 | slife-mcp | `slife/plugins/mcp/` | MCP proxy — connect to external MCP servers (stdio or HTTP) |
 | slife-memory | `slife/plugins/memory/` | Diary database — permanent conversation storage with hybrid search |
+| slife-wechat | `slife/plugins/wechat/` | WeChat messaging — bidirectional iLink ClawBot bridge |
+
+### WeChat (slife-wechat)
+
+Connect Slife to your personal WeChat account. Once logged in (QR code scan), incoming WeChat messages are processed by the LLM and replies are sent back automatically. The typing indicator gives phone-side feedback while the agent works.
+
+**Enable** in `slife.json5`:
+```json5
+wechat: { enabled: true }
+```
+
+**LLM tools:** `wechat__login` (QR scan), `wechat__send_message` (reply), `wechat__check_messages` (incoming), `wechat__check_status` (session info), `wechat__logout` (disconnect).
+
+**Session** tokens are saved in `wechat_<user>.json5` — auto-restored on restart. Session validity: ~23 hours.
+
+Powered by the [iLink ClawBot API](https://github.com/SiverKing/weixin-ClawBot-API) (MIT). No `user_id` configuration needed — the `from_user_id` is extracted from incoming messages automatically.
 
 ## Agent-to-Agent (A2A)
 
@@ -177,6 +193,7 @@ slife/
   plugins/          # Built-in MCP plugins
     mcp/            #   slife-mcp — MCP proxy server
     memory/         #   slife-memory — diary database
+    wechat/         #   slife-wechat — WeChat iLink bridge
   ui/               # Textual TUI
 skills/             # On-demand skill plugins
 tests/              # pytest suite
