@@ -41,15 +41,28 @@ class Inbox:
         conversations: "ConversationStore",
         a2a_client: "A2AClient | None" = None,
         on_activity: "Callable | None" = None,
+        on_turn_complete: "Callable | None" = None,
     ):
         self._agent_loop = agent_loop
         self._conversations = conversations
         self._a2a_client = a2a_client
         self._on_activity = on_activity  # async cb(kind, **kwargs)
+        self._on_turn_complete = on_turn_complete  # async cb(user_message, token_count, conversation)
         self._queue: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._runner_task: asyncio.Task | None = None
+        self._processing: bool = False
 
     # ── Post ──────────────────────────────────────────────────────────
+
+    @property
+    def busy(self) -> bool:
+        """True when the inbox is currently processing a message."""
+        return self._processing
+
+    @property
+    def pending(self) -> int:
+        """Number of messages waiting in the queue (approx)."""
+        return self._queue.qsize()
 
     async def post(self, msg: AgentMessage) -> None:
         """Drop a message into the inbox.  Non-blocking, never raises."""
@@ -69,9 +82,9 @@ class Inbox:
 
     async def _process_one(self, msg: AgentMessage) -> None:
         """Process a single message through the agent loop."""
-        from slife.a2a.identity import HUMAN
+        from slife.a2a.identity import HUMAN, WECHAT
 
-        is_remote = msg.source != HUMAN
+        is_remote = msg.source not in (HUMAN, WECHAT)
         logger.info(
             "inbox_process source=%s corr_id=%s content=%.80s remote=%s",
             msg.source, msg.correlation_id, msg.content, is_remote,
@@ -86,16 +99,32 @@ class Inbox:
             except Exception:
                 pass
 
+        # Notify TUI of peer terminal messages (WeChat etc.)
+        # so they appear in the chat view with a source prefix.
+        if msg.source == WECHAT and self._on_activity:
+            try:
+                await self._on_activity(
+                    "peer_message", source="wechat", content=msg.content,
+                )
+            except Exception:
+                pass
+
         # Mark busy while processing
         if self._a2a_client:
             await self._a2a_client.update_status("busy")
+        self._processing = True
 
         try:
             # Get or create conversation for this source
             conversation = self._conversations.get_or_create(msg.source)
 
             # Build a handler appropriate for the source
-            handler = self._conversations.handler_for(msg.source)
+            # Prefer the handler attached to the message (TUI path).
+            # Fall back to the per-source registry / default factory
+            # (remote A2A messages that don't carry their own handler).
+            handler = msg.handler
+            if handler is None:
+                handler = self._conversations.handler_for(msg.source)
 
             # Run the agent loop
             from slife.agent.loop import AgentResult
@@ -121,6 +150,18 @@ class Inbox:
             # Reply via MQTT if this was a remote task
             if msg.reply_to and self._a2a_client:
                 await self._publish_reply(msg.reply_to, msg.correlation_id, result)
+
+            # Persist turn to memory (unified path for all sources)
+            if self._on_turn_complete:
+                try:
+                    await self._on_turn_complete(
+                        user_message=msg.content,
+                        token_count=result.usage.total_tokens
+                        if hasattr(result, "usage") else 0,
+                        conversation=conversation,
+                    )
+                except Exception:
+                    logger.debug("on_turn_complete_error", exc_info=True)
 
             # Route reply to originating channel (WeChat, etc.)
             if msg.on_reply is not None:
@@ -155,6 +196,7 @@ class Inbox:
                     pass
         finally:
             # Return to idle
+            self._processing = False
             if self._a2a_client:
                 await self._a2a_client.update_status("idle")
 
@@ -228,18 +270,19 @@ class ConversationStore:
     def get_or_create(self, source: AgentId) -> Conversation:
         """Get or create a conversation for *source*.
 
-        The human's conversation is persistent.  Remote agents get a
-        fresh conversation each message (one-shot).
+        Human (TUI) and WeChat conversations are persistent so the
+        operator has a continuous back-and-forth.  Remote agent
+        conversations are fresh each message (one-shot).
         """
-        from slife.a2a.identity import HUMAN
+        from slife.a2a.identity import HUMAN, WECHAT
 
-        if source == HUMAN:
-            # Persistent conversation for the human operator
-            if HUMAN not in self._convs:
-                self._convs[HUMAN] = Conversation(
+        if source in (HUMAN, WECHAT):
+            # Persistent conversation for human / WeChat operators
+            if source not in self._convs:
+                self._convs[source] = Conversation(
                     system_prompt=self._system_prompt,
                 )
-            return self._convs[HUMAN]
+            return self._convs[source]
 
         # One-shot conversation for remote agents
         return Conversation(system_prompt=self._system_prompt)

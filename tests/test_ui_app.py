@@ -64,35 +64,37 @@ class TestAgentService:
 
     @pytest.mark.asyncio
     async def test_process_message(self, sample_config):
-        """process_message delegates to agent_loop.run."""
+        """process_message routes through unified inbox — handler on message."""
         service = AgentService(sample_config)
         handler = AsyncMock()
 
-        mock_result = AgentResult(text="Hi!", usage=TokenUsage(1, 1, 2))
-        service.agent_loop.run = AsyncMock(return_value=mock_result)
+        # Replace inbox with mock so we don't need a running background task
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock()
+        service.inbox = mock_inbox
 
         result = await service.process_message("hello", None, handler)
 
-        service.agent_loop.run.assert_awaited_once_with(
-            user_input="hello",
-            conversation=service.conversation,
-            images=None,
-            handler=handler,
-        )
-        assert result.text == "Hi!"
+        mock_inbox.post.assert_awaited_once()
+        msg = mock_inbox.post.call_args[0][0]
+        assert msg.content == "hello"
+        assert msg.handler is handler
+        assert result.text == ""  # placeholder when using inbox
 
     @pytest.mark.asyncio
     async def test_process_message_with_images(self, sample_config):
         service = AgentService(sample_config)
         handler = AsyncMock()
 
-        mock_result = AgentResult(text="Nice pic!", usage=TokenUsage(1, 2, 3))
-        service.agent_loop.run = AsyncMock(return_value=mock_result)
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock()
+        service.inbox = mock_inbox
 
         result = await service.process_message("describe", ["img.png"], handler)
 
-        call_kwargs = service.agent_loop.run.call_args[1]
-        assert call_kwargs["images"] == ["img.png"]
+        mock_inbox.post.assert_awaited_once()
+        msg = mock_inbox.post.call_args[0][0]
+        assert msg.images == ["img.png"]
 
 
 # ── AgentService MCP ───────────────────────────────────────────────────

@@ -21,6 +21,8 @@ from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.conversation import Conversation
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
+from slife.agent.inbox import Inbox, ConversationStore
+from slife.a2a.identity import HUMAN
 from slife.tools.factory import create_tools_from_config
 from slife.mcp.client import MCPClient
 
@@ -63,6 +65,25 @@ class AgentService:
         )
         self.session_usage = TokenUsage()
 
+        # ── Unified message queue (always active) ──────────────────
+        # Every input — human keyboard, A2A MQTT, WeChat — flows
+        # through the same inbox queue.  Processed serially.
+        conversations = ConversationStore(
+            system_prompt=build_system_prompt(
+                agent_name=self.config.a2a_config.agent_name or None,
+            ),
+        )
+        conversations._convs[HUMAN] = self.conversation
+
+        self.inbox = Inbox(
+            agent_loop=self.agent_loop,
+            conversations=conversations,
+            a2a_client=None,  # injected by start_a2a when enabled
+            on_activity=self._notify_a2a_activity,  # always active for WeChat etc.
+            on_turn_complete=self.save_to_memory,
+        )
+        self._inbox_task: asyncio.Task | None = None
+
         # MCP integration state
         self._mcp_client: MCPClient | None = None
         self._mcp_process = None
@@ -79,7 +100,6 @@ class AgentService:
         self._a2a_client = None
         self._a2a_broker = None
         self._subagent_manager = None
-        self.inbox = None
         self._on_a2a_callbacks: list = []  # callbacks for TUI notification
 
     @property
@@ -593,15 +613,15 @@ class AgentService:
         self._wechat_poll_task = asyncio.create_task(self._wechat_poll_loop())
 
     async def _wechat_poll_loop(self, interval: float = 5.0) -> None:
-        """Poll WeChat for new messages and inject them into the inbox
-        (or process directly when A2A inbox is not available).
+        """Poll WeChat for new messages and inject them into the inbox.
 
         Each WeChat message becomes an AgentMessage with an on_reply
         callback — when the agent responds, the reply is automatically
-        forwarded back to WeChat.  TUI and WeChat are peer terminals.
+        forwarded back to WeChat.  TUI and WeChat are peer terminals
+        with independent persistent conversations.
         """
         import json as _json
-        from slife.a2a.identity import AgentMessage, HUMAN
+        from slife.a2a.identity import AgentMessage, WECHAT
 
         logger.info("wechat_poll_loop_start interval=%.1fs", interval)
 
@@ -623,11 +643,38 @@ class AgentService:
                     if not text.strip():
                         continue
 
-                    # Build reply callback — captures from_id/ctx_token
                     wc = self._wechat_client  # local ref for closure
+
+                    # ── Typing indicator keep-alive ──────────────────
+                    # The WeChat iLink typing indicator auto-expires
+                    # after ~10-20 s.  Refresh it every 8 s while the
+                    # agent is processing so the user always sees
+                    # "对方正在输入…" until the reply arrives.
+                    _typing_stop = asyncio.Event()
+
+                    async def _keep_typing(uid=from_id, tok=ctx_token) -> None:
+                        while not _typing_stop.is_set():
+                            try:
+                                await asyncio.sleep(8.0)
+                                if not _typing_stop.is_set():
+                                    await wc.call_tool("send_typing", {
+                                        "to_user_id": uid,
+                                        "context_token": tok,
+                                        "status": 1,
+                                    })
+                            except asyncio.CancelledError:
+                                break
+                            except Exception:
+                                pass
+
+                    _typing_task = asyncio.create_task(_keep_typing())
 
                     async def _reply(reply_text: str,
                                      uid=from_id, tok=ctx_token) -> None:
+                        # Stop the typing keep-alive task
+                        _typing_stop.set()
+                        if not _typing_task.done():
+                            _typing_task.cancel()
                         try:
                             await wc.call_tool("send_message", {
                                 "to_user_id": uid,
@@ -638,31 +685,24 @@ class AgentService:
                         except Exception as e:
                             logger.debug("wechat_reply_error err=%s", e)
 
-                    if self.inbox is not None:
-                        # A2A inbox path — serialised processing
-                        # Show typing indicator on phone
-                        try:
-                            await wc.call_tool("send_typing", {
-                                "to_user_id": from_id,
-                                "context_token": ctx_token,
-                                "status": 1,
-                            })
-                        except Exception:
-                            pass
-                        msg = AgentMessage(
-                            source=HUMAN,
-                            content=text,
-                            metadata={"channel": "wechat"},
-                            on_reply=_reply,
-                        )
-                        await self.inbox.post(msg)
-                        logger.debug("wechat_in from=%s text=%.100s", from_id, text)
-                    else:
-                        # No A2A — process directly via agent loop
-                        logger.debug("wechat_direct from=%s text=%.100s", from_id, text)
-                        asyncio.create_task(
-                            self._process_wechat_direct(from_id, text, _reply)
-                        )
+                    # Show typing immediately (don't wait for first refresh)
+                    try:
+                        await wc.call_tool("send_typing", {
+                            "to_user_id": from_id,
+                            "context_token": ctx_token,
+                            "status": 1,
+                        })
+                    except Exception:
+                        pass
+
+                    msg = AgentMessage(
+                        source=WECHAT,
+                        content=text,
+                        metadata={"channel": "wechat"},
+                        on_reply=_reply,
+                    )
+                    await self.inbox.post(msg)
+                    logger.debug("wechat_in from=%s text=%.100s", from_id, text)
 
             except asyncio.CancelledError:
                 break
@@ -672,70 +712,6 @@ class AgentService:
             await asyncio.sleep(interval)
 
         logger.info("wechat_poll_loop_stop")
-
-    async def _process_wechat_direct(
-        self, from_id: str, text: str, reply_cb,
-    ) -> None:
-        """Process a WeChat message directly through the agent loop
-        when no A2A inbox is available, and send the reply back.
-
-        Uses a dedicated conversation so WeChat tool-call history
-        does not interfere with the TUI conversation.
-
-        Follows the official iLink bot pattern:
-        send_typing(1) → AI processing → send_message → send_typing(2)
-        """
-        from slife.agent.conversation import Conversation
-        from slife.agent.system_prompt import build as build_system_prompt
-
-        wc = self._wechat_client
-        ctx = ""  # context_token comes from the message
-
-        # Show typing indicator on phone
-        try:
-            await wc.call_tool("send_typing", {
-                "to_user_id": from_id, "context_token": "", "status": 1,
-            })
-        except Exception:
-            pass
-
-        wechat_conv = Conversation(
-            system_prompt=build_system_prompt(
-                agent_name=self.config.a2a_config.agent_name or None,
-            ),
-        )
-        try:
-            result = await self.agent_loop.run(
-                user_input=text,
-                conversation=wechat_conv,
-                images=None,
-                handler=None,
-            )
-            reply_text = result.text if hasattr(result, "text") else str(result)
-            if reply_text.strip():
-                await reply_cb(reply_text)
-
-            # Save WeChat turn to memory (same as TUI turns)
-            await self.save_to_memory(
-                user_message=text,
-                token_count=result.usage.total_tokens,
-                conversation=wechat_conv,
-            )
-        except Exception as e:
-            logger.debug("wechat_direct_error err=%s", e)
-            try:
-                await reply_cb(f"抱歉，处理出错了：{e}")
-            except Exception:
-                pass
-        finally:
-            # Hide typing indicator (also handled in send_message, but
-            # ensure it's hidden even if send_message wasn't called)
-            try:
-                await wc.call_tool("send_typing", {
-                    "to_user_id": from_id, "context_token": "", "status": 2,
-                })
-            except Exception:
-                pass
 
     async def stop_wechat(self) -> None:
         """Shut down the WeChat plugin and clean up."""
@@ -831,6 +807,31 @@ class AgentService:
             logger.debug("get_recent_turns_error err=%s", e)
             return []
 
+    # ── Inbox lifecycle (always active) ────────────────────────────────
+
+    async def start_inbox(self) -> None:
+        """Start the inbox background processor.
+
+        Called during app startup before A2A/WeChat so the queue is
+        ready to accept messages from any input channel.
+        """
+        if self._inbox_task is not None:
+            return
+        self._inbox_task = asyncio.create_task(self.inbox.run())
+        logger.info("inbox_started")
+
+    async def stop_inbox(self) -> None:
+        """Stop the inbox background processor."""
+        if self._inbox_task is None:
+            return
+        self._inbox_task.cancel()
+        try:
+            await self._inbox_task
+        except asyncio.CancelledError:
+            pass
+        self._inbox_task = None
+        logger.info("inbox_stopped")
+
     # ── A2A lifecycle ──────────────────────────────────────────────────
 
     async def start_a2a(
@@ -895,34 +896,22 @@ class AgentService:
                      "P2P agent mesh is unavailable.",
             )
 
-        # Set up the unified Inbox
-        from slife.agent.inbox import Inbox, ConversationStore
-        from slife.a2a.identity import HUMAN
-
-        conversations = ConversationStore(
-            system_prompt=build_system_prompt(
-                agent_name=a2a_cfg.agent_name or None,
-            ),
-        )
-        conversations._convs[HUMAN] = self.conversation
-
-        self.inbox = Inbox(
-            agent_loop=self.agent_loop,
-            conversations=conversations,
-            a2a_client=self._a2a_client,
-            on_activity=self._notify_a2a_activity,
-        )
+        # Wire the existing inbox to A2A
+        # (Inbox was already created in __init__; now inject the
+        # live A2A client and activity callback.)
+        self.inbox._a2a_client = self._a2a_client
+        self.inbox._on_activity = self._notify_a2a_activity
 
         # Register handler factory so remote tasks always have a TUI
         # handler — streams to chat like human-typed messages.
         if handler_factory is not None:
-            conversations.set_default_handler_factory(handler_factory)
+            self.inbox._conversations.set_default_handler_factory(handler_factory)
 
         # Wire A2A incoming tasks → Inbox
         self._a2a_client.on_incoming_task(self.inbox.post)
 
-        # Start the inbox background processor
-        self._inbox_task = asyncio.create_task(self.inbox.run())
+        # NOTE: inbox background task is already running (started by
+        # start_inbox() during on_mount).  No need to restart it here.
 
         # Start agent-change notifier (log + TUI notifications)
         self._a2a_client.on_agent_change(self._on_agent_change)
@@ -944,21 +933,27 @@ class AgentService:
         logger.info("a2a_init_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def stop_a2a(self) -> None:
-        """Leave the P2P mesh and clean up."""
-        # Cancel inbox processing
-        if hasattr(self, "_inbox_task") and self._inbox_task:
-            self._inbox_task.cancel()
-            try:
-                await self._inbox_task
-            except asyncio.CancelledError:
-                pass
+        """Leave the P2P mesh and clean up.
+
+        Does NOT stop the inbox — the queue is independent of A2A
+        and may still be used by human input / WeChat.
+        """
+        # Disconnect A2A client from inbox
+        if self.inbox is not None:
+            self.inbox._a2a_client = None
+            self.inbox._on_activity = None
 
         # Clear module-level transport reference
         from slife.a2a.client import clear_client
         clear_client()
 
+        # Disconnect the A2A client
+        if self._a2a_client:
+            try:
+                await self._a2a_client.disconnect()
+            except Exception as e:
+                logger.debug("a2a_disconnect_error err=%s", e)
         self._a2a_client = None
-        self.inbox = None
 
         # Stop broker if we spawned it
         if self._a2a_broker:
@@ -1058,43 +1053,20 @@ class AgentService:
     ) -> AgentResult:
         """Run the agent loop for a user message via streaming.
 
-        When the Inbox is active (A2A enabled), messages are routed
-        through the inbox for serialisation.  Otherwise the legacy
-        direct-call path is used.
+        All messages (human keyboard, A2A, WeChat) go through the
+        unified inbox queue — processed serially, never cancelled.
         """
-        if self.inbox is not None:
-            # Route through the unified inbox
-            from slife.a2a.identity import HUMAN, AgentMessage
-            from slife.agent.inbox import ConversationStore
+        from slife.a2a.identity import AgentMessage
 
-            # Register the TUI handler for human messages
-            conversations = self.inbox._conversations
-            conversations.register_handler(HUMAN, handler)
-
-            msg = AgentMessage(
-                source=HUMAN,
-                content=user_input,
-                images=images if images else [],
-            )
-            await self.inbox.post(msg)
-
-            # Return a placeholder — TUIHandler will update the UI
-            # as streaming events arrive.  The actual result is not
-            # available synchronously with the inbox model.
-            return AgentResult(text="", usage=TokenUsage())
-
-        # Legacy direct path (A2A disabled)
-        result = await self.agent_loop.run(
-            user_input=user_input,
-            conversation=self.conversation,
-            images=images,
+        msg = AgentMessage(
+            source=HUMAN,
+            content=user_input,
+            images=images if images else [],
             handler=handler,
         )
+        await self.inbox.post(msg)
 
-        # Save turn to memory — every turn is independent, no session concept
-        await self.save_to_memory(
-            user_message=user_input,
-            token_count=self.session_usage.total_tokens,
-        )
-
-        return result
+        # Return a placeholder — TUIHandler will update the UI
+        # as streaming events arrive.  The actual result is not
+        # available synchronously with the inbox model.
+        return AgentResult(text="", usage=TokenUsage())

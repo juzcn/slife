@@ -136,14 +136,18 @@ Three plugins ship with Slife and are always enabled. All use `MCPWrapperProcess
 
 ### WeChat (slife-wechat)
 
-Connect Slife to your personal WeChat account. Once logged in (QR code scan), incoming WeChat messages are processed by the LLM and replies are sent back automatically. The typing indicator gives phone-side feedback while the agent works.
+Connect Slife to your personal WeChat account. Once logged in (QR code scan), incoming WeChat messages flow through the **unified inbox** — the same queue that handles human keyboard input and A2A tasks. The LLM processes them like any other message, and replies are sent back automatically.
+
+Incoming WeChat messages appear in the TUI chat view with a `Wechat> ` prefix, and the assistant's reply streams in real-time — exactly like a locally-typed message. WeChat has its own persistent conversation, independent from the TUI conversation.
+
+The **typing indicator** ("对方正在输入…") stays visible on the phone for the entire duration of agent processing. A background keep-alive task refreshes it every 8 seconds until the reply is sent, so the WeChat user always knows the agent is still working.
 
 **Enable** in `slife.json5`:
 ```json5
 wechat: { enabled: true }
 ```
 
-**LLM tools:** `wechat__login` (QR scan), `wechat__send_message` (reply), `wechat__check_messages` (incoming), `wechat__check_status` (session info), `wechat__logout` (disconnect).
+**LLM tools:** `wechat__login` (QR scan), `wechat__send_message` (reply), `wechat__send_typing` (show/hide typing indicator), `wechat__check_messages` (incoming), `wechat__check_status` (session info), `wechat__logout` (disconnect).
 
 **Session** tokens are saved in `wechat_<user>.json5` — auto-restored on restart. Session validity: ~23 hours.
 

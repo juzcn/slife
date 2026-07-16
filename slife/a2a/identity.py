@@ -12,6 +12,9 @@ AgentId = NewType("AgentId", str)
 HUMAN = AgentId("human")
 """The operator at the keyboard."""
 
+WECHAT = AgentId("wechat")
+"""WeChat user — peer terminal, same processing pipeline as human."""
+
 
 @dataclass
 class AgentMessage:
@@ -33,3 +36,9 @@ class AgentMessage:
     """Async callback invoked with the agent's response text.
     Set by input channels (WeChat, Telegram, etc.) to route replies
     back to the user.  Called after the agent loop completes."""
+
+    handler: "AgentEventHandler | None" = None
+    """TUI handler for streaming agent output to the chat view.
+    Set by the TUI input path so each message carries its own handler
+    rather than relying on a global mutable registry.  Remote A2A
+    messages leave this as None and fall back to the default factory."""

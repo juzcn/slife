@@ -1,12 +1,14 @@
 """Tests for Slife.agent.service — AgentService lifecycle and message processing."""
 
 import asyncio
+import json as _json
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 
 from slife.agent.service import AgentService
 from slife.agent.llm_client import TokenUsage
+from slife.a2a.identity import AgentMessage, HUMAN, WECHAT
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -294,42 +296,34 @@ class TestAgentServiceProcessMessage:
     """Tests for process_message."""
 
     @pytest.mark.asyncio
-    async def test_process_message_legacy_path(self):
-        """When inbox is None, uses legacy direct path."""
+    async def test_process_message_unified_queue(self):
+        """Always routes through inbox — handler is attached to the message."""
+        from slife.a2a.identity import HUMAN
+
         service = AgentService(make_mock_config())
 
-        mock_result = MagicMock()
-        mock_result.text = "response text"
-        mock_result.usage = TokenUsage()
+        # inbox is always created in __init__
+        assert service.inbox is not None
 
-        service.agent_loop.run = AsyncMock(return_value=mock_result)
-        service.conversation.add_user_message = MagicMock()
-
-        handler = MagicMock()
-        result = await service.process_message("hello", None, handler)
-
-        service.agent_loop.run.assert_called_once()
-        assert result.text == "response text"
-
-    @pytest.mark.asyncio
-    async def test_process_message_inbox_path(self):
-        """When inbox is set, routes through inbox."""
-        service = AgentService(make_mock_config())
-
-        # Set up an inbox mock
+        # Set up inbox mock
         mock_inbox = MagicMock()
         mock_inbox.post = AsyncMock()
-        mock_convs = MagicMock()
-        mock_convs.register_handler = MagicMock()
-        mock_inbox._conversations = mock_convs
         service.inbox = mock_inbox
 
         handler = MagicMock()
         result = await service.process_message("hello", None, handler)
 
+        # Should post to inbox
         mock_inbox.post.assert_called_once()
-        mock_convs.register_handler.assert_called_once()
-        # Returns placeholder when using inbox
+
+        # The message should carry the handler
+        call_args = mock_inbox.post.call_args[0]
+        msg = call_args[0]
+        assert msg.handler is handler
+        assert msg.content == "hello"
+        assert msg.source == HUMAN
+
+        # Returns placeholder
         assert result.text == ""
 
 
@@ -378,3 +372,370 @@ class TestAgentServiceStopMemory:
         await service.stop_memory()
 
         mock_client.disconnect.assert_called_once()
+
+
+# ── Inbox: always-active unified message queue ───────────────────────────────
+
+
+class TestAgentServiceInbox:
+    """Tests for the always-active unified inbox."""
+
+    def test_inbox_always_created(self):
+        """Inbox is created in __init__ — not conditional on A2A."""
+        service = AgentService(make_mock_config())
+        assert service.inbox is not None
+
+    def test_inbox_has_correct_wiring(self):
+        """Inbox is wired with agent_loop, conversations, and on_turn_complete."""
+        service = AgentService(make_mock_config())
+        inbox = service.inbox
+
+        assert inbox._agent_loop is service.agent_loop
+        # _on_activity is a bound method — use equality not identity
+        assert inbox._on_activity.__func__ is service._notify_a2a_activity.__func__
+        assert inbox._on_turn_complete.__func__ is service.save_to_memory.__func__
+        # HUMAN conversation is pre-seeded from service.conversation
+        assert inbox._conversations._convs.get(HUMAN) is service.conversation
+
+    @pytest.mark.asyncio
+    async def test_start_inbox_creates_background_task(self):
+        """start_inbox launches inbox.run() as a background task."""
+        service = AgentService(make_mock_config())
+
+        # Replace inbox.run with a mock so we don't actually start the loop
+        mock_run = AsyncMock()
+        service.inbox._runner_task = None  # ensure clean state
+        with patch.object(service.inbox, "run", mock_run):
+            await service.start_inbox()
+
+        assert service._inbox_task is not None
+
+    @pytest.mark.asyncio
+    async def test_stop_inbox_cancels_task(self):
+        """stop_inbox cancels the background task and waits for it."""
+        service = AgentService(make_mock_config())
+
+        # Create a real cancellable task
+        async def _fake_run():
+            try:
+                while True:
+                    await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                raise
+
+        service._inbox_task = asyncio.create_task(_fake_run())
+        await asyncio.sleep(0)  # let it start
+
+        await service.stop_inbox()
+
+        assert service._inbox_task is None
+
+    @pytest.mark.asyncio
+    async def test_stop_inbox_noop_when_not_started(self):
+        """stop_inbox is safe when inbox was never started."""
+        service = AgentService(make_mock_config())
+        service._inbox_task = None
+        await service.stop_inbox()  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_process_message_routes_through_inbox(self):
+        """process_message enqueues via inbox with handler on the message."""
+        service = AgentService(make_mock_config())
+
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock()
+        service.inbox = mock_inbox
+
+        handler = MagicMock()
+        result = await service.process_message("test msg", None, handler)
+
+        mock_inbox.post.assert_called_once()
+        msg = mock_inbox.post.call_args[0][0]
+        assert msg.source == HUMAN
+        assert msg.content == "test msg"
+        assert msg.handler is handler
+        assert result.text == ""  # placeholder
+
+
+# ── WeChat lifecycle ─────────────────────────────────────────────────────────
+
+
+class TestAgentServiceWeChat:
+    """Tests for WeChat plugin lifecycle and message processing."""
+
+    def test_wechat_not_enabled_initially(self):
+        """WeChat client is None until start_wechat is called."""
+        service = AgentService(make_mock_config())
+        assert service.wechat_enabled is False
+        assert service._wechat_client is None
+
+    @pytest.mark.asyncio
+    async def test_stop_wechat_noop_when_disabled(self):
+        """stop_wechat is safe when WeChat was never started."""
+        service = AgentService(make_mock_config())
+        await service.stop_wechat()  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_start_wechat_with_mocked_internals(self):
+        """start_wechat spawns the server, registers tools, and starts polling."""
+        service = AgentService(make_mock_config())
+
+        # WeChat must be enabled in config for start_wechat to proceed
+        mock_wechat_cfg = MagicMock()
+        mock_wechat_cfg.enabled = True
+        service.config.wechat_config = mock_wechat_cfg
+
+        with patch.object(service, "_connect_wechat", AsyncMock()) as mock_connect, \
+             patch.object(service, "_register_wechat_tools", AsyncMock()) as mock_register:
+            result = await service.start_wechat()
+
+            mock_connect.assert_called_once()
+            mock_register.assert_called_once()
+            assert result is True
+            # Note: _wechat_poll_task is created inside _register_wechat_tools
+            # (which is mocked here), so it won't be set in this test.
+            # The poll task creation is covered by the poll loop tests below.
+
+    @pytest.mark.asyncio
+    async def test_stop_wechat_cancels_poll_and_disconnects(self):
+        """stop_wechat stops the poll loop and disconnects the client."""
+        service = AgentService(make_mock_config())
+
+        # Set up a fake poll task
+        async def _fake_poll():
+            try:
+                while True:
+                    await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                raise
+
+        service._wechat_poll_task = asyncio.create_task(_fake_poll())
+
+        mock_client = MagicMock()
+        mock_client.is_connected = True
+        mock_client.disconnect = AsyncMock()
+        service._wechat_client = mock_client
+
+        mock_process = MagicMock()
+        mock_process.stop = AsyncMock()
+        service._wechat_process = mock_process
+
+        await service.stop_wechat()
+
+        # Poll task cancelled and cleaned up
+        assert service._wechat_poll_task is None
+        # Client disconnected
+        mock_client.disconnect.assert_called_once()
+        assert service._wechat_client is None
+        # Process stopped
+        mock_process.stop.assert_called_once()
+        assert service._wechat_process is None
+
+    @pytest.mark.asyncio
+    async def test_wechat_poll_posts_to_inbox(self):
+        """The poll loop fetches messages and posts AgentMessages to inbox."""
+        service = AgentService(make_mock_config())
+
+        mock_wc = MagicMock()
+        mock_wc.is_connected = True
+
+        call_count = [0]
+
+        async def mock_call_tool(tool_name, args):
+            if tool_name == "check_messages":
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return _json.dumps({"messages": [{
+                        "to_user_id": "wx_user_123",
+                        "context_token": "ctx_abc",
+                        "text": "你好",
+                    }]})
+                # Disconnect after first poll to exit the loop cleanly
+                mock_wc.is_connected = False
+                return _json.dumps({"messages": []})
+            return "{}"
+
+        mock_wc.call_tool = mock_call_tool
+        service._wechat_client = mock_wc
+
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock()
+        service.inbox = mock_inbox
+
+        await service._wechat_poll_loop(interval=0.001)
+
+        # Message posted to inbox
+        mock_inbox.post.assert_called_once()
+        msg = mock_inbox.post.call_args[0][0]
+        assert msg.source == WECHAT
+        assert msg.content == "你好"
+        assert msg.metadata["channel"] == "wechat"
+        assert msg.on_reply is not None
+
+    @pytest.mark.asyncio
+    async def test_wechat_poll_skips_empty_text(self):
+        """Messages with empty text are not posted to inbox."""
+        service = AgentService(make_mock_config())
+
+        mock_wc = MagicMock()
+        mock_wc.is_connected = True
+
+        call_count = [0]
+
+        async def mock_call_tool(tool_name, args):
+            if tool_name == "check_messages":
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return _json.dumps({"messages": [
+                        {"to_user_id": "wx_1", "context_token": "c1", "text": "   "},
+                        {"to_user_id": "wx_2", "context_token": "c2", "text": "real"},
+                    ]})
+                mock_wc.is_connected = False
+                return _json.dumps({"messages": []})
+            return "{}"
+
+        mock_wc.call_tool = mock_call_tool
+        service._wechat_client = mock_wc
+
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock()
+        service.inbox = mock_inbox
+
+        await service._wechat_poll_loop(interval=0.001)
+
+        # Only the non-empty message is posted
+        assert mock_inbox.post.call_count == 1
+        msg = mock_inbox.post.call_args[0][0]
+        assert msg.content == "real"
+
+    @pytest.mark.asyncio
+    async def test_wechat_reply_callback_sends_message(self):
+        """The on_reply callback delivers the response text via send_message."""
+        service = AgentService(make_mock_config())
+
+        mock_wc = MagicMock()
+        mock_wc.is_connected = True
+
+        call_count = [0]
+
+        async def mock_call_tool(tool_name, args):
+            if tool_name == "check_messages":
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return _json.dumps({"messages": [{
+                        "to_user_id": "wx_123",
+                        "context_token": "ctx_xyz",
+                        "text": "帮我查一下天气",
+                    }]})
+                mock_wc.is_connected = False
+                return _json.dumps({"messages": []})
+            elif tool_name == "send_typing":
+                return "{}"
+            elif tool_name == "send_message":
+                return "{}"
+            return "{}"
+
+        mock_wc.call_tool = mock_call_tool
+        service._wechat_client = mock_wc
+
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock()
+        service.inbox = mock_inbox
+
+        await service._wechat_poll_loop(interval=0.001)
+
+        # Extract the reply callback from the posted message
+        msg = mock_inbox.post.call_args[0][0]
+        assert msg.on_reply is not None
+
+        # Reset call_tool to track post-poll calls
+        mock_wc.call_tool = AsyncMock(return_value="{}")
+
+        await msg.on_reply("今天北京晴，25°C")
+
+        # Verify send_message was called with correct params
+        send_calls = [
+            c for c in mock_wc.call_tool.call_args_list
+            if c[0][0] == "send_message"
+        ]
+        assert len(send_calls) == 1
+        _, send_args = send_calls[0][0]
+        assert send_args["to_user_id"] == "wx_123"
+        assert send_args["context_token"] == "ctx_xyz"
+        assert send_args["text"] == "今天北京晴，25°C"
+
+    @pytest.mark.asyncio
+    async def test_wechat_typing_sent_on_arrival(self):
+        """send_typing(status=1) is called when a message arrives."""
+        service = AgentService(make_mock_config())
+
+        mock_wc = MagicMock()
+        mock_wc.is_connected = True
+
+        call_count = [0]
+
+        async def mock_call_tool(tool_name, args):
+            if tool_name == "check_messages":
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return _json.dumps({"messages": [{
+                        "to_user_id": "wx_1",
+                        "context_token": "ctx_1",
+                        "text": "hello",
+                    }]})
+                mock_wc.is_connected = False
+                return _json.dumps({"messages": []})
+            return "{}"
+
+        mock_wc.call_tool = AsyncMock(side_effect=mock_call_tool)
+        service._wechat_client = mock_wc
+
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock()
+        service.inbox = mock_inbox
+
+        await service._wechat_poll_loop(interval=0.001)
+
+        # verify send_typing was called with status=1
+        typing_calls = [
+            c for c in mock_wc.call_tool.call_args_list
+            if c[0][0] == "send_typing"
+        ]
+        assert len(typing_calls) >= 1
+        _, typing_args = typing_calls[0][0]
+        assert typing_args["to_user_id"] == "wx_1"
+        assert typing_args["context_token"] == "ctx_1"
+        assert typing_args["status"] == 1
+
+    @pytest.mark.asyncio
+    async def test_wechat_poll_error_handling(self):
+        """Poll errors are caught and do not crash the loop."""
+        service = AgentService(make_mock_config())
+
+        mock_wc = MagicMock()
+        mock_wc.is_connected = True
+
+        call_count = [0]
+
+        async def mock_call_tool(tool_name, args):
+            if tool_name == "check_messages":
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise Exception("network error")
+                # Second call succeeds but disconnects
+                mock_wc.is_connected = False
+                return _json.dumps({"messages": []})
+            return "{}"
+
+        mock_wc.call_tool = mock_call_tool
+        service._wechat_client = mock_wc
+
+        mock_inbox = MagicMock()
+        mock_inbox.post = AsyncMock()
+        service.inbox = mock_inbox
+
+        # Should not raise
+        await service._wechat_poll_loop(interval=0.001)
+
+        # Error on first poll, second poll should still run
+        assert call_count[0] == 2

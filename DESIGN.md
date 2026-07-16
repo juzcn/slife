@@ -65,8 +65,8 @@ What the LLM cannot know (and the prompt provides):
 ├──────────────────────────────────────────────────────────────────┤
 │  Agent Service                                                   │
 │  slife/agent/service.py — wires client + tools + loop + MCP     │
-│  Manages MCP, Memory, A2A/MQTT, and subagent lifecycles          │
-│  Inbox: serializes human + MQTT + subagent messages               │
+│  Manages MCP, Memory, A2A/MQTT, WeChat, and subagent lifecycles  │
+│  Inbox: serializes human + WeChat + MQTT + subagent messages     │
 ├──────────────────────────────────────────────────────────────────┤
 │  Agent Loop                                                      │
 │  slife/agent/loop.py — streaming function-calling                │
@@ -167,6 +167,11 @@ async def my_plugin_save(data: str) -> str: ...
 Bi-directional WeChat messaging via the iLink ClawBot protocol. Enables
 Slfe to receive and reply to WeChat messages from a personal account.
 
+WeChat is a **first-class peer terminal** — not a separate processing path.
+Messages flow through the unified inbox, get processed by the same agent
+loop, and replies are routed back via the message's `on_reply` callback.
+WeChat has its own persistent conversation, independent from the TUI.
+
 **Enable:** `wechat: { enabled: true }` in `slife.json5`.
 
 **Architecture:**
@@ -179,13 +184,22 @@ Phone WeChat ──▶ iLink API ◀── slife-wechat (FastMCP stdio)
    │                │
    └── reply received ───────────────┘
 
-Service-side (AgentService._wechat_poll_loop):
+Agent-side (AgentService._wechat_poll_loop):
   1. call_tool("check_messages") every 5s → drains pending queue
   2. send_typing(status=1) → "typing…" on phone
-  3. agent_loop.run() → LLM processes
-  4. send_message → iLink → phone
-  5. send_typing(status=2) → hide typing indicator
+  3. AgentMessage(source=WECHAT, on_reply=…) → inbox.post()
+  4. ── inbox queue → AgentLoop.run() → handler streams to TUI ──
+  5. on_reply callback → send_message → reply arrives on phone
+  6. Typing keep-alive: background task refreshes send_typing(status=1)
+     every 8s until the reply is sent, so the user always sees
+     "对方正在输入…" during long processing.
 ```
+
+**TUI integration:** incoming WeChat messages appear as `Wechat> hi` in the
+chat view. The assistant's reply streams in real-time via the shared
+`TUIHandler` default factory — identical to a locally-typed message.
+Activity callbacks and the handler factory are always active (not gated
+behind A2A), so WeChat display works regardless of whether A2A is enabled.
 
 **Data flow:** incoming messages follow the official iLink bot pattern:
 `getupdates → getconfig → sendtyping(1) → AI → sendmessage → sendtyping(2)`
@@ -643,21 +657,36 @@ Local child-process workers spawned via `asyncio.create_subprocess_exec`. Always
 
 ### Unified Inbox
 
-All messages — human keyboard input, MQTT tasks, subagent results — flow through a single `asyncio.Queue`:
+All messages — human keyboard input, MQTT tasks, subagent results, WeChat messages — flow through a single `asyncio.Queue`:
 
 ```
 Human keyboard ──→ Inbox.post() ──→ asyncio.Queue ──→ Inbox.run() ──→ AgentLoop
 MQTT inbox msgs ──→ Inbox.post() ──→              ──→ ConversationStore
-Subagent results ──→ Inbox.post() ──→              ──→ per-source convs
+WeChat messages  ──→ Inbox.post() ──→              ──→ per-source convs
+Subagent results ──→ Inbox.post() ──→
 ```
 
-**ConversationStore**: the human's conversation persists across messages (continuous back-and-forth). Remote agent conversations are fresh each time (one-shot task model).
+**ConversationStore**: human (TUI) and WeChat conversations are persistent across messages (continuous back-and-forth). Remote agent conversations are fresh each time (one-shot task model).
 
-**Serialization**: the inbox processes messages sequentially — even if human and remote agents send simultaneously, only one `AgentLoop` runs at a time. While a loop is running, the agent card shows "busy."
+**Serialization**: the inbox processes messages sequentially — even if human, WeChat, and remote agents send simultaneously, only one `AgentLoop` runs at a time. While a loop is running, the status bar shows "⏳ processing."
 
-### Remote Task UI Integration
+**Queue guarantees**:
+- **No interruption**: `Inbox.post()` is non-blocking. Messages are always enqueued and waited — an incoming WeChat message never interrupts a running agent loop. The current loop finishes, then the next queued message is processed.
+- **No message loss**: the inbox runs as a persistent background task (`asyncio.create_task(inbox.run())`) that lives for the entire session. It starts before any input channel (Step 0 in `on_mount`) and is the last thing shut down. Every channel — keyboard, WeChat, MQTT — drops messages into the same queue with the same guarantee.
+- **No cancellations**: the TUI input handler uses `run_worker(exclusive=False)` so human messages don't cancel the current loop. They simply wait their turn.
 
-Remote tasks stream to the chat view exactly like locally-typed messages. The source agent's name becomes the prompt prefix (`Jack> task…`), the LLM's thinking and response stream to the chat, and tool calls render as collapsible widgets. This is achieved through a handler factory pattern that creates fresh `TUIHandler` instances per task.
+**Message handler resolution**:
+1. If the message carries its own `handler` (TUI keyboard path), use it directly.
+2. Otherwise, look up `handler_for(source)` → registered handlers → default factory.
+3. The default factory creates a fresh `TUIHandler` per message, so WeChat and remote A2A messages stream to the chat view just like locally-typed messages.
+
+**Reply routing**: each message can carry an `on_reply` callback. After the agent loop completes, the response text is passed to this callback — WeChat uses it to forward replies back to the phone, A2A uses it to publish task results to MQTT.
+
+### Remote Task & WeChat UI Integration
+
+Remote tasks and WeChat messages stream to the chat view exactly like locally-typed messages. The source agent's name or channel prefix (`Wechat>`) identifies the origin. The LLM's thinking and response stream to the chat, and tool calls render as collapsible widgets. This is achieved through a handler factory pattern that creates fresh `TUIHandler` instances per message.
+
+Activity callbacks and the handler factory are registered at startup (Step 3 in `on_mount`, before any channel starts polling) and are always active — not gated behind A2A. This ensures WeChat display works regardless of whether A2A is enabled, and no messages are dropped before the UI is listening.
 
 ### Protocol
 

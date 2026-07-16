@@ -38,6 +38,8 @@ class StatusBar(Static):
         model: str = "",
         tokens: int = 0,
         thinking: bool = False,
+        inbox_busy: bool = False,
+        inbox_pending: int = 0,
     ) -> None:
         """Update the status bar display."""
         parts = []
@@ -47,6 +49,11 @@ class StatusBar(Static):
 
         if thinking:
             parts.append("[#d29922]⚡ thinking[/#d29922]")
+
+        if inbox_busy:
+            parts.append("[#d29922]⏳ processing[/#d29922]")
+        elif inbox_pending > 0:
+            parts.append(f"[#6e7681]⏳ {inbox_pending} queued[/#6e7681]")
 
         if tokens > 0:
             parts.append(f"[#6e7681]↑ {tokens:,} tokens[/#6e7681]")
@@ -113,6 +120,10 @@ class SlifeApp(App):
         # Focus input on startup
         self.query_one("#user-input").focus()
 
+        # ★ Step 0: Start the unified message queue first.
+        # All input (human, A2A, WeChat) flows through this inbox.
+        await self.service.start_inbox()
+
         # ★ Step 1: Start memory service first (synchronous — fast local startup)
         if self.service.config.memory_config:
             try:
@@ -140,20 +151,24 @@ class SlifeApp(App):
                 group="mcp-startup",
             )
 
-        # Step 3: Start A2A P2P mesh in the background
+        # Step 3: Register unified activity callbacks + handler factory.
+        # These serve ALL input channels — A2A, WeChat, etc. —
+        # not just A2A.  Must run BEFORE any channel starts polling
+        # so messages are never dropped before the UI is listening.
+        self.service.on_a2a_activity(self._on_a2a_activity)
+        self.service.inbox._conversations.set_default_handler_factory(
+            lambda: TUIHandler(self, assistant_prefix=self._assistant_prefix)
+        )
+
+        # Step 4: Start A2A P2P mesh in the background
         if self.service.config.a2a_config and self.service.config.a2a_config.enabled:
-            self.service.on_a2a_activity(self._on_a2a_activity)
             self.run_worker(
-                self.service.start_a2a(
-                    handler_factory=lambda: TUIHandler(
-                        self, assistant_prefix=self._assistant_prefix
-                    ),
-                ),
+                self.service.start_a2a(),
                 exclusive=False,
                 group="a2a-startup",
             )
 
-        # Step 4: Start subagent manager
+        # Step 5: Start subagent manager
         if self.service.config.subagent_config:
             self.run_worker(
                 self.service.start_subagent(),
@@ -161,7 +176,7 @@ class SlifeApp(App):
                 group="subagent-startup",
             )
 
-        # Step 5: Start WeChat plugin (if enabled in config)
+        # Step 6: Start WeChat plugin (if enabled in config)
         if self.service.config.wechat_config and self.service.config.wechat_config.enabled:
             self.run_worker(
                 self.service.start_wechat(),
@@ -195,6 +210,7 @@ class SlifeApp(App):
             _stop("mcp", self.service.stop_mcp()),
             _stop("memory", self.service.stop_memory()),
             _stop("wechat", self.service.stop_wechat()),
+            _stop("inbox", self.service.stop_inbox()),
         )
         await super().action_quit()
 
@@ -216,16 +232,24 @@ class SlifeApp(App):
     def _update_status(self) -> None:
         """Refresh the status bar with current session info."""
         status = self.query_one("#status-bar", StatusBar)
+        inbox = self.service.inbox
         status.update_info(
             model=self.service.model_display_name,
             tokens=self.service.session_usage.total_tokens,
             thinking=self.service.thinking_enabled,
+            inbox_busy=inbox.busy if inbox else False,
+            inbox_pending=inbox.pending if inbox else 0,
         )
 
     # ── Input handling ────────────────────────────────────────────
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle user pressing Enter in the input field."""
+        """Handle user pressing Enter in the input field.
+
+        Posts the message to the unified inbox queue — never cancels
+        a running agent loop.  If the queue is empty and no loop is
+        running, processing starts immediately.
+        """
         raw = event.value.strip()
         if not raw:
             return
@@ -235,10 +259,11 @@ class SlifeApp(App):
         chat_view = self.query_one("#chat-view", ChatView)
         chat_view.add_user_message(raw)
 
+        # _process_message just enqueues and returns immediately
+        # (handler is attached to the message, inbox streams later).
         self.run_worker(
             self._process_message(raw, None, chat_view),
-            exclusive=True,
-            group="agent",
+            exclusive=False,
         )
 
     # ── A2A activity (chat notifications) ───────────────────────────
@@ -271,6 +296,12 @@ class SlifeApp(App):
             content = kwargs.get("content", "").strip()
             # Show as a normal user message with source as prefix
             chat_view.add_user_message(content, prefix=f"{source}> ")
+
+        elif kind == "peer_message":
+            # Peer terminal (WeChat etc.) — show with channel prefix
+            source = kwargs.get("source", "wechat")
+            content = kwargs.get("content", "").strip()
+            chat_view.add_user_message(content, prefix="Wechat> ")
 
         elif kind == "task_completed":
             source = kwargs.get("source", "unknown")
