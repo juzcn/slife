@@ -289,6 +289,84 @@ class TestMCPProxyToolExecute:
         call_kwargs = client.call_tool.call_args[0][1]
         assert "source" not in call_kwargs
 
+    @pytest.mark.asyncio
+    async def test_source_not_a_dict_stripped_from_mcp_call(self):
+        """source that isn't a dict is still stripped from kwargs — callback gets None."""
+        info = make_tool_info(server="mcp", name="mcp_add_server")
+        client = make_mock_mcp_client()
+        client.call_tool.return_value = json.dumps({"status": "connected"})
+
+        tool = MCPProxyTool(client, info)
+        await tool.execute(name="test", source="string-source")
+
+        # source is always stripped from MCP client call
+        call_kwargs = client.call_tool.call_args[0][1]
+        assert "source" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_memory_server_calls_directly(self):
+        """Memory server tools call the MCP client directly (no routing layer)."""
+        info = make_tool_info(server="memory", name="memory_search", description="Search")
+        client = make_mock_mcp_client()
+        client.call_tool.return_value = "search results"
+
+        tool = MCPProxyTool(client, info)
+        result = await tool.execute(query="test query")
+
+        client.call_tool.assert_called_once_with("memory_search", {"query": "test query"})
+        assert result == "search results"
+
+    @pytest.mark.asyncio
+    async def test_handle_add_server_callback_exception_swallowed(self):
+        """Exceptions in on_server_added callback are swallowed."""
+        info = make_tool_info(server="mcp", name="mcp_add_server")
+        client = make_mock_mcp_client()
+        client.call_tool.return_value = json.dumps({"status": "connected"})
+        on_add = AsyncMock(side_effect=RuntimeError("callback exploded"))
+
+        tool = MCPProxyTool(client, info, on_server_added=on_add)
+        # Should not raise
+        result = await tool.execute(name="test", command="cmd")
+        assert json.loads(result)["status"] == "connected"
+
+    @pytest.mark.asyncio
+    async def test_handle_set_disclosure_callback_exception_swallowed(self):
+        """Exceptions in on_server_disclosure_changed callback are swallowed."""
+        info = make_tool_info(server="mcp", name="mcp_set_disclosure")
+        client = make_mock_mcp_client()
+        client.call_tool.return_value = json.dumps({"disclosure": "lazy"})
+        on_disc = AsyncMock(side_effect=RuntimeError("callback error"))
+
+        tool = MCPProxyTool(client, info, on_server_disclosure_changed=on_disc)
+        # Should not raise
+        result = await tool.execute(name="test", disclosure="lazy")
+        assert json.loads(result)["disclosure"] == "lazy"
+
+    @pytest.mark.asyncio
+    async def test_handle_remove_server_callback_exception_swallowed(self):
+        """Exceptions in on_server_removed callback are swallowed."""
+        info = make_tool_info(server="mcp", name="mcp_remove_server")
+        client = make_mock_mcp_client()
+        client.call_tool.return_value = json.dumps({"status": "removed"})
+        on_remove = AsyncMock(side_effect=RuntimeError("callback error"))
+
+        tool = MCPProxyTool(client, info, on_server_removed=on_remove)
+        # Should not raise
+        result = await tool.execute(name="old")
+        assert json.loads(result)["status"] == "removed"
+
+    @pytest.mark.asyncio
+    async def test_handle_remove_server_parse_error(self):
+        """Parse error in remove_server result is handled gracefully."""
+        info = make_tool_info(server="mcp", name="mcp_remove_server")
+        client = make_mock_mcp_client()
+        client.call_tool.return_value = "not valid json"
+        on_remove = AsyncMock()
+
+        tool = MCPProxyTool(client, info, on_server_removed=on_remove)
+        await tool.execute(name="test")
+        on_remove.assert_not_called()
+
 
 # ── create_proxy_tools ──────────────────────────────────────────────────────
 

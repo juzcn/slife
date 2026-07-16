@@ -1,6 +1,6 @@
 # Slife
 
-**Terminal-based AI agent** — chat with an LLM that can execute shell commands, read and write files, search the web, call any REST API, connect to MCP servers, spawn subagents for parallel work, communicate with other Slife instances over MQTT, and remember everything permanently.
+**Terminal-based AI agent** — chat with an LLM that can execute shell commands, read and write files, search the web, call REST APIs, connect to MCP servers, spawn subagents for parallel work, communicate with other Slife instances over MQTT, and remember everything permanently.
 
 Think of it as a terminal-native AI pair programmer with a searchable long-term memory.
 
@@ -21,7 +21,7 @@ The example config ships with three pre-configured MCP servers (filesystem, web 
 
 ## How It Works
 
-Slife is a **function-calling loop**. You type a message → the LLM decides what tools to call → Slife executes them and returns results → the LLM responds → repeat. There's no orchestration, no hardcoded workflows, no guardrails. The LLM is in control.
+Slife is a **function-calling loop**. You type a message → the LLM decides what tools to call → Slife executes them and returns results → the LLM responds → repeat. No orchestration, no hardcoded workflows, no guardrails. The LLM is in control.
 
 ```
 You: "Find all TODO comments and create GitHub issues for them"
@@ -71,7 +71,7 @@ All tools are unified as OpenAI function definitions — the LLM sees no differe
 
 ### MCP & REST APIs
 
-External MCP servers connect through [slife-mcp](https://pypi.org/project/slife-mcp/) — an **independent proxy process** that manages persistent server connections. Tools are prefixed by server name (e.g. `filesystem__read_file`).
+External MCP servers connect through slife-mcp — a **built-in plugin** (`slife/plugins/mcp/`) that manages persistent server connections. Tools are prefixed by server name (e.g. `filesystem__read_file`).
 
 REST APIs connect via [anyapi-mcp-server](https://github.com/quiloos39/anyapi-mcp-server), which converts any OpenAPI spec to callable tools at runtime — no per-endpoint code needed.
 
@@ -89,7 +89,7 @@ External CLI commands the LLM discovers and registers for future use. After succ
 
 Every turn — user message, assistant thinking, tool calls and their outputs, file contents, web pages, API responses, errors — is permanently recorded as an independent, immutable row. No sessions, no lifecycle. Memory is a continuous time-ordered log.
 
-Memory runs as an **independent MCP service** (`slife-memory`), same architecture as slife-mcp. If Slife crashes, turns already saved are safe — no data loss.
+Memory runs as a **built-in plugin** (`slife/plugins/memory/`), same architecture as slife-mcp. If Slife crashes, turns already saved are safe — no data loss.
 
 **Each turn is saved atomically when it completes.** If you press Ctrl+C mid-turn (while the LLM is still generating), the current turn is lost — only prior completed turns survive. This prevents partial, incomplete responses from polluting your knowledge base.
 
@@ -123,6 +123,15 @@ slife                 # default user
 ```
 
 See [DESIGN.md](DESIGN.md#permanent-memory-slife-memory) for the full memory architecture.
+
+## Built-in Plugins
+
+Two plugins ship with Slife and are always enabled. Both use `MCPWrapperProcess` (spawn child process) + `MCPClient` (stdio transport) — their tools are discovered via `list_tools()` and registered as `MCPProxyTool` instances.
+
+| Plugin | Path | Role |
+|--------|------|------|
+| slife-mcp | `slife/plugins/mcp/` | MCP proxy — connect to external MCP servers (stdio or HTTP) |
+| slife-memory | `slife/plugins/memory/` | Diary database — permanent conversation storage with hybrid search |
 
 ## Agent-to-Agent (A2A)
 
@@ -164,10 +173,11 @@ slife/
   a2a/              # A2A: MQTT client, broker lifecycle, identity, TaskStore
   subagent/         # Subagent: spawn, JSON-RPC IPC, process management
   tools/            # All tools — native, skills, CLI, A2A (auto-discovered)
-  mcp/              # MCP client (slife side)
+  mcp/              # MCP client + plugin infrastructure (MCPClient, MCPWrapperProcess)
+  plugins/          # Built-in MCP plugins
+    mcp/            #   slife-mcp — MCP proxy server
+    memory/         #   slife-memory — diary database
   ui/               # Textual TUI
-slife_mcp/          # Independent MCP proxy (pip install slife-mcp)
-slife_memory/       # Independent memory MCP service (pip install slife-memory)
 skills/             # On-demand skill plugins
 tests/              # pytest suite
 ```
@@ -180,7 +190,7 @@ tests/              # pytest suite
 
 ## Design
 
-slife is a **minimum-harness agent**. The harness only does what the LLM physically cannot: execute tools, maintain conversation state, stream responses, and persist memory. Everything else — reasoning, planning, tool selection, error recovery — is the LLM's job.
+Slife is a **minimum-harness agent**. The harness only does what the LLM physically cannot: execute tools, maintain conversation state, stream responses, and persist memory. Everything else — reasoning, planning, tool selection, error recovery — is the LLM's job.
 
 See [DESIGN.md](DESIGN.md) for the full architecture, design rationale, and component-level documentation.
 

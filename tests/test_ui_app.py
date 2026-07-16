@@ -102,14 +102,16 @@ class TestAgentServiceMCP:
     """Tests for AgentService MCP start/stop methods."""
 
     @pytest.mark.asyncio
-    async def test_start_mcp_disabled_config(self, sample_config):
-        """start_mcp returns early when MCP is disabled."""
-        sample_config.mcp_config.enabled = False
+    async def test_start_mcp_with_empty_servers(self, sample_config):
+        """start_mcp runs even with no servers (wrapper always starts)."""
         service = AgentService(sample_config)
 
-        await service.start_mcp()
+        with patch.object(service, "_connect_mcp_wrapper", AsyncMock()), \
+             patch.object(service, "_register_mcp_wrapper_tools", AsyncMock()), \
+             patch.object(service, "_auto_connect_mcp_servers", AsyncMock()):
+            await service.start_mcp()
 
-        assert service._mcp_client is None
+        assert service._mcp_client is None  # mocked, so no real connection
 
     @pytest.mark.asyncio
     async def test_stop_mcp_nothing_running(self, sample_config):

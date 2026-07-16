@@ -37,7 +37,7 @@ import platform as _platform
 import subprocess as _subprocess
 from typing import TYPE_CHECKING
 
-from slife.tools.base import Tool
+from slife.tools.base import Tool, require_params
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -54,14 +54,6 @@ _NO_TRANSPORT_MSG = (
     "Agent '{agent_id}' not found. "
     "Use a2a_list_agents or a2a_list_subagents to see available agents."
 )
-
-
-def _require_params(**params: str) -> str | None:
-    """Check that all named params are non-empty. Returns error string or None."""
-    missing = [k for k, v in params.items() if not v]
-    if missing:
-        return f"Error: {' and '.join(missing)} required."
-    return None
 
 
 def _get_transports():
@@ -229,7 +221,7 @@ class A2ASendTaskTool(Tool):
     }
 
     async def execute(self, agent_id: str = "", task: str = "", **kwargs) -> str:
-        if err := _require_params(agent_id=agent_id, task=task):
+        if err := require_params(agent_id=agent_id, task=task):
             return err
 
         from slife.a2a.identity import AgentId
@@ -290,7 +282,7 @@ class A2ASendTaskAsyncTool(Tool):
     }
 
     async def execute(self, agent_id: str = "", task: str = "", **kwargs) -> str:
-        if err := _require_params(agent_id=agent_id, task=task):
+        if err := require_params(agent_id=agent_id, task=task):
             return err
 
         from slife.a2a.identity import AgentId
@@ -370,7 +362,7 @@ class A2AGetTaskResultTool(Tool):
     }
 
     async def execute(self, agent_id: str = "", task_id: str = "", **kwargs) -> str:
-        if err := _require_params(agent_id=agent_id, task_id=task_id):
+        if err := require_params(agent_id=agent_id, task_id=task_id):
             return err
 
         from slife.a2a.identity import AgentId
@@ -452,7 +444,7 @@ class A2ACancelTaskTool(Tool):
     }
 
     async def execute(self, agent_id: str = "", task_id: str = "", **kwargs) -> str:
-        if err := _require_params(agent_id=agent_id, task_id=task_id):
+        if err := require_params(agent_id=agent_id, task_id=task_id):
             return err
 
         from slife.a2a.identity import AgentId
@@ -605,7 +597,7 @@ class A2ASubscribeTaskTool(Tool):
     async def execute(
         self, agent_id: str = "", task_id: str = "", timeout: float = 120.0, **kwargs,
     ) -> str:
-        if err := _require_params(agent_id=agent_id, task_id=task_id):
+        if err := require_params(agent_id=agent_id, task_id=task_id):
             return err
 
         from slife.a2a.identity import AgentId

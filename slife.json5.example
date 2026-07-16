@@ -82,9 +82,16 @@
   //
   //   { name: "execute_shell", timeout: 60 },
 
-  // ── MCP servers (minimum bootstrap set) ──────────────────────
+  // ── MCP servers ─────────────────────────────────────────────
   // These three need no API keys — file I/O, web fetch, and search.
   // The agent can add more servers at runtime via mcp_add_server.
+  //
+  // Each server supports two transports:
+  //   stdio: command + args (spawn as child process)
+  //   http:  url + headers  (connect to remote MCP endpoint)
+  //
+  // Set enabled: false to skip auto-connect at startup. The server
+  // stays in config and can be started later with mcp_enable_server.
   mcp: {
     servers: {
       filesystem: {
@@ -114,10 +121,8 @@
       // converts any OpenAPI spec into MCP tools — swap --spec and
       // --base-url to connect other REST APIs (Jira, Slack, etc.).
       //
-      // disclosure: "lazy" is available for servers that expose many
-      // tools (e.g. native MCP servers with one tool per endpoint).
-      // Lazy servers connect at startup but don't register their tools
-      // until the LLM calls mcp_activate_server.
+      // disclosure: "lazy" keeps tools hidden until the LLM calls
+      // mcp_set_disclosure("eager"). Useful for servers with many tools.
       //
       // github: {
       //   command: "npx",
@@ -129,7 +134,24 @@
       //     "--header", "Authorization: Bearer ${GITHUB_TOKEN}",
       //   ],
       //   env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
-      //   description: "GitHub REST API via anyapi-mcp-server — repos, issues, PRs, users, search.",
+      //   description: "GitHub REST API via anyapi-mcp-server.",
+      // },
+
+      // Remote HTTP MCP server example:
+      //
+      // remote_api: {
+      //   url: "http://api-server:8080/mcp",
+      //   headers: { Authorization: "Bearer ${API_TOKEN}" },
+      //   description: "Remote MCP API server.",
+      // },
+
+      // Pre-configure without auto-connecting:
+      //
+      // optional_server: {
+      //   command: "npx",
+      //   args: ["-y", "some-heavy-mcp-server"],
+      //   enabled: false,
+      //   description: "Heavy server — start manually with mcp_enable_server.",
       // },
     },
   },
@@ -159,12 +181,10 @@
   // ── Permanent Memory ────────────────────────────────────────
   // Records every conversation like a diary with hybrid keyword
   // (FTS5) + semantic (sqlite-vec) search. Also enables crash
-  // recovery — on restart, slife detects interrupted sessions
-  // and asks whether to restore or discard.
+  // recovery — on restart, slife restores recent turns.
   //
-  // The memory service runs as an independent MCP process
-  // (slife-memory), just like slife-mcp. It communicates via
-  // stdio (child process) or HTTP.
+  // slife-memory is a built-in plugin — always enabled. It runs
+  // as a child process connected via MCP stdio protocol.
   //
   // User isolation: --user <name> on CLI. Defaults to "default".
   // Each user gets their own isolated diary namespace.
@@ -173,13 +193,8 @@
   //   1. Local GGUF model (offline, no API cost)
   //   2. OpenAI-compatible API (requires api_key)
   memory: {
-    enabled: true,
-
     // SQLite database path
     // db_path: "~/.slife/slife.db",
-
-    // HTTP endpoint for standalone slife-memory server.
-    // url: "http://127.0.0.1:9877/mcp",
 
     // ── Embedding configuration ──────────────────────────────
     embedding: {

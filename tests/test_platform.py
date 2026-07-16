@@ -180,3 +180,124 @@ class TestRunPythonScriptEdgeCases:
     def test_whitespace_in_script_path(self):
         cmd = run_python_script("  my script.py  ")
         assert "my script.py" in cmd
+
+
+# ── terminate_process ────────────────────────────────────────────────
+
+
+class TestTerminateProcess:
+    """Tests for terminate_process async function."""
+
+    @pytest.mark.asyncio
+    async def test_none_process_noop(self):
+        """Terminating None is a no-op."""
+        from slife.platform import terminate_process
+        await terminate_process(None, label="test")
+        # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_already_exited_noop(self):
+        """Process with returncode set needs no termination."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        from slife.platform import terminate_process
+
+        proc = MagicMock(spec=asyncio.subprocess.Process)
+        proc.returncode = 0
+        await terminate_process(proc, label="test")
+        proc.terminate.assert_not_called()
+        proc.kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_closes_stdin(self):
+        """Stdin is closed to signal the process."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        from slife.platform import terminate_process
+
+        proc = MagicMock(spec=asyncio.subprocess.Process)
+        proc.returncode = None
+        proc.stdin = MagicMock()
+        proc.wait = AsyncMock(return_value=0)
+
+        await terminate_process(proc, label="test")
+        proc.stdin.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_process_lookup_error_swallowed(self):
+        """ProcessLookupError (process already gone) is swallowed."""
+        import asyncio
+        from unittest.mock import MagicMock
+        from slife.platform import terminate_process
+
+        proc = MagicMock(spec=asyncio.subprocess.Process)
+        proc.returncode = None
+        proc.stdin = None
+        proc.terminate = MagicMock(side_effect=ProcessLookupError)
+
+        if IS_WINDOWS:
+            await terminate_process(proc, label="test")
+            # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_stdin_close_error_swallowed(self):
+        """Errors closing stdin are swallowed gracefully."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        from slife.platform import terminate_process
+
+        proc = MagicMock(spec=asyncio.subprocess.Process)
+        proc.returncode = None
+        proc.stdin = MagicMock()
+        proc.stdin.close = MagicMock(side_effect=OSError("pipe broken"))
+        proc.wait = AsyncMock(return_value=0)
+
+        await terminate_process(proc, label="test")
+        # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_general_exception_swallowed(self):
+        """General exceptions during termination are swallowed."""
+        import asyncio
+        from unittest.mock import MagicMock
+        from slife.platform import terminate_process
+
+        proc = MagicMock(spec=asyncio.subprocess.Process)
+        proc.returncode = None
+        proc.stdin = None
+        proc.terminate = MagicMock(side_effect=RuntimeError("unexpected"))
+
+        if IS_WINDOWS:
+            await terminate_process(proc, label="test")
+            # Should not raise — RuntimeError is caught
+
+
+# ── resolve_command — Windows-specific ───────────────────────────────
+
+
+class TestResolveCommandWindows:
+    """Windows-specific resolve_command tests."""
+
+    @pytest.mark.skipif(not IS_WINDOWS, reason="Windows only")
+    @patch("shutil.which")
+    def test_finds_exe(self, mock_which):
+        mock_which.side_effect = lambda c: (
+            r"C:\tools\git.exe" if c in ("git", "git.exe") else None
+        )
+        result = resolve_command("git")
+        assert "git.exe" in result or "git" in result
+
+    @pytest.mark.skipif(not IS_WINDOWS, reason="Windows only")
+    @patch("shutil.which")
+    def test_finds_cmd_fallback(self, mock_which):
+        mock_which.side_effect = lambda c: (
+            r"C:\tools\npm.cmd" if c in ("npm.cmd",) else None
+        )
+        result = resolve_command("npm")
+        assert "npm" in result.lower()
+
+    @pytest.mark.skipif(not IS_WINDOWS, reason="Windows only")
+    @patch("shutil.which", return_value=None)
+    def test_unresolvable_returns_original(self, mock_which):
+        result = resolve_command("nonexistent_cmd")
+        assert result == "nonexistent_cmd"

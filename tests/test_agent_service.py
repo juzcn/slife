@@ -126,20 +126,9 @@ class TestAgentServiceMCPLifecycle:
     """Tests for start_mcp and stop_mcp."""
 
     @pytest.mark.asyncio
-    async def test_start_mcp_disabled_noop(self):
-        service = AgentService(make_mock_config())
-        # Config's mcp_config default is disabled
-        await service.start_mcp()
-        assert service._mcp_client is None
-
-    @pytest.mark.asyncio
-    @patch("slife.agent.service.MCPClient.is_wrapper_running", return_value=True)
-    async def test_start_mcp_http(self, mock_probe):
+    async def test_start_mcp_always_enabled(self):
         config = make_mock_config()
-        # Enable MCP in config
         config.mcp_config = MagicMock()
-        config.mcp_config.enabled = True
-        config.mcp_config.wrapper_url = "http://test:9876/mcp"
 
         service = AgentService(config)
 
@@ -199,12 +188,15 @@ class TestAgentServiceMemory:
         assert service.memory_enabled is False
 
     @pytest.mark.asyncio
-    async def test_start_memory_disabled_noop(self):
+    async def test_start_memory_always_runs(self):
         config = make_mock_config()
-        config.memory_config.enabled = False
         service = AgentService(config)
-        result = await service.start_memory()
-        assert result is False
+        with patch.object(service, "_connect_memory", AsyncMock()) as mock_connect, \
+             patch.object(service, "_register_memory_tools", AsyncMock()) as mock_register:
+            result = await service.start_memory()
+            mock_connect.assert_called_once()
+            mock_register.assert_called_once()
+            assert result is True
 
     @pytest.mark.asyncio
     async def test_save_to_memory_disabled_noop(self):

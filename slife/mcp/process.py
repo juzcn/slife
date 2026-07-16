@@ -15,7 +15,7 @@ from slife.platform import IS_WINDOWS, terminate_process
 logger = logging.getLogger(__name__)
 
 # Default wrapper module path
-_DEFAULT_SERVER_MODULE = "slife_mcp.server"
+_DEFAULT_SERVER_MODULE = "slife.plugins.mcp.server"
 
 
 class MCPWrapperProcess:

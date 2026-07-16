@@ -50,6 +50,25 @@ def write_config(path: Path, raw: dict) -> None:
     path.write_text(json5.dumps(raw, indent=2, trailing_commas=False, ensure_ascii=False), encoding="utf-8")
 
 
+def format_source_info(source: dict) -> str:
+    """Format a source provenance dict into a human-readable string.
+
+    Accepts ``{type, url, version}`` and returns a string like
+    ``"github — https://example.com — v1.0.0"``.
+    Returns ``""`` if source is not a non-empty dict.
+    """
+    if not isinstance(source, dict) or not source:
+        return ""
+    parts = []
+    if source.get("type"):
+        parts.append(source["type"])
+    if source.get("url"):
+        parts.append(source["url"])
+    if source.get("version"):
+        parts.append(f"v{source['version']}")
+    return " — ".join(parts) if parts else ""
+
+
 # ── Mixin for tools that read/write slife.json5 ──────────────────────
 
 

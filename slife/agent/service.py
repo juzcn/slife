@@ -111,17 +111,9 @@ class AgentService:
     # ── MCP lifecycle ──────────────────────────────────────────────────
 
     async def start_mcp(self) -> None:
-        """Start the MCP wrapper and register its tools.
-
-        Called during app startup. Detects if a standalone wrapper
-        is already running (via HTTP); if not, spawns one as a child
-        process via stdio.
-        """
+        """Start the MCP wrapper as a child process and register its tools."""
         mcp_cfg = self.config.mcp_config
         assert mcp_cfg is not None  # guaranteed by Config.__post_init__
-        if not mcp_cfg.enabled:
-            logger.debug("mcp_not_enabled")
-            return
 
         logger.info("mcp_init start")
         await self._connect_mcp_wrapper()
@@ -132,29 +124,19 @@ class AgentService:
     # ── MCP private helpers ──────────────────────────────────────────
 
     async def _connect_mcp_wrapper(self) -> None:
-        """Detect or spawn the MCP wrapper and establish a connection.
-
-        Always probes wrapper_url first. If an HTTP wrapper is
-        already running, connects via HTTP. Otherwise spawns the
-        wrapper as a child process via stdio.
-        """
+        """Spawn the MCP wrapper as a child process via stdio."""
         from slife.mcp.process import MCPWrapperProcess
 
         mcp_cfg = self.config.mcp_config
         assert mcp_cfg is not None
 
-        if await MCPClient.is_wrapper_running(mcp_cfg.wrapper_url):
-            logger.info("mcp_wrapper_found url=%s transport=http", mcp_cfg.wrapper_url)
-            self._mcp_client = MCPClient()
-            await self._mcp_client.connect_http(mcp_cfg.wrapper_url)
-        else:
-            logger.info("mcp_wrapper_spawn transport=stdio")
-            self._mcp_process = MCPWrapperProcess(
-                command=mcp_cfg.wrapper_command,
-                args=mcp_cfg.wrapper_args,
-            )
-            await self._mcp_process.start()
-            self._mcp_client = await self._mcp_process.create_client()
+        logger.info("mcp_wrapper_spawn transport=stdio")
+        self._mcp_process = MCPWrapperProcess(
+            command=mcp_cfg.wrapper_command,
+            args=mcp_cfg.wrapper_args,
+        )
+        await self._mcp_process.start()
+        self._mcp_client = await self._mcp_process.create_client()
 
     async def _register_mcp_wrapper_tools(self) -> None:
         """Discover and register wrapper management tools as proxy tools.
@@ -210,6 +192,9 @@ class AgentService:
 
         async def _connect_one(name: str, cfg: dict) -> None:
             try:
+                if cfg.get("enabled") is False:
+                    logger.debug("mcp_server_skipped name=%s reason=disabled", name)
+                    return
                 disclosure = cfg.get("disclosure", "eager")
                 activate = disclosure != "lazy"
                 result = await mcp_client.call_tool(
@@ -219,6 +204,8 @@ class AgentService:
                         "command": cfg.get("command", ""),
                         "args": cfg.get("args", []),
                         "env": cfg.get("env"),
+                        "url": cfg.get("url", ""),
+                        "headers": cfg.get("headers"),
                         "activate": activate,
                     },
                 )
@@ -265,7 +252,7 @@ class AgentService:
         except Exception as e:
             logger.error("mcp_discover_failed server=%s err=%s", server_name, e)
 
-    async def _persist_server(self, name: str, command: str, args: list[str], env: dict | None = None, description: str = "", source: dict | None = None):
+    async def _persist_server(self, name: str, command: str, args: list[str], env: dict | None = None, description: str = "", source: dict | None = None, url: str = "", headers: dict[str, str] | None = None):
         """Callback: persist a newly-added (or updated) MCP server to config
         file and immediately discover and register its tools.
 
@@ -282,7 +269,7 @@ class AgentService:
             )
             self.tool_registry.unregister_by_prefix(f"{name}__")
 
-        self.config.save_mcp_server(name, command, args, env, description, source)
+        self.config.save_mcp_server(name, command, args, env, description, source, url=url, headers=headers)
         # Discover and register the new server's tools right away
         await self._discover_and_register_external_tools(server_name=name)
 
@@ -384,9 +371,7 @@ class AgentService:
     async def start_memory(self) -> bool:
         """Connect to slife-memory and register tools. Returns True on success."""
         mem_cfg = self.config.memory_config
-        if mem_cfg is None or not mem_cfg.enabled:
-            logger.debug("memory_not_enabled")
-            return False
+        assert mem_cfg is not None  # guaranteed by Config.__post_init__
 
         logger.info("memory_init start")
         try:
@@ -400,30 +385,20 @@ class AgentService:
             return None
 
     async def _connect_memory(self) -> None:
-        """Detect or spawn the slife-memory service and establish a connection.
-
-        Always probes memory_url first. If an HTTP service is already
-        running, connects via HTTP. Otherwise spawns slife-memory as
-        a child process via stdio.
-        """
+        """Spawn the slife-memory service as a child process via stdio."""
         from slife.mcp.process import MCPWrapperProcess
 
         mem_cfg = self.config.memory_config
         assert mem_cfg is not None
 
-        if await MCPClient.is_wrapper_running(mem_cfg.url):
-            logger.info("memory_found url=%s transport=http", mem_cfg.url)
-            self._memory_client = MCPClient()
-            await self._memory_client.connect_http(mem_cfg.url)
-        else:
-            logger.info("memory_spawn transport=stdio")
-            self._memory_process = MCPWrapperProcess(
-                command=sys.executable,
-                args=["-m", "slife_memory.server"],
-                server_module="slife_memory.server",
-            )
-            await self._memory_process.start()
-            self._memory_client = await self._memory_process.create_client()
+        logger.info("memory_spawn transport=stdio")
+        self._memory_process = MCPWrapperProcess(
+            command=sys.executable,
+            args=["-m", "slife.plugins.memory.server"],
+            server_module="slife.plugins.memory.server",
+        )
+        await self._memory_process.start()
+        self._memory_client = await self._memory_process.create_client()
 
     async def _register_memory_tools(self) -> None:
         """Discover and register memory tools as proxy tools.

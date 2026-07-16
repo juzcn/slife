@@ -343,19 +343,19 @@ class TestMCPConfigFromDict:
         """Non-dict input returns default MCPConfig."""
         from slife.config import MCPConfig
         result = MCPConfig.from_dict("not a dict")
-        assert result.enabled is False
+        assert result.servers == {}
 
     def test_list_returns_default(self):
         """List input returns default MCPConfig."""
         from slife.config import MCPConfig
         result = MCPConfig.from_dict([1, 2, 3])
-        assert result.enabled is False
+        assert result.servers == {}
 
     def test_non_dict_wrapper(self):
-        """Non-dict wrapper with no servers stays disabled (malformed config)."""
+        """Non-dict wrapper field is ignored."""
         from slife.config import MCPConfig
         result = MCPConfig.from_dict({"wrapper": "not-a-dict"})
-        assert result.enabled is False
+        assert result.wrapper_command  # default preserved (non-empty)
 
     def test_non_dict_servers(self):
         """Non-dict servers field uses empty dict."""
@@ -385,42 +385,13 @@ class TestMCPConfigFromDict:
         })
         assert "fs" in result.servers
 
-    def test_wrapper_url_enables_mcp(self):
-        """wrapper.url alone enables MCP (for standalone HTTP mode)."""
+    def test_wrapper_command_parsed(self):
+        """wrapper.command is parsed from config."""
         from slife.config import MCPConfig
         result = MCPConfig.from_dict({
-            "wrapper": {"url": "http://127.0.0.1:8888/mcp"},
+            "wrapper": {"command": "/usr/bin/python3"},
         })
-        assert result.enabled is True
-        assert result.wrapper_url == "http://127.0.0.1:8888/mcp"
-
-    def test_wrapper_url_always_set(self):
-        """wrapper_url has a default value, always set."""
-        from slife.config import MCPConfig
-        result = MCPConfig.from_dict({
-            "servers": {"fs": {"command": "npx", "args": ["-y", "server-filesystem"]}},
-        })
-        assert result.wrapper_url == "http://127.0.0.1:9876/mcp"
-
-    def test_wrapper_url_default(self):
-        """wrapper_url uses default when not in config."""
-        from slife.config import MCPConfig
-        cfg = MCPConfig(enabled=True)
-        assert cfg.wrapper_url == "http://127.0.0.1:9876/mcp"
-
-    def test_wrapper_url_custom(self):
-        """Custom wrapper_url is preserved."""
-        from slife.config import MCPConfig
-        cfg = MCPConfig(enabled=True, wrapper_url="http://10.0.0.1:7777/mcp")
-        assert cfg.wrapper_url == "http://10.0.0.1:7777/mcp"
-
-    def test_wrapper_url_from_dict(self):
-        """wrapper_url is parsed from config dict."""
-        from slife.config import MCPConfig
-        result = MCPConfig.from_dict({
-            "wrapper": {"url": "http://0.0.0.0:8888/mcp"},
-        })
-        assert result.wrapper_url == "http://0.0.0.0:8888/mcp"
+        assert result.wrapper_command == "/usr/bin/python3"
 
 
 # ── Config.save_mcp_server / remove_mcp_server ──────────────────────────
@@ -612,6 +583,234 @@ class TestConfigMCPSaveRemove:
         raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
         assert "source" not in raw["mcp"]["servers"]["srv"]
 
+    def test_save_server_with_url_and_headers(self, tmp_path, monkeypatch):
+        """save_mcp_server with URL and headers stores both."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+
+        config.save_mcp_server(
+            "web", "node", ["server.js"],
+            url="http://localhost:3000",
+            headers={"Authorization": "Bearer token"},
+            description="A web server",
+        )
+
+        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        srv = raw["mcp"]["servers"]["web"]
+        assert srv["url"] == "http://localhost:3000"
+        assert srv["headers"] == {"Authorization": "Bearer token"}
+        assert srv["description"] == "A web server"
+
+    def test_set_server_disclosure_eager(self, tmp_path, monkeypatch):
+        """set_server_disclosure eager removes disclosure key."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+            "mcp": {
+                "servers": {
+                    "mysrv": {"command": "echo", "args": [], "disclosure": "lazy"},
+                },
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        # Pre-populate in-memory state with disclosure=lazy
+        config.mcp_config.servers["mysrv"]["disclosure"] = "lazy"
+
+        config.set_server_disclosure("mysrv", "eager")
+
+        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "disclosure" not in raw["mcp"]["servers"]["mysrv"]
+        assert "disclosure" not in config.mcp_config.servers["mysrv"]
+
+    def test_set_server_disclosure_lazy(self, tmp_path, monkeypatch):
+        """set_server_disclosure lazy adds disclosure key."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+            "mcp": {
+                "servers": {
+                    "mysrv": {"command": "echo", "args": []},
+                },
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        config.mcp_config.servers["mysrv"] = {"command": "echo", "args": []}
+
+        config.set_server_disclosure("mysrv", "lazy")
+
+        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        assert raw["mcp"]["servers"]["mysrv"]["disclosure"] == "lazy"
+        assert config.mcp_config.servers["mysrv"]["disclosure"] == "lazy"
+
+    def test_set_server_disclosure_no_path(self, caplog):
+        """set_server_disclosure without _path logs warning."""
+        from slife.config import Config, ModelConfig
+        mc = ModelConfig(
+            ref="test/m", provider="test", api_model="m",
+            display_name="M", api_key="k",
+        )
+        config = Config(models=[mc], active_model_ref="test/m", tools=[])
+        config.mcp_config.servers["mysrv"] = {"command": "cmd"}
+
+        with caplog.at_level(logging.WARNING):
+            config.set_server_disclosure("mysrv", "lazy")
+        assert "config_no_path" in caplog.text
+
+
+# ── MemoryConfig ──────────────────────────────────────────────────────
+
+
+class TestMemoryConfigFromDict:
+    """Tests for MemoryConfig.from_dict."""
+
+    def test_non_dict_returns_default(self):
+        from slife.config import MemoryConfig
+        result = MemoryConfig.from_dict("not a dict")
+        assert result.db_path == "~/.slife/slife.db"
+
+    def test_non_dict_embedding(self):
+        from slife.config import MemoryConfig
+        result = MemoryConfig.from_dict({"embedding": "not a dict"})
+        assert result.embedding_model == "text-embedding-3-small"
+        assert result.embedding_dim == 1536
+
+    def test_custom_values(self):
+        from slife.config import MemoryConfig
+        result = MemoryConfig.from_dict({
+            "db_path": "/custom/path.db",
+            "embedding": {"model": "custom-model", "dim": 768},
+        })
+        assert result.db_path == "/custom/path.db"
+        assert result.embedding_model == "custom-model"
+        assert result.embedding_dim == 768
+
+
+# ── parse_cli_agent / parse_cli_user ───────────────────────────────────
+
+
+class TestParseCLI:
+    def test_parse_cli_agent_found(self):
+        from slife.config import parse_cli_agent
+        result = parse_cli_agent(["slife", "--agent", "my-agent"])
+        assert result == "my-agent"
+
+    def test_parse_cli_agent_missing(self):
+        from slife.config import parse_cli_agent
+        result = parse_cli_agent(["slife"])
+        assert result is None
+
+    def test_parse_cli_agent_no_value(self):
+        from slife.config import parse_cli_agent
+        result = parse_cli_agent(["slife", "--agent"])
+        assert result is None
+
+    def test_parse_cli_user_found(self):
+        from slife.config import parse_cli_user
+        result = parse_cli_user(["slife", "--user", "bob"])
+        assert result == "bob"
+
+    def test_parse_cli_user_default(self):
+        from slife.config import parse_cli_user
+        result = parse_cli_user(["slife"])
+        assert result == "default"
+
+
+# ── Config.from_json5 — subagent / A2A ────────────────────────────────
+
+
+class TestConfigSubagentDefault:
+    """Tests for _load_subagent_config."""
+
+    def test_defaults_when_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
+                },
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.subagent_config == {"max_subagents": 5, "task_timeout": 120}
+
+    def test_custom_values(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
+                },
+            },
+            "subagent": {"max_subagents": 3, "task_timeout": 60},
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.subagent_config == {"max_subagents": 3, "task_timeout": 60}
+
+    def test_non_dict_uses_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
+                },
+            },
+            "subagent": "not-a-dict",
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.subagent_config == {"max_subagents": 5, "task_timeout": 120}
+
+
+class TestConfigA2A:
+    """Tests for A2A config with agent name."""
+
+    def test_with_agent_name(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
+                },
+            },
+            "mqtt": {
+                "host": "mqtt.example.com",
+                "port": 1883,
+            },
+        }))
+        config = Config.from_json5(str(cfg_path), agent_name="slife-1")
+        assert config.a2a_config is not None
+        assert config.a2a_config.agent_id is not None
+
 
 # ── Config.from_json5 edge cases ────────────────────────────────────────
 
@@ -802,17 +1001,17 @@ class TestConfigFromJSON5EdgeCases:
             },
             "mcp": {
                 "enabled": True,
-                "wrapper": {"command": "python", "args": ["-m", "slife_mcp"]},
+                "wrapper": {"command": "python", "args": ["-m", "slife.plugins.mcp"]},
                 "servers": {"srv1": {"command": "npx", "args": []}},
             },
         }))
         config = Config.from_json5(str(cfg_path))
-        assert config.mcp_config.enabled is True
+        assert config.mcp_config is not None
         assert config.mcp_config.wrapper_command == "python"
         assert "srv1" in config.mcp_config.servers
 
-    def test_mcp_disabled_when_absent(self, tmp_path, monkeypatch):
-        """MCP is disabled when no mcp section exists in config."""
+    def test_mcp_always_available(self, tmp_path, monkeypatch):
+        """MCP wrapper is always configured even when absent from config."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({
@@ -826,7 +1025,7 @@ class TestConfigFromJSON5EdgeCases:
             },
         }))
         config = Config.from_json5(str(cfg_path))
-        assert config.mcp_config.enabled is False
+        assert config.mcp_config is not None
         assert config.mcp_config.servers == {}
 
     def test_provider_models_empty_list(self, tmp_path, monkeypatch):

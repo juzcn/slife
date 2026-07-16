@@ -5,9 +5,10 @@ memory_remove_embedding MCP tools to manage the ``memory.embedding``
 section of ``slife.json5`` at runtime.
 """
 
-import json5
 import logging
 from pathlib import Path
+
+from slife.tools._config_io import read_config, write_config
 
 logger = logging.getLogger(__name__)
 
@@ -16,22 +17,12 @@ _CONFIG_PATH = Path("slife.json5")
 
 def _read_raw() -> dict:
     """Read the full slife.json5 dict, returning {} on failure."""
-    try:
-        return json5.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        logger.warning("config_not_found path=%s", _CONFIG_PATH)
-        return {}
-    except (ValueError, OSError) as e:
-        logger.error("config_parse_error path=%s err=%s", _CONFIG_PATH, e)
-        return {}
+    return read_config(_CONFIG_PATH)
 
 
 def _write_raw(raw: dict) -> None:
     """Write the full slife.json5 dict."""
-    _CONFIG_PATH.write_text(
-        json5.dumps(raw, indent=2, trailing_commas=False, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    write_config(_CONFIG_PATH, raw)
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -107,7 +98,7 @@ def _get_embedder_module():
     """Lazy-import the server module to access the global _embedder."""
     global _embedder_module
     if _embedder_module is None:
-        import slife_memory.server as _embedder_module
+        import slife.plugins.memory.server as _embedder_module
     return _embedder_module
 
 
@@ -116,7 +107,7 @@ async def reload_embedder() -> dict:
 
     Returns a status dict suitable for returning from a tool.
     """
-    from slife_memory.embeddings import EmbeddingClient  # local import
+    from slife.plugins.memory.embeddings import EmbeddingClient  # local import
 
     mod = _get_embedder_module()
     mod._embedder = EmbeddingClient.from_config()
@@ -176,7 +167,7 @@ def make_check_report() -> dict:
     gguf_path = cfg.get("gguf_path")
 
     # Check actual availability
-    from slife_memory.embeddings import EmbeddingClient
+    from slife.plugins.memory.embeddings import EmbeddingClient
     client = EmbeddingClient.from_config()
 
     result: dict = {

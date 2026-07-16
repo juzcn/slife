@@ -272,3 +272,200 @@ class TestRemoveSkillTool:
         tool = RemoveSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(skill_name="ghost")
         assert "not found" in result
+
+    @pytest.mark.asyncio
+    async def test_remove_by_directory_name_direct(self, tmp_path):
+        """Remove a directory by name even without SKILL.md."""
+        skills_dir = tmp_path / "skills"
+        d = skills_dir / "raw-dir"
+        d.mkdir(parents=True)
+        (d / "README.md").write_text("just a readme", encoding="utf-8")
+        # No SKILL.md — should still be removable
+
+        tool = RemoveSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(skill_name="raw-dir")
+        assert "[OK]" in result
+        assert not d.exists()
+
+    @pytest.mark.asyncio
+    async def test_remove_not_found_lists_available(self, tmp_path):
+        """When not found, the response lists available skills and dirs."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        # Create a valid skill
+        d = skills_dir / "valid-skill"
+        d.mkdir()
+        (d / "SKILL.md").write_text(
+            "---\nname: valid-skill\ndescription: Valid\n---\n# Body", encoding="utf-8"
+        )
+        # Create a directory without SKILL.md
+        (skills_dir / "raw-dir").mkdir()
+
+        tool = RemoveSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(skill_name="ghost")
+        assert "valid-skill" in result
+        assert "raw-dir" in result
+        assert "not found" in result
+
+
+# ── ListSkillsTool / UseSkillTool execute ─────────────────────────────
+
+
+class TestListSkillsToolExecute:
+    @pytest.mark.asyncio
+    async def test_no_skills(self, tmp_path):
+        skills_dir = tmp_path / "empty"
+        skills_dir.mkdir()
+        tool = ListSkillsTool(skills_dir=str(skills_dir))
+        result = await tool.execute()
+        assert "No skills available" in result
+
+    @pytest.mark.asyncio
+    async def test_with_skills(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        d = skills_dir / "my-skill"
+        d.mkdir()
+        (d / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: Does stuff\n---\n# Body", encoding="utf-8"
+        )
+        tool = ListSkillsTool(skills_dir=str(skills_dir))
+        result = await tool.execute()
+        assert "my-skill" in result
+        assert "Does stuff" in result
+
+
+class TestUseSkillToolExecute:
+    @pytest.mark.asyncio
+    async def test_loads_skill(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        d = skills_dir / "my-skill"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: Desc\n---\n# Instructions\nDo stuff.", encoding="utf-8"
+        )
+        tool = UseSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(skill_name="my-skill")
+        assert "Instructions" in result
+        assert "Do stuff" in result
+
+    @pytest.mark.asyncio
+    async def test_not_found(self, tmp_path):
+        skills_dir = tmp_path / "empty"
+        skills_dir.mkdir()
+        tool = UseSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(skill_name="ghost")
+        assert "not found" in result
+
+    @pytest.mark.asyncio
+    async def test_matches_by_directory_name(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        d = skills_dir / "dir-name"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: frontmatter-name\ndescription: Desc\n---\n# Body", encoding="utf-8"
+        )
+        tool = UseSkillTool(skills_dir=str(skills_dir))
+        # Match by directory name
+        result = await tool.execute(skill_name="dir-name")
+        assert "# Body" in result
+
+
+# ── AddSkillTool — archive installation ──────────────────────────────
+
+
+class TestAddSkillToolArchive:
+    @pytest.mark.asyncio
+    async def test_install_from_zip_archive(self, tmp_path):
+        """Install a skill from a base64-encoded zip archive."""
+        import base64
+        import io
+        import zipfile
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Build a valid zip with SKILL.md
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("SKILL.md", "---\nname: zipped\ndescription: From zip\n---\n# Zipped Skill")
+        archive_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        tool = AddSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(name="zipped", archive=archive_b64)
+        assert "[OK]" in result
+        assert (skills_dir / "zipped" / "SKILL.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_install_from_zip_with_wrapper_dir(self, tmp_path):
+        """Zip with a single wrapper directory is flattened."""
+        import base64
+        import io
+        import zipfile
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("my-skill-v1/SKILL.md", "---\nname: wrapped\ndescription: Wrapped\n---\n# Wrapped")
+        archive_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        tool = AddSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(name="wrapped", archive=archive_b64)
+        assert "[OK]" in result
+        assert (skills_dir / "wrapped" / "SKILL.md").exists()
+        # Wrapper directory should be flattened
+        assert not (skills_dir / "wrapped" / "my-skill-v1").exists()
+
+    @pytest.mark.asyncio
+    async def test_install_from_tar_gz_archive(self, tmp_path):
+        """Install a skill from a base64-encoded tar.gz archive."""
+        import base64
+        import io
+        import tarfile
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            info = tarfile.TarInfo(name="SKILL.md")
+            content = b"---\nname: targz\ndescription: From tar.gz\n---\n# TarGz Skill"
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+        archive_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        tool = AddSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(name="targz", archive=archive_b64)
+        assert "[OK]" in result
+        assert (skills_dir / "targz" / "SKILL.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_unknown_archive_format(self, tmp_path):
+        """Unknown archive format raises an error."""
+        import base64
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        archive_b64 = base64.b64encode(b"not a valid archive").decode("ascii")
+        tool = AddSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(name="bad-archive", archive=archive_b64)
+        assert "[FAIL]" in result
+
+    @pytest.mark.asyncio
+    async def test_install_error_cleanup(self, tmp_path):
+        """On install error, the skill directory is cleaned up."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Pass files with a missing key to trigger an error
+        tool = AddSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(
+            name="error-skill",
+            files=[{"path": "SKILL.md"}],  # missing 'content' key
+        )
+        assert "[FAIL]" in result
+        # Directory should be cleaned up
+        assert not (skills_dir / "error-skill").exists()

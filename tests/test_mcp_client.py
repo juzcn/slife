@@ -1,4 +1,4 @@
-"""Tests for Slife.mcp.client — MCPClient, adapters, is_wrapper_running."""
+"""Tests for Slife.mcp.client — MCPClient and adapters."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,7 +9,6 @@ from slife.mcp.client import (
     MCPClient,
     _ReadAdapter,
     _WriteAdapter,
-    DEFAULT_WRAPPER_URL,
 )
 
 
@@ -72,140 +71,6 @@ class TestMCPClientProperties:
         client = MCPClient()
         assert client._session is None
         assert client._process is None
-        assert client._transport is None
-
-
-class TestMCPClientIsWrapperRunning:
-    """Tests for is_wrapper_running static method."""
-
-    @pytest.mark.asyncio
-    @patch("httpx.AsyncClient")
-    async def test_wrapper_running_status_200(self, mock_client_cls):
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client_cls.return_value = mock_client
-
-        result = await MCPClient.is_wrapper_running()
-        assert result is True
-
-    @pytest.mark.asyncio
-    @patch("httpx.AsyncClient")
-    async def test_wrapper_running_404(self, mock_client_cls):
-        """404 is < 500, so it counts as running."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_response = MagicMock()
-        mock_response.status_code = 404
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client_cls.return_value = mock_client
-
-        result = await MCPClient.is_wrapper_running()
-        assert result is True
-
-    @pytest.mark.asyncio
-    @patch("httpx.AsyncClient")
-    async def test_wrapper_not_running(self, mock_client_cls):
-        """Connection error means not running."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client.get = AsyncMock(side_effect=Exception("Connection refused"))
-        mock_client_cls.return_value = mock_client
-
-        result = await MCPClient.is_wrapper_running()
-        assert result is False
-
-    @pytest.mark.asyncio
-    @patch("httpx.AsyncClient")
-    async def test_wrapper_error_500(self, mock_client_cls):
-        """500 is not < 500, should return False."""
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client_cls.return_value = mock_client
-
-        result = await MCPClient.is_wrapper_running()
-        assert result is False
-
-    @pytest.mark.asyncio
-    @patch("httpx.AsyncClient")
-    async def test_custom_url(self, mock_client_cls):
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client_cls.return_value = mock_client
-
-        result = await MCPClient.is_wrapper_running("http://custom:9999/mcp")
-        assert result is True
-        mock_client.get.assert_called_once_with("http://custom:9999/mcp")
-
-
-class TestMCPClientConnectHTTP:
-    """Tests for connect_http."""
-
-    @pytest.mark.asyncio
-    @patch("slife.mcp.client.ClientSession")
-    @patch("mcp.client.streamable_http.streamablehttp_client")
-    async def test_connect_http_success(self, mock_streamable, mock_session_cls):
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.initialize = AsyncMock()
-        mock_session_cls.return_value = mock_session
-
-        mock_transport = MagicMock()
-        mock_transport.__aenter__ = AsyncMock(
-            return_value=(AsyncMock(), AsyncMock(), None),
-        )
-        mock_transport.__aexit__ = AsyncMock(return_value=None)
-        mock_streamable.return_value = mock_transport
-
-        client = MCPClient()
-        await client.connect_http()
-
-        assert client.is_connected
-        mock_streamable.assert_called_once_with(DEFAULT_WRAPPER_URL)
-
-    @pytest.mark.asyncio
-    async def test_connect_http_already_connected(self):
-        client = MCPClient()
-        client._connected = True
-
-        # Should not raise and not try to connect
-        with patch("mcp.client.streamable_http.streamablehttp_client") as mock_streamable:
-            await client.connect_http()
-            mock_streamable.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("slife.mcp.client.ClientSession")
-    @patch("mcp.client.streamable_http.streamablehttp_client")
-    async def test_connect_http_custom_url(self, mock_streamable, mock_session_cls):
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.initialize = AsyncMock()
-        mock_session_cls.return_value = mock_session
-
-        mock_transport = MagicMock()
-        mock_transport.__aenter__ = AsyncMock(
-            return_value=(AsyncMock(), AsyncMock(), None),
-        )
-        mock_transport.__aexit__ = AsyncMock(return_value=None)
-        mock_streamable.return_value = mock_transport
-
-        client = MCPClient()
-        await client.connect_http("http://other:8888/mcp")
-
-        mock_streamable.assert_called_once_with("http://other:8888/mcp")
 
 
 class TestMCPClientDisconnect:
@@ -215,21 +80,16 @@ class TestMCPClientDisconnect:
     async def test_disconnect_clears_state(self):
         client = MCPClient()
         client._connected = True
-        client._transport = MagicMock()
-        client._transport.__aexit__ = AsyncMock()
 
         await client.disconnect()
 
         assert not client.is_connected
         assert client._session is None
-        assert client._transport is None
 
     @pytest.mark.asyncio
-    async def test_disconnect_handles_transport_error(self):
+    async def test_disconnect_handles_clean_shutdown(self):
         client = MCPClient()
         client._connected = True
-        client._transport = MagicMock()
-        client._transport.__aexit__ = AsyncMock(side_effect=Exception("boom"))
 
         # Should not raise
         await client.disconnect()

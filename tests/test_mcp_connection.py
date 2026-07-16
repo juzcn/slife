@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from slife_mcp.connection import (
+from slife.plugins.mcp.connection import (
     ServerConfig,
     ServerStatus,
     MCPServerConnection,
@@ -336,3 +336,251 @@ class TestConnectionPoolShutdown:
 
         await pool.shutdown()
         assert pool.list_servers() == []
+
+
+# ── HTTP transport ────────────────────────────────────────────────────────────
+
+
+class TestServerConfigTransport:
+    """Tests for ServerConfig.transport property."""
+
+    def test_transport_stdio_by_default(self):
+        cfg = ServerConfig(name="test", command="echo")
+        assert cfg.transport == "stdio"
+
+    def test_transport_http_when_url_set(self):
+        cfg = ServerConfig(name="test", url="http://localhost:8080/mcp")
+        assert cfg.transport == "http"
+
+    def test_transport_http_takes_priority(self):
+        cfg = ServerConfig(name="test", command="echo", url="http://localhost:8080/mcp")
+        assert cfg.transport == "http"
+
+    def test_headers_stored(self):
+        cfg = ServerConfig(
+            name="test",
+            url="http://localhost:8080/mcp",
+            headers={"Authorization": "Bearer xyz"},
+        )
+        assert cfg.headers == {"Authorization": "Bearer xyz"}
+
+    def test_command_defaults_to_empty(self):
+        cfg = ServerConfig(name="test")
+        assert cfg.command == ""
+        assert cfg.transport == "stdio"
+
+
+class TestMCPServerConnectionHTTP:
+    """Tests for HTTP transport connection lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_connect_http_handshake(self):
+        """Verify HTTP initialize extracts session ID and result."""
+        import httpx
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        resp = MagicMock()
+        resp.headers = {"mcp-session-id": "abc123"}
+        resp.raise_for_status = MagicMock()
+        resp.json = MagicMock(return_value={
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"serverInfo": {"name": "TestSrv", "version": "1.0"}},
+        })
+        mock_client.post = AsyncMock(return_value=resp)
+        conn._http_client = mock_client
+
+        init_result = await conn._request_http({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {}},
+        })
+
+        assert init_result == {"serverInfo": {"name": "TestSrv", "version": "1.0"}}
+        assert conn._session_id == "abc123"
+
+    @pytest.mark.asyncio
+    async def test_tools_list_via_http(self):
+        """Verify tools/list via HTTP."""
+        import httpx
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        resp = MagicMock()
+        resp.headers = {}
+        resp.raise_for_status = MagicMock()
+        resp.json = MagicMock(return_value={
+            "jsonrpc": "2.0", "id": 2,
+            "result": {"tools": [{"name": "tool1", "description": "A tool"}]},
+        })
+        mock_client.post = AsyncMock(return_value=resp)
+        conn._http_client = mock_client
+
+        tools_result = await conn._request_http({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
+        })
+
+        assert tools_result == {"tools": [{"name": "tool1", "description": "A tool"}]}
+
+    @pytest.mark.asyncio
+    async def test_request_http_passes_session_id(self):
+        """Subsequent HTTP requests carry the mcp-session-id header."""
+        import httpx
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+        conn._session_id = "existing-sid"
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        resp = MagicMock()
+        resp.headers = {}
+        resp.raise_for_status = MagicMock()
+        resp.json = MagicMock(return_value={"jsonrpc": "2.0", "id": 1, "result": "ok"})
+        mock_client.post = AsyncMock(return_value=resp)
+        conn._http_client = mock_client
+
+        result = await conn._request_http({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
+        })
+
+        assert result == "ok"
+        # Verify the session ID header was passed
+        call_kwargs = mock_client.post.call_args
+        assert call_kwargs.kwargs["headers"] == {"mcp-session-id": "existing-sid"}
+
+    @pytest.mark.asyncio
+    async def test_request_http_error_status(self):
+        """HTTP 4xx raises ConnectionError."""
+        import httpx
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.post.side_effect = httpx.HTTPStatusError(
+            "Not Found",
+            request=MagicMock(),
+            response=MagicMock(status_code=404),
+        )
+        conn._http_client = mock_client
+
+        with pytest.raises(ConnectionError, match="HTTP error"):
+            await conn._request_http({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
+            })
+
+    @pytest.mark.asyncio
+    async def test_request_http_jsonrpc_error(self):
+        """A 200 with JSON-RPC error raises Exception."""
+        import httpx
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        resp = MagicMock()
+        resp.headers = {}
+        resp.raise_for_status = MagicMock()
+        resp.json = MagicMock(return_value={
+            "jsonrpc": "2.0", "id": 1,
+            "error": {"code": -32601, "message": "Method not found"},
+        })
+        mock_client.post = AsyncMock(return_value=resp)
+        conn._http_client = mock_client
+
+        with pytest.raises(Exception, match="MCP error"):
+            await conn._request_http({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
+            })
+
+    @pytest.mark.asyncio
+    async def test_notify_http_fire_and_forget(self):
+        """HTTP notify creates a background POST task."""
+        import httpx
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+        conn._session_id = "sid123"
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.post = AsyncMock(return_value=MagicMock())
+        conn._http_client = mock_client
+
+        conn._notify("notifications/initialized", {})
+        # Let the background task run
+        await asyncio.sleep(0)
+
+        mock_client.post.assert_called_once()
+        call_kwargs = mock_client.post.call_args
+        assert call_kwargs.kwargs["json"]["method"] == "notifications/initialized"
+        assert call_kwargs.kwargs["headers"] == {"mcp-session-id": "sid123"}
+
+    @pytest.mark.asyncio
+    async def test_disconnect_http_closes_client(self):
+        """HTTP disconnect sends DELETE and closes the client."""
+        import httpx
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+        conn._session_id = "sid-to-delete"
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.delete = AsyncMock()
+        mock_client.aclose = AsyncMock()
+        conn._http_client = mock_client
+
+        await conn.disconnect()
+
+        mock_client.delete.assert_called_once_with(
+            "http://remote:8080/mcp",
+            headers={"mcp-session-id": "sid-to-delete"},
+        )
+        mock_client.aclose.assert_called_once()
+        assert conn._session_id is None
+        assert conn._http_client is None
+
+    @pytest.mark.asyncio
+    async def test_call_tool_allows_http_connection(self):
+        """call_tool works for HTTP transport (no _process needed)."""
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.CONNECTED
+        conn._http_client = MagicMock()
+
+        resp = MagicMock()
+        resp.headers = {}
+        resp.raise_for_status = MagicMock()
+        resp.json = MagicMock(return_value={
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"content": [{"type": "text", "text": "hello"}]},
+        })
+        conn._http_client.post = AsyncMock(return_value=resp)
+
+        result = await conn.call_tool("greet", {"name": "world"})
+        assert result == "hello"
+
+    @pytest.mark.asyncio
+    async def test_http_headers_passed_to_client(self):
+        """Custom config.headers are merged into the httpx client headers."""
+        import httpx
+
+        cfg = ServerConfig(
+            name="http_srv",
+            url="http://remote:8080/mcp",
+            headers={"Authorization": "Bearer mytoken"},
+        )
+        conn = MCPServerConnection(cfg)
+
+        with patch.object(httpx, "AsyncClient") as mock_cls:
+            mock_client = MagicMock()
+            mock_cls.return_value = mock_client
+            await conn._connect_http()
+
+            # Verify AsyncClient was constructed with merged headers
+            call_kwargs = mock_cls.call_args.kwargs
+            assert call_kwargs["headers"]["Authorization"] == "Bearer mytoken"
+            assert call_kwargs["headers"]["Content-Type"] == "application/json"
+            assert "text/event-stream" in call_kwargs["headers"]["Accept"]

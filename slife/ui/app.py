@@ -114,7 +114,7 @@ class SlifeApp(App):
         self.query_one("#user-input").focus()
 
         # ★ Step 1: Start memory service first (synchronous — fast local startup)
-        if self.service.config.memory_config and self.service.config.memory_config.enabled:
+        if self.service.config.memory_config:
             try:
                 await self.service.start_memory()
 
@@ -133,7 +133,7 @@ class SlifeApp(App):
                 )
 
         # Step 2: Start MCP wrapper in the background
-        if self.service.config.mcp_config.enabled:
+        if self.service.config.mcp_config:
             self.run_worker(
                 self.service.start_mcp(),
                 exclusive=False,

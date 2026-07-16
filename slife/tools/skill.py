@@ -10,7 +10,7 @@ import json
 import logging
 from pathlib import Path
 
-from slife.tools._config_io import now_iso, with_fetched_at
+from slife.tools._config_io import format_source_info, now_iso, with_fetched_at
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -91,17 +91,9 @@ def get_skills_summary(skills_dir: str | Path = "skills") -> str:
         if meta_path.exists():
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                src = meta.get("source")
-                if isinstance(src, dict):
-                    parts = []
-                    if src.get("type"):
-                        parts.append(src["type"])
-                    if src.get("url"):
-                        parts.append(src["url"])
-                    if src.get("version"):
-                        parts.append(f"v{src['version']}")
-                    if parts:
-                        line += f"  \n  source: {' — '.join(parts)}"
+                src_str = format_source_info(meta.get("source"))
+                if src_str:
+                    line += f"  \n  source: {src_str}"
             except (json.JSONDecodeError, OSError):
                 pass
         lines.append(line)

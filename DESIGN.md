@@ -78,7 +78,7 @@ What the LLM cannot know (and the prompt provides):
 │  cli.py  skill.py  a2a.py                                        │
 │                                                                   │
 │  Memory Tools       Skills         MCP Tools        A2A Tools    │
-│  slife_memory/      skills/ dir    slife/mcp/       slife/a2a/   │
+│  slife/plugins/memory/  skills/ dir  slife/mcp/    slife/a2a/   │
 │  (MCP service)      SKILL.md       (MCP proxy)      MQTT+subagent│
 ├──────────────────────────────────────────────────────────────────┤
 │  LLM Client (AsyncOpenAI)                                        │
@@ -89,36 +89,99 @@ What the LLM cannot know (and the prompt provides):
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### Independent Processes
+### Plugin Architecture
 
-Slife uses a multi-process architecture for resilience. The memory service and MCP proxy run as **separate OS processes** — they survive a Slife crash and can be shared across multiple Slife instances.
+Slife has a **plugin system** built on the MCP stdio protocol. A plugin is any FastMCP server spawned as a child process. It communicates via stdin/stdout, exposes tools through standard `list_tools` / `call_tool` MCP methods, and its tools are automatically registered in Slife's `ToolRegistry`.
+
+Both `slife-mcp` and `slife-memory` are built-in plugins using this exact mechanism:
 
 ```
-slife agent ──── stdio / HTTP ──── slife-mcp (port 9876)
-                                    ├── filesystem server (npx)
-                                    ├── fetch server (uvx)
-                                    └── anyapi-mcp-server (npx)
-
-slife agent ──── stdio / HTTP ──── slife-memory (port 9877)
-                                    └── ~/.slife/slife.db
-                                        ├── diary
-                                        ├── diary_fts (FTS5)
-                                        └── diary_semantic (vec0)
-
-slife agent ──── MQTT ──────────── mosquitto ─── other Slife instances
-                   P2P mesh                          (remote peers)
-
-slife agent ──── JSON-RPC 2.0 ─── subagent (headless)
-  (parent)         stdin/stdout        (child process)
+Slife ── MCPClient (stdio) ──▶ MCPWrapperProcess ──▶ slife-mcp    (MCP proxy)
+  │                          │                         ├── filesystem (npx)
+  │                          │                         ├── fetch (uvx)
+  │                          │                         └── ... (any MCP server)
+  │                          │
+  │                          └── MCPWrapperProcess ──▶ slife-memory (diary DB)
+  │                                                    └── ~/.slife/slife.db
+  │
+  └── MQTT ──── mosquitto ─── other Slife instances
+  └── JSON-RPC 2.0 ─── subagent (headless)
 ```
+
+#### The Plugin Contract
+
+A plugin must:
+
+1. **Be a FastMCP server** — `mcp = FastMCP("name")` with `mcp.run(transport="stdio")`
+2. **Define one or more `@mcp.tool` functions** — these become Slife tools
+3. **Be importable** — `python -m <module>.server` must work
+
+That's the entire contract. No base class, no import hook, no SDK. Just a FastMCP stdio server.
+
+#### Infrastructure (reusable)
+
+Every plugin startup follows the same path in `slife/agent/service.py`:
+
+```
+1. MCPWrapperProcess(command, args, server_module).start()
+   → asyncio.create_subprocess_exec(exe, *args, stdin=PIPE, stdout=PIPE)
+
+2. MCPClient.connect_streams(process.stdout, process.stdin)
+   → JSON-RPC over asyncio.Queue adapters + ClientSession
+
+3. list_tools() → discover tool schemas
+
+4. MCPProxyTool(mcp_client, tool_info, server="plugin_name")
+   → registered in ToolRegistry
+```
+
+Key classes in `slife/mcp/`:
+
+| Class | Role |
+|-------|------|
+| `MCPClient` (`client.py`) | stdio MCP connection — `connect_streams()`, `list_tools()`, `call_tool()` |
+| `MCPProxyTool` (`tool_adapter.py`) | Adapts an MCP tool to Slife's `Tool` ABC. Sets `name`/`description`/`parameters` at instance level, tool names prefixed as `{server}__{tool}` |
+| `MCPWrapperProcess` (`process.py`) | Child process lifecycle — `start()`, `create_client()`, `stop()` |
+
+#### Harness Tools vs. LLM Tools
+
+A plugin can register both programmatic tools and LLM-visible tools. Use naming conventions to distinguish them:
+
+```python
+# LLM-visible: auto-registered in ToolRegistry
+@mcp.tool(name="my_search", description="Search my knowledge base")
+async def my_search(query: str) -> str: ...
+
+# Harness-only: filtered out by AgentService before registration
+@mcp.tool(name="my_plugin_save", description="Save state (harness)")
+async def my_plugin_save(data: str) -> str: ...
+```
+
+`AgentService._register_memory_tools()` shows the pattern: call `list_tools()`, filter out harness names from a set, wrap the rest in `MCPProxyTool`.
+
+#### Third-Party Plugins
+
+Third-party plugin auto-loading from `slife.json5` is not yet implemented.
+Currently the two built-in plugins (slife-mcp, slife-memory) are hardcoded
+in `AgentService`.  The infrastructure — `MCPWrapperProcess`, `MCPClient`,
+`MCPProxyTool` — is generic and ready for external plugins once the config-
+driven startup loop is added.
+
+#### Plugin vs. MCP Server
+
+| | Plugin | MCP Server (via slife-mcp) |
+|---|---|---|
+| Connection | Slife directly (stdio) | Via slife-mcp proxy |
+| Config section | `plugins` | `mcp.servers` |
+| Transport for downstream | N/A (no downstream) | stdio + HTTP |
+| Tool prefix | `plugin_name__tool` | `server_name__tool` |
+| Use case | Extend Slife itself | Third-party tools (filesystem, APIs) |
+
+Plugins are Slife-native extensions. MCP servers are external tools. Choose a plugin when you're building something Slife-specific (like memory); choose an MCP server when you're connecting an existing service.
 
 **Why separate processes:**
 
-If memory or MCP were in-process, a Slife crash would race with the final write — data could be lost. A separate process observes the disconnection and marks the session as interrupted. No race window.
-
-The separation also means `slife-mcp` and `slife-memory` can be published as standalone PyPI packages (`pip install slife-mcp`, `pip install slife-memory`) and used independently of Slife.
-
-**Connection strategy:** Slife always probes the HTTP endpoint first. If the service is already running (started manually or by another Slife instance), Slife connects via HTTP. Otherwise, it spawns the service as a child process via stdio. Both services auto-detect their transport mode: piped stdin → stdio mode; terminal → HTTP mode.
+If a plugin crashes, Slife continues. If Slife crashes, the plugin observes the disconnection and can save state. No in-process crash can race with writes to disk. Both plugins are part of the slife source tree — they share the same repo, the same test suite, and the same release cycle.
 
 ## Agent Loop
 
@@ -217,7 +280,7 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 
 #### 2. Memory Tools
 
-Seven tools implementing the full memory lifecycle. The memory service runs as an **independent MCP process** (`slife_memory/`), discovered through the same `MCPClient` + `MCPProxyTool` pattern as all other MCP tools.
+Seven tools implementing the full memory lifecycle. The memory service runs as a **built-in MCP plugin** (`slife/plugins/memory/`), discovered through the same `MCPClient` + `MCPProxyTool` pattern as all other MCP tools.
 
 | Tier | Tool | Visibility | Description |
 |------|------|-----------|-------------|
@@ -276,15 +339,16 @@ External CLI commands the LLM discovers and registers. The tools (`cli_add_tool`
 
 ## MCP Integration
 
-### slife-mcp — Independent Proxy Process
+### slife-mcp — MCP Proxy Plugin
 
-slife-mcp is an independent FastMCP server that manages persistent connections to external MCP servers. It has zero dependency on slife and is published as a standalone PyPI package.
+slife-mcp is a built-in plugin that manages persistent connections to external MCP servers. It runs as a child process (stdio), spawned by Slife via `MCPWrapperProcess`.
 
 ```
-               stdio / HTTP
+                   stdio
 slife agent  ←────────────→  slife-mcp (FastMCP)
-                                  ├── filesystem MCP (npx)
-                                  ├── fetch MCP (uvx)
+                                  ├── filesystem MCP (npx stdio)
+                                  ├── fetch MCP (uvx stdio)
+                                  ├── remote MCP (HTTP POST)
                                   └── ... (any MCP server)
 ```
 
@@ -292,25 +356,27 @@ slife agent  ←────────────→  slife-mcp (FastMCP)
 
 ### Slife side (`slife/mcp/`)
 
-- **MCPClient** (`client.py`): connects via stdio (child process) or HTTP (standalone). Uses `asyncio.Queue` adapters to bridge subprocess pipes to MCP's `ClientSession`.
+- **MCPClient** (`client.py`): connects via stdio (child process). Uses `asyncio.Queue` adapters to bridge subprocess pipes to MCP's `ClientSession`.
 - **MCPProxyTool** (`tool_adapter.py`): adapts external MCP tools to Slife's `Tool` ABC. Sets `name`/`description`/`parameters` at instance level. Tool names are prefixed with the server name.
 - **MCPWrapperProcess** (`process.py`): generic child process lifecycle management — start, create client from streams, graceful stop (stdin close → SIGTERM → SIGKILL escalation). Used identically for both slife-mcp and slife-memory.
 
 **Startup flow:**
-1. Probe `wrapper_url` (default `http://127.0.0.1:9876/mcp`) — connect via HTTP if running
-2. Fall back to spawning as child process via stdio
+1. Spawn `slife.plugins.mcp.server` as child process via `MCPWrapperProcess.start()`
+2. Connect via `MCPClient.connect_streams()` over stdio pipes
 3. Discover wrapper management tools, create proxies
 4. Auto-connect pre-configured servers in parallel; eager servers get their tools discovered immediately, lazy servers connect but skip registration
 
-### slife-mcp side (`slife_mcp/`)
+### slife-mcp side (`slife/plugins/mcp/`)
 
-An independent FastMCP server. Auto-detects transport mode:
-- Piped stdin → stdio mode (spawned by Slife)
-- Terminal → HTTP mode (run standalone)
+A FastMCP server running on stdio transport. Always spawned as a child process.
 
 **Management tools:** `mcp_add_server` / `mcp_remove_server` / `mcp_list_servers` / `mcp_list_tools` / `mcp_check_server` / `mcp_set_disclosure` / `mcp_call_tool` / `mcp_reload`
 
-**Connection pool** (`connection.py`): raw asyncio JSON-RPC over subprocess pipes. No anyio, no `ClientSession` — avoids TaskGroup conflicts with FastMCP.
+**Connection pool** (`connection.py`): supports two transports for connecting to external MCP servers:
+- **stdio**: spawn server as subprocess, raw JSON-RPC over pipes
+- **http**: POST JSON-RPC to a Streamable HTTP MCP endpoint (with `mcp-session-id` header management)
+
+No anyio, no `ClientSession` — avoids TaskGroup conflicts with FastMCP.
 
 ### Progressive Disclosure
 
@@ -350,19 +416,17 @@ Each endpoint becomes a tool named `{name}__{operationId}`. The pattern works fo
 Every turn (user message + assistant response including thinking, tool calls,
 and tool results) is permanently recorded as an independent row.  There is no
 session concept, no lifecycle — memory is a continuous, time-ordered log of
-every exchange.  The memory service runs as an **independent MCP process**,
-symmetrical to slife-mcp.
+every exchange.  The memory service runs as a **built-in MCP plugin**,
+same architecture as slife-mcp.
 
 ### Architecture
 
 ```
-                         MCP protocol
+                         MCP protocol (stdio)
 slife agent ───────────────┼────────────────
                            │
-                      stdio / HTTP
-                           │
                     ┌──────────────┐
-                    │ slife-memory │  (independent process, port 9877)
+                    │ slife-memory │  (built-in plugin)
                     └──────┬───────┘
                            │
                     ~/.slife/slife.db
@@ -583,8 +647,8 @@ All user-facing text (tool output, search results, file contents) is rendered wi
 1. **Models**: dispatches between provider-dict and flat-list formats. Provider defaults (api_key, base_url, api) are inherited by each model. Duplicate model IDs within a provider raise an error.
 2. **Env**: extracted and injected into `os.environ` so tools and subprocesses can reference values via `${VAR}`.
 3. **Agent**: `max_iterations`, `context_floor`, `context_ceiling`, `tool_result_ceiling`.
-4. **MCP**: enabled when servers are configured, `enabled: true` is explicit, or a custom wrapper is defined. `wrapper_url` always has a default (`http://127.0.0.1:9876/mcp`).
-5. **Memory**: enabled by default. Embedding backend auto-detected — local GGUF takes priority over API; if neither is configured, semantic search degrades gracefully.
+4. **MCP**: built-in plugin — always enabled. External servers configured under `mcp.servers`; each can set `enabled: false` to skip auto-connect.
+5. **Memory**: built-in plugin — always enabled. Embedding backend auto-detected — local GGUF takes priority over API; if neither is configured, semantic search degrades gracefully.
 6. **A2A**: enabled only via `--agent` CLI flag. The `mqtt` config section provides broker connection details — it never auto-enables A2A.
 7. **Subagent**: always available, configured with `max_subagents` and `task_timeout`.
 8. **Tools**: optional override list — auto-discovery handles defaults.
@@ -639,30 +703,28 @@ slife/
     cli.py              #   cli_add_tool / check_installed / remove / list
     _config_io.py       #   Shared JSON5 read/write helpers
 
-  mcp/                  # MCP client (shared by slife-mcp & slife-memory)
-    client.py           #   stdio/HTTP client with asyncio.Queue adapters
+  mcp/                  # MCP client + plugin infrastructure
+    client.py           #   stdio client with asyncio.Queue adapters
     tool_adapter.py     #   MCP → Slife Tool adapter (MCPProxyTool)
     process.py          #   Child process lifecycle manager
+
+  plugins/              # Built-in MCP plugins
+    mcp/                #   slife-mcp — MCP proxy
+      server.py         #     FastMCP server — 10 management tools
+      connection.py     #     asyncio JSON-RPC connection pool (stdio + HTTP)
+    memory/             #   slife-memory — diary database
+      server.py         #     FastMCP server — 7 memory + 3 embedding config tools
+      store.py          #     SQLite + FTS5 + vec0 hybrid search
+      embeddings.py     #     GGUF local or OpenAI API embedding backend
+      embedding_config.py #   Runtime embedding config management
+      search.py         #     RRF (Reciprocal Rank Fusion) merge
+      schema.sql        #     DDL — diary + FTS5 + vec0
 
   ui/                   # Textual TUI
     app.py              #   Main app (SlifeApp) — memory + recovery UI
     chat.py             #   Message widgets (ChatView, AssistantMessage)
     handler.py          #   Streaming event → UI bridge (TUIHandler)
     tool_display.py     #   Tool call rendering (ToolCallWidget)
-
-slife_mcp/              # Independent MCP proxy (pip install slife-mcp)
-  server.py             #   FastMCP server — 8 management tools
-  connection.py         #   asyncio JSON-RPC connection pool
-  pyproject.toml        #   Standalone package config
-
-slife_memory/           # Independent memory MCP service (pip install slife-memory)
-  server.py             #   FastMCP server — 7 memory tools + embedding config
-  store.py              #   SQLite + FTS5 + vec0 hybrid search
-  embeddings.py         #   GGUF local or OpenAI API embedding backend
-  embedding_config.py   #   Runtime embedding config management
-  search.py             #   RRF (Reciprocal Rank Fusion) merge
-  schema.sql            #   DDL — diary + FTS5 + vec0
-  pyproject.toml        #   Standalone package config
 
 skills/                 # On-demand skill plugins (SKILL.md per directory)
 tests/                  # pytest suite (asyncio_mode=strict)

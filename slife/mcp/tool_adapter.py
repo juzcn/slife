@@ -12,6 +12,15 @@ from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
+# ── Built-in server / tool name constants ─────────────────────────────
+
+_MCP_SERVER = "mcp"           # built-in MCP management server
+_MEMORY_SERVER = "memory"     # built-in memory service
+_MCP_ADD_SERVER = "mcp_add_server"
+_MCP_SET_DISCLOSURE = "mcp_set_disclosure"
+_MCP_REMOVE_SERVER = "mcp_remove_server"
+_MCP_CALL_TOOL = "mcp_call_tool"
+
 
 class MCPProxyTool(Tool):
     """Adapts a single MCP tool to Slife's Tool ABC.
@@ -101,10 +110,10 @@ class MCPProxyTool(Tool):
         """Execute the tool by calling through the appropriate MCP client.
 
         Three paths:
-          - Wrapper tools (server="mcp"): call directly, with config
-            persistence callbacks.
-          - Memory tools (server="memory"): call directly on the standalone
-            memory MCP client — no routing layer needed.
+          - Wrapper tools (built-in MCP management): call directly, with
+            config persistence callbacks.
+          - Memory tools (built-in memory service): call directly on the
+            standalone memory MCP client — no routing layer needed.
           - External MCP server tools: route via mcp_call_tool on the
             slife-mcp wrapper.
         """
@@ -113,10 +122,12 @@ class MCPProxyTool(Tool):
             self._server,
             self._tool_name,
         )
-        if self._server == "mcp":
+        if self._server == _MCP_SERVER:
             # Strip source from kwargs — wrapper doesn't need it,
             # it's only for the persistence callback.
-            source = kwargs.pop("source", None) if isinstance(kwargs.get("source"), dict) else None
+            source = kwargs.pop("source", None)
+            if not isinstance(source, dict):
+                source = None
 
             # Wrapper management tool — call directly
             result = await self._mcp_client.call_tool(self._tool_name, kwargs)
@@ -125,7 +136,7 @@ class MCPProxyTool(Tool):
             await self._handle_add_server(result, source, **kwargs)
             await self._handle_set_disclosure(result, **kwargs)
             await self._handle_remove_server(result, **kwargs)
-        elif self._server == "memory":
+        elif self._server == _MEMORY_SERVER:
             # Memory tools — call directly on the memory MCP client.
             # The memory service is standalone (not behind the MCP wrapper),
             # so there's no mcp_call_tool routing layer.
@@ -133,7 +144,7 @@ class MCPProxyTool(Tool):
         else:
             # External MCP server tool — route through mcp_call_tool
             result = await self._mcp_client.call_tool(
-                "mcp_call_tool",
+                _MCP_CALL_TOOL,
                 {
                     "server": self._server,
                     "tool_name": self._tool_name,
@@ -146,7 +157,7 @@ class MCPProxyTool(Tool):
 
     async def _handle_add_server(self, result: str, source: dict | None, **kwargs) -> None:
         """Persist newly added MCP servers to config."""
-        if self._tool_name != "mcp_add_server" or not self._on_server_added:
+        if self._tool_name != _MCP_ADD_SERVER or not self._on_server_added:
             return
         try:
             parsed = json.loads(result)
@@ -158,6 +169,8 @@ class MCPProxyTool(Tool):
                     env=kwargs.get("env"),
                     description=kwargs.get("description", ""),
                     source=source,
+                    url=kwargs.get("url", ""),
+                    headers=kwargs.get("headers"),
                 )
             else:
                 logger.info(
@@ -179,7 +192,7 @@ class MCPProxyTool(Tool):
 
     async def _handle_set_disclosure(self, result: str, **kwargs) -> None:
         """Persist disclosure changes and trigger eager tool registration."""
-        if self._tool_name != "mcp_set_disclosure" or not self._on_server_disclosure_changed:
+        if self._tool_name != _MCP_SET_DISCLOSURE or not self._on_server_disclosure_changed:
             return
         try:
             parsed = json.loads(result)
@@ -198,7 +211,7 @@ class MCPProxyTool(Tool):
 
     async def _handle_remove_server(self, result: str, **kwargs) -> None:
         """Persist MCP server removals to config."""
-        if self._tool_name != "mcp_remove_server" or not self._on_server_removed:
+        if self._tool_name != _MCP_REMOVE_SERVER or not self._on_server_removed:
             return
         try:
             parsed = json.loads(result)

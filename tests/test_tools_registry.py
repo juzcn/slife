@@ -72,3 +72,63 @@ class TestToolRegistry:
         assert len(registry.list_tools()) == 1
         result = await registry.execute("echo")
         assert "New!" in result
+
+    def test_unregister_existing(self, tool_registry):
+        """Unregister returns True and removes the tool."""
+        # Clone since tool_registry is session-scoped
+        registry = ToolRegistry()
+        registry.register(tool_registry.get("echo"))
+        assert registry.unregister("echo") is True
+        assert registry.get("echo") is None
+
+    def test_unregister_missing(self, empty_registry):
+        """Unregister returns False for non-existent tools."""
+        assert empty_registry.unregister("nonexistent") is False
+
+    def test_unregister_by_prefix(self, tool_registry):
+        """Unregister by prefix removes matching tools and returns count."""
+        registry = ToolRegistry()
+        registry.register(tool_registry.get("echo"))
+        registry.register(tool_registry.get("failer"))
+        # Both don't share a prefix — this should remove 0
+        count = registry.unregister_by_prefix("nonexistent_prefix_")
+        assert count == 0
+        assert len(registry.list_tools()) == 2
+
+    def test_unregister_by_prefix_multiple(self):
+        """Multiple tools with matching prefix are all removed."""
+        registry = ToolRegistry()
+
+        class ToolA(Tool):
+            name = "mcp__tool_a"
+            description = "A"
+            parameters = {"type": "object", "properties": {}}
+            async def execute(self, **kwargs): return "a"
+
+        class ToolB(Tool):
+            name = "mcp__tool_b"
+            description = "B"
+            parameters = {"type": "object", "properties": {}}
+            async def execute(self, **kwargs): return "b"
+
+        class ToolC(Tool):
+            name = "other_tool"
+            description = "C"
+            parameters = {"type": "object", "properties": {}}
+            async def execute(self, **kwargs): return "c"
+
+        registry.register(ToolA())
+        registry.register(ToolB())
+        registry.register(ToolC())
+
+        count = registry.unregister_by_prefix("mcp__")
+        assert count == 2
+        assert registry.get("mcp__tool_a") is None
+        assert registry.get("mcp__tool_b") is None
+        assert registry.get("other_tool") is not None
+
+    @pytest.mark.asyncio
+    async def test_execute_positional_only(self, tool_registry):
+        """The tool_name parameter is positional-only — kwargs don't collide."""
+        result = await tool_registry.execute("echo", message="positional_test")
+        assert result == "Echo: positional_test"

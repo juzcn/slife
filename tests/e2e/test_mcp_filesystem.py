@@ -37,14 +37,15 @@ async def main(allowed_dir: str | None = None):
     print("=" * 60)
     print()
 
-    # ── 1. Connect to slife-mcp wrapper ──────────────────────────
-    # MCPClient.connect_stdio() spawns the wrapper internally
-    print("1. Connecting to slife-mcp wrapper...")
-    client = MCPClient()
-    await client.connect_stdio(
+    # ── 1. Connect to slife-mcp wrapper via MCPWrapperProcess ────
+    print("1. Starting slife-mcp wrapper...")
+    from slife.mcp.process import MCPWrapperProcess
+    wrapper = MCPWrapperProcess(
         command="uv",
-        args=["run", "python", "-m", "slife_mcp.server"],
+        args=["run", "python", "-m", "slife.plugins.mcp.server"],
     )
+    await wrapper.start()
+    client = await wrapper.create_client()
     print("   Connected.")
     print()
 

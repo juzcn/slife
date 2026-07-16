@@ -1,7 +1,11 @@
 """MCP connection pool — persistent connections to external MCP servers.
 
-Uses raw JSON-RPC over asyncio subprocess pipes. Avoids anyio and
-ClientSession entirely to prevent TaskGroup conflicts with FastMCP.
+Supports two transports:
+  - stdio: spawn server as subprocess, raw JSON-RPC over pipes
+  - http:  POST JSON-RPC to a Streamable HTTP MCP endpoint
+
+Avoids anyio and ClientSession entirely to prevent TaskGroup conflicts
+with FastMCP.
 """
 
 import asyncio
@@ -11,6 +15,8 @@ import os
 import time as _time
 from dataclasses import dataclass, field
 from enum import Enum
+
+import httpx
 
 from slife.platform import resolve_command, terminate_process
 
@@ -27,18 +33,29 @@ class ServerStatus(Enum):
 @dataclass
 class ServerConfig:
     name: str
-    command: str
+    command: str = ""                       # stdio: executable to spawn
     args: list[str] = field(default_factory=list)
     env: dict[str, str] | None = None
+    url: str = ""                           # http: MCP endpoint URL
+    headers: dict[str, str] | None = None   # http: extra request headers
+    enabled: bool = True  # False = don't auto-connect at startup
     description: str = ""
     active: bool = True  # False = connected but tools not disclosed yet
 
+    @property
+    def transport(self) -> str:
+        """Return the transport mode: 'http' or 'stdio'."""
+        return "http" if self.url else "stdio"
+
 
 class MCPServerConnection:
-    """Persistent MCP client connection using raw JSON-RPC over pipes.
+    """Persistent MCP client connection using raw JSON-RPC.
 
-    Spawns the server via asyncio subprocess. Sends/receives JSON-RPC
-    directly — no ClientSession, no anyio, no TaskGroup conflicts.
+    Supports two transports:
+      - stdio: spawn server as subprocess, JSON-RPC over pipes
+      - http:  POST JSON-RPC to a Streamable HTTP MCP endpoint
+
+    No ClientSession, no anyio, no TaskGroup conflicts.
     """
 
     def __init__(self, config: ServerConfig):
@@ -46,6 +63,8 @@ class MCPServerConnection:
         self._status = ServerStatus.DISCONNECTED
         self._active = config.active
         self._process: asyncio.subprocess.Process | None = None
+        self._http_client: httpx.AsyncClient | None = None
+        self._session_id: str | None = None
         self._next_id: int = 0
         self._lock = asyncio.Lock()
         self._tools_cache: list[dict] = []
@@ -82,37 +101,25 @@ class MCPServerConnection:
         self._error = None
         self._stderr_buffer.clear()
         t0 = _time.monotonic()
+        transport = self.config.transport
         logger.info(
-            "mcp_connect server=%s cmd=%s",
-            self.config.name, self.config.command,
+            "mcp_connect server=%s transport=%s",
+            self.config.name, transport,
         )
 
         try:
-            exe = resolve_command(self.config.command)
+            if transport == "stdio":
+                await self._connect_stdio()
+            else:
+                await self._connect_http()
 
-            # Build environment
-            env = dict(os.environ)
-            if self.config.env:
-                env.update(self.config.env)
-
-            self._process = await asyncio.create_subprocess_exec(
-                exe, *self.config.args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env or None,
-            )
-
-            self._stderr_task = asyncio.create_task(self._drain_stderr())
-
-            # MCP initialize handshake
+            # MCP initialize handshake (transport-agnostic)
             init_result = await self._request("initialize", {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
                 "clientInfo": {"name": "slife-mcp", "version": "0.1.0"},
             })
 
-            # Validate protocol version
             server_info = init_result.get("serverInfo", {})
             logger.debug(
                 "mcp_initialized server=%s remote=%s ver=%s",
@@ -144,8 +151,6 @@ class MCPServerConnection:
 
         except Exception as e:
             self._status = ServerStatus.FAILED
-            # Include stderr output in the error so the LLM can understand
-            # why the server failed (e.g. missing required arguments).
             stderr_tail = "".join(self._stderr_buffer[-20:]).strip()
             if stderr_tail:
                 self._error = f"{e}\n\n[server stderr]\n{stderr_tail}"
@@ -154,10 +159,38 @@ class MCPServerConnection:
             logger.error("mcp_connect_failed server=%s err=%s", self.config.name, e)
             await self._cleanup_resources()
 
+    async def _connect_stdio(self) -> None:
+        """Spawn server as subprocess and set up pipe I/O."""
+        exe = resolve_command(self.config.command)
+        env = dict(os.environ)
+        if self.config.env:
+            env.update(self.config.env)
+
+        self._process = await asyncio.create_subprocess_exec(
+            exe, *self.config.args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env or None,
+        )
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
+
+    async def _connect_http(self) -> None:
+        """Create HTTP client for Streamable HTTP transport."""
+        base_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        if self.config.headers:
+            base_headers.update(self.config.headers)
+
+        self._http_client = httpx.AsyncClient(
+            headers=base_headers,
+            timeout=httpx.Timeout(30.0),
+        )
+
     async def _request(self, method: str, params: dict) -> dict:
         """Send a JSON-RPC request and wait for the response."""
-        assert self._process and self._process.stdin and self._process.stdout
-
         async with self._lock:
             self._next_id += 1
             req_id = self._next_id
@@ -168,39 +201,94 @@ class MCPServerConnection:
                 "method": method,
                 "params": params,
             }
-            line = json.dumps(request, ensure_ascii=False) + "\n"
-            self._process.stdin.write(line.encode("utf-8"))
-            await self._process.stdin.drain()
 
-            # Read responses until we get one with matching id
-            while True:
-                resp_line = await self._process.stdout.readline()
-                if not resp_line:
-                    raise ConnectionError(f"Server '{self.config.name}' closed connection")
+            if self.config.transport == "stdio":
+                return await self._request_stdio(request, req_id)
+            else:
+                return await self._request_http(request)
 
-                try:
-                    response = json.loads(resp_line.decode("utf-8", errors="replace"))
-                except json.JSONDecodeError:
-                    logger.debug("mcp_invalid_json server=%s line=%.100s", self.config.name, resp_line)
-                    continue
+    async def _request_stdio(self, request: dict, req_id: int) -> dict:
+        """Send JSON-RPC over subprocess pipes and wait for matching response."""
+        assert self._process and self._process.stdin and self._process.stdout
+        line = json.dumps(request, ensure_ascii=False) + "\n"
+        self._process.stdin.write(line.encode("utf-8"))
+        await self._process.stdin.drain()
 
-                if response.get("id") == req_id:
-                    if "error" in response:
-                        raise Exception(
-                            f"MCP error from '{self.config.name}': {response['error']}"
-                        )
-                    return response.get("result", {})
+        while True:
+            resp_line = await self._process.stdout.readline()
+            if not resp_line:
+                raise ConnectionError(f"Server '{self.config.name}' closed connection")
+
+            try:
+                response = json.loads(resp_line.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                logger.debug("mcp_invalid_json server=%s line=%.100s", self.config.name, resp_line)
+                continue
+
+            if response.get("id") == req_id:
+                if "error" in response:
+                    raise Exception(
+                        f"MCP error from '{self.config.name}': {response['error']}"
+                    )
+                return response.get("result", {})
+
+    async def _request_http(self, request: dict) -> dict:
+        """Send JSON-RPC via HTTP POST and parse the response."""
+        assert self._http_client is not None
+
+        headers = {}
+        if self._session_id:
+            headers["mcp-session-id"] = self._session_id
+
+        try:
+            resp = await self._http_client.post(
+                self.config.url, json=request, headers=headers,
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            raise ConnectionError(
+                f"HTTP error from '{self.config.name}': {e}"
+            ) from e
+
+        # Extract session ID from response header (first initialize response)
+        sid = resp.headers.get("mcp-session-id")
+        if sid and not self._session_id:
+            self._session_id = sid
+
+        try:
+            response = resp.json()
+        except ValueError as e:
+            raise ConnectionError(
+                f"Invalid JSON from '{self.config.name}': {e}"
+            ) from e
+
+        if "error" in response:
+            raise Exception(
+                f"MCP error from '{self.config.name}': {response['error']}"
+            )
+        return response.get("result", {})
 
     def _notify(self, method: str, params: dict) -> None:
         """Send a JSON-RPC notification (no response expected)."""
-        assert self._process and self._process.stdin
         notification = {
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
         }
-        line = json.dumps(notification, ensure_ascii=False) + "\n"
-        self._process.stdin.write(line.encode("utf-8"))
+        if self.config.transport == "stdio":
+            assert self._process and self._process.stdin
+            line = json.dumps(notification, ensure_ascii=False) + "\n"
+            self._process.stdin.write(line.encode("utf-8"))
+        else:
+            assert self._http_client is not None
+            headers = {}
+            if self._session_id:
+                headers["mcp-session-id"] = self._session_id
+            asyncio.create_task(
+                self._http_client.post(
+                    self.config.url, json=notification, headers=headers,
+                )
+            )
 
     async def _drain_stderr(self) -> None:
         assert self._process and self._process.stderr
@@ -221,9 +309,11 @@ class MCPServerConnection:
         await self._cleanup_resources()
         self._status = ServerStatus.DISCONNECTED
         self._tools_cache = []
+        self._session_id = None
         logger.info("mcp_disconnected server=%s", self.config.name)
 
     async def _cleanup_resources(self) -> None:
+        # -- stdio cleanup --
         if self._stderr_task and not self._stderr_task.done():
             self._stderr_task.cancel()
             try:
@@ -232,7 +322,6 @@ class MCPServerConnection:
                 pass
         self._stderr_task = None
 
-        # Drain stdin before termination
         if self._process and self._process.stdin:
             try:
                 self._process.stdin.write(b'')
@@ -243,11 +332,25 @@ class MCPServerConnection:
         await terminate_process(self._process, label=f"mcp_conn:{self.config.name}")
         self._process = None
 
+        # -- http cleanup --
+        if self._http_client is not None:
+            # Best-effort session termination
+            if self._session_id:
+                try:
+                    await self._http_client.delete(
+                        self.config.url,
+                        headers={"mcp-session-id": self._session_id},
+                    )
+                except Exception:
+                    pass
+            await self._http_client.aclose()
+            self._http_client = None
+
     def list_tools(self) -> list[dict]:
         return list(self._tools_cache)
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
-        if self._status != ServerStatus.CONNECTED or self._process is None:
+        if self._status != ServerStatus.CONNECTED:
             raise ValueError(
                 f"Server '{self.config.name}' is not connected (status: {self._status.value})"
             )
@@ -297,9 +400,14 @@ class ConnectionPool:
     def list_servers(self) -> list[dict]:
         return [
             {
-                "name": name, "status": conn.status.value,
+                "name": name,
+                "state": "running" if conn.status == ServerStatus.CONNECTED else "stopped",
+                "status": conn.status.value,
+                "enabled": conn.config.enabled,
                 "tool_count": conn.tool_count, "error": conn.error,
+                "transport": conn.config.transport,
                 "command": conn.config.command, "args": conn.config.args,
+                "url": conn.config.url,
                 "description": conn.config.description,
                 "active": conn.active,
             }

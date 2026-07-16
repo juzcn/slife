@@ -2,7 +2,7 @@
 
 import pytest
 
-from slife_memory.search import merge_hybrid, RRF_K
+from slife.plugins.memory.search import merge_hybrid, RRF_K
 
 
 # ── merge_hybrid ─────────────────────────────────────────────────────────────

@@ -54,6 +54,13 @@ def parse_cli_user(argv: list[str]) -> str:
     return "default"
 
 
+def _parse_section(raw: dict, key: str, expected_type, default):
+    """Safely extract a typed section from parsed JSON5, returning
+    *default* if the value is missing or of the wrong type."""
+    value = raw.get(key, default)
+    return value if isinstance(value, expected_type) else default
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a single LLM model."""
@@ -119,38 +126,24 @@ class ModelConfig:
 
 @dataclass
 class MCPConfig:
-    """Configuration for the MCP wrapper and external MCP servers."""
+    """Configuration for the MCP wrapper and external MCP servers.
 
-    enabled: bool = False
-    # Default: use the same Python interpreter that runs Slife.
-    # Avoids 'uv run' which can hit Windows file-lock errors when
-    # uv tries to manage cached .exe wrappers.
+    Always enabled — slife-mcp is a built-in plugin.
+    """
+
     wrapper_command: str = sys.executable
     wrapper_args: list = None  # type: ignore[assignment]
-    # HTTP endpoint for the MCP wrapper. Always set — Slife probes this
-    # URL first, falls back to spawning a child process via stdio.
-    # The wrapper server also reads this when started standalone:
-    #   python -m slife_mcp.server --transport http [--config slife.json5]
-    wrapper_url: str = "http://127.0.0.1:9876/mcp"
     servers: dict[str, dict] = None  # type: ignore[assignment]
 
     def __post_init__(self):
         if self.wrapper_args is None:
-            self.wrapper_args = ["-m", "slife_mcp.server"]
+            self.wrapper_args = ["-m", "slife.plugins.mcp.server"]
         if self.servers is None:
             self.servers = {}
 
     @classmethod
     def from_dict(cls, data: dict) -> "MCPConfig":
-        """Parse mcp config section from JSON5 config.
-
-        MCP is enabled when:
-          - 'enabled: true' is set explicitly, OR
-          - servers are configured (non-empty servers dict), OR
-          - a custom wrapper is configured (wrapper.command, wrapper.args,
-            or wrapper.url).
-        An absent mcp section or empty mcp dict leaves MCP disabled.
-        """
+        """Parse mcp config section from JSON5 config."""
         if not isinstance(data, dict):
             return cls()
 
@@ -162,30 +155,20 @@ class MCPConfig:
         if not isinstance(wrapper, dict):
             wrapper = {}
 
-        explicit_enabled = data.get("enabled")
-        has_servers = len(servers) > 0
-        has_wrapper_cfg = bool(
-            wrapper.get("command") or wrapper.get("args") or wrapper.get("url")
-        )
-
-        if not explicit_enabled and not has_servers and not has_wrapper_cfg:
-            return cls()
-
         return cls(
-            enabled=True,
             wrapper_command=wrapper.get("command", sys.executable),
-            wrapper_args=wrapper.get("args", ["-m", "slife_mcp.server"]),
-            wrapper_url=wrapper.get("url", "http://127.0.0.1:9876/mcp"),
+            wrapper_args=wrapper.get("args", ["-m", "slife.plugins.mcp.server"]),
             servers=servers,
         )
 
 
 @dataclass
 class MemoryConfig:
-    """Configuration for the slife-memory service."""
+    """Configuration for the slife-memory service.
 
-    enabled: bool = True
-    url: str = "http://127.0.0.1:9877/mcp"
+    Always enabled — slife-memory is a built-in plugin.
+    """
+
     db_path: str = "~/.slife/slife.db"
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
@@ -199,8 +182,6 @@ class MemoryConfig:
         if not isinstance(emb, dict):
             emb = {}
         return cls(
-            enabled=data.get("enabled", True),
-            url=data.get("url", "http://127.0.0.1:9877/mcp"),
             db_path=data.get("db_path", "~/.slife/slife.db"),
             embedding_model=emb.get("model", "text-embedding-3-small"),
             embedding_dim=emb.get("dim", 1536),
@@ -250,7 +231,7 @@ class Config:
         from slife.tools._config_io import write_config
         write_config(self._path, raw)
 
-    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None) -> None:
+    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None, url: str = "", headers: dict[str, str] | None = None) -> None:
         """Persist an MCP server to the config file."""
         raw = self._read_config("save_mcp", name)
         if raw is None:
@@ -258,6 +239,10 @@ class Config:
 
         servers = raw.setdefault("mcp", {}).setdefault("servers", {})
         server_entry: dict = {"command": command, "args": args}
+        if url:
+            server_entry["url"] = url
+        if headers:
+            server_entry["headers"] = headers
         if description:
             server_entry["description"] = description
         if env:
@@ -402,13 +387,6 @@ class Config:
 
         return all_models, len(providers)
 
-    @staticmethod
-    def _parse_section(raw: dict, key: str, expected_type, default):
-        """Safely extract a typed section from parsed JSON5, returning
-        default if the value is missing or of the wrong type."""
-        value = raw.get(key, default)
-        return value if isinstance(value, expected_type) else default
-
     # ── Main loader ─────────────────────────────────────────────────
 
     @classmethod
@@ -451,35 +429,34 @@ class Config:
         )
 
         # Agent
-        agent = cls._parse_section(raw, "agent", dict, {})
+        agent = _parse_section(raw, "agent", dict, {})
         max_iterations = agent.get("max_iterations", 10)
         context_floor = agent.get("context_floor", 0.2)
         context_ceiling = agent.get("context_ceiling", 0.8)
         tool_result_ceiling = agent.get("tool_result_ceiling", 0.2)
 
         # Env — inject into os.environ so tools can reference vars via ${VAR}
-        env_section = resolve_env(cls._parse_section(raw, "env", dict, {}))
+        env_section = resolve_env(_parse_section(raw, "env", dict, {}))
         for key, value in env_section.items():
             os.environ[key] = str(value)
         logger.debug("config_env_vars count=%d", len(env_section))
 
         # Tools (optional — auto-discovery handles defaults)
-        tools = resolve_env(cls._parse_section(raw, "tools", list, []))
+        tools = resolve_env(_parse_section(raw, "tools", list, []))
 
-        # MCP
+        # MCP (built-in plugin, always enabled)
         mcp_config = MCPConfig.from_dict(raw.get("mcp", {}))
-        if mcp_config.enabled:
-            logger.debug(
-                "mcp_config wrapper=%s servers=%d",
-                mcp_config.wrapper_command,
-                len(mcp_config.servers),
-            )
+        logger.debug(
+            "mcp_config wrapper=%s servers=%d",
+            mcp_config.wrapper_command,
+            len(mcp_config.servers),
+        )
 
-        # Memory — permanent conversation storage with hybrid search
+        # Memory — built-in plugin, always enabled
         memory_config = MemoryConfig.from_dict(raw.get("memory", {}))
         logger.debug(
-            "memory_config enabled=%s db=%s embed=%s",
-            memory_config.enabled, memory_config.db_path,
+            "memory_config db=%s embed=%s",
+            memory_config.db_path,
             memory_config.embedding_model,
         )
 

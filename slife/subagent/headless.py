@@ -103,7 +103,7 @@ async def run_headless(config_path: str = "slife.json5") -> None:
     logger.info("model=%s tools=%d", config.active_model.ref, len(config.tools))
 
     service = AgentService(config)
-    if config.mcp_config and config.mcp_config.enabled:
+    if config.mcp_config:
         try: await service.start_mcp()
         except Exception as e: logger.warning("mcp_failed err=%s", e)
 

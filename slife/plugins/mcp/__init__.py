@@ -1,4 +1,4 @@
-"""slife-mcp — MCP wrapper service.
+"""slife.plugins.mcp — MCP proxy built-in plugin.
 
 A FastMCP server that:
   - Maintains persistent connections to external MCP servers

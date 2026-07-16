@@ -12,15 +12,14 @@ Usage:
 import json
 import logging
 import os
-import sys
 from pathlib import Path
 
 from fastmcp import FastMCP
 
-from slife_memory.store import SessionStore
-from slife_memory.embeddings import EmbeddingClient
-from slife_memory.search import merge_hybrid
-from slife.server_utils import setup_server_logging, read_host_port_from_config
+from slife.plugins.memory.store import SessionStore
+from slife.plugins.memory.embeddings import EmbeddingClient
+from slife.plugins.memory.search import merge_hybrid
+from slife.server_utils import setup_server_logging
 
 logger = logging.getLogger("slife_memory")
 
@@ -301,7 +300,7 @@ async def memory_summarize(
 @mcp.tool(name="memory_check_embedding",
           description="Check the current embedding configuration status.")
 async def memory_check_embedding() -> str:
-    from slife_memory.embedding_config import make_check_report
+    from slife.plugins.memory.embedding_config import make_check_report
     try:
         return json.dumps(make_check_report(), ensure_ascii=False, indent=2)
     except Exception as e:
@@ -315,7 +314,7 @@ async def memory_set_embedding(
     backend: str = "", model: str = "bge-m3",
     gguf_path: str | None = None, dim: int = 0,
 ) -> str:
-    from slife_memory.embedding_config import (
+    from slife.plugins.memory.embedding_config import (
         write_embedding_config, validate_gguf_path,
         get_first_provider_api_key, reload_embedder,
     )
@@ -353,7 +352,7 @@ async def memory_set_embedding(
 @mcp.tool(name="memory_remove_embedding",
           description="Remove the embedding configuration.")
 async def memory_remove_embedding() -> str:
-    from slife_memory.embedding_config import remove_embedding_config, reload_embedder
+    from slife.plugins.memory.embedding_config import remove_embedding_config, reload_embedder
     try:
         remove_embedding_config()
         status = await reload_embedder()
@@ -382,8 +381,6 @@ def _read_db_path_from_config(config_path: str) -> Path | None:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="slife-memory server")
-    parser.add_argument("--port", type=int, default=None)
-    parser.add_argument("--host", default=None)
     parser.add_argument("--db", default=None)
     args = parser.parse_args()
 
@@ -409,25 +406,8 @@ def main():
 
     asyncio.run(_init())
 
-    if not sys.stdin.isatty():
-        logger.info("memory_start transport=stdio db=%s", db_path)
-        mcp.run(transport="stdio")
-        return
-
-    config_path = "slife.json5"
-    if not Path(config_path).exists():
-        logger.error("slife.json5 not found.")
-        sys.exit(1)
-
-    cfg = read_host_port_from_config(config_path, config_key="memory", default_port=9877)
-    if cfg is None:
-        logger.error("Cannot determine host/port.")
-        sys.exit(1)
-
-    host = args.host if args.host is not None else cfg[0]
-    port = args.port if args.port is not None else cfg[1]
-    logger.info("memory_start transport=http host=%s port=%s db=%s", host, port, db_path)
-    mcp.run(transport="http", host=host, port=port)
+    logger.info("memory_start transport=stdio db=%s", db_path)
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

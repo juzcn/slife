@@ -7,6 +7,23 @@ if TYPE_CHECKING:
     from slife.config import Config
 
 
+def require_params(**params: str) -> str | None:
+    """Validate that all named parameters are non-empty.
+
+    Returns an error message string if any parameter is falsy,
+    or ``None`` if all are valid.
+
+    Usage::
+
+        if err := require_params(agent_id=agent_id, task=task):
+            return err
+    """
+    missing = [k for k, v in params.items() if not v]
+    if missing:
+        return f"Error: {' and '.join(missing)} required."
+    return None
+
+
 class Tool(ABC):
     """Abstract base class for all tools.
 

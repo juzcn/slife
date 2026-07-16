@@ -18,7 +18,7 @@ Flow:
 import logging
 from pathlib import Path
 
-from slife.tools._config_io import _ConfigPathMixin, now_iso, read_config, with_fetched_at, write_config
+from slife.tools._config_io import _ConfigPathMixin, format_source_info, now_iso, read_config, with_fetched_at, write_config
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -55,16 +55,9 @@ def get_cli_tools_summary(config_path: Path) -> str:
         line = f"- **{name}**: {desc}  \n  command: `{command}`"
         if install:
             line += f"  \n  install: `{install}`"
-        if isinstance(source, dict):
-            parts = []
-            if source.get("type"):
-                parts.append(source["type"])
-            if source.get("url"):
-                parts.append(source["url"])
-            if source.get("version"):
-                parts.append(f"v{source['version']}")
-            if parts:
-                line += f"  \n  source: {' — '.join(parts)}"
+        src_str = format_source_info(source)
+        if src_str:
+            line += f"  \n  source: {src_str}"
         lines.append(line)
 
     return "\n".join(lines)
@@ -115,16 +108,8 @@ class CliCheckInstalled(_ConfigPathMixin, Tool):
             entry = cli_tools.get(cmd)
             if isinstance(entry, dict):
                 found += 1
-                source_info = ""
-                src = entry.get("source")
-                if isinstance(src, dict):
-                    parts = []
-                    if src.get("type"):
-                        parts.append(src["type"])
-                    if src.get("url"):
-                        parts.append(src["url"])
-                    if parts:
-                        source_info = f"  source: {' — '.join(parts)}"
+                src_str = format_source_info(entry.get("source"))
+                source_info = f"  source: {src_str}" if src_str else ""
                 install_info = ""
                 if entry.get("install"):
                     install_info = f"\n  install: {entry['install']}"

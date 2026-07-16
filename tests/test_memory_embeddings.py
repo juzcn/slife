@@ -1,10 +1,10 @@
-"""Tests for slife_memory.embeddings — EmbeddingClient and helpers."""
+"""Tests for slife.plugins.memory.embeddings — EmbeddingClient and helpers."""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from slife_memory.embeddings import (
+from slife.plugins.memory.embeddings import (
     EmbeddingClient,
     _guess_dim,
 )
@@ -49,7 +49,7 @@ class TestEmbeddingClientInit:
         assert client.dimension == 1536
 
     def test_gguf_backend(self):
-        with patch("slife_memory.embeddings.Path.exists", return_value=True):
+        with patch("slife.plugins.memory.embeddings.Path.exists", return_value=True):
             client = EmbeddingClient(
                 model="bge-m3",
                 gguf_path="/path/to/model.gguf",
@@ -59,7 +59,7 @@ class TestEmbeddingClientInit:
             assert client.dimension == 1024
 
     def test_gguf_path_not_exists_falls_back(self):
-        with patch("slife_memory.embeddings.Path.exists", return_value=False):
+        with patch("slife.plugins.memory.embeddings.Path.exists", return_value=False):
             client = EmbeddingClient(
                 model="bge-m3",
                 gguf_path="/nonexistent/model.gguf",
@@ -133,7 +133,7 @@ class TestEmbeddingClientFromConfig:
             assert client.backend == "api"
             assert client.available is True
 
-    @patch("slife_memory.embeddings.Path.exists")
+    @patch("slife.plugins.memory.embeddings.Path.exists")
     def test_missing_config_returns_disabled(self, mock_exists):
         mock_exists.return_value = False
 
@@ -141,7 +141,7 @@ class TestEmbeddingClientFromConfig:
         assert client.available is False
 
     def test_json5_not_installed(self):
-        with patch("slife_memory.embeddings.json5", create=True, side_effect=ImportError):
+        with patch("slife.plugins.memory.embeddings.json5", create=True, side_effect=ImportError):
             # This simulates json5 not being available
             pass
 

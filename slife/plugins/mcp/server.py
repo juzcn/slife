@@ -4,23 +4,18 @@ This is the entry point for the slife-mcp child process. It:
   1. Starts a FastMCP server on stdio transport
   2. Exposes management tools for the slife agent to control external MCP connections
   3. Maintains persistent connections to external MCP servers
-
-Usage:
-    uv run python -m slife_mcp.server
 """
 
 import json
 import logging
 import os
-import sys
-from pathlib import Path
 
 from typing import Literal
 
 from fastmcp import FastMCP
 
-from slife_mcp.connection import ConnectionPool, ServerConfig
-from slife.server_utils import setup_server_logging, read_host_port_from_config
+from slife.plugins.mcp.connection import ConnectionPool, ServerConfig
+from slife.server_utils import setup_server_logging
 
 logger = logging.getLogger("slife_mcp")
 
@@ -50,9 +45,12 @@ mcp = FastMCP(
     name="mcp_add_server",
     description=(
         "Connect to an external MCP server and make its tools available. "
-        "Research the server's docs first — some servers (like anyapi-mcp-server) "
-        "require user-provided flags (--spec, --base-url). ASK the user for "
-        "these values; never pass empty strings for required args. "
+        "Two transports are supported:\n"
+        "- stdio: provide `command` and `args` to spawn a local process.\n"
+        "- http: provide `url` (and optionally `headers`) for a remote server.\n"
+        "Research the server's docs first — some servers require user-provided "
+        "flags or API keys. ASK the user for these values; never pass empty "
+        "strings for required fields. "
         "Set activate=false to connect without loading tools (use "
         "mcp_set_disclosure later to load them on demand). "
         "Returns the list of discovered tools on success; on failure the error "
@@ -63,18 +61,28 @@ mcp = FastMCP(
 )
 async def mcp_add_server(
     name: str,
-    command: str,
+    command: str = "",
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
+    url: str = "",
+    headers: dict[str, str] | None = None,
     description: str = "",
     activate: bool = True,
     source: dict | None = None,
 ) -> str:
+    if not command and not url:
+        return json.dumps({
+            "status": "error", "server": name,
+            "error": "Either 'command' (for stdio) or 'url' (for HTTP) must be provided.",
+        }, indent=2)
+
     config = ServerConfig(
         name=name,
         command=command,
         args=args or [],
         env=env,
+        url=url,
+        headers=headers,
         description=description,
         active=activate,
     )
@@ -89,6 +97,7 @@ async def mcp_add_server(
                 {
                     "status": "connected",
                     "server": name,
+                    "transport": config.transport,
                     "tool_count": len(tools),
                     "tools": tool_names,
                 },
@@ -308,68 +317,91 @@ async def mcp_reload(server: str | None = None) -> str:
         return json.dumps(results, indent=2)
 
 
+@mcp.tool(
+    name="mcp_enable_server",
+    description=(
+        "Connect to a pre-configured but disabled MCP server. "
+        "Use this to start a server that was added with enabled=false "
+        "or was previously disabled with mcp_disable_server. "
+        "Returns the list of discovered tools on success."
+    ),
+)
+async def mcp_enable_server(name: str) -> str:
+    conn = _pool.get_server(name)
+    if conn is None:
+        # Server not in pool — look it up in config and add
+        return json.dumps({
+            "status": "error", "server": name,
+            "error": f"Server '{name}' not found. Use mcp_add_server to add it first.",
+        }, indent=2)
+
+    conn.config.enabled = True
+    try:
+        # If already connected, just return current state
+        if conn.status.value == "connected":
+            tools = conn.list_tools()
+            return json.dumps({
+                "status": "already_connected",
+                "server": name,
+                "tool_count": len(tools),
+                "tools": [t["name"] for t in tools],
+            }, indent=2)
+
+        await conn.connect()
+        if conn.status.value == "connected":
+            tools = conn.list_tools()
+            return json.dumps({
+                "status": "connected",
+                "server": name,
+                "tool_count": len(tools),
+                "tools": [t["name"] for t in tools],
+            }, indent=2)
+        else:
+            return json.dumps({
+                "status": conn.status.value,
+                "server": name,
+                "error": conn.error or "Unknown error",
+            }, indent=2)
+    except Exception as e:
+        logger.exception("mcp_enable_failed server=%s", name)
+        return json.dumps({"status": "error", "server": name, "error": str(e)}, indent=2)
+
+
+@mcp.tool(
+    name="mcp_disable_server",
+    description=(
+        "Disconnect and disable an MCP server. The server config is preserved "
+        "but it won't auto-connect on next startup. Use mcp_enable_server to "
+        "reconnect it later."
+    ),
+)
+async def mcp_disable_server(name: str) -> str:
+    conn = _pool.get_server(name)
+    if conn is None:
+        return json.dumps({
+            "status": "error", "server": name,
+            "error": f"Server '{name}' not found.",
+        }, indent=2)
+
+    conn.config.enabled = False
+    await _pool.remove_server(name)
+    return json.dumps({
+        "status": "disabled",
+        "server": name,
+    }, indent=2)
+
+
 # ── Entry point ──────────────────────────────────────────────────────
 
 
 def main():
-    """Run the slife-mcp wrapper server.
+    """Run the slife-mcp wrapper server on stdio transport.
 
-    Auto-detects transport mode:
-      - Piped stdin (slife child process) → stdio mode
-      - Terminal → reads slife.json5 → HTTP mode
-
-    Examples:
-      python -m slife_mcp.server                           # auto-detect
-      python -m slife_mcp.server --port 8888               # HTTP, override port
-      python -m slife_mcp.server --host 0.0.0.0 --port 9876
+    Always uses stdio — slife-mcp is always spawned as a child process.
     """
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Slife-mcp wrapper server")
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        help="HTTP port (overrides config)",
-    )
-    parser.add_argument(
-        "--host",
-        default=None,
-        help="HTTP host (overrides config)",
-    )
-    args = parser.parse_args()
-
     logger.info("log_path=%s", _log_path)
-
-    # Auto-detect: piped stdin → stdio (Slife child process), TTY → HTTP
-    if not sys.stdin.isatty():
-        logger.info("mcp_start transport=stdio")
-        mcp.run(transport="stdio")
-        return
-
-    # Terminal mode — read host/port from slife.json5
-    config_path = "slife.json5"
-    if not Path(config_path).exists():
-        logger.error(
-            "slife.json5 not found. Either:\n"
-            "  - Create slife.json5 with mcp.wrapper.url, or\n"
-            "  - Use --host/--port to specify the HTTP endpoint."
-        )
-        sys.exit(1)
-
-    cfg = read_host_port_from_config(config_path, config_key="mcp.wrapper", default_port=9876)
-    if cfg is None:
-        logger.error(
-            "Cannot determine host/port. "
-            "Set mcp.wrapper.url in slife.json5 or use --host/--port."
-        )
-        sys.exit(1)
-
-    host = args.host if args.host is not None else cfg[0]
-    port = args.port if args.port is not None else cfg[1]
-
-    logger.info("mcp_start transport=http host=%s port=%s", host, port)
-    mcp.run(transport="http", host=host, port=port)
+    logger.info("mcp_start transport=stdio")
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
