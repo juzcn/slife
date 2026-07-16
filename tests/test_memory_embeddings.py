@@ -49,7 +49,10 @@ class TestEmbeddingClientInit:
         assert client.dimension == 1536
 
     def test_gguf_backend(self):
-        with patch("slife.plugins.memory.embeddings.Path.exists", return_value=True):
+        with (
+            patch("slife.plugins.memory.embeddings.Path.exists", return_value=True),
+            patch("slife.plugins.memory.embeddings._check_runtime", return_value=True),
+        ):
             client = EmbeddingClient(
                 model="bge-m3",
                 gguf_path="/path/to/model.gguf",
@@ -77,6 +80,29 @@ class TestEmbeddingClientInit:
         client = EmbeddingClient(model="custom", dim=512)
         assert client.dimension == 512
 
+    def test_gguf_runtime_check_fails(self):
+        """available=False when GGUF file exists but llama-cpp isn't installed."""
+        with (
+            patch("slife.plugins.memory.embeddings.Path.exists", return_value=True),
+            patch("slife.plugins.memory.embeddings._check_runtime", return_value=False),
+        ):
+            client = EmbeddingClient(
+                model="bge-m3",
+                gguf_path="/path/to/model.gguf",
+            )
+            assert client.backend == "gguf"
+            assert client.available is False
+
+    def test_api_runtime_check_fails(self):
+        """available=False when api_key is set but openai isn't installed."""
+        with patch("slife.plugins.memory.embeddings._check_runtime", return_value=False):
+            client = EmbeddingClient(
+                model="text-embedding-3-small",
+                api_key="sk-test-key",
+            )
+            assert client.backend == "api"
+            assert client.available is False
+
     def test_properties(self):
         client = EmbeddingClient()
         assert client.backend == ""
@@ -101,7 +127,10 @@ class TestEmbeddingClientFromConfig:
             },
         }
 
-        with patch("json5.loads", return_value=mock_config):
+        with (
+            patch("json5.loads", return_value=mock_config),
+            patch("slife.plugins.memory.embeddings._check_runtime", return_value=True),
+        ):
             client = EmbeddingClient.from_config("/fake/config.json5")
             assert client.backend == "gguf"
             assert client.available is True

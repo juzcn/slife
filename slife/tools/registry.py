@@ -21,7 +21,6 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         """Register a tool instance."""
         self._tools[tool.name] = tool
-        logger.debug("tool_registered name=%s", tool.name)
 
     def unregister(self, name: str) -> bool:
         """Remove a tool by name. Returns True if it existed."""

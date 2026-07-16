@@ -169,18 +169,49 @@ class MCPWrapperProcess:
         All lines at DEBUG — wrapper stderr is diagnostic only.
         Errors are communicated via the MCP protocol on stdout;
         leaking stderr to the parent terminal would pollute the TUI.
-        Suppresses FastMCP ASCII art box-drawing lines.
+
+        Filters out:
+        - FastMCP ASCII/Unicode box-drawing banner art
+        - Subprocess log lines that are already in the subprocess's
+          own log file (they have the ``[LEVEL]`` marker) — only
+          log lines without that pattern, like raw tracebacks.
         """
+        import re
         from slife.logfmt import read_stderr_lines
+
+        # Subprocess log lines already go to their own log file.
+        # Only relay lines that are NOT from the slife logger:
+        # they lack the "HH:MM:SS [LEVEL] logger_name" prefix.
+        _SUBPROCESS_LOG = re.compile(
+            r'^\d{2}:\d{2}:\d{2}\s+\[(?:DEBUG|INFO|WARNING|ERROR)\]\s+\S+'
+        )
+
+        # FastMCP v3 uses Unicode box-drawing.  Also catch ANSI escape
+        # sequences that may leak through.
+        _BANNER_CHARS = set(
+            "─│└├┬┴╭╮╯╰▀▄█▌▐░▒▓"
+            "─│└├┬┴"
+            "╭╮╯╰"
+            "▀▄█▌▐"
+            "░▒▓"
+        )
 
         async for text in read_stderr_lines(
             self._process, lambda: self._running,
         ):
-            # Suppress FastMCP ASCII art (box-drawing characters)
-            if any(c in text for c in ("+---", "─", "│", "└", "├", "┬", "┴", "╭", "╮", "╯", "╰")):
+            stripped = text.strip()
+            if not stripped:
                 continue
-            # Suppress empty box lines with just spaces and pipes
-            if text.strip() and all(c in " |│" for c in text.strip()):
+
+            # Suppress FastMCP box-drawing/ASCII art banners
+            if any(c in stripped for c in _BANNER_CHARS):
+                continue
+            # Empty box lines (spaces and vertical bars)
+            if all(c in " |│" for c in stripped):
+                continue
+
+            # Subprocess has its own log file — don't duplicate
+            if _SUBPROCESS_LOG.match(stripped):
                 continue
 
             logger.debug("[wrapper] %s", text)

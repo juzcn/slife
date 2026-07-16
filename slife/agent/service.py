@@ -116,8 +116,25 @@ class AgentService:
         assert mcp_cfg is not None  # guaranteed by Config.__post_init__
 
         logger.info("mcp_init start")
-        await self._connect_mcp_wrapper()
-        await self._register_mcp_wrapper_tools()
+        try:
+            await self._connect_mcp_wrapper()
+            await self._register_mcp_wrapper_tools()
+            from slife.health import record
+            record(
+                "mcp_wrapper", "ok",
+                key="status", value="connected",
+                hint="MCP wrapper started and management tools registered.",
+            )
+        except Exception as e:
+            logger.error("mcp_wrapper_init_failed err=%s", e)
+            from slife.health import record
+            record(
+                "mcp_wrapper", "error",
+                key="status", value="failed",
+                hint=f"MCP wrapper failed to start: {e}. "
+                     "MCP tools (filesystem, search, etc.) are unavailable.",
+            )
+            return
         await self._auto_connect_mcp_servers()
         logger.info("mcp_init_done tools=%d", len(self.tool_registry.list_tools()))
 
@@ -210,12 +227,24 @@ class AgentService:
                     },
                 )
                 logger.debug("mcp_server_connected name=%s disclosure=%s result=%s", name, disclosure, result)
+                from slife.health import record
+                record(
+                    "mcp_server", "ok",
+                    key=name, value="connected",
+                    hint=f"MCP server '{name}' connected (disclosure={disclosure}).",
+                )
                 # Eager servers: discover and register tools immediately.
                 # Lazy servers: connected but tools not registered yet.
                 if activate:
                     await self._discover_and_register_external_tools(server_name=name)
             except Exception as e:
                 logger.error("mcp_auto_connect_failed server=%s err=%s", name, e)
+                from slife.health import record
+                record(
+                    "mcp_server", "error",
+                    key=name, value="connect_failed",
+                    hint=f"MCP server '{name}' failed to connect: {e}",
+                )
 
         await asyncio.gather(
             *(_connect_one(name, cfg) for name, cfg in servers.items())
@@ -251,6 +280,12 @@ class AgentService:
                 logger.debug("mcp_no_tools server=%s", server_name)
         except Exception as e:
             logger.error("mcp_discover_failed server=%s err=%s", server_name, e)
+            from slife.health import record
+            record(
+                "mcp_server", "warning",
+                key=server_name, value="discovery_failed",
+                hint=f"MCP server '{server_name}' connected but tool discovery failed: {e}",
+            )
 
     async def _persist_server(self, name: str, command: str, args: list[str], env: dict | None = None, description: str = "", source: dict | None = None, url: str = "", headers: dict[str, str] | None = None):
         """Callback: persist a newly-added (or updated) MCP server to config
@@ -378,9 +413,22 @@ class AgentService:
             await self._connect_memory()
             await self._register_memory_tools()
             logger.info("memory_init_done tools=%d", len(self.tool_registry.list_tools()))
+            from slife.health import record
+            record(
+                "memory_service", "ok",
+                key="status", value="connected",
+                hint="Memory service started and tools registered.",
+            )
             return True
         except Exception as e:
             logger.warning("memory_init_failed err=%s — continuing without memory", e)
+            from slife.health import record
+            record(
+                "memory_service", "error",
+                key="status", value="failed",
+                hint=f"Memory service failed to start: {e}. "
+                     "Turn storage and search are unavailable.",
+            )
             return False
             return None
 
@@ -540,11 +588,34 @@ class AgentService:
                 await self._a2a_broker.ensure()
             except Exception as e:
                 logger.warning("a2a_broker_ensure_failed err=%s", e)
+                from slife.health import record
+                record(
+                    "a2a", "warning",
+                    key="broker", value="failed",
+                    hint=f"A2A broker failed to start: {e}. "
+                         "P2P agent mesh is unavailable.",
+                )
 
         # Create and connect the A2A client
         from slife.a2a.client import A2AClient
         self._a2a_client = A2AClient(a2a_cfg)
-        await self._a2a_client.connect()
+        try:
+            await self._a2a_client.connect()
+            from slife.health import record
+            record(
+                "a2a", "ok",
+                key="status", value="connected",
+                hint="A2A P2P mesh connected.",
+            )
+        except Exception as e:
+            logger.warning("a2a_connect_failed err=%s", e)
+            from slife.health import record
+            record(
+                "a2a", "warning",
+                key="status", value="connect_failed",
+                hint=f"A2A client failed to connect: {e}. "
+                     "P2P agent mesh is unavailable.",
+            )
 
         # Set up the unified Inbox
         from slife.agent.inbox import Inbox, ConversationStore
@@ -651,6 +722,12 @@ class AgentService:
         set_manager(self._subagent_manager)
 
         logger.info("subagent_init_done tools=%d", len(self.tool_registry.list_tools()))
+        from slife.health import record
+        record(
+            "subagent", "ok",
+            key="status", value="ready",
+            hint=f"Subagent manager ready (max_subagents={self.config.subagent_config['max_subagents']}).",
+        )
 
     async def stop_subagent(self) -> None:
         """Stop all local subagents and clean up."""

@@ -43,6 +43,32 @@ def _guess_max_tokens(model: str) -> int:
     return 8192
 
 
+#: Maps each backend to the import that proves it's usable at runtime.
+_BACKEND_RUNTIME_IMPORTS: dict[str, tuple[str, str]] = {
+    "gguf": ("llama_cpp", "llama-cpp-python"),
+    "api":  ("openai",   "openai"),
+}
+
+
+def _check_runtime(backend: str) -> bool:
+    """Smoke-test that the Python packages a backend needs are importable.
+
+    ``available`` must reflect *runtime* usability — not just whether a
+    config file or GGUF file exists on disk.  Without this, a missing
+    dependency is silently treated as "backend ready" until the first
+    ``embed()`` call fails.
+    """
+    pair = _BACKEND_RUNTIME_IMPORTS.get(backend)
+    if pair is None:
+        return False
+    pkg, _ = pair
+    try:
+        __import__(pkg)
+        return True
+    except ImportError:
+        return False
+
+
 class EmbeddingClient:
     """Generates embeddings using a local GGUF model or OpenAI API.
 
@@ -80,17 +106,34 @@ class EmbeddingClient:
         # Resolve backend
         if gguf_path and Path(gguf_path).exists():
             self._backend = "gguf"
-            self._available = True
-            logger.info(
-                "embeddings_backend=gguf model=%s path=%s dim=%d",
-                model, gguf_path, self._dim,
-            )
+            self._available = _check_runtime("gguf")
+            if self._available:
+                logger.info(
+                    "embeddings_backend=gguf model=%s path=%s dim=%d",
+                    model, gguf_path, self._dim,
+                )
+            else:
+                logger.warning(
+                    "embeddings_gguf_unavailable — GGUF file found (%s) but "
+                    "llama-cpp-python is not installed. Install with: "
+                    "pip install llama-cpp-python. "
+                    "Semantic search will be unavailable; keyword search still works.",
+                    gguf_path,
+                )
         elif api_key:
             self._backend = "api"
-            self._available = True
-            logger.info(
-                "embeddings_backend=api model=%s dim=%d", model, self._dim,
-            )
+            self._available = _check_runtime("api")
+            if self._available:
+                logger.info(
+                    "embeddings_backend=api model=%s dim=%d", model, self._dim,
+                )
+            else:
+                logger.warning(
+                    "embeddings_api_unavailable — api_key configured but "
+                    "openai package is not installed. Install with: "
+                    "pip install openai. "
+                    "Semantic search will be unavailable; keyword search still works.",
+                )
         else:
             logger.warning(
                 "embeddings_disabled — no gguf_path or api_key configured. "
@@ -213,7 +256,7 @@ class EmbeddingClient:
         try:
             from llama_cpp import Llama
         except ImportError:
-            logger.error(
+            logger.warning(
                 "llama_cpp not installed. Install with: "
                 "pip install llama-cpp-python"
             )
@@ -246,7 +289,13 @@ class EmbeddingClient:
 
     async def _call_api(self, texts: list[str]) -> list[list[float]]:
         """Call the OpenAI embeddings API."""
-        from openai import AsyncOpenAI
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            logger.warning(
+                "openai not installed. Install with: pip install openai"
+            )
+            return None
 
         if self._client is None:
             kwargs: dict = {"api_key": self._api_key}

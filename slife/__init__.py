@@ -43,7 +43,19 @@ def main(config_path: str = "slife.json5", agent_name: str | None = None):
 
     logger.debug("log_path=%s", log_path)
     logger.debug("config loading…")
-    config = Config.from_json5(config_path, agent_name=agent_name, user=user)
+    try:
+        config = Config.from_json5(config_path, agent_name=agent_name, user=user)
+    except Exception:
+        logger.exception("config_load_failed path=%s", config_path)
+        raise
+    from slife.health import record
+    record(
+        "config", "ok",
+        key="path", value=config_path,
+        hint=f"Config loaded: {len(config.models)} models, "
+             f"{len(config.mcp_config.servers) if config.mcp_config else 0} MCP servers, "
+             f"memory={'enabled' if config.memory_config else 'disabled'}.",
+    )
 
     # Log env vars from config (already applied to os.environ by Config.from_json5)
     if config.env:
@@ -59,6 +71,13 @@ def main(config_path: str = "slife.json5", agent_name: str | None = None):
     logger.debug("model=%s provider=%s", active.ref, active.display_name)
     logger.debug("thinking=%s", "on" if active.thinking_enabled else "off")
     logger.debug("tools=%d", len(config.tools))
+    record(
+        "model", "ok",
+        key="active", value=active.ref,
+        hint=f"Model: {active.display_name}, "
+             f"thinking={'on' if active.thinking_enabled else 'off'}, "
+             f"context={active.context_window}.",
+    )
 
     # Console logging is already at WARNING via setup_logging().
     # All messages still go to the per-session log file at DEBUG level.

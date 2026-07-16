@@ -18,6 +18,7 @@ dependencies = [
     "paho-mqtt>=2.0.0",
     "aiosqlite>=0.22.1",
     "sqlite-vec>=0.1.9",
+    "llama-cpp-python",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -75,3 +76,6 @@ markers = [
     "asyncio: mark a test as an async test (auto-applied by asyncio_mode=strict)",
     "slow: mark a test as slow (excluded from quick test runs with -m 'not slow')",
 ]
+
+[tool.uv.sources]
+llama-cpp-python = { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl" }

@@ -66,6 +66,7 @@ class SessionStore:
         schema_sql = schema_sql.replace("float[1536]", f"float[{self._embedding_dim}]")
         # Execute each statement individually — vec0 virtual tables
         # can hang in aiosqlite's executescript.
+        schema_errors: list[str] = []
         for stmt in _split_sql(schema_sql):
             stmt = stmt.strip()
             if not stmt:
@@ -74,6 +75,7 @@ class SessionStore:
                 await self._conn.execute(stmt)
             except Exception as e:
                 logger.debug("schema_stmt_error err=%s stmt=%.80s", e, stmt)
+                schema_errors.append(str(e)[:80])
         await self._conn.commit()
         logger.debug("schema_ready")
 

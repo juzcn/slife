@@ -84,13 +84,6 @@ class MCPProxyTool(Tool):
             }
         object.__setattr__(self, "parameters", schema)
 
-        logger.debug(
-            "proxy_created name=%s server=%s params=%d",
-            full_name,
-            self._server,
-            len(schema.get("properties", {})),
-        )
-
     def to_openai_function(self) -> dict:
         """Convert to OpenAI function definition using instance-level values.
 

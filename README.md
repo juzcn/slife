@@ -188,6 +188,44 @@ tests/              # pytest suite
 - [uv](https://docs.astral.sh/uv/) — Python package manager
 - Node.js — only if using npx-based MCP servers
 
+### Windows: llama-cpp-python
+
+The local embedding backend (`bge-m3` GGUF model) requires `llama-cpp-python`,
+which **cannot be built from source on Windows** — there is no C++ compiler
+available. A pre-built wheel must be installed instead.
+
+```bash
+uv add "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+```
+
+Available backends:
+
+| Tag | GPU |
+|-----|-----|
+| `v0.3.34-vulkan` | Any (Vulkan) — works on CPU-only machines |
+| `v0.3.34-cu132` / `cu130` / `cu125` / `cu124` | NVIDIA (CUDA) |
+| `v0.3.34-hip-radeon` | AMD (HIP) |
+
+The Vulkan wheel is the safest default — it falls back to CPU when no GPU is
+available. After installation, copy a GGUF model file and configure the path
+in `slife.json5`:
+
+```json5
+memory: {
+  embedding: {
+    model: "bge-m3",
+    gguf_path: "C:/path/to/bge-m3-q4_k_m.gguf",
+  },
+}
+```
+
+Download GGUF models from [Hugging Face](https://huggingface.co/ChristianAzinn/bge-m3-gguf).
+A Q4_K_M quantized file (~300 MiB) gives near-full accuracy for embedding use.
+
+If you prefer not to deal with local models, configure an OpenAI-compatible
+embedding API instead — set `api_key` in your model provider and remove
+`gguf_path`.
+
 ## Design
 
 Slife is a **minimum-harness agent**. The harness only does what the LLM physically cannot: execute tools, maintain conversation state, stream responses, and persist memory. Everything else — reasoning, planning, tool selection, error recovery — is the LLM's job.

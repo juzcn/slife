@@ -167,7 +167,7 @@ def make_check_report() -> dict:
     gguf_path = cfg.get("gguf_path")
 
     # Check actual availability
-    from slife.plugins.memory.embeddings import EmbeddingClient
+    from slife.plugins.memory.embeddings import EmbeddingClient, _check_runtime
     client = EmbeddingClient.from_config()
 
     result: dict = {
@@ -180,18 +180,50 @@ def make_check_report() -> dict:
 
     if gguf_path:
         result["gguf_path"] = gguf_path
-        ok, msg = validate_gguf_path(gguf_path)
-        if not ok:
-            result["available"] = False
-            result["gguf_error"] = msg
 
-    if not client.available:
+    if client.available:
+        # All good — add a confirmation hint.
         if backend == "gguf":
-            result["hint"] = f"GGUF 文件不可用: {gguf_path}"
+            result["hint"] = (
+                f"GGUF 嵌入模型已就绪: {model} (dim={dim}, path={gguf_path})"
+            )
         else:
             result["hint"] = (
-                "API backend 缺少 api_key。确认 models.providers 中配置了 api_key，"
-                "或改用 GGUF 本地模型: memory_set_embedding backend=gguf"
+                f"API 嵌入已就绪: {model} (dim={dim})"
             )
+    else:
+        # Diagnose WHY it's unavailable — file missing vs package missing
+        if backend == "gguf":
+            file_ok, file_msg = validate_gguf_path(gguf_path) if gguf_path else (False, "no path configured")
+            if not file_ok:
+                result["gguf_error"] = file_msg
+                result["hint"] = (
+                    f"GGUF 文件不可用: {file_msg}。"
+                    "下载模型文件或使用 memory_set_embedding 切换到 API 后端。"
+                )
+            elif not _check_runtime("gguf"):
+                result["hint"] = (
+                    f"GGUF 文件存在 ({gguf_path})，但 llama-cpp-python 未安装。"
+                    "运行: pip install llama-cpp-python。"
+                    "在此之前语义搜索 (hybrid 模式) 不可用；"
+                    "关键词搜索 (grep/fts5/time) 仍可正常工作。"
+                )
+            else:
+                result["hint"] = (
+                    f"GGUF 后端不可用，原因未知。文件: {gguf_path}"
+                )
+        else:  # api
+            if not _check_runtime("api"):
+                result["hint"] = (
+                    "API key 已配置，但 openai 包未安装。"
+                    "运行: pip install openai。"
+                    "在此之前语义搜索 (hybrid 模式) 不可用；"
+                    "关键词搜索 (grep/fts5/time) 仍可正常工作。"
+                )
+            else:
+                result["hint"] = (
+                    "API backend 缺少 api_key。确认 models.providers 中配置了 api_key，"
+                    "或改用 GGUF 本地模型: memory_set_embedding backend=gguf"
+                )
 
     return result
