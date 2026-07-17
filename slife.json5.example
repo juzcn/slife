@@ -6,9 +6,25 @@
   // LLM provider's API key — everything else is optional and can
   // be added later at runtime by the agent.
 
+  // ── Credential store ────────────────────────────────────────
+  // credstore encrypted backup file path.
+  // Default: ./credentials.crypt (current folder).
+  // Override via env: CREDSTORE_FILE=/path/to/file
+  // credentials: {
+  //   cryptfile_path: "credentials.crypt",
+  // },
+
   // ── Environment variables ────────────────────────────────────
-  // Injected into os.environ. Use ${VAR} syntax in mcp servers.
+  // Reference env var names only — NEVER put secrets here.
+  // Store actual values with: credstore set slife/env/VAR_NAME
+  // Slife resolves: os.environ → credstore (keyring) → here.
+  //
+  // Quick setup:
+  //   credstore set-password          (first time only)
+  //   credstore set slife/env/DEEPSEEK_API_KEY
+  //   credstore set slife/env/GITHUB_TOKEN
   env: {
+    // DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}",
     // GITHUB_TOKEN: "${GITHUB_TOKEN}",
     // SERPER_API_KEY: "${SERPER_API_KEY}",
   },
@@ -42,6 +58,7 @@
     providers: {
       deepseek: {
         base_url: "https://api.deepseek.com",
+        // Store your key with: credstore set slife/env/DEEPSEEK_API_KEY
         api_key: "${DEEPSEEK_API_KEY}",
         api: "openai-completions",
         models: [

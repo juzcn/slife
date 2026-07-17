@@ -394,7 +394,7 @@ class TestStatusBar:
         bar.update = MagicMock()
         bar.update_info()
         text = bar.update.call_args[0][0]
-        assert "Ctrl+C" in text
+        assert "Ctrl+C quit" in text
 
     def test_update_info_no_tokens_hides_count(self):
         with patch("slife.ui.app.Static.__init__", return_value=None):

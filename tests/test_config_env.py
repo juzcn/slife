@@ -1,4 +1,4 @@
-"""Tests for Slife.tools.config_env — env var management tools."""
+"""Tests for slife.tools.config_env — env var management tools."""
 
 import os
 from pathlib import Path
@@ -15,31 +15,49 @@ from slife.tools.config_env import (
 )
 
 
-# ── helper: mock read/write ─────────────────────────────────────────────────
+# ── helpers ──────────────────────────────────────────────────
+
 
 def _mock_config(data: dict, monkeypatch):
     """Mock read_config and write_config for a test."""
     import slife.tools.config_env
 
     raw = dict(data)
-    monkeypatch.setattr(
-        slife.tools.config_env, "read_config", lambda path: raw,
-    )
+    monkeypatch.setattr(slife.tools.config_env, "read_config", lambda path: raw)
     written = []
     monkeypatch.setattr(
-        slife.tools.config_env,
-        "write_config",
+        slife.tools.config_env, "write_config",
         lambda path, r: written.append(dict(r)),
     )
     return raw, written
 
 
-# ── _env_section ────────────────────────────────────────────────────────────
+def _mock_credstore(monkeypatch):
+    """Mock credstore to an in-memory dict."""
+    data = {}
+
+    def _get(key):
+        return data.get(key)
+
+    def _delete(key):
+        return data.pop(key, None) is not None
+
+    # Patch the credstore package — config_env imports from it locally
+    import credstore
+    monkeypatch.setattr(credstore, "get_credential", _get)
+    monkeypatch.setattr(credstore, "delete_credential", _delete)
+
+    # Also patch config's helper
+    import slife.config
+    monkeypatch.setattr(slife.config, "_try_credstore_lookup", _get)
+
+    return data
+
+
+# ── _env_section ─────────────────────────────────────────────
 
 
 class TestEnvSection:
-    """Tests for _env_section helper."""
-
     def test_creates_env_section_if_missing(self):
         raw = {}
         env = _env_section(raw)
@@ -59,110 +77,132 @@ class TestEnvSection:
         assert raw["env"] == {}
 
 
-# ── ConfigEnvSetTool ────────────────────────────────────────────────────────
+# ── ConfigEnvSetTool ─────────────────────────────────────────
 
 
 class TestConfigEnvSetTool:
-    """Tests for ConfigEnvSetTool."""
-
     @pytest.mark.asyncio
-    async def test_set_new_var(self, monkeypatch):
+    async def test_secret_key_with_value_rejected(self, monkeypatch):
+        """API_KEY with plaintext value → REJECTED, directs to CLI."""
         raw, written = _mock_config({}, monkeypatch)
+        _mock_credstore(monkeypatch)
         tool = ConfigEnvSetTool(config_path=Path("test.json5"))
 
         result = await tool.execute(key="TAVILY_API_KEY", value="sk-abc123")
 
-        assert "TAVILY_API_KEY" in raw["env"]
-        assert raw["env"]["TAVILY_API_KEY"] == "sk-abc123"
-        assert os.environ["TAVILY_API_KEY"] == "sk-abc123"
-        assert "[OK]" in result
-        assert "active immediately" in result
+        # Must reject — never accept secret values
+        assert "[REJECTED]" in result
+        assert "credstore set" in result
+        assert "sk-abc123" not in result  # value never exposed
+        assert len(written) == 0  # nothing written to config
+
+    @pytest.mark.asyncio
+    async def test_secret_key_no_value_writes_ref(self, monkeypatch):
+        """Secret key without value → writes ${VAR} ref, directs to CLI."""
+        raw, written = _mock_config({}, monkeypatch)
+        _mock_credstore(monkeypatch)
+        tool = ConfigEnvSetTool(config_path=Path("test.json5"))
+
+        result = await tool.execute(key="MY_API_KEY")
+
+        assert raw["env"]["MY_API_KEY"] == "${MY_API_KEY}"
+        assert "credstore set" in result
         assert len(written) == 1
 
     @pytest.mark.asyncio
-    async def test_set_placeholder_when_no_value(self, monkeypatch):
+    async def test_non_secret_key_writes_value(self, monkeypatch):
+        """Non-secret keys still write directly."""
         raw, written = _mock_config({}, monkeypatch)
+        _mock_credstore(monkeypatch)
         tool = ConfigEnvSetTool(config_path=Path("test.json5"))
 
-        result = await tool.execute(key="MY_API_KEY", value="")
+        result = await tool.execute(key="EDITOR", value="vim")
 
-        assert "MY_API_KEY" in raw["env"]
-        assert raw["env"]["MY_API_KEY"] == "<YOUR_MY_API_KEY>"
+        assert raw["env"]["EDITOR"] == "vim"
+        assert os.environ["EDITOR"] == "vim"
         assert "[OK]" in result
+
+    @pytest.mark.asyncio
+    async def test_non_secret_placeholder(self, monkeypatch):
+        raw, written = _mock_config({}, monkeypatch)
+        _mock_credstore(monkeypatch)
+        tool = ConfigEnvSetTool(config_path=Path("test.json5"))
+
+        result = await tool.execute(key="MY_SETTING")
+
+        assert raw["env"]["MY_SETTING"] == "<YOUR_MY_SETTING>"
         assert "placeholder" in result
 
     @pytest.mark.asyncio
-    async def test_set_placeholder_strips_brackets(self, monkeypatch):
-        raw, written = _mock_config({}, monkeypatch)
-        tool = ConfigEnvSetTool(config_path=Path("test.json5"))
-
-        await tool.execute(key="<MY_KEY>", value="")
-
-        assert raw["env"]["<MY_KEY>"] == "<YOUR_MY_KEY>"
-
-    @pytest.mark.asyncio
     async def test_overwrite_existing(self, monkeypatch):
-        raw, written = _mock_config({"env": {"OLD": "old_value"}}, monkeypatch)
+        raw, written = _mock_config({"env": {"EDITOR": "nano"}}, monkeypatch)
+        _mock_credstore(monkeypatch)
         tool = ConfigEnvSetTool(config_path=Path("test.json5"))
 
-        result = await tool.execute(key="OLD", value="new_value")
-
-        assert raw["env"]["OLD"] == "new_value"
-        assert "[OK]" in result
-
-    @pytest.mark.asyncio
-    async def test_inject_into_os_environ(self, monkeypatch):
-        raw, written = _mock_config({}, monkeypatch)
-        tool = ConfigEnvSetTool(config_path=Path("test.json5"))
-
-        old_val = os.environ.get("INJECT_TEST")
-        await tool.execute(key="INJECT_TEST", value="injected!")
-
-        assert os.environ["INJECT_TEST"] == "injected!"
-
-        # Cleanup
-        if old_val is not None:
-            os.environ["INJECT_TEST"] = old_val
-        else:
-            os.environ.pop("INJECT_TEST", None)
+        result = await tool.execute(key="EDITOR", value="vim")
+        assert raw["env"]["EDITOR"] == "vim"
 
 
-# ── ConfigEnvGetTool ────────────────────────────────────────────────────────
+# ── ConfigEnvGetTool ─────────────────────────────────────────
 
 
 class TestConfigEnvGetTool:
-    """Tests for ConfigEnvGetTool."""
-
     @pytest.mark.asyncio
-    async def test_get_single_key(self, monkeypatch):
-        raw, _ = _mock_config({"env": {"MY_KEY": "my_value"}}, monkeypatch)
+    async def test_get_from_config_fallback(self, monkeypatch):
+        """When not in environ or credstore, falls back to config value."""
+        raw, _ = _mock_config({"env": {"MY_SETTING": "config_val"}}, monkeypatch)
+        _mock_credstore(monkeypatch)
         tool = ConfigEnvGetTool(config_path=Path("test.json5"))
 
-        result = await tool.execute(key="MY_KEY")
-        assert "MY_KEY" in result
-        assert "my_value" in result
+        result = await tool.execute(key="MY_SETTING")
+        assert "MY_SETTING" in result
+        assert "config_val" in result
+        assert "[slife.json5]" in result
+
+    @pytest.mark.asyncio
+    async def test_get_from_credstore(self, monkeypatch):
+        """When in credstore, show it with masking."""
+        raw, _ = _mock_config({"env": {"API_KEY": "${API_KEY}"}}, monkeypatch)
+        cred = _mock_credstore(monkeypatch)
+        cred["API_KEY"] = "sk-secret-key-long"
+
+        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        result = await tool.execute(key="API_KEY")
+
+        assert "API_KEY" in result
+        assert "[credstore" in result
+        # Value must be masked
+        assert "sk-secret-key-long" not in result
+
+    @pytest.mark.asyncio
+    async def test_get_from_shell_takes_priority(self, monkeypatch):
+        """os.environ takes priority over credstore and config."""
+        raw, _ = _mock_config({"env": {"MY_VAR": "from_config"}}, monkeypatch)
+        cred = _mock_credstore(monkeypatch)
+        cred["MY_VAR"] = "from_credstore"
+        os.environ["MY_VAR"] = "from_shell"
+
+        try:
+            tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+            result = await tool.execute(key="MY_VAR")
+            assert "[shell" in result
+            assert "active" in result
+        finally:
+            os.environ.pop("MY_VAR", None)
 
     @pytest.mark.asyncio
     async def test_get_missing_key(self, monkeypatch):
         raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _mock_credstore(monkeypatch)
         tool = ConfigEnvGetTool(config_path=Path("test.json5"))
 
         result = await tool.execute(key="NOT_THERE")
         assert "not set" in result
 
     @pytest.mark.asyncio
-    async def test_get_placeholder_shows_warning(self, monkeypatch):
-        raw, _ = _mock_config({"env": {"TODO": "<YOUR_TODO>"}}, monkeypatch)
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
-
-        result = await tool.execute(key="TODO")
-        assert "[PLACEHOLDER]" in result
-
-    @pytest.mark.asyncio
     async def test_list_all_vars(self, monkeypatch):
-        raw, _ = _mock_config(
-            {"env": {"A": "val_a", "B": "val_b"}}, monkeypatch,
-        )
+        raw, _ = _mock_config({"env": {"A": "val_a", "B": "val_b"}}, monkeypatch)
+        _mock_credstore(monkeypatch)
         tool = ConfigEnvGetTool(config_path=Path("test.json5"))
 
         result = await tool.execute()
@@ -172,40 +212,39 @@ class TestConfigEnvGetTool:
         assert "val_b" in result
 
     @pytest.mark.asyncio
+    async def test_list_from_credstore(self, monkeypatch):
+        raw, _ = _mock_config({"env": {"API_KEY": "${API_KEY}"}}, monkeypatch)
+        cred = _mock_credstore(monkeypatch)
+        cred["API_KEY"] = "sk-secret-12345678"
+
+        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+        result = await tool.execute(key="API_KEY")
+
+        assert "[credstore" in result
+        # Must be masked
+        assert "sk-secret-12345678" not in result
+
+    @pytest.mark.asyncio
     async def test_list_empty(self, monkeypatch):
         raw, _ = _mock_config({}, monkeypatch)
+        _mock_credstore(monkeypatch)
         tool = ConfigEnvGetTool(config_path=Path("test.json5"))
-
         result = await tool.execute()
         assert "No environment variables" in result
 
-    @pytest.mark.asyncio
-    async def test_list_shows_placeholder_markers(self, monkeypatch):
-        raw, _ = _mock_config(
-            {"env": {"REAL": "value", "TODO": "<YOUR_TODO>"}}, monkeypatch,
-        )
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
 
-        result = await tool.execute()
-        assert "[PLACEHOLDER]" in result
-
-
-# ── ConfigEnvRemoveTool ─────────────────────────────────────────────────────
+# ── ConfigEnvRemoveTool ──────────────────────────────────────
 
 
 class TestConfigEnvRemoveTool:
-    """Tests for ConfigEnvRemoveTool."""
-
     @pytest.mark.asyncio
     async def test_remove_existing_var(self, monkeypatch):
-        raw, written = _mock_config(
-            {"env": {"TO_REMOVE": "bye"}}, monkeypatch,
-        )
+        raw, written = _mock_config({"env": {"TO_REMOVE": "bye"}}, monkeypatch)
+        _mock_credstore(monkeypatch)
         os.environ["TO_REMOVE"] = "bye"
         tool = ConfigEnvRemoveTool(config_path=Path("test.json5"))
 
         result = await tool.execute(key="TO_REMOVE")
-
         assert "TO_REMOVE" not in raw["env"]
         assert "TO_REMOVE" not in os.environ
         assert "[OK]" in result
@@ -214,19 +253,30 @@ class TestConfigEnvRemoveTool:
     @pytest.mark.asyncio
     async def test_remove_missing_var(self, monkeypatch):
         raw, written = _mock_config({"env": {}}, monkeypatch)
+        _mock_credstore(monkeypatch)
         tool = ConfigEnvRemoveTool(config_path=Path("test.json5"))
 
         result = await tool.execute(key="NOT_THERE")
-        assert "not set" in result
         assert "nothing to remove" in result
 
     @pytest.mark.asyncio
-    async def test_remove_var_not_in_os_environ(self, monkeypatch):
-        raw, written = _mock_config(
-            {"env": {"ONLY_IN_FILE": "val"}}, monkeypatch,
-        )
+    async def test_remove_from_credstore(self, monkeypatch):
+        raw, _ = _mock_config({"env": {"SECRET_KEY": "${SECRET_KEY}"}}, monkeypatch)
+        cred = _mock_credstore(monkeypatch)
+        cred["SECRET_KEY"] = "some-secret"
         tool = ConfigEnvRemoveTool(config_path=Path("test.json5"))
 
-        result = await tool.execute(key="ONLY_IN_FILE")
-        assert "ONLY_IN_FILE" not in raw["env"]
+        result = await tool.execute(key="SECRET_KEY")
         assert "[OK]" in result
+        assert "SECRET_KEY" not in cred
+
+    @pytest.mark.asyncio
+    async def test_remove_from_os_environ_only(self, monkeypatch):
+        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _mock_credstore(monkeypatch)
+        os.environ["ONLY_IN_ENV"] = "temp"
+        tool = ConfigEnvRemoveTool(config_path=Path("test.json5"))
+
+        result = await tool.execute(key="ONLY_IN_ENV")
+        assert "[OK]" in result
+        assert "ONLY_IN_ENV" not in os.environ

@@ -1,4 +1,4 @@
-"""Tests for Slife.plugins.wechat.config — per-user WeChat config I/O."""
+"""Tests for slife.plugins.wechat.config — per-user WeChat config I/O."""
 
 import json5
 import logging
@@ -14,6 +14,53 @@ from slife.plugins.wechat.config import (
     clear_wechat_config,
     DEFAULT_BASE_URL,
 )
+
+
+# ── Mock credstore so tests don't touch real keyring ──────────
+
+
+@pytest.fixture(autouse=True)
+def _mock_credstore(monkeypatch):
+    """Mock credstore to an in-memory dict — prevents real keyring access."""
+    data = {}
+
+    def _get(key):
+        return data.get(key)
+
+    def _set(key, secret):
+        data[key] = secret
+
+    def _delete(key):
+        return data.pop(key, None) is not None
+
+    # Patch credstore public API
+    import credstore
+    monkeypatch.setattr(credstore, "get_credential", _get)
+    monkeypatch.setattr(credstore, "delete_credential", _delete)
+
+    # Patch the internal module too
+    import credstore._store as sm
+    monkeypatch.setattr(sm, "init_store", lambda **kw: None)
+    store = sm.CredentialStore()
+    store.get = _get
+    store.set = _set
+    store.delete = _delete
+    monkeypatch.setattr(sm, "_store", store)
+    monkeypatch.setattr(sm, "_get_store", lambda: store)
+    monkeypatch.setattr(sm, "get_credential", _get)
+    monkeypatch.setattr(sm, "delete_credential", _delete)
+
+    # Patch wechat's internal _credstore_set to use our in-memory dict
+    import slife.plugins.wechat.config as wc
+    monkeypatch.setattr(wc, "_credstore_set", _set)
+
+    # Mock backend to prevent real keyring init
+    import credstore._backend as backend
+    monkeypatch.setattr(backend, "init_backend", lambda **kw: None)
+    monkeypatch.setattr(backend, "get_system_keyring", lambda: None)
+    monkeypatch.setattr(backend, "get_cryptfile", lambda: None)
+    monkeypatch.setattr(backend, "has_master_key", lambda: True)
+
 
 
 class TestConfigPath:

@@ -15,9 +15,21 @@ Platform
   commands.
 
 Configuration
-  Call config_env_get before asking for an API key — it may already
-  be set.  When the user doesn't have a key yet, persist a placeholder
-  with config_env_set.
+  Secrets (API keys, tokens, passwords) are stored via credstore in
+  the OS keyring — NEVER in slife.json5 or in conversation.
+
+  Call config_env_get before asking for an API key — it checks three
+  sources: shell environment → credstore keyring → slife.json5.
+
+  To register an env var in slife.json5, use config_env_set:
+    - For secrets (KEY/TOKEN/SECRET/PASSWORD in name): writes a
+      ${VAR} reference, tells user to run "credstore set <KEY>".
+      The secret value is NEVER accepted by this tool.
+    - For non-secret vars (EDITOR, LANG, etc): writes the value.
+
+  If the user needs to store a new secret, tell them to run in
+  terminal:  credstore set <KEY>
+  (reads the secret via masked input — no echo, no shell history).
 
 Tools
   Skills — list_skills, then use_skill to load.  Fetch files, then

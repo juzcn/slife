@@ -22,6 +22,7 @@ dependencies = [
     "aiohttp>=3.14.1",
     "qrcode>=8.0",
     "Pillow>=11.0",
+    "credstore",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -81,4 +82,5 @@ markers = [
 ]
 
 [tool.uv.sources]
+credstore = { path = "credstore" }
 llama-cpp-python = { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl" }

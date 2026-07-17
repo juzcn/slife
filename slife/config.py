@@ -1,4 +1,4 @@
-"""Configuration for Slife agent — OpenClaw-compatible JSON5 format.
+"""Configuration for Slife agent -- OpenClaw-compatible JSON5 format.
 
 Two-level model hierarchy:
   providers:
@@ -19,11 +19,99 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from credstore import resolve_uri, is_keyring_uri
 from slife.env import resolve_env
 from slife.tools._config_io import with_fetched_at
 from slife.a2a.config import A2AConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_api_key(value: str) -> str:
+    """Resolve an api_key value through the full chain.
+
+    1. ``keyring:`` URI  → credstore
+    2. ``${VAR}``        → os.environ → credstore
+    3. plaintext         → as-is (legacy, logged warning)
+    """
+    import os
+
+    # keyring: URI
+    from credstore import is_keyring_uri, resolve_uri
+    if is_keyring_uri(value):
+        return resolve_uri(value)
+
+    # ${VAR} reference
+    if value.startswith("${") and value.endswith("}"):
+        var_name = value[2:-1]
+        # os.environ first (user may have resolved it by now)
+        env_val = os.environ.get(var_name)
+        if env_val:
+            return env_val
+        # credstore fallback
+        cred_val = _try_credstore_lookup(var_name)
+        if cred_val:
+            return cred_val
+        # Can't resolve — return as-is (will fail in LLMClient with clear error)
+        return value
+
+    # Plaintext
+    if value and len(value) >= 12:
+        logger.warning("plaintext_api_key — store with: credstore set ...")
+    return value
+
+
+def _resolve_mcp_env_var(value: str) -> str:
+    """Resolve a ``${VAR}`` reference in MCP server env.
+
+    Same logic as _resolve_api_key but for env var values.
+    """
+    import os
+
+    if value.startswith("${") and value.endswith("}"):
+        var_name = value[2:-1]
+        env_val = os.environ.get(var_name)
+        if env_val:
+            return env_val
+        cred_val = _try_credstore_lookup(var_name)
+        if cred_val:
+            return cred_val
+    return value
+
+
+def _resolve_env_lenient(value):
+    """Resolve ${VAR} references without raising on missing vars.
+
+    Missing vars are left as-is (e.g. ``${DEEPSEEK_API_KEY}``) so
+    downstream resolvers (credstore, defaults) get a chance.
+    """
+    try:
+        return resolve_env(value)
+    except KeyError:
+        return value
+
+
+def _is_secret_key(key: str) -> bool:
+    """Check if a key name looks like a secret (API key, token, etc.)."""
+    return any(
+        hint in key.upper()
+        for hint in ("KEY", "TOKEN", "SECRET", "PASSWORD")
+    )
+
+
+def _try_credstore_lookup(key: str) -> str | None:
+    """Look up an env var name in credstore (keyring).
+
+    The env var name IS the credstore key — e.g. ``DEEPSEEK_API_KEY``.
+
+    Returns the credential value, or None if not found or credstore
+    is unavailable.
+    """
+    try:
+        from credstore import get_credential
+        return get_credential(key)
+    except Exception:
+        return None
 
 
 def parse_cli_agent(argv: list[str]) -> str | None:
@@ -82,12 +170,12 @@ class ModelConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "ModelConfig":
-        """Parse a model entry (OpenClaw field names → internal).
+        """Parse a model entry (OpenClaw field names ->internal).
 
         model: API model name, doubles as local id (e.g. "deepseek-v4-flash")
         name: display label (e.g. "DeepSeek V4 Flash")
-        reasoning: true → thinking_enabled
-        input: ["text","image"] → supports_vision
+        reasoning: true ->thinking_enabled
+        input: ["text","image"] ->supports_vision
         """
         api_model = data["model"]
 
@@ -111,7 +199,7 @@ class ModelConfig:
             provider=provider,
             api_model=api_model,
             display_name=display_name,
-            api_key=data["api_key"],
+            api_key=_resolve_api_key(data["api_key"]),
             base_url=data.get("base_url", "https://api.deepseek.com"),
             api=data.get("api", "openai-completions"),
             supports_vision=supports_vision,
@@ -128,7 +216,7 @@ class ModelConfig:
 class MCPConfig:
     """Configuration for the MCP wrapper and external MCP servers.
 
-    Always enabled — slife-mcp is a built-in plugin.
+    Always enabled -- slife-mcp is a built-in plugin.
     """
 
     wrapper_command: str = sys.executable
@@ -151,6 +239,14 @@ class MCPConfig:
         if not isinstance(servers, dict):
             servers = {}
 
+        # Resolve ${VAR} in each server's env section
+        for sname, scfg in servers.items():
+            if isinstance(scfg, dict) and "env" in scfg:
+                senv = scfg["env"]
+                if isinstance(senv, dict):
+                    for k, v in senv.items():
+                        senv[k] = _resolve_mcp_env_var(str(v))
+
         wrapper = data.get("wrapper", {})
         if not isinstance(wrapper, dict):
             wrapper = {}
@@ -166,7 +262,7 @@ class MCPConfig:
 class MemoryConfig:
     """Configuration for the slife-memory service.
 
-    Always enabled — slife-memory is a built-in plugin.
+    Always enabled -- slife-memory is a built-in plugin.
     """
 
     db_path: str = "~/.slife/slife.db"
@@ -192,7 +288,7 @@ class MemoryConfig:
 class WechatConfig:
     """Configuration for the slife-wechat plugin.
 
-    Optional — only loaded when ``wechat.enabled`` is true.
+    Optional -- only loaded when ``wechat.enabled`` is true.
     Session tokens are stored per-user in ``wechat_<user>.json5``.
     """
 
@@ -202,7 +298,7 @@ class WechatConfig:
     def from_dict(cls, data: dict) -> "WechatConfig":
         """Parse wechat config section from JSON5 config.
 
-        Defaults to enabled when the wechat section is absent — the plugin
+        Defaults to enabled when the wechat section is absent -- the plugin
         is lightweight and only activates when wechat_login is called.
         Set ``wechat: { enabled: false }`` to explicitly opt out.
         """
@@ -272,7 +368,18 @@ class Config:
         if description:
             server_entry["description"] = description
         if env:
-            server_entry["env"] = env
+            # Sanitize: reject plaintext secrets, write ${VAR} refs instead
+            sanitized = {}
+            for k, v in env.items():
+                if _is_secret_key(k) and v and not str(v).startswith(("${", "<", "keyring:")):
+                    sanitized[k] = "${%s}" % k
+                    logger.warning(
+                        "mcp_env_secret_rejected server=%s key=%s — use credstore set %s",
+                        name, k, k,
+                    )
+                else:
+                    sanitized[k] = v
+            server_entry["env"] = sanitized
         source = with_fetched_at(source)
         if source:
             server_entry["source"] = source
@@ -352,7 +459,7 @@ class Config:
         Supports both dict (providers) and flat-list formats.
 
         Returns:
-            (models, provider_count) — provider_count is 0 for list format.
+            (models, provider_count) -- provider_count is 0 for list format.
         """
         if isinstance(models_section, dict):
             return Config._parse_provider_models(models_section)
@@ -361,7 +468,7 @@ class Config:
             for m in models_section:
                 if not isinstance(m, dict):
                     continue
-                models.append(ModelConfig.from_dict(resolve_env(m)))
+                models.append(ModelConfig.from_dict(_resolve_env_lenient(m)))
             return models, 0
         return [], 0
 
@@ -381,7 +488,7 @@ class Config:
             if not isinstance(provider_cfg, dict):
                 continue
 
-            provider_cfg = resolve_env(provider_cfg)
+            provider_cfg = _resolve_env_lenient(provider_cfg)
             defaults = {
                 "api_key": provider_cfg.get("api_key", ""),
                 "base_url": provider_cfg.get("base_url", ""),
@@ -396,7 +503,7 @@ class Config:
             for m in model_list:
                 if not isinstance(m, dict):
                     continue
-                m = resolve_env(m)
+                m = _resolve_env_lenient(m)
                 for key, value in defaults.items():
                     m.setdefault(key, value)
                 m.setdefault("provider", provider_id)
@@ -421,7 +528,7 @@ class Config:
         agent_name: str | None = None,
         user: str = "default",
     ) -> "Config":
-        """Load from JSON5 file with provider→model hierarchy.
+        """Load from JSON5 file with provider->model hierarchy.
 
         Args:
             path: Path to the JSON5 config file.
@@ -435,7 +542,7 @@ class Config:
         if not path.exists():
             raise FileNotFoundError(
                 f"Config file not found: {path}\n"
-                f"Copy slife.json5.example → slife.json5 and edit it."
+                f"Copy slife.json5.example ->slife.json5 and edit it."
             )
 
         raw = json5.loads(path.read_text(encoding="utf-8"))
@@ -461,24 +568,41 @@ class Config:
         context_ceiling = agent.get("context_ceiling", 0.8)
         tool_result_ceiling = agent.get("tool_result_ceiling", 0.2)
 
-        # Env — inject into os.environ so tools can reference vars via ${VAR}
-        env_section = resolve_env(_parse_section(raw, "env", dict, {}))
+        # Env -- inject into os.environ so tools can reference vars via ${VAR}
+        # Resolution order: os.environ ->credstore (keyring) ->config value
+        env_section = _parse_section(raw, "env", dict, {})
         for key, value in env_section.items():
-            os.environ[key] = str(value)
+            # 1. Already set in environment (user's shell) -- keep it
+            if os.environ.get(key):
+                continue
+            # 2. Try credstore
+            cred_value = _try_credstore_lookup(key)
+            if cred_value:
+                os.environ[key] = cred_value
+                continue
+            # 3. Fall back to config value (with env var resolution)
+            try:
+                resolved = resolve_env(str(value))
+            except KeyError:
+                resolved = str(value)
+            if resolved and not str(resolved).startswith("${"):
+                os.environ[key] = str(resolved)
         logger.debug("config_env_vars count=%d", len(env_section))
 
-        # Tools (optional — auto-discovery handles defaults)
+        # Tools (optional -- auto-discovery handles defaults)
         tools = resolve_env(_parse_section(raw, "tools", list, []))
 
         # MCP (built-in plugin, always enabled)
-        mcp_config = MCPConfig.from_dict(raw.get("mcp", {}))
+        # Resolve ${VAR} in MCP server env vars
+        mcp_raw = _resolve_env_lenient(raw.get("mcp", {}))
+        mcp_config = MCPConfig.from_dict(mcp_raw)
         logger.debug(
             "mcp_config wrapper=%s servers=%d",
             mcp_config.wrapper_command,
             len(mcp_config.servers),
         )
 
-        # Memory — built-in plugin, always enabled
+        # Memory -- built-in plugin, always enabled
         memory_config = MemoryConfig.from_dict(raw.get("memory", {}))
         logger.debug(
             "memory_config db=%s embed=%s",
@@ -486,7 +610,7 @@ class Config:
             memory_config.embedding_model,
         )
 
-        # WeChat — optional plugin, enabled via wechat.enabled
+        # WeChat -- optional plugin, enabled via wechat.enabled
         wechat_config = WechatConfig.from_dict(raw.get("wechat", {}))
         if wechat_config.enabled:
             logger.debug("wechat_config enabled=true")
@@ -498,7 +622,7 @@ class Config:
                 os.environ.get("SLIFE_CONFIG_DIR", "."), user,
             )
 
-        # A2A/MQTT — enabled only via --agent CLI flag, json5 provides broker details
+        # A2A/MQTT -- enabled only via --agent CLI flag, json5 provides broker details
         a2a_config = A2AConfig.from_dict(raw.get("mqtt"), agent_name=agent_name)
         if a2a_config.enabled:
             logger.debug(
@@ -508,7 +632,7 @@ class Config:
                 a2a_config.broker_port,
             )
 
-        # Subagent — always available (no enabled flag), local stdin/stdout workers
+        # Subagent -- always available (no enabled flag), local stdin/stdout workers
         subagent_config = cls._load_subagent_config(raw)
         logger.debug(
             "subagent_config max_subagents=%d task_timeout=%d",

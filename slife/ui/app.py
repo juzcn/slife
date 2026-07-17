@@ -60,13 +60,29 @@ class StatusBar(Static):
             parts.append(f"[#6e7681]↑ {tokens:,} tokens[/#6e7681]")
 
         parts.append(
-            "[#484f58]│ Ctrl+C quit  Esc cancel  Ctrl+L focus  Home/End scroll[/#484f58]"
+            "[#484f58]│ Ctrl+C quit (in input)  Esc cancel  Ctrl+L focus  Home/End scroll[/#484f58]"
         )
 
         self.update("  ".join(parts))
 
 
 # ── Main TUI app ───────────────────────────────────────────────────
+
+
+class SlifeInput(Input):
+    """Custom Input that only binds Ctrl+C to quit when focused.
+
+    When focus is elsewhere (chat view, tool widgets, etc.), Ctrl+C
+    is not intercepted so the terminal can handle it as copy.
+    """
+
+    BINDINGS = [
+        Binding("ctrl+c", "quit_app", "Quit", priority=True),
+    ]
+
+    def action_quit_app(self) -> None:
+        """Quit the app via Ctrl+C when this input is focused."""
+        self.app.action_quit()
 
 
 class SlifeApp(App):
@@ -79,7 +95,6 @@ class SlifeApp(App):
     CSS_PATH = "slife.tcss"
 
     BINDINGS = [
-        Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("escape", "cancel", "Cancel agent loop", priority=True),
         Binding("ctrl+l", "focus_input", "Focus Input"),
         Binding("home", "scroll_home", "Scroll to top", priority=True),
@@ -106,7 +121,7 @@ class SlifeApp(App):
     def compose(self) -> ComposeResult:
         """Minimal layout: chat fills screen, input + status docked at bottom."""
         yield ChatView(id="chat-view")
-        yield Input(
+        yield SlifeInput(
             placeholder="Message Slife…",
             id="user-input",
         )
