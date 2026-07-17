@@ -24,6 +24,7 @@ Usage::
 
 from credstore._store import (
     get_credential,
+    exists_credential,
     delete_credential,
     list_credentials,
     get_backend_name,
@@ -40,6 +41,7 @@ from credstore._resolver import (
 __all__ = [
     # Read / delete / list
     "get_credential",
+    "exists_credential",
     "delete_credential",
     "list_credentials",
     # URI resolution

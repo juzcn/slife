@@ -26,13 +26,25 @@ class CredentialStore:
     # ── get: system keyring only (no master key) ──────────────
 
     def get(self, key: str) -> str | None:
-        """Retrieve from system keyring only — fast, no master key."""
+        """Retrieve from system keyring only — fast, no master key.
+
+        Prefer ``exists()`` when you only need to know whether a
+        credential is stored — it avoids pulling the full secret
+        into process memory.
+        """
         from credstore._backend import get_system_keyring
 
         sk = get_system_keyring()
         if sk is not None:
             return sk.get_password(self._service, key)
         return None
+
+    def exists(self, key: str) -> bool:
+        """Check whether a credential exists without retrieving its value.
+
+        Returns True/False — NEVER the secret content.
+        """
+        return self.get(key) is not None
 
     # ── set: dual-write ───────────────────────────────────────
 
@@ -139,6 +151,12 @@ class CredentialStore:
 
     @staticmethod
     def mask(value: str) -> str:
+        """Return a masked representation for CLI display.
+
+        Shows first 4 + last 4 characters for human verification
+        in the terminal.  Agent tools must use ``exists()`` instead
+        — never expose partial credential data to an LLM.
+        """
         if not value:
             return "(empty)"
         if len(value) <= 8:
@@ -184,6 +202,17 @@ def _get_store() -> CredentialStore:
 
 def get_credential(key: str) -> str | None:
     return _get_store().get(key)
+
+
+def exists_credential(key: str) -> bool:
+    """Check whether a credential exists WITHOUT retrieving its value.
+
+    Returns True/False — NEVER the secret content.
+    Prefer this over ``get_credential()`` when you only need to know
+    if a key is stored.
+    """
+    return _get_store().exists(key)
+
 
 
 def set_credential(key: str, secret: str) -> None:

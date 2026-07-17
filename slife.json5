@@ -1,0 +1,195 @@
+{
+  env: {
+    BAIDU_API_KEY: "${BAIDU_API_KEY}",
+  },
+  agent: {
+    max_iterations: 10,
+    context_floor: 0.2,
+    context_ceiling: 0.8,
+  },
+  models: {
+    mode: "merge",
+    providers: {
+      deepseek: {
+        base_url: "https://api.deepseek.com",
+        api_key: "${DEEPSEEK_API_KEY}",
+        api: "openai-completions",
+        models: [
+          {
+            model: "deepseek-v4-flash",
+            name: "DeepSeek V4 Flash",
+            reasoning: true,
+            input: [
+              "text",
+              "image",
+            ],
+            context_window: 131072,
+            max_tokens: 8192,
+            temperature: 0.7,
+            top_p: 1.0,
+          },
+          {
+            model: "deepseek-v4-pro",
+            name: "DeepSeek V4 Pro",
+            reasoning: true,
+            input: [
+              "text",
+              "image",
+            ],
+            context_window: 131072,
+            max_tokens: 8192,
+            temperature: 0.7,
+            top_p: 1.0,
+          },
+        ],
+      },
+    },
+  },
+  active_model: "deepseek/deepseek-v4-flash",
+  mcp: {
+    servers: {
+      filesystem: {
+        command: "npx",
+        args: [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          ".",
+        ],
+        description: "Local filesystem operations — read, write, list, and search files within allowed directories.",
+      },
+      serper: {
+        command: "npx",
+        args: [
+          "-y",
+          "serper-search-scrape-mcp-server",
+        ],
+        env: {
+          SERPER_API_KEY: "${SERPER_API_KEY}",
+        },
+        description: "Google web search via Serper — search the web and scrape result pages.",
+      },
+      fetch: {
+        command: "uvx",
+        args: [
+          "mcp-server-fetch",
+        ],
+        description: "Fetch and convert web pages to markdown for reading.",
+      },
+      "tavily-mcp": {
+        command: "npx",
+        args: [
+          "-y",
+          "tavily-mcp@latest",
+        ],
+        env: {
+          TAVILY_API_KEY: "${TAVILY_API_KEY}"
+        },
+        description: "Tavily AI-optimized web search — designed for LLM agents, returns clean structured results.",
+      },
+      github: {
+        command: "npx",
+        args: [
+          "-y",
+          "anyapi-mcp-server",
+          "--name",
+          "github",
+          "--spec",
+          "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml",
+          "--base-url",
+          "https://api.github.com",
+          "--header",
+          "Authorization: Bearer ${GITHUB_TOKEN}",
+        ],
+        env: {
+          GITHUB_TOKEN: "${GITHUB_TOKEN}",
+        },
+        description: "GitHub REST API via anyapi-mcp-server — manage repos, issues, PRs, users, and more.",
+      },
+      "duckduckgo-search": {
+        command: "uvx",
+        args: [
+          "--with",
+          "duckduckgo-mcp-server[browser]",
+          "duckduckgo-mcp-server",
+          "--fetch-backend",
+          "auto",
+          "--search-backend",
+          "auto",
+        ],
+        description: "DuckDuckGo 搜索 MCP 服务器 — 提供网页搜索和内容抓取功能",
+      },
+      "amap-maps": {
+        command: "npx",
+        args: [
+          "-y",
+          "@amap/amap-maps-mcp-server",
+        ],
+        description: "高德地图官方 MCP Server，提供地理编码、逆地理编码、IP定位、天气查询、骑行/步行/驾车/公交路径规划、距离测量、关键词/周边/详情POI搜索、专属地图生成、导航、打车等能力",
+        env: {
+          AMAP_MAPS_API_KEY: "${AMAP_MAPS_API_KEY}"
+        },
+      },
+    },
+  },
+  mqtt: {
+    broker: {
+      host: "localhost",
+      port: 1883,
+    },
+    heartbeat_interval: 15,
+    heartbeat_timeout: 45,
+    task_timeout: 120,
+  },
+  subagent: {
+    max_subagents: 5,
+    task_timeout: 120,
+  },
+  cli_tools: {
+    "yt-dlp": {
+      command: "yt-dlp",
+      description: "yt-dlp is a powerful command-line video downloader supporting 1000+ sites including YouTube, Twitter/X, Bilibili, TikTok, etc. Common usage: yt-dlp <URL> to download best quality; yt-dlp -f \"bestvideo+bestaudio\" --merge-output-format mp4 <URL> for best quality merged MP4; yt-dlp --list-formats <URL> to list available formats; yt-dlp -f <format_id> <URL> for specific format. Supports cookies, subtitles, playlists, and more.",
+      install: "uv pip install yt-dlp",
+    },
+    npm: {
+      command: "npm",
+      description: "Node Package Manager — install, manage, and publish Node.js packages. Common subcommands: npm install <pkg> — install a package; npm install -g <pkg> — install globally; npm init — create a package.json; npm run <script> — run a script from package.json; npm publish — publish a package; npm update — update packages; npm audit — audit dependencies; npm ls — list installed packages.",
+      install: "Download from https://nodejs.org/ or use a version manager like nvm.",
+    },
+    npx: {
+      command: "npx",
+      description: "Node Package Executor — run Node.js packages without installing them globally. Common usage: npx <pkg> — run a package directly; npx <pkg>@<version> — run a specific version; npx -y <pkg> — skip confirmation prompt; npx --help — show help. Used for one-off commands like npx create-react-app, npx tsx, etc.",
+      install: "Comes bundled with npm (Node.js). Download from https://nodejs.org/.",
+    },
+    uv: {
+      command: "uv",
+      description: "Fast Python package and project manager (replaces pip, pip-tools, poetry, etc.). Common subcommands: uv pip install <pkg> — install a Python package; uv pip sync — sync from requirements; uv venv — create a virtual environment; uv init — init a new project; uv add <pkg> — add a dependency; uv run <script> — run a script in the project venv; uv lock — generate lockfile; uv sync — sync the project environment; uv tool install <pkg> — install a CLI tool globally (like pipx).",
+      install: "Install via: powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\" (Windows) or curl -LsSf https://astral.sh/uv/install.sh | sh (macOS/Linux).",
+    },
+    uvx: {
+      command: "uvx",
+      description: "UV Package Executor — run Python-based CLI tools without installing them (like npx but for Python). Common usage: uvx <pkg> — run a Python CLI tool directly; uvx <pkg>@<version> — run a specific version; uvx <pkg> -- <args> — pass args to the tool. Examples: uvx ruff check ., uvx black file.py, uvx streamlit run app.py.",
+      install: "Comes bundled with uv. Install uv first via: powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\" (Windows).",
+    },
+    "browser-harness": {
+      command: "browser-harness",
+      description: "Direct browser control via CDP — automation, scraping, testing, screenshots. Subcommands: browser-harness <<'PY' ... PY (run Python helpers like new_tab, page_info, capture_screenshot, click_at_xy, js, etc.), browser-harness --doctor (diagnose connection), browser-harness skill (print SKILL.md), browser-harness auth login (cloud auth), browser-harness telemetry disable.",
+      install: "uv tool install --python 3.12 --upgrade --force browser-harness",
+      source: {
+        type: "pypi",
+        url: "https://pypi.org/project/browser-harness/",
+        version: "0.1.5",
+        description: "Official browser-harness package",
+        fetched_at: "2026-07-13T00:44:43.891352+00:00",
+      },
+    },
+  },
+  memory: {
+    enabled: true,
+    db_path: "./slife.db",
+    embedding: {
+      model: "bge-m3",
+      gguf_path: "C:\\OneDrive\\AI\\hf_KimChen_bge-m3-q4_k_m.gguf",
+      dim: 1024,
+    },
+  },
+}

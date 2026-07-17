@@ -20,11 +20,16 @@
 
 ```bash
 uv sync                                      # install dependencies
-cp slife.json5.example slife.json5           # copy + edit: set your API key
 uv run slife                                 # launch the TUI
 ```
 
-The example config includes three pre-configured MCP servers (filesystem, web fetch, DuckDuckGo search) — you're productive immediately after setting your model key.
+The default config (`slife.json5`) ships with pre-configured MCP servers (filesystem, web fetch, DuckDuckGo search).  Store your API key and launch:
+
+```bash
+credstore set-password                        # first time only — sets up encrypted backup
+credstore set DEEPSEEK_API_KEY               # masked input, no echo
+uv run slife
+```
 
 ## How It Works
 
@@ -39,24 +44,43 @@ You: "Find all TODO comments and create GitHub issues for them"
 
 ## Configuration
 
-Edit `slife.json5`. The only required setting is a **provider + API key**:
+Slife uses a **two-layer** configuration model:
+
+| Layer | Storage | What goes here |
+|-------|---------|----------------|
+| **Secrets** | OS keyring (credstore) | API keys, tokens, passwords — encrypted at OS level |
+| **Config** | `slife.json5` → `env:` | `${VAR}` references + non-secret values (EDITOR, LANG, etc.) |
 
 ```json5
+// slife.json5
+env: {
+  DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}",   // → resolved from keyring at runtime
+  EDITOR: "code",                             // → plain value, no secret
+}
+
 models: {
   providers: {
     deepseek: {
       base_url: "https://api.deepseek.com",
-      api_key: "${DEEPSEEK_API_KEY}",
-      models: [
-        { model: "deepseek-v4-pro", name: "DeepSeek V4 Pro", reasoning: true },
-      ],
+      api_key: "${DEEPSEEK_API_KEY}",          // ← ${VAR} syntax throughout
+      models: [{ model: "deepseek-v4-pro", name: "DeepSeek V4 Pro", reasoning: true }],
     },
   },
 },
 active_model: "deepseek/deepseek-v4-pro",
 ```
 
-`${ENV_VAR}` and `${ENV_VAR:-default}` syntax is supported throughout — values are resolved at startup and injected into `os.environ`.
+`${ENV_VAR}` and `${ENV_VAR:-default}` syntax works everywhere — values resolve at runtime via shell → keyring → config.
+
+### Storing Secrets
+
+Never paste API keys into `slife.json5` or the chat.  Use the terminal:
+
+```bash
+credstore set DEEPSEEK_API_KEY       # masked input — no echo, no shell history
+```
+
+The agent registers the reference for you — just say "add a DeepSeek key" and it calls `config_env_set`, which writes `${DEEPSEEK_API_KEY}` to the config and tells you to run the command above.
 
 ## Features
 
@@ -115,7 +139,8 @@ Not all tools are in every LLM request.  Three categories use lightweight summar
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+C` | Quit |
+| `Ctrl+C` (in input) | Quit |
+| `Ctrl+C` (elsewhere) | Copy (terminal-native) |
 | `Esc` | Cancel agent loop |
 | `Ctrl+L` | Focus input field |
 | `Home` / `End` | Scroll to top / bottom |

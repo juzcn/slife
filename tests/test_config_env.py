@@ -240,27 +240,25 @@ class TestConfigEnvRemoveTool:
     @pytest.mark.asyncio
     async def test_remove_existing_var(self, monkeypatch):
         raw, written = _mock_config({"env": {"TO_REMOVE": "bye"}}, monkeypatch)
-        _mock_credstore(monkeypatch)
         os.environ["TO_REMOVE"] = "bye"
         tool = ConfigEnvRemoveTool(config_path=Path("test.json5"))
 
         result = await tool.execute(key="TO_REMOVE")
         assert "TO_REMOVE" not in raw["env"]
-        assert "TO_REMOVE" not in os.environ
+        assert "TO_REMOVE" in os.environ  # NOT touched — only removes from config
         assert "[OK]" in result
         assert len(written) == 1
 
     @pytest.mark.asyncio
     async def test_remove_missing_var(self, monkeypatch):
         raw, written = _mock_config({"env": {}}, monkeypatch)
-        _mock_credstore(monkeypatch)
         tool = ConfigEnvRemoveTool(config_path=Path("test.json5"))
 
         result = await tool.execute(key="NOT_THERE")
         assert "nothing to remove" in result
 
     @pytest.mark.asyncio
-    async def test_remove_from_credstore(self, monkeypatch):
+    async def test_remove_does_not_touch_credstore(self, monkeypatch):
         raw, _ = _mock_config({"env": {"SECRET_KEY": "${SECRET_KEY}"}}, monkeypatch)
         cred = _mock_credstore(monkeypatch)
         cred["SECRET_KEY"] = "some-secret"
@@ -268,15 +266,15 @@ class TestConfigEnvRemoveTool:
 
         result = await tool.execute(key="SECRET_KEY")
         assert "[OK]" in result
-        assert "SECRET_KEY" not in cred
+        assert "SECRET_KEY" not in raw["env"]
+        assert "SECRET_KEY" in cred  # NOT touched — only removes from config
 
     @pytest.mark.asyncio
-    async def test_remove_from_os_environ_only(self, monkeypatch):
+    async def test_remove_not_in_config_is_noop(self, monkeypatch):
         raw, _ = _mock_config({"env": {}}, monkeypatch)
-        _mock_credstore(monkeypatch)
         os.environ["ONLY_IN_ENV"] = "temp"
         tool = ConfigEnvRemoveTool(config_path=Path("test.json5"))
 
         result = await tool.execute(key="ONLY_IN_ENV")
-        assert "[OK]" in result
-        assert "ONLY_IN_ENV" not in os.environ
+        assert "nothing to remove" in result
+        assert "ONLY_IN_ENV" in os.environ  # NOT touched

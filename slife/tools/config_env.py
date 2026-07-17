@@ -41,29 +41,48 @@ def _env_section(raw: dict) -> dict:
 
 
 class ConfigEnvSetTool(_ConfigPathMixin, Tool):
-    """Set a non-secret environment variable in slife.json5.
+    """Register an environment variable in slife.json5.
 
-    For API keys / tokens / passwords, use ``credstore set <KEY>``
-    in the terminal instead — never pass secrets through this tool.
+    The SINGLE tool for all env var registration — automatically
+    handles secrets vs non-secrets based on the key name:
+
+    • Secret key (contains KEY/TOKEN/SECRET/PASSWORD):
+      Writes ${VAR} reference, tells user to run credstore set <KEY>.
+      The secret VALUE is REJECTED if passed — never stored in config.
+
+    • Non-secret key (EDITOR, LANG, LOG_LEVEL, etc):
+      Writes the value directly, or a <YOUR_VAR> placeholder if no
+      value given.
+
+    There is no separate credential_set tool — this covers both.
     """
 
     name = "config_env_set"
     description = (
-        "Set a NON-SECRET environment variable in slife.json5. "
-        "For API keys, tokens, or passwords, do NOT use this tool — "
-        "tell the user to run 'credstore set <KEY>' in their terminal. "
-        "Only use this for things like EDITOR, LANG, LOG_LEVEL, etc."
+        "Register an env var in slife.json5. "
+        "Secret key (KEY/TOKEN/SECRET/PASSWORD) → writes ${VAR} ref, "
+        "value is REJECTED. "
+        "Non-secret key → writes value or <YOUR_VAR> placeholder."
     )
     parameters = {
         "type": "object",
         "properties": {
             "key": {
                 "type": "string",
-                "description": "Env var name. For secrets (KEY/TOKEN/SECRET/PASSWORD in name), this writes a credstore reference — never a value.",
+                "description": (
+                    "Env var name, e.g. 'DEEPSEEK_API_KEY' or 'EDITOR'. "
+                    "Secret keys (containing KEY/TOKEN/SECRET/PASSWORD) "
+                    "get a ${VAR} reference + CLI instruction. "
+                    "Non-secret keys get a value or placeholder."
+                ),
             },
             "value": {
                 "type": "string",
-                "description": "The value. ONLY for non-secret vars (EDITOR, LANG, etc). If the key looks like a secret, this value is REJECTED.",
+                "description": (
+                    "ONLY for non-secret vars (EDITOR, LANG, LOG_LEVEL, etc). "
+                    "If the key looks like a secret, this value is REJECTED — "
+                    "secrets MUST go through 'credstore set <KEY>' in the terminal."
+                ),
             },
         },
         "required": ["key"],
@@ -78,8 +97,9 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):
             if value and not str(value).startswith(("${", "<")):
                 return (
                     f"[REJECTED] '{key}' looks like a secret (API key/token/password).\n"
-                    f"Never pass secrets through this tool.\n"
-                    f"Tell the user to run: credstore set {key}"
+                    f"NEVER paste secrets into the chat — chat history is plaintext.\n"
+                    f"Instead, tell the user to run in their terminal:\n"
+                    f"  credstore set {key}"
                 )
 
             raw = read_config(self._config_path)
@@ -117,17 +137,17 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):
 
 
 class ConfigEnvGetTool(_ConfigPathMixin, Tool):
-    """Read env vars — shell first, then credstore, then config."""
+    """Resolve an env var across all three sources at runtime.
+
+    Resolution order: shell environment → credstore keyring → slife.json5.
+    Secret values are always masked in output.  Omit key to list all.
+    """
 
     name = "config_env_get"
     description = (
-        "Look up an environment variable. Resolution order: "
-        "1) current os.environ (shell export), "
-        "2) credstore keyring (for secrets), "
-        "3) slife.json5 env: section (config file). "
-        "Secret values (keys containing KEY/TOKEN/SECRET/PASSWORD) "
-        "are always masked in the output. "
-        "Omit the key to list all configured variables."
+        "Resolve an env var across shell → keyring → config. "
+        "Secret values are always masked. "
+        "Omit key to list all configured variables."
     )
     parameters = {
         "type": "object",
@@ -161,12 +181,13 @@ class ConfigEnvGetTool(_ConfigPathMixin, Tool):
 
 
 class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):
-    """Remove an env var from all sources."""
+    """Remove an env var from slife.json5 only."""
 
     name = "config_env_remove"
     description = (
-        "Delete an environment variable from slife.json5, "
-        "os.environ, and credstore (if stored there)."
+        "Remove an env var from slife.json5. "
+        "Does NOT touch the OS keyring or shell environment — "
+        "only removes what Slife itself configured."
     )
     parameters = {
         "type": "object",
@@ -181,30 +202,16 @@ class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):
 
     async def execute(self, **kwargs) -> str:
         key: str = kwargs["key"]
-        removed_from = []
-
-        if os.environ.pop(key, None) is not None:
-            removed_from.append("shell environment")
-
-        try:
-            from credstore import delete_credential
-            if delete_credential(key):
-                removed_from.append("credstore (keyring)")
-        except Exception:
-            pass
 
         raw = read_config(self._config_path)
         env = _env_section(raw)
-        if key in env:
-            del env[key]
-            write_config(self._config_path, raw)
-            removed_from.append("slife.json5")
+        if key not in env:
+            return f"'{key}' is not in slife.json5 — nothing to remove."
 
-        if not removed_from:
-            return f"'{key}' was not set anywhere — nothing to remove."
-
-        logger.info("env_removed key=%s sources=%s", key, removed_from)
-        return f"[OK] {key} removed from: {', '.join(removed_from)}."
+        del env[key]
+        write_config(self._config_path, raw)
+        logger.info("env_removed key=%s", key)
+        return f"[OK] Removed '{key}' from slife.json5."
 
 
 # ── helpers ─────────────────────────────────────────────────

@@ -4,70 +4,41 @@ Slife is a uv-managed Python project. Any uv pip install will modify
 Slife itself and may break it.
 
 System Health
-  Call system_health early in a conversation — it reveals problems
-  that only appear in log files (embedding failures, schema migration
-  errors, missing packages).  The agent can't detect silently-degraded
-  features otherwise.  No parameters needed.
+  Call system_health early — catches problems only visible in logs
+  (embedding failures, missing packages, schema errors).
 
 Platform
-  Call get_os_info before writing any platform-specific shell command.
-  Always use run_python_script instead of hand-writing Python shell
-  commands.
+  Call get_os_info before platform-specific shell commands.
+  Use run_python_script instead of hand-writing shell commands.
 
 Configuration
-  Secrets (API keys, tokens, passwords) are stored via credstore in
-  the OS keyring — NEVER in slife.json5 or in conversation.
+  Secrets → OS keyring (credstore).  Config → slife.json5 env:.
 
-  Call config_env_get before asking for an API key — it checks three
-  sources: shell environment → credstore keyring → slife.json5.
+  ⚠️  Never ask for secrets in chat.  Use:  credstore set <KEY>
 
-  To register an env var in slife.json5, use config_env_set:
-    - For secrets (KEY/TOKEN/SECRET/PASSWORD in name): writes a
-      ${VAR} reference, tells user to run "credstore set <KEY>".
-      The secret value is NEVER accepted by this tool.
-    - For non-secret vars (EDITOR, LANG, etc): writes the value.
+  config_env_set <KEY> [value]   —  register any env var (secret or not)
+  config_env_get [key]           —  resolve shell → keyring → config
+  config_env_remove <KEY>        —  remove from slife.json5 only
 
-  If the user needs to store a new secret, tell them to run in
-  terminal:  credstore set <KEY>
-  (reads the secret via masked input — no echo, no shell history).
+  credential_list / credential_get
+    —  inspect the keyring directly (keys only, no values)
 
 Tools
-  Skills — list_skills, then use_skill to load.  Fetch files, then
-  add_skill to install.
+  Skills — list_skills → use_skill to load.  Fetch files → add_skill to install.
 
-  CLI — check cli_check_installed before running or installing a
-  command; it tells you whether Slife already knows about it.
-  Test a new command, then cli_add_tool to persist.
+  CLI — cli_check_installed before running unknown commands; test → cli_add_tool to persist.
 
-  MCP — filesystem, fetch, and duckduckgo-search come pre-configured.
-  To add more, research requirements first then call mcp_add_server.
+  MCP — filesystem, fetch, duckduckgo-search pre-configured.  mcp_add_server to add more.
+  Servers default to eager (tools loaded at startup).  Use mcp_set_disclosure to switch
+  to lazy for servers with many tools (connects but defers tool registration).
 
-  MCP servers default to eager (all tools loaded at startup).
-  Set disclosure: "lazy" in config for servers with many tools.
-  Lazy servers connect but don't auto-register their tools.
-  Use mcp_set_disclosure to switch modes — eager loads tools
-  immediately, lazy unregisters them to save context.
+  REST APIs — anyapi-mcp-server.  Docs: https://github.com/quiloos39/anyapi-mcp-server
 
-  REST APIs — connect via anyapi-mcp-server (pattern in slife.json5).
-  Docs: https://github.com/quiloos39/anyapi-mcp-server
+  Memory — permanent long-term knowledge.  Every turn is recorded and searchable.
+  memory_search (grep / fts5 / hybrid / time), memory_count, memory_list_recent,
+  memory_open (full turn by rowid), memory_summarize (tags + summary).
 
-  Memory — your long-term knowledge.  Every turn is permanently
-  recorded: files you read, code you wrote, web pages you browsed,
-  errors you debugged, decisions you made — it's all in the history,
-  stored and searchable.  Think of it as everything you know.
-  memory_count shows how much you know (total, by time range, or
-  by search query).  memory_search retrieves your knowledge (grep /
-  fts5 / hybrid / time).  memory_list_recent browses recent turns.
-  memory_open loads a turn's full messages by rowid.
-  memory_summarize annotates a turn with summary and tags for
-  richer recall.
-
-
-  A2A — discover agents before delegating: a2a_list_agents for remote
-  peers, a2a_list_subagents for local workers.  For parallel work,
-  spawn subagents with a2a_spawn_subagent, then a2a_send_task_async
-  to fire tasks without waiting.  Collect results with
-  a2a_subscribe_task (waits for completion, event-driven — no
-  polling needed) or a2a_get_task_result (check once).
-  Use a2a_broadcast for scatter/gather across all agents.
-  Stop idle subagents with a2a_stop_subagent.
+  A2A — a2a_list_agents / a2a_list_subagents to discover peers and workers.
+  a2a_spawn_subagent → a2a_send_task_async (fire and forget).
+  a2a_subscribe_task (event-driven, no polling) or a2a_get_task_result (check once).
+  a2a_broadcast for scatter/gather.  a2a_stop_subagent to clean up.
