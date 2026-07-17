@@ -116,8 +116,10 @@ Not all tools are in every LLM request.  Three categories use lightweight summar
 | Key | Action |
 |-----|--------|
 | `Ctrl+C` | Quit |
-| `Ctrl+L` | Clear conversation |
-| `Esc` | Focus input field |
+| `Esc` | Cancel agent loop |
+| `Ctrl+L` | Focus input field |
+| `Home` / `End` | Scroll to top / bottom |
+| Any key | Auto-focus input + type |
 
 ## CLI Flags
 

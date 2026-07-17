@@ -2,6 +2,7 @@
 
 from textual.containers import VerticalScroll
 from textual.content import Content
+from textual.events import Key
 from textual.widgets import Static
 
 from slife.agent.llm_client import TokenUsage
@@ -12,13 +13,21 @@ class ChatView(VerticalScroll):
 
     can_focus is True so the ScrollView itself can receive focus and
     process keyboard scroll bindings (PageUp/PageDown/Home/End).
-    When focusable children exist inside the scroll container, Textual
-    may route arrow keys to focus navigation instead of scrolling;
-    keeping the container itself focusable ensures its scroll bindings
-    are always active in the key-binding resolution chain.
+    Tab is intercepted at the Screen level to always focus the input.
     """
 
     can_focus = True
+
+    async def _on_key(self, event: Key) -> None:
+        """Redirect printable keys to the input field."""
+        if event.is_printable:
+            inp = self.screen.query_one("#user-input", None)
+            if inp is not None and not inp.has_focus:
+                inp.focus()
+                await inp._on_key(event)
+                event.stop()
+                return
+        await super()._on_key(event)
 
     def add_user_message(
         self,
@@ -126,6 +135,17 @@ class AssistantMessage(Static):
         ("enter", "toggle_thinking", "Toggle thinking"),
         ("space", "toggle_thinking", "Toggle thinking"),
     ]
+
+    async def _on_key(self, event: Key) -> None:
+        """Redirect printable keys to the input field."""
+        if event.is_printable:
+            inp = self.screen.query_one("#user-input", None)
+            if inp is not None and not inp.has_focus:
+                inp.focus()
+                await inp._on_key(event)
+                event.stop()
+                return
+        await super()._on_key(event)
 
     def __init__(self, name_prefix: str | None = None):
         super().__init__("")

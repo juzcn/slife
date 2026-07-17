@@ -4,6 +4,7 @@ import json
 import logging
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.widgets import Input, Static
 
 from slife.config import Config
@@ -59,7 +60,7 @@ class StatusBar(Static):
             parts.append(f"[#6e7681]↑ {tokens:,} tokens[/#6e7681]")
 
         parts.append(
-            "[#484f58]│ Ctrl+C quit  Ctrl+L clear  Esc focus[/#484f58]"
+            "[#484f58]│ Ctrl+C quit  Esc cancel  Ctrl+L focus  Home/End scroll[/#484f58]"
         )
 
         self.update("  ".join(parts))
@@ -78,9 +79,11 @@ class SlifeApp(App):
     CSS_PATH = "slife.tcss"
 
     BINDINGS = [
-        ("ctrl+c", "quit", "Quit"),
-        ("ctrl+l", "clear_chat", "Clear"),
-        ("escape", "focus_input", "Focus Input"),
+        Binding("ctrl+c", "quit", "Quit", priority=True),
+        Binding("escape", "cancel", "Cancel agent loop", priority=True),
+        Binding("ctrl+l", "focus_input", "Focus Input"),
+        Binding("home", "scroll_home", "Scroll to top", priority=True),
+        Binding("end", "scroll_end", "Scroll to bottom", priority=True),
     ]
 
     def __init__(self, config: Config):
@@ -214,18 +217,25 @@ class SlifeApp(App):
         )
         await super().action_quit()
 
-    def action_clear_chat(self) -> None:
-        """Clear chat history and start a fresh conversation."""
-        self.service.clear()
+    def action_cancel(self) -> None:
+        """Cancel the currently running agent loop.  No-op if idle."""
+        if not self.service.inbox.busy:
+            return
+        self.service.inbox.cancel()
         chat_view = self.query_one("#chat-view", ChatView)
-        for child in list(chat_view.children):
-            child.remove()
-        self._tool_widgets.clear()
-        self._show_system_message("📖 新对话已开始", color="#3fb950")
+        chat_view.add_system_message("⏹ 已中断", color="#d29922")
 
     def action_focus_input(self) -> None:
         """Focus the input field."""
         self.query_one("#user-input").focus()
+
+    def action_scroll_home(self) -> None:
+        """Scroll chat view to the top."""
+        self.query_one("#chat-view", ChatView).scroll_home(animate=False)
+
+    def action_scroll_end(self) -> None:
+        """Scroll chat view to the bottom."""
+        self.query_one("#chat-view", ChatView).scroll_end(animate=False)
 
     # ── Status bar ───────────────────────────────────────────────
 

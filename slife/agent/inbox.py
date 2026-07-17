@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from slife.a2a.identity import AgentId, AgentMessage
 from slife.agent.conversation import Conversation
+from slife.agent.loop import AgentCancelled
 
 if TYPE_CHECKING:
     from slife.a2a.client import A2AClient
@@ -51,6 +52,15 @@ class Inbox:
         self._queue: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._runner_task: asyncio.Task | None = None
         self._processing: bool = False
+
+    # ── Cancel ────────────────────────────────────────────────────────
+
+    def cancel(self) -> None:
+        """Cancel the currently running agent loop (if any).
+
+        Safe to call when nothing is running — does nothing.
+        """
+        self._agent_loop.cancel()
 
     # ── Post ──────────────────────────────────────────────────────────
 
@@ -115,6 +125,9 @@ class Inbox:
         self._processing = True
 
         try:
+            # Reset cancel state for the new message
+            self._agent_loop.reset_cancel()
+
             # Get or create conversation for this source
             conversation = self._conversations.get_or_create(msg.source)
 
@@ -172,6 +185,8 @@ class Inbox:
                     logger.debug("on_reply_error channel=%s err=%s",
                                  msg.metadata.get("channel", "?"), e)
 
+        except AgentCancelled:
+            logger.info("inbox_cancelled source=%s", msg.source)
         except Exception as e:
             logger.warning("inbox_process_error source=%s err=%s", msg.source, e)
             if is_remote and self._on_activity:

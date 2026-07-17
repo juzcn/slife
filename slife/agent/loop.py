@@ -1,5 +1,6 @@
 """Function-calling agent loop with real-time streaming and thinking support."""
 
+import asyncio
 import json
 import logging
 import time as _time
@@ -12,6 +13,11 @@ from slife.tools.registry import ToolRegistry
 from slife.logfmt import request_scope, elapsed
 
 logger = logging.getLogger(__name__)
+
+
+class AgentCancelled(Exception):
+    """Raised when the agent loop is cancelled by user request."""
+    pass
 
 
 # ── Types ──────────────────────────────────────────────────────────
@@ -118,6 +124,15 @@ class AgentLoop:
         self.tool_registry = tool_registry
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
+        self._cancel_event = asyncio.Event()
+
+    def cancel(self) -> None:
+        """Signal the agent loop to stop at the next safe point."""
+        self._cancel_event.set()
+
+    def reset_cancel(self) -> None:
+        """Clear the cancel signal for the next run."""
+        self._cancel_event.clear()
 
     # ── Tool call helpers ──────────────────────────────────────────
 
@@ -186,6 +201,9 @@ class AgentLoop:
         Emits thinking and text chunks to the handler in real-time.
         Accumulates tool call deltas, content, and usage.
 
+        When cancelled, stops emitting to the handler but continues
+        consuming the stream to avoid resource leaks.
+
         Returns a _StreamResult with the complete response data.
         """
         content_parts: list[str] = []
@@ -199,12 +217,12 @@ class AgentLoop:
         ):
             if chunk.thinking:
                 thinking_parts.append(chunk.thinking)
-                if handler:
+                if handler and not self._cancel_event.is_set():
                     await handler.on_thinking_chunk(chunk.thinking)
 
             if chunk.content:
                 content_parts.append(chunk.content)
-                if handler:
+                if handler and not self._cancel_event.is_set():
                     await handler.on_text_chunk(chunk.content)
 
             if chunk.tool_deltas:
@@ -295,6 +313,7 @@ class AgentLoop:
 
         Raises:
             MaxIterationsExceeded: If the loop exceeds max_iterations.
+            AgentCancelled: If cancel() was called during execution.
         """
         conversation.add_user_message(user_input, images=images)
         total_usage = TokenUsage()
@@ -305,8 +324,20 @@ class AgentLoop:
 
         with request_scope(user_input[:50]):
             for i in range(self.max_iterations):
+                # Check for cancellation before each iteration
+                if self._cancel_event.is_set():
+                    logger.info("agent_cancelled iter=%d", i + 1)
+                    raise AgentCancelled()
+
                 with elapsed("iter", logger, iter=i + 1):
                     result = await self._process_stream(conversation, handler)
+
+                    # Check for cancellation after stream (may have been
+                    # cancelled mid-stream — stop emitting was handled in
+                    # _process_stream, now break out of the loop)
+                    if self._cancel_event.is_set():
+                        logger.info("agent_cancelled after_stream iter=%d", i + 1)
+                        raise AgentCancelled()
 
                     total_usage = total_usage + result.usage
                     if handler:
