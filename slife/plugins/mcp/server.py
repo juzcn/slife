@@ -15,7 +15,7 @@ from typing import Literal
 from fastmcp import FastMCP
 
 from slife.plugins.mcp.connection import ConnectionPool, ServerConfig
-from slife.server_utils import setup_server_logging
+from slife.server_utils import setup_server_logging, ok_json, error_json
 
 logger = logging.getLogger("slife_mcp")
 
@@ -71,10 +71,10 @@ async def mcp_add_server(
     source: dict | None = None,
 ) -> str:
     if not command and not url:
-        return json.dumps({
-            "status": "error", "server": name,
-            "error": "Either 'command' (for stdio) or 'url' (for HTTP) must be provided.",
-        }, indent=2)
+        return error_json(
+            "Either 'command' (for stdio) or 'url' (for HTTP) must be provided.",
+            server=name,
+        )
 
     config = ServerConfig(
         name=name,
@@ -93,28 +93,22 @@ async def mcp_add_server(
         if conn.status.value == "connected":
             tools = conn.list_tools()
             tool_names = [t["name"] for t in tools]
-            return json.dumps(
-                {
-                    "status": "connected",
-                    "server": name,
-                    "transport": config.transport,
-                    "tool_count": len(tools),
-                    "tools": tool_names,
-                },
-                indent=2,
+            return ok_json(
+                status="connected",
+                server=name,
+                transport=config.transport,
+                tool_count=len(tools),
+                tools=tool_names,
             )
         else:
-            return json.dumps(
-                {
-                    "status": conn.status.value,
-                    "server": name,
-                    "error": conn.error or "Unknown error",
-                },
-                indent=2,
+            return error_json(
+                conn.error or "Unknown error",
+                status=conn.status.value,
+                server=name,
             )
     except Exception as e:
         logger.exception("mcp_add_failed server=%s", name)
-        return json.dumps({"status": "error", "server": name, "error": str(e)}, indent=2)
+        return error_json(str(e), server=name)
 
 
 @mcp.tool(
@@ -132,10 +126,10 @@ async def mcp_remove_server(name: str) -> str:
     """
     try:
         await _pool.remove_server(name)
-        return json.dumps({"status": "removed", "server": name}, indent=2)
+        return ok_json(status="removed", server=name)
     except Exception as e:
         logger.exception("mcp_remove_failed server=%s", name)
-        return json.dumps({"status": "error", "server": name, "error": str(e)}, indent=2)
+        return error_json(str(e), server=name)
 
 
 @mcp.tool(
@@ -151,7 +145,7 @@ async def mcp_list_servers() -> str:
     servers = _pool.list_servers()
     if not servers:
         return "No MCP servers configured."
-    return json.dumps(servers, indent=2)
+    return json.dumps(servers, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
@@ -171,12 +165,13 @@ async def mcp_list_tools(server: str) -> str:
     try:
         tools = _pool.list_all_tools(server_name=server)
         if not tools:
-            return json.dumps({"tools": [], "server": server, "note": f"No tools from server '{server}'."})
+            return ok_json(tools=[], server=server,
+                           note=f"No tools from server '{server}'.")
 
-        return json.dumps({"tools": tools}, indent=2)
+        return ok_json(tools=tools)
     except Exception as e:
         logger.exception("mcp_list_tools_failed")
-        return json.dumps({"error": str(e)})
+        return error_json(str(e))
 
 
 @mcp.tool(
@@ -190,7 +185,7 @@ async def mcp_list_tools(server: str) -> str:
 )
 async def mcp_check_server(name: str) -> str:
     result = _pool.check_server(name)
-    return json.dumps(result, indent=2)
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
@@ -207,27 +202,20 @@ async def mcp_set_disclosure(name: str, disclosure: Literal["eager", "lazy"]) ->
         if disclosure == "eager":
             result = await _pool.activate_server(name)
             result["disclosure"] = "eager"
-            return json.dumps(result, indent=2)
+            return json.dumps(result, ensure_ascii=False, indent=2)
         else:
             conn = _pool.get_server(name)
             if conn is None:
-                return json.dumps(
-                    {"status": "error", "server": name, "error": f"Server '{name}' not found."},
-                    indent=2,
-                )
-            return json.dumps(
-                {
-                    "status": "ok",
-                    "server": name,
-                    "disclosure": "lazy",
-                    "tool_count": conn.tool_count,
-                    "note": "Tools unregistered immediately. Server stays connected — switch back to eager to reload.",
-                },
-                indent=2,
+                return error_json(f"Server '{name}' not found.", server=name)
+            return ok_json(
+                server=name,
+                disclosure="lazy",
+                tool_count=conn.tool_count,
+                note="Tools unregistered immediately. Server stays connected — switch back to eager to reload.",
             )
     except Exception as e:
         logger.exception("mcp_disclosure_failed server=%s", name)
-        return json.dumps({"status": "error", "server": name, "error": str(e)}, indent=2)
+        return error_json(str(e), server=name)
 
 
 @mcp.tool(
@@ -278,19 +266,16 @@ async def mcp_reload(server: str | None = None) -> str:
     if server:
         conn = _pool.get_server(server)
         if conn is None:
-            return json.dumps({"status": "error", "server": server, "error": "Server not found"}, indent=2)
+            return error_json(f"Server '{server}' not found.", server=server)
 
         config = conn.config
         await _pool.remove_server(server)
         new_conn = await _pool.add_server(config)
 
-        return json.dumps(
-            {
-                "status": new_conn.status.value,
-                "server": server,
-                "tool_count": new_conn.tool_count,
-            },
-            indent=2,
+        return ok_json(
+            status=new_conn.status.value,
+            server=server,
+            tool_count=new_conn.tool_count,
         )
     else:
         servers = _pool.list_servers()
@@ -314,7 +299,7 @@ async def mcp_reload(server: str | None = None) -> str:
                 "tool_count": conn.tool_count,
             })
 
-        return json.dumps(results, indent=2)
+        return json.dumps(results, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
@@ -330,41 +315,41 @@ async def mcp_enable_server(name: str) -> str:
     conn = _pool.get_server(name)
     if conn is None:
         # Server not in pool — look it up in config and add
-        return json.dumps({
-            "status": "error", "server": name,
-            "error": f"Server '{name}' not found. Use mcp_add_server to add it first.",
-        }, indent=2)
+        return error_json(
+            f"Server '{name}' not found. Use mcp_add_server to add it first.",
+            server=name,
+        )
 
     conn.config.enabled = True
     try:
         # If already connected, just return current state
         if conn.status.value == "connected":
             tools = conn.list_tools()
-            return json.dumps({
-                "status": "already_connected",
-                "server": name,
-                "tool_count": len(tools),
-                "tools": [t["name"] for t in tools],
-            }, indent=2)
+            return ok_json(
+                status="already_connected",
+                server=name,
+                tool_count=len(tools),
+                tools=[t["name"] for t in tools],
+            )
 
         await conn.connect()
         if conn.status.value == "connected":
             tools = conn.list_tools()
-            return json.dumps({
-                "status": "connected",
-                "server": name,
-                "tool_count": len(tools),
-                "tools": [t["name"] for t in tools],
-            }, indent=2)
+            return ok_json(
+                status="connected",
+                server=name,
+                tool_count=len(tools),
+                tools=[t["name"] for t in tools],
+            )
         else:
-            return json.dumps({
-                "status": conn.status.value,
-                "server": name,
-                "error": conn.error or "Unknown error",
-            }, indent=2)
+            return error_json(
+                conn.error or "Unknown error",
+                status=conn.status.value,
+                server=name,
+            )
     except Exception as e:
         logger.exception("mcp_enable_failed server=%s", name)
-        return json.dumps({"status": "error", "server": name, "error": str(e)}, indent=2)
+        return error_json(str(e), server=name)
 
 
 @mcp.tool(
@@ -378,17 +363,14 @@ async def mcp_enable_server(name: str) -> str:
 async def mcp_disable_server(name: str) -> str:
     conn = _pool.get_server(name)
     if conn is None:
-        return json.dumps({
-            "status": "error", "server": name,
-            "error": f"Server '{name}' not found.",
-        }, indent=2)
+        return error_json(f"Server '{name}' not found.", server=name)
 
     conn.config.enabled = False
     await _pool.remove_server(name)
-    return json.dumps({
-        "status": "disabled",
-        "server": name,
-    }, indent=2)
+    return ok_json(
+        status="disabled",
+        server=name,
+    )
 
 
 # ── Entry point ──────────────────────────────────────────────────────
@@ -399,9 +381,14 @@ def main():
 
     Always uses stdio — slife-mcp is always spawned as a child process.
     """
-    logger.info("log_path=%s", _log_path)
-    logger.info("mcp_start transport=stdio")
-    mcp.run(transport="stdio")
+    from slife.logfmt import elapsed
+
+    logger.info(
+        "mcp_start transport=stdio log=%s pid=%s", _log_path, os.getpid(),
+    )
+    with elapsed("mcp_init", logger, level=logging.INFO, transport="stdio"):
+        mcp.run(transport="stdio")
+    logger.info("mcp_stop")
 
 
 if __name__ == "__main__":

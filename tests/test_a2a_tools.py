@@ -598,7 +598,7 @@ class TestA2ANotifyUserTool:
     @pytest.mark.asyncio
     async def test_notification_sent(self):
         tool = A2ANotifyUserTool()
-        with patch("slife.tools.a2a._desktop_notify"):
+        with patch("slife.platform.desktop_notify"):
             result = await tool.execute(title="Test", message="Hello world")
         assert "Notification sent" in result
         assert "Test" in result

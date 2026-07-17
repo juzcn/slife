@@ -427,3 +427,26 @@ class TestTrimContext:
         # Should not crash without system prompt
         if len(conv.messages) > 0:
             assert conv.messages[0]["role"] == "user"
+
+    def test_trim_no_user_messages_to_trim(self):
+        """When only assistant messages remain (no user turns), trim exits early.
+        This covers the break on line 232 (no complete turns left to trim)."""
+        conv = Conversation()
+        # Add only assistant messages (no user messages) — so count_tokens()
+        # will be high but no user turns to remove.
+        for i in range(50):
+            conv.messages.append({
+                "role": "assistant",
+                "content": "x" * 500,
+            })
+
+        removed = conv.trim_context(context_window=100, floor=0.1, ceiling=0.2)
+        # Should exit early with break since there are no user messages to
+        # anchor turn boundaries
+        assert removed == 0
+
+    def test_trim_zero_window_returns_zero(self):
+        conv = Conversation(system_prompt="test")
+        conv.add_user_message("hello")
+        removed = conv.trim_context(context_window=0)
+        assert removed == 0

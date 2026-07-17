@@ -4,6 +4,7 @@ import asyncio
 import logging
 import shutil
 import signal
+import subprocess as _subprocess
 import sys
 import platform as _platform
 
@@ -126,3 +127,39 @@ async def terminate_process(
         pass  # Already exited
     except Exception as e:
         logger.debug("process_terminate_error label=%s err=%s", label, e)
+
+
+def desktop_notify(title: str, message: str) -> None:
+    """Fire a best-effort desktop notification (cross-platform).
+
+    Uses native platform facilities — never raises, never blocks the
+    caller on failure.
+    """
+    system = _platform.system()
+    try:
+        if system == "Windows":
+            _subprocess.run(
+                ["powershell", "-Command",
+                 f"Add-Type -AssemblyName System.Windows.Forms; "
+                 f"$n = New-Object System.Windows.Forms.NotifyIcon; "
+                 f"$n.Icon = [System.Drawing.SystemIcons]::Information; "
+                 f"$n.BalloonTipTitle = '{title}'; "
+                 f"$n.BalloonTipText = '{message}'; "
+                 f"$n.Visible = $true; "
+                 f"$n.ShowBalloonTip(5000);"],
+                capture_output=True, timeout=10,
+            )
+        elif system == "Darwin":
+            _subprocess.run(
+                ["osascript", "-e",
+                 f'display notification "{message}" with title "{title}"'],
+                capture_output=True, timeout=5,
+            )
+        else:
+            _subprocess.run(
+                ["notify-send", title, message],
+                capture_output=True, timeout=5,
+            )
+    except Exception:
+        # Desktop notification is best-effort — never let it fail the caller
+        pass

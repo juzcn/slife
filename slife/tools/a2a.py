@@ -33,8 +33,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os as _os
-import platform as _platform
-import subprocess as _subprocess
 from typing import TYPE_CHECKING
 
 from slife.tools.base import Tool, require_params
@@ -67,38 +65,6 @@ def _get_transports():
     from slife.subagent.process import get_manager
 
     return get_manager(), get_client()
-
-
-def _desktop_notify(title: str, message: str) -> None:
-    """Fire a best-effort desktop notification (cross-platform)."""
-    system = _platform.system()
-    try:
-        if system == "Windows":
-            _subprocess.run(
-                ["powershell", "-Command",
-                 f"Add-Type -AssemblyName System.Windows.Forms; "
-                 f"$n = New-Object System.Windows.Forms.NotifyIcon; "
-                 f"$n.Icon = [System.Drawing.SystemIcons]::Information; "
-                 f"$n.BalloonTipTitle = '{title}'; "
-                 f"$n.BalloonTipText = '{message}'; "
-                 f"$n.Visible = $true; "
-                 f"$n.ShowBalloonTip(5000);"],
-                capture_output=True, timeout=10,
-            )
-        elif system == "Darwin":
-            _subprocess.run(
-                ["osascript", "-e",
-                 f'display notification "{message}" with title "{title}"'],
-                capture_output=True, timeout=5,
-            )
-        else:
-            _subprocess.run(
-                ["notify-send", title, message],
-                capture_output=True, timeout=5,
-            )
-    except Exception:
-        # Desktop notification is best-effort — never let it fail the tool
-        pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -867,7 +833,8 @@ class A2ANotifyUserTool(Tool):
 
         # Fire desktop notification (best-effort, non-blocking)
         loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, _desktop_notify, title, message)
+        from slife.platform import desktop_notify
+        loop.run_in_executor(None, desktop_notify, title, message)
 
         return f"Notification sent: [{title}] {message}"
 

@@ -7,7 +7,7 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
-from slife.server_utils import setup_server_logging
+from slife.server_utils import setup_server_logging, shutdown_server_logging
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────
@@ -145,3 +145,48 @@ class TestSetupServerLogging:
         handlers = logging.getLogger().handlers
         stderr_handler = handlers[0]
         assert isinstance(stderr_handler.formatter, logging.Formatter)
+
+
+# ── shutdown_server_logging ─────────────────────────────────────────────
+
+
+class TestShutdownServerLogging:
+    """Tests for shutdown_server_logging()."""
+
+    def test_noop_when_no_handlers(self):
+        """Safe to call when no handlers are set up."""
+        root = logging.getLogger()
+        root.handlers.clear()
+        # Should not raise
+        shutdown_server_logging()
+
+    def test_closes_and_removes_all_handlers(self, tmp_path):
+        """All handlers are flushed, closed, and removed."""
+        _, _ = _run_with_mocks(tmp_path / "logs")
+        root = logging.getLogger()
+        assert len(root.handlers) > 0
+
+        shutdown_server_logging()
+        assert len(root.handlers) == 0
+
+    def test_handler_close_error_swallowed(self):
+        """Exceptions during handler.close() are caught, not propagated."""
+        root = logging.getLogger()
+        root.handlers.clear()
+        bad_handler = MagicMock()
+        bad_handler.close.side_effect = OSError("file locked")
+        bad_handler.flush = MagicMock()
+        root.addHandler(bad_handler)
+
+        # Should not raise
+        shutdown_server_logging()
+        assert len(root.handlers) == 0
+
+    def test_extra_logger_names_cleaned(self):
+        """Child loggers with their own handlers are also cleaned."""
+        child = logging.getLogger("test_extra_cleanup")
+        child.handlers.clear()
+        child.addHandler(logging.StreamHandler())
+
+        shutdown_server_logging(extra_logger_names=("test_extra_cleanup",))
+        assert len(child.handlers) == 0

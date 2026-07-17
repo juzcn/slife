@@ -42,12 +42,15 @@ def main(config_path: str = "slife.json5", agent_name: str | None = None):
     os.environ["SLIFE_USER"] = user
 
     logger.debug("log_path=%s", log_path)
+    from slife.logfmt import elapsed as _elapsed
+
     logger.debug("config loading…")
-    try:
-        config = Config.from_json5(config_path, agent_name=agent_name, user=user)
-    except Exception:
-        logger.exception("config_load_failed path=%s", config_path)
-        raise
+    with _elapsed("config_load", logger, level=logging.DEBUG, path=config_path):
+        try:
+            config = Config.from_json5(config_path, agent_name=agent_name, user=user)
+        except Exception:
+            logger.exception("config_load_failed path=%s", config_path)
+            raise
     from slife.health import record
     record(
         "config", "ok",

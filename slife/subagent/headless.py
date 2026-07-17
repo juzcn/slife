@@ -19,40 +19,13 @@ import sys
 import threading
 from pathlib import Path
 
-logger = logging.getLogger("Slife.subagent")
+from slife.server_utils import setup_server_logging, shutdown_server_logging
+from slife.logfmt import elapsed
 
+logger = logging.getLogger("slife_subagent")
 
-_log_handler: logging.FileHandler | None = None
-"""Module-level reference so we can close the handler on shutdown."""
-
-
-def _setup_logging() -> Path:
-    global _log_handler
-    from slife.logfmt import init_session_id, SessionFormatter, FILE_LOG_FORMAT, silence_noisy_loggers
-    sid = init_session_id(); os.environ["SLIFE_SESSION_ID"] = sid
-    (log_dir := Path("logs")).mkdir(exist_ok=True)
-    from datetime import datetime
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    name = os.environ.get("SLIFE_SUBAGENT_NAME", "subagent")
-    log_path = log_dir / f"{ts}_slife_{name}.log"
-    root = logging.getLogger(); root.setLevel(logging.DEBUG)
-    _log_handler = logging.FileHandler(log_path, encoding="utf-8")
-    _log_handler.setLevel(logging.DEBUG)
-    _log_handler.setFormatter(SessionFormatter(FILE_LOG_FORMAT))
-    root.addHandler(_log_handler)
-    silence_noisy_loggers()
-    return log_path
-
-
-def _shutdown_logging() -> None:
-    """Close and remove the file handler, releasing the Windows file lock."""
-    global _log_handler
-    if _log_handler is not None:
-        root = logging.getLogger()
-        root.removeHandler(_log_handler)
-        _log_handler.flush()
-        _log_handler.close()
-        _log_handler = None
+#: Set by ``run_headless`` — log path so callers can find it.
+_log_path: Path | None = None
 
 
 def _write(result=None, error=None, rpc_id=None) -> None:
@@ -82,10 +55,20 @@ async def _process(task_text: str, rpc_id, service) -> None:
     )
 
     try:
-        result = await service.agent_loop.run(user_input=task_text, conversation=conv, handler=None)
+        with elapsed("task_loop", logger, level=logging.INFO, rpc_id=rpc_id):
+            result = await service.agent_loop.run(
+                user_input=task_text, conversation=conv, handler=None,
+            )
         _write(result=result.text, rpc_id=rpc_id)
-        logger.info("task_done id=%s tok=%d", rpc_id, result.usage.total_tokens)
+        logger.info(
+            "task_done id=%s tok_p=%s tok_c=%s tok_t=%s",
+            rpc_id,
+            result.usage.prompt_tokens,
+            result.usage.completion_tokens,
+            result.usage.total_tokens,
+        )
     except MaxIterationsExceeded as e:
+        logger.warning("task_loop_exceeded id=%s err=%s", rpc_id, e)
         _write(error={"code": -32000, "message": str(e)}, rpc_id=rpc_id)
     except Exception as e:
         logger.error("task_error id=%s err=%s", rpc_id, e)
@@ -93,22 +76,39 @@ async def _process(task_text: str, rpc_id, service) -> None:
 
 
 async def run_headless(config_path: str = "slife.json5") -> None:
+    global _log_path
     from slife.config import Config
     from slife.agent.service import AgentService
 
-    log_path = _setup_logging()
-    logger.info("start config=%s log=%s", config_path, log_path)
+    _log_path = setup_server_logging("slife_subagent")
+    logger.info(
+        "subagent_start config=%s log=%s name=%s pid=%s",
+        config_path, _log_path,
+        os.environ.get("SLIFE_SUBAGENT_NAME", "?"),
+        os.getpid(),
+    )
 
-    config = Config.from_json5(config_path)
-    logger.info("model=%s tools=%d", config.active_model.ref, len(config.tools))
+    with elapsed("config_load", logger, level=logging.INFO, path=config_path):
+        config = Config.from_json5(config_path)
+    logger.info(
+        "config_loaded model=%s tools=%d memory=%s mcp=%s a2a=%s",
+        config.active_model.ref,
+        len(config.tools),
+        "on" if config.memory_config else "off",
+        "on" if config.mcp_config else "off",
+        "on" if config.a2a_config else "off",
+    )
 
     service = AgentService(config)
     if config.mcp_config:
-        try: await service.start_mcp()
-        except Exception as e: logger.warning("mcp_failed err=%s", e)
+        try:
+            with elapsed("mcp_startup", logger, level=logging.INFO):
+                await service.start_mcp()
+        except Exception as e:
+            logger.warning("mcp_failed err=%s", e)
 
     _write(result={"ready": True})
-    logger.info("ready")
+    logger.info("subagent_ready")
 
     # Read JSON-RPC lines from stdin.  On Windows, connect_read_pipe
     # fails with OSError [WinError 6] (句柄无效) when sys.stdin is a
@@ -133,34 +133,55 @@ async def run_headless(config_path: str = "slife.json5") -> None:
 
     threading.Thread(target=_feed_stdin, daemon=True).start()
 
+    request_count = 0
     try:
         while True:
             line = await reader.readline()
-            if not line: break
-            try: req = json.loads(line.decode("utf-8", errors="replace"))
-            except json.JSONDecodeError: continue
+            if not line:
+                break
+            try:
+                req = json.loads(line.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                continue
 
             method = req.get("method", "")
             rpc_id = req.get("id")
             params = req.get("params", {})
 
-            if method == "shutdown": break
+            if method == "shutdown":
+                logger.info("subagent_shutdown requested task_count=%d", request_count)
+                break
             elif method == "tasks/send":
+                request_count += 1
                 task_text = params.get("task", "")
                 if not task_text:
-                    _write(error={"code": -32602, "message": "Invalid params: task required"}, rpc_id=rpc_id)
+                    _write(
+                        error={"code": -32602, "message": "Invalid params: task required"},
+                        rpc_id=rpc_id,
+                    )
                     continue
                 await _process(task_text, rpc_id, service)
             else:
-                _write(error={"code": -32601, "message": f"Method not found: {method}"}, rpc_id=rpc_id)
+                _write(
+                    error={"code": -32601, "message": f"Method not found: {method}"},
+                    rpc_id=rpc_id,
+                )
     finally:
-        logger.info("shutdown")
+        logger.info(
+            "subagent_stop task_count=%d tok_p=%s tok_c=%s tok_t=%s",
+            request_count,
+            service.session_usage.prompt_tokens,
+            service.session_usage.completion_tokens,
+            service.session_usage.total_tokens,
+        )
         await service.stop_mcp()
-        _shutdown_logging()
+        shutdown_server_logging()
 
 
 def main(argv: list[str] | None = None) -> None:
-    config_path = next((a for a in (argv or []) if not a.startswith("-")), "slife.json5")
+    config_path = next(
+        (a for a in (argv or []) if not a.startswith("-")), "slife.json5",
+    )
     asyncio.run(run_headless(config_path))
 
 

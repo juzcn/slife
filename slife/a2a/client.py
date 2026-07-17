@@ -381,52 +381,6 @@ class A2AClient:
         get_store().record_error(task_id, "timeout")
         raise TimeoutError(f"Subscribe to task '{task_id}' timed out after {timeout}s")
 
-    async def set_push_notification(
-        self, task_id: str, notify_topic: str,
-    ) -> bool:
-        """Configure push notifications for *task_id*.
-
-        Publishes a configuration message asking the target agent to push
-        status updates to *notify_topic*.  The local client subscribes to
-        that topic so updates arrive as MQTT messages.
-
-        Returns ``True`` if the configuration was published.
-        """
-        from slife.a2a.task_store import get_store
-
-        rec = get_store().get(task_id)
-        if rec is None:
-            return False
-
-        # Subscribe locally
-        try:
-            await self._adapter.subscribe(notify_topic)
-        except Exception:
-            pass
-
-        # Tell the target agent where to push updates
-        config_payload = json.dumps({
-            "correlation_id": task_id,
-            "source": self._agent_id,
-            "action": "set_push_notification",
-            "notify_topic": notify_topic,
-        })
-        try:
-            await self._adapter.publish(
-                f"Slife/{rec.agent_id}/tasks/inbox",
-                config_payload, qos=1,
-            )
-        except Exception:
-            return False
-
-        logger.info(
-            "a2a_push_notification_set task_id=%s topic=%s",
-            task_id, notify_topic,
-        )
-        return True
-
-    # ── Presence / heartbeat ──────────────────────────────────────────
-
     async def _publish_presence(self, status_override: str | None = None) -> None:
         """Publish our presence (called on connect, heartbeat, status change)."""
         card = AgentCard(
@@ -566,40 +520,6 @@ class A2AClient:
         finally:
             f_inbox.cancel()
             f_result.cancel()
-
-    async def _wait_for_message(
-        self,
-        inbox_q: asyncio.Queue | None,
-        result_q: asyncio.Queue | None,
-    ) -> MQTTMessage | None:
-        """Wait for the next message from either queue.
-
-        Uses individual ``get()`` coroutines wrapped in tasks so we can
-        wait on both queues simultaneously.  The ``try/finally`` ensures
-        every task is cancelled on *any* exit path — including the
-        ``asyncio.wait_for`` timeout in :meth:`_inbox_listener`.  Without
-        this, orphaned ``get()`` tasks accumulate and silently consume
-        inbound messages, making A2A task delivery look broken.
-        """
-        tasks: list[asyncio.Task] = []
-        try:
-            if inbox_q is not None:
-                tasks.append(asyncio.create_task(inbox_q.get()))
-            if result_q is not None:
-                tasks.append(asyncio.create_task(result_q.get()))
-
-            if not tasks:
-                await asyncio.sleep(0.5)
-                return None
-
-            done, _ = await asyncio.wait(
-                tasks, return_when=asyncio.FIRST_COMPLETED,
-            )
-            return await done.pop()
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
 
     async def _handle_incoming_task(self, msg: MQTTMessage) -> None:
         """Process an incoming task request."""

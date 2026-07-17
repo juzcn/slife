@@ -116,14 +116,16 @@ class SubagentProcess:
             try:
                 shutdown = json.dumps({"jsonrpc":"2.0","method":"shutdown","id":None}) + "\n"
                 self._process.stdin.write(shutdown.encode()); await self._process.stdin.drain()
-            except Exception: pass
+            except Exception:
+                logger.debug("shutdown_send_failed name=%s", self._name, exc_info=True)
         await terminate_process(self._process, label=f"subagent:{self._name}")
         self._running = False; self._process = None
         # Await both reader tasks
         for t in (stdout_task, stderr_task):
             if t and not t.done():
                 try: await t
-                except (asyncio.CancelledError, Exception): pass
+                except (asyncio.CancelledError, Exception):
+                    logger.debug("reader_cancel name=%s", self._name, exc_info=True)
 
     async def send_task(self, task: str, timeout: float = 120.0) -> str:
         if not self.is_running or not self._process or not self._process.stdin:
@@ -247,19 +249,15 @@ class SubagentProcess:
                                 params.get("pct", "?"),
                             )
                         self._resolve_push(task_id, msg)
-        except Exception: pass  # CancelledError + pipe closure on shutdown
+        except Exception:
+            logger.debug("stdout_read_error name=%s", self._name, exc_info=True)
 
     async def _read_stderr(self) -> None:
-        from slife.logfmt import read_stderr_lines
-
-        async for text in read_stderr_lines(
-            self._process, lambda: self._running,
-        ):
-            # Always DEBUG — subagent stderr is diagnostic only.
-            # Errors are already communicated via JSON-RPC on stdout;
-            # leaking stderr to the parent terminal at WARNING would
-            # pollute the TUI with raw error text the user shouldn't see.
-            logger.debug("[subagent:%s] %s", self._name, text)
+        from slife.logfmt import drain_stderr
+        await drain_stderr(
+            self._process, f"subagent:{self._name}", logger,
+            running_check=lambda: self._running,
+        )
 
 
 class SubagentManager:

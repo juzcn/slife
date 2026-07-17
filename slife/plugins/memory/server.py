@@ -380,11 +380,15 @@ def _read_db_path_from_config(config_path: str) -> Path | None:
 
 def main():
     import argparse
+    from slife.logfmt import elapsed
+
     parser = argparse.ArgumentParser(description="slife-memory server")
     parser.add_argument("--db", default=None)
     args = parser.parse_args()
 
-    logger.info("log_path=%s", _log_path)
+    logger.info(
+        "memory_start log=%s pid=%s", _log_path, os.getpid(),
+    )
 
     db_path = Path(args.db).expanduser() if args.db else None
     if db_path is None:
@@ -395,19 +399,25 @@ def main():
 
     async def _init():
         global _store, _embedder
-        _embedder = EmbeddingClient.from_config()
+        with elapsed("embedder_init", logger, level=logging.INFO):
+            _embedder = EmbeddingClient.from_config()
         _store = SessionStore(db_path)
-        await _store.setup(embedding_dim=_embedder.dimension)
+        with elapsed("store_setup", logger, level=logging.INFO, db=str(db_path)):
+            await _store.setup(embedding_dim=_embedder.dimension)
         if _embedder.available:
-            logger.info("embeddings_ready backend=%s model=%s dim=%d",
-                        _embedder.backend, _embedder._model, _embedder.dimension)
+            logger.info(
+                "embeddings_ready backend=%s model=%s dim=%d",
+                _embedder.backend, _embedder._model, _embedder.dimension,
+            )
         else:
             logger.info("embeddings_disabled")
 
-    asyncio.run(_init())
+    with elapsed("memory_init", logger, level=logging.INFO, db=str(db_path)):
+        asyncio.run(_init())
 
-    logger.info("memory_start transport=stdio db=%s", db_path)
+    logger.info("memory_ready transport=stdio db=%s", db_path)
     mcp.run(transport="stdio")
+    logger.info("memory_stop")
 
 
 if __name__ == "__main__":

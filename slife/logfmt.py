@@ -202,3 +202,25 @@ async def read_stderr_lines(process, running_check=None):
                 yield text
     except (asyncio.CancelledError, Exception):
         pass
+
+
+async def drain_stderr(
+    process,
+    prefix: str,
+    logger: logging.Logger,
+    running_check=None,
+) -> None:
+    """Async task: read and log stderr from *process* with *prefix*.
+
+    A thin convenience wrapper around :func:`read_stderr_lines`.  Every
+    non-empty stderr line is logged at DEBUG with the given prefix, e.g.
+    ``[subagent:foo]`` or ``[mosquitto]``.
+
+    Args:
+        process: ``asyncio.subprocess.Process`` or ``None``.
+        prefix: String label to prepend to each line.
+        logger: Logger to write to (DEBUG level).
+        running_check: Optional ``() -> bool`` to stop draining early.
+    """
+    async for text in read_stderr_lines(process, running_check):
+        logger.debug("[%s] %s", prefix, text)

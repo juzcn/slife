@@ -164,56 +164,19 @@ async def my_plugin_save(data: str) -> str: ...
 
 #### slife-wechat — WeChat iLink Bridge
 
-Bi-directional WeChat messaging via the iLink ClawBot protocol. Enables
-Slfe to receive and reply to WeChat messages from a personal account.
-
-WeChat is a **first-class peer terminal** — not a separate processing path.
-Messages flow through the unified inbox, get processed by the same agent
-loop, and replies are routed back via the message's `on_reply` callback.
-WeChat has its own persistent conversation, independent from the TUI.
+Bidirectional WeChat messaging via the iLink ClawBot protocol.  Messages flow
+through the unified inbox, get processed by the same agent loop, and replies
+are routed back via the message's `on_reply` callback.
 
 **Enable:** `wechat: { enabled: true }` in `slife.json5`.
 
-**Architecture:**
-```
-Phone WeChat ──▶ iLink API ◀── slife-wechat (FastMCP stdio)
-   ▲                ▲                │
-   │                │                ├── poll_updates() — long-poll getupdates (3s)
-   │                │                ├── send_message() — reply via sendmessage
-   │                │                └── send_typing() — typing indicator on phone
-   │                │
-   └── reply received ───────────────┘
-
-Agent-side (AgentService._wechat_poll_loop):
-  1. call_tool("check_messages") every 5s → drains pending queue
-  2. send_typing(status=1) → "typing…" on phone
-  3. AgentMessage(source=WECHAT, on_reply=…) → inbox.post()
-  4. ── inbox queue → AgentLoop.run() → handler streams to TUI ──
-  5. on_reply callback → send_message → reply arrives on phone
-  6. Typing keep-alive: background task refreshes send_typing(status=1)
-     every 8s until the reply is sent, so the user always sees
-     "对方正在输入…" during long processing.
-```
-
-**TUI integration:** incoming WeChat messages appear as `Wechat> hi` in the
-chat view. The assistant's reply streams in real-time via the shared
-`TUIHandler` default factory — identical to a locally-typed message.
-Activity callbacks and the handler factory are always active (not gated
-behind A2A), so WeChat display works regardless of whether A2A is enabled.
-
-**Data flow:** incoming messages follow the official iLink bot pattern:
-`getupdates → getconfig → sendtyping(1) → AI → sendmessage → sendtyping(2)`
-
-**Session management:** bot token is saved in `wechat_<user>.json5` (gitignored).
-Auto-restored on startup via `check_status` → `try_restore_session()`.
-Session max age: ~23 hours, after which re-login (QR scan) is required.
-
-**No user_id config needed:** the WeChat user ID (`from_user_id`) and
-`context_token` are extracted from incoming messages — no manual configuration.
-
-**Per-call aiohttp sessions** eliminate event-loop-closed errors that occur
-when FastMCP's anyio-based event loop management is incompatible with
-cached `aiohttp.ClientSession` instances.
+| Feature | Detail |
+|---------|--------|
+| Transport | HTTP long-poll (3s interval) — `getupdates → getconfig → sendtyping → AI → sendmessage` |
+| Session | Token saved in `wechat_<user>.json5`, auto-restored on startup, ~23h validity |
+| TUI integration | Incoming messages appear as `Wechat> hi`, replies stream via shared `TUIHandler` factory |
+| Typing indicator | Keep-alive task refreshes every 8s until reply is sent |
+| Config | No `user_id` needed — extracted from incoming messages |
 
 **Reference:** [SiverKing/weixin-ClawBot-API](https://github.com/SiverKing/weixin-ClawBot-API) (MIT).
 
@@ -576,6 +539,16 @@ Semantic search (`hybrid` mode) uses vector embeddings via two configurable back
 2. **OpenAI-compatible API** — uses api_key from models.providers, text-embedding-3-small by default (1536-dim)
 
 Embedding config is managed at runtime via `memory_check_embedding`, `memory_set_embedding`, and `memory_remove_embedding` — no restart needed.
+
+**Windows: llama-cpp-python** cannot be built from source (no C++ compiler).
+Install a pre-built wheel instead:
+
+```bash
+uv add "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+```
+
+Available backends: `v0.3.34-vulkan` (any GPU, falls back to CPU), `v0.3.34-cu132` / `cu125` (NVIDIA CUDA), `v0.3.34-hip-radeon` (AMD).  Vulkan is the safest default.
+Download GGUF models from [Hugging Face](https://huggingface.co/ChristianAzinn/bge-m3-gguf) — Q4_K_M quantized (~300 MiB) gives near-full accuracy.
 
 ### Session Recovery
 

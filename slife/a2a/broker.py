@@ -121,9 +121,8 @@ class BrokerManager:
 
     async def _drain_stderr(self) -> None:
         """Log mosquitto stderr output."""
-        from slife.logfmt import read_stderr_lines
-
-        async for text in read_stderr_lines(
-            self._process, lambda: self._running,
-        ):
-            logger.debug("[mosquitto] %s", text)
+        from slife.logfmt import drain_stderr
+        await drain_stderr(
+            self._process, "mosquitto", logger,
+            running_check=lambda: self._running,
+        )

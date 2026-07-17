@@ -27,7 +27,7 @@ from slife.plugins.wechat.config import (
     save_wechat_config,
     clear_wechat_config,
 )
-from slife.server_utils import setup_server_logging
+from slife.server_utils import setup_server_logging, ok_json, error_json
 
 SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
 
@@ -318,7 +318,7 @@ async def wechat_login() -> str:
         data = await _client._fetch_qrcode(BASE_URL)
     except Exception as e:
         logger.exception("qr_fetch_failed")
-        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False, indent=2)
+        return error_json(str(e))
 
     qrcode = data.get("qrcode", "")
     img = data.get("qrcode_img_content", "")
@@ -363,16 +363,10 @@ async def wechat_send_message(
     global _client
 
     if not _client.is_logged_in:
-        return json.dumps({
-            "status": "error",
-            "error": "Not logged in. Call login first.",
-        }, ensure_ascii=False, indent=2)
+        return error_json("Not logged in. Call login first.")
 
     if not to_user_id.strip() or not text.strip():
-        return json.dumps({
-            "status": "error",
-            "error": "Both to_user_id and text are required and must be non-empty.",
-        }, ensure_ascii=False, indent=2)
+        return error_json("Both to_user_id and text are required and must be non-empty.")
 
     try:
         await _client.send_message(to_user_id, context_token or "", text)
@@ -389,7 +383,7 @@ async def wechat_send_message(
         }, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("send_failed to=%s", to_user_id)
-        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False, indent=2)
+        return error_json(str(e))
 
 
 @mcp.tool(
@@ -409,26 +403,20 @@ async def wechat_send_typing(
     global _client
 
     if not _client.is_logged_in:
-        return json.dumps({
-            "status": "error",
-            "error": "Not logged in. Call login first.",
-        }, ensure_ascii=False, indent=2)
+        return error_json("Not logged in. Call login first.")
 
     if not to_user_id.strip():
-        return json.dumps({
-            "status": "error",
-            "error": "to_user_id is required.",
-        }, ensure_ascii=False, indent=2)
+        return error_json("to_user_id is required.")
 
     try:
         result = await _client.send_typing(to_user_id, context_token or "", status)
-        return json.dumps({
-            "status": "sent",
-            "typing_status": status,
-        }, ensure_ascii=False, indent=2)
+        return ok_json(
+            status="sent",
+            typing_status=status,
+        )
     except Exception as e:
         logger.debug("send_typing_error err=%s", e)
-        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False, indent=2)
+        return error_json(str(e))
 
 
 @mcp.tool(
@@ -633,9 +621,15 @@ def main():
     inside FastMCP's own event loop — this avoids the aiohttp session
     being bound to a temporary loop that gets closed.
     """
-    logger.info("log_path=%s", _log_path)
-    logger.info("wechat_start user=%s transport=stdio", _user)
-    mcp.run(transport="stdio")
+    from slife.logfmt import elapsed
+
+    logger.info(
+        "wechat_start user=%s transport=stdio log=%s pid=%s",
+        _user, _log_path, os.getpid(),
+    )
+    with elapsed("wechat_run", logger, level=logging.INFO, user=_user):
+        mcp.run(transport="stdio")
+    logger.info("wechat_stop user=%s", _user)
 
 
 if __name__ == "__main__":
