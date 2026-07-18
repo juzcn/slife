@@ -197,11 +197,11 @@ active_model: "deepseek/deepseek-v4-pro",
 
 `${ENV_VAR}` and `${ENV_VAR:-default}` syntax works everywhere — values resolve at runtime via shell → keyring → config.
 
-### Credential Management
+## Credential Management
 
-Slife ships with **credstore** — cross-platform credential storage backed by the OS keyring with an AES-encrypted file backup.  Never paste API keys into `slife.json5` or the chat.
+Slife ships with **credstore** — a standalone cross-platform secret manager backed by the OS keyring with AES-encrypted file backup.  Never paste API keys into config files or the chat.
 
-#### Setup (first time)
+### Setup (first time)
 
 ```bash
 credstore set-password
@@ -209,37 +209,52 @@ credstore set-password
 
 Creates `./credentials.crypt` and sets a master password.  Path configurable via `CREDSTORE_FILE` env var.
 
-#### Command Reference
+### CLI Reference
+
+```bash
+credstore set DEEPSEEK_API_KEY        # store (masked, atomic dual-write)
+credstore get DEEPSEEK_API_KEY        # retrieve, masked output (sk-5f…b722)
+credstore get DEEPSEEK_API_KEY -p     # retrieve, plaintext (dual-query)
+credstore list                        # list all stored keys
+credstore delete OLD_KEY              # delete from keyring + cryptfile
+credstore reset-keyring               # restore keyring from cryptfile backup
+credstore reset-backup                # sync keyring → cryptfile
+credstore status                      # show backend status
+```
 
 | Command | Master key | Description |
 |---------|:----------:|-------------|
 | `set-password` | sets it | Create/change master key, init cryptfile |
-| `set KEY` | enters it | Atomic dual-write (cryptfile + keyring) |
-| `get KEY` | no | Keyring only, masked output (`sk-5f…b722`) |
-| `get KEY -p` | enters it | Dual-query keyring + cryptfile, plaintext output |
-| `delete KEY` | enters it | Remove from keyring + cryptfile |
-| `list` | enters it | List all stored credential keys |
-| `reset-keyring` | enters it | Restore keyring from cryptfile backup |
-| `reset-backup` | enters it | Overwrite cryptfile from system keyring |
+| `set KEY` | enters it | Atomic dual-write: cryptfile first, then keyring. Rolls back on failure |
+| `get KEY` | no | Keyring only, masked output |
+| `get KEY -p` | enters it | Dual-query keyring + cryptfile, plaintext. Fails on mismatch |
+| `delete KEY` | enters it | Remove from both keyring and cryptfile |
+| `list` | enters it | List all stored credential keys (values never shown) |
+| `reset-keyring` | enters it | Restore all credentials from cryptfile → system keyring |
+| `reset-backup` | enters it | Sync all credentials from system keyring → cryptfile |
 | `status` | no | Show backend status |
 
-#### Storing an API Key
+**Disaster recovery**: when the OS keyring loses data (e.g. after a Windows password change), run `credstore reset-keyring` to restore everything from the encrypted backup.
 
-```bash
-credstore set DEEPSEEK_API_KEY       # masked input — no echo, no shell history
+### Python API
+
+```python
+import credstore
+
+# Read / check / write / delete
+credstore.get_credential("myapp/api_key")      # → str | None
+credstore.exists_credential("myapp/api_key")   # → bool
+credstore.set_credential("myapp/api_key", "sk-…")
+credstore.delete_credential("myapp/api_key")   # → bool
+
+# keyring: URI resolution — non-keyring: pass-through
+credstore.is_keyring_uri("keyring:myapp/k")    # → True
+credstore.resolve_uri("keyring:myapp/k")       # → the secret value
+
+# Backend info
+credstore.check_backend()      # → {"available": True, "backend": "…", …}
+credstore.is_cryptfile_ready() # → True if master key is set
 ```
-
-Writes to cryptfile first, then system keyring.  If keyring fails, rolls back the cryptfile entry — both stores stay consistent.
-
-#### Disaster Recovery
-
-When the OS keyring loses data (e.g. after a Windows password change):
-
-```bash
-credstore reset-keyring               # restore all from cryptfile backup
-```
-
-The agent registers references for you — just say "add a DeepSeek key" and it calls `config_secret_register`, which writes `${DEEPSEEK_API_KEY}` to the config and tells you to run `credstore set DEEPSEEK_API_KEY` in your terminal.
 
 ## Features
 
