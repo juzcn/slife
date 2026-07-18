@@ -91,14 +91,6 @@ def _resolve_env_lenient(value):
         return value
 
 
-def _is_secret_key(key: str) -> bool:
-    """Check if a key name looks like a secret (API key, token, etc.)."""
-    return any(
-        hint in key.upper()
-        for hint in ("KEY", "TOKEN", "SECRET", "PASSWORD")
-    )
-
-
 def _try_credstore_lookup(key: str) -> str | None:
     """Look up an env var name in credstore (keyring).
 
@@ -368,18 +360,7 @@ class Config:
         if description:
             server_entry["description"] = description
         if env:
-            # Sanitize: reject plaintext secrets, write ${VAR} refs instead
-            sanitized = {}
-            for k, v in env.items():
-                if _is_secret_key(k) and v and not str(v).startswith(("${", "<", "keyring:")):
-                    sanitized[k] = "${%s}" % k
-                    logger.warning(
-                        "mcp_env_secret_rejected server=%s key=%s — use credstore set %s",
-                        name, k, k,
-                    )
-                else:
-                    sanitized[k] = v
-            server_entry["env"] = sanitized
+            server_entry["env"] = dict(env)
         source = with_fetched_at(source)
         if source:
             server_entry["source"] = source
