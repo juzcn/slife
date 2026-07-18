@@ -10,8 +10,9 @@ Commands::
     credstore set <key>           Store a credential (keyring + cryptfile)
     credstore get <key>           Retrieve (keyring; cryptfile fallback on miss)
     credstore delete <key>        Delete a credential
-    credstore reset               Restore keyring from cryptfile backup
-    credstore sync                Sync system keyring → cryptfile backup
+    credstore list                List all stored credential keys
+    credstore reset-keyring       Restore keyring from cryptfile backup
+    credstore reset-backup        Sync system keyring → cryptfile backup
 """
 
 from __future__ import annotations
@@ -19,85 +20,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-
-def masked_input(prompt: str = "") -> str:
-    """Read a line from stdin, echoing ``*`` for each character.
-
-    Supports paste and backspace.  The actual characters are never
-    displayed — only ``*`` placeholders.  Works on Windows (msvcrt)
-    and Unix (termios).
-
-    Ctrl+C raises KeyboardInterrupt as usual.
-    """
-    sys.stdout.write(prompt)
-    sys.stdout.flush()
-
-    if sys.platform == "win32":
-        return _masked_input_windows()
-    else:
-        return _masked_input_unix()
-
-
-def _masked_input_windows() -> str:
-    import msvcrt
-    chars: list[str] = []
-    while True:
-        ch = msvcrt.getwch()
-        if ch in ("\r", "\n"):
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            break
-        if ch == "\x03":  # Ctrl+C
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            raise KeyboardInterrupt()
-        if ch in ("\x08", "\x7f"):  # Backspace / DEL
-            if chars:
-                chars.pop()
-                sys.stdout.write("\b \b")
-                sys.stdout.flush()
-        elif ch == "\x1b":  # Escape sequence (arrow keys, etc.)
-            # Read the rest of the escape sequence and ignore it
-            while msvcrt.kbhit():
-                msvcrt.getwch()
-        elif ord(ch) >= 32:  # Printable characters only
-            chars.append(ch)
-            sys.stdout.write("*")
-            sys.stdout.flush()
-    return "".join(chars)
-
-
-def _masked_input_unix() -> str:
-    import termios
-    import tty
-
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    chars: list[str] = []
-    try:
-        tty.setraw(fd)
-        while True:
-            ch = sys.stdin.read(1)
-            if ch in ("\r", "\n"):
-                sys.stdout.write("\n")
-                sys.stdout.flush()
-                break
-            if ch == "\x03":
-                sys.stdout.write("\n")
-                sys.stdout.flush()
-                raise KeyboardInterrupt()
-            if ch in ("\x08", "\x7f"):
-                if chars:
-                    chars.pop()
-                    sys.stdout.write("\b \b")
-                    sys.stdout.flush()
-            elif ord(ch) >= 32:
-                chars.append(ch)
-                sys.stdout.write("*")
-                sys.stdout.flush()
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    return "".join(chars)
+from credstore._tty import masked_input
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -127,30 +50,38 @@ def main(argv: list[str] | None = None) -> int:
     # get <key>
     get_p = sub.add_parser("get", help="Retrieve a credential (keyring; cryptfile fallback on miss)")
     get_p.add_argument("key", help="Credential key to retrieve")
+    get_p.add_argument(
+        "--password", "-p",
+        action="store_true",
+        help="Dual-query keyring + cryptfile, output plaintext; fail on mismatch",
+    )
 
     # delete <key>
     del_p = sub.add_parser("delete", help="Delete a credential")
     del_p.add_argument("key", help="Credential key to delete")
 
-    # reset
+    # list
+    sub.add_parser("list", help="List all stored credential keys")
+
+    # reset-keyring
     sub.add_parser(
-        "reset",
+        "reset-keyring",
         help="Restore all credentials from cryptfile backup to system keyring",
     )
 
-    # sync
+    # reset-backup
     sub.add_parser(
-        "sync",
+        "reset-backup",
         help="Sync credentials from system keyring to cryptfile backup",
     )
 
     args = parser.parse_args(argv)
 
-    # ── Gate: 'set' / 'sync' require cryptfile to exist ──
+    # ── Gate: 'set' / 'reset-backup' require cryptfile to exist ──
     # get/delete work with system keyring (no master key).
     # get has an optional cryptfile fallback (asks for master key).
-    # reset / sync ask for the master key interactively.
-    if args.command in ("set", "sync"):
+    # reset-keyring / reset-backup ask for the master key interactively.
+    if args.command in ("set", "reset-backup"):
         from credstore._backend import has_master_key
         from credstore._store import init_store
         init_store()
@@ -168,13 +99,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "set":
             return _cmd_set(args.key)
         elif args.command == "get":
-            return _cmd_get(args.key)
+            return _cmd_get(args.key, password_mode=args.password)
         elif args.command == "delete":
             return _cmd_delete(args.key)
-        elif args.command == "reset":
-            return _cmd_reset()
-        elif args.command == "sync":
-            return _cmd_sync()
+        elif args.command == "list":
+            return _cmd_list()
+        elif args.command == "reset-keyring":
+            return _cmd_reset_keyring()
+        elif args.command == "reset-backup":
+            return _cmd_reset_backup()
         else:
             parser.print_help()
             return 1
@@ -200,7 +133,11 @@ def _cmd_set_password() -> int:
     from credstore._backend import (
         get_cryptfile, reinit_cryptfile,
     )
-    from credstore._store import DEFAULT_SERVICE
+    from credstore._store import DEFAULT_SERVICE, _read_cryptfile_keys  # noqa: PLC2701
+
+    if not sys.stdin.isatty():
+        print("Error: 'credstore set-password' requires an interactive terminal.", file=sys.stderr)
+        return 1
 
     print("Set master password for encrypted credential backup.")
     print()
@@ -276,22 +213,6 @@ def _cmd_set_password() -> int:
     return 0
 
 
-def _read_cryptfile_keys(cf) -> list[str]:
-    """Read all credential keys from a cryptfile backend."""
-    import configparser
-    from credstore._store import DEFAULT_SERVICE
-
-    cfg = configparser.ConfigParser()
-    cfg.read(cf.file_path)
-    keys = []
-    for section in cfg.sections():
-        if section.startswith("keyring") or section.startswith("DEFAULT"):
-            continue
-        if section == DEFAULT_SERVICE:
-            keys.extend(cfg.options(section))
-    return keys
-
-
 def _cmd_status() -> int:
     """Show backend diagnostic info."""
     from credstore._store import check_backend
@@ -314,7 +235,7 @@ def _cmd_status() -> int:
         print()
         print("Secrets are stored in system keyring only.")
         print("WARNING: Changing your OS login password may erase all secrets.")
-        print("Run 'credstore set-password' to enable cryptfile backup sync.")
+        print("Run 'credstore set-password' to enable cryptfile backup.")
     else:
         print("Cryptfile: not installed")
         print()
@@ -324,8 +245,24 @@ def _cmd_status() -> int:
 
 
 def _cmd_set(key: str) -> int:
-    """Store a credential: system keyring + cryptfile backup."""
+    """Store a credential: cryptfile + system keyring (atomic dual-write).
+
+    Writes to cryptfile FIRST, then system keyring.  If keyring fails,
+    rolls back the cryptfile entry so both stores stay consistent.
+    """
     import credstore
+    from credstore._backend import get_cryptfile
+    from credstore._store import DEFAULT_SERVICE
+
+    if not sys.stdin.isatty():
+        print("Error: 'credstore set' requires an interactive terminal.", file=sys.stderr)
+        return 1
+
+    cf = get_cryptfile()
+    if cf is None:
+        print("Error: cryptfile backend not available.", file=sys.stderr)
+        print("Install: pip install keyrings.cryptfile", file=sys.stderr)
+        return 1
 
     print(f"Enter secret for '{key}' (paste then press Enter):")
     try:
@@ -338,102 +275,110 @@ def _cmd_set(key: str) -> int:
         print("Error: secret cannot be empty.")
         return 1
 
-    # 1. System keyring (always)
-    credstore.set_credential(key, secret)
+    master_pw = masked_input("Master password (for encrypted backup): ")
 
-    # 2. Cryptfile backup (needs master password)
-    _write_cryptfile(key, secret)
+    # 1. Write cryptfile first (backup)
+    try:
+        cf.keyring_key = master_pw
+        cf.set_password(DEFAULT_SERVICE, key, secret)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        del cf.keyring_key
+
+    # 2. Write system keyring (primary)
+    try:
+        credstore.set_credential(key, secret)
+    except Exception as exc:
+        # Rollback: remove from cryptfile
+        try:
+            cf.keyring_key = master_pw
+            cf.delete_password(DEFAULT_SERVICE, key)
+        except Exception:
+            pass
+        finally:
+            del cf.keyring_key
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     print(f"Stored: {key}")
     return 0
 
 
-def _cmd_get(key: str) -> int:
-    """Retrieve a credential: system keyring + cryptfile fallback."""
+def _cmd_get(key: str, password_mode: bool = False) -> int:
+    """Retrieve a credential.
+
+    --password mode: dual-query keyring + cryptfile, output plaintext, fail on mismatch.
+    Default mode:     keyring only, output masked.
+    """
     import credstore
 
-    # 1. System keyring (no master key needed)
-    value = credstore.get_credential(key)
-    if value is not None:
+    if not sys.stdin.isatty():
+        print("Error: 'credstore get' requires an interactive terminal.", file=sys.stderr)
+        return 1
+
+    if not password_mode:
+        # ── default: keyring only, masked output ──
+        value = credstore.get_credential(key)
+        if value is None:
+            print(f"Not found in system keyring: {key}", file=sys.stderr)
+            return 1
         from credstore._store import CredentialStore
-        masked = CredentialStore.mask(value)
-        print(f"{key}: {masked}")
+        print(f"{key}: {CredentialStore.mask(value)}")
         return 0
 
-    # 2. Not in keyring — try cryptfile fallback
-    print(f"Not found in keyring: {key}")
-    master_pw = masked_input(
-        "Master password to search encrypted backup"
-        " (or press Enter to skip): "
-    )
-    if not master_pw.strip():
-        return 1
-
-    value = _read_cryptfile(key, master_pw)
-    if value is None:
-        print(f"Not found in backup: {key}")
-        return 1
-
-    # Found in cryptfile — auto-restore to system keyring
+    # ── --password mode: dual-query, plaintext, consistency check ──
     from credstore._store import CredentialStore, DEFAULT_SERVICE
-    from credstore._backend import get_system_keyring
-    sk = get_system_keyring()
-    if sk is not None:
-        sk.set_password(DEFAULT_SERVICE, key, value)
 
-    masked = CredentialStore.mask(value)
-    print(f"{key}: {masked}")
-    print("(auto-restored to system keyring)")
-    print()
-    print(
-        "⚠  This credential was only in the encrypted backup.\n"
-        "   Other credentials may also be missing from the keyring.\n"
-        "   Run:  credstore reset\n"
-        "   to restore ALL credentials from the backup."
-    )
+    master_pw = masked_input("Master password: ")
+    if not master_pw.strip():
+        print("Error: master password is required in --password mode.", file=sys.stderr)
+        return 1
+
+    # 1. Query keyring
+    value_kr = credstore.get_credential(key)
+
+    # 2. Query cryptfile
+    value_cf = None
+    cf_error: str | None = None
+    try:
+        value_cf = _read_cryptfile(key, master_pw)
+    except Exception as exc:
+        cf_error = str(exc)
+
+    # 3. Evaluate results
+    if value_kr is None and value_cf is None:
+        print(f"Not found in either store: {key}", file=sys.stderr)
+        return 1
+
+    if value_kr is None and value_cf is not None:
+        print(f"Error: {key} — found in cryptfile but missing from system keyring.", file=sys.stderr)
+        print("Run 'credstore reset-keyring' to restore all credentials from backup.", file=sys.stderr)
+        return 1
+
+    if value_kr is not None and value_cf is None:
+        if cf_error:
+            print(f"Error: {key} — cryptfile read failed: {cf_error}", file=sys.stderr)
+        else:
+            print(f"Error: {key} — found in system keyring but missing from cryptfile backup.", file=sys.stderr)
+        print("Run 'credstore reset-backup' to sync keyring → cryptfile.", file=sys.stderr)
+        return 1
+
+    # Both found — consistency check
+    if value_kr != value_cf:
+        print(f"Error: {key} — value mismatch between system keyring and cryptfile.", file=sys.stderr)
+        print("The two stores have diverged. Determine the correct value, then:", file=sys.stderr)
+        print("  credstore reset-backup   if keyring is authoritative", file=sys.stderr)
+        print("  credstore reset-keyring  if cryptfile is authoritative", file=sys.stderr)
+        return 1
+
+    # Match — output plaintext
+    print(value_kr)
     return 0
 
 
 # ── cryptfile helpers (CLI layer — master key is only typed here) ───
-
-
-def _write_cryptfile(key: str, secret: str) -> None:
-    """Write a single credential to the cryptfile.
-
-    Prompts for the master password.  Skipped in non-interactive
-    contexts (e.g. subprocess calls) where a console is not available.
-    On failure the credential is already in the system keyring —
-    we warn but don't fail.
-    """
-    from credstore._backend import get_cryptfile
-    from credstore._store import DEFAULT_SERVICE
-
-    cf = get_cryptfile()
-    if cf is None:
-        return
-
-    if not sys.stdin.isatty():
-        print(
-            "  (non-interactive — cryptfile backup skipped,"
-            " run 'credstore sync' to backfill)",
-            file=sys.stderr,
-        )
-        return
-
-    master_pw = masked_input("Master password (for encrypted backup): ")
-
-    try:
-        cf.keyring_key = master_pw
-        cf.set_password(DEFAULT_SERVICE, key, secret)
-    except ValueError as exc:
-        print(f"Warning: {exc}", file=sys.stderr)
-        print(
-            "Credential stored in system keyring only"
-            " (cryptfile backup skipped).",
-            file=sys.stderr,
-        )
-    finally:
-        del cf.keyring_key
 
 
 def _delete_from_cryptfile(key: str) -> bool:
@@ -447,6 +392,14 @@ def _delete_from_cryptfile(key: str) -> bool:
 
     cf = get_cryptfile()
     if cf is None:
+        return False
+
+    if not sys.stdin.isatty():
+        print(
+            "(non-interactive — cryptfile cleanup skipped,"
+            " re-run 'credstore delete' in a terminal to clean up)",
+            file=sys.stderr,
+        )
         return False
 
     master_pw = masked_input("Master password (to remove from encrypted backup): ")
@@ -490,6 +443,10 @@ def _cmd_delete(key: str) -> int:
     """Delete a credential from system keyring + cryptfile."""
     import credstore
 
+    if not sys.stdin.isatty():
+        print("Error: 'credstore delete' requires an interactive terminal.", file=sys.stderr)
+        return 1
+
     deleted_sk = credstore.delete_credential(key)
     deleted_cf = _delete_from_cryptfile(key)
 
@@ -501,12 +458,55 @@ def _cmd_delete(key: str) -> int:
         return 1
 
 
-def _cmd_reset() -> int:
+def _cmd_list() -> int:
+    """List all stored credential keys from the cryptfile."""
+    from credstore._backend import get_cryptfile
+    from credstore._store import DEFAULT_SERVICE, _read_cryptfile_keys  # noqa: PLC2701
+
+    if not sys.stdin.isatty():
+        print("Error: 'credstore list' requires an interactive terminal.", file=sys.stderr)
+        return 1
+
+    cf = get_cryptfile()
+    if cf is None:
+        print("Error: cryptfile backend not available.", file=sys.stderr)
+        print("Install: pip install keyrings.cryptfile", file=sys.stderr)
+        return 1
+
+    master_pw = masked_input("Master password: ")
+    if not master_pw.strip():
+        print("Error: master password is required.", file=sys.stderr)
+        return 1
+
+    try:
+        cf.keyring_key = master_pw
+        keys = _read_cryptfile_keys(cf)
+    except Exception as exc:
+        print(f"Error: cannot read cryptfile — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        del cf.keyring_key
+
+    if not keys:
+        print("No credentials stored.")
+        return 0
+
+    print(f"{len(keys)} credential(s) stored:")
+    for key in sorted(keys):
+        print(f"  {key}")
+    return 0
+
+
+def _cmd_reset_keyring() -> int:
     """Restore all credentials from cryptfile to system keyring.
 
     Requires the master password to decrypt the cryptfile.
     Reads every credential and re-writes to the system keyring.
     """
+    if not sys.stdin.isatty():
+        print("Error: 'credstore reset-keyring' requires an interactive terminal.", file=sys.stderr)
+        return 1
+
     print("Restore credentials from encrypted backup to system keyring.")
     print()
 
@@ -524,8 +524,8 @@ def _cmd_reset() -> int:
     return 0
 
 
-def _cmd_sync() -> int:
-    """Sync all credentials from system keyring to cryptfile backup.
+def _cmd_reset_backup() -> int:
+    """Reset cryptfile backup: sync all credentials from system keyring.
 
     Enumerates credentials from the system keyring (platform-specific)
     and writes each one to the cryptfile.  Useful for one-time migration
@@ -535,7 +535,11 @@ def _cmd_sync() -> int:
     from credstore._backend import get_cryptfile
     from credstore._store import DEFAULT_SERVICE
 
-    print("Sync credentials from system keyring to encrypted backup.")
+    if not sys.stdin.isatty():
+        print("Error: 'credstore reset-backup' requires an interactive terminal.", file=sys.stderr)
+        return 1
+
+    print("Reset cryptfile backup from system keyring.")
     print()
 
     # 1. Enumerate
@@ -573,7 +577,7 @@ def _cmd_sync() -> int:
         del cf.keyring_key
 
     print()
-    print(f"Synced {synced} credential(s) to cryptfile.")
+    print(f"Reset {synced} credential(s) in cryptfile backup.")
     return 0
 
 

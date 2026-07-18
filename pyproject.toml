@@ -68,7 +68,7 @@ dev = [
 
 [tool.pytest.ini_options]
 minversion = "9.1"
-testpaths = ["tests"]
+testpaths = ["tests", "credstore/tests"]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "module"
 addopts = "-v --tb=short --strict-markers --strict-config --no-header"

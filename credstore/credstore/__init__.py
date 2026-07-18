@@ -54,4 +54,4 @@ __all__ = [
     "is_cryptfile_ready",
     "init_store",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

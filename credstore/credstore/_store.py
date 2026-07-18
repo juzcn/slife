@@ -111,21 +111,23 @@ class CredentialStore:
 
         # Unlock cryptfile with provided master password
         cf.keyring_key = master_password
+        try:
+            keys = _read_cryptfile_keys(cf)
+            count = 0
+            for key in keys:
+                try:
+                    value = cf.get_password(self._service, key)
+                    if value is not None:
+                        sk.set_password(self._service, key, value)
+                        count += 1
+                        logger.info("reset_restored key=%s", key)
+                except Exception as exc:
+                    logger.warning("reset_skip key=%s err=%s", key, exc)
 
-        keys = _read_cryptfile_keys(cf)
-        count = 0
-        for key in keys:
-            try:
-                value = cf.get_password(self._service, key)
-                if value is not None:
-                    sk.set_password(self._service, key, value)
-                    count += 1
-                    logger.info("reset_restored key=%s", key)
-            except Exception as exc:
-                logger.warning("reset_skip key=%s err=%s", key, exc)
-
-        logger.info("reset_complete count=%d", count)
-        return count
+            logger.info("reset_complete count=%d", count)
+            return count
+        finally:
+            del cf.keyring_key
 
     # ── mask ──────────────────────────────────────────────────
 

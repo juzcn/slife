@@ -2,6 +2,8 @@
 
 Cross-platform credential storage — OS keyring + AES-encrypted file backup.
 
+All commands require an interactive terminal (tty).
+
 ## CLI
 
 ### Setup
@@ -20,29 +22,23 @@ credstore set DEEPSEEK_API_KEY
 ```
 
 Prompts for the secret (masked, `****`), then the master password.
-**Dual-writes** to both the OS keyring and `credentials.crypt`
-(encrypted backup).
+**Atomic dual-write**: writes to cryptfile first, then system keyring.
+If keyring write fails, rolls back the cryptfile entry — both stores
+stay consistent.
 
 ### Retrieve a credential
 
 ```bash
-credstore get DEEPSEEK_API_KEY   # → DEEPSEEK_API_KEY: sk-5f…b722
+credstore get DEEPSEEK_API_KEY        # → DEEPSEEK_API_KEY: sk-5f…b722
+credstore get DEEPSEEK_API_KEY -p     # → sk-5f1b...b722  (plaintext)
 ```
 
-Reads from the OS keyring (no master password).
-If not found, offers a cryptfile fallback:
+Default mode: reads from the OS keyring (no master password), outputs
+masked value (`sk-5f…b722`).
 
-```
-Not found in keyring: DEEPSEEK_API_KEY
-Master password to search encrypted backup (or press Enter to skip): ********
-DEEPSEEK_API_KEY: sk-5f…b722
-(auto-restored to system keyring)
-
-⚠  This credential was only in the encrypted backup.
-   Other credentials may also be missing from the keyring.
-   Run:  credstore reset
-   to restore ALL credentials from the backup.
-```
+`--password` / `-p` mode: prompts for the master password, then
+queries **both** keyring and cryptfile.  If both match, prints the
+secret in plaintext.  Fails on mismatch, missing entry, or read error.
 
 ### Delete a credential
 
@@ -50,15 +46,15 @@ DEEPSEEK_API_KEY: sk-5f…b722
 credstore delete OLD_KEY
 ```
 
-Removes from both the OS keyring and the cryptfile.
-(Cryptfile delete does not need the master password.)
+Prompts for the master password, then removes from both the OS keyring
+and the cryptfile.
 
-### Restore from backup
+### Restore keyring from backup
 
 When the OS keyring loses data (e.g. after a Windows password change):
 
 ```bash
-credstore reset
+credstore reset-keyring
 # Master password: ********
 # Restored 5 credential(s) to system keyring.
 ```
@@ -66,24 +62,38 @@ credstore reset
 Decrypts every credential in `credentials.crypt` and writes
 them back to the OS keyring.
 
-### Sync — populate cryptfile from keyring
+### Reset backup from keyring
 
 Migrate existing credentials (stored before cryptfile dual-write was
 enabled) into the encrypted backup:
 
 ```bash
-credstore sync
+credstore reset-backup
 # Master password: ********
 # Found 12 credential(s) in system keyring:
 #   DEEPSEEK_API_KEY
 #   OPENAI_API_KEY
 #   ...
-# Synced 12 credential(s) to cryptfile.
+# Reset 12 credential(s) in cryptfile backup.
 ```
 
 Enumerates credentials from the system keyring (Windows Credential
 Manager) and writes each one to `credentials.crypt`.  Run this once
-after upgrading to enable `reset` to work.
+after upgrading to enable `reset-keyring` to work.
+
+### List stored credentials
+
+```bash
+credstore list
+# Master password: ********
+# 3 credential(s) stored:
+#   DEEPSEEK_API_KEY
+#   GITHUB_TOKEN
+#   OPENAI_API_KEY
+```
+
+Reads the cryptfile to list all stored credential keys.  Secret values
+are never shown.  Requires the master password.
 
 ### Backend status
 
@@ -99,11 +109,13 @@ credstore status
 | Command | Master key | Description |
 |---------|:----------:|-------------|
 | `set-password` | sets it | Create/change master key, init cryptfile |
-| `set KEY` | enters it | Store a secret (keyring + cryptfile dual-write) |
-| `get KEY` | optional | Retrieve from keyring; cryptfile fallback on miss |
-| `delete KEY` | no | Remove from keyring + cryptfile |
-| `reset` | enters it | Restore keyring from cryptfile backup |
-| `sync` | enters it | Sync system keyring → cryptfile backup |
+| `set KEY` | enters it | Atomic dual-write (cryptfile + keyring) |
+| `get KEY` | no | Keyring only, masked output |
+| `get KEY -p` | enters it | Dual-query keyring + cryptfile, plaintext |
+| `delete KEY` | enters it | Remove from keyring + cryptfile |
+| `list` | enters it | List all stored credential keys |
+| `reset-keyring` | enters it | Restore keyring from cryptfile backup |
+| `reset-backup` | enters it | Overwrite cryptfile from system keyring |
 | `status` | no | Show backend status |
 
 ### Config
@@ -126,15 +138,16 @@ Env var `CREDSTORE_FILE` takes highest priority.
 import credstore
 ```
 
-The Python API is **read-only** for credentials — secrets are only
-written through the CLI.  All functions talk to the system keyring
-(no master password, no cryptfile fallback, never prompt).
+The Python API talks to the system keyring only — no master password,
+no cryptfile fallback, never prompt.  Dual-write (keyring + cryptfile)
+is handled by the CLI layer.
 
 ### Credential access
 
 ```python
 credstore.get_credential("myapp/api_key")    # → str | None
 credstore.exists_credential("myapp/api_key") # → bool
+credstore.set_credential("myapp/api_key", "sk-…")  # → None (raises on failure)
 credstore.delete_credential("myapp/api_key") # → bool
 ```
 
@@ -143,7 +156,10 @@ credstore.delete_credential("myapp/api_key") # → bool
   for that).
 - `exists_credential` — check existence without pulling the secret
   into process memory.  Preferred for agent tools.
-- `delete_credential` — remove from both keyring and cryptfile.
+- `set_credential` — write to system keyring only.  Requires cryptfile
+  to exist (run `credstore set-password` first).  For full dual-write,
+  use the CLI `set` command.
+- `delete_credential` — remove from system keyring.
 
 ### keyring: URI resolution
 
