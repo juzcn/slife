@@ -111,11 +111,6 @@ class MCPProxyTool(Tool):
           - External MCP server tools: route via mcp_call_tool on the
             slife-mcp wrapper.
         """
-        logger.debug(
-            "mcp_proxy_call server=%s tool=%s",
-            self._server,
-            self._tool_name,
-        )
         if self._server == _MCP_SERVER:
             # Strip source from kwargs — wrapper doesn't need it,
             # it's only for the persistence callback.

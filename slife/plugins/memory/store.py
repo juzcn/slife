@@ -432,13 +432,19 @@ class SessionStore:
 
 
 def _split_sql(sql_text: str) -> list[str]:
-    """Split SQL text on semicolons, respecting quotes and comments."""
+    """Split SQL text on semicolons, respecting quotes and comments.
+
+    Multi-statement constructs (CREATE TRIGGER … BEGIN … END) are kept
+    together so SQLite can parse them as a single statement.  Otherwise
+    the interior INSERT / DELETE would be split into orphaned fragments.
+    """
     statements = []
     current: list[str] = []
     in_single = False
     in_double = False
     in_line = False
     in_block = False
+    in_trigger = False  # track CREATE TRIGGER … BEGIN … END blocks
 
     chars = list(sql_text)
     i = 0
@@ -482,7 +488,18 @@ def _split_sql(sql_text: str) -> list[str]:
             in_double = not in_double
         elif ch == ";" and not in_single and not in_double:
             current.append(ch)
-            statements.append("".join(current))
+            stmt = "".join(current)
+            # Detect start of a multi-statement TRIGGER block
+            if not in_trigger and _looks_like_trigger_start(stmt):
+                in_trigger = True
+            # A TRIGGER body ends with END;
+            if in_trigger and _looks_like_trigger_end(stmt):
+                in_trigger = False
+            if in_trigger:
+                # Keep accumulating — this semicolon is inside the trigger body
+                i += 1
+                continue
+            statements.append(stmt)
             current = []
             i += 1
             continue
@@ -494,6 +511,18 @@ def _split_sql(sql_text: str) -> list[str]:
     if remainder:
         statements.append(remainder)
     return statements
+
+
+def _looks_like_trigger_start(stmt: str) -> bool:
+    """True if *stmt* starts a CREATE TRIGGER that has a BEGIN body."""
+    upper = stmt.strip().upper()
+    return upper.startswith("CREATE TRIGGER") and "BEGIN" in upper
+
+
+def _looks_like_trigger_end(stmt: str) -> bool:
+    """True if *stmt* ends a trigger body (``END;``)."""
+    stripped = stmt.strip().rstrip(";").strip().upper()
+    return stripped == "END"
 
 
 def _turn_text_for_embedding(user_message: str, messages: list[dict]) -> str:

@@ -50,7 +50,10 @@ _NOISY_LOGGER_NAMES = (
     "httpx",
     "asyncio",
     "urllib3",
-    "aiosqlite",       # dumps full SQL with messages JSON at DEBUG
+    "aiosqlite",           # dumps full SQL with messages JSON at DEBUG
+    "keyring.backend",     # probes 8 backends at startup (KWallet, SecretService, …)
+    "win32ctypes.core.cffi",  # "Loaded cffi backend" — one-shot, not diagnostic
+    "credstore",           # "backend already initialized" — noise on every import
 )
 
 

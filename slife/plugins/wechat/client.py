@@ -345,7 +345,7 @@ class WechatClawbotClient:
                 url, headers=_make_headers(self._bot_token),
             ) as res:
                 text = await res.text()
-                logger.debug("[GET %s] HTTP %s → %s", path, res.status, text[:200])
+                logger.debug("[GET %s] HTTP %s → %s", path, res.status, text.rstrip()[:200])
                 try:
                     return json.loads(text)
                 except Exception:
@@ -361,7 +361,7 @@ class WechatClawbotClient:
                 url, json=body, headers=_make_headers(self._bot_token),
             ) as res:
                 text = await res.text()
-                logger.debug("[POST %s] HTTP %s → %s", path, res.status, text[:200])
+                logger.debug("[POST %s] HTTP %s → %s", path, res.status, text.rstrip()[:200])
                 try:
                     return json.loads(text)
                 except Exception:

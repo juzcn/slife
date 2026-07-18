@@ -131,11 +131,6 @@ class Conversation:
 
     def add_tool_result(self, tool_call_id: str, content: str) -> None:
         """Add a tool result message."""
-        logger.debug(
-            "conv_tool_result id=%s result_len=%d",
-            tool_call_id,
-            len(content),
-        )
         self.messages.append({
             "role": "tool",
             "tool_call_id": tool_call_id,

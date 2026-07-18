@@ -182,18 +182,22 @@ class MCPWrapperProcess:
         # Subprocess log lines already go to their own log file.
         # Only relay lines that are NOT from the slife logger:
         # they lack the "HH:MM:SS [LEVEL] logger_name" prefix.
+        # stderr format is: HH:MM:SS [%(levelname)-5s] logger_name | ...
+        # -5s left-pads: "INFO " (4 + space), "DEBUG" (5), "ERROR" (5), "WARNING" (7)
         _SUBPROCESS_LOG = re.compile(
-            r'^\d{2}:\d{2}:\d{2}\s+\[(?:DEBUG|INFO|WARNING|ERROR)\]\s+\S+'
+            r'^\d{2}:\d{2}:\d{2}\s+\[(?:DEBUG|INFO ?|WARN(?:ING)?|ERROR)\]\s+\S+'
         )
 
-        # FastMCP v3 uses Unicode box-drawing.  Also catch ANSI escape
-        # sequences that may leak through.
+        # FastMCP v3 uses Unicode box-drawing and ASCII art banners.
+        # Typical content: box borders, "FastMCP 3.x", "gofastmcp.com",
+        # "Deploy free:", emoji server name lines.
+        _BANNER_MARKERS = (
+            "gofastmcp.com",
+            "Deploy free:",
+            "FastMCP ",
+        )
         _BANNER_CHARS = set(
             "─│└├┬┴╭╮╯╰▀▄█▌▐░▒▓"
-            "─│└├┬┴"
-            "╭╮╯╰"
-            "▀▄█▌▐"
-            "░▒▓"
         )
 
         async for text in read_stderr_lines(
@@ -203,11 +207,17 @@ class MCPWrapperProcess:
             if not stripped:
                 continue
 
-            # Suppress FastMCP box-drawing/ASCII art banners
+            # Suppress FastMCP box-drawing/ASCII art banners.
+            # Strategy: block any line with (a) box-drawing chars, (b) Unicode
+            # replacement chars from encoding failures, (c) known banner text,
+            # or (d) purely decorative lines (spaces + box edges).
             if any(c in stripped for c in _BANNER_CHARS):
                 continue
-            # Empty box lines (spaces and vertical bars)
-            if all(c in " |│" for c in stripped):
+            if "�" in stripped:  # mojibake from CP65001 ↔ UTF-8 mismatch
+                continue
+            if all(c in " |│+" for c in stripped):  # ASCII box edges too
+                continue
+            if any(m in stripped for m in _BANNER_MARKERS):
                 continue
 
             # Subprocess has its own log file — don't duplicate

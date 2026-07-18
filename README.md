@@ -119,7 +119,25 @@ Three built-in plugins ship with Slife, all using the same MCP stdio protocol:
 | **slife-memory** | Diary database with hybrid search (FTS5 + vec0 RRF) |
 | **slife-wechat** | Bidirectional WeChat messaging via iLink ClawBot API |
 
-Third-party plugin auto-loading is on the roadmap — the infrastructure is ready.
+**Third-party plugins** are standard MCP servers configured in `slife.json5` →
+`mcp.servers`. They auto-connect on startup and their tools are discovered and
+registered automatically. Any MCP-compatible server — in Python, Node.js, Go,
+Rust, or any other language — works as a Slife plugin.
+
+```json5
+// Example: add a custom MCP server
+mcp: {
+  servers: {
+    "my-plugin": {
+      command: "uv", args: ["run", "python", "-m", "my_plugin.server"],
+      env: { API_KEY: "${API_KEY}" },
+      description: "My custom MCP server."
+    },
+  },
+}
+```
+
+See [DESIGN.md § Third-Party Plugins](DESIGN.md#third-party-plugins) for the full plugin contract and configuration reference.
 
 ### A2A — Agent-to-Agent
 

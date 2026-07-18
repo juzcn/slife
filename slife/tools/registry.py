@@ -68,7 +68,6 @@ class ToolRegistry:
             return f"Error: Unknown tool '{tool_name}'"
         try:
             t0 = _time.monotonic()
-            logger.debug("tool_start name=%s", tool_name)
             result = await tool.execute(**kwargs)
             elapsed = (_time.monotonic() - t0) * 1000
             logger.debug(

@@ -182,23 +182,89 @@ are routed back via the message's `on_reply` callback.
 
 ### Third-Party Plugins
 
-Third-party plugin auto-loading from `slife.json5` is not yet implemented.
-Currently the three built-in plugins (slife-mcp, slife-memory, slife-wechat)
-are hardcoded in `AgentService`.  The infrastructure — `MCPWrapperProcess`,
-`MCPClient`, `MCPProxyTool` — is generic and ready for external plugins once
-the config-driven startup loop is added.
+Third-party plugins are standard MCP servers — any program that speaks the MCP
+stdio or HTTP protocol.  They are configured in `slife.json5` under `mcp.servers`
+and auto-connected on startup via `AgentService._auto_connect_mcp_servers()`
+(`slife/agent/service.py:215`).
 
-#### Plugin vs. MCP Server
+Two transports are supported per server:
 
-| | Plugin | MCP Server (via slife-mcp) |
+| Transport | Required fields | Protocol |
+|-----------|----------------|----------|
+| **stdio** | `command`, `args` | Spawns a local subprocess, communicates via stdin/stdout JSON-RPC |
+| **HTTP** | `url` | POSTs JSON-RPC to a Streamable HTTP MCP endpoint |
+
+#### Configuration
+
+```json5
+mcp: {
+  servers: {
+    "my-plugin": {                       // stdio example
+      command: "uv", args: ["run", "python", "-m", "my_plugin.server"],
+      env: { API_KEY: "${API_KEY}" },
+      description: "My custom MCP server.",
+    },
+    "remote-api": {                      // HTTP example
+      url: "https://api.example.com/mcp",
+      headers: { Authorization: "Bearer ${TOKEN}" },
+      description: "Remote MCP server over HTTP.",
+    },
+  },
+}
+```
+
+Servers are connected **in parallel** at startup via `asyncio.gather`.  Eager
+servers (default) have their tools discovered and registered immediately;
+lazy servers (`disclosure: "lazy"`) connect but skip tool registration until
+the LLM calls `mcp_set_disclosure("eager")`.
+
+Dynamic management at runtime is also supported — the LLM can call
+`mcp_add_server` to connect new servers (auto-persisted to `slife.json5`),
+`mcp_remove_server` to disconnect and clean up, and `mcp_set_disclosure` to
+toggle between eager and lazy modes.
+
+#### The Plugin Contract
+
+A third-party plugin must:
+
+1. **Speak MCP** — implement the standard `initialize`, `tools/list`, `tools/call`
+   JSON-RPC methods over stdio or HTTP.
+2. **Define tools** — each with a `name`, `description`, and `inputSchema` (JSON Schema).
+3. **Be launchable** — for stdio: `command` + `args` that start the process.
+
+That's the entire contract.  No Slife SDK, no base class, no import hook.
+Any MCP-compatible server — in Python, Node.js, Go, Rust, or any other language —
+is a Slife plugin.
+
+FastMCP (Python) is the recommended path for Python developers:
+
+```python
+from fastmcp import FastMCP
+mcp = FastMCP("my-plugin")
+
+@mcp.tool(name="hello", description="Say hello.")
+async def hello(name: str) -> str:
+    return f"Hello, {name}!"
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
+```
+
+#### Built-in Plugin vs. External MCP Server
+
+| | Built-in Plugin | External MCP Server |
 |---|---|---|
-| Connection | Slife directly (stdio) | Via slife-mcp proxy |
-| Config section | `plugins` | `mcp.servers` |
-| Transport for downstream | N/A (no downstream) | stdio + HTTP |
-| Tool prefix | `plugin_name__tool` | `server_name__tool` |
-| Use case | Extend Slife itself | Third-party tools (filesystem, APIs) |
+| Connection | Slife directly (stdio), dedicated `MCPWrapperProcess` | Via slife-mcp proxy (`ConnectionPool`) |
+| Config section | Top-level (`memory:`, `wechat:`) or hardcoded | `mcp.servers.<name>` |
+| Tool routing | Direct `MCPClient.call_tool()` | Routed via `mcp_call_tool` on slife-mcp wrapper |
+| Tool prefix | `memory__tool`, `wechat__tool` | `server_name__tool` |
+| Lifecycle | Dedicated `start_*()` / `stop_*()` in `AgentService` | Managed by `ConnectionPool`, auto-reconnect on restart |
+| Use case | Slife-native services (memory, WeChat) | Third-party tools (filesystem, search, APIs) |
 
-Plugins are Slife-native extensions. MCP servers are external tools. Choose a plugin when you're building something Slife-specific (like memory); choose an MCP server when you're connecting an existing service.
+Both use the same MCP protocol and the same `MCPProxyTool` adapter.
+The distinction is operational — built-in plugins get dedicated lifecycle
+management with direct tool routing; external servers are dynamically managed
+through the slife-mcp proxy with auto-persistence to the config file.
 
 **Why separate processes:**
 

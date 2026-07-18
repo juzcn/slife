@@ -236,7 +236,7 @@ class LLMClient:
                 usage = self._usage_from_response(event.usage)
                 elapsed = (_time.monotonic() - t0) * 1000
                 logger.debug(
-                    "stream_done tok_p=%d tok_c=%d tok_t=%d took_ms=%.0f",
+                    "stream_done prompt=%d completion=%d total=%d took_ms=%.0f",
                     usage.prompt_tokens,
                     usage.completion_tokens,
                     usage.total_tokens,
