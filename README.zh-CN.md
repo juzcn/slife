@@ -188,6 +188,50 @@ active_model: "deepseek/deepseek-v4-pro",
 
 整个配置文件中支持 `${ENV_VAR}` 和 `${ENV_VAR:-default}` 语法 —— 值在启动时解析并注入到 `os.environ`。
 
+### 凭证管理
+
+Slife 内置 **credstore** — 基于 OS keyring 的跨平台凭证存储，附带 AES 加密文件备份。切勿将 API 密钥粘贴到 `slife.json5` 或聊天中。
+
+#### 初始化（首次使用）
+
+```bash
+credstore set-password
+```
+
+创建 `./credentials.crypt` 并设置主密码。可通过 `CREDSTORE_FILE` 环境变量自定义路径。
+
+#### 命令参考
+
+| 命令 | 主密码 | 说明 |
+|------|:------:|------|
+| `set-password` | 设置 | 创建/修改主密码，初始化加密文件 |
+| `set KEY` | 输入 | 原子双写（加密文件 + keyring） |
+| `get KEY` | 否 | 仅 keyring，脱敏输出（`sk-5f…b722`） |
+| `get KEY -p` | 输入 | 双重查询 keyring + 加密文件，明文输出 |
+| `delete KEY` | 输入 | 从 keyring + 加密文件中删除 |
+| `list` | 输入 | 列出所有已存凭证键名 |
+| `reset-keyring` | 输入 | 从加密文件备份恢复 keyring |
+| `reset-backup` | 输入 | 从系统 keyring 覆盖加密文件 |
+| `status` | 否 | 显示后端状态 |
+
+#### 存储 API 密钥
+
+```bash
+credstore set DEEPSEEK_API_KEY       # 密码输入 — 无回显、无 shell 历史
+```
+
+先写入加密文件，再写入系统 keyring。若 keyring 写入失败，回滚加密文件条目 — 两侧保持一致。
+
+#### 灾难恢复
+
+当系统 keyring 丢失数据时（如 Windows 密码变更后）：
+
+```bash
+credstore reset-keyring               # 从加密文件备份恢复所有凭证
+```
+
+智能体会自动注册引用 — 在对话中说"添加 DeepSeek 密钥"，它会调用 `config_secret_register`，将 `${DEEPSEEK_API_KEY}` 写入配置并提示你在终端运行 `credstore set DEEPSEEK_API_KEY`。
+
 ## 功能特性
 
 ### 工具系统

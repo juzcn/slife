@@ -197,15 +197,49 @@ active_model: "deepseek/deepseek-v4-pro",
 
 `${ENV_VAR}` and `${ENV_VAR:-default}` syntax works everywhere — values resolve at runtime via shell → keyring → config.
 
-### Storing Secrets
+### Credential Management
 
-Never paste API keys into `slife.json5` or the chat.  Use the terminal:
+Slife ships with **credstore** — cross-platform credential storage backed by the OS keyring with an AES-encrypted file backup.  Never paste API keys into `slife.json5` or the chat.
+
+#### Setup (first time)
+
+```bash
+credstore set-password
+```
+
+Creates `./credentials.crypt` and sets a master password.  Path configurable via `CREDSTORE_FILE` env var.
+
+#### Command Reference
+
+| Command | Master key | Description |
+|---------|:----------:|-------------|
+| `set-password` | sets it | Create/change master key, init cryptfile |
+| `set KEY` | enters it | Atomic dual-write (cryptfile + keyring) |
+| `get KEY` | no | Keyring only, masked output (`sk-5f…b722`) |
+| `get KEY -p` | enters it | Dual-query keyring + cryptfile, plaintext output |
+| `delete KEY` | enters it | Remove from keyring + cryptfile |
+| `list` | enters it | List all stored credential keys |
+| `reset-keyring` | enters it | Restore keyring from cryptfile backup |
+| `reset-backup` | enters it | Overwrite cryptfile from system keyring |
+| `status` | no | Show backend status |
+
+#### Storing an API Key
 
 ```bash
 credstore set DEEPSEEK_API_KEY       # masked input — no echo, no shell history
 ```
 
-The agent registers the reference for you — just say "add a DeepSeek key" and it calls `config_secret_register`, which writes `${DEEPSEEK_API_KEY}` to the config and tells you to run `credstore set DEEPSEEK_API_KEY` in your terminal.
+Writes to cryptfile first, then system keyring.  If keyring fails, rolls back the cryptfile entry — both stores stay consistent.
+
+#### Disaster Recovery
+
+When the OS keyring loses data (e.g. after a Windows password change):
+
+```bash
+credstore reset-keyring               # restore all from cryptfile backup
+```
+
+The agent registers references for you — just say "add a DeepSeek key" and it calls `config_secret_register`, which writes `${DEEPSEEK_API_KEY}` to the config and tells you to run `credstore set DEEPSEEK_API_KEY` in your terminal.
 
 ## Features
 
