@@ -190,15 +190,7 @@ class SlifeApp(App):
     # ── Actions ──────────────────────────────────────────────────
 
     def action_quit(self) -> None:
-        """Ctrl+C: quit only when input is focused.
-
-        When the user is reading chat output or inspecting tool results,
-        Ctrl+C should not quit — the terminal handles copy natively when
-        text is selected.  Only quit when the user is in the input box.
-        """
-        if not self.query_one("#user-input").has_focus:
-            return
-
+        """Quit the app — cancel workers, then fire-and-forget cleanup."""
         import asyncio
 
         for worker in list(self.workers):
