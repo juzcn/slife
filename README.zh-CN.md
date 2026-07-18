@@ -56,6 +56,14 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 
 无需安装 — 在临时环境中下载、缓存并运行 slife。
 
+安装后，`slife` 和 `credstore` 命令全局可用：
+
+| 命令 | 位置 |
+|------|------|
+| `slife` | `~/.local/bin/slife` |
+| `credstore` | `~/.local/bin/credstore` |
+| 安装文件 | `~/.local/share/uv/tools/slife/` |
+
 ### 可选扩展
 
 Slife 默认安装保持精简。按需添加扩展：

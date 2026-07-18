@@ -56,6 +56,14 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 
 No install — downloads, caches, and runs slife in a temporary environment.
 
+After installation, the `slife` and `credstore` commands are available globally:
+
+| Command | Location |
+|---------|----------|
+| `slife` | `~/.local/bin/slife` |
+| `credstore` | `~/.local/bin/credstore` |
+| Package files | `~/.local/share/uv/tools/slife/` |
+
 ### Optional Extras
 
 Slife keeps the default install lean.  Add extras when you need them:
