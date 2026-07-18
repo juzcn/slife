@@ -79,7 +79,7 @@ class SlifeApp(App):
     CSS_PATH = "slife.tcss"
 
     BINDINGS = [
-        Binding("ctrl+c", "quit", "Quit", priority=True),
+        Binding("ctrl+c", "quit", "Quit"),
         Binding("escape", "cancel", "Cancel agent loop", priority=True),
         Binding("ctrl+l", "focus_input", "Focus Input"),
         Binding("home", "scroll_home", "Scroll to top", priority=True),
