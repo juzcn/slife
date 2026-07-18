@@ -64,6 +64,20 @@ After installation, the `slife` and `credstore` commands are available globally:
 | `credstore` | `~/.local/bin/credstore` |
 | Package files | `~/.local/share/uv/tools/slife/` |
 
+### Uninstall
+
+```bash
+uv tool uninstall slife
+```
+
+User data (conversation logs, credentials, config) remains in your project directory and OS keyring — delete manually if desired:
+
+```bash
+rm -f slife.db slife.json5               # conversation log + config
+credstore delete DEEPSEEK_API_KEY          # remove a stored secret
+credstore list                             # list all stored credentials
+```
+
 ### Optional Extras
 
 Slife keeps the default install lean.  Add extras when you need them:

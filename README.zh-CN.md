@@ -64,6 +64,20 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 | `credstore` | `~/.local/bin/credstore` |
 | 安装文件 | `~/.local/share/uv/tools/slife/` |
 
+### 卸载
+
+```bash
+uv tool uninstall slife
+```
+
+用户数据（对话记录、凭证、配置）保留在项目目录和系统 keyring 中，如需删除：
+
+```bash
+rm -f slife.db slife.json5               # 对话记录 + 配置
+credstore delete DEEPSEEK_API_KEY          # 删除已存密钥
+credstore list                             # 列出所有已存凭证
+```
+
 ### 可选扩展
 
 Slife 默认安装保持精简。按需添加扩展：
