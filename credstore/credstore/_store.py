@@ -1,9 +1,9 @@
-"""Credential store — dual-write: system keyring + cryptfile backup.
+"""Credential store — system keyring with cryptfile backup.
 
-- get():    system keyring only (fast, no master key needed)
-- set():    both system keyring + cryptfile (needs master key)
-- delete(): both stores
-- reset():  cryptfile → system keyring (explicit recovery)
+- get():    system keyring only (fast, no master key)
+- set():    system keyring only (cryptfile backup handled by CLI layer)
+- delete(): both stores (cryptfile delete does not need master key)
+- reset():  cryptfile → system keyring (explicit recovery, needs master key)
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ class CredentialStore:
     def __init__(self, service: str = DEFAULT_SERVICE):
         self._service = service
 
-    # ── get: system keyring only (no master key) ──────────────
+    # ── get: system keyring only ───────────────────────────────
 
     def get(self, key: str) -> str | None:
         """Retrieve from system keyring only — fast, no master key.
@@ -46,13 +46,13 @@ class CredentialStore:
         """
         return self.get(key) is not None
 
-    # ── set: dual-write ───────────────────────────────────────
+    # ── set ───────────────────────────────────────────────────
 
     def set(self, key: str, secret: str) -> None:
         """Store to system keyring.
 
         Requires master key to have been set (cryptfile exists).
-        Does NOT write to cryptfile — backup sync is done separately.
+        Cryptfile backup is handled by the CLI layer.
         """
         from credstore._backend import get_system_keyring, has_master_key
 
@@ -68,13 +68,14 @@ class CredentialStore:
         sk.set_password(self._service, key, secret)
         logger.info("credential_stored key=%s", key)
 
-    # ── delete: both stores ──────────────────────────────────
+    # ── delete ─────────────────────────────────────────────────
 
     def delete(self, key: str) -> bool:
-        """Delete from both stores."""
-        from credstore._backend import (
-            get_system_keyring, get_cryptfile, is_cryptfile_ready,
-        )
+        """Delete from system keyring only.
+
+        Cryptfile cleanup is handled by the CLI layer (needs master key)."""
+        from credstore._backend import get_system_keyring
+
         existed = False
 
         sk = get_system_keyring()
@@ -82,13 +83,6 @@ class CredentialStore:
             try:
                 sk.delete_password(self._service, key)
                 existed = True
-            except Exception:
-                pass
-
-        cf = get_cryptfile()
-        if cf is not None and is_cryptfile_ready():
-            try:
-                cf.delete_password(self._service, key)
             except Exception:
                 pass
 
@@ -132,20 +126,6 @@ class CredentialStore:
 
         logger.info("reset_complete count=%d", count)
         return count
-
-    # ── list ──────────────────────────────────────────────────
-
-    def list_keys(self) -> list[str]:
-        """List known keys from cryptfile (best-effort)."""
-        from credstore._backend import get_cryptfile
-
-        cf = get_cryptfile()
-        if cf is None or not hasattr(cf, "file_path"):
-            return []
-        try:
-            return _read_cryptfile_keys(cf)
-        except Exception:
-            return []
 
     # ── mask ──────────────────────────────────────────────────
 
@@ -225,10 +205,6 @@ def delete_credential(key: str) -> bool:
 
 def reset_credentials(master_password: str) -> int:
     return _get_store().reset(master_password)
-
-
-def list_credentials() -> list[str]:
-    return _get_store().list_keys()
 
 
 def get_backend_name() -> str:

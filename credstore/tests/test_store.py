@@ -83,12 +83,6 @@ class TestMask:
         assert CredentialStore.mask("") == "(empty)"
 
 
-class TestListKeys:
-    def test_empty(self, dual_store):
-        store, _ = dual_store
-        assert store.list_keys() == []
-
-
 # ── fixtures ───────────────────────────────────────────────────
 
 

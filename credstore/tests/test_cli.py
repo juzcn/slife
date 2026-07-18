@@ -10,7 +10,9 @@ class TestCliStatus:
 
 
 class TestCliGet:
-    def test_get_not_found(self, mock_backend):
+    def test_get_not_found(self, mock_backend, monkeypatch):
+        # User skips cryptfile fallback (empty input)
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "")
         assert main(["get", "nonexistent/key"]) == 1
 
     def test_get_found_shows_masked(self, capsys, mock_backend, in_mem_store):
@@ -22,26 +24,15 @@ class TestCliGet:
 
 
 class TestCliDelete:
-    def test_delete_not_found(self, mock_backend):
+    def test_delete_not_found(self, mock_backend, monkeypatch):
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "test-master-pw")
         assert main(["delete", "nonexistent"]) == 1
 
-    def test_delete_found(self, mock_backend, in_mem_store):
+    def test_delete_found(self, mock_backend, in_mem_store, monkeypatch):
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "test-master-pw")
         in_mem_store["test/key"] = "secret"
         assert main(["delete", "test/key"]) == 0
         assert "test/key" not in in_mem_store
-
-
-class TestCliList:
-    def test_list_empty(self, capsys, mock_backend):
-        assert main(["list"]) == 0
-        assert "No credentials" in capsys.readouterr().out
-
-    def test_list_shows_keys_not_values(self, capsys, mock_backend, in_mem_store):
-        in_mem_store["a"] = "1"
-        in_mem_store["b"] = "2"
-        assert main(["list"]) == 0
-        out = capsys.readouterr().out
-        assert "1" not in out
 
 
 class TestCliSet:
@@ -72,13 +63,11 @@ def mock_backend(monkeypatch, in_mem_store):
     store.get = in_mem_store.get
     store.set = in_mem_store.__setitem__
     store.delete = lambda key: in_mem_store.pop(key, None) is not None
-    store.list_keys = lambda: list(in_mem_store.keys())
     monkeypatch.setattr(sm, "_store", store)
     monkeypatch.setattr(sm, "_get_store", lambda: store)
     monkeypatch.setattr(sm, "get_credential", in_mem_store.get)
     monkeypatch.setattr(sm, "set_credential", in_mem_store.__setitem__)
     monkeypatch.setattr(sm, "delete_credential", lambda k: in_mem_store.pop(k, None) is not None)
-    monkeypatch.setattr(sm, "list_credentials", lambda: list(in_mem_store.keys()))
 
     # Gate: cryptfile must appear ready for commands to work
     monkeypatch.setattr(backend, "has_master_key", lambda: True)
