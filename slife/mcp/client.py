@@ -36,15 +36,20 @@ _STREAM_CLOSED = _StreamClosed()
 class _ReadAdapter:
     """Wraps asyncio.Queue for ClientSession read stream."""
 
-    def __init__(self, queue: asyncio.Queue):
+    def __init__(self, queue: asyncio.Queue, client: "MCPClient"):
         self._queue = queue
+        self._client = client
 
     async def receive(self):
         item = await self._queue.get()
         if isinstance(item, _StreamClosed):
-            raise _StreamClosed(
-                "MCP child process stdout stream closed unexpectedly "
-                "— the process likely crashed during startup"
+            # The MCP session's _receive_loop logs every Exception as
+            # "Unhandled exception in receive loop" to stderr.  During
+            # shutdown the child process exits before disconnect() runs,
+            # so EOF is expected.  Raise StopAsyncIteration so the
+            # receive loop terminates cleanly without noise.
+            raise StopAsyncIteration(
+                "MCP child process stdout stream closed"
             )
         return item
 
@@ -118,11 +123,13 @@ class MCPClient:
             while True:
                 line = await reader.readline()
                 if not line:
-                    # EOF — child process stdout closed (likely crashed)
+                    # EOF — child process stdout closed.
+                    # During startup (before MCP handshake completes) or
+                    # during operation, this is unexpected → warn + signal.
+                    # During shutdown (disconnect() already called) → silent.
                     if self._connected:
-                        # Unexpected EOF during operation
                         logger.warning("mcp_bridge_eof source=%s", label)
-                    await self._stdout_queue.put(_STREAM_CLOSED)
+                        await self._stdout_queue.put(_STREAM_CLOSED)
                     break
                 line_str = line.decode("utf-8", errors="replace").strip()
                 if not line_str:
@@ -170,7 +177,7 @@ class MCPClient:
 
         self._stdout_queue = asyncio.Queue()
         self._stdin_queue = asyncio.Queue()
-        self._read_adapter = _ReadAdapter(self._stdout_queue)
+        self._read_adapter = _ReadAdapter(self._stdout_queue, self)
         self._write_adapter = _WriteAdapter(self._stdin_queue)
 
         self._read_task = asyncio.create_task(self._bridge_reader(read_stream))

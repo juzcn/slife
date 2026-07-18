@@ -60,29 +60,13 @@ class StatusBar(Static):
             parts.append(f"[#6e7681]↑ {tokens:,} tokens[/#6e7681]")
 
         parts.append(
-            "[#484f58]│ Ctrl+C quit (in input)  Esc cancel  Ctrl+L focus  Home/End scroll[/#484f58]"
+            "[#484f58]│ Ctrl+C quit  Esc cancel  Ctrl+L focus  Home/End scroll[/#484f58]"
         )
 
         self.update("  ".join(parts))
 
 
 # ── Main TUI app ───────────────────────────────────────────────────
-
-
-class SlifeInput(Input):
-    """Custom Input that only binds Ctrl+C to quit when focused.
-
-    When focus is elsewhere (chat view, tool widgets, etc.), Ctrl+C
-    is not intercepted so the terminal can handle it as copy.
-    """
-
-    BINDINGS = [
-        Binding("ctrl+c", "quit_app", "Quit", priority=True),
-    ]
-
-    def action_quit_app(self) -> None:
-        """Quit the app via Ctrl+C when this input is focused."""
-        self.app.action_quit()
 
 
 class SlifeApp(App):
@@ -95,6 +79,7 @@ class SlifeApp(App):
     CSS_PATH = "slife.tcss"
 
     BINDINGS = [
+        Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("escape", "cancel", "Cancel agent loop", priority=True),
         Binding("ctrl+l", "focus_input", "Focus Input"),
         Binding("home", "scroll_home", "Scroll to top", priority=True),
@@ -121,7 +106,7 @@ class SlifeApp(App):
     def compose(self) -> ComposeResult:
         """Minimal layout: chat fills screen, input + status docked at bottom."""
         yield ChatView(id="chat-view")
-        yield SlifeInput(
+        yield Input(
             placeholder="Message Slife…",
             id="user-input",
         )
@@ -204,33 +189,47 @@ class SlifeApp(App):
 
     # ── Actions ──────────────────────────────────────────────────
 
-    async def action_quit(self) -> None:
-        """Quit the app, shutting down memory, subagent, A2A, and MCP.
+    def action_quit(self) -> None:
+        """Ctrl+C: quit only when input is focused.
 
-        All services are stopped in parallel with a timeout so a hung
-        subprocess doesn't prevent cleanup of the rest.  On Windows,
-        orphaned child processes would otherwise hold log file handles
-        indefinitely.
+        When the user is reading chat output or inspecting tool results,
+        Ctrl+C should not quit — the terminal handles copy natively when
+        text is selected.  Only quit when the user is in the input box.
         """
+        if not self.query_one("#user-input").has_focus:
+            return
+
         import asyncio
 
-        async def _stop(name: str, coro) -> None:
+        for worker in list(self.workers):
             try:
-                await asyncio.wait_for(coro, timeout=10.0)
+                worker.cancel()
+            except Exception:
+                pass
+
+        async def _cleanup():
+            stop_coros = {
+                "subagent": self.service.stop_subagent,
+                "a2a": self.service.stop_a2a,
+                "mcp": self.service.stop_mcp,
+                "memory": self.service.stop_memory,
+                "wechat": self.service.stop_wechat,
+                "inbox": self.service.stop_inbox,
+            }
+            tasks = [_stop_one(n, f()) for n, f in stop_coros.items()]
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        async def _stop_one(name: str, coro) -> None:
+            try:
+                await asyncio.wait_for(coro, timeout=5.0)
             except asyncio.TimeoutError:
                 logger.warning("shutdown_timeout service=%s", name)
             except Exception:
-                pass  # Best-effort cleanup
+                pass
 
-        await asyncio.gather(
-            _stop("subagent", self.service.stop_subagent()),
-            _stop("a2a", self.service.stop_a2a()),
-            _stop("mcp", self.service.stop_mcp()),
-            _stop("memory", self.service.stop_memory()),
-            _stop("wechat", self.service.stop_wechat()),
-            _stop("inbox", self.service.stop_inbox()),
-        )
-        await super().action_quit()
+        asyncio.get_running_loop().create_task(_cleanup())
+        self.exit()
 
     def action_cancel(self) -> None:
         """Cancel the currently running agent loop.  No-op if idle."""
