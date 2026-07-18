@@ -195,32 +195,33 @@ class TestConfigEnvGetTool:
 
     @pytest.mark.asyncio
     async def test_get_from_credstore(self, monkeypatch):
-        """When in credstore, show it with masking."""
-        raw, _ = _mock_config({"env": {"API_KEY": "${API_KEY}"}}, monkeypatch)
+        """credential_check handles keyring, not config_env_get."""
+        # Import the test target
+        from slife.tools.credentials import CredentialCheckTool
+
         cred = _mock_credstore(monkeypatch)
-        cred["API_KEY"] = "sk-secret-key-long"
+        cred["DEEPSEEK_API_KEY"] = "sk-secret-key-long"
 
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
-        result = await tool.execute(key="API_KEY")
+        tool = CredentialCheckTool()
+        result = await tool.execute(key="DEEPSEEK_API_KEY")
 
-        assert "API_KEY" in result
+        assert "DEEPSEEK_API_KEY" in result
         assert "[credstore" in result
         # Value must be masked
         assert "sk-secret-key-long" not in result
 
     @pytest.mark.asyncio
     async def test_get_from_shell_takes_priority(self, monkeypatch):
-        """os.environ takes priority over credstore and config."""
+        """os.environ takes priority in config_env_get."""
         raw, _ = _mock_config({"env": {"MY_VAR": "from_config"}}, monkeypatch)
-        cred = _mock_credstore(monkeypatch)
-        cred["MY_VAR"] = "from_credstore"
+        _mock_credstore(monkeypatch)
         os.environ["MY_VAR"] = "from_shell"
 
         try:
             tool = ConfigEnvGetTool(config_path=Path("test.json5"))
             result = await tool.execute(key="MY_VAR")
             assert "[shell" in result
-            assert "active" in result
+            assert "from_shell" in result
         finally:
             os.environ.pop("MY_VAR", None)
 
@@ -246,13 +247,15 @@ class TestConfigEnvGetTool:
         assert "val_b" in result
 
     @pytest.mark.asyncio
-    async def test_list_from_credstore(self, monkeypatch):
-        raw, _ = _mock_config({"env": {"API_KEY": "${API_KEY}"}}, monkeypatch)
-        cred = _mock_credstore(monkeypatch)
-        cred["API_KEY"] = "sk-secret-12345678"
+    async def test_credential_check_masked_value(self, monkeypatch):
+        """credential_check shows masked value from credstore."""
+        from slife.tools.credentials import CredentialCheckTool
 
-        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
-        result = await tool.execute(key="API_KEY")
+        cred = _mock_credstore(monkeypatch)
+        cred["DEEPSEEK_API_KEY"] = "sk-secret-12345678"
+
+        tool = CredentialCheckTool()
+        result = await tool.execute(key="DEEPSEEK_API_KEY")
 
         assert "[credstore" in result
         # Must be masked

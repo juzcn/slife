@@ -1,11 +1,9 @@
 """Config environment variable tools.
 
-- Secrets (API keys, tokens, passwords): use config_secret_register.
-  Writes ${VAR} placeholder — the user must run credstore set <KEY>
-  in their own terminal.  The tool has NO value parameter.
-- Non-secret env vars: use config_env_set / config_env_get / config_env_remove.
-
-Resolution order: os.environ → credstore (keyring) → slife.json5
+- Non-secret env vars: config_env_set / config_env_get / config_env_remove.
+  Resolution: os.environ → slife.json5.
+- Secrets (API keys, tokens, passwords): config_secret_register (register)
+  + credential_check (verify in keyring).  LLMs cannot invoke credstore CLI.
 
 credstore is an interactive-only CLI tool — LLMs cannot invoke it.
 """
@@ -22,13 +20,6 @@ from slife.tools.base import Tool
 logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_PREFIX = "<YOUR_"
-
-# Key name patterns that indicate a secret
-_SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
-
-
-def _is_secret_key(key: str) -> bool:
-    return any(hint in key.upper() for hint in _SECRET_HINTS)
 
 
 def _env_section(raw: dict) -> dict:
@@ -156,17 +147,16 @@ class ConfigSecretRegisterTool(_ConfigPathMixin, Tool):
 
 
 class ConfigEnvGetTool(_ConfigPathMixin, Tool):
-    """Resolve an env var across all three sources at runtime.
+    """Read non-secret env vars. Resolution: shell → slife.json5.
 
-    Resolution order: shell environment → credstore keyring → slife.json5.
-    Secret values are always masked in output.  Omit key to list all.
+    Does NOT query the keyring — use credential_check for API keys and tokens.
     """
 
     name = "config_env_get"
     description = (
-        "Resolve an env var across shell → keyring → config. "
-        "Secret values are always masked. "
-        "Omit key to list all configured variables."
+        "Read a non-secret env var (shell → slife.json5). "
+        "Does NOT check the keyring — use credential_check for secrets. "
+        "Omit key to list all configured non-secret variables."
     )
     parameters = {
         "type": "object",
@@ -237,51 +227,24 @@ class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):
 
 
 def _lookup_one(key: str, env: dict) -> str:
-    sources = []
-
+    # shell takes priority
     env_val = os.environ.get(key)
     if env_val:
-        sources.append(("shell", env_val))
+        return f"{key} = {env_val} [shell]"
 
-    from credstore import get_credential
-    cred_val = get_credential(key)
-    if cred_val:
-        sources.append(("credstore", cred_val))
-
+    # Fallback: slife.json5
     config_val = env.get(key)
     if config_val and config_val not in (None, ""):
-        sources.append(("slife.json5", str(config_val)))
+        return f"{key} = {config_val} [slife.json5]"
 
-    if not sources:
-        return f"'{key}' is not set anywhere."
-
-    lines = [f"{key}:"]
-    for source_name, value in sources:
-        masked = _mask_if_secret(key, value)
-        marker = " ← active" if source_name == sources[0][0] else ""
-        lines.append(f"  [{source_name}]{marker}: {masked}")
-
-    return "\n".join(lines)
+    return f"'{key}' is not set."
 
 
 def _format_one(key: str, value: str) -> str:
     env_val = os.environ.get(key)
     if env_val:
-        return f"  {key} = {_mask_if_secret(key, env_val)} [shell]"
-
-    from credstore import get_credential
-    cred_val = get_credential(key)
-    if cred_val:
-        return f"  {key} = {_mask_if_secret(key, cred_val)} [credstore]"
+        return f"  {key} = {env_val} [shell]"
 
     is_placeholder = str(value).startswith(_PLACEHOLDER_PREFIX)
     note = " [PLACEHOLDER]" if is_placeholder else " [unset]"
     return f"  {key} = {value}{note}"
-
-
-def _mask_if_secret(key: str, value: str) -> str:
-    if _is_secret_key(key):
-        if len(value) > 8:
-            return f"{value[:4]}…{value[-4:]}"
-        return "***"
-    return value

@@ -363,8 +363,8 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 | `execute_shell` | `asyncio.create_subprocess_shell` with configurable timeout |
 | `run_python_script` | Platform-correct Python invocation with JSON arguments |
 | `get_os_info` | Current OS name for platform-specific shell syntax |
-| `config_env_set` / `config_secret_register` / `get` / `remove` | Manage env vars in slife.json5 — secrets → `${VAR}` refs (no value param), non-secrets → values |
-| `credential_check` | Check OS keyring existence — returns stored / not stored, never the value |
+| `config_env_set` / `config_secret_register` / `get` / `remove` | Manage env vars in slife.json5 — secrets → `${VAR}` refs (no value param), non-secrets → values. `config_env_get` handles shell + config only (no keyring). |
+| `credential_check` | Verify OS keyring credentials — shows masked value (`sk-a…B3f2`) if stored, shell overrides keyring. Never exposes the full secret. |
 | `cli_add_tool` / `check_installed` / `remove` / `list` | CLI discovery and registration management |
 
 #### 2. Memory Tools
@@ -549,6 +549,7 @@ CREATE TABLE diary (
     summary        TEXT,     -- 1-2 sentence gist (LLM-written via memory_summarize)
     tags           TEXT,     -- comma-separated topic tags
 
+    channel        TEXT,     -- source: 'human', 'wechat', or remote agent id
     created_at     TEXT,     -- when this turn happened
     who_helped     TEXT,     -- agent name (--agent flag)
     what_model     TEXT,     -- model used
@@ -590,6 +591,7 @@ current config).  The `messages` JSON array contains:
 | Content | In diary? | In API calls? |
 |---------|-----------|---------------|
 | User input (separate column) | ✅ | ✅ |
+| Source channel (human/wechat/agent) | ✅ | ❌ (UI prefix on restore) |
 | Assistant thinking | ✅ | ❌ (stripped by `to_openai_messages()`) |
 | Tool call name + arguments | ✅ | ✅ |
 | Tool execution output | ✅ | ✅ |
@@ -764,7 +766,7 @@ Slife separates secrets from config into two layers with different security prop
 │  Encrypted at OS level.  Survives config changes.   │
 │  ─────────────────────────────────────────────────  │
 │  credstore set <KEY>          ← masked stdin input  │
-│  credential_check <KEY>      ← "stored" / "not"    │
+│  credential_check <KEY>       ← masked value        │
 │  (interactive-only CLI — LLMs cannot invoke)        │
 └────────────────────┬────────────────────────────────┘
                      │  ${VAR} reference
@@ -775,14 +777,16 @@ Slife separates secrets from config into two layers with different security prop
 │  ─────────────────────────────────────────────────  │
 │  config_secret_register <KEY>  ← secrets only       │
 │  config_env_set <KEY> [value]  ← non-secrets only   │
-│  config_env_get [key]          ← resolve (masked)   │
+│  config_env_get [key]          ← non-secrets only   │
 │  config_env_remove <KEY>       ← config only        │
 └─────────────────────────────────────────────────────┘
 ```
 
 ### Design Principles
 
-**Secrets never touch the agent process.** The `credstore set <KEY>` CLI reads secrets via masked stdin input (no echo, no shell history) and writes them directly to the OS keyring. Agent tools never accept, return, or see secret values — `credential_check` returns only "stored" / "not stored". `config_env_get` always masks secret values in output. **credstore is an interactive-only CLI tool — LLMs cannot invoke it** (it requires direct TTY input).
+**Secrets never touch the agent process.** The `credstore set <KEY>` CLI reads secrets via masked stdin input (no echo, no shell history) and writes them directly to the OS keyring. **credstore is an interactive-only CLI tool — LLMs cannot invoke it** (it requires direct TTY input).
+
+**Clean separation of config vs. credentials.** `config_env_get` handles only non-secret env vars (shell → slife.json5) — it does NOT query the keyring. `credential_check` handles all secrets (shell → keyring) and shows masked values (e.g. `sk-a…B3f2`). The LLM chooses the right tool — no key-name heuristic needed."
 
 **Two tools for registration — structurally safe.** Secret and non-secret env var registration are separate tools, eliminating the need for runtime key-name detection:
 
@@ -793,7 +797,7 @@ Slife separates secrets from config into two layers with different security prop
 
 The split is structural, not heuristic — `config_secret_register` has **no `value` parameter**, so the secret can never enter the LLM context regardless of model behavior.
 
-**Resolution at runtime.** `config_env_get` resolves a key across three sources in priority order: shell environment → credstore keyring → slife.json5. Secret values are always masked in output.
+**Resolution at runtime.** `config_env_get` resolves non-secret env vars: shell → slife.json5. `credential_check` resolves secrets: shell → OS keyring, with values masked (`sk-a…B3f2`). The two tools are separate — the LLM picks the right one.
 
 **Config removal is scoped.** `config_env_remove` removes only from `slife.json5` — it never touches the OS keyring or shell environment. Credentials stored in the keyring by other applications or by the user directly are never affected by Slife's config management.
 
@@ -806,7 +810,7 @@ The split is structural, not heuristic — `config_secret_register` has **no `va
 | **What lives here** | Actual secret values | References (`${VAR}`) and non-secret config |
 | **Encryption** | OS-level (Keychain/Linux keyring/Win DPAPI) | Plaintext file |
 | **Who writes** | User via `credstore set` CLI | Agent via `config_secret_register` / `config_env_set` |
-| **Who reads** | `credential_check` (existence only) | `config_env_get` (resolves → keyring) |
+| **Who reads** | `credential_check` (masked value from keyring) | `config_env_get` (shell + config only, no keyring) |
 | **Survives** | OS user profile changes | Git version control |
 
 Separating them means you can commit `slife.json5` to version control (with `${VAR}` references) without leaking secrets, while secrets stay in OS-level encrypted storage where they belong.
