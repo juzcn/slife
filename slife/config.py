@@ -19,7 +19,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from credstore import resolve_uri, is_keyring_uri
+from slife.credstore import resolve_uri, is_keyring_uri
 from slife.env import resolve_env
 from slife.tools._config_io import with_fetched_at
 from slife.a2a.config import A2AConfig
@@ -37,7 +37,7 @@ def _resolve_api_key(value: str) -> str:
     import os
 
     # keyring: URI
-    from credstore import is_keyring_uri, resolve_uri
+    from slife.credstore import is_keyring_uri, resolve_uri
     if is_keyring_uri(value):
         return resolve_uri(value)
 
@@ -100,7 +100,7 @@ def _try_credstore_lookup(key: str) -> str | None:
     is unavailable.
     """
     try:
-        from credstore import get_credential
+        from slife.credstore import get_credential
         return get_credential(key)
     except Exception:
         return None
