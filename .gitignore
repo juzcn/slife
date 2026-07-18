@@ -1,3 +1,6 @@
+# Credential store encrypted backup
+credentials.crypt
+
 # WeChat session files (contain auth tokens)
 wechat_*.json5
 
