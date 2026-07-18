@@ -16,20 +16,123 @@
 └────────────────────────────────────────────────────────────┘
 ```
 
+## Install
+
+**Zero prerequisites.**  The install script auto-installs Python 3.13 and uv if needed — then installs slife in an isolated environment.  No git, no Node.js, no C++ compiler required.
+
+### Option 1: Install Script (Recommended)
+
+**macOS / Linux / WSL:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
+```
+
+**Windows PowerShell:**
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 | iex"
+```
+
+The script checks your Python version, installs [uv](https://docs.astral.sh/uv/) if needed, downloads the latest slife, and installs it in an isolated environment.  [Inspect the script](install.sh) before piping if you prefer.
+
+### Option 2: uv tool install (requires git)
+
+```bash
+uv tool install git+https://github.com/juzcn/slife.git
+```
+
+### Option 3: pipx (requires git)
+
+```bash
+pipx install git+https://github.com/juzcn/slife.git
+```
+
+### Option 4: Try Before Installing
+
+```bash
+uvx --from git+https://github.com/juzcn/slife.git slife
+```
+
+No install — downloads, caches, and runs slife in a temporary environment.
+
+### Optional Extras
+
+Slife keeps the default install lean.  Add extras when you need them:
+
+| Extra | Package | What it enables |
+|-------|---------|-----------------|
+| `embeddings` | `llama-cpp-python` | Local GGUF embeddings for semantic memory search (offline, no API cost). Without it, FTS5 keyword search still works. |
+| `mqtt` | `paho-mqtt` | A2A agent mesh via MQTT (`--agent <id>`). Without it, subagent spawning still works — only remote-agent discovery needs MQTT. |
+
+```bash
+# Install with one or both extras:
+uv tool install "slife[embeddings]" --reinstall
+uv tool install "slife[mqtt]" --reinstall
+uv tool install "slife[embeddings,mqtt]" --reinstall
+```
+
+#### Setting Up Local Embeddings
+
+After installing `slife[embeddings]`, download a GGUF model and configure it:
+
+```bash
+# 1. Download a GGUF embedding model (BGE-M3, Q4_K_M quantized, ~300 MiB)
+curl -LO https://huggingface.co/ChristianAzinn/bge-m3-gguf/resolve/main/bge-m3-Q4_K_M.gguf
+
+# 2. Launch slife and tell the agent to enable it:
+slife
+# > enable local embeddings with bge-m3-Q4_K_M.gguf
+```
+
+The agent calls `memory_set_embedding` which writes the config and reloads the embedder — **no restart needed**.  Verify with:
+
+```bash
+slife
+# > check embedding status
+```
+
+**Windows users**: `llama-cpp-python` needs a pre-built wheel (no C++ compiler required).  The Vulkan variant works on any GPU and falls back to CPU:
+
+```bash
+uv tool install "slife[embeddings]" --reinstall
+# Then install the platform wheel into the tool's venv:
+uv tool run --from slife pip install "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+```
+
+Alternative CUDA wheels: `v0.3.34-cu132`, `v0.3.34-cu125`; AMD: `v0.3.34-hip-radeon`.
+
+#### Setting Up the MQTT Mesh
+
+After installing `slife[mqtt]`, run a [Mosquitto](https://mosquitto.org/) broker and launch with an agent identity:
+
+```bash
+# Terminal 1 — start the broker (or use your existing one)
+mosquitto -p 1883
+
+# Terminal 2 — launch slife with an agent identity
+slife --agent my-agent
+```
+
+Configure broker address in `slife.json5` if not using defaults (`localhost:1883`):
+
+```json5
+a2a: {
+  mqtt: { host: "my-broker.local", port: 1883 },
+}
+```
+
 ## Quick Start
 
-```bash
-uv sync                                      # install dependencies
-uv run slife                                 # launch the TUI
-```
-
-The default config (`slife.json5`) ships with pre-configured MCP servers (filesystem, web fetch, DuckDuckGo search).  Store your API key and launch:
+Store your API key and launch:
 
 ```bash
-credstore set-password                        # first time only — sets up encrypted backup
-credstore set DEEPSEEK_API_KEY               # masked input, no echo
-uv run slife
+credstore set-password                # first time only — sets up encrypted backup
+credstore set DEEPSEEK_API_KEY        # masked input, no echo
+slife
 ```
+
+The default config (`slife.json5`) ships with pre-configured MCP servers (filesystem, web fetch, DuckDuckGo search).
 
 ## How It Works
 
@@ -173,10 +276,36 @@ Not all tools are in every LLM request.  Three categories use lightweight summar
 
 ## Requirements
 
-- Python ≥ 3.13
-- [uv](https://docs.astral.sh/uv/) — Python package manager
-- Node.js — only if using npx-based MCP servers
-- Windows + GGUF embeddings: see [DESIGN.md § Embeddings](DESIGN.md#embeddings-2) for pre-built wheel instructions
+The install script handles everything automatically.  Nothing to install beforehand.
+
+| Component | Status |
+|-----------|--------|
+| Python ≥ 3.13 | Auto-installed via uv if missing |
+| [uv](https://docs.astral.sh/uv/) | Auto-installed if missing |
+| Node.js | Optional — only for npx-based MCP servers |
+| `llama-cpp-python` | Optional — `slife[embeddings]` for local GGUF embeddings |
+| `paho-mqtt` | Optional — `slife[mqtt]` for A2A MQTT mesh |
+
+## Development
+
+```bash
+git clone https://github.com/juzcn/slife.git
+cd slife
+uv sync
+uv run slife
+```
+
+For all optional dependencies (embeddings + MQTT):
+
+```bash
+uv sync --all-extras
+```
+
+Run tests:
+
+```bash
+uv run pytest
+```
 
 ## Design
 

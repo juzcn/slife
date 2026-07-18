@@ -129,15 +129,35 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _resolve_skills_dir(skills_dir: str = "") -> Path:
+    """Resolve the skills directory, preferring the package-bundled copy.
+
+    Priority:
+      1. Explicit path (from config or argument) — used as-is.
+      2. Package-bundled ``slife/skills/`` — used when installed via wheel.
+      3. CWD-relative ``skills/`` — development fallback (``uv run slife``).
+    """
+    if skills_dir:
+        return Path(skills_dir)
+
+    # When installed, skills are bundled inside the slife package.
+    pkg_skills = Path(__file__).parent.parent / "skills"
+    if pkg_skills.is_dir():
+        return pkg_skills
+
+    # Development mode: CWD-relative skills/ directory.
+    return Path("skills")
+
+
 class _SkillDirMixin:
     """Shared skills_dir init and from_config — mixed into Tool subclasses."""
 
-    def __init__(self, skills_dir: str = "skills"):
-        self.skills_dir = Path(skills_dir)
+    def __init__(self, skills_dir: str = ""):
+        self.skills_dir = _resolve_skills_dir(skills_dir)
 
     @classmethod
     def from_config(cls, cfg, config):
-        return cls(skills_dir=cfg.get("skills_dir", "skills"))
+        return cls(skills_dir=cfg.get("skills_dir", ""))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

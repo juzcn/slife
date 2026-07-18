@@ -16,15 +16,123 @@
 └────────────────────────────────────────────────────────────┘
 ```
 
-## 快速开始
+## 安装
+
+**零前提。** 安装脚本会自动安装 Python 3.13 和 uv（如需要），然后将 slife 安装到隔离环境中。无需 git、无需 Node.js、无需 C++ 编译器。
+
+### 方式一：安装脚本（推荐）
+
+**macOS / Linux / WSL：**
 
 ```bash
-uv sync                                      # 安装依赖
-cp slife.json5.example slife.json5           # 复制配置文件，设置 API 密钥
-uv run slife                                 # 启动 TUI
+curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
 ```
 
-示例配置包含三个预配置的 MCP 服务器（文件系统、网页抓取、DuckDuckGo 搜索）—— 设置好模型密钥即可立即开始使用。
+**Windows PowerShell：**
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 | iex"
+```
+
+脚本会检查 Python 版本，按需安装 [uv](https://docs.astral.sh/uv/)，下载最新 slife 并安装到隔离环境中。如不放心，可先[查看脚本](install.sh)再执行。
+
+### 方式二：uv tool install（需要 git）
+
+```bash
+uv tool install git+https://github.com/juzcn/slife.git
+```
+
+### 方式三：pipx（需要 git）
+
+```bash
+pipx install git+https://github.com/juzcn/slife.git
+```
+
+### 方式四：免安装试用
+
+```bash
+uvx --from git+https://github.com/juzcn/slife.git slife
+```
+
+无需安装 — 在临时环境中下载、缓存并运行 slife。
+
+### 可选扩展
+
+Slife 默认安装保持精简。按需添加扩展：
+
+| 扩展 | 包 | 作用 |
+|------|-----|------|
+| `embeddings` | `llama-cpp-python` | 本地 GGUF 嵌入模型，用于语义记忆搜索（离线、无 API 费用）。未安装时 FTS5 关键词搜索仍可正常使用。 |
+| `mqtt` | `paho-mqtt` | A2A 智能体网格（`--agent <id>`）。未安装时子智能体仍可正常使用 —— 仅远程智能体发现需要 MQTT。 |
+
+```bash
+# 安装一个或两个扩展：
+uv tool install "slife[embeddings]" --reinstall
+uv tool install "slife[mqtt]" --reinstall
+uv tool install "slife[embeddings,mqtt]" --reinstall
+```
+
+#### 配置本地嵌入模型
+
+安装 `slife[embeddings]` 后，下载 GGUF 模型并配置：
+
+```bash
+# 1. 下载 GGUF 嵌入模型（BGE-M3，Q4_K_M 量化，约 300 MiB）
+curl -LO https://huggingface.co/ChristianAzinn/bge-m3-gguf/resolve/main/bge-m3-Q4_K_M.gguf
+
+# 2. 启动 slife，告诉智能体启用它：
+slife
+# > 启用本地嵌入，使用 bge-m3-Q4_K_M.gguf
+```
+
+智能体会调用 `memory_set_embedding` 写入配置并重载嵌入器 —— **无需重启**。验证：
+
+```bash
+slife
+# > 检查嵌入状态
+```
+
+**Windows 用户**：`llama-cpp-python` 需要预编译 wheel（无需 C++ 编译器）。Vulkan 版本兼容所有 GPU，无 GPU 时自动回退 CPU：
+
+```bash
+uv tool install "slife[embeddings]" --reinstall
+# 将平台 wheel 安装到工具的 venv 中：
+uv tool run --from slife pip install "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+```
+
+其他 CUDA wheel：`v0.3.34-cu132`、`v0.3.34-cu125`；AMD：`v0.3.34-hip-radeon`。
+
+#### 配置 MQTT 网格
+
+安装 `slife[mqtt]` 后，启动 [Mosquitto](https://mosquitto.org/) broker 并以智能体身份运行：
+
+```bash
+# 终端 1 — 启动 broker（或使用已有实例）
+mosquitto -p 1883
+
+# 终端 2 — 以智能体身份启动 slife
+slife --agent my-agent
+```
+
+如果 broker 地址不是默认值（`localhost:1883`），在 `slife.json5` 中配置：
+
+```json5
+a2a: {
+  mqtt: { host: "my-broker.local", port: 1883 },
+}
+```
+
+## 快速开始
+
+存储 API 密钥并启动：
+
+```bash
+credstore set-password                # 首次使用 — 设置加密备份
+credstore set DEEPSEEK_API_KEY        # 密码输入，无回显
+slife
+```
+
+默认配置（`slife.json5`）包含预配置的 MCP 服务器（文件系统、网页抓取、DuckDuckGo 搜索）—— 设置好模型密钥即可立即开始使用。
 
 ## 工作原理
 
@@ -130,10 +238,30 @@ Slife 内置三个插件，均使用相同的 MCP stdio 协议：
 
 ## 环境要求
 
-- Python ≥ 3.13
-- [uv](https://docs.astral.sh/uv/) — Python 包管理器
-- Node.js — 仅在使用基于 npx 的 MCP 服务器时需要
-- Windows + GGUF 嵌入：参见 [DESIGN.md § Embeddings](DESIGN.md#embeddings-2) 中的预编译 wheel 安装说明
+安装脚本自动处理一切。无需提前安装任何东西。
+
+| 组件 | 状态 |
+|------|------|
+| Python ≥ 3.13 | 缺失时通过 uv 自动安装 |
+| [uv](https://docs.astral.sh/uv/) | 缺失时自动安装 |
+| Node.js | 可选 — 仅用于 npx MCP 服务器 |
+| `llama-cpp-python` | 可选 — `slife[embeddings]` 提供本地 GGUF 嵌入 |
+| `paho-mqtt` | 可选 — `slife[mqtt]` 提供 A2A MQTT 网格 |
+
+## 开发
+
+```bash
+git clone https://github.com/juzcn/slife.git
+cd slife
+uv sync
+uv run slife
+```
+
+运行测试：
+
+```bash
+uv run pytest
+```
 
 ## 设计哲学
 

@@ -15,14 +15,13 @@ dependencies = [
     "json5>=0.15.0",
     "jinja2>=3.1.0",
     "fastmcp>=2.0.0",
-    "paho-mqtt>=2.0.0",
     "aiosqlite>=0.22.1",
     "sqlite-vec>=0.1.9",
-    "llama-cpp-python",
     "aiohttp>=3.14.1",
     "qrcode>=8.0",
     "Pillow>=11.0",
-    "credstore",
+    "keyring>=25.0.0",
+    "keyrings-cryptfile>=1.3.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -39,17 +38,27 @@ classifiers = [
 Homepage = "https://github.com/juzcn/slife"
 Repository = "https://github.com/juzcn/slife"
 
+[project.optional-dependencies]
+embeddings = ["llama-cpp-python"]
+mqtt = ["paho-mqtt>=2.0.0"]
+
 [project.scripts]
 slife = "slife:main"
+credstore = "credstore.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["slife"]
+packages = ["slife", "credstore"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "slife/skills"
 
 [tool.hatch.build.targets.sdist]
 include = [
     "/slife",
     "/skills",
+    "/credstore",
     "/README.md",
+    "/README.zh-CN.md",
     "/LICENSE",
     "/pyproject.toml",
 ]
@@ -83,4 +92,3 @@ markers = [
 
 [tool.uv.sources]
 credstore = { path = "credstore" }
-llama-cpp-python = { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl" }

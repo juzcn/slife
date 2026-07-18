@@ -14,9 +14,10 @@ import logging
 import time as _time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-import paho.mqtt.client as mqtt
+if TYPE_CHECKING:
+    import paho.mqtt.client as mqtt
 
 from slife.a2a.identity import AgentId
 
@@ -24,6 +25,17 @@ logger = logging.getLogger(__name__)
 
 # MQTTv5 reason-code constants
 _MQTT_RC_SUCCESS = 0
+
+#: Lazily-loaded paho-mqtt module — only imported when MQTT is actually used.
+_mqtt: Any = None
+
+
+def _get_mqtt():
+    """Lazy-import paho-mqtt so it is only required when MQTT is enabled."""
+    global _mqtt
+    if _mqtt is None:
+        import paho.mqtt.client as _mqtt
+    return _mqtt
 
 
 @dataclass
@@ -71,13 +83,15 @@ class MQTTAdapter:
         if self._connected:
             return
 
+        mq = _get_mqtt()
+
         lwt_topic = f"Slife/{self._client_id}/presence"
         lwt_payload = json.dumps({"status": "offline"})
 
-        self._client = mqtt.Client(
-            mqtt.CallbackAPIVersion.VERSION2,
+        self._client = mq.Client(
+            mq.CallbackAPIVersion.VERSION2,
             client_id=self._client_id,
-            protocol=mqtt.MQTTv5,
+            protocol=mq.MQTTv5,
         )
         self._client.will_set(lwt_topic, lwt_payload, qos=1, retain=False)
 
@@ -217,9 +231,10 @@ class MQTTAdapter:
         )
 
         # Route to all matching subscribed queues
+        mq = _get_mqtt()
         matched = False
         for topic_filter, queue in self._queues.items():
-            if mqtt.topic_matches_sub(topic_filter, msg.topic):
+            if mq.topic_matches_sub(topic_filter, msg.topic):
                 matched = True
                 try:
                     queue.put_nowait(mqtt_msg)
