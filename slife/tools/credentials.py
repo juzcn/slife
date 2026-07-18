@@ -2,8 +2,9 @@
 
 Talk directly to the OS keyring via credstore.  Sensitive values are
 NEVER exposed — credential_check only confirms existence (stored / not stored).
-Use config_env_set to register env vars in
-slife.json5 (it handles both secrets and non-secrets).
+Use config_secret_register to register secret env vars in slife.json5
+(writes ${VAR} placeholder — user stores the real value via credstore CLI).
+Use config_env_set for non-secret env vars.
 """
 
 from __future__ import annotations

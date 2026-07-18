@@ -1,10 +1,13 @@
 """Config environment variable tools.
 
-- Secrets (API keys, tokens, passwords): NEVER set via these tools.
-  Use ``credstore set <KEY>`` in the terminal instead.
-- Non-secret env vars: can be set/get/removed here.
+- Secrets (API keys, tokens, passwords): use config_secret_register.
+  Writes ${VAR} placeholder — the user must run credstore set <KEY>
+  in their own terminal.  The tool has NO value parameter.
+- Non-secret env vars: use config_env_set / config_env_get / config_env_remove.
 
 Resolution order: os.environ → credstore (keyring) → slife.json5
+
+credstore is an interactive-only CLI tool — LLMs cannot invoke it.
 """
 
 from __future__ import annotations
@@ -41,28 +44,18 @@ def _env_section(raw: dict) -> dict:
 
 
 class ConfigEnvSetTool(_ConfigPathMixin, Tool):
-    """Register an environment variable in slife.json5.
+    """Set a non-secret environment variable in slife.json5.
 
-    The SINGLE tool for all env var registration — automatically
-    handles secrets vs non-secrets based on the key name:
-
-    • Secret key (contains KEY/TOKEN/SECRET/PASSWORD):
-      Writes ${VAR} reference, tells user to run credstore set <KEY>.
-      The secret VALUE is REJECTED if passed — never stored in config.
-
-    • Non-secret key (EDITOR, LANG, LOG_LEVEL, etc):
-      Writes the value directly, or a <YOUR_VAR> placeholder if no
-      value given.
-
-    There is no separate credential_set tool — this covers both.
+    For API keys, tokens, and passwords, use config_secret_register instead
+    — it writes a ${VAR} placeholder and directs the user to the terminal.
+    This tool is for regular env vars like EDITOR, LANG, LOG_LEVEL, etc.
     """
 
     name = "config_env_set"
     description = (
-        "Register an env var in slife.json5. "
-        "Secret key (KEY/TOKEN/SECRET/PASSWORD) → writes ${VAR} ref, "
-        "value is REJECTED. "
-        "Non-secret key → writes value or <YOUR_VAR> placeholder."
+        "Set a non-secret env var in slife.json5. "
+        "Writes the value directly (or a <YOUR_VAR> placeholder if omitted). "
+        "For secrets (API keys, tokens, passwords) use config_secret_register."
     )
     parameters = {
         "type": "object",
@@ -70,19 +63,13 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):
             "key": {
                 "type": "string",
                 "description": (
-                    "Env var name, e.g. 'DEEPSEEK_API_KEY' or 'EDITOR'. "
-                    "Secret keys (containing KEY/TOKEN/SECRET/PASSWORD) "
-                    "get a ${VAR} reference + CLI instruction. "
-                    "Non-secret keys get a value or placeholder."
+                    "Env var name for a NON-SECRET setting, e.g. 'EDITOR' or 'LOG_LEVEL'. "
+                    "Do NOT use for API keys or tokens — use config_secret_register for those."
                 ),
             },
             "value": {
                 "type": "string",
-                "description": (
-                    "ONLY for non-secret vars (EDITOR, LANG, LOG_LEVEL, etc). "
-                    "If the key looks like a secret, this value is REJECTED — "
-                    "secrets MUST go through 'credstore set <KEY>' in the terminal."
-                ),
+                "description": "Value for the env var. Omit to write a <YOUR_VAR> placeholder.",
             },
         },
         "required": ["key"],
@@ -92,28 +79,6 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):
         key: str = kwargs.get("key", "")
         value: str | None = kwargs.get("value")
 
-        if _is_secret_key(key):
-            # Secret: NEVER accept a value. Write ${VAR} reference, direct to CLI.
-            if value and not str(value).startswith(("${", "<")):
-                return (
-                    f"[REJECTED] '{key}' looks like a secret (API key/token/password).\n"
-                    f"NEVER paste secrets into the chat — chat history is plaintext.\n"
-                    f"Instead, tell the user to run in their terminal:\n"
-                    f"  credstore set {key}"
-                )
-
-            raw = read_config(self._config_path)
-            env = _env_section(raw)
-            env[key] = "${%s}" % key
-            write_config(self._config_path, raw)
-            logger.info("env_set_credstore_ref key=%s", key)
-            return (
-                f"[OK] Registered '{key}' in slife.json5.\n\n"
-                f"To store the secret, user must run in terminal:\n"
-                f"  credstore set {key}"
-            )
-
-        # Non-secret: write value or placeholder
         raw = read_config(self._config_path)
         env = _env_section(raw)
         if value:
@@ -131,6 +96,60 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):
                 f"[OK] {key} placeholder written.\n"
                 f"Edit slife.json5 → env: → {key} with the real value."
             )
+
+
+# ── config_secret_register ──────────────────────────────────
+
+
+class ConfigSecretRegisterTool(_ConfigPathMixin, Tool):
+    """Register a secret env var in slife.json5.
+
+    Writes a ${VAR} placeholder ONLY — the tool has NO value parameter,
+    so the secret can never enter the LLM context.
+
+    The user must run the interactive CLI ``credstore set <KEY>`` in
+    their own terminal to store the real secret in the OS keyring.
+    LLMs cannot invoke credstore — it requires direct TTY input.
+    """
+
+    name = "config_secret_register"
+    description = (
+        "Register a secret env var (API key, token, password) in slife.json5. "
+        "Writes a ${VAR} placeholder — NEVER accepts the secret value. "
+        "The user must store the real value via 'credstore set <KEY>' in "
+        "their own terminal (credstore is interactive-only)."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Env var name for the secret, e.g. 'DEEPSEEK_API_KEY'.",
+            },
+        },
+        "required": ["key"],
+    }
+
+    async def execute(self, **kwargs) -> str:
+        key: str = kwargs["key"]
+
+        from credstore import exists_credential
+
+        already_stored = exists_credential(key)
+
+        raw = read_config(self._config_path)
+        env = _env_section(raw)
+        env[key] = "${%s}" % key
+        write_config(self._config_path, raw)
+        logger.info("secret_registered key=%s already_stored=%s", key, already_stored)
+
+        status = "already stored in keyring" if already_stored else "not yet stored"
+        return (
+            f"[OK] Registered '{key}' in slife.json5 ({status}).\n\n"
+            f"To store the secret, user must run in terminal:\n"
+            f"  credstore set {key}\n\n"
+            f"(credstore requires interactive terminal — LLMs cannot invoke it.)"
+        )
 
 
 # ── config_env_get ──────────────────────────────────────────

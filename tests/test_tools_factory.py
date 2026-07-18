@@ -20,6 +20,7 @@ class TestCreateToolsFromConfig:
         assert "add_skill" in names
         assert "remove_skill" in names
         assert "config_env_set" in names
+        assert "config_secret_register" in names
         assert "config_env_get" in names
         assert "config_env_remove" in names
         assert "cli_add_tool" in names

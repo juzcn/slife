@@ -80,7 +80,7 @@ Never paste API keys into `slife.json5` or the chat.  Use the terminal:
 credstore set DEEPSEEK_API_KEY       # masked input — no echo, no shell history
 ```
 
-The agent registers the reference for you — just say "add a DeepSeek key" and it calls `config_env_set`, which writes `${DEEPSEEK_API_KEY}` to the config and tells you to run the command above.
+The agent registers the reference for you — just say "add a DeepSeek key" and it calls `config_secret_register`, which writes `${DEEPSEEK_API_KEY}` to the config and tells you to run `credstore set DEEPSEEK_API_KEY` in your terminal.
 
 ## Features
 

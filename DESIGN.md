@@ -37,7 +37,8 @@ What the LLM cannot know (and the prompt provides):
 - That MCP servers default to eager, with lazy as an option for large tool sets
 - That `anyapi-mcp-server` converts OpenAPI specs to tools
 - That `cli_add_tool` persists discovered CLIs across restarts
-- That `config_env_set` handles both secrets (writes `${VAR}`, directs to CLI) and non-secrets (writes value or placeholder)
+- That `config_secret_register` registers secrets (writes `${VAR}`, user runs `credstore set` in terminal)
+- That `config_env_set` handles non-secret env vars (writes value or `<YOUR_VAR>` placeholder)
 - That A2A agents are discovered via `a2a_list_agents` / `a2a_list_subagents`
 - That `a2a_spawn_subagent` creates local workers for parallel computation
 - That every conversation is permanently recorded and searchable via `memory_search`
@@ -362,8 +363,8 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 | `execute_shell` | `asyncio.create_subprocess_shell` with configurable timeout |
 | `run_python_script` | Platform-correct Python invocation with JSON arguments |
 | `get_os_info` | Current OS name for platform-specific shell syntax |
-| `config_env_set` / `get` / `remove` | Manage env vars in slife.json5 — secrets → `${VAR}` refs, non-secrets → values |
-| `credential_list` / `get` | Inspect the OS keyring — key names only, never secret values |
+| `config_env_set` / `config_secret_register` / `get` / `remove` | Manage env vars in slife.json5 — secrets → `${VAR}` refs (no value param), non-secrets → values |
+| `credential_check` | Check OS keyring existence — returns stored / not stored, never the value |
 | `cli_add_tool` / `check_installed` / `remove` / `list` | CLI discovery and registration management |
 
 #### 2. Memory Tools
@@ -763,8 +764,8 @@ Slife separates secrets from config into two layers with different security prop
 │  Encrypted at OS level.  Survives config changes.   │
 │  ─────────────────────────────────────────────────  │
 │  credstore set <KEY>          ← masked stdin input  │
-│  credential_list              ← key names only      │
-│  credential_get               ← "stored" / "not"    │
+│  credential_check <KEY>      ← "stored" / "not"    │
+│  (interactive-only CLI — LLMs cannot invoke)        │
 └────────────────────┬────────────────────────────────┘
                      │  ${VAR} reference
                      ▼
@@ -772,23 +773,25 @@ Slife separates secrets from config into two layers with different security prop
 │  slife.json5 → env: section                         │
 │  Plain config file.  Holds refs, not secrets.       │
 │  ─────────────────────────────────────────────────  │
-│  config_env_set <KEY> [value]  ← single tool for    │
-│  config_env_get [key]          ← all env var ops    │
+│  config_secret_register <KEY>  ← secrets only       │
+│  config_env_set <KEY> [value]  ← non-secrets only   │
+│  config_env_get [key]          ← resolve (masked)   │
 │  config_env_remove <KEY>       ← config only        │
 └─────────────────────────────────────────────────────┘
 ```
 
 ### Design Principles
 
-**Secrets never touch the agent process.** The `credstore set <KEY>` CLI reads secrets via masked stdin input (no echo, no shell history) and writes them directly to the OS keyring. Agent tools never accept, return, or see secret values — `credential_get` returns only "stored" / "not stored", `credential_list` returns key names only.
+**Secrets never touch the agent process.** The `credstore set <KEY>` CLI reads secrets via masked stdin input (no echo, no shell history) and writes them directly to the OS keyring. Agent tools never accept, return, or see secret values — `credential_check` returns only "stored" / "not stored". `config_env_get` always masks secret values in output. **credstore is an interactive-only CLI tool — LLMs cannot invoke it** (it requires direct TTY input).
 
-**One tool for registration.** `config_env_set` is the single entry point for registering any env var in `slife.json5`. It detects secret keys by name (containing KEY/TOKEN/SECRET/PASSWORD) and automatically routes to the correct flow:
+**Two tools for registration — structurally safe.** Secret and non-secret env var registration are separate tools, eliminating the need for runtime key-name detection:
 
-| Key type | Behavior |
-|----------|----------|
-| Secret (KEY/TOKEN/SECRET/PASSWORD) | Writes `${VAR}` reference, tells user to run `credstore set <KEY>`. Value parameter **rejected**. |
-| Non-secret, value given | Writes the value directly |
-| Non-secret, no value | Writes `<YOUR_VAR>` placeholder |
+| Tool | Purpose | `value` parameter | Behavior |
+|------|---------|:---:|---|
+| `config_secret_register` | Secrets (API keys, tokens) | ❌ | Writes `${VAR}` placeholder, directs user to run `credstore set <KEY>` in terminal. Always checks if already stored via `credential_check`. |
+| `config_env_set` | Non-secret vars (EDITOR, LANG, etc.) | ✅ optional | Writes value directly, or `<YOUR_VAR>` placeholder if omitted. |
+
+The split is structural, not heuristic — `config_secret_register` has **no `value` parameter**, so the secret can never enter the LLM context regardless of model behavior.
 
 **Resolution at runtime.** `config_env_get` resolves a key across three sources in priority order: shell environment → credstore keyring → slife.json5. Secret values are always masked in output.
 
@@ -802,8 +805,8 @@ Slife separates secrets from config into two layers with different security prop
 |---|---|---|
 | **What lives here** | Actual secret values | References (`${VAR}`) and non-secret config |
 | **Encryption** | OS-level (Keychain/Linux keyring/Win DPAPI) | Plaintext file |
-| **Who writes** | User via `credstore set` CLI | Agent via `config_env_set` |
-| **Who reads** | `credential_get` (existence only) | `config_env_get` (resolves → keyring) |
+| **Who writes** | User via `credstore set` CLI | Agent via `config_secret_register` / `config_env_set` |
+| **Who reads** | `credential_check` (existence only) | `config_env_get` (resolves → keyring) |
 | **Survives** | OS user profile changes | Git version control |
 
 Separating them means you can commit `slife.json5` to version control (with `${VAR}` references) without leaking secrets, while secrets stay in OS-level encrypted storage where they belong.
@@ -867,7 +870,7 @@ slife/
     run_python_script.py#   run_python_script
     os_info.py          #   get_os_info
     skill.py            #   list_skills / use_skill / add_skill / remove_skill
-    config_env.py       #   config_env_set / get / remove
+    config_env.py       #   config_env_set / config_secret_register / get / remove
     cli.py              #   cli_add_tool / check_installed / remove / list
     _config_io.py       #   Shared JSON5 read/write helpers
 

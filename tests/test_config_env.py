@@ -10,6 +10,7 @@ from slife.tools.config_env import (
     _env_section,
     _PLACEHOLDER_PREFIX,
     ConfigEnvSetTool,
+    ConfigSecretRegisterTool,
     ConfigEnvGetTool,
     ConfigEnvRemoveTool,
 )
@@ -46,6 +47,7 @@ def _mock_credstore(monkeypatch):
     import credstore
     monkeypatch.setattr(credstore, "get_credential", _get)
     monkeypatch.setattr(credstore, "delete_credential", _delete)
+    monkeypatch.setattr(credstore, "exists_credential", lambda k: k in data)
 
     # Also patch config's helper
     import slife.config
@@ -82,34 +84,6 @@ class TestEnvSection:
 
 class TestConfigEnvSetTool:
     @pytest.mark.asyncio
-    async def test_secret_key_with_value_rejected(self, monkeypatch):
-        """API_KEY with plaintext value → REJECTED, directs to CLI."""
-        raw, written = _mock_config({}, monkeypatch)
-        _mock_credstore(monkeypatch)
-        tool = ConfigEnvSetTool(config_path=Path("test.json5"))
-
-        result = await tool.execute(key="TAVILY_API_KEY", value="sk-abc123")
-
-        # Must reject — never accept secret values
-        assert "[REJECTED]" in result
-        assert "credstore set" in result
-        assert "sk-abc123" not in result  # value never exposed
-        assert len(written) == 0  # nothing written to config
-
-    @pytest.mark.asyncio
-    async def test_secret_key_no_value_writes_ref(self, monkeypatch):
-        """Secret key without value → writes ${VAR} ref, directs to CLI."""
-        raw, written = _mock_config({}, monkeypatch)
-        _mock_credstore(monkeypatch)
-        tool = ConfigEnvSetTool(config_path=Path("test.json5"))
-
-        result = await tool.execute(key="MY_API_KEY")
-
-        assert raw["env"]["MY_API_KEY"] == "${MY_API_KEY}"
-        assert "credstore set" in result
-        assert len(written) == 1
-
-    @pytest.mark.asyncio
     async def test_non_secret_key_writes_value(self, monkeypatch):
         """Non-secret keys still write directly."""
         raw, written = _mock_config({}, monkeypatch)
@@ -141,6 +115,66 @@ class TestConfigEnvSetTool:
 
         result = await tool.execute(key="EDITOR", value="vim")
         assert raw["env"]["EDITOR"] == "vim"
+
+
+# ── ConfigSecretRegisterTool ──────────────────────────────────
+
+
+class TestConfigSecretRegisterTool:
+    @pytest.mark.asyncio
+    async def test_registers_placeholder(self, monkeypatch):
+        """Writes ${KEY} placeholder, directs to CLI."""
+        raw, written = _mock_config({}, monkeypatch)
+        _mock_credstore(monkeypatch)
+        tool = ConfigSecretRegisterTool(config_path=Path("test.json5"))
+
+        result = await tool.execute(key="DEEPSEEK_API_KEY")
+
+        assert raw["env"]["DEEPSEEK_API_KEY"] == "${DEEPSEEK_API_KEY}"
+        assert "credstore set" in result
+        assert "[OK]" in result
+        assert len(written) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_value_parameter(self):
+        """Schema has NO value field — structurally impossible to pass secrets."""
+        tool = ConfigSecretRegisterTool(config_path=Path("test.json5"))
+        assert "value" not in tool.parameters["properties"]
+
+    @pytest.mark.asyncio
+    async def test_reports_already_stored(self, monkeypatch):
+        """If credential already in keyring, reports it."""
+        raw, _ = _mock_config({}, monkeypatch)
+        cred = _mock_credstore(monkeypatch)
+        cred["DEEPSEEK_API_KEY"] = "sk-secret"
+
+        tool = ConfigSecretRegisterTool(config_path=Path("test.json5"))
+        result = await tool.execute(key="DEEPSEEK_API_KEY")
+
+        assert "already stored in keyring" in result
+
+    @pytest.mark.asyncio
+    async def test_reports_not_yet_stored(self, monkeypatch):
+        """If credential not in keyring, reports not yet stored."""
+        raw, _ = _mock_config({}, monkeypatch)
+        _mock_credstore(monkeypatch)
+
+        tool = ConfigSecretRegisterTool(config_path=Path("test.json5"))
+        result = await tool.execute(key="DEEPSEEK_API_KEY")
+
+        assert "not yet stored" in result
+
+    @pytest.mark.asyncio
+    async def test_mentions_interactive_only(self, monkeypatch):
+        """Response tells LLM that credstore is interactive-only."""
+        raw, _ = _mock_config({}, monkeypatch)
+        _mock_credstore(monkeypatch)
+
+        tool = ConfigSecretRegisterTool(config_path=Path("test.json5"))
+        result = await tool.execute(key="DEEPSEEK_API_KEY")
+
+        assert "interactive" in result.lower()
+        assert "LLMs cannot invoke" in result
 
 
 # ── ConfigEnvGetTool ─────────────────────────────────────────
