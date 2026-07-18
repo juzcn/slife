@@ -47,15 +47,17 @@ slife = "slife:main"
 credstore = "slife.credstore.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["slife"]
+packages = ["slife", "credstore"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "slife/skills"
+"credstore/__init__.py" = "credstore/__init__.py"
 
 [tool.hatch.build.targets.sdist]
 include = [
     "/slife",
     "/skills",
+    "/credstore",
     "/README.md",
     "/README.zh-CN.md",
     "/LICENSE",
