@@ -262,12 +262,50 @@ class TestConfigEnvGetTool:
         assert "sk-secret-12345678" not in result
 
     @pytest.mark.asyncio
+    async def test_list_includes_mcp_env_sections(self, monkeypatch):
+        """List-all shows env vars from mcp.servers.<name>.env sections."""
+        raw, _ = _mock_config({
+            "env": {"EDITOR": "code"},
+            "mcp": {"servers": {
+                "github": {"command": "npx", "args": [], "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}},
+                "serper": {"command": "npx", "args": [], "env": {"SERPER_API_KEY": "${SERPER_API_KEY}"}},
+            }},
+        }, monkeypatch)
+        _mock_credstore(monkeypatch)
+        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+
+        result = await tool.execute()
+        assert "env:" in result
+        assert "EDITOR" in result
+        assert "mcp/github:" in result
+        assert "GITHUB_TOKEN" in result
+        assert "mcp/serper:" in result
+        assert "SERPER_API_KEY" in result
+
+    @pytest.mark.asyncio
+    async def test_lookup_finds_mcp_env(self, monkeypatch):
+        """Single-key lookup finds value in MCP server env."""
+        raw, _ = _mock_config({
+            "env": {},
+            "mcp": {"servers": {
+                "github": {"command": "npx", "args": [], "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}},
+            }},
+        }, monkeypatch)
+        _mock_credstore(monkeypatch)
+        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+
+        result = await tool.execute(key="GITHUB_TOKEN")
+        assert "GITHUB_TOKEN" in result
+        assert "mcp/github" in result
+        assert "${GITHUB_TOKEN}" in result
+
+    @pytest.mark.asyncio
     async def test_list_empty(self, monkeypatch):
         raw, _ = _mock_config({}, monkeypatch)
         _mock_credstore(monkeypatch)
         tool = ConfigEnvGetTool(config_path=Path("test.json5"))
         result = await tool.execute()
-        assert "No environment variables" in result
+        assert "env:" in result
 
 
 # ── ConfigEnvRemoveTool ──────────────────────────────────────

@@ -154,9 +154,10 @@ class ConfigEnvGetTool(_ConfigPathMixin, Tool):
 
     name = "config_env_get"
     description = (
-        "Read a non-secret env var (shell → slife.json5). "
+        "Read a non-secret env var (shell → slife.json5 → MCP server envs). "
         "Does NOT check the keyring — use credential_check for secrets. "
-        "Omit key to list all configured non-secret variables."
+        "Omit key to list all configured variables across root env: and "
+        "mcp.servers.<name>.env sections."
     )
     parameters = {
         "type": "object",
@@ -173,16 +174,27 @@ class ConfigEnvGetTool(_ConfigPathMixin, Tool):
         key: str = kwargs.get("key", "")
         raw = read_config(self._config_path)
         env = _env_section(raw)
+        mcp_envs = _mcp_env_sections(raw)
 
         if key:
-            return _lookup_one(key, env)
+            return _lookup_one(key, env, mcp_envs)
 
-        if not env:
-            return "No environment variables in slife.json5 env: section."
+        lines = []
 
-        lines = ["env:"]
-        for k in sorted(env.keys()):
-            lines.append(_format_one(k, env.get(k, "")))
+        # Root env: section
+        if env:
+            lines.append("env:")
+            for k in sorted(env.keys()):
+                lines.append(_format_one(k, env.get(k, "")))
+        else:
+            lines.append("env: (empty)")
+
+        # MCP server env sections
+        for server_name, server_env in sorted(mcp_envs.items()):
+            lines.append(f"mcp/{server_name}:")
+            for k in sorted(server_env.keys()):
+                lines.append(_format_one(k, server_env.get(k, "")))
+
         return "\n".join(lines)
 
 
@@ -226,18 +238,46 @@ class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):
 # ── helpers ─────────────────────────────────────────────────
 
 
-def _lookup_one(key: str, env: dict) -> str:
+def _mcp_env_sections(raw: dict) -> dict[str, dict]:
+    """Extract per-server env dicts from ``mcp.servers.<name>.env``."""
+    result: dict[str, dict] = {}
+    servers = raw.get("mcp", {}).get("servers", {})
+    if isinstance(servers, dict):
+        for name, cfg in servers.items():
+            if isinstance(cfg, dict):
+                server_env = cfg.get("env", {})
+                if isinstance(server_env, dict) and server_env:
+                    result[name] = dict(server_env)
+    return result
+
+
+def _lookup_one(key: str, env: dict, mcp_envs: dict[str, dict]) -> str:
     # shell takes priority
     env_val = os.environ.get(key)
     if env_val:
         return f"{key} = {env_val} [shell]"
 
-    # Fallback: slife.json5
+    sources = []
+
+    # Root env:
     config_val = env.get(key)
     if config_val and config_val not in (None, ""):
-        return f"{key} = {config_val} [slife.json5]"
+        sources.append(("slife.json5", str(config_val)))
 
-    return f"'{key}' is not set."
+    # MCP server envs
+    for server_name, server_env in sorted(mcp_envs.items()):
+        val = server_env.get(key)
+        if val and val not in (None, ""):
+            sources.append((f"mcp/{server_name}", str(val)))
+
+    if not sources:
+        return f"'{key}' is not set."
+
+    lines = [f"{key}:"]
+    for source_name, value in sources:
+        marker = " ← active" if source_name == sources[0][0] else ""
+        lines.append(f"  [{source_name}]{marker}: {value}")
+    return "\n".join(lines)
 
 
 def _format_one(key: str, value: str) -> str:
