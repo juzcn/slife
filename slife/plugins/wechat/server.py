@@ -236,9 +236,14 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
         if data.get("bot_token"):
             bot_token = data["bot_token"]
             bu = data.get("baseurl", base_url)
-            await _client.start(bot_token, bu)
-            # Store the user's WeChat ID so the LLM knows who to message
             ilink_user_id = data.get("ilink_user_id", "")
+            ilink_bot_id = data.get("ilink_bot_id", "")
+            await _client.start(
+                bot_token, bu,
+                ilink_user_id=ilink_user_id,
+                ilink_bot_id=ilink_bot_id,
+            )
+            # Store the user's WeChat ID so the LLM knows who to message
             if ilink_user_id:
                 _client.last_contact = {
                     "from_id": ilink_user_id,
@@ -410,6 +415,15 @@ async def wechat_send_typing(
 
     try:
         result = await _client.send_typing(to_user_id, context_token or "", status)
+        if result is None:
+            logger.debug(
+                "send_typing_no_ticket to_user_id=%s context_token=%s",
+                to_user_id, context_token,
+            )
+            return error_json(
+                "Typing indicator not sent — could not obtain typing ticket. "
+                "The getconfig API call may have failed."
+            )
         return ok_json(
             status="sent",
             typing_status=status,

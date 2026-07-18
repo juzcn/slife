@@ -62,13 +62,14 @@ async def memory_save_turn(
     token_count: int = 0,
     who_helped: str = "",
     what_model: str = "",
+    channel: str = "",
 ) -> str:
     assert _store is not None
     try:
         rowid = await _store.save_turn(
             author=author, user_message=user_message, messages=messages,
             token_count=token_count, who_helped=who_helped, what_model=what_model,
-            embedder=_embedder,
+            channel=channel, embedder=_embedder,
         )
         return json.dumps({"rowid": rowid, "status": "saved"}, ensure_ascii=False)
     except Exception as e:

@@ -744,6 +744,7 @@ class AgentService:
         user_message: str = "",
         token_count: int | None = None,
         conversation: "Conversation | None" = None,
+        channel: str = "",
     ) -> None:
         """Save the just-completed turn as a new row in memory.
 
@@ -752,6 +753,7 @@ class AgentService:
             token_count: Cumulative token usage for the turn.
             conversation: The conversation to extract messages from.
                 Defaults to self.conversation (the TUI conversation).
+            channel: Source channel — 'human', 'wechat', or remote agent id.
         """
         if not self.memory_enabled:
             return
@@ -786,6 +788,7 @@ class AgentService:
                     "token_count": token_count or 0,
                     "who_helped": self.config.a2a_config.agent_name or "",
                     "what_model": self.config.active_model.ref,
+                    "channel": channel,
                 },
             )
         except Exception as e:

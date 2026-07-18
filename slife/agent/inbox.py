@@ -172,6 +172,7 @@ class Inbox:
                         token_count=result.usage.total_tokens
                         if hasattr(result, "usage") else 0,
                         conversation=conversation,
+                        channel=str(msg.source),
                     )
                 except Exception:
                     logger.debug("on_turn_complete_error", exc_info=True)

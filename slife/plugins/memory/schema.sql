@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS diary (
     created_at     TEXT NOT NULL,
 
     -- ▼ 背景
+    channel        TEXT DEFAULT '',  -- 'human', 'wechat', or remote agent id
     who_helped     TEXT DEFAULT '',
     what_model     TEXT DEFAULT '',
 
@@ -48,18 +49,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS diary_fts USING fts5(
     messages,
     summary,
     tags,
+    channel,
     content='diary',
     content_rowid='rowid'
 );
 
 CREATE TRIGGER IF NOT EXISTS diary_ai AFTER INSERT ON diary BEGIN
-    INSERT INTO diary_fts(rowid, author, user_message, messages, summary, tags)
-    VALUES (new.rowid, new.author, new.user_message, new.messages, new.summary, new.tags);
+    INSERT INTO diary_fts(rowid, author, user_message, messages, summary, tags, channel)
+    VALUES (new.rowid, new.author, new.user_message, new.messages, new.summary, new.tags, new.channel);
 END;
 
 CREATE TRIGGER IF NOT EXISTS diary_ad AFTER DELETE ON diary BEGIN
-    INSERT INTO diary_fts(diary_fts, rowid, author, user_message, messages, summary, tags)
-    VALUES ('delete', old.rowid, old.author, old.user_message, old.messages, old.summary, old.tags);
+    INSERT INTO diary_fts(diary_fts, rowid, author, user_message, messages, summary, tags, channel)
+    VALUES ('delete', old.rowid, old.author, old.user_message, old.messages, old.summary, old.tags, old.channel);
 END;
 
 

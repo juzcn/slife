@@ -81,6 +81,8 @@ class WechatClawbotClient:
         self._base_url: str = BASE_URL
         self._get_updates_buf: str = ""
         self._typing_tickets: dict[str, str] = {}
+        self._ilink_user_id: str = ""   # bot's own iLink user ID (from login)
+        self._ilink_bot_id: str = ""    # bot's iLink bot ID (from login)
         self.last_contact: dict[str, str | None] = {
             "from_id": None, "context_token": None,
         }
@@ -218,7 +220,10 @@ class WechatClawbotClient:
 
     # ── Session lifecycle ──────────────────────────────────────────────
 
-    async def start(self, bot_token: str, base_url: str = "") -> None:
+    async def start(
+        self, bot_token: str, base_url: str = "",
+        ilink_user_id: str = "", ilink_bot_id: str = "",
+    ) -> None:
         """Set credentials. Call after ``login()``.
 
         Each API call creates its own aiohttp session (following the
@@ -227,6 +232,8 @@ class WechatClawbotClient:
         """
         self._bot_token = bot_token
         self._base_url = base_url or BASE_URL
+        self._ilink_user_id = ilink_user_id
+        self._ilink_bot_id = ilink_bot_id
 
     async def stop(self) -> None:
         """Clean up (no persistent session to close)."""
@@ -248,7 +255,11 @@ class WechatClawbotClient:
         if not bot_token:
             return False
 
-        await self.start(bot_token, base_url)
+        await self.start(
+            bot_token, base_url,
+            ilink_user_id=saved.get("ilink_user_id", ""),
+            ilink_bot_id=saved.get("ilink_bot_id", ""),
+        )
         logger.debug("Session restored from saved dict")
         return True
 
@@ -257,6 +268,8 @@ class WechatClawbotClient:
         return {
             "bot_token": self._bot_token,
             "base_url": self._base_url,
+            "ilink_user_id": self._ilink_user_id,
+            "ilink_bot_id": self._ilink_bot_id,
             "saved_at": time.time(),
         }
 
@@ -321,18 +334,31 @@ class WechatClawbotClient:
     async def _ensure_typing_ticket(
         self, user_id: str, context_token: str,
     ) -> str:
-        if user_id in self._typing_tickets:
+        # Return cached ticket if valid (non-empty)
+        if user_id in self._typing_tickets and self._typing_tickets[user_id]:
             return self._typing_tickets[user_id]
-        cfg = await self._api_post(
-            "ilink/bot/getconfig",
-            {
-                "ilink_user_id": user_id,
-                "context_token": context_token,
-                "base_info": _base_info(),
-            },
-        )
+
+        # getconfig is a bot-level endpoint — it needs the bot's own
+        # ilink_user_id (returned at login), NOT the message sender's ID.
+        # The sender's ID goes to sendtyping as the target.
+        bot_id = self._ilink_user_id or self._ilink_bot_id
+        body: dict = {"base_info": _base_info()}
+        if bot_id:
+            body["ilink_user_id"] = bot_id
+        # context_token is per-conversation and may help the API identify
+        # the right session for the typing ticket
+        if context_token:
+            body["context_token"] = context_token
+
+        cfg = await self._api_post("ilink/bot/getconfig", body)
         ticket = cfg.get("typing_ticket", "")
-        self._typing_tickets[user_id] = ticket
+        if ticket:
+            self._typing_tickets[user_id] = ticket
+        else:
+            logger.debug(
+                "_ensure_typing_ticket_empty ilink_user_id=%s context_token=%s "
+                "cfg_keys=%s", bot_id, context_token, list(cfg.keys()),
+            )
         return ticket
 
     # ── Internal helpers ───────────────────────────────────────────────

@@ -69,6 +69,24 @@ class StatusBar(Static):
 # ── Main TUI app ───────────────────────────────────────────────────
 
 
+def _restore_prefix(channel: str, assistant_prefix: str) -> str:
+    """Consistent prefix mapping for restored turns.
+
+    Matches the real-time display prefixes used during live operation:
+      - human  → "You> " / "> "
+      - wechat → "Wechat> "
+      - other   → "<channel>> " (external agent id, A2A peer, etc.)
+    """
+    if channel == "human":
+        return "You> " if assistant_prefix else "> "
+    if channel == "wechat":
+        return "Wechat> "
+    if channel:
+        return f"{channel}> "
+    # Backward compat: old turns saved before channel was introduced
+    return "You> " if assistant_prefix else "> "
+
+
 class SlifeApp(App):
     """Main Textual application for Slife — an AI agent in the terminal.
 
@@ -333,6 +351,8 @@ class SlifeApp(App):
         chat_view = self.query_one("#chat-view", ChatView)
         chat_view.add_system_message(text, color=color)
 
+    # ── Restore helpers ──────────────────────────────────────────────
+
     async def _restore_session(self) -> None:
         """Restore a previous session from turn-based memory.
 
@@ -386,7 +406,6 @@ class SlifeApp(App):
 
             # Build UI ops
             from slife.ui.chat import UserMessage, AssistantMessage
-            user_prefix = "You> " if self._assistant_prefix else "> "
             ui_ops: list[dict] = []
 
             assistant_indices = [
@@ -395,17 +414,31 @@ class SlifeApp(App):
             ]
             last_assistant_idx = assistant_indices[-1] if assistant_indices else -1
 
+            # Build a channel→prefix lookup so every user message gets the
+            # correct prefix per turn (human → "You> ", wechat → "Wechat> ",
+            # remote agent → "<agent_id>> ").
+            _channel_by_row: dict[int, str] = {}
+            for i, turn in enumerate(turns):
+                ch = turn.get("channel", "")
+                # Count user messages up to this turn (each turn adds
+                # exactly one user message after the system prompt).
+                _channel_by_row[i] = ch
+
+            turn_idx = -1
             for idx, msg in enumerate(all_messages):
                 role = msg.get("role", "")
                 if role == "system":
                     continue
 
                 elif role == "user":
+                    turn_idx += 1
+                    ch = _channel_by_row.get(turn_idx, "")
+                    prefix = _restore_prefix(ch, self._assistant_prefix)
                     ui_ops.append({
                         "type": "user",
                         "content": msg.get("content", "") or "",
                         "images": msg.get("images"),
-                        "prefix": user_prefix,
+                        "prefix": prefix,
                     })
 
                 elif role == "assistant":

@@ -49,6 +49,7 @@ class SessionStore:
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._load_vec_extension()
         await self._run_schema()
+        await self._migrate()
         logger.info("store_ready path=%s wal=on vec_dim=%d", self._db_path, self._embedding_dim)
 
     async def _load_vec_extension(self) -> None:
@@ -79,6 +80,21 @@ class SessionStore:
         await self._conn.commit()
         logger.debug("schema_ready")
 
+    async def _migrate(self) -> None:
+        """Idempotent column additions for schema evolution."""
+        assert self._conn is not None
+        migrations = [
+            "ALTER TABLE diary ADD COLUMN channel TEXT DEFAULT ''",
+        ]
+        for sql in migrations:
+            try:
+                await self._conn.execute(sql)
+                logger.debug("migrate_applied sql=%s", sql)
+            except Exception:
+                # Column already exists — that's fine
+                pass
+        await self._conn.commit()
+
     async def close(self) -> None:
         if self._conn:
             await self._conn.close()
@@ -95,6 +111,7 @@ class SessionStore:
         token_count: int = 0,
         who_helped: str = "",
         what_model: str = "",
+        channel: str = "",
         embedder=None,
     ) -> int:
         """Insert a turn. Returns rowid. Generates embedding if embedder available."""
@@ -105,9 +122,9 @@ class SessionStore:
 
         cursor = await self._conn.execute(
             """INSERT INTO diary (author, user_message, messages, summary, tags,
-                                  created_at, who_helped, what_model, token_count)
-               VALUES (?, ?, ?, '', '', ?, ?, ?, ?)""",
-            (author, user_message, messages_json, now, who_helped, what_model, token_count),
+                                  channel, created_at, who_helped, what_model, token_count)
+               VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?)""",
+            (author, user_message, messages_json, channel, now, who_helped, what_model, token_count),
         )
         await self._conn.commit()
         rowid = cursor.lastrowid
@@ -151,7 +168,7 @@ class SessionStore:
         # Subquery: get the last N rowids, then sort them ascending
         cursor = await self._conn.execute(
             """SELECT rowid, author, user_message, messages, summary, tags,
-                      created_at, who_helped, what_model, token_count
+                      channel, created_at, who_helped, what_model, token_count
                FROM diary
                WHERE author = ? AND rowid IN (
                    SELECT rowid FROM diary WHERE author = ?
