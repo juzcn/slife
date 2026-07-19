@@ -91,12 +91,22 @@ try {
 
     $extractedDir = Get-ChildItem -Path $tmpDir -Directory | Select-Object -First 1
 
-    Write-Host "Installing slife…"
+    # Read version from pyproject.toml
+    $version = "unknown"
+    $pyprojectPath = Join-Path $extractedDir.FullName "pyproject.toml"
+    if (Test-Path $pyprojectPath) {
+        $content = Get-Content $pyprojectPath -Raw
+        if ($content -match 'version\s*=\s*"([^"]+)"') {
+            $version = $matches[1]
+        }
+    }
+
+    Write-Host "Installing slife v$version…"
     uv tool install --python 3.13 $extractedDir.FullName
 
     Write-Host ""
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
-    Write-Host "  Slife installed successfully! 🎉           " -ForegroundColor Green
+    Write-Host "  Slife v$version installed successfully! 🎉  " -ForegroundColor Green
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
     Write-Host ""
     Write-Host "Quick start:" -ForegroundColor Cyan

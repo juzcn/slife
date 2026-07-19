@@ -76,13 +76,23 @@ echo "Downloading slife…"
 curl -fsSL "$SLIFE_TARBALL" -o "$TMP_DIR/slife.tar.gz"
 tar xzf "$TMP_DIR/slife.tar.gz" -C "$TMP_DIR"
 
-echo "Installing slife…"
+# Read version from pyproject.toml
+VERSION="unknown"
+PYPROJECT="$TMP_DIR/slife-main/pyproject.toml"
+if [ -f "$PYPROJECT" ]; then
+    EXTRACTED_VERSION=$(grep -oP 'version\s*=\s*"\K[^"]+' "$PYPROJECT" 2>/dev/null || echo "")
+    if [ -n "$EXTRACTED_VERSION" ]; then
+        VERSION="$EXTRACTED_VERSION"
+    fi
+fi
+
+echo "Installing slife v${VERSION}…"
 uv tool install --python 3.13 "$TMP_DIR/slife-main"
 
 # ── 4. Done ──────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  Slife installed successfully! 🎉           ║${NC}"
+echo -e "${GREEN}║  Slife v${VERSION} installed successfully! 🎉  ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${CYAN}Quick start:${NC}"
