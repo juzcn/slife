@@ -64,7 +64,12 @@ class MQTTAdapter:
     """
 
     def __init__(self, client_id: str):
-        self._client_id = client_id
+        import os as _os
+        # Append PID so two instances with the same agent-id don't
+        # fight over the MQTT client-id at the protocol level.
+        # Duplicate detection is handled at the application layer.
+        self._agent_id = client_id
+        self._client_id = f"{client_id}-{_os.getpid()}"
         self._client: mqtt.Client | None = None
         self._queues: dict[str, asyncio.Queue[MQTTMessage]] = {}
         self._connected = False
@@ -85,7 +90,7 @@ class MQTTAdapter:
 
         mq = _get_mqtt()
 
-        lwt_topic = f"Slife/{self._client_id}/presence"
+        lwt_topic = f"Slife/{self._agent_id}/presence"
         lwt_payload = json.dumps({"status": "offline"})
 
         self._client = mq.Client(
@@ -98,6 +103,10 @@ class MQTTAdapter:
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
         self._client.on_message = self._on_message
+
+        # Prevent reconnect storm when two instances share the same
+        # agent-id: back off from 5s to 30s between attempts.
+        self._client.reconnect_delay_set(min_delay=5, max_delay=30)
 
         self._client.connect_async(host, port, keepalive=30)
         self._client.loop_start()
@@ -121,7 +130,7 @@ class MQTTAdapter:
 
         try:
             self._client.publish(
-                f"Slife/{self._client_id}/presence",
+                f"Slife/{self._agent_id}/presence",
                 json.dumps({"status": "offline"}),
                 qos=1,
                 retain=False,
@@ -149,7 +158,7 @@ class MQTTAdapter:
             raise RuntimeError("MQTT not connected")
         info = self._client.publish(topic, payload, qos=qos, retain=retain)
         if info.rc != _MQTT_RC_SUCCESS:
-            logger.warning(
+            logger.info(
                 "a2a_mqtt_publish_fail topic=%s rc=%d", topic, info.rc,
             )
         self._last_publish_time = _time.monotonic()

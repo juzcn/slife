@@ -31,6 +31,11 @@ from slife.a2a.config import A2AConfig
 from slife.a2a.identity import AgentId, AgentMessage
 from slife.a2a.mqtt import MQTTAdapter, MQTTMessage
 
+
+class DuplicateAgentError(RuntimeError):
+    """Raised when another instance with the same agent-id is on the MQTT mesh."""
+    pass
+
 logger = logging.getLogger(__name__)
 
 # ── Module-level current-client reference ────────────────────────────
@@ -117,11 +122,32 @@ class A2AClient:
         logger.info("a2a_connect host=%s port=%d id=%s", host, port, self._agent_id)
         await self._adapter.connect(host, port)
 
-        # Announce our presence immediately
-        await self._publish_presence("online")
-
-        # Subscribe to peer presence
+        # Subscribe to peer presence before publishing our own,
+        # so we can detect duplicate agent-ids already on the mesh.
         await self._adapter.subscribe("Slife/+/presence")
+
+        # Check for duplicate agent-id — collect existing presences
+        # briefly before announcing ourselves.
+        try:
+            async with asyncio.timeout(1.5):
+                async for msg in self._adapter.messages("Slife/+/presence"):
+                    try:
+                        card = json.loads(msg.payload)
+                        if card.get("agent_id") == self._agent_id:
+                            raise DuplicateAgentError(
+                                f"Agent '{self._agent_id}' is already running "
+                                f"on the MQTT mesh.\n"
+                                f"  • Stop mosquitto first, then restart slife\n"
+                                f"  • Or use a different agent id:\n"
+                                f"      slife --agent <new-id>"
+                            )
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+        except TimeoutError:
+            pass  # No duplicates found — good
+
+        # Announce our presence
+        await self._publish_presence("online")
 
         # Subscribe to own inbox + results
         await self._adapter.subscribe(f"Slife/{self._agent_id}/tasks/inbox")

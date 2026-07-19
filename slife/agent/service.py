@@ -872,7 +872,7 @@ class AgentService:
         a2a_cfg.enabled = True
 
         # Create and connect the A2A client
-        from slife.a2a.client import A2AClient
+        from slife.a2a.client import A2AClient, DuplicateAgentError
         self._a2a_client = A2AClient(a2a_cfg)
         try:
             await self._a2a_client.connect()
@@ -882,6 +882,11 @@ class AgentService:
                 key="status", value="connected",
                 hint="A2A P2P mesh connected.",
             )
+        except DuplicateAgentError as e:
+            # Gracefully exit on duplicate agent-id — two instances
+            # with the same identity cannot coexist on the MQTT mesh.
+            print(f"\n  ✗ {e}\n", file=sys.stderr)
+            raise SystemExit(1)
         except Exception as e:
             logger.warning("a2a_connect_failed err=%s", e)
             from slife.health import record

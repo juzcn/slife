@@ -47,8 +47,10 @@ class TestMQTTAdapterInit:
     """Tests for MQTTAdapter initialization."""
 
     def test_initial_state(self):
+        import os
         adapter = MQTTAdapter("test-client")
-        assert adapter._client_id == "test-client"
+        assert adapter._agent_id == "test-client"
+        assert adapter._client_id == f"test-client-{os.getpid()}"
         assert adapter.is_connected is False
         assert adapter._client is None
 
