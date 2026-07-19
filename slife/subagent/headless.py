@@ -82,7 +82,7 @@ async def run_headless(config_path: str = "slife.json5") -> None:
     from slife.agent.service import AgentService
 
     _name = os.environ.get("SLIFE_SUBAGENT_NAME", "")
-    _suffix = f"_subagent_{_name}" if _name else "_subagent"
+    _suffix = f"_{_name}" if _name else "_subagent"
     _log_path = setup_server_logging(_suffix)
     logger.info(
         "subagent_start config=%s log=%s name=%s pid=%s",
