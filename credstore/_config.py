@@ -50,7 +50,7 @@ def get_cryptfile_path() -> str:
     Priority:
       1. ``CREDSTORE_FILE`` env var
       2. ``cryptfile_path`` in credstore.json5 config
-      3. ``./credentials.crypt`` (current directory)
+      3. ``~/.slife/credentials.crypt`` (default)
     """
     # 1. Env var
     env_path = os.environ.get("CREDSTORE_FILE")
@@ -63,5 +63,5 @@ def get_cryptfile_path() -> str:
     if cfg_path:
         return str(Path(cfg_path).expanduser())
 
-    # 3. Default
-    return str(Path("credentials.crypt"))
+    # 3. Default — follow slife's data directory convention
+    return str(Path.home() / ".slife" / "credentials.crypt")

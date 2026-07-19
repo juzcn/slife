@@ -3,7 +3,7 @@
   // Lookup order: ./credstore.json5 → ~/.credstore/config.json5
   // Env var CREDSTORE_FILE overrides both.
   //
-  // If no config is found, defaults to ./credentials.crypt
+  // If no config is found, defaults to ~/.slife/credentials.crypt
 
   // Custom path for the encrypted credential file:
   // cryptfile_path: "~/.slife/credentials.crypt",
