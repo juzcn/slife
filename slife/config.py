@@ -486,6 +486,52 @@ class Config:
 
         return all_models, len(providers)
 
+    # ── First-run helpers ──────────────────────────────────────────
+
+    @staticmethod
+    def _check_active_provider_key(raw: dict) -> tuple[bool, str]:
+        """Check whether the active model's provider API key is resolvable.
+
+        Parses the just-seeded config to find the active model, its
+        provider, and the provider's ``api_key`` field.  Returns
+        ``(True, "")`` when the key can be resolved through env or
+        credstore, or ``(False, hint)`` when it cannot — *hint* is the
+        env-var name the user should set (e.g. ``"DEEPSEEK_API_KEY"``).
+        """
+        from credstore import exists_credential
+
+        active_ref: str = raw.get("active_model", "")
+        if "/" not in active_ref:
+            return False, "API_KEY"
+        provider_id = active_ref.split("/", 1)[0]
+
+        providers: dict = raw.get("models", {}).get("providers", {})
+        provider_cfg: dict = providers.get(provider_id, {})
+        api_key_raw: str = str(provider_cfg.get("api_key", ""))
+
+        if not api_key_raw:
+            return False, "API_KEY"
+
+        # keyring: URI
+        if api_key_raw.startswith("keyring:"):
+            from credstore import parse_keyring_uri
+            parsed = parse_keyring_uri(api_key_raw)
+            key_name = parsed.get("key", api_key_raw) if parsed else api_key_raw
+            return (bool(exists_credential(key_name)), str(key_name))
+
+        # ${VAR} reference
+        if api_key_raw.startswith("${") and api_key_raw.endswith("}"):
+            var_name = api_key_raw[2:-1]
+            if os.environ.get(var_name) or exists_credential(var_name):
+                return True, ""
+            return False, var_name
+
+        # Plaintext — already a key
+        if api_key_raw:
+            return True, ""
+
+        return False, "API_KEY"
+
     # ── Main loader ─────────────────────────────────────────────────
 
     @classmethod
@@ -513,12 +559,15 @@ class Config:
                 shutil.copy(pkg_template, path)
                 logger.info("config_seeded from=%s to=%s", pkg_template, path)
                 print(f"\n  First run — created: {path}")
-                # If the API key is already in credstore / env, start right up.
-                if os.environ.get("DEEPSEEK_API_KEY") or _try_credstore_lookup("DEEPSEEK_API_KEY"):
+                # Check whether the active model's API key is resolvable.
+                raw = json5.loads(path.read_text(encoding="utf-8"))
+                key_ok, key_hint = cls._check_active_provider_key(raw)
+                if key_ok:
                     print(f"  API key found — starting up.\n")
+                    # fall through to normal config loading below
                 else:
                     print(f"  Set your API key and you're ready:")
-                    print(f"    credstore set DEEPSEEK_API_KEY")
+                    print(f"    credstore set {key_hint}")
                     print(f"    slife\n")
                     raise SystemExit(0)
             else:
