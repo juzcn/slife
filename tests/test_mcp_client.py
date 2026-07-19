@@ -22,7 +22,7 @@ class TestReadAdapter:
     async def test_receive_returns_from_queue(self):
         queue = asyncio.Queue()
         await queue.put("test_message")
-        adapter = _ReadAdapter(queue)
+        adapter = _ReadAdapter(queue, MagicMock())
 
         result = await adapter.receive()
         assert result == "test_message"
@@ -37,7 +37,7 @@ class TestReadAdapter:
             await asyncio.sleep(0.01)
             await queue.put(None)  # sentinel
 
-        adapter = _ReadAdapter(queue)
+        adapter = _ReadAdapter(queue, MagicMock())
         items = []
         # We check __aiter__ returns self
         assert adapter.__aiter__() is adapter

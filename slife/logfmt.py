@@ -19,11 +19,14 @@ Usage:
 
 import asyncio
 import contextvars
+import json
 import logging
+import os
 import secrets
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 # ── Context variables (async-safe) ──────────────────────────────────────
 
@@ -227,3 +230,45 @@ async def drain_stderr(
     """
     async for text in read_stderr_lines(process, running_check):
         logger.debug("[%s] %s", prefix, text)
+
+
+# ── Log directory resolution ──────────────────────────────────────────
+
+
+def resolve_log_dir() -> Path:
+    """Return the log directory, respecting ``SLIFE_DATA_DIR``.
+
+    Dev mode (pyproject.toml in CWD): ``./logs/``.
+    Production: ``~/.slife/logs/``.
+    """
+    data_dir = os.environ.get("SLIFE_DATA_DIR")
+    if data_dir:
+        return Path(data_dir) / "logs"
+    return Path("logs")
+
+
+# ── JSON response helpers ─────────────────────────────────────────────
+
+
+def ok_json(**extra: object) -> str:
+    """Render ``{"status": "ok", ...}`` — the standard success envelope.
+
+    Keys with ``None`` values are omitted.  Output is indented and safe
+    for display in TUI tool-result widgets.
+    """
+    payload: dict = {"status": "ok", **{k: v for k, v in extra.items() if v is not None}}
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def error_json(message: str, **extra: object) -> str:
+    """Render ``{"status": "error", "error": <message>, ...}``.
+
+    The *message* parameter is required — every error must explain itself.
+    Extra keys with ``None`` values are omitted.
+    """
+    payload: dict = {
+        "status": "error",
+        "error": message,
+        **{k: v for k, v in extra.items() if v is not None},
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)

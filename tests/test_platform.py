@@ -301,3 +301,81 @@ class TestResolveCommandWindows:
     def test_unresolvable_returns_original(self, mock_which):
         result = resolve_command("nonexistent_cmd")
         assert result == "nonexistent_cmd"
+
+
+# ── run_python_script cross-platform ─────────────────────────────────
+
+
+class TestRunPythonScript:
+    """Tests for run_python_script quoting on different platforms."""
+
+    def test_unix_quoting(self):
+        """Non-Windows uses single-quote wrapping for JSON args."""
+        from slife.platform import run_python_script
+        with patch("slife.platform.IS_WINDOWS", False):
+            # input_str format: "<script_path> <json_args>"
+            result = run_python_script('/tmp/script.py {"key": "val"}')
+            assert "'" in result
+            assert "python3" in result
+
+
+# ── terminate_process force-kill ──────────────────────────────────────
+
+
+class TestTerminateProcessForceKill:
+    """Tests for terminate_process force-kill escalation."""
+
+    @pytest.mark.asyncio
+    async def test_force_kill_after_timeout(self):
+        """After terminate times out, kill is called."""
+        import asyncio
+        from unittest.mock import MagicMock
+        from slife.platform import terminate_process
+        mock_proc = MagicMock()
+        mock_proc.returncode = None
+        # terminate succeeds
+        mock_proc.terminate.return_value = None
+        # wait raises TimeoutError twice
+        mock_proc.wait = MagicMock(side_effect=[asyncio.TimeoutError(), asyncio.TimeoutError()])
+
+        with patch("slife.platform.IS_WINDOWS", True):
+            await terminate_process(mock_proc, label="test_kill")
+
+        mock_proc.kill.assert_called()
+
+
+# ── desktop_notify ────────────────────────────────────────────────────
+
+
+class TestDesktopNotify:
+    """Tests for desktop_notify."""
+
+    @patch("subprocess.run")
+    @patch("slife.platform._platform.system", return_value="Windows")
+    def test_windows_notification(self, mock_system, mock_run):
+        from slife.platform import desktop_notify
+        desktop_notify("Test", "Hello World")
+        mock_run.assert_called_once()
+        assert "powershell" in mock_run.call_args[0][0][0]
+
+    @patch("subprocess.run")
+    @patch("slife.platform._platform.system", return_value="Darwin")
+    def test_macos_notification(self, mock_system, mock_run):
+        from slife.platform import desktop_notify
+        desktop_notify("Test", "Hello")
+        mock_run.assert_called_once()
+        assert "osascript" in mock_run.call_args[0][0][0]
+
+    @patch("subprocess.run")
+    @patch("slife.platform._platform.system", return_value="Linux")
+    def test_linux_notification(self, mock_system, mock_run):
+        from slife.platform import desktop_notify
+        desktop_notify("Test", "Hello")
+        mock_run.assert_called_once()
+
+    @patch("subprocess.run", side_effect=Exception("notify failed"))
+    @patch("slife.platform._platform.system", return_value="Windows")
+    def test_notification_exception_swallowed(self, mock_system, mock_run):
+        from slife.platform import desktop_notify
+        # Should not raise
+        desktop_notify("Test", "Hello")

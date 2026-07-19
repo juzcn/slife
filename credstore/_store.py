@@ -99,19 +99,13 @@ class CredentialStore:
         *master_password*, then writes each one to the system keyring.
         Returns the count of restored credentials.
         """
-        from credstore._backend import get_system_keyring, get_cryptfile
+        from credstore._backend import get_system_keyring, unlocked_cryptfile
 
         sk = get_system_keyring()
         if sk is None:
             raise RuntimeError("No system keyring available")
 
-        cf = get_cryptfile()
-        if cf is None:
-            raise RuntimeError("Cryptfile backend not available")
-
-        # Unlock cryptfile with provided master password
-        cf.keyring_key = master_password
-        try:
+        with unlocked_cryptfile(master_password) as cf:
             keys = _read_cryptfile_keys(cf)
             count = 0
             for key in keys:
@@ -126,8 +120,6 @@ class CredentialStore:
 
             logger.info("reset_complete count=%d", count)
             return count
-        finally:
-            del cf.keyring_key
 
     # ── mask ──────────────────────────────────────────────────
 

@@ -27,6 +27,23 @@ from slife.a2a.config import A2AConfig
 logger = logging.getLogger(__name__)
 
 
+def _resolve_env_or_credstore(value: str) -> str:
+    """Resolve a ``${VAR}`` reference through os.environ then credstore.
+
+    Returns the resolved value, or the original string if unresolved.
+    """
+    if not (value.startswith("${") and value.endswith("}")):
+        return value
+    var_name = value[2:-1]
+    env_val = os.environ.get(var_name)
+    if env_val:
+        return env_val
+    cred_val = _try_credstore_lookup(var_name)
+    if cred_val:
+        return cred_val
+    return value
+
+
 def _resolve_api_key(value: str) -> str:
     """Resolve an api_key value through the full chain.
 
@@ -34,26 +51,15 @@ def _resolve_api_key(value: str) -> str:
     2. ``${VAR}``        → os.environ → credstore
     3. plaintext         → as-is (legacy, logged warning)
     """
-    import os
-
     # keyring: URI
     from credstore import is_keyring_uri, resolve_uri
     if is_keyring_uri(value):
         return resolve_uri(value)
 
     # ${VAR} reference
-    if value.startswith("${") and value.endswith("}"):
-        var_name = value[2:-1]
-        # os.environ first (user may have resolved it by now)
-        env_val = os.environ.get(var_name)
-        if env_val:
-            return env_val
-        # credstore fallback
-        cred_val = _try_credstore_lookup(var_name)
-        if cred_val:
-            return cred_val
-        # Can't resolve — return as-is (will fail in LLMClient with clear error)
-        return value
+    resolved = _resolve_env_or_credstore(value)
+    if resolved != value:
+        return resolved
 
     # Plaintext
     if value and len(value) >= 12:
@@ -64,19 +70,9 @@ def _resolve_api_key(value: str) -> str:
 def _resolve_mcp_env_var(value: str) -> str:
     """Resolve a ``${VAR}`` reference in MCP server env.
 
-    Same logic as _resolve_api_key but for env var values.
+    Same logic as _resolve_api_key but for env var values (no keyring: URI).
     """
-    import os
-
-    if value.startswith("${") and value.endswith("}"):
-        var_name = value[2:-1]
-        env_val = os.environ.get(var_name)
-        if env_val:
-            return env_val
-        cred_val = _try_credstore_lookup(var_name)
-        if cred_val:
-            return cred_val
-    return value
+    return _resolve_env_or_credstore(value)
 
 
 def _resolve_env_lenient(value):

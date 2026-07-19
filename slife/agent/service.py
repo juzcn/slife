@@ -461,7 +461,6 @@ class AgentService:
                      "Turn storage and search are unavailable.",
             )
             return False
-            return None
 
     async def _connect_memory(self) -> None:
         """Spawn the slife-memory service as a child process via stdio."""

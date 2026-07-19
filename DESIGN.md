@@ -828,24 +828,28 @@ Separating them means you can commit `slife.json5` to version control (with `${V
 7. **Subagent**: always available, configured with `max_subagents` and `task_timeout`.
 8. **Tools**: optional override list — auto-discovery handles defaults.
 
-`${ENV_VAR}` and `${ENV_VAR:-default}` resolution works recursively through dicts and lists.
+`${ENV_VAR}` and `${ENV_VAR:-default}` resolution works recursively through dicts and lists. The common `${VAR}` → `os.environ` → credstore lookup chain is consolidated in `_resolve_env_or_credstore()`, shared by `_resolve_api_key()` and `_resolve_mcp_env_var()`.
 
 ## Project Structure
 
 ```
 slife/
-  __init__.py           # Entry point: main(), config loading, log setup
-  config.py             # JSON5 config loading (ModelConfig, MCPConfig, MemoryConfig)
-  env.py                # ${ENV_VAR} resolution
-  platform.py           # OS detection, shell syntax (Windows/Unix)
-  logfmt.py             # Structured logging with session/request IDs
-  bootstrap.py          # Logging setup, session ID generation
+  __init__.py           # Entry point: main(), config loading
+  config.py             # JSON5 config loading — ModelConfig, MCPConfig, MemoryConfig, etc.
+                        #   _resolve_env_or_credstore(): shared ${VAR} → os.environ → credstore
+  env.py                # ${ENV_VAR} and ${ENV_VAR:-default} resolution
+  platform.py           # OS detection, shell syntax (Windows/Unix), desktop notifications
+  logfmt.py             # Structured logging (SessionFormatter, request/session IDs)
+                        #   + resolve_log_dir(): shared log-directory resolution
+                        #   + ok_json() / error_json(): JSON response envelope helpers
+  bootstrap.py          # Main-process logging setup (uses resolve_log_dir from logfmt)
+  server_utils.py       # Server-process logging setup + shutdown (uses resolve_log_dir from logfmt)
 
   agent/                # LLM interaction layer
     loop.py             #   Function-calling while-loop with streaming
     llm_client.py       #   OpenAI-compatible streaming client (+ thinking)
     conversation.py     #   Message history + context window trimming
-    service.py          #   Wiring: client + tools + loop + MCP + Memory + A2A
+    service.py          #   Wiring: client + tools + loop + MCP + Memory + A2A + WeChat
     system_prompt.py    #   Jinja2 template rendering
     multimodal.py       #   Image encoding for vision APIs
     inbox.py            #   Unified message queue (human + MQTT + subagent)
@@ -875,13 +879,14 @@ slife/
     os_info.py          #   get_os_info
     skill.py            #   list_skills / use_skill / add_skill / remove_skill
     config_env.py       #   config_env_set / config_secret_register / get / remove
+    credentials.py      #   credential_check — masked keyring lookup
     cli.py              #   cli_add_tool / check_installed / remove / list
-    _config_io.py       #   Shared JSON5 read/write helpers
+    _config_io.py       #   Shared JSON5 read/write helpers + _ConfigPathMixin
 
   mcp/                  # MCP client + plugin infrastructure
-    client.py           #   stdio client with asyncio.Queue adapters
+    client.py           #   stdio client with asyncio.Queue adapters (_ReadAdapter, _WriteAdapter)
     tool_adapter.py     #   MCP → Slife Tool adapter (MCPProxyTool)
-    process.py          #   Child process lifecycle manager
+    process.py          #   Child process lifecycle manager (MCPWrapperProcess)
 
   plugins/              # Built-in MCP plugins
     mcp/                #   slife-mcp — MCP proxy
@@ -900,13 +905,31 @@ slife/
       config.py         #     Per-user session persistence (wechat_<user>.json5)
 
   ui/                   # Textual TUI
-    app.py              #   Main app (SlifeApp) — memory + recovery UI
-    chat.py             #   Message widgets (ChatView, AssistantMessage)
+    app.py              #   Main app (SlifeApp) — startup orchestration, session restore
+    chat.py             #   Message widgets (ChatView, AssistantMessage, UserMessage)
     handler.py          #   Streaming event → UI bridge (TUIHandler)
     tool_display.py     #   Tool call rendering (ToolCallWidget)
 
 skills/                 # On-demand skill plugins (SKILL.md per directory)
-tests/                  # pytest suite (asyncio_mode=strict)
+tests/                  # pytest suite (asyncio_mode=strict, 1250+ tests)
+```
+
+### credstore — Credential Storage Companion
+
+```
+credstore/
+  __init__.py           # Public API: get_credential, set_credential, delete_credential, etc.
+  __main__.py           # CLI entry point — 8 commands (set-password, status, set, get,
+                        #   delete, list, reset-keyring, reset-backup)
+                        #   @requires_tty decorator guards interactive commands
+                        #   _err() helper for consistent error output
+  _backend.py           # Dual-write backend: system keyring + keyrings.cryptfile
+                        #   unlocked_cryptfile(password): context manager for cryptfile access
+  _config.py            # Config file resolution (credstore.json5, CREDSTORE_FILE env var)
+  _resolver.py          # keyring: URI parsing and resolution
+  _store.py             # CredentialStore: get/set/delete/reset with lazy backend init
+  _tty.py               # Platform-agnostic masked terminal input (Windows msvcrt / Unix termios)
+  tests/                # pytest suite (133 tests)
 ```
 
 ## The Knowledge Base Effect

@@ -4,7 +4,6 @@ Provides consistent logging setup across all child-process servers:
 slife-mcp, slife-memory, slife-wechat, and slife-subagent.
 """
 
-import json
 import logging
 import os
 import sys
@@ -14,6 +13,7 @@ from pathlib import Path
 from slife.logfmt import (
     SessionFormatter,
     FILE_LOG_FORMAT,
+    resolve_log_dir,
     set_session_id,
     silence_noisy_loggers,
 )
@@ -25,18 +25,6 @@ _FASTMCP_NOISE = ("mcp.server.lowlevel.server", "fastmcp")
 
 
 # ── Logging setup / shutdown ────────────────────────────────────────────
-
-
-def _resolve_server_log_dir() -> Path:
-    """Return the log directory for server processes.
-
-    Uses ``SLIFE_DATA_DIR`` from the parent process (already set in env).
-    Dev mode: ``./logs/``.  Production: ``~/.slife/logs/``.
-    """
-    data_dir = os.environ.get("SLIFE_DATA_DIR")
-    if data_dir:
-        return Path(data_dir) / "logs"
-    return Path("logs")
 
 
 def setup_server_logging(
@@ -55,7 +43,7 @@ def setup_server_logging(
     Returns the log file path.
     """
     if log_dir is None:
-        log_dir = _resolve_server_log_dir()
+        log_dir = resolve_log_dir()
 
     _sid = os.environ.get("SLIFE_SESSION_ID", "")
     if _sid:
@@ -81,7 +69,7 @@ def setup_server_logging(
 
     log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"{ts}_{_agent_id}{service_name}.log"
+    log_path = log_dir / f"{ts}_{_agent_id}_{service_name}.log"
     _file = logging.FileHandler(log_path, encoding="utf-8")
     _file.setLevel(logging.DEBUG)
     _file.setFormatter(SessionFormatter(FILE_LOG_FORMAT))
@@ -120,28 +108,8 @@ def shutdown_server_logging(extra_logger_names: tuple[str, ...] = ()) -> None:
         child.handlers.clear()
 
 
-# ── JSON response helpers ──────────────────────────────────────────────
+# ── JSON response helpers (re-exported from logfmt) ────────────────────
+# These were moved to slife.logfmt for better cohesion.
+# Kept here for backward compatibility.
 
-
-def ok_json(**extra: object) -> str:
-    """Render ``{"status": "ok", ...}`` — the standard success envelope.
-
-    Keys with ``None`` values are omitted.  Output is indented and safe
-    for display in TUI tool-result widgets.
-    """
-    payload: dict = {"status": "ok", **{k: v for k, v in extra.items() if v is not None}}
-    return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-def error_json(message: str, **extra: object) -> str:
-    """Render ``{"status": "error", "error": <message>, ...}``.
-
-    The *message* parameter is required — every error must explain itself.
-    Extra keys with ``None`` values are omitted.
-    """
-    payload: dict = {
-        "status": "error",
-        "error": message,
-        **{k: v for k, v in extra.items() if v is not None},
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+from slife.logfmt import ok_json, error_json  # noqa: F401

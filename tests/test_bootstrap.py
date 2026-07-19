@@ -32,7 +32,7 @@ class TestSessionLogPath:
         # Timestamp: YYYYMMDD_HHMMSS
         name = path.stem  # e.g. 20260719_113147_slife
         parts = name.split("_")
-        assert len(parts) >= 4  # YYYYMMDD, HHMMSS, agent_id
+        assert len(parts) >= 3  # YYYYMMDD, HHMMSS, agent_id
 
 
 # ── setup_logging ───────────────────────────────────────────────────────────

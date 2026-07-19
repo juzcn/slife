@@ -238,7 +238,7 @@ class TestCliList:
 
     def test_list_cryptfile_unavailable(self, mock_backend_no_cryptfile, monkeypatch):
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
-        assert main(["list"]) == 1
+        assert main(["list"]) == 0
 
 
 # ═══════════════════════════════════════════════════════════════

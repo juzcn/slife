@@ -130,7 +130,7 @@ class ConfigSecretRegisterTool(_ConfigPathMixin, Tool):
 
         raw = read_config(self._config_path)
         env = _env_section(raw)
-        env[key] = "${%s}" % key
+        env[key] = f"${{{key}}}"
         write_config(self._config_path, raw)
         logger.info("secret_registered key=%s already_stored=%s", key, already_stored)
 

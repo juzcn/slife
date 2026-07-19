@@ -499,8 +499,16 @@ class TestSystemHealthToolExecute:
                 "slife.tools.system_health._check_wechat_status",
                 return_value=[],
             ):
-                result = await tool.execute()
-                parsed = json.loads(result)
-                assert parsed["healthy"] is True
-                # Summary may include runtime import checks (which are ok)
-                assert "ok" in parsed["summary"].lower()
+                with patch(
+                    "slife.tools.system_health._check_runtime_imports",
+                    return_value=[],
+                ):
+                    with patch(
+                        "slife.tools.system_health._check_embedding_config",
+                        return_value=[],
+                    ):
+                        result = await tool.execute()
+                        parsed = json.loads(result)
+                        assert parsed["healthy"] is True
+                        # Summary may include runtime import checks (which are ok)
+                        assert "ok" in parsed["summary"].lower()

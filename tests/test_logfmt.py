@@ -16,6 +16,7 @@ from slife.logfmt import (
     SessionFormatter,
     elapsed,
     read_stderr_lines,
+    drain_stderr,
     FILE_LOG_FORMAT,
 )
 
@@ -290,3 +291,41 @@ class TestReadStderrLines:
         lines = [line async for line in read_stderr_lines(proc)]
         assert lines[0] == "valid line"
         assert "invalid utf8" in lines[1]  # errors='replace' handles it
+
+
+# ── drain_stderr ────────────────────────────────────────────────────────
+
+
+class TestDrainStderr:
+    """Tests for drain_stderr — thin wrapper for logging stderr lines."""
+
+    @pytest.mark.asyncio
+    async def test_drain_logs_each_line(self, caplog):
+        """drain_stderr logs every non-empty line with the given prefix."""
+        async def _mock_lines(process, running_check):
+            yield "error: something went wrong"
+            yield "info: recovery complete"
+
+        logger = logging.getLogger("test_drain")
+        with patch("slife.logfmt.read_stderr_lines", _mock_lines):
+            with caplog.at_level(logging.DEBUG, logger="test_drain"):
+                await drain_stderr(None, "myserver", logger)
+
+        assert len(caplog.records) == 2
+        assert "[myserver] error: something went wrong" in caplog.text
+        assert "[myserver] info: recovery complete" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_drain_empty_lines_yield_nothing(self, caplog):
+        """When read_stderr_lines yields nothing, no logs are emitted."""
+        async def _mock_lines(process, running_check):
+            # No yield — empty iterator
+            if False:
+                yield
+
+        logger = logging.getLogger("test_drain_empty")
+        with patch("slife.logfmt.read_stderr_lines", _mock_lines):
+            with caplog.at_level(logging.DEBUG, logger="test_drain_empty"):
+                await drain_stderr(None, "empty", logger)
+
+        assert len(caplog.records) == 0

@@ -5,25 +5,12 @@ focused on ``main()``.
 """
 
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 
-from slife.logfmt import SessionFormatter, FILE_LOG_FORMAT, silence_noisy_loggers
+from slife.logfmt import SessionFormatter, FILE_LOG_FORMAT, silence_noisy_loggers, resolve_log_dir
 
 logger = logging.getLogger("slife")
-
-
-def _resolve_log_dir() -> Path:
-    """Return the log directory, respecting ``SLIFE_DATA_DIR``.
-
-    Dev mode (pyproject.toml in CWD): ``./logs/``.
-    Production: ``~/.slife/logs/``.
-    """
-    data_dir = os.environ.get("SLIFE_DATA_DIR")
-    if data_dir:
-        return Path(data_dir) / "logs"
-    return Path("logs")
 
 
 def _session_log_path(agent_id: str = "slife") -> Path:
@@ -32,7 +19,7 @@ def _session_log_path(agent_id: str = "slife") -> Path:
     Follows the same naming convention as sub-agent logs:
     ``logs/YYYYMMDD_HHMMSS_<agent_id>.log``.
     """
-    log_dir = _resolve_log_dir()
+    log_dir = resolve_log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return log_dir / f"{ts}_{agent_id}.log"

@@ -406,3 +406,37 @@ class TestCliCheckInstalledExecute:
         assert "winget install GitHub.cli" in result
         assert "github" in result
         assert "https://cli.github.com/" in result
+
+
+# ── get_cli_tools_summary edge cases ────────────────────────────────────
+
+
+class TestGetCliToolsSummary:
+    """Tests for get_cli_tools_summary edge cases."""
+
+    def test_skips_non_dict_entries(self, tmp_path):
+        """Entries in cli_tools that are not dicts should be skipped."""
+        from slife.tools.cli import get_cli_tools_summary
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "cli_tools": {
+                "good_tool": {
+                    "command": "echo",
+                    "description": "A good tool",
+                },
+                "bad_tool": "just a string, not a dict",
+            },
+        }))
+        result = get_cli_tools_summary(cfg_path)
+        assert "good_tool" in result
+        assert "bad_tool" not in result
+
+    def test_non_dict_cli_tools_section(self, tmp_path):
+        """When cli_tools is a list, should show default message."""
+        from slife.tools.cli import get_cli_tools_summary
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "cli_tools": ["bad", "values"],
+        }))
+        result = get_cli_tools_summary(cfg_path)
+        assert result == "No CLI tools registered."

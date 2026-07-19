@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 logger = logging.getLogger("credstore")
@@ -40,6 +41,28 @@ def get_cryptfile():
     return _cryptfile
 
 
+@contextmanager
+def unlocked_cryptfile(password: str):
+    """Context manager that temporarily unlocks the cryptfile.
+
+    Sets ``keyring_key`` on entry, deletes it on exit.
+    Raises ``RuntimeError`` if the cryptfile backend is not available.
+
+    Usage::
+
+        with unlocked_cryptfile(master_pw) as cf:
+            cf.set_password(DEFAULT_SERVICE, key, secret)
+    """
+    cf = get_cryptfile()
+    if cf is None:
+        raise RuntimeError("Cryptfile backend not available")
+    cf.keyring_key = password
+    try:
+        yield cf
+    finally:
+        del cf.keyring_key
+
+
 def has_master_key() -> bool:
     """Check if master key has been set (cryptfile exists).
 
@@ -47,13 +70,8 @@ def has_master_key() -> bool:
     ``credstore set-password`` at least once.
     """
     if _cryptfile is not None and hasattr(_cryptfile, "file_path"):
-        return __import__("os").path.exists(_cryptfile.file_path)
+        return os.path.exists(_cryptfile.file_path)
     return False
-
-
-def is_cryptfile_ready() -> bool:
-    """Check if cryptfile is initialized (master key set)."""
-    return has_master_key()
 
 
 def init_backend(password: str | None = None) -> None:
@@ -71,7 +89,7 @@ def init_backend(password: str | None = None) -> None:
     _init_cryptfile(password)
 
     # Report status
-    if is_cryptfile_ready():
+    if has_master_key():
         logger.info("backend=dual system=%s cryptfile=%s",
                      type(_system_keyring).__name__ if _system_keyring else "none",
                      "ready")
@@ -85,7 +103,7 @@ def reinit_cryptfile(password: str) -> None:
     """Re-initialize cryptfile with a new password (for set-password / change-password)."""
     global _cryptfile
     _init_cryptfile(password)
-    if is_cryptfile_ready():
+    if has_master_key():
         logger.info("cryptfile reinitialized with new password")
 
 
@@ -158,7 +176,7 @@ def get_backend_info() -> dict:
     info: dict = {
         "available": _system_keyring is not None,
         "backend": get_active_backend_name(),
-        "cryptfile_ready": is_cryptfile_ready(),
+        "cryptfile_ready": has_master_key(),
     }
     if _cryptfile is not None:
         from credstore._config import get_cryptfile_path
@@ -169,7 +187,7 @@ def get_backend_info() -> dict:
 
 def get_active_backend_name() -> str:
     """Human-readable backend description."""
-    if _system_keyring is not None and is_cryptfile_ready():
+    if _system_keyring is not None and has_master_key():
         return "system keyring + cryptfile (dual-write)"
     elif _system_keyring is not None:
         return "system keyring only (cryptfile not configured)"

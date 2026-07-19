@@ -15,7 +15,8 @@ from typing import Literal
 from fastmcp import FastMCP
 
 from slife.plugins.mcp.connection import ConnectionPool, ServerConfig
-from slife.server_utils import setup_server_logging, ok_json, error_json
+from slife.server_utils import setup_server_logging
+from slife.logfmt import ok_json, error_json
 
 logger = logging.getLogger("slife_mcp")
 

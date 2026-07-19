@@ -50,10 +50,6 @@ def _mock_credstore(monkeypatch):
     monkeypatch.setattr(sm, "get_credential", _get)
     monkeypatch.setattr(sm, "delete_credential", _delete)
 
-    # Patch wechat's internal _credstore_set to use our in-memory dict
-    import slife.plugins.wechat.config as wc
-    monkeypatch.setattr(wc, "_credstore_set", _set)
-
     # Mock backend to prevent real keyring init
     import credstore._backend as backend
     monkeypatch.setattr(backend, "init_backend", lambda **kw: None)

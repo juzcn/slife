@@ -27,7 +27,8 @@ from slife.plugins.wechat.config import (
     save_wechat_config,
     clear_wechat_config,
 )
-from slife.server_utils import setup_server_logging, ok_json, error_json
+from slife.server_utils import setup_server_logging
+from slife.logfmt import ok_json, error_json
 
 SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
 

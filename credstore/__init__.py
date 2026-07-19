@@ -31,7 +31,6 @@ from credstore._store import (
     check_backend,
     init_store,
 )
-from credstore._backend import is_cryptfile_ready
 from credstore._resolver import (
     resolve_uri,
     is_keyring_uri,
@@ -51,7 +50,6 @@ __all__ = [
     # Diagnostics
     "get_backend_name",
     "check_backend",
-    "is_cryptfile_ready",
     "init_store",
 ]
-__version__ = "0.2.0"
+__version__ = "0.3.5"
