@@ -236,15 +236,12 @@ async def drain_stderr(
 
 
 def resolve_log_dir() -> Path:
-    """Return the log directory, respecting ``SLIFE_DATA_DIR``.
+    """Return the log directory.
 
-    Dev mode (pyproject.toml in CWD): ``./logs/``.
-    Production: ``~/.slife/logs/``.
+    Dev mode: ``./logs/``.  Production: ``~/.slife/logs/``.
     """
-    data_dir = os.environ.get("SLIFE_DATA_DIR")
-    if data_dir:
-        return Path(data_dir) / "logs"
-    return Path("logs")
+    from slife.paths import get_logs_dir
+    return get_logs_dir()
 
 
 # ── JSON response helpers ─────────────────────────────────────────────

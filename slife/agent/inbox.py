@@ -189,7 +189,9 @@ class Inbox:
         except AgentCancelled:
             logger.info("inbox_cancelled source=%s", msg.source)
         except MaxIterationsExceeded as e:
-            logger.warning("inbox_process_error source=%s err=%s", msg.source, e)
+            # Info-level: the TUI shows a red system message via _on_activity
+            # so there's no need to alarm the user with a stderr warning.
+            logger.info("inbox_process_error source=%s err=%s", msg.source, e)
             # Finalize the handler so the last assistant message is marked complete
             if handler is not None:
                 try:

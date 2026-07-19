@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from slife.paths import get_data_dir
 from slife.plugins.memory.store import SessionStore
 from slife.plugins.memory.embeddings import EmbeddingClient
 from slife.plugins.memory.search import merge_hybrid
@@ -37,7 +38,7 @@ def _get_db_path() -> Path:
     env_path = os.environ.get("SLIFE_MEMORY_DB")
     if env_path:
         return Path(env_path)
-    data_dir = Path(os.environ.get("SLIFE_DATA_DIR", Path.home() / ".slife"))
+    data_dir = get_data_dir()
     return data_dir / f"{agent_id}.db"
 
 

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
 
+from slife.paths import get_config_path
 from slife.tools._config_io import (
     now_iso,
     with_fetched_at,
@@ -116,7 +117,7 @@ class TestConfigPathMixin:
 
     def test_default_path_is_slife_json5(self):
         mixin = _ConfigPathMixin()
-        assert mixin._config_path == Path("slife.json5")
+        assert mixin._config_path == get_config_path()
 
     def test_custom_path(self):
         mixin = _ConfigPathMixin(config_path=Path("/custom/path.json5"))
@@ -131,10 +132,10 @@ class TestConfigPathMixin:
     def test_from_config_without_config(self):
         """from_config falls back to default when config is None."""
         instance = _ConfigPathMixin.from_config({}, None)
-        assert instance._config_path == Path("slife.json5")
+        assert instance._config_path == get_config_path()
 
     def test_from_config_without_path(self, sample_config):
         """from_config falls back to default when config._path is None."""
         sample_config._path = None
         instance = _ConfigPathMixin.from_config({}, sample_config)
-        assert instance._config_path == Path("slife.json5")
+        assert instance._config_path == get_config_path()

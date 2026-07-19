@@ -141,7 +141,7 @@ class EmbeddingClient:
             )
 
     @classmethod
-    def from_config(cls, config_path: str = "slife.json5") -> "EmbeddingClient":
+    def from_config(cls, config_path: str | None = None) -> "EmbeddingClient":
         """Create an EmbeddingClient from slife.json5 config.
 
         Looks for:
@@ -150,12 +150,16 @@ class EmbeddingClient:
           - models.providers.<first>.api_key → for API backend
           - models.providers.<first>.base_url → for API backend
         """
+        from slife.paths import get_config_path
+
         try:
             import json5
         except ImportError:
             logger.warning("json5_not_installed — embeddings disabled")
             return cls(api_key="")
 
+        if config_path is None:
+            config_path = str(get_config_path())
         config_path = Path(config_path)
         if not config_path.exists():
             logger.warning("config_not_found path=%s", config_path)

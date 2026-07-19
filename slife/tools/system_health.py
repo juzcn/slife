@@ -14,6 +14,7 @@ status (readable, writable, git repo detection).
 import json
 import logging
 
+from slife.paths import get_data_dir
 from slife.tools.base import Tool
 from slife.health import get_report as get_startup_records
 
@@ -170,7 +171,7 @@ def _check_wechat_status(config=None) -> list[dict]:
     except ImportError:
         SESSION_MAX_AGE = 23 * 3600
 
-    wd = Path(os.environ.get("SLIFE_CONFIG_DIR", "."))
+    wd = get_data_dir()
     session = load_wechat_config(config.agent_id, wd)
 
     if not session.get("bot_token"):
@@ -366,7 +367,7 @@ def _check_working_dir() -> list[dict]:
         is_slife_project = False
         data = None
 
-    data_dir = os.environ.get("SLIFE_DATA_DIR", "")
+    data_dir = get_data_dir()
     if is_slife_project:
         results.append({
             "component": "workspace",
@@ -386,7 +387,7 @@ def _check_working_dir() -> list[dict]:
             "value": "production",
             "hint": (
                 f"Production mode — data files live in "
-                f"~/.slife/ (SLIFE_DATA_DIR={data_dir or '~/.slife/'})"
+                f"~/.slife/ (data_dir={data_dir})"
             ),
         })
 

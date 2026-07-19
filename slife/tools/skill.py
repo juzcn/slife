@@ -81,7 +81,7 @@ def get_skills_summary(skills_dir: str | Path = "skills") -> str:
     if not skills:
         return ""
 
-    lines = []
+    lines = [f"> **Skills root:** `{Path(skills_dir).resolve()}` — use this path for skill scripts.\n"]
     for d, fm, _body in skills:
         name = fm.get("name", d.name)
         desc = fm.get("description", "(no description)")
@@ -114,7 +114,15 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
         if fm.get("name") == skill_name or d.name == skill_name:
             content = (d / "SKILL.md").read_text(encoding="utf-8")
             logger.info("skill_loaded name=%s", skill_name)
-            return content
+            # Prepend the absolute skills directory so the agent can
+            # construct correct paths to scripts (e.g. "python
+            # <skills_dir>/baidu-search/scripts/search.py") regardless
+            # of the current working directory.
+            return (
+                f"> **Skills root:** `{skills_dir.resolve()}`\n"
+                f"> When running skill scripts, use this absolute path.\n\n"
+                f"{content}"
+            )
 
     # Build hint with available names
     available = [f"  - {fm.get('name', d.name)}" for d, fm, _body in skills]

@@ -853,8 +853,8 @@ class AgentService:
                 stream to the chat view just like human-typed messages.
         """
         a2a_cfg = self.config.a2a_config
-        if a2a_cfg is None:
-            logger.debug("a2a_no_config")
+        if a2a_cfg is None or not a2a_cfg.enabled:
+            logger.debug("a2a_disabled")
             return
 
         logger.info("a2a_init start")

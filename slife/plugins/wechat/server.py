@@ -82,7 +82,8 @@ def _render_qr_ascii(content: str) -> str:
 
 _client = WechatClawbotClient()
 _agent_id: str = os.environ.get("SLIFE_AGENT_ID", "slife")
-_work_dir: Path = Path(os.environ.get("SLIFE_CONFIG_DIR", "."))
+from slife.paths import get_data_dir as _get_data_dir
+_work_dir: Path = _get_data_dir()
 
 # Background polling
 _poll_task: asyncio.Task | None = None

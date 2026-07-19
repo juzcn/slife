@@ -8,6 +8,8 @@ import json5
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+
+from slife.paths import get_config_path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -80,7 +82,7 @@ class _ConfigPathMixin:
     """
 
     def __init__(self, config_path: Path | None = None):
-        self._config_path = config_path or Path("slife.json5")
+        self._config_path = config_path or get_config_path()
 
     @classmethod
     def from_config(cls, cfg: dict, config: "Config | None"):

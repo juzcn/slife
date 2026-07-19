@@ -16,23 +16,10 @@ from pathlib import Path
 from slife.bootstrap import setup_logging
 from slife.config import Config, parse_cli_agent
 from slife.logfmt import init_session_id
+from slife.paths import get_data_dir, get_config_path
 from slife.ui.app import SlifeApp
 
 logger = logging.getLogger("slife")
-
-
-def _is_dev() -> bool:
-    """Check whether we're running from the slife source tree.
-
-    Reads ``pyproject.toml`` in CWD and checks that ``[project] name``
-    equals ``"slife"``.
-    """
-    import tomllib
-    try:
-        data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-        return data.get("project", {}).get("name") == "slife"
-    except Exception:
-        return False
 
 
 def _check_external_deps() -> None:
@@ -110,13 +97,13 @@ def main(config_path: str = "slife.json5"):
     agent_id = parse_cli_agent(sys.argv)
 
     # Resolve data dir BEFORE logging setup so logs go to the right place.
-    # Dev mode (pyproject.toml in CWD): ./logs/
-    # Production: ~/.slife/logs/
+    # Explicit config path → use its parent as data dir.
+    # Otherwise → dev: CWD, production: ~/.slife/
     _cp = Path(config_path).expanduser()
-    if not _cp.is_absolute() and not _cp.exists():
-        if not _is_dev():
-            _cp = Path.home() / ".slife" / "slife.json5"
-    data_dir = str(_cp.parent.resolve())
+    if _cp.is_absolute() or _cp.exists():
+        data_dir = str(_cp.parent.resolve())
+    else:
+        data_dir = str(get_config_path().parent.resolve())
     os.environ["SLIFE_DATA_DIR"] = data_dir
     os.environ["SLIFE_CONFIG_DIR"] = data_dir
 

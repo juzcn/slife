@@ -41,6 +41,24 @@ def get_os_info() -> str:
     return system  # Fallback for other platforms (e.g. "FreeBSD")
 
 
+def _resolve_skill_script(script_path: str) -> str:
+    """Resolve a ``skills/…`` path to the actual install location.
+
+    Skills ship inside the slife package (``slife/skills/``) in production
+    and in the project root in dev mode.  Returns the absolute path if the
+    file exists; otherwise returns the original path unchanged.
+    """
+    from slife.paths import get_skills_dir
+
+    if script_path.startswith(("skills/", "skills\\")):
+        skills_dir = get_skills_dir()
+        rel = script_path[len("skills/"):].lstrip("/\\") if script_path.startswith("skills/") else script_path[len("skills\\"):].lstrip("/\\")
+        resolved = skills_dir / rel
+        if resolved.is_file():
+            return str(resolved)
+    return script_path
+
+
 def run_python_script(input_str: str) -> str:
     """Build a platform-correct command to run a Python script with JSON args.
 
@@ -62,6 +80,9 @@ def run_python_script(input_str: str) -> str:
     else:
         script = input_str[:split_at].strip()
         args = input_str[split_at:].strip()
+
+    # Resolve skills/ paths to the installed package location.
+    script = _resolve_skill_script(script)
 
     # On Windows, "python" is often the MS Store app alias (no actual
     # binary) and "py" may pick a different version (e.g. 3.14).

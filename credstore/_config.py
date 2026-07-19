@@ -18,6 +18,23 @@ import logging
 import os
 from pathlib import Path
 
+try:
+    from slife.paths import _is_dev as _is_slife_dev
+except ImportError:  # standalone credstore (not installed with slife)
+    try:
+        import tomllib
+    except ImportError:
+        tomllib = None
+
+    def _is_slife_dev() -> bool:
+        if tomllib is None:
+            return False
+        try:
+            data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+            return data.get("project", {}).get("name") == "slife"
+        except Exception:
+            return False
+
 logger = logging.getLogger("credstore")
 
 _DEFAULT_CONFIG_FILES = [
@@ -42,20 +59,6 @@ def load_config() -> dict:
             except Exception as exc:
                 logger.debug("config_parse_failed path=%s err=%s", path, exc)
     return {}
-
-
-def _is_slife_dev() -> bool:
-    """Check whether we're running from the slife source tree.
-
-    Reads ``pyproject.toml`` in CWD and checks that ``[project] name``
-    equals ``"slife"``.
-    """
-    try:
-        import tomllib
-        data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-        return data.get("project", {}).get("name") == "slife"
-    except Exception:
-        return False
 
 
 def get_cryptfile_path() -> str:

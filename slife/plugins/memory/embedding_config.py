@@ -8,11 +8,12 @@ section of ``slife.json5`` at runtime.
 import logging
 from pathlib import Path
 
+from slife.paths import get_config_path
 from slife.tools._config_io import read_config, write_config
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = Path("slife.json5")
+_CONFIG_PATH = get_config_path()
 
 
 def _read_raw() -> dict:
