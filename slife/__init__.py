@@ -1,53 +1,75 @@
 """Slife — Silicon-based life based on LLM.
 
 A terminal-based AI agent with extensible tool system and multi-model support.
-Config: slife.json5 (JSON with comments, OpenClaw-style).
+Config: ~/.slife/slife.json5 (JSON with comments, OpenClaw-style).
 
 Usage:
-    uv run python -m slife                # uses slife.json5
+    uv run python -m slife                # dev: CWD, prod: ~/.slife/
     uv run python -m slife myconf.json5   # uses a specific config
 """
 
 import logging
 import os
+import sys
+from pathlib import Path
 
 from slife.bootstrap import setup_logging
-from slife.config import Config, parse_cli_agent, parse_cli_user
+from slife.config import Config, parse_cli_agent
 from slife.logfmt import init_session_id
 from slife.ui.app import SlifeApp
 
 logger = logging.getLogger("slife")
 
 
-def main(config_path: str = "slife.json5", agent_name: str | None = None):
+def _is_dev() -> bool:
+    """Check whether we're running from the slife source tree.
+
+    Reads ``pyproject.toml`` in CWD and checks that ``[project] name``
+    equals ``"slife"``.
+    """
+    import tomllib
+    try:
+        data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+        return data.get("project", {}).get("name") == "slife"
+    except Exception:
+        return False
+
+
+def main(config_path: str = "slife.json5"):
     """Entry point for the Slife TUI application.
 
-    Args:
-        config_path: Path to a slife.json5 configuration file.
-        agent_name: If provided, enables A2A and sets the agent identity.
-                    Equivalent to ``--agent`` on the CLI.
+    Dev mode (detected via pyproject.toml): data files stay in CWD.
+    Otherwise: everything lives in ``~/.slife/``.
     """
-    # Parse --agent and --user from sys.argv when called via setuptools entry point
-    import sys as _sys
-    if agent_name is None:
-        agent_name = parse_cli_agent(_sys.argv)
+    agent_id = parse_cli_agent(sys.argv)
 
-    user = parse_cli_user(_sys.argv)
+    log_path, console_handler = setup_logging(agent_id=agent_id)
 
-    log_path, console_handler = setup_logging(user=user)
+    # Resolve config path
+    _cp = Path(config_path).expanduser()
+    if not _cp.is_absolute() and not _cp.exists():
+        if not _is_dev():
+            _cp = Path.home() / ".slife" / "slife.json5"
+    data_dir = str(_cp.parent.resolve())
+    os.environ["SLIFE_DATA_DIR"] = data_dir
+    os.environ["SLIFE_CONFIG_DIR"] = data_dir
+    # Credstore follows the same data directory unless explicitly set
+    if not os.environ.get("CREDSTORE_FILE"):
+        os.environ["CREDSTORE_FILE"] = str(Path(data_dir) / "credentials.crypt")
 
     # Generate session ID — shared with MCP subprocess via env var
     sid = init_session_id()
     os.environ["SLIFE_SESSION_ID"] = sid
-    os.environ["SLIFE_USER"] = user
+    os.environ["SLIFE_AGENT_ID"] = agent_id
 
     logger.debug("log_path=%s", log_path)
+    logger.debug("data_dir=%s", data_dir)
     from slife.logfmt import elapsed as _elapsed
 
     logger.debug("config loading…")
-    with _elapsed("config_load", logger, level=logging.DEBUG, path=config_path):
+    with _elapsed("config_load", logger, level=logging.DEBUG, path=str(_cp)):
         try:
-            config = Config.from_json5(config_path, agent_name=agent_name, user=user)
+            config = Config.from_json5(str(_cp), agent_id=agent_id)
         except Exception:
             logger.exception("config_load_failed path=%s", config_path)
             raise

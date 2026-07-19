@@ -80,7 +80,7 @@ def _render_qr_ascii(content: str) -> str:
 # ── Global state ─────────────────────────────────────────────────────────
 
 _client = WechatClawbotClient()
-_user: str = os.environ.get("SLIFE_USER", "default")
+_agent_id: str = os.environ.get("SLIFE_AGENT_ID", "slife")
 _work_dir: Path = Path(os.environ.get("SLIFE_CONFIG_DIR", "."))
 
 # Background polling
@@ -252,7 +252,7 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
             # Save with ilink_user_id for session-restore across restarts
             session_dict = _client.get_session_dict()
             session_dict["ilink_user_id"] = ilink_user_id
-            save_wechat_config(_user, session_dict, _work_dir)
+            save_wechat_config(_agent_id, session_dict, _work_dir)
             _start_polling()
             _qr_status = "confirmed"
             logger.info("qr_login_confirmed user_id=%s", ilink_user_id)
@@ -515,7 +515,7 @@ async def wechat_check_status() -> str:
         return json.dumps(qr_info, ensure_ascii=False, indent=2)
 
     if not _client.is_logged_in:
-        saved = load_wechat_config(_user, _work_dir)
+        saved = load_wechat_config(_agent_id, _work_dir)
         if saved.get("bot_token"):
             try:
                 restored = await _client.try_restore_session(saved)
@@ -616,7 +616,7 @@ async def wechat_logout() -> str:
         logger.debug("stop_error err=%s", e)
 
     _client = WechatClawbotClient()
-    clear_wechat_config(_user, _work_dir)
+    clear_wechat_config(_agent_id, _work_dir)
 
     return json.dumps({
         "status": "logged_out",
@@ -638,12 +638,12 @@ def main():
     from slife.logfmt import elapsed
 
     logger.info(
-        "wechat_start user=%s transport=stdio log=%s pid=%s",
-        _user, _log_path, os.getpid(),
+        "wechat_start agent_id=%s transport=stdio log=%s pid=%s",
+        _agent_id, _log_path, os.getpid(),
     )
-    with elapsed("wechat_run", logger, level=logging.INFO, user=_user):
+    with elapsed("wechat_run", logger, level=logging.INFO, agent_id=_agent_id):
         mcp.run(transport="stdio")
-    logger.info("wechat_stop user=%s", _user)
+    logger.info("wechat_stop agent_id=%s", _agent_id)
 
 
 if __name__ == "__main__":

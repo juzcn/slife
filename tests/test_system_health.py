@@ -316,7 +316,7 @@ class TestCheckWechatStatus:
     def test_config_none_returns_unknown(self):
         """When config is None and slife.json5 doesn't exist, returns unknown."""
         # Config is imported inside _check_wechat_status via:
-        #   from slife.config import Config, parse_cli_agent, parse_cli_user
+        #   from slife.config import Config, parse_cli_agent
         with patch("slife.config.Config") as MockConfig:
             MockConfig.from_json5.side_effect = Exception("no config")
             with patch("pathlib.Path.exists", return_value=False):
@@ -337,7 +337,7 @@ class TestCheckWechatStatus:
 
     def test_not_logged_in(self):
         mock_config = MagicMock()
-        mock_config.user = "testuser"
+        mock_config.agent_id = "testuser"
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
@@ -355,7 +355,7 @@ class TestCheckWechatStatus:
     def test_session_expired(self):
         import time
         mock_config = MagicMock()
-        mock_config.user = "testuser"
+        mock_config.agent_id = "testuser"
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
@@ -372,7 +372,7 @@ class TestCheckWechatStatus:
     def test_logged_in(self):
         import time
         mock_config = MagicMock()
-        mock_config.user = "testuser"
+        mock_config.agent_id = "testuser"
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 

@@ -60,7 +60,8 @@ class AgentService:
         )
         self.conversation = Conversation(
             system_prompt=build_system_prompt(
-                agent_name=self.config.a2a_config.agent_name or None,
+                agent_id=self.config.agent_id,
+                agent_name=self.config.a2a_config.agent_name,
             ),
         )
         self.session_usage = TokenUsage()
@@ -70,7 +71,8 @@ class AgentService:
         # through the same inbox queue.  Processed serially.
         conversations = ConversationStore(
             system_prompt=build_system_prompt(
-                agent_name=self.config.a2a_config.agent_name or None,
+                agent_id=self.config.agent_id,
+                agent_name=self.config.a2a_config.agent_name,
             ),
         )
         conversations._convs[HUMAN] = self.conversation
@@ -98,7 +100,6 @@ class AgentService:
 
         # A2A integration state
         self._a2a_client = None
-        self._a2a_broker = None
         self._subagent_manager = None
         self._on_a2a_callbacks: list = []  # callbacks for TUI notification
 
@@ -782,7 +783,7 @@ class AgentService:
             await self._memory_client.call_tool(
                 "memory_save_turn",
                 {
-                    "author": self.config.user,
+                    "author": self.config.agent_id,
                     "user_message": user_message,
                     "messages": turn_messages,
                     "token_count": token_count or 0,
@@ -802,7 +803,7 @@ class AgentService:
         try:
             result = await self._memory_client.call_tool(
                 "memory_get_recent_turns",
-                {"author": self.config.user, "limit": limit},
+                {"author": self.config.agent_id, "limit": limit},
             )
             data = json.loads(result)
             return data.get("turns", [])
@@ -843,8 +844,9 @@ class AgentService:
         """Connect to MQTT broker for remote agent P2P mesh.
 
         Called during app startup after MCP initialization.
-        Probes for an existing broker, spawns one if configured.
-        Registers unified A2A tools covering both MQTT and local transports.
+        Probes for a running Mosquitto broker — if none is found,
+        A2A is silently disabled.  Mosquitto must be pre-started
+        by the user (slife never spawns it).
 
         Args:
             handler_factory: Optional callable that creates a TUI handler
@@ -852,31 +854,23 @@ class AgentService:
                 stream to the chat view just like human-typed messages.
         """
         a2a_cfg = self.config.a2a_config
-        if a2a_cfg is None or not a2a_cfg.enabled:
-            logger.debug("a2a_not_enabled")
+        if a2a_cfg is None:
+            logger.debug("a2a_no_config")
             return
 
         logger.info("a2a_init start")
 
-        # Ensure broker is available (probe → optional spawn)
-        if a2a_cfg.broker_command:
-            from slife.a2a.broker import BrokerManager
-            self._a2a_broker = BrokerManager(
-                command=a2a_cfg.broker_command,
-                host=a2a_cfg.broker_host,
-                port=a2a_cfg.broker_port,
+        # Probe for pre-existing Mosquitto — user must start it first
+        from slife.a2a.broker import probe_broker
+        if not await probe_broker(a2a_cfg.broker_host, a2a_cfg.broker_port):
+            logger.warning(
+                "a2a_broker_not_found host=%s port=%d — A2A disabled",
+                a2a_cfg.broker_host, a2a_cfg.broker_port,
             )
-            try:
-                await self._a2a_broker.ensure()
-            except Exception as e:
-                logger.warning("a2a_broker_ensure_failed err=%s", e)
-                from slife.health import record
-                record(
-                    "a2a", "warning",
-                    key="broker", value="failed",
-                    hint=f"A2A broker failed to start: {e}. "
-                         "P2P agent mesh is unavailable.",
-                )
+            return
+
+        # Broker found — enable A2A
+        a2a_cfg.enabled = True
 
         # Create and connect the A2A client
         from slife.a2a.client import A2AClient
@@ -898,6 +892,8 @@ class AgentService:
                 hint=f"A2A client failed to connect: {e}. "
                      "P2P agent mesh is unavailable.",
             )
+            a2a_cfg.enabled = False
+            return
 
         # Wire the existing inbox to A2A
         # (Inbox was already created in __init__; now inject the
@@ -957,14 +953,6 @@ class AgentService:
             except Exception as e:
                 logger.debug("a2a_disconnect_error err=%s", e)
         self._a2a_client = None
-
-        # Stop broker if we spawned it
-        if self._a2a_broker:
-            try:
-                await self._a2a_broker.stop()
-            except Exception as e:
-                logger.debug("a2a_broker_stop_error err=%s", e)
-            self._a2a_broker = None
 
         logger.info("a2a_shutdown")
 

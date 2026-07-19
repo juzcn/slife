@@ -33,11 +33,11 @@ def setup_server_logging(
 ) -> Path:
     """Configure shared logging for a server process (stderr + file).
 
-    - Adopts ``SLIFE_SESSION_ID`` and ``SLIFE_USER`` from the parent env.
+    - Adopts ``SLIFE_SESSION_ID`` and ``SLIFE_AGENT_ID`` from the parent env.
     - stderr: DEBUG+ with plain formatter (parent adds session/request context).
     - File:    DEBUG+ with ``SessionFormatter``, one per session.
-    - File name includes *user* to avoid conflicts when multiple users
-      run in the same directory (e.g. ``logs/..._slife_mcp_default.log``).
+    - File name includes *agent_id* to avoid conflicts when multiple agents
+      run in the same directory (e.g. ``logs/..._slife_mcp_slife.log``).
     - Silences httpx/httpcore/openai/asyncio and FastMCP noise.
 
     Returns the log file path.
@@ -46,7 +46,7 @@ def setup_server_logging(
     if _sid:
         set_session_id(_sid)
 
-    _user = os.environ.get("SLIFE_USER", "default")
+    _agent_id = os.environ.get("SLIFE_AGENT_ID", "slife")
 
     _stderr_fmt = logging.Formatter(
         "%(asctime)s [%(levelname)-5s] %(name)s | %(message)s",
@@ -66,7 +66,7 @@ def setup_server_logging(
 
     log_dir.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"{ts}_{service_name}_{_user}.log"
+    log_path = log_dir / f"{ts}_{service_name}_{_agent_id}.log"
     _file = logging.FileHandler(log_path, encoding="utf-8")
     _file.setLevel(logging.DEBUG)
     _file.setFormatter(SessionFormatter(FILE_LOG_FORMAT))

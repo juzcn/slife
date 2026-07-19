@@ -1,117 +1,38 @@
-"""Tests for Slife.a2a.broker — BrokerManager construction and lifecycle."""
+"""Tests for slife.a2a.broker — probe_broker function."""
 
-import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch, AsyncMock, MagicMock
 
-from slife.a2a.broker import BrokerManager
-
-
-class TestBrokerManagerConstruction:
-    """Tests for BrokerManager.__init__."""
-
-    def test_default_construction(self):
-        mgr = BrokerManager()
-        assert mgr._command == "mosquitto"
-        assert mgr._args == []
-        assert mgr._host == "localhost"
-        assert mgr._port == 1883
-        assert mgr._process is None
-        assert mgr._running is False
-
-    def test_custom_construction(self):
-        mgr = BrokerManager(
-            command="/usr/sbin/mosquitto",
-            args=["-c", "custom.conf"],
-            host="mqtt.local",
-            port=8883,
-        )
-        assert mgr._command == "/usr/sbin/mosquitto"
-        assert mgr._args == ["-c", "custom.conf"]
-        assert mgr._host == "mqtt.local"
-        assert mgr._port == 8883
+from slife.a2a.broker import probe_broker
 
 
-class TestBrokerManagerStop:
-    """Tests for BrokerManager.stop."""
+class TestProbeBroker:
+    """Tests for probe_broker."""
 
     @pytest.mark.asyncio
-    async def test_stop_not_running_noop(self):
-        """Stop does nothing when no process is running."""
-        mgr = BrokerManager()
-        await mgr.stop()  # Should not raise
+    async def test_probe_success(self):
+        """Returns True when a TCP listener is present."""
+        mock_writer = MagicMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
 
-    @pytest.mark.asyncio
-    async def test_stop_running_process(self):
-        """Stop terminates a running process."""
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
-        mock_proc.wait = AsyncMock()
-        mock_proc.terminate = MagicMock()
-        mock_proc.stderr = None
-
-        mgr = BrokerManager()
-        mgr._process = mock_proc
-        mgr._running = True
-
-        await mgr.stop()
-
-        mock_proc.terminate.assert_called_once()
-        assert mgr._running is False
-        assert mgr._process is None
-
-    @pytest.mark.asyncio
-    async def test_stop_timeout_triggers_kill(self):
-        """When terminate times out, the process is killed."""
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
-        # First wait() raises TimeoutError → triggers kill path
-        # Second wait() succeeds (after kill)
-        mock_proc.wait = AsyncMock(side_effect=[asyncio.TimeoutError, None])
-        mock_proc.kill = MagicMock()
-        mock_proc.terminate = MagicMock()
-        mock_proc.stderr = None
-
-        mgr = BrokerManager()
-        mgr._process = mock_proc
-        mgr._running = True
-
-        await mgr.stop()
-
-        mock_proc.kill.assert_called_once()
-        assert mgr._running is False
-
-    @pytest.mark.asyncio
-    async def test_stop_process_lookup_error_swallowed(self):
-        """ProcessLookupError during stop is silently handled."""
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
-        mock_proc.terminate = MagicMock(side_effect=ProcessLookupError)
-        mock_proc.stderr = None
-
-        mgr = BrokerManager()
-        mgr._process = mock_proc
-        mgr._running = True
-
-        await mgr.stop()  # Should not raise
-        assert mgr._running is False
-
-
-class TestBrokerManagerProbe:
-    """Tests for BrokerManager._probe."""
+        with patch("asyncio.open_connection", AsyncMock(
+            return_value=(MagicMock(), mock_writer),
+        )):
+            result = await probe_broker("localhost", 1883)
+            assert result is True
+            mock_writer.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_probe_connection_refused(self):
-        """Probe returns False when connection fails."""
-        mgr = BrokerManager(port=19999)  # Unlikely to have a broker
+        """Returns False when connection fails."""
         with patch("asyncio.open_connection", side_effect=ConnectionRefusedError):
-            result = await mgr._probe()
+            result = await probe_broker("localhost", 19999)
             assert result is False
 
     @pytest.mark.asyncio
     async def test_probe_timeout(self):
-        """Probe returns False on timeout."""
-        mgr = BrokerManager()
+        """Returns False on timeout."""
         with patch("asyncio.wait_for", side_effect=TimeoutError):
-            result = await mgr._probe()
+            result = await probe_broker("localhost", 1883)
             assert result is False

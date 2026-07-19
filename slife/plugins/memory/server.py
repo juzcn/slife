@@ -27,14 +27,18 @@ _log_path = setup_server_logging("slife_memory")
 
 _store: SessionStore | None = None
 _embedder: EmbeddingClient | None = None
-_DEFAULT_DB_PATH = Path.home() / ".slife" / "slife.db"
-
-
 def _get_db_path() -> Path:
+    """Return the database path for the current agent.
+
+    Uses ``SLIFE_DATA_DIR`` (set by the main process) so dev and
+    production environments each get their own location.
+    """
+    agent_id = os.environ.get("SLIFE_AGENT_ID", "slife")
     env_path = os.environ.get("SLIFE_MEMORY_DB")
     if env_path:
         return Path(env_path)
-    return _DEFAULT_DB_PATH
+    data_dir = Path(os.environ.get("SLIFE_DATA_DIR", Path.home() / ".slife"))
+    return data_dir / f"{agent_id}.db"
 
 
 mcp = FastMCP(
@@ -44,7 +48,7 @@ mcp = FastMCP(
         "Every turn (user question + your response) is one row. "
         "LLM-visible tools: memory_list_recent, memory_search (grep/fts5/hybrid/time), "
         "memory_open, memory_summarize, memory_check/set/remove_embedding. "
-        "All tools take an author parameter for --user isolation."
+        "All tools take an author parameter for --agent isolation."
     ),
 )
 
@@ -367,18 +371,6 @@ async def memory_remove_embedding() -> str:
 # ── Entry point ──────────────────────────────────────────────────────
 
 
-def _read_db_path_from_config(config_path: str) -> Path | None:
-    try:
-        import json5
-        raw = json5.loads(Path(config_path).read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    memory = raw.get("memory", {})
-    if isinstance(memory, dict) and "db_path" in memory:
-        return Path(memory["db_path"]).expanduser()
-    return None
-
-
 def main():
     import argparse
     from slife.logfmt import elapsed
@@ -391,10 +383,7 @@ def main():
         "memory_start log=%s pid=%s", _log_path, os.getpid(),
     )
 
-    db_path = Path(args.db).expanduser() if args.db else None
-    if db_path is None:
-        config_db = _read_db_path_from_config("slife.json5")
-        db_path = config_db or _get_db_path()
+    db_path = Path(args.db).expanduser() if args.db else _get_db_path()
 
     import asyncio
 

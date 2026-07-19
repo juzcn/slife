@@ -63,6 +63,7 @@ After installation, the `slife` and `credstore` commands are available globally:
 | `slife` | `~/.local/bin/slife` |
 | `credstore` | `~/.local/bin/credstore` |
 | Package files | `~/.local/share/uv/tools/slife/` |
+| User data | `~/.slife/` (auto-created on first run) |
 
 ### Uninstall
 
@@ -70,10 +71,10 @@ After installation, the `slife` and `credstore` commands are available globally:
 uv tool uninstall slife
 ```
 
-User data (conversation logs, credentials, config) remains in your project directory and OS keyring — delete manually if desired:
+User data (config, memory DB, WeChat sessions, credentials backup) lives in `~/.slife/`. In development (when a `slife.json5` exists in the current directory), data stays in the project directory for easy debugging. Delete manually if desired:
 
 ```bash
-rm -f slife.db slife.json5               # conversation log + config
+rm -rf ~/.slife                            # all user data (production)
 credstore delete DEEPSEEK_API_KEY          # remove a stored secret
 credstore list                             # list all stored credentials
 ```
@@ -136,11 +137,11 @@ mosquitto -p 1883
 slife --agent my-agent
 ```
 
-Configure broker address in `slife.json5` if not using defaults (`localhost:1883`):
+Configure broker address in `~/.slife/slife.json5` if not using defaults (`localhost:1883`):
 
 ```json5
-a2a: {
-  mqtt: { host: "my-broker.local", port: 1883 },
+mqtt: {
+  broker: { host: "my-broker.local", port: 1883 },
 }
 ```
 
@@ -174,7 +175,7 @@ Slife uses a **two-layer** configuration model:
 | Layer | Storage | What goes here |
 |-------|---------|----------------|
 | **Secrets** | OS keyring (credstore) | API keys, tokens, passwords — encrypted at OS level |
-| **Config** | `slife.json5` → `env:` | `${VAR}` references + non-secret values (EDITOR, LANG, etc.) |
+| **Config** | `~/.slife/slife.json5` → `env:` | `${VAR}` references + non-secret values (EDITOR, LANG, etc.) |
 
 ```json5
 // slife.json5
@@ -250,7 +251,7 @@ memory_search("that bug fix", mode="hybrid")→ semantic recall
 memory_search(mode="time", since="2026-07") → browse by date
 ```
 
-User isolation via `--user alice`. Embedding via local GGUF (offline) or OpenAI-compatible API.  See [DESIGN.md § Permanent Memory](DESIGN.md#permanent-memory-slife-memory) for the full architecture.
+Agent isolation via `--agent alice`. Each agent gets its own DB (`<agent_id>.db`) in the data directory. Embedding via local GGUF (offline) or OpenAI-compatible API.  See [DESIGN.md § Permanent Memory](DESIGN.md#permanent-memory-slife-memory) for the full architecture.
 
 ### Plugins
 
@@ -311,8 +312,7 @@ Not all tools are in every LLM request.  Three categories use lightweight summar
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--agent <id>` | (off) | Enable A2A — join the MQTT mesh with this identity |
-| `--user <id>` | `default` | Memory isolation key — separate diary per user |
+| `--agent <id>` | `slife` | Agent identity — memory isolation key & A2A mesh identity |
 
 ## Requirements
 
@@ -328,11 +328,13 @@ The install script handles everything automatically.  Nothing to install beforeh
 
 ## Development
 
+Dev mode is detected via `pyproject.toml` — when `[project] name == "slife"`, data files stay in the project directory for easy debugging. Production installs use `~/.slife/`.
+
 ```bash
 git clone https://github.com/juzcn/slife.git
 cd slife
 uv sync
-uv run slife
+uv run slife                      # uses ./slife.json5, data stays in ./
 ```
 
 For all optional dependencies (embeddings + MQTT):

@@ -693,7 +693,7 @@ class TestMemoryConfigFromDict:
     def test_non_dict_returns_default(self):
         from slife.config import MemoryConfig
         result = MemoryConfig.from_dict("not a dict")
-        assert result.db_path == "~/.slife/slife.db"
+        assert result.embedding_model == "text-embedding-3-small"
 
     def test_non_dict_embedding(self):
         from slife.config import MemoryConfig
@@ -704,42 +704,25 @@ class TestMemoryConfigFromDict:
     def test_custom_values(self):
         from slife.config import MemoryConfig
         result = MemoryConfig.from_dict({
-            "db_path": "/custom/path.db",
             "embedding": {"model": "custom-model", "dim": 768},
         })
-        assert result.db_path == "/custom/path.db"
         assert result.embedding_model == "custom-model"
         assert result.embedding_dim == 768
 
 
-# ── parse_cli_agent / parse_cli_user ───────────────────────────────────
+# ── parse_cli_agent ────────────────────────────────────────────────────
 
 
 class TestParseCLI:
     def test_parse_cli_agent_found(self):
         from slife.config import parse_cli_agent
-        result = parse_cli_agent(["slife", "--agent", "my-agent"])
-        assert result == "my-agent"
-
-    def test_parse_cli_agent_missing(self):
-        from slife.config import parse_cli_agent
-        result = parse_cli_agent(["slife"])
-        assert result is None
-
-    def test_parse_cli_agent_no_value(self):
-        from slife.config import parse_cli_agent
-        result = parse_cli_agent(["slife", "--agent"])
-        assert result is None
-
-    def test_parse_cli_user_found(self):
-        from slife.config import parse_cli_user
-        result = parse_cli_user(["slife", "--user", "bob"])
+        result = parse_cli_agent(["slife", "--agent", "bob"])
         assert result == "bob"
 
-    def test_parse_cli_user_default(self):
-        from slife.config import parse_cli_user
-        result = parse_cli_user(["slife"])
-        assert result == "default"
+    def test_parse_cli_agent_default(self):
+        from slife.config import parse_cli_agent
+        result = parse_cli_agent(["slife"])
+        assert result == "slife"
 
 
 # ── Config.from_json5 — subagent / A2A ────────────────────────────────
@@ -791,9 +774,9 @@ class TestConfigSubagentDefault:
 
 
 class TestConfigA2A:
-    """Tests for A2A config with agent name."""
+    """Tests for A2A config — agent_id derived from user."""
 
-    def test_with_agent_name(self, tmp_path, monkeypatch):
+    def test_agent_id_from_user(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({
@@ -803,13 +786,13 @@ class TestConfigA2A:
                 },
             },
             "mqtt": {
-                "host": "mqtt.example.com",
-                "port": 1883,
+                "broker": {"host": "mqtt.example.com", "port": 1883},
             },
         }))
-        config = Config.from_json5(str(cfg_path), agent_name="slife-1")
+        config = Config.from_json5(str(cfg_path), agent_id="bob")
         assert config.a2a_config is not None
-        assert config.a2a_config.agent_id is not None
+        assert config.a2a_config.agent_id == "bob"
+        assert config.a2a_config.enabled is False  # runtime probe sets this
 
 
 # ── Config.from_json5 edge cases ────────────────────────────────────────

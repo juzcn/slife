@@ -15,19 +15,19 @@ logger = logging.getLogger("slife")
 LOG_DIR = Path("logs")
 
 
-def _session_log_path(user: str = "default") -> Path:
+def _session_log_path(agent_id: str = "slife") -> Path:
     """Generate a timestamped log file path for this session.
 
     Follows the same naming convention as sub-agent logs:
-    ``logs/YYYYMMDD_HHMMSS_slife_<user>.log``.
+    ``logs/YYYYMMDD_HHMMSS_slife_<agent_id>.log``.
     """
     LOG_DIR.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return LOG_DIR / f"{ts}_slife_{user}.log"
+    return LOG_DIR / f"{ts}_slife_{agent_id}.log"
 
 
 def setup_logging(
-    user: str = "default",
+    agent_id: str = "slife",
     level: int = logging.DEBUG,
 ) -> tuple[Path, logging.Handler]:
     """Configure logging to both console and file.
@@ -35,7 +35,7 @@ def setup_logging(
     Console: WARNING+ only — keeps the terminal clean before Textual's
              alternate screen activates and during TUI runtime.
     File:    DEBUG+ with timestamps, session/request IDs for troubleshooting.
-    Each session writes to a new ``logs/YYYYMMDD_HHMMSS_slife_<user>.log`` file.
+    Each session writes to a new ``logs/YYYYMMDD_HHMMSS_slife_<agent_id>.log`` file.
 
     Returns:
         (log_path, console_handler) — console is already at WARNING;
@@ -52,7 +52,7 @@ def setup_logging(
             None
         )
         if console is not None:
-            return _session_log_path(user), console
+            return _session_log_path(agent_id), console
 
     root.setLevel(logging.DEBUG)
 
@@ -67,7 +67,7 @@ def setup_logging(
     root.addHandler(console)
 
     # File handler — detailed format with session/request IDs, one per session
-    log_path = _session_log_path(user)
+    log_path = _session_log_path(agent_id)
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setLevel(level)
     file_handler.setFormatter(SessionFormatter(FILE_LOG_FORMAT))

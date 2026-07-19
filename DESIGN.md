@@ -32,7 +32,7 @@ The prompt is rendered from `slife/agent/templates/system_prompt.j2` via Jinja2.
 What the LLM cannot know (and the prompt provides):
 
 - The `list_skills` / `use_skill` flow — a Slife-specific convention
-- That secrets live in the OS keyring (credstore), config lives in `slife.json5 → env:`
+- That secrets live in the OS keyring (credstore), config lives in `~/.slife/slife.json5 → env:`
 - That pre-configured MCP servers need no auth
 - That MCP servers default to eager, with lazy as an option for large tool sets
 - That `anyapi-mcp-server` converts OpenAPI specs to tools
@@ -103,7 +103,7 @@ Slife ── MCPClient (stdio) ──▶ MCPWrapperProcess ──▶ slife-mcp  
   │                          │                         └── ... (any MCP server)
   │                          │
   │                          └── MCPWrapperProcess ──▶ slife-memory (diary DB)
-  │                          │                         └── ~/.slife/slife.db
+  │                          │                         └── ~/.slife/<agent_id>.db
   │                          │
   │                          └── MCPWrapperProcess ──▶ slife-wechat (WeChat)
   │                                                    └── iLink ClawBot API
@@ -518,7 +518,7 @@ slife agent ───────────────┼──────�
                     │ slife-memory │  (built-in plugin)
                     └──────┬───────┘
                            │
-                    ~/.slife/slife.db
+                    ~/.slife/<agent_id>.db
                       ├── diary            (one row = one turn)
                       ├── diary_fts (FTS5) (keyword search, BM25 ranking)
                       └── diary_semantic   (vec0, cosine KNN on turn text)
@@ -542,7 +542,7 @@ One row = one turn. No sessions, no status, no lifecycle — just time-ordered r
 
 ```sql
 CREATE TABLE diary (
-    author         TEXT,     -- who (--user flag)
+    author         TEXT,     -- who (--agent flag)
     user_message   TEXT,     -- what the user said
     messages       TEXT,     -- assistant response JSON (thinking, tool calls, results, text)
 
@@ -639,20 +639,20 @@ messages, rebuild the conversation.
 No trim_count needed — each turn is its own row, immutable once written.
 If no prior turns exist, starts fresh.
 
-### User Isolation
+### Agent Isolation
 
-Multiple users on the same machine are isolated by `--user`:
+Multiple agents on the same machine are isolated by `--agent`:
 
 ```bash
-Slife --user alice              # alice's diary, alice's knowledge
-Slife --user bob --agent bob    # bob's diary + A2A identity "bob"
+Slife --agent alice              # alice's diary, alice's knowledge
+Slife --agent bob                # bob's diary + A2A identity "bob"
 ```
 
-`--user` and `--agent` are orthogonal:
-- `--user` → memory isolation key (who owns the diary)
-- `--agent` → A2A network identity (who I am on the MQTT mesh)
+`--agent` serves both purposes:
+- Memory isolation key (who owns the diary)
+- A2A network identity (who I am on the MQTT mesh)
 
-Every memory tool takes an `author` parameter. The `diary` table uses `author` as the primary isolation column. `diary_semantic` (vec0) uses `author` as a partition key — KNN search is automatically scoped to one user with zero cross-user overhead.
+Every memory tool takes an `author` parameter. The `diary` table uses `author` as the primary isolation column. `diary_semantic` (vec0) uses `author` as a partition key — KNN search is automatically scoped to one agent with zero cross-agent overhead.
 
 ## A2A — Agent-to-Agent
 

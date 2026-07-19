@@ -5,7 +5,7 @@ from slife.agent.system_prompt import build
 
 class TestBuild:
     def test_starts_with_slife(self):
-        assert build().startswith("You are Slife.")
+        assert build().startswith("You are Slife — agent slife")
 
     def test_config_reference(self):
         """Prompt mentions config location and security rules —

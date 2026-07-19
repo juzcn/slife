@@ -63,6 +63,7 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 | `slife` | `~/.local/bin/slife` |
 | `credstore` | `~/.local/bin/credstore` |
 | 安装文件 | `~/.local/share/uv/tools/slife/` |
+| 用户数据 | `~/.slife/`（首次运行时自动创建） |
 
 ### 卸载
 
@@ -70,10 +71,10 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 uv tool uninstall slife
 ```
 
-用户数据（对话记录、凭证、配置）保留在项目目录和系统 keyring 中，如需删除：
+用户数据（配置、记忆数据库、微信会话、凭证备份）存放在 `~/.slife/`。开发环境下（当前目录存在 `slife.json5`），数据文件保留在项目目录中便于调试。如需删除：
 
 ```bash
-rm -f slife.db slife.json5               # 对话记录 + 配置
+rm -rf ~/.slife                            # 所有用户数据（生产环境）
 credstore delete DEEPSEEK_API_KEY          # 删除已存密钥
 credstore list                             # 列出所有已存凭证
 ```
@@ -136,11 +137,11 @@ mosquitto -p 1883
 slife --agent my-agent
 ```
 
-如果 broker 地址不是默认值（`localhost:1883`），在 `slife.json5` 中配置：
+如果 broker 地址不是默认值（`localhost:1883`），在 `~/.slife/slife.json5` 中配置：
 
 ```json5
-a2a: {
-  mqtt: { host: "my-broker.local", port: 1883 },
+mqtt: {
+  broker: { host: "my-broker.local", port: 1883 },
 }
 ```
 
@@ -257,7 +258,7 @@ memory_search("那个 bug 修复", mode="hybrid") → 语义召回
 memory_search(mode="time", since="2026-07") → 按日期浏览
 ```
 
-通过 `--user alice` 实现用户隔离。嵌入模型支持本地 GGUF（离线）或 OpenAI 兼容 API。完整架构参见 [DESIGN.md § Permanent Memory](DESIGN.md#permanent-memory-slife-memory)。
+通过 `--agent alice` 实现智能体隔离，每个智能体在数据目录拥有独立的数据库文件（`<agent_id>.db`）。嵌入模型支持本地 GGUF（离线）或 OpenAI 兼容 API。完整架构参见 [DESIGN.md § Permanent Memory](DESIGN.md#permanent-memory-slife-memory)。
 
 ### 插件系统
 
@@ -299,8 +300,7 @@ Slife 内置三个插件，均使用相同的 MCP stdio 协议：
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--agent <id>` | (关闭) | 启用 A2A — 以此身份加入 MQTT 网格 |
-| `--user <id>` | `default` | 记忆隔离键 — 每个用户独立的日记 |
+| `--agent <id>` | `slife` | 智能体身份 — 记忆隔离键 & A2A 网格身份 |
 
 ## 环境要求
 
@@ -316,11 +316,13 @@ Slife 内置三个插件，均使用相同的 MCP stdio 协议：
 
 ## 开发
 
+通过 `pyproject.toml` 检测开发模式 — 当 `[project] name == "slife"` 时，数据文件保留在项目目录中便于调试。生产环境使用 `~/.slife/`。
+
 ```bash
 git clone https://github.com/juzcn/slife.git
 cd slife
 uv sync
-uv run slife
+uv run slife                      # 使用 ./slife.json5，数据文件在 ./
 ```
 
 运行测试：

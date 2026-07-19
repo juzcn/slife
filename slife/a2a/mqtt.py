@@ -27,15 +27,15 @@ logger = logging.getLogger(__name__)
 _MQTT_RC_SUCCESS = 0
 
 #: Lazily-loaded paho-mqtt module — only imported when MQTT is actually used.
-_mqtt: Any = None
+mqtt: Any = None
 
 
 def _get_mqtt():
     """Lazy-import paho-mqtt so it is only required when MQTT is enabled."""
-    global _mqtt
-    if _mqtt is None:
-        import paho.mqtt.client as _mqtt
-    return _mqtt
+    global mqtt
+    if mqtt is None:
+        import paho.mqtt.client as mqtt
+    return mqtt
 
 
 @dataclass

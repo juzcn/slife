@@ -69,22 +69,24 @@ class StatusBar(Static):
 # ── Main TUI app ───────────────────────────────────────────────────
 
 
-def _restore_prefix(channel: str, assistant_prefix: str) -> str:
+def _restore_prefix(channel: str | None, agent_id: str) -> str:
     """Consistent prefix mapping for restored turns.
 
     Matches the real-time display prefixes used during live operation:
-      - human  → "You> " / "> "
-      - wechat → "Wechat> "
-      - other   → "<channel>> " (external agent id, A2A peer, etc.)
+      - human  → "<agent_id>> "
+      - wechat → "<agent_id>(Wechat)"
+      - other   → "<agent_id>(a2a)" (external agent id, A2A peer, etc.)
     """
-    if channel == "human":
-        return "You> " if assistant_prefix else "> "
-    if channel == "wechat":
-        return "Wechat> "
-    if channel:
-        return f"{channel}> "
+    # Normalise None → "" (JSON null values, missing keys)
+    ch = channel or ""
+    if ch == "human":
+        return f"{agent_id}> "
+    if ch == "wechat":
+        return f"{agent_id}(Wechat)"
+    if ch:
+        return f"{agent_id}(a2a)"
     # Backward compat: old turns saved before channel was introduced
-    return "You> " if assistant_prefix else "> "
+    return f"{agent_id}> "
 
 
 class SlifeApp(App):
@@ -110,7 +112,8 @@ class SlifeApp(App):
 
         # Resolve assistant name prefix once (set on first user message)
         a2a = config.a2a_config
-        agent_name = a2a.agent_name if a2a else None
+        agent_name = a2a.agent_name if a2a else ""
+        self._agent_id: str = config.agent_id
         self._assistant_prefix: str = (
             f"{agent_name}> " if agent_name else "> "
         )
@@ -182,12 +185,12 @@ class SlifeApp(App):
         )
 
         # Step 4: Start A2A P2P mesh in the background
-        if self.service.config.a2a_config and self.service.config.a2a_config.enabled:
-            self.run_worker(
-                self.service.start_a2a(),
-                exclusive=False,
-                group="a2a-startup",
-            )
+        # (service probes mosquitto internally — skips if not running)
+        self.run_worker(
+            self.service.start_a2a(),
+            exclusive=False,
+            group="a2a-startup",
+        )
 
         # Step 5: Start subagent manager
         if self.service.config.subagent_config:
@@ -291,7 +294,7 @@ class SlifeApp(App):
         event.input.clear()
 
         chat_view = self.query_one("#chat-view", ChatView)
-        chat_view.add_user_message(raw)
+        chat_view.add_user_message(raw, prefix=f"{self._agent_id}> ")
 
         # _process_message just enqueues and returns immediately
         # (handler is attached to the message, inbox streams later).
@@ -328,14 +331,14 @@ class SlifeApp(App):
         elif kind == "task_received":
             source = kwargs.get("source", "unknown")
             content = kwargs.get("content", "").strip()
-            # Show as a normal user message with source as prefix
-            chat_view.add_user_message(content, prefix=f"{source}> ")
+            # Show as a normal user message with agent-id(a2a) as prefix
+            chat_view.add_user_message(content, prefix=f"{self._agent_id}(a2a)")
 
         elif kind == "peer_message":
             # Peer terminal (WeChat etc.) — show with channel prefix
             source = kwargs.get("source", "wechat")
             content = kwargs.get("content", "").strip()
-            chat_view.add_user_message(content, prefix="Wechat> ")
+            chat_view.add_user_message(content, prefix=f"{self._agent_id}(Wechat)")
 
         elif kind == "task_completed":
             source = kwargs.get("source", "unknown")
@@ -415,8 +418,8 @@ class SlifeApp(App):
             last_assistant_idx = assistant_indices[-1] if assistant_indices else -1
 
             # Build a channel→prefix lookup so every user message gets the
-            # correct prefix per turn (human → "You> ", wechat → "Wechat> ",
-            # remote agent → "<agent_id>> ").
+            # correct prefix per turn (human → "<agent_id>> ", wechat → "<agent_id>(Wechat)",
+            # remote agent / a2a → "<agent_id>(a2a)").
             _channel_by_row: dict[int, str] = {}
             for i, turn in enumerate(turns):
                 ch = turn.get("channel", "")
@@ -433,7 +436,7 @@ class SlifeApp(App):
                 elif role == "user":
                     turn_idx += 1
                     ch = _channel_by_row.get(turn_idx, "")
-                    prefix = _restore_prefix(ch, self._assistant_prefix)
+                    prefix = _restore_prefix(ch, self._agent_id)
                     ui_ops.append({
                         "type": "user",
                         "content": msg.get("content", "") or "",

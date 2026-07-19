@@ -146,14 +146,13 @@ def _check_wechat_status(config=None) -> list[dict]:
     # Get config if not passed (tool runs outside AgentService context)
     if config is None:
         try:
-            from slife.config import Config, parse_cli_agent, parse_cli_user
+            from slife.config import Config, parse_cli_agent
             import sys as _sys
-            user = parse_cli_user(_sys.argv)
-            agent = parse_cli_agent(_sys.argv)
+            agent_id = parse_cli_agent(_sys.argv)
             # Try loading the config — may fail if no slife.json5 exists
             cfg_path = Path("slife.json5")
             if cfg_path.exists():
-                config = Config.from_json5(cfg_path, agent_name=agent, user=user)
+                config = Config.from_json5(cfg_path, agent_id=agent_id)
         except Exception:
             pass
 
@@ -193,7 +192,7 @@ def _check_wechat_status(config=None) -> list[dict]:
         SESSION_MAX_AGE = 23 * 3600
 
     wd = Path(os.environ.get("SLIFE_CONFIG_DIR", "."))
-    session = load_wechat_config(config.user, wd)
+    session = load_wechat_config(config.agent_id, wd)
 
     if not session.get("bot_token"):
         results.append({

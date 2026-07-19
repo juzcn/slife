@@ -90,9 +90,14 @@ class SessionStore:
             try:
                 await self._conn.execute(sql)
                 logger.debug("migrate_applied sql=%s", sql)
-            except Exception:
-                # Column already exists — that's fine
-                pass
+            except Exception as e:
+                # "duplicate column name" is expected when column already exists.
+                # Any other error is unexpected and should be logged.
+                err_msg = str(e).lower()
+                if "duplicate column" in err_msg or "already exists" in err_msg:
+                    logger.debug("migrate_skipped sql=%s reason=already_exists", sql)
+                else:
+                    logger.warning("migrate_failed sql=%s err=%s", sql, e)
         await self._conn.commit()
 
     async def close(self) -> None:

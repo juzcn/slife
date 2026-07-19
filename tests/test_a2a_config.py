@@ -14,42 +14,41 @@ from slife.a2a.identity import AgentId
 class TestA2AConfigFromDict:
     """Tests for A2AConfig.from_dict."""
 
-    def test_none_data_no_name_returns_disabled(self):
+    def test_none_data_returns_disabled(self):
         cfg = A2AConfig.from_dict(None)
         assert cfg.enabled is False
 
-    def test_none_agent_name_returns_disabled(self):
-        cfg = A2AConfig.from_dict({}, agent_name=None)
-        assert cfg.enabled is False
+    def test_empty_data_returns_disabled_with_defaults(self):
+        cfg = A2AConfig.from_dict({})
+        assert cfg.enabled is False  # runtime probe sets this
+        assert cfg.agent_id == "slife"  # default agent_id
+        assert cfg.agent_name == ""
 
-    def test_empty_data_with_name_enables(self):
-        cfg = A2AConfig.from_dict({}, agent_name="my-agent")
-        assert cfg.enabled is True
-        assert cfg.agent_id == "my-agent"
-        assert cfg.agent_name == "my-agent"
+    def test_user_becomes_agent_id(self):
+        cfg = A2AConfig.from_dict({}, agent_id="bob")
+        assert cfg.agent_id == "bob"
+        assert cfg.enabled is False  # runtime probe sets this
+
+    def test_agent_name_from_data(self):
+        cfg = A2AConfig.from_dict({"agent_name": "My Agent"}, agent_id="bob")
+        assert cfg.agent_id == "bob"
+        assert cfg.agent_name == "My Agent"
 
     def test_broker_defaults_from_empty_dict(self):
-        cfg = A2AConfig.from_dict({}, agent_name="agent-1")
+        cfg = A2AConfig.from_dict({}, agent_id="agent-1")
         assert cfg.broker_host == "localhost"
         assert cfg.broker_port == 1883
 
     def test_broker_from_data(self):
         cfg = A2AConfig.from_dict(
             {"broker": {"host": "mqtt.example.com", "port": 8883}},
-            agent_name="agent-1",
+            agent_id="agent-1",
         )
         assert cfg.broker_host == "mqtt.example.com"
         assert cfg.broker_port == 8883
 
-    def test_broker_command_from_data(self):
-        cfg = A2AConfig.from_dict(
-            {"broker": {"command": "/usr/sbin/mosquitto"}},
-            agent_name="agent-1",
-        )
-        assert cfg.broker_command == "/usr/sbin/mosquitto"
-
     def test_heartbeat_defaults(self):
-        cfg = A2AConfig.from_dict({}, agent_name="agent-1")
+        cfg = A2AConfig.from_dict({}, agent_id="agent-1")
         assert cfg.heartbeat_interval == 15
         assert cfg.heartbeat_timeout == 45
         assert cfg.task_timeout == 120
@@ -57,7 +56,7 @@ class TestA2AConfigFromDict:
     def test_custom_heartbeat_values(self):
         cfg = A2AConfig.from_dict(
             {"heartbeat_interval": 30, "heartbeat_timeout": 90, "task_timeout": 300},
-            agent_name="agent-1",
+            agent_id="agent-1",
         )
         assert cfg.heartbeat_interval == 30
         assert cfg.heartbeat_timeout == 90
@@ -67,7 +66,7 @@ class TestA2AConfigFromDict:
         """When broker is not a dict, use defaults."""
         cfg = A2AConfig.from_dict(
             {"broker": "just a string"},
-            agent_name="agent-1",
+            agent_id="agent-1",
         )
         assert cfg.broker_host == "localhost"
         assert cfg.broker_port == 1883

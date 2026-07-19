@@ -22,9 +22,12 @@
   },
 
   // ── MQTT / A2A Mesh ────────────────────────────────────────────
-  // Multi-agent communication.  Requires slife[mqtt] + Mosquitto.
-  // Enable with: slife --agent <your-agent-id>
+  // Multi-agent communication.  Requires paho-mqtt + Mosquitto.
+  // Start Mosquitto BEFORE launching slife — its presence is the
+  // on/off switch.  agent_id is derived from --agent (default "slife").
+  // agent_name is an optional human-readable display name.
   mqtt: {
+    // agent_name: "my-agent",   // optional display name
     broker: { host: "localhost", port: 1883 },
     heartbeat_interval: 15,
     heartbeat_timeout: 45,
@@ -118,9 +121,9 @@
   },
 
   // ── Memory ─────────────────────────────────────────────────────
+  // DB files auto-located at ~/.slife/<agent_id>.db — no config needed.
   memory: {
     enabled: true,
-    db_path: "./slife.db",
 
     // Local GGUF embeddings (offline).  Install: slife[embeddings]
     // embedding: {

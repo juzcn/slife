@@ -185,7 +185,6 @@
   },
   memory: {
     enabled: true,
-    db_path: "./slife.db",
     embedding: {
       model: "bge-m3",
       gguf_path: "C:\\OneDrive\\AI\\hf_KimChen_bge-m3-q4_k_m.gguf",

@@ -32,9 +32,6 @@ class A2AConfig:
     broker_host: str = "localhost"
     broker_port: int = 1883
 
-    broker_command: str | None = None
-    """Path to the mosquitto binary (optional — for auto-spawn)."""
-
     heartbeat_interval: int = 15
     """Seconds between presence heartbeat publishes."""
 
@@ -46,34 +43,32 @@ class A2AConfig:
 
     @classmethod
     def from_dict(
-        cls, data: dict | None, agent_name: str | None = None,
+        cls, data: dict | None, agent_id: str = "slife",
     ) -> "A2AConfig":
         """Parse the ``mqtt`` section from slife.json5.
 
-        A2A over MQTT is enabled **only** when ``--agent`` is passed on the
-        CLI (``agent_name`` is not ``None``).  The json5 ``mqtt`` section
-        provides broker connection details — it never enables A2A on its own.
+        A2A over MQTT is enabled **at runtime** when Mosquitto is detected
+        on ``broker_host:broker_port``.  The json5 ``mqtt`` section always
+        provides connection details — ``enabled`` is set to ``True`` only
+        after a successful TCP probe.
 
         Args:
             data: The ``mqtt`` dict from the JSON5 config, or ``None``.
-            agent_name: If provided (``--agent`` on the CLI), enables A2A
-                        and uses this value as ``agent_id``.
+            agent_id: The ``--agent`` value (defaults to ``"slife"``).
+                      Used as the MQTT client id / agent identity.
         """
-        # --agent is the only way to enable A2A over MQTT
-        if agent_name is None:
-            return cls()
-
         broker = {}
+        agent_name = ""
         if isinstance(data, dict):
             broker = data.get("broker", {}) if isinstance(data.get("broker"), dict) else {}
+            agent_name = data.get("agent_name", "")
 
         return cls(
-            enabled=True,
-            agent_id=agent_name,
+            enabled=False,  # set to True at runtime after mosquitto probe
+            agent_id=agent_id,
             agent_name=agent_name,
             broker_host=broker.get("host", "localhost"),
             broker_port=broker.get("port", 1883),
-            broker_command=broker.get("command"),
             heartbeat_interval=(data or {}).get("heartbeat_interval", 15),
             heartbeat_timeout=(data or {}).get("heartbeat_timeout", 45),
             task_timeout=(data or {}).get("task_timeout", 120),

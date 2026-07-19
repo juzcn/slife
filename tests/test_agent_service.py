@@ -74,7 +74,6 @@ class TestAgentServiceInit:
         service = AgentService(config)
 
         assert service._a2a_client is None
-        assert service._a2a_broker is None
         assert service.a2a_enabled is False
 
 

@@ -106,10 +106,11 @@ def _try_credstore_lookup(key: str) -> str | None:
         return None
 
 
-def parse_cli_agent(argv: list[str]) -> str | None:
-    """Extract ``--agent <value>`` from CLI args.
+def parse_cli_agent(argv: list[str]) -> str:
+    """Extract ``--agent <value>`` from CLI args. Defaults to ``"slife"``.
 
-    Returns ``None`` when ``--agent`` is not provided (A2A stays disabled).
+    The agent identity isolates memory on multi-user machines and serves
+    as the A2A network identity on the MQTT mesh.
     """
     args = argv[1:]
     i = 0
@@ -117,21 +118,7 @@ def parse_cli_agent(argv: list[str]) -> str | None:
         if args[i] == "--agent" and i + 1 < len(args):
             return args[i + 1]
         i += 1
-    return None
-
-
-def parse_cli_user(argv: list[str]) -> str:
-    """Extract ``--user <value>`` from CLI args. Defaults to ``"default"``.
-
-    The user identity isolates memory on multi-user machines.
-    """
-    args = argv[1:]
-    i = 0
-    while i < len(args):
-        if args[i] == "--user" and i + 1 < len(args):
-            return args[i + 1]
-        i += 1
-    return "default"
+    return "slife"
 
 
 def _parse_section(raw: dict, key: str, expected_type, default):
@@ -257,7 +244,6 @@ class MemoryConfig:
     Always enabled -- slife-memory is a built-in plugin.
     """
 
-    db_path: str = "~/.slife/slife.db"
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
 
@@ -270,7 +256,6 @@ class MemoryConfig:
         if not isinstance(emb, dict):
             emb = {}
         return cls(
-            db_path=data.get("db_path", "~/.slife/slife.db"),
             embedding_model=emb.get("model", "text-embedding-3-small"),
             embedding_dim=emb.get("dim", 1536),
         )
@@ -281,7 +266,7 @@ class WechatConfig:
     """Configuration for the slife-wechat plugin.
 
     Optional -- only loaded when ``wechat.enabled`` is true.
-    Session tokens are stored per-user in ``wechat_<user>.json5``.
+    Session tokens are stored per-agent in ``wechat_<agent_id>.json5``.
     """
 
     enabled: bool = True
@@ -311,7 +296,7 @@ class Config:
     context_floor: float = 0.2
     context_ceiling: float = 0.8
     tool_result_ceiling: float = 0.2  # max tool result = 20% of context window
-    user: str = "default"
+    agent_id: str = "slife"
     mcp_config: MCPConfig | None = None
     memory_config: MemoryConfig | None = None
     wechat_config: WechatConfig | None = None
@@ -506,23 +491,23 @@ class Config:
     @classmethod
     def from_json5(
         cls, path: str | Path = "slife.json5",
-        agent_name: str | None = None,
-        user: str = "default",
+        agent_id: str = "slife",
     ) -> "Config":
         """Load from JSON5 file with provider->model hierarchy.
 
         Args:
             path: Path to the JSON5 config file.
-            agent_name: If provided, enables A2A and sets this as the
-                        agent identity (``--agent`` on the CLI).
-            user: Memory isolation key (``--user`` on the CLI).
-                  Defaults to ``"default"``.
+                  Defaults to ``~/.slife/slife.json5``.
+            agent_id: Agent identity key (``--agent`` on the CLI).
+                      Defaults to ``"slife"``.  Used for memory isolation
+                      and as the MQTT agent identity when Mosquitto is available.
         """
-        path = Path(path)
+        path = Path(path).expanduser()
         logger.debug("config_load path=%s", path)
         if not path.exists():
-            # First run: copy the bundled template config to CWD.
+            # First run: copy the bundled template config to ~/.slife/.
             import shutil
+            path.parent.mkdir(parents=True, exist_ok=True)
             pkg_template = Path(__file__).parent / "slife.template.json5"
             if pkg_template.exists():
                 shutil.copy(pkg_template, path)
@@ -534,7 +519,7 @@ class Config:
                 raise SystemExit(0)
             raise FileNotFoundError(
                 f"Config file not found: {path}\n"
-                f"Run: cp slife.template.json5 slife.json5"
+                f"Run: cp slife.template.json5 ~/.slife/slife.json5"
             )
 
         raw = json5.loads(path.read_text(encoding="utf-8"))
@@ -594,28 +579,24 @@ class Config:
             len(mcp_config.servers),
         )
 
-        # Memory -- built-in plugin, always enabled
+        # Memory -- built-in plugin, always enabled.  DB files live in
+        # ~/.slife/<agent_id>.db — no configuration needed.
         memory_config = MemoryConfig.from_dict(raw.get("memory", {}))
         logger.debug(
-            "memory_config db=%s embed=%s",
-            memory_config.db_path,
+            "memory_config embed=%s",
             memory_config.embedding_model,
         )
 
         # WeChat -- optional plugin, enabled via wechat.enabled
         wechat_config = WechatConfig.from_dict(raw.get("wechat", {}))
         if wechat_config.enabled:
-            logger.debug("wechat_config enabled=true")
-            # Set config dir so the wechat server knows where to find per-user files
-            if not os.environ.get("SLIFE_CONFIG_DIR"):
-                os.environ["SLIFE_CONFIG_DIR"] = str(path.parent)
             logger.debug(
-                "wechat_config dir=%s user=%s",
-                os.environ.get("SLIFE_CONFIG_DIR", "."), user,
+                "wechat_config agent_id=%s",
+                agent_id,
             )
 
-        # A2A/MQTT -- enabled only via --agent CLI flag, json5 provides broker details
-        a2a_config = A2AConfig.from_dict(raw.get("mqtt"), agent_name=agent_name)
+        # A2A/MQTT — always parse config; enabled at runtime after mosquitto probe
+        a2a_config = A2AConfig.from_dict(raw.get("mqtt"), agent_id=agent_id)
         if a2a_config.enabled:
             logger.debug(
                 "a2a_config id=%s broker=%s:%d",
@@ -641,7 +622,7 @@ class Config:
             context_floor=context_floor,
             context_ceiling=context_ceiling,
             tool_result_ceiling=tool_result_ceiling,
-            user=user,
+            agent_id=agent_id,
             mcp_config=mcp_config,
             memory_config=memory_config,
             wechat_config=wechat_config,
