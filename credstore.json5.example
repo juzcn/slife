@@ -1,9 +1,0 @@
-{
-  // Optional config for credstore.
-  // Lookup order: ./credstore.json5 → ~/.credstore/config.json5
-  //
-  // If neither file exists, defaults to ./credentials.crypt
-
-  // Custom path for the encrypted credential file:
-  // cryptfile_path: "~/.slife/credentials.crypt",
-}
