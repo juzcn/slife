@@ -97,13 +97,17 @@ def main(config_path: str = "slife.json5"):
     agent_id = parse_cli_agent(sys.argv)
 
     # Resolve data dir BEFORE logging setup so logs go to the right place.
-    # Explicit config path → use its parent as data dir.
-    # Otherwise → dev: CWD, production: ~/.slife/
+    # Only two modes:
+    #   1. Dev (pyproject.toml in CWD): everything in CWD
+    #   2. Production: everything in ~/.slife/
+    # Unless the user passes an explicit config path — then use its parent.
     _cp = Path(config_path).expanduser()
-    if _cp.is_absolute() or _cp.exists():
+    if _cp.is_absolute():
+        # Explicit path given — use its parent as data dir
         data_dir = str(_cp.parent.resolve())
     else:
-        data_dir = str(get_config_path().parent.resolve())
+        data_dir = str(get_data_dir())
+        _cp = get_config_path()  # resolve to ~/.slife/slife.json5 or CWD/slife.json5
     os.environ["SLIFE_DATA_DIR"] = data_dir
     os.environ["SLIFE_CONFIG_DIR"] = data_dir
 

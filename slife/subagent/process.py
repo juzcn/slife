@@ -266,7 +266,8 @@ class SubagentManager:
     def __init__(self, config: "Config"):
         self._subagents: dict[str, SubagentProcess] = {}
         self._counter = 0
-        self._config_path = str(config._path) if config._path else "slife.json5"
+        from slife.paths import get_config_path
+        self._config_path = str(config._path) if config._path else str(get_config_path())
         sc = config.subagent_config or {}
         self._max = sc.get("max_subagents", 5)
         self._timeout = sc.get("task_timeout", 120)

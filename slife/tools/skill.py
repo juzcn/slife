@@ -138,23 +138,17 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
 
 
 def _resolve_skills_dir(skills_dir: str = "") -> Path:
-    """Resolve the skills directory, preferring the package-bundled copy.
+    """Resolve the skills directory.
 
     Priority:
       1. Explicit path (from config or argument) — used as-is.
-      2. Package-bundled ``slife/skills/`` — used when installed via wheel.
-      3. CWD-relative ``skills/`` — development fallback (``uv run slife``).
+      2. Package-bundled or dev-mode — delegated to ``slife.paths.get_skills_dir()``.
     """
+    from slife.paths import get_skills_dir
+
     if skills_dir:
         return Path(skills_dir)
-
-    # When installed, skills are bundled inside the slife package.
-    pkg_skills = Path(__file__).parent.parent / "skills"
-    if pkg_skills.is_dir():
-        return pkg_skills
-
-    # Development mode: CWD-relative skills/ directory.
-    return Path("skills")
+    return get_skills_dir()
 
 
 class _SkillDirMixin:

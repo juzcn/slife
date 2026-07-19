@@ -130,7 +130,7 @@ def _check_wechat_status(config=None) -> list[dict]:
             import sys as _sys
             agent_id = parse_cli_agent(_sys.argv)
             # Try loading the config — may fail if no slife.json5 exists
-            cfg_path = Path("slife.json5")
+            cfg_path = get_data_dir() / "slife.json5"
             if cfg_path.exists():
                 config = Config.from_json5(cfg_path, agent_id=agent_id)
         except Exception:
