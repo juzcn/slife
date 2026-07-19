@@ -3,14 +3,8 @@
   // ${VAR} references resolve at runtime: shell → OS keyring → default.
   // Use credstore to store secrets (never paste keys here):
   //   credstore set DEEPSEEK_API_KEY
-  //
-  // Add vars needed by MCP servers or tools (uncomment as needed):
   env: {
-    // BAIDU_API_KEY: "${BAIDU_API_KEY}",
     // SERPER_API_KEY: "${SERPER_API_KEY}",
-    // GITHUB_TOKEN: "${GITHUB_TOKEN}",
-    // TAVILY_API_KEY: "${TAVILY_API_KEY}",
-    // AMAP_MAPS_API_KEY: "${AMAP_MAPS_API_KEY}",
   },
 
   // ── Agent Behavior ─────────────────────────────────────────────
@@ -38,9 +32,9 @@
   },
 
   // ── Model Provider ─────────────────────────────────────────────
-  // Edit this section with your API provider.  The example uses
-  // DeepSeek — replace with OpenAI, Gemini, Ollama, or any
-  // OpenAI-compatible endpoint.
+  // Edit for your API provider.  Default uses DeepSeek — replace
+  // with OpenAI, Gemini, Ollama, or any OpenAI-compatible endpoint.
+  // ${DEEPSEEK_API_KEY} resolves from keyring automatically.
   models: {
     mode: "merge",
     providers: {
@@ -76,11 +70,9 @@
   active_model: "deepseek/deepseek-v4-flash",
 
   // ── MCP Servers ────────────────────────────────────────────────
-  // Pre-configured MCP servers that auto-connect on startup.
-  // Any MCP-compatible server (Python, Node, Go, Rust) works here.
+  // Add any MCP-compatible server here (Python, Node, Go, Rust).
   mcp: {
     servers: {
-      // ── Always-on (no API key needed) ──────────────────────────
       filesystem: {
         command: "npx",
         args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
@@ -101,43 +93,17 @@
         ],
         description: "DuckDuckGo web search. No API key required.",
       },
-
-      // ── API-key gated (uncomment + credstore set <KEY>) ────────
       // serper: {
       //   command: "npx",
       //   args: ["-y", "serper-search-scrape-mcp-server"],
       //   env: { SERPER_API_KEY: "${SERPER_API_KEY}" },
-      //   description: "Google web search via Serper.",
-      // },
-      // "tavily-mcp": {
-      //   command: "npx",
-      //   args: ["-y", "tavily-mcp@latest"],
-      //   env: { TAVILY_API_KEY: "${TAVILY_API_KEY}" },
-      //   description: "Tavily AI-optimized web search for LLM agents.",
-      // },
-      // github: {
-      //   command: "npx",
-      //   args: [
-      //     "-y", "anyapi-mcp-server",
-      //     "--name", "github",
-      //     "--spec", "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml",
-      //     "--base-url", "https://api.github.com",
-      //     "--header", "Authorization: Bearer ${GITHUB_TOKEN}",
-      //   ],
-      //   env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
-      //   description: "GitHub REST API — repos, issues, PRs, users.",
-      // },
-      // "amap-maps": {
-      //   command: "npx",
-      //   args: ["-y", "@amap/amap-maps-mcp-server"],
-      //   env: { AMAP_MAPS_API_KEY: "${AMAP_MAPS_API_KEY}" },
-      //   description: "高德地图 — 地理编码、路径规划、POI搜索、天气查询.",
+      //   description: "Google web search via Serper. Set SERPER_API_KEY first.",
       // },
     },
   },
+
   // ── CLI Tools ──────────────────────────────────────────────────
-  // External commands the agent can discover and persist at runtime.
-  // Register new ones via cli_add_tool in conversation.
+  // External commands the agent discovers and persists at runtime.
   cli_tools: {
     uv: {
       command: "uv",
@@ -149,26 +115,6 @@
       description: "Run Python CLI tools without installing (like npx for Python). Usage: uvx ruff check ., uvx black file.py.",
       install: "Bundled with uv.",
     },
-    // npx: {
-    //   command: "npx",
-    //   description: "Run Node.js packages without installing. Usage: npx <pkg>, npx -y <pkg>.",
-    //   install: "Bundled with Node.js — https://nodejs.org/",
-    // },
-    // npm: {
-    //   command: "npm",
-    //   description: "Node Package Manager. Subcommands: npm install, npm init, npm run.",
-    //   install: "https://nodejs.org/",
-    // },
-    // "yt-dlp": {
-    //   command: "yt-dlp",
-    //   description: "Video downloader for 1000+ sites. Usage: yt-dlp <URL>.",
-    //   install: "uv pip install yt-dlp",
-    // },
-    // "browser-harness": {
-    //   command: "browser-harness",
-    //   description: "Direct browser control via CDP — automation, scraping, testing.",
-    //   install: "uv tool install --python 3.12 browser-harness",
-    // },
   },
 
   // ── Memory ─────────────────────────────────────────────────────
@@ -176,20 +122,11 @@
     enabled: true,
     db_path: "./slife.db",
 
-    // ── Embeddings (optional) ────────────────────────────────────
-    // Uncomment for semantic hybrid search. Install first:
-    //   uv tool install "slife[embeddings]" --reinstall
-    //
-    // Local GGUF model (offline, no API cost):
+    // Local GGUF embeddings (offline).  Install: slife[embeddings]
     // embedding: {
     //   model: "bge-m3",
-    //   gguf_path: "C:\\path\\to\\bge-m3-Q4_K_M.gguf",
+    //   gguf_path: "/path/to/bge-m3-Q4_K_M.gguf",
     //   dim: 1024,
     // },
-    //
-    // Or OpenAI-compatible API:
-    // embedding: {
-    //   model: "text-embedding-3-small",
-    //   dim: 1536,
-    // },
-  },}
+  },
+}
