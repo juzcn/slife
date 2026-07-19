@@ -70,6 +70,38 @@ else
 fi
 echo -e "  Selected: ${CYAN}$PYTHON${NC} ($(uv run --python 3.13 python --version 2>&1))"
 
+# Ensure uv-managed Python and its scripts directory are on PATH.
+# This guarantees "python3" and "python" resolve to the real interpreter,
+# not a system stub or missing-command handler.
+PYTHON_DIR="$(dirname "$PYTHON")"
+export PATH="$PYTHON_DIR:$HOME/.local/bin:$PATH"
+
+# ── 2.5 Ensure Node.js / npm is available ───────────────────────────────
+echo -n "Checking for Node.js / npm… "
+HAVE_NODE=false
+if command -v node &>/dev/null && command -v npm &>/dev/null; then
+    echo -e "${GREEN}found${NC}"
+    echo -e "  node $(node --version), npm $(npm --version)"
+    HAVE_NODE=true
+else
+    echo -e "${YELLOW}not found${NC}"
+    if command -v apt-get &>/dev/null; then
+        echo -e "${YELLOW}Installing Node.js via apt…${NC}"
+        curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+        sudo apt-get install -y nodejs
+    elif command -v brew &>/dev/null; then
+        echo -e "${YELLOW}Installing Node.js via Homebrew…${NC}"
+        brew install node
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y nodejs npm
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm nodejs npm
+    else
+        echo -e "${YELLOW}  Skipped: fetch MCP will use Python-based article extraction.${NC}"
+        echo -e "${YELLOW}  Install manually: https://nodejs.org (LTS recommended)${NC}"
+    fi
+fi
+
 # ── 3. Download and install slife ────────────────────────────────────
 echo ""
 echo "Downloading slife…"

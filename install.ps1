@@ -81,6 +81,61 @@ try {
     $pyVer = uv run --python 3.13 python --version 2>&1
     Write-Host "  Selected: $pythonPath ($pyVer)" -ForegroundColor Cyan
 
+    # Disable Windows Store app execution aliases that shadow real Python.
+    # The "python" and "python3" commands in PowerShell often redirect to the
+    # Microsoft Store instead of running an actual interpreter — even after a
+    # real Python is installed.  Removing these aliases lets the real Python
+    # on PATH take precedence.
+    Write-Host "Removing Windows Store Python aliases…" -ForegroundColor Yellow
+    foreach ($alias in @("python", "python3")) {
+        $aliasPath = "$env:LOCALAPPDATA\Microsoft\WindowsApps\$alias.exe"
+        if (Test-Path $aliasPath) {
+            try {
+                Remove-Item $aliasPath -Force -ErrorAction Stop
+                Write-Host "  Removed: $aliasPath" -ForegroundColor Green
+            } catch {
+                Write-Host "  Could not remove $aliasPath (admin rights needed, skipped)" -ForegroundColor Yellow
+            }
+        }
+    }
+    # Refresh PATH so the freshly-installed Python takes effect
+    $env:PATH = "$(Split-Path $pythonPath -Parent);$env:PATH"
+
+    # ── 2.5 Ensure Node.js / npm is available ───────────────────────────
+    Write-Host -NoNewline "Checking for Node.js / npm… "
+    $haveNode = $false
+    try {
+        $nodeVer = node --version 2>&1
+        $npmVer = npm --version 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "found" -ForegroundColor Green
+            Write-Host "  node $nodeVer, npm $npmVer" -ForegroundColor Cyan
+            $haveNode = $true
+        } else {
+            throw "not working"
+        }
+    } catch {
+        Write-Host "not found" -ForegroundColor Yellow
+        # Try winget first (Windows 10+/11)
+        $winget = Get-Command winget -ErrorAction SilentlyContinue
+        if ($winget) {
+            Write-Host "Installing Node.js LTS via winget…" -ForegroundColor Yellow
+            winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -eq 0) {
+                $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+                try {
+                    $nv = node --version 2>&1
+                    Write-Host "√ node $nv installed" -ForegroundColor Green
+                    $haveNode = $true
+                } catch { }
+            }
+        }
+        if (-not $haveNode) {
+            Write-Host "  Skipped: fetch MCP will use Python-based article extraction." -ForegroundColor Yellow
+            Write-Host "  Install manually: https://nodejs.org (LTS recommended)" -ForegroundColor Yellow
+        }
+    }
+
     # ── 3. Download and install slife ────────────────────────────────────
     Write-Host ""
     Write-Host "Downloading slife…"

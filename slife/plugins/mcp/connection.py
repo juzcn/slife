@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess as _subprocess
 import time as _time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -149,6 +150,9 @@ class MCPServerConnection:
                 self.config.name, len(self._tools_cache), elapsed,
             )
 
+            # Run post-connect setup (best-effort, never blocks on failure)
+            await self._post_connect_setup()
+
         except Exception as e:
             self._status = ServerStatus.FAILED
             stderr_tail = "".join(self._stderr_buffer[-20:]).strip()
@@ -188,6 +192,64 @@ class MCPServerConnection:
             headers=base_headers,
             timeout=httpx.Timeout(30.0),
         )
+
+    async def _post_connect_setup(self) -> None:
+        """Run server-specific post-connect setup (best-effort).
+
+        On Windows, the ``mcp-server-fetch`` package's ``readabilipy``
+        dependency cannot detect ``npm`` because Python's ``subprocess.run``
+        on Windows only tries ``.exe`` extensions via ``CreateProcess``,
+        and ``npm`` only ships as ``npm.cmd``.
+
+        Pre-installing the ``node_modules`` into ``readabilipy``'s
+        ``javascript`` directory lets ``have_node()`` succeed without
+        ever calling ``have_npm()``, sidestepping the detection bug.
+        """
+        if self.config.name != "fetch":
+            return
+
+        try:
+            # Locate readabilipy inside the uvx-managed environment
+            result = _subprocess.run(
+                [
+                    "uvx", "--from", "mcp-server-fetch", "python", "-c",
+                    "import readabilipy, os; print(os.path.dirname(readabilipy.__file__))",
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                return
+            readabilipy_dir = result.stdout.strip()
+            if not readabilipy_dir or not os.path.isdir(readabilipy_dir):
+                return
+
+            jsdir = os.path.join(readabilipy_dir, "javascript")
+            if not os.path.isdir(jsdir):
+                return
+
+            # Already installed — nothing to do
+            if os.path.isdir(os.path.join(jsdir, "node_modules")):
+                logger.debug("readabilipy node_modules already present")
+                return
+
+            logger.info(
+                "fetch_npm_install jsdir=%s", jsdir,
+            )
+            npm_cmd = ["cmd", "/c", "npm", "install"]
+            install = _subprocess.run(
+                npm_cmd, cwd=jsdir,
+                capture_output=True, text=True, timeout=60,
+            )
+            if install.returncode == 0:
+                logger.info("fetch_npm_install_done")
+            else:
+                logger.debug(
+                    "fetch_npm_install_fail rc=%d stderr=%s",
+                    install.returncode, install.stderr[:200],
+                )
+        except Exception:
+            # Best-effort — never let setup failure block the connection
+            pass
 
     async def _request(self, method: str, params: dict) -> dict:
         """Send a JSON-RPC request and wait for the response."""

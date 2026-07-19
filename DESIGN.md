@@ -467,6 +467,50 @@ A FastMCP server running on stdio transport. Always spawned as a child process.
 
 No anyio, no `ClientSession` — avoids TaskGroup conflicts with FastMCP.
 
+### Post-Connect Setup
+
+After a successful connection, ``MCPServerConnection._post_connect_setup()`` runs
+server-specific initialization (best-effort — failures are logged but never block
+the connection).
+
+**fetch MCP server — Node.js detection on Windows.**  The ``mcp-server-fetch``
+package uses ``readabilipy`` for article extraction.  ``readabilipy`` detects
+Node.js by running ``subprocess.run(['node', '-v'])`` — which works because
+``node.exe`` is found via Windows ``CreateProcess``'s ``.exe`` extension search.
+But ``readabilipy`` also needs to install its JavaScript dependencies via
+``subprocess.run(['npm', 'version'])``, which **fails on Windows** because
+``CreateProcess`` only appends ``.exe`` when searching for executables, not
+``.cmd`` (and ``npm`` is only available as ``npm.cmd``).  See
+`python/cpython#94541 <https://github.com/python/cpython/issues/94541>`_.
+
+**Workaround.**  The post-connect hook pre-installs ``node_modules`` directly
+into the ``readabilipy/javascript`` directory via ``cmd /c npm install``.
+With ``node_modules`` already present, ``have_node()`` succeeds without ever
+calling ``have_npm()``, completely sidestepping the detection bug.  This is
+done once per slife session at MCP server connection time — the uvx cache
+keeps the installed packages across restarts.
+
+### External Dependencies
+
+Slife depends on several external tools at runtime.  The approach is:
+
+| Where | What | How |
+|-------|------|-----|
+| **Install script** (`install.ps1` / `install.sh`) | Python, uv, Node.js | Auto-detects and installs missing dependencies |
+| **Runtime startup** (`_check_external_deps` in `__init__.py`) | node, npm, uv | Checks availability, reports via ``system_health`` — no auto-install |
+| **Post-connect hook** (`connection.py`) | readabilipy node_modules | Pre-installs to work around Windows PATHEXT limitation |
+
+The division of responsibility:
+
+- **Install script** handles the "not installed" case — it's the one-click
+  path for production users.  Developers manage their own toolchain.
+- **Runtime check** surfaces missing tools to the LLM via ``system_health``
+  so the agent can guide the user.  It never attempts to install — that
+  belongs in the install script or the user's package manager.
+- **Post-connect hook** handles the "installed but not detected" edge case
+  (Windows ``CreateProcess`` not finding ``.cmd`` files).  This is a
+  platform-specific workaround that the install script cannot fix.
+
 ### Progressive Disclosure
 
 Not all tools need to be in every LLM request. Slife uses a two-level pattern:
@@ -835,7 +879,7 @@ Separating them means you can commit `slife.json5` to version control (with `${V
 
 ```
 slife/
-  __init__.py           # Entry point: main(), config loading
+  __init__.py           # Entry point: main(), config loading, _check_external_deps()
   config.py             # JSON5 config loading — ModelConfig, MCPConfig, MemoryConfig, etc.
                         #   _resolve_env_or_credstore(): shared ${VAR} → os.environ → credstore
   env.py                # ${ENV_VAR} and ${ENV_VAR:-default} resolution

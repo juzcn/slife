@@ -63,7 +63,11 @@ def run_python_script(input_str: str) -> str:
         script = input_str[:split_at].strip()
         args = input_str[split_at:].strip()
 
-    python = "python" if IS_WINDOWS else "python3"
+    # On Windows, "python" is often the MS Store app alias (no actual
+    # binary) and "py" may pick a different version (e.g. 3.14).
+    # Use sys.executable — the exact Python that is running slife,
+    # installed by uv at the correct version (3.13).
+    python = sys.executable if IS_WINDOWS else "python3"
 
     if not args:
         return f"{python} {script}"

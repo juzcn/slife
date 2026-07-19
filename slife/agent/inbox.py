@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from slife.a2a.identity import AgentId, AgentMessage
 from slife.agent.conversation import Conversation
-from slife.agent.loop import AgentCancelled
+from slife.agent.loop import AgentCancelled, MaxIterationsExceeded
 
 if TYPE_CHECKING:
     from slife.a2a.client import A2AClient
@@ -188,6 +188,24 @@ class Inbox:
 
         except AgentCancelled:
             logger.info("inbox_cancelled source=%s", msg.source)
+        except MaxIterationsExceeded as e:
+            logger.warning("inbox_process_error source=%s err=%s", msg.source, e)
+            # Finalize the handler so the last assistant message is marked complete
+            if handler is not None:
+                try:
+                    handler.finalize_current()
+                except Exception:
+                    pass
+            # Notify TUI so the user sees the iteration-limit message
+            if self._on_activity:
+                try:
+                    await self._on_activity(
+                        "loop_error",
+                        source=msg.source,
+                        error=str(e),
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning("inbox_process_error source=%s err=%s", msg.source, e)
             if is_remote and self._on_activity:

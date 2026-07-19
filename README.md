@@ -18,7 +18,7 @@
 
 ## Install
 
-**Zero prerequisites.**  The install script auto-installs Python 3.13 and uv if needed — then installs slife in an isolated environment.  No git, no Node.js, no C++ compiler required.
+**Zero prerequisites.**  The install script auto-installs Python 3.13, uv, and Node.js if needed — then installs slife in an isolated environment.  No git, no C++ compiler required.
 
 ### Option 1: Install Script (Recommended)
 
@@ -319,9 +319,15 @@ The install script handles everything automatically.  Nothing to install beforeh
 |-----------|--------|
 | Python ≥ 3.13 | Auto-installed via uv if missing |
 | [uv](https://docs.astral.sh/uv/) | Auto-installed if missing |
-| Node.js | Optional — only for npx-based MCP servers |
+| Node.js LTS | Auto-installed via winget (Windows) / apt, brew, dnf, pacman (Linux) if missing |
 | `llama-cpp-python` | Optional — `slife[embeddings]` for local GGUF embeddings |
-| `paho-mqtt` | Optional — `slife[mqtt]` for A2A MQTT mesh |
+| `paho-mqtt` | Included — A2A MQTT mesh (auto-activates when Mosquitto is detected) |
+
+**Node.js** is used by the fetch MCP server (`mcp-server-fetch`) for
+Readability.js-powered article extraction.  If unavailable, fetch falls back to
+pure-Python extraction — fully functional but with slightly lower article quality.
+The install script auto-installs Node.js when missing; the runtime checks at
+startup and reports status via `system_health`.
 
 ## Development
 

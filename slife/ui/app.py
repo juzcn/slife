@@ -340,6 +340,10 @@ class SlifeApp(App):
             content = kwargs.get("content", "").strip()
             chat_view.add_user_message(content, prefix="You(Wechat)")
 
+        elif kind == "loop_error":
+            error = kwargs.get("error", "")
+            chat_view.add_system_message(f"✗ {error}", color="#f85149")
+
         elif kind == "task_completed":
             source = kwargs.get("source", "unknown")
             result = kwargs.get("result", "")
