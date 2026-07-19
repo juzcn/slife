@@ -52,7 +52,7 @@ class CredentialCheckTool(Tool):
     async def execute(self, **kwargs) -> str:
         key: str = kwargs["key"]
 
-        from slife.credstore import get_credential
+        from credstore import get_credential
 
         # shell takes priority
         env_val = os.environ.get(key)

@@ -128,7 +128,7 @@ def _init_cryptfile(password: str | None = None):
 
     try:
         kr = CryptFileKeyring()
-        from slife.credstore._config import get_cryptfile_path
+        from credstore._config import get_cryptfile_path
         crypt_path = get_cryptfile_path()
         kr.file_path = crypt_path
         _ensure_dir(Path(crypt_path).parent)
@@ -161,7 +161,7 @@ def get_backend_info() -> dict:
         "cryptfile_ready": is_cryptfile_ready(),
     }
     if _cryptfile is not None:
-        from slife.credstore._config import get_cryptfile_path
+        from credstore._config import get_cryptfile_path
         info["cryptfile_path"] = get_cryptfile_path()
         info["cryptfile_locked"] = getattr(_cryptfile, "_keyring_key", None) is None
     return info

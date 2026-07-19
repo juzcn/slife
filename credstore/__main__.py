@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from slife.credstore._tty import masked_input
+from credstore._tty import masked_input
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,8 +82,8 @@ def main(argv: list[str] | None = None) -> int:
     # get has an optional cryptfile fallback (asks for master key).
     # reset-keyring / reset-backup ask for the master key interactively.
     if args.command in ("set", "reset-backup"):
-        from slife.credstore._backend import has_master_key
-        from slife.credstore._store import init_store
+        from credstore._backend import has_master_key
+        from credstore._store import init_store
         init_store()
         if not has_master_key():
             print("Error: master key not set.", file=sys.stderr)
@@ -130,10 +130,10 @@ def _cmd_set_password() -> int:
       - Change (existing cryptfile): read all data with old password,
         re-encrypt everything with new password.
     """
-    from slife.credstore._backend import (
+    from credstore._backend import (
         get_cryptfile, reinit_cryptfile,
     )
-    from slife.credstore._store import DEFAULT_SERVICE, _read_cryptfile_keys  # noqa: PLC2701
+    from credstore._store import DEFAULT_SERVICE, _read_cryptfile_keys  # noqa: PLC2701
 
     if not sys.stdin.isatty():
         print("Error: 'credstore set-password' requires an interactive terminal.", file=sys.stderr)
@@ -188,7 +188,7 @@ def _cmd_set_password() -> int:
     # Re-init with new password (creates fresh encrypted file)
     reinit_cryptfile(pw1)
 
-    from slife.credstore._backend import has_master_key
+    from credstore._backend import has_master_key
     if not has_master_key():
         print("Error: could not initialize cryptfile backend.", file=sys.stderr)
         return 1
@@ -215,7 +215,7 @@ def _cmd_set_password() -> int:
 
 def _cmd_status() -> int:
     """Show backend diagnostic info."""
-    from slife.credstore._store import check_backend
+    from credstore._store import check_backend
 
     info = check_backend()
     print(f"Backend: {info.get('backend', 'unknown')}")
@@ -250,9 +250,9 @@ def _cmd_set(key: str) -> int:
     Writes to cryptfile FIRST, then system keyring.  If keyring fails,
     rolls back the cryptfile entry so both stores stay consistent.
     """
-    import slife.credstore as credstore
-    from slife.credstore._backend import get_cryptfile
-    from slife.credstore._store import DEFAULT_SERVICE
+    import credstore
+    from credstore._backend import get_cryptfile
+    from credstore._store import DEFAULT_SERVICE
 
     if not sys.stdin.isatty():
         print("Error: 'credstore set' requires an interactive terminal.", file=sys.stderr)
@@ -312,7 +312,7 @@ def _cmd_get(key: str, password_mode: bool = False) -> int:
     --password mode: dual-query keyring + cryptfile, output plaintext, fail on mismatch.
     Default mode:     keyring only, output masked.
     """
-    import slife.credstore as credstore
+    import credstore
 
     if not sys.stdin.isatty():
         print("Error: 'credstore get' requires an interactive terminal.", file=sys.stderr)
@@ -324,12 +324,12 @@ def _cmd_get(key: str, password_mode: bool = False) -> int:
         if value is None:
             print(f"Not found in system keyring: {key}", file=sys.stderr)
             return 1
-        from slife.credstore._store import CredentialStore
+        from credstore._store import CredentialStore
         print(f"{key}: {CredentialStore.mask(value)}")
         return 0
 
     # ── --password mode: dual-query, plaintext, consistency check ──
-    from slife.credstore._store import CredentialStore, DEFAULT_SERVICE
+    from credstore._store import CredentialStore, DEFAULT_SERVICE
 
     master_pw = masked_input("Master password: ")
     if not master_pw.strip():
@@ -387,8 +387,8 @@ def _delete_from_cryptfile(key: str) -> bool:
     Prompts for the master password.  Returns True if the credential
     was found and deleted from the cryptfile.
     """
-    from slife.credstore._backend import get_cryptfile
-    from slife.credstore._store import DEFAULT_SERVICE
+    from credstore._backend import get_cryptfile
+    from credstore._store import DEFAULT_SERVICE
 
     cf = get_cryptfile()
     if cf is None:
@@ -425,8 +425,8 @@ def _read_cryptfile(key: str, master_password: str) -> str | None:
     Returns the secret value, or None if not found.
     Raises ValueError if the master password is wrong.
     """
-    from slife.credstore._backend import get_cryptfile
-    from slife.credstore._store import DEFAULT_SERVICE
+    from credstore._backend import get_cryptfile
+    from credstore._store import DEFAULT_SERVICE
 
     cf = get_cryptfile()
     if cf is None:
@@ -441,7 +441,7 @@ def _read_cryptfile(key: str, master_password: str) -> str | None:
 
 def _cmd_delete(key: str) -> int:
     """Delete a credential from system keyring + cryptfile."""
-    import slife.credstore as credstore
+    import credstore
 
     if not sys.stdin.isatty():
         print("Error: 'credstore delete' requires an interactive terminal.", file=sys.stderr)
@@ -460,8 +460,8 @@ def _cmd_delete(key: str) -> int:
 
 def _cmd_list() -> int:
     """List all stored credential keys from the cryptfile."""
-    from slife.credstore._backend import get_cryptfile
-    from slife.credstore._store import DEFAULT_SERVICE, _read_cryptfile_keys  # noqa: PLC2701
+    from credstore._backend import get_cryptfile
+    from credstore._store import DEFAULT_SERVICE, _read_cryptfile_keys  # noqa: PLC2701
 
     if not sys.stdin.isatty():
         print("Error: 'credstore list' requires an interactive terminal.", file=sys.stderr)
@@ -512,7 +512,7 @@ def _cmd_reset_keyring() -> int:
 
     master_pw = masked_input("Master password: ")
 
-    from slife.credstore._store import reset_credentials
+    from credstore._store import reset_credentials
 
     try:
         count = reset_credentials(master_pw)
@@ -532,8 +532,8 @@ def _cmd_reset_backup() -> int:
     of existing credentials that were stored before cryptfile dual-write
     was enabled.
     """
-    from slife.credstore._backend import get_cryptfile
-    from slife.credstore._store import DEFAULT_SERVICE
+    from credstore._backend import get_cryptfile
+    from credstore._store import DEFAULT_SERVICE
 
     if not sys.stdin.isatty():
         print("Error: 'credstore reset-backup' requires an interactive terminal.", file=sys.stderr)

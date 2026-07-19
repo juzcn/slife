@@ -32,7 +32,7 @@ class CredentialStore:
         credential is stored — it avoids pulling the full secret
         into process memory.
         """
-        from slife.credstore._backend import get_system_keyring
+        from credstore._backend import get_system_keyring
 
         sk = get_system_keyring()
         if sk is not None:
@@ -54,7 +54,7 @@ class CredentialStore:
         Requires master key to have been set (cryptfile exists).
         Cryptfile backup is handled by the CLI layer.
         """
-        from slife.credstore._backend import get_system_keyring, has_master_key
+        from credstore._backend import get_system_keyring, has_master_key
 
         if not has_master_key():
             raise RuntimeError(
@@ -74,7 +74,7 @@ class CredentialStore:
         """Delete from system keyring only.
 
         Cryptfile cleanup is handled by the CLI layer (needs master key)."""
-        from slife.credstore._backend import get_system_keyring
+        from credstore._backend import get_system_keyring
 
         existed = False
 
@@ -99,7 +99,7 @@ class CredentialStore:
         *master_password*, then writes each one to the system keyring.
         Returns the count of restored credentials.
         """
-        from slife.credstore._backend import get_system_keyring, get_cryptfile
+        from credstore._backend import get_system_keyring, get_cryptfile
 
         sk = get_system_keyring()
         if sk is None:
@@ -168,7 +168,7 @@ def _read_cryptfile_keys(cf) -> list[str]:
 
 def init_store(password: str | None = None) -> CredentialStore:
     global _store
-    from slife.credstore._backend import init_backend
+    from credstore._backend import init_backend
     init_backend(password=password)
     if _store is None:
         _store = CredentialStore()
@@ -210,10 +210,10 @@ def reset_credentials(master_password: str) -> int:
 
 
 def get_backend_name() -> str:
-    from slife.credstore._backend import get_active_backend_name
+    from credstore._backend import get_active_backend_name
     return get_active_backend_name()
 
 
 def check_backend() -> dict:
-    from slife.credstore._backend import get_backend_info
+    from credstore._backend import get_backend_info
     return get_backend_info()

@@ -80,7 +80,7 @@ def resolve_uri(value: str) -> str:
 
     service, key = parsed
     full_key = f"{service}/{key}"
-    from slife.credstore._store import get_credential
+    from credstore._store import get_credential
 
     result = get_credential(full_key)
     if result is None:

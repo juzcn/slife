@@ -124,7 +124,7 @@ class ConfigSecretRegisterTool(_ConfigPathMixin, Tool):
     async def execute(self, **kwargs) -> str:
         key: str = kwargs["key"]
 
-        from slife.credstore import exists_credential
+        from credstore import exists_credential
 
         already_stored = exists_credential(key)
 
