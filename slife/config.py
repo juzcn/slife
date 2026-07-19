@@ -513,10 +513,14 @@ class Config:
                 shutil.copy(pkg_template, path)
                 logger.info("config_seeded from=%s to=%s", pkg_template, path)
                 print(f"\n  First run — created: {path}")
-                print(f"  Set your API key and you're ready:")
-                print(f"    credstore set DEEPSEEK_API_KEY")
-                print(f"    slife\n")
-                raise SystemExit(0)
+                # If the API key is already in credstore / env, start right up.
+                if os.environ.get("DEEPSEEK_API_KEY") or _try_credstore_lookup("DEEPSEEK_API_KEY"):
+                    print(f"  API key found — starting up.\n")
+                else:
+                    print(f"  Set your API key and you're ready:")
+                    print(f"    credstore set DEEPSEEK_API_KEY")
+                    print(f"    slife\n")
+                    raise SystemExit(0)
             raise FileNotFoundError(
                 f"Config file not found: {path}\n"
                 f"Run: cp slife.template.json5 ~/.slife/slife.json5"

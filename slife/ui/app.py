@@ -73,20 +73,20 @@ def _restore_prefix(channel: str | None, agent_id: str) -> str:
     """Consistent prefix mapping for restored turns.
 
     Matches the real-time display prefixes used during live operation:
-      - human  → "<agent_id>> "
+      - human  → "You> "
       - wechat → "<agent_id>(Wechat)"
       - other   → "<agent_id>(a2a)" (external agent id, A2A peer, etc.)
     """
     # Normalise None → "" (JSON null values, missing keys)
     ch = channel or ""
     if ch == "human":
-        return f"{agent_id}> "
+        return "You> "
     if ch == "wechat":
         return f"{agent_id}(Wechat)"
     if ch:
         return f"{agent_id}(a2a)"
     # Backward compat: old turns saved before channel was introduced
-    return f"{agent_id}> "
+    return "You> "
 
 
 class SlifeApp(App):
@@ -115,7 +115,7 @@ class SlifeApp(App):
         agent_name = a2a.agent_name if a2a else ""
         self._agent_id: str = config.agent_id
         self._assistant_prefix: str = (
-            f"{agent_name}> " if agent_name else "> "
+            f"{agent_name}> " if agent_name else f"{self._agent_id}> "
         )
 
         # TUI state for tracking active widgets during streaming
@@ -294,7 +294,7 @@ class SlifeApp(App):
         event.input.clear()
 
         chat_view = self.query_one("#chat-view", ChatView)
-        chat_view.add_user_message(raw, prefix=f"{self._agent_id}> ")
+        chat_view.add_user_message(raw, prefix="You> ")
 
         # _process_message just enqueues and returns immediately
         # (handler is attached to the message, inbox streams later).
