@@ -56,7 +56,7 @@ _TOOL_META: dict[str, _ToolMeta] = {
     "grep":          _ToolMeta("Searching code", "Searched code", "pattern"),
     "glob":          _ToolMeta("Finding files",  "Found files",   "pattern"),
     "web_fetch":         _ToolMeta("Fetching URL",            "Fetched URL",            "url"),
-    "run_python_script": _ToolMeta("Building python command", "Built python command",  "script"),
+    "run_python_script": _ToolMeta("Running python script", "Python script complete", "script"),
     "get_os_info":       _ToolMeta("Checking OS",             "Checked OS",             ""),
 }
 

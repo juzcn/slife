@@ -59,14 +59,13 @@ def _resolve_skill_script(script_path: str) -> str:
     return script_path
 
 
-def run_python_script(input_str: str) -> str:
+def build_python_command(input_str: str) -> str:
     """Build a platform-correct command to run a Python script with JSON args.
 
     input_str format: "<script_path> <json_args>"
     Example: "skills/search.py {\"query\":\"hello\"}"
 
-    Returns a complete command with OS-appropriate quoting and Windows-
-    specific UTF-8 workarounds (chcp 65001 + -X utf8).
+    Returns a complete command with OS-appropriate quoting and UTF-8 handling.
     """
     # Split on first { or [ to separate script path from JSON args
     brace = input_str.find("{")

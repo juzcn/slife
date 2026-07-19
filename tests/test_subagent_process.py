@@ -118,7 +118,8 @@ class TestSubagentManagerInit:
     def test_default_config_path(self, sample_config):
         sample_config._path = None
         manager = SubagentManager(sample_config)
-        assert manager._config_path == "slife.json5"
+        from slife.paths import get_config_path
+        assert manager._config_path == str(get_config_path())
 
     def test_custom_max_subagents(self, sample_config):
         sample_config.subagent_config = {"max_subagents": 3, "task_timeout": 60}

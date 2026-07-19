@@ -63,30 +63,29 @@ class TestCreateToolsFromConfig:
         ])
         # Overridden tool gets custom dir
         assert str(registry.get("list_skills").skills_dir) == "custom_skills"
-        # Other skill tools still use default
-        assert str(registry.get("use_skill").skills_dir) == "skills"
+        # Other skill tools use the resolved default (absolute path)
+        from slife.paths import get_skills_dir
+        assert str(registry.get("use_skill").skills_dir) == str(get_skills_dir())
 
 
 class TestRunPythonScriptTool:
     """Tests for RunPythonScriptTool.execute()."""
 
     @pytest.mark.asyncio
-    async def test_execute_returns_command(self):
-        """execute() returns platform command for a script."""
+    async def test_execute_runs_script(self):
+        """execute() runs a Python one-liner and returns output."""
         from slife.tools.run_python_script import RunPythonScriptTool
         tool = RunPythonScriptTool()
-        result = await tool.execute(script="script.py {}")
-        assert "python" in result
-        assert "script.py" in result
+        result = await tool.execute(script="-c print('hello')")
+        assert "hello" in result
 
     @pytest.mark.asyncio
-    async def test_execute_with_json_args(self):
-        """execute() handles JSON args."""
+    async def test_execute_missing_script_returns_error(self):
+        """execute() returns error info for a failing command."""
         from slife.tools.run_python_script import RunPythonScriptTool
         tool = RunPythonScriptTool()
-        result = await tool.execute(script='script.py {"key": "value"}')
-        assert "script.py" in result
-        assert "key" in result
+        result = await tool.execute(script="-c raise SystemExit(1)")
+        assert "Error" in result
 
 
 class TestCreateToolsOverrideEdgeCases:

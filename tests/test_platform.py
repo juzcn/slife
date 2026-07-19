@@ -5,14 +5,14 @@ import pytest
 from unittest.mock import patch
 
 from slife.platform import (
-    run_python_script,
+    build_python_command,
     resolve_command,
     IS_WINDOWS,
     get_os_info,
 )
 
 
-# ── run_python_script ──────────────────────────────────────────────────
+# ── build_python_command ───────────────────────────────────────────────
 
 
 class TestRunPythonScript:
@@ -20,30 +20,30 @@ class TestRunPythonScript:
 
     def test_no_json_args(self):
         """Script without JSON args (no braces/brackets)."""
-        result = run_python_script("script.py")
+        result = build_python_command("script.py")
         assert "script.py" in result
         assert "python" in result
         assert "{" not in result
 
     def test_with_json_braces(self):
         """Script with JSON args in braces."""
-        result = run_python_script('script.py {"key": "value"}')
+        result = build_python_command('script.py {"key": "value"}')
         assert "script.py" in result
         assert "key" in result
         assert "value" in result
 
     def test_with_json_brackets(self):
         """Script with JSON args in brackets."""
-        result = run_python_script("script.py [1, 2, 3]")
+        result = build_python_command("script.py [1, 2, 3]")
         assert "script.py" in result
 
     def test_empty_string(self):
-        result = run_python_script("")
+        result = build_python_command("")
         assert "python" in result
 
     def test_cmd_normalization(self):
         """Direct command (not script path) works."""
-        result = run_python_script("echo hello")
+        result = build_python_command("echo hello")
         assert "echo hello" in result
 
 
@@ -93,13 +93,12 @@ class TestRunPythonScriptTool:
     """Tests for the standalone RunPythonScriptTool."""
 
     @pytest.mark.asyncio
-    async def test_execute_returns_command(self):
-        """Tool returns a command containing python and the script name."""
+    async def test_execute_runs_script(self):
+        """Tool executes a simple Python one-liner and returns output."""
         from slife.tools.run_python_script import RunPythonScriptTool
         tool = RunPythonScriptTool()
-        result = await tool.execute(script="myscript.py {}")
-        assert "python" in result
-        assert "myscript.py" in result
+        result = await tool.execute(script="-c print('hello')")
+        assert "hello" in result
 
 
 # ── resolve_command ─────────────────────────────────────────────────────
@@ -162,23 +161,23 @@ class TestRunPythonScriptEdgeCases:
 
     def test_script_with_braces_first_not_bracket(self):
         """Split happens at the first { even if [ appears later."""
-        cmd = run_python_script('myscript.py {"k":[1,2]}')
+        cmd = build_python_command('myscript.py {"k":[1,2]}')
         assert "myscript.py" in cmd
         assert "{" in cmd
 
-    def test_windows_uses_chcp_and_utf8(self):
+    def test_windows_uses_utf8_flag(self):
         if IS_WINDOWS:
-            cmd = run_python_script('script.py {"a":1}')
-            assert "chcp 65001" in cmd
+            cmd = build_python_command('script.py {"a":1}')
             assert "-X utf8" in cmd
+            assert '\\"a\\":1' in cmd
 
     def test_non_windows_uses_single_quotes(self):
         if not IS_WINDOWS:
-            cmd = run_python_script('script.py {"a":1}')
+            cmd = build_python_command('script.py {"a":1}')
             assert "'" in cmd
 
     def test_whitespace_in_script_path(self):
-        cmd = run_python_script("  my script.py  ")
+        cmd = build_python_command("  my script.py  ")
         assert "my script.py" in cmd
 
 
@@ -311,10 +310,10 @@ class TestRunPythonScript:
 
     def test_unix_quoting(self):
         """Non-Windows uses single-quote wrapping for JSON args."""
-        from slife.platform import run_python_script
+        from slife.platform import build_python_command
         with patch("slife.platform.IS_WINDOWS", False):
             # input_str format: "<script_path> <json_args>"
-            result = run_python_script('/tmp/script.py {"key": "val"}')
+            result = build_python_command('/tmp/script.py {"key": "val"}')
             assert "'" in result
             assert "python3" in result
 
