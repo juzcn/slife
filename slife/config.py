@@ -521,7 +521,8 @@ class Config:
                     print(f"    credstore set DEEPSEEK_API_KEY")
                     print(f"    slife\n")
                     raise SystemExit(0)
-            raise FileNotFoundError(
+            else:
+                raise FileNotFoundError(
                 f"Config file not found: {path}\n"
                 f"Run: cp slife.template.json5 ~/.slife/slife.json5"
             )
