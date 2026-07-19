@@ -521,18 +521,20 @@ class Config:
         path = Path(path)
         logger.debug("config_load path=%s", path)
         if not path.exists():
-            # First run: copy the bundled example config to CWD.
+            # First run: copy the bundled template config to CWD.
             import shutil
-            pkg_example = Path(__file__).parent / "slife.json5.example"
-            if pkg_example.exists():
-                shutil.copy(pkg_example, path)
-                logger.info("config_seeded from=%s to=%s", pkg_example, path)
-                print(f"\n  First run — seeded default config to: {path}")
-                print(f"  Edit it to configure your API provider, then run slife again.\n")
+            pkg_template = Path(__file__).parent / "slife.template.json5"
+            if pkg_template.exists():
+                shutil.copy(pkg_template, path)
+                logger.info("config_seeded from=%s to=%s", pkg_template, path)
+                print(f"\n  First run — created: {path}")
+                print(f"  Set your API key and you're ready:")
+                print(f"    credstore set DEEPSEEK_API_KEY")
+                print(f"    slife\n")
                 raise SystemExit(0)
             raise FileNotFoundError(
                 f"Config file not found: {path}\n"
-                f"Run: cp slife.json5.example slife.json5"
+                f"Run: cp slife.template.json5 slife.json5"
             )
 
         raw = json5.loads(path.read_text(encoding="utf-8"))
