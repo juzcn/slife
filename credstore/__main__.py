@@ -566,10 +566,15 @@ def _cmd_list() -> int:
         print(f"  {len(all_keys)} credential(s) — {', '.join(parts)}")
 
     # Hint if mismatch
-    if ring_only > 0 and cryptfile_exists:
-        print()
-        print(f"  Tip: run 'credstore reset-backup' to sync {ring_only} missing")
-        print(f"  credential(s) from system keyring into the cryptfile.")
+    if ring_only > 0:
+        if cryptfile_exists:
+            print()
+            print(f"  Tip: run 'credstore reset-backup' to sync {ring_only} missing")
+            print(f"  credential(s) from system keyring into the cryptfile.")
+        else:
+            print()
+            print(f"  Tip: run 'credstore set-password' to enable encrypted backup,")
+            print(f"  then 'credstore reset-backup' to sync {ring_only} credential(s).")
     elif crypt_only > 0:
         print()
         print(f"  Tip: run 'credstore reset-keyring' to restore {crypt_only}")
