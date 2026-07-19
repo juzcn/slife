@@ -44,13 +44,28 @@ def load_config() -> dict:
     return {}
 
 
+def _is_slife_dev() -> bool:
+    """Check whether we're running from the slife source tree.
+
+    Reads ``pyproject.toml`` in CWD and checks that ``[project] name``
+    equals ``"slife"``.
+    """
+    try:
+        import tomllib
+        data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+        return data.get("project", {}).get("name") == "slife"
+    except Exception:
+        return False
+
+
 def get_cryptfile_path() -> str:
     """Resolve the cryptfile path.
 
     Priority:
       1. ``CREDSTORE_FILE`` env var
       2. ``cryptfile_path`` in credstore.json5 config
-      3. ``~/.slife/credentials.crypt`` (default)
+      3. ``~/.credstore/credentials.crypt`` (production) or
+         ``./credentials.crypt`` (dev — when CWD contains slife's pyproject.toml)
     """
     # 1. Env var
     env_path = os.environ.get("CREDSTORE_FILE")
@@ -63,5 +78,7 @@ def get_cryptfile_path() -> str:
     if cfg_path:
         return str(Path(cfg_path).expanduser())
 
-    # 3. Default — follow slife's data directory convention
-    return str(Path.home() / ".slife" / "credentials.crypt")
+    # 3. Default
+    if _is_slife_dev():
+        return str(Path("credentials.crypt"))
+    return str(Path.home() / ".credstore" / "credentials.crypt")

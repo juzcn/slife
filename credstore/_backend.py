@@ -35,15 +35,8 @@ def get_system_keyring():
 
 
 def get_cryptfile():
-    """Get the cryptfile backend, or None if not configured.
-
-    Lazily initialises the cryptfile on first call so that
-    standalone ``credstore`` commands (e.g. ``list``) work
-    without a prior ``init_backend()`` call.
-    """
+    """Get the cryptfile backend, or None if not configured."""
     global _cryptfile
-    if _cryptfile is None:
-        _init_cryptfile()
     return _cryptfile
 
 

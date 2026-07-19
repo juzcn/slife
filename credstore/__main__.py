@@ -133,6 +133,7 @@ def _cmd_set_password() -> int:
     from credstore._backend import (
         get_cryptfile, reinit_cryptfile,
     )
+    from credstore._config import get_cryptfile_path
     from credstore._store import DEFAULT_SERVICE, _read_cryptfile_keys  # noqa: PLC2701
 
     if not sys.stdin.isatty():
@@ -145,15 +146,19 @@ def _cmd_set_password() -> int:
     # ── Detect: first time or change? ──
     is_change = False
     old_data: dict[str, str] = {}  # key → secret
+    crypt_path = get_cryptfile_path()
 
-    cf = get_cryptfile()
-    if cf is not None and hasattr(cf, "file_path"):
-        crypt_path = getattr(cf, "file_path", None)
-        if crypt_path and __import__("os").path.exists(crypt_path):
-            is_change = True
+    if __import__("os").path.exists(crypt_path):
+        is_change = True
 
     if is_change:
         # ── Password CHANGE: read all old data first ──
+        from credstore._backend import init_backend
+        init_backend()
+        cf = get_cryptfile()
+        if cf is None:
+            print("Error: cryptfile backend not available.", file=sys.stderr)
+            return 1
         print("Changing existing master password.")
         old_pw = masked_input("Current master password: ")
 
@@ -460,13 +465,14 @@ def _cmd_delete(key: str) -> int:
 
 def _cmd_list() -> int:
     """List all stored credential keys from the cryptfile."""
-    from credstore._backend import get_cryptfile
+    from credstore._backend import get_cryptfile, init_backend
     from credstore._store import DEFAULT_SERVICE, _read_cryptfile_keys  # noqa: PLC2701
 
     if not sys.stdin.isatty():
         print("Error: 'credstore list' requires an interactive terminal.", file=sys.stderr)
         return 1
 
+    init_backend()
     cf = get_cryptfile()
     if cf is None:
         print("Error: cryptfile backend not available.", file=sys.stderr)

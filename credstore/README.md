@@ -12,7 +12,7 @@ A standalone secret manager that ships with [Slife](https://github.com/juzcn/sli
 credstore set-password
 ```
 
-Creates `~/.slife/credentials.crypt` and sets a master password. Path configurable via `CREDSTORE_FILE` env var.
+Creates `~/.credstore/credentials.crypt` and sets a master password (dev: `./credentials.crypt`). Path configurable via `CREDSTORE_FILE` env var.
 
 ### Command Reference
 

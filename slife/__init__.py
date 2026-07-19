@@ -53,9 +53,6 @@ def main(config_path: str = "slife.json5"):
     data_dir = str(_cp.parent.resolve())
     os.environ["SLIFE_DATA_DIR"] = data_dir
     os.environ["SLIFE_CONFIG_DIR"] = data_dir
-    # Credstore follows the same data directory unless explicitly set
-    if not os.environ.get("CREDSTORE_FILE"):
-        os.environ["CREDSTORE_FILE"] = str(Path(data_dir) / "credentials.crypt")
 
     # Generate session ID — shared with MCP subprocess via env var
     sid = init_session_id()

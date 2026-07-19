@@ -405,6 +405,10 @@ def mock_backend(monkeypatch, in_mem_store, in_mem_cryptfile):
         "cryptfile_ready": True, "cryptfile_path": "/mock/credentials.crypt",
     })
 
+    # Mock get_cryptfile_path so tests don't depend on CWD state
+    import credstore._config as cfg
+    monkeypatch.setattr(cfg, "get_cryptfile_path", lambda: "/mock/credentials.crypt")
+
     # System keyring mock
     sk = _MockSystemKeyring(in_mem_store)
     monkeypatch.setattr(backend, "get_system_keyring", lambda: sk)
