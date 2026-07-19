@@ -283,6 +283,9 @@ class TestCliSetPassword:
         # Two calls: new password + confirm
         inputs = iter(["new-password-123", "new-password-123"])
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": next(inputs))
+        # Simulate first-time: cryptfile does not exist yet
+        import os as _os
+        monkeypatch.setattr(_os.path, "exists", lambda p: False)
         assert main(["set-password"]) == 0
         out = capsys.readouterr().out
         assert "Master password set" in out
@@ -408,6 +411,12 @@ def mock_backend(monkeypatch, in_mem_store, in_mem_cryptfile):
     # Mock get_cryptfile_path so tests don't depend on CWD state
     import credstore._config as cfg
     monkeypatch.setattr(cfg, "get_cryptfile_path", lambda: "/mock/credentials.crypt")
+
+    # Mock os.path.exists — default to True (cryptfile exists).
+    # Individual tests override when they need first-time behaviour.
+    import os as _os
+    _real_exists = _os.path.exists
+    monkeypatch.setattr(_os.path, "exists", lambda p: True)
 
     # System keyring mock
     sk = _MockSystemKeyring(in_mem_store)
