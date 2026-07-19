@@ -465,7 +465,7 @@ def _cmd_delete(key: str) -> int:
 
 def _cmd_list() -> int:
     """List all stored credential keys from the cryptfile."""
-    from credstore._backend import get_cryptfile, init_backend
+    from credstore._backend import get_cryptfile, init_backend, has_master_key
     from credstore._store import DEFAULT_SERVICE, _read_cryptfile_keys  # noqa: PLC2701
 
     if not sys.stdin.isatty():
@@ -477,6 +477,10 @@ def _cmd_list() -> int:
     if cf is None:
         print("Error: cryptfile backend not available.", file=sys.stderr)
         print("Install: pip install keyrings.cryptfile", file=sys.stderr)
+        return 1
+
+    if not has_master_key():
+        print("No cryptfile found. Run 'credstore set-password' first.", file=sys.stderr)
         return 1
 
     master_pw = masked_input("Master password: ")
