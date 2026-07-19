@@ -48,11 +48,16 @@ def create_tools_from_config(
             logger.info("tool_disabled name=%s", tool_cls.name)
             continue
 
-        # Skip tools that require the MQTT/A2A mesh when it's not enabled
+        # Skip tools that require the MQTT/A2A mesh when MQTT is not
+        # configured at all (no ``mqtt`` section in slife.json5).
+        # We do NOT gate on a2a_config.enabled — that flag is set at
+        # runtime after the Mosquitto probe, which happens *after* tool
+        # registration.  Each tool handles "A2A client not connected"
+        # gracefully with a user-friendly error message.
         if getattr(tool_cls, "requires_a2a", False):
             a2a_cfg = getattr(config, "a2a_config", None) if config else None
-            if a2a_cfg is None or not a2a_cfg.enabled:
-                logger.debug("tool_skipped_no_a2a name=%s", tool_cls.name)
+            if a2a_cfg is None:
+                logger.debug("tool_skipped_no_a2a_config name=%s", tool_cls.name)
                 continue
 
         tool = tool_cls.from_config(cfg, config)

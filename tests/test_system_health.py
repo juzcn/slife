@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from slife.tools.system_health import (
-    _check_runtime_imports,
     _check_embedding_config,
     _check_wechat_status,
     _group_by_component,
@@ -156,32 +155,6 @@ class TestBuildSummary:
         assert "1 ok" in summary
         assert "1 warning(s): b" in summary
         assert "1 error(s): c" in summary
-
-
-# ── _check_runtime_imports ────────────────────────────────────────────
-
-
-class TestCheckRuntimeImports:
-    """Tests for _check_runtime_imports()."""
-
-    def test_returns_list_of_entries(self):
-        result = _check_runtime_imports()
-        assert isinstance(result, list)
-        assert len(result) > 0
-        for entry in result:
-            assert "component" in entry
-            assert entry["component"] == "runtime"
-            assert "level" in entry
-            assert entry["level"] in ("ok", "warning")
-            assert "key" in entry
-            assert "value" in entry
-            assert "hint" in entry
-
-    def test_ok_when_packages_available(self):
-        """Standard Python packages like 'os' or 'json' are always importable."""
-        result = _check_runtime_imports()
-        ok_entries = [e for e in result if e["level"] == "ok"]
-        assert len(ok_entries) > 0
 
 
 # ── _check_embedding_config ───────────────────────────────────────────
@@ -500,15 +473,10 @@ class TestSystemHealthToolExecute:
                 return_value=[],
             ):
                 with patch(
-                    "slife.tools.system_health._check_runtime_imports",
+                    "slife.tools.system_health._check_embedding_config",
                     return_value=[],
                 ):
-                    with patch(
-                        "slife.tools.system_health._check_embedding_config",
-                        return_value=[],
-                    ):
-                        result = await tool.execute()
-                        parsed = json.loads(result)
-                        assert parsed["healthy"] is True
-                        # Summary may include runtime import checks (which are ok)
-                        assert "ok" in parsed["summary"].lower()
+                    result = await tool.execute()
+                    parsed = json.loads(result)
+                    assert parsed["healthy"] is True
+                    assert "ok" in parsed["summary"].lower()

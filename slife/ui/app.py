@@ -75,16 +75,16 @@ def _restore_prefix(channel: str | None, agent_id: str) -> str:
     Matches the real-time display prefixes used during live operation:
       - human  → "You> "
       - wechat → "<agent_id>(Wechat)"
-      - other   → "<agent_id>(a2a)" (external agent id, A2A peer, etc.)
+      - other   → "<remote_agent_id>(a2a)" (external agent id, A2A peer, etc.)
     """
     # Normalise None → "" (JSON null values, missing keys)
     ch = channel or ""
     if ch == "human":
         return "You> "
     if ch == "wechat":
-        return f"{agent_id}(Wechat)"
+        return "You(Wechat)"
     if ch:
-        return f"{agent_id}(a2a)"
+        return f"{ch}(a2a)"
     # Backward compat: old turns saved before channel was introduced
     return "You> "
 
@@ -331,14 +331,14 @@ class SlifeApp(App):
         elif kind == "task_received":
             source = kwargs.get("source", "unknown")
             content = kwargs.get("content", "").strip()
-            # Show as a normal user message with agent-id(a2a) as prefix
-            chat_view.add_user_message(content, prefix=f"{self._agent_id}(a2a)")
+            # Show source agent ID as prefix so user knows who sent the task
+            chat_view.add_user_message(content, prefix=f"{source}(a2a)")
 
         elif kind == "peer_message":
             # Peer terminal (WeChat etc.) — show with channel prefix
             source = kwargs.get("source", "wechat")
             content = kwargs.get("content", "").strip()
-            chat_view.add_user_message(content, prefix=f"{self._agent_id}(Wechat)")
+            chat_view.add_user_message(content, prefix="You(Wechat)")
 
         elif kind == "task_completed":
             source = kwargs.get("source", "unknown")
@@ -418,7 +418,7 @@ class SlifeApp(App):
             last_assistant_idx = assistant_indices[-1] if assistant_indices else -1
 
             # Build a channel→prefix lookup so every user message gets the
-            # correct prefix per turn (human → "<agent_id>> ", wechat → "<agent_id>(Wechat)",
+            # correct prefix per turn (human → "You> ", wechat → "You(Wechat)",
             # remote agent / a2a → "<agent_id>(a2a)").
             _channel_by_row: dict[int, str] = {}
             for i, turn in enumerate(turns):

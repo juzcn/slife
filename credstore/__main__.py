@@ -420,14 +420,17 @@ def _cmd_list() -> int:
     """List credentials from both system keyring and cryptfile backup."""
     # ── 1. System keyring (no password needed) ──────────────────
     keyring_entries = _enumerate_system_keyring(store_mod.DEFAULT_SERVICE)
-    keyring_keys: dict[str, str] = {}
+    keyring_values: dict[str, str] = {}
     for k, v in keyring_entries:
-        keyring_keys[k] = store_mod.CredentialStore.mask(v) if v else "(empty)"
+        keyring_values[k] = v or ""
 
-    # ── 2. Cryptfile (requires master password if it exists) ────
-    cryptfile_keys: set[str] = set()
+    # ── 2. Cryptfile (requires master password to decrypt) ────
+    cryptfile_values: dict[str, str] = {}
     cryptfile_path = config_mod.get_cryptfile_path()
     cryptfile_exists = os.path.exists(cryptfile_path)
+
+    # Ensure backends are initialised before checking has_master_key()
+    backend_mod.init_backend()
 
     if cryptfile_exists and backend_mod.has_master_key():
         master_pw = masked_input("Master password: ")
@@ -440,33 +443,39 @@ def _cmd_list() -> int:
             cf = backend_mod.get_cryptfile()
             if cf is not None:
                 with backend_mod.unlocked_cryptfile(master_pw) as cf:
-                    cryptfile_keys = set(store_mod._read_cryptfile_keys(cf))
+                    for key in store_mod._read_cryptfile_keys(cf):
+                        try:
+                            val = cf.get_password(store_mod.DEFAULT_SERVICE, key)
+                            if val:
+                                cryptfile_values[key] = val
+                        except Exception:
+                            pass
         except Exception as exc:
             _err(f"cannot read cryptfile — {exc}")
             return 1
 
     # ── 3. Merge & display ─────────────────────────────────────
-    all_keys = sorted(set(keyring_keys.keys()) | cryptfile_keys)
+    all_keys = sorted(set(keyring_values.keys()) | set(cryptfile_values.keys()))
 
     if not all_keys:
-        _print_empty_list(keyring_keys, cryptfile_exists, cryptfile_keys)
+        _print_empty_list(keyring_values, cryptfile_exists, set(cryptfile_values.keys()))
         return 0
 
-    _print_credential_table(all_keys, keyring_keys, cryptfile_keys, cryptfile_exists)
+    _print_credential_table(all_keys, keyring_values, cryptfile_values, cryptfile_exists)
     return 0
 
 
 def _print_empty_list(
-    keyring_keys: dict[str, str],
+    keyring_values: dict[str, str],
     cryptfile_exists: bool,
     cryptfile_keys: set[str],
 ) -> None:
     """Print the empty-credential message with appropriate guidance."""
     print("No credentials stored.")
     print()
-    if not keyring_keys and not cryptfile_exists:
+    if not keyring_values and not cryptfile_exists:
         print("Run 'credstore set <KEY>' to store a credential.")
-    elif not keyring_keys and not cryptfile_keys:
+    elif not keyring_values and not cryptfile_keys:
         print("Cryptfile exists but is empty.  Credentials in the")
         print("system keyring cannot be enumerated on this platform.")
         print("Run 'credstore set <KEY>' to populate both stores.")
@@ -474,49 +483,55 @@ def _print_empty_list(
 
 def _print_credential_table(
     all_keys: list[str],
-    keyring_keys: dict[str, str],
-    cryptfile_keys: set[str],
+    keyring_values: dict[str, str],
+    cryptfile_values: dict[str, str],
     cryptfile_exists: bool,
 ) -> None:
     """Print a formatted table of credentials with sync status and tips."""
     key_width = max(len(k) for k in all_keys) + 2
 
     print()
-    print(f"  {'KEY':<{key_width}} SYSTEM KEYRING   CRYPTFILE")
-    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ─────────")
+    print(f"  {'KEY':<{key_width}} SYSTEM KEYRING   CRYPTFILE        STATUS")
+    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ──────────────   ──────")
 
     ring_only = 0
     crypt_only = 0
-    both = 0
+    synced = 0
+    mismatched = 0
 
     for key in all_keys:
-        in_ring = key in keyring_keys
-        in_crypt = key in cryptfile_keys
+        in_ring = key in keyring_values
+        in_crypt = key in cryptfile_values
 
         if in_ring and in_crypt:
-            both += 1
-            ring_mark, crypt_mark = "✔", "✔"
+            ring_val = keyring_values[key]
+            crypt_val = cryptfile_values[key]
+            if ring_val == crypt_val:
+                synced += 1
+                ring_mark, crypt_mark, status = "✔", "✔", "synced"
+            else:
+                mismatched += 1
+                ring_mark, crypt_mark, status = "✔", "✔", "MISMATCH ⚠"
         elif in_ring:
             ring_only += 1
-            ring_mark, crypt_mark = "✔", "—"
+            ring_mark, crypt_mark, status = "✔", "—", "keyring only"
         else:
             crypt_only += 1
-            ring_mark, crypt_mark = "—", "✔"
+            ring_mark, crypt_mark, status = "—", "✔", "cryptfile only"
 
-        print(f"  {key:<{key_width}} {ring_mark:<13}   {crypt_mark}")
+        print(f"  {key:<{key_width}} {ring_mark:<13}   {crypt_mark:<14}   {status}")
 
-    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ─────────")
-    if ring_only == 0 and crypt_only == 0:
-        print(f"  {len(all_keys)} credential(s) — all synced")
-    else:
-        parts = []
-        if ring_only:
-            parts.append(f"system only: {ring_only}")
-        if crypt_only:
-            parts.append(f"cryptfile only: {crypt_only}")
-        if both:
-            parts.append(f"both: {both}")
-        print(f"  {len(all_keys)} credential(s) — {', '.join(parts)}")
+    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ──────────────   ──────")
+    parts = []
+    if synced:
+        parts.append(f"synced: {synced}")
+    if ring_only:
+        parts.append(f"system only: {ring_only}")
+    if crypt_only:
+        parts.append(f"cryptfile only: {crypt_only}")
+    if mismatched:
+        parts.append(f"mismatched: {mismatched}")
+    print(f"  {len(all_keys)} credential(s) — {', '.join(parts)}")
 
     _print_list_tips(ring_only, crypt_only, cryptfile_exists)
     print()
@@ -644,6 +659,7 @@ def _enumerate_windows(service: str) -> list[tuple[str, str]]:
         return []
 
     entries: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for cred in all_creds:
         target = cred.get("TargetName", "")
         cred_type = cred.get("Type", 0)
@@ -659,6 +675,12 @@ def _enumerate_windows(service: str) -> list[tuple[str, str]]:
         username = cred.get("UserName", "")
         if not username:
             continue
+
+        # Dedup: Windows Credential Manager may hold duplicate entries
+        # from different keyring backends (WinVault + fallback chain).
+        if username in seen:
+            continue
+        seen.add(username)
 
         # Decode the credential blob (UTF-16 as written by keyring)
         blob = cred.get("CredentialBlob", b"")

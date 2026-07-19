@@ -81,18 +81,15 @@ credstore list                             # list all stored credentials
 
 ### Optional Extras
 
-Slife keeps the default install lean.  Add extras when you need them:
-
 | Extra | Package | What it enables |
 |-------|---------|-----------------|
 | `embeddings` | `llama-cpp-python` | Local GGUF embeddings for semantic memory search (offline, no API cost). Without it, FTS5 keyword search still works. |
-| `mqtt` | `paho-mqtt` | A2A agent mesh via MQTT (`--agent <id>`). Without it, subagent spawning still works — only remote-agent discovery needs MQTT. |
+
+MQTT support (`paho-mqtt`) is now included by default — A2A agent mesh auto-activates when Mosquitto is detected.
 
 ```bash
-# Install with one or both extras:
+# Install with embeddings extra (only optional extra left):
 uv tool install "slife[embeddings]" --reinstall
-uv tool install "slife[mqtt]" --reinstall
-uv tool install "slife[embeddings,mqtt]" --reinstall
 ```
 
 #### Setting Up Local Embeddings

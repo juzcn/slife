@@ -862,7 +862,7 @@ class AgentService:
         # Probe for pre-existing Mosquitto — user must start it first
         from slife.a2a.broker import probe_broker
         if not await probe_broker(a2a_cfg.broker_host, a2a_cfg.broker_port):
-            logger.warning(
+            logger.info(
                 "a2a_broker_not_found host=%s port=%d — A2A disabled",
                 a2a_cfg.broker_host, a2a_cfg.broker_port,
             )

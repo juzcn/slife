@@ -151,7 +151,12 @@ def _read_cryptfile_keys(cf) -> list[str]:
         if section.startswith("keyring") or section.startswith("DEFAULT"):
             continue
         if section == DEFAULT_SERVICE:
-            keys.extend(cfg.options(section))
+            from keyrings.cryptfile.escape import unescape
+            for raw_key in cfg.options(section):
+                # configparser's optionxform lowercases keys.
+                # unescape reverses _XX hex encoding → original UTF-8 bytes.
+                # Normalize to uppercase to match keyring convention.
+                keys.append(unescape(raw_key).upper())
     return keys
 
 

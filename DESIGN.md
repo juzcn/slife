@@ -824,9 +824,10 @@ Separating them means you can commit `slife.json5` to version control (with `${V
 3. **Agent**: `max_iterations`, `context_floor`, `context_ceiling`, `tool_result_ceiling`.
 4. **MCP**: built-in plugin — always enabled. External servers configured under `mcp.servers`; each can set `enabled: false` to skip auto-connect.
 5. **Memory**: built-in plugin — always enabled. Embedding backend auto-detected — local GGUF takes priority over API; if neither is configured, semantic search degrades gracefully.
-6. **A2A**: enabled only via `--agent` CLI flag. The `mqtt` config section provides broker connection details — it never auto-enables A2A.
+6. **A2A**: auto-detects Mosquitto at startup. The `mqtt` config section provides broker connection details. `paho-mqtt` is a core dependency — A2A tools are always registered and return helpful errors when the broker is unavailable.
 7. **Subagent**: always available, configured with `max_subagents` and `task_timeout`.
-8. **Tools**: optional override list — auto-discovery handles defaults.
+8. **Tools**: optional override list — auto-discovery handles defaults. A2A tools (`requires_a2a = True`) are registered when `a2a_config` exists in config, regardless of broker connectivity — each tool handles "not connected" gracefully.
+9. **System Health**: `system_health` tool reports live OS info, available shells (bash, cmd, PowerShell), workspace status (dev/prod, uv/pip, readable/writable, git), embedding backend status, MCP server connections, and startup errors — all from a single call.
 
 `${ENV_VAR}` and `${ENV_VAR:-default}` resolution works recursively through dicts and lists. The common `${VAR}` → `os.environ` → credstore lookup chain is consolidated in `_resolve_env_or_credstore()`, shared by `_resolve_api_key()` and `_resolve_mcp_env_var()`.
 
