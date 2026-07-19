@@ -4,6 +4,7 @@
   // Use credstore to store secrets (never paste keys here):
   //   credstore set DEEPSEEK_API_KEY
   env: {
+    BAIDU_API_KEY: "${BAIDU_API_KEY}",
     // SERPER_API_KEY: "${SERPER_API_KEY}",
   },
 
