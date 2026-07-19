@@ -15,8 +15,9 @@ class RunPythonScriptTool(Tool):
     name = "run_python_script"
     description = (
         "Build a platform-correct shell command for executing a Python "
-        "script with JSON arguments. Handles OS-specific quoting and "
-        "encoding so the returned command is ready to run via execute_shell."
+        "script with JSON arguments. Handles OS-specific quoting, encoding, "
+        "and path resolution.  The returned command MUST be passed verbatim "
+        "to execute_shell — do NOT modify, shorten, or rewrite it."
     )
     parameters = {
         "type": "object",

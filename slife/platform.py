@@ -94,12 +94,12 @@ def run_python_script(input_str: str) -> str:
         return f"{python} {script}"
 
     if IS_WINDOWS:
-        # Force UTF-8 to avoid GBK encoding errors with Chinese output.
-        # chcp sets console code page; -X utf8 forces Python to use UTF-8 for pipes/stdio.
-        escaped = args.replace("\\", "\\\\").replace('"', '\\"')
-        return f'chcp 65001 >nul && {python} -X utf8 {script} "{escaped}"'
+        # -X utf8 forces Python to use UTF-8 for pipes/stdio — sufficient
+        # to avoid GBK encoding errors.  No chcp prefix needed (it only
+        # tempts the LLM to "simplify" the command by stripping the prefix).
+        escaped = args.replace('"', '\\"')
+        return f'{python} -X utf8 {script} "{escaped}"'
     else:
-        # bash: single quotes (no escaping needed for JSON)
         return f"{python} {script} '{args}'"
 
 
