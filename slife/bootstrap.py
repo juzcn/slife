@@ -19,11 +19,11 @@ def _session_log_path(agent_id: str = "slife") -> Path:
     """Generate a timestamped log file path for this session.
 
     Follows the same naming convention as sub-agent logs:
-    ``logs/YYYYMMDD_HHMMSS_slife_<agent_id>.log``.
+    ``logs/YYYYMMDD_HHMMSS_<agent_id>.log``.
     """
     LOG_DIR.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return LOG_DIR / f"{ts}_slife_{agent_id}.log"
+    return LOG_DIR / f"{ts}_{agent_id}.log"
 
 
 def setup_logging(
@@ -35,7 +35,7 @@ def setup_logging(
     Console: WARNING+ only — keeps the terminal clean before Textual's
              alternate screen activates and during TUI runtime.
     File:    DEBUG+ with timestamps, session/request IDs for troubleshooting.
-    Each session writes to a new ``logs/YYYYMMDD_HHMMSS_slife_<agent_id>.log`` file.
+    Each session writes to a new ``logs/YYYYMMDD_HHMMSS_<agent_id>.log`` file.
 
     Returns:
         (log_path, console_handler) — console is already at WARNING;

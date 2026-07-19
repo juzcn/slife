@@ -23,7 +23,7 @@ from slife.server_utils import setup_server_logging
 
 logger = logging.getLogger("slife_memory")
 
-_log_path = setup_server_logging("slife_memory")
+_log_path = setup_server_logging("_memory")
 
 _store: SessionStore | None = None
 _embedder: EmbeddingClient | None = None

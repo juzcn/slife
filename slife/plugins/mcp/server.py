@@ -19,7 +19,7 @@ from slife.server_utils import setup_server_logging, ok_json, error_json
 
 logger = logging.getLogger("slife_mcp")
 
-_log_path = setup_server_logging("slife_mcp")
+_log_path = setup_server_logging("_mcp")
 
 # ── Global state ─────────────────────────────────────────────────────
 

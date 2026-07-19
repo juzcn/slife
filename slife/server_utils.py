@@ -37,7 +37,7 @@ def setup_server_logging(
     - stderr: DEBUG+ with plain formatter (parent adds session/request context).
     - File:    DEBUG+ with ``SessionFormatter``, one per session.
     - File name includes *agent_id* to avoid conflicts when multiple agents
-      run in the same directory (e.g. ``logs/..._slife_mcp_slife.log``).
+      run in the same directory (e.g. ``logs/..._slife_mcp.log``).
     - Silences httpx/httpcore/openai/asyncio and FastMCP noise.
 
     Returns the log file path.
@@ -66,7 +66,7 @@ def setup_server_logging(
 
     log_dir.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"{ts}_{service_name}_{_agent_id}.log"
+    log_path = log_dir / f"{ts}_{_agent_id}_{service_name}.log"
     _file = logging.FileHandler(log_path, encoding="utf-8")
     _file.setLevel(logging.DEBUG)
     _file.setFormatter(SessionFormatter(FILE_LOG_FORMAT))

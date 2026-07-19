@@ -33,7 +33,7 @@ SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
 
 logger = logging.getLogger("slife_wechat")
 
-_log_path = setup_server_logging("slife_wechat")
+_log_path = setup_server_logging("_wechat")
 
 # ── QR code rendering ────────────────────────────────────────────────────
 

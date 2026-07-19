@@ -16,23 +16,23 @@ class TestSessionLogPath:
     """Tests for _session_log_path."""
 
     @patch("pathlib.Path.mkdir")
-    def test_default_name_main(self, mock_mkdir):
+    def test_default_name(self, mock_mkdir):
         path = bootstrap._session_log_path()
         assert path.parent.name == "logs"
-        assert path.name.endswith("_slife_default.log")
+        assert path.name.endswith("_slife.log")
 
     @patch("pathlib.Path.mkdir")
-    def test_custom_user(self, mock_mkdir):
-        path = bootstrap._session_log_path(user="testbot")
-        assert "_slife_testbot.log" in str(path)
+    def test_custom_agent_id(self, mock_mkdir):
+        path = bootstrap._session_log_path(agent_id="testbot")
+        assert "_testbot.log" in str(path)
 
     @patch("pathlib.Path.mkdir")
     def test_timestamp_format(self, mock_mkdir):
         path = bootstrap._session_log_path()
         # Timestamp: YYYYMMDD_HHMMSS
-        name = path.stem  # e.g. slife_main_20260715_120000
+        name = path.stem  # e.g. 20260719_113147_slife
         parts = name.split("_")
-        assert len(parts) >= 4  # slife, main, YYYYMMDD, HHMMSS
+        assert len(parts) >= 4  # YYYYMMDD, HHMMSS, agent_id
 
 
 # ── setup_logging ───────────────────────────────────────────────────────────
