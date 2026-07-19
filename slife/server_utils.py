@@ -27,9 +27,21 @@ _FASTMCP_NOISE = ("mcp.server.lowlevel.server", "fastmcp")
 # ── Logging setup / shutdown ────────────────────────────────────────────
 
 
+def _resolve_server_log_dir() -> Path:
+    """Return the log directory for server processes.
+
+    Uses ``SLIFE_DATA_DIR`` from the parent process (already set in env).
+    Dev mode: ``./logs/``.  Production: ``~/.slife/logs/``.
+    """
+    data_dir = os.environ.get("SLIFE_DATA_DIR")
+    if data_dir:
+        return Path(data_dir) / "logs"
+    return Path("logs")
+
+
 def setup_server_logging(
     service_name: str,
-    log_dir: Path = Path("logs"),
+    log_dir: Path | None = None,
 ) -> Path:
     """Configure shared logging for a server process (stderr + file).
 
@@ -42,6 +54,9 @@ def setup_server_logging(
 
     Returns the log file path.
     """
+    if log_dir is None:
+        log_dir = _resolve_server_log_dir()
+
     _sid = os.environ.get("SLIFE_SESSION_ID", "")
     if _sid:
         set_session_id(_sid)
@@ -64,9 +79,9 @@ def setup_server_logging(
     _stderr.setFormatter(_stderr_fmt)
     _root.addHandler(_stderr)
 
-    log_dir.mkdir(exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"{ts}_{_agent_id}_{service_name}.log"
+    log_path = log_dir / f"{ts}_{_agent_id}{service_name}.log"
     _file = logging.FileHandler(log_path, encoding="utf-8")
     _file.setLevel(logging.DEBUG)
     _file.setFormatter(SessionFormatter(FILE_LOG_FORMAT))

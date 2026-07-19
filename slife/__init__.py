@@ -43,9 +43,9 @@ def main(config_path: str = "slife.json5"):
     """
     agent_id = parse_cli_agent(sys.argv)
 
-    log_path, console_handler = setup_logging(agent_id=agent_id)
-
-    # Resolve config path
+    # Resolve data dir BEFORE logging setup so logs go to the right place.
+    # Dev mode (pyproject.toml in CWD): ./logs/
+    # Production: ~/.slife/logs/
     _cp = Path(config_path).expanduser()
     if not _cp.is_absolute() and not _cp.exists():
         if not _is_dev():
@@ -58,6 +58,8 @@ def main(config_path: str = "slife.json5"):
     sid = init_session_id()
     os.environ["SLIFE_SESSION_ID"] = sid
     os.environ["SLIFE_AGENT_ID"] = agent_id
+
+    log_path, console_handler = setup_logging(agent_id=agent_id)
 
     logger.debug("log_path=%s", log_path)
     logger.debug("data_dir=%s", data_dir)
