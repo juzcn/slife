@@ -464,48 +464,118 @@ def _cmd_delete(key: str) -> int:
 
 
 def _cmd_list() -> int:
-    """List all stored credential keys from the cryptfile."""
-    from credstore._backend import get_cryptfile, init_backend
+    """List credentials from both system keyring and cryptfile backup.
+
+    Dual-read, dual-display: shows which credentials exist in each store
+    so the user can tell at a glance where their secrets live.
+    """
+    from credstore._backend import get_cryptfile, init_backend, has_master_key
     from credstore._config import get_cryptfile_path
-    from credstore._store import DEFAULT_SERVICE, _read_cryptfile_keys  # noqa: PLC2701
+    from credstore._store import DEFAULT_SERVICE, CredentialStore, _read_cryptfile_keys  # noqa: PLC2701
 
     if not sys.stdin.isatty():
         print("Error: 'credstore list' requires an interactive terminal.", file=sys.stderr)
         return 1
 
-    # Check BEFORE init — init may create the file
-    if not __import__("os").path.exists(get_cryptfile_path()):
-        print("No cryptfile found. Run 'credstore set-password' first.", file=sys.stderr)
-        return 1
+    # ── 1. System keyring (no password needed) ──────────────────
+    keyring_entries = _enumerate_system_keyring(DEFAULT_SERVICE)
+    keyring_keys: dict[str, str] = {}  # key → masked value
+    for k, v in keyring_entries:
+        keyring_keys[k] = CredentialStore.mask(v) if v else "(empty)"
 
-    init_backend()
-    cf = get_cryptfile()
-    if cf is None:
-        print("Error: cryptfile backend not available.", file=sys.stderr)
-        print("Install: pip install keyrings.cryptfile", file=sys.stderr)
-        return 1
+    # ── 2. Cryptfile (requires master password if it exists) ────
+    cryptfile_keys: set[str] = set()
+    cryptfile_path = get_cryptfile_path()
+    cryptfile_exists = __import__("os").path.exists(cryptfile_path)
 
-    master_pw = masked_input("Master password: ")
-    if not master_pw.strip():
-        print("Error: master password is required.", file=sys.stderr)
-        return 1
+    if cryptfile_exists and has_master_key():
+        master_pw = masked_input("Master password: ")
+        if not master_pw.strip():
+            print("Error: master password is required.", file=sys.stderr)
+            return 1
 
-    try:
-        cf.keyring_key = master_pw
-        keys = _read_cryptfile_keys(cf)
-    except Exception as exc:
-        print(f"Error: cannot read cryptfile — {exc}", file=sys.stderr)
-        return 1
-    finally:
-        del cf.keyring_key
+        try:
+            init_backend(password=master_pw)
+            cf = get_cryptfile()
+            if cf is not None:
+                cf.keyring_key = master_pw
+                try:
+                    cryptfile_keys = set(_read_cryptfile_keys(cf))
+                finally:
+                    del cf.keyring_key
+        except Exception as exc:
+            print(f"Error: cannot read cryptfile — {exc}", file=sys.stderr)
+            return 1
 
-    if not keys:
+    # ── 3. Merge & display ─────────────────────────────────────
+    all_keys = sorted(set(keyring_keys.keys()) | cryptfile_keys)
+
+    if not all_keys:
         print("No credentials stored.")
+        print()
+        if not keyring_keys and not cryptfile_exists:
+            print("Run 'credstore set <KEY>' to store a credential.")
+        elif not keyring_keys and not cryptfile_keys:
+            print("Cryptfile exists but is empty.  Credentials in the")
+            print("system keyring cannot be enumerated on this platform.")
+            print("Run 'credstore set <KEY>' to populate both stores.")
         return 0
 
-    print(f"{len(keys)} credential(s) stored:")
-    for key in sorted(keys):
-        print(f"  {key}")
+    # Column widths
+    key_width = max(len(k) for k in all_keys) + 2
+
+    # Header
+    print()
+    print(f"  {'KEY':<{key_width}} SYSTEM KEYRING   CRYPTFILE")
+    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ─────────")
+
+    ring_only = 0
+    crypt_only = 0
+    both = 0
+
+    for key in all_keys:
+        in_ring = key in keyring_keys
+        in_crypt = key in cryptfile_keys
+
+        if in_ring and in_crypt:
+            both += 1
+            ring_mark = "✔"
+            crypt_mark = "✔"
+        elif in_ring:
+            ring_only += 1
+            ring_mark = "✔"
+            crypt_mark = "—"
+        else:
+            crypt_only += 1
+            ring_mark = "—"
+            crypt_mark = "✔"
+
+        print(f"  {key:<{key_width}} {ring_mark:<13}   {crypt_mark}")
+
+    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ─────────")
+    if ring_only == 0 and crypt_only == 0:
+        print(f"  {len(all_keys)} credential(s) — all synced")
+    else:
+        parts = []
+        if ring_only:
+            parts.append(f"system only: {ring_only}")
+        if crypt_only:
+            parts.append(f"cryptfile only: {crypt_only}")
+        if both:
+            parts.append(f"both: {both}")
+        print(f"  {len(all_keys)} credential(s) — {', '.join(parts)}")
+
+    # Hint if mismatch
+    if ring_only > 0 and cryptfile_exists:
+        print()
+        print(f"  Tip: run 'credstore reset-backup' to sync {ring_only} missing")
+        print(f"  credential(s) from system keyring into the cryptfile.")
+    elif crypt_only > 0:
+        print()
+        print(f"  Tip: run 'credstore reset-keyring' to restore {crypt_only}")
+        print(f"  credential(s) from cryptfile back to the system keyring.")
+
+    print()
     return 0
 
 
