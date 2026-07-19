@@ -1,0 +1,97 @@
+{
+  // ── Environment Variables ──────────────────────────────────────
+  // ${VAR} references resolve at runtime: shell → OS keyring → default.
+  // Use credstore to store secrets (never paste keys here):
+  //   credstore set DEEPSEEK_API_KEY
+  env: {
+    EDITOR: "code",
+  },
+
+  // ── Agent Behavior ─────────────────────────────────────────────
+  agent: {
+    max_iterations: 10,
+    context_floor: 0.2,
+    context_ceiling: 0.8,
+  },
+
+  // ── Model Provider ─────────────────────────────────────────────
+  // Edit this section with your API provider.  The example uses
+  // DeepSeek — replace with OpenAI, Gemini, Ollama, or any
+  // OpenAI-compatible endpoint.
+  models: {
+    mode: "merge",
+    providers: {
+      deepseek: {
+        base_url: "https://api.deepseek.com",
+        api_key: "${DEEPSEEK_API_KEY}",
+        api: "openai-completions",
+        models: [
+          {
+            model: "deepseek-v4-flash",
+            name: "DeepSeek V4 Flash",
+            reasoning: true,
+            input: ["text", "image"],
+            context_window: 131072,
+            max_tokens: 8192,
+            temperature: 0.7,
+            top_p: 1.0,
+          },
+          {
+            model: "deepseek-v4-pro",
+            name: "DeepSeek V4 Pro",
+            reasoning: true,
+            input: ["text", "image"],
+            context_window: 131072,
+            max_tokens: 8192,
+            temperature: 0.7,
+            top_p: 1.0,
+          },
+        ],
+      },
+    },
+  },
+  active_model: "deepseek/deepseek-v4-flash",
+
+  // ── MCP Servers ────────────────────────────────────────────────
+  // Pre-configured MCP servers that auto-connect on startup.
+  // Add your own or remove ones you don't need.
+  mcp: {
+    servers: {
+      filesystem: {
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
+        description: "Local filesystem operations — read, write, list, search files.",
+      },
+      fetch: {
+        command: "uvx",
+        args: ["mcp-server-fetch"],
+        description: "Fetch and convert web pages to markdown.",
+      },
+      "duckduckgo-search": {
+        command: "uvx",
+        args: [
+          "--with", "duckduckgo-mcp-server[browser]",
+          "duckduckgo-mcp-server",
+          "--fetch-backend", "auto",
+          "--search-backend", "auto",
+        ],
+        description: "DuckDuckGo web search.",
+      },
+    },
+  },
+
+  // ── Memory ─────────────────────────────────────────────────────
+  memory: {
+    enabled: true,
+    db_path: "./slife.db",
+  },
+
+  // ── MQTT / A2A ─────────────────────────────────────────────────
+  // Uncomment and configure if using --agent <id> for multi-agent mesh.
+  // mqtt: {
+  //   broker: { host: "localhost", port: 1883 },
+  //   heartbeat_interval: 15,
+  //   heartbeat_timeout: 45,
+  //   task_timeout: 120,
+  // },
+}
