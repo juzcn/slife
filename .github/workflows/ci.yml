@@ -24,8 +24,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: uv sync
+      - name: Build wheels
+        run: |
+          uv build --out-dir dist
+          uv build --out-dir dist --package credstore
+
+      - name: Install
+        run: |
+          uv pip install dist/slife-*.whl dist/credstore-*.whl
+          uv pip install pytest pytest-asyncio pytest-cov pytest-xdist
 
       - name: Run tests
         run: uv run pytest
