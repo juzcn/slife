@@ -98,6 +98,8 @@ addopts = "-v --tb=short --strict-markers --strict-config --no-header"
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::pytest.PytestDeprecationWarning",
+    "ignore::RuntimeWarning:unittest.mock",
+    "ignore::RuntimeWarning:_pytest",
 ]
 markers = [
     "asyncio: mark a test as an async test (auto-applied by asyncio_mode=strict)",
