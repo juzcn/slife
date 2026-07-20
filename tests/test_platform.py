@@ -310,12 +310,13 @@ class TestRunPythonScript:
 
     def test_unix_quoting(self):
         """Non-Windows uses single-quote wrapping for JSON args."""
+        import sys
         from slife.platform import build_python_command
         with patch("slife.platform.IS_WINDOWS", False):
             # input_str format: "<script_path> <json_args>"
             result = build_python_command('/tmp/script.py {"key": "val"}')
             assert "'" in result
-            assert "python3" in result
+            assert sys.executable in result
 
 
 # ── terminate_process force-kill ──────────────────────────────────────

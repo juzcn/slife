@@ -83,11 +83,13 @@ def build_python_command(input_str: str) -> str:
     # Resolve skills/ paths to the installed package location.
     script = _resolve_skill_script(script)
 
-    # On Windows, "python" is often the MS Store app alias (no actual
-    # binary) and "py" may pick a different version (e.g. 3.14).
-    # Use sys.executable — the exact Python that is running slife,
-    # installed by uv at the correct version (3.13).
-    python = sys.executable if IS_WINDOWS else "python3"
+    # Use sys.executable on all platforms — the exact Python that is
+    # running slife.  On Windows this avoids the MS Store app alias
+    # ("python") and version mismatches from "py".  On macOS / Linux
+    # it avoids missing-python3 issues when Python was installed
+    # via uv (which adds python3.13 but may not create a python3
+    # symlink, especially in CI).
+    python = sys.executable
 
     if not args:
         return f"{python} {script}"
