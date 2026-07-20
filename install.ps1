@@ -157,8 +157,7 @@ try {
     }
 
     Write-Host "Installing slife v$version…"
-    $credstoreDir = Join-Path $extractedDir.FullName "credstore"
-    uv tool install --python 3.13 --with $credstoreDir $extractedDir.FullName
+    uv tool install --python 3.13 $extractedDir.FullName
 
     Write-Host ""
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
