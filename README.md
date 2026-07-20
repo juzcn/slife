@@ -244,6 +244,8 @@ All tools are unified as OpenAI function definitions — the LLM sees no differe
 
 Every conversation turn is permanently recorded.  Hybrid search (grep + FTS5 + semantic via vec0) lets the LLM recall past work.  Memory runs as a built-in plugin (`slife/plugins/memory/`) — a separate process so crashes never race with writes.
 
+On restart, recent turns are automatically restored to the chat view — user messages, assistant responses, and tool call results all reappear.  (Transient UI state such as per-tool-call iteration counters is not preserved.)
+
 ```
 memory_search("ConnectionError")            → exact error trace
 memory_search("MCP config", mode="fts5")    → topic search

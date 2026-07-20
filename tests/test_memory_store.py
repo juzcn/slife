@@ -192,7 +192,6 @@ class TestSessionStoreSaveTurn:
         store._conn = mock_conn
 
         rowid = await store.save_turn(
-            author="testuser",
             user_message="Hello",
             token_count=10,
             who_helped="assistant",
@@ -219,7 +218,6 @@ class TestSessionStoreSaveTurn:
         mock_embedder.embed_one = AsyncMock(return_value=[0.1, 0.2, 0.3])
 
         rowid = await store.save_turn(
-            author="testuser",
             user_message="Hello",
             embedder=mock_embedder,
         )
@@ -243,7 +241,6 @@ class TestSessionStoreSaveTurn:
         mock_embedder.max_tokens = 1  # Very small limit
 
         rowid = await store.save_turn(
-            author="testuser",
             user_message="Hello world " * 500,  # Way over the limit
             embedder=mock_embedder,
         )
@@ -265,7 +262,7 @@ class TestSessionStoreGetTurn:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.get_turn(rowid=1, author="user")
+        result = await store.get_turn(rowid=1)
         assert result == {"rowid": 1, "user_message": "Hello"}
 
     @pytest.mark.asyncio
@@ -277,7 +274,7 @@ class TestSessionStoreGetTurn:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.get_turn(rowid=999, author="user")
+        result = await store.get_turn(rowid=999)
         assert result is None
 
 
@@ -296,7 +293,7 @@ class TestSessionStoreGetRecentTurns:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.get_recent_turns(author="user", limit=50)
+        result = await store.get_recent_turns(limit=50)
         assert len(result) == 2
         assert result[0]["user_message"] == "Turn 1"
         assert result[1]["user_message"] == "Turn 2"
@@ -314,7 +311,7 @@ class TestSessionStoreHasTurns:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.has_turns(author="user")
+        result = await store.has_turns()
         assert result is True
 
     @pytest.mark.asyncio
@@ -326,7 +323,7 @@ class TestSessionStoreHasTurns:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.has_turns(author="user")
+        result = await store.has_turns()
         assert result is False
 
 
@@ -344,7 +341,7 @@ class TestSessionStoreCountTurns:
         mock_conn.execute = AsyncMock(return_value=total_cursor)
         store._conn = mock_conn
 
-        result = await store.count_turns(author="user")
+        result = await store.count_turns()
         assert result["total"] == 42
         assert result["filtered"] == 42
 
@@ -367,7 +364,7 @@ class TestSessionStoreCountTurns:
         mock_conn.execute = AsyncMock(side_effect=_execute_side_effect)
         store._conn = mock_conn
 
-        result = await store.count_turns(author="user", query="hello", mode="fts5")
+        result = await store.count_turns(query="hello", mode="fts5")
         assert result["total"] == 10
         assert result["filtered"] == 3
 
@@ -387,7 +384,7 @@ class TestSessionStoreListRecent:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.list_recent(author="user", limit=5)
+        result = await store.list_recent(limit=5)
         assert len(result) == 2
         # Newest first
         assert result[0]["rowid"] == 2
@@ -405,7 +402,7 @@ class TestSessionStoreUpdateSummary:
         store._conn = mock_conn
 
         await store.update_summary(
-            rowid=1, author="user",
+            rowid=1,
             summary="Great conversation", tags="ai,chat",
         )
         mock_conn.commit.assert_called_once()
@@ -416,7 +413,7 @@ class TestSessionStoreUpdateSummary:
         mock_conn = AsyncMock()
         store._conn = mock_conn
 
-        await store.update_summary(rowid=1, author="user")
+        await store.update_summary(rowid=1)
         mock_conn.execute.assert_not_called()
 
 
@@ -434,7 +431,7 @@ class TestSessionStoreSearchKeyword:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.search_keyword(author="user", query="hello")
+        result = await store.search_keyword(query="hello")
         assert len(result) == 1
         assert result[0]["rowid"] == 1
 
@@ -449,7 +446,7 @@ class TestSessionStoreSearchKeyword:
         )
         store._conn = mock_conn
 
-        result = await store.search_keyword(author="user", query="bad!!query")
+        result = await store.search_keyword(query="bad!!query")
         assert result == []
 
 
@@ -467,7 +464,7 @@ class TestSessionStoreSearchGrep:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.search_grep(author="user", pattern="Hello")
+        result = await store.search_grep(pattern="Hello")
         assert len(result) == 1
 
 
@@ -486,7 +483,6 @@ class TestSessionStoreSearchTime:
         store._conn = mock_conn
 
         result = await store.search_time(
-            author="user",
             since="2024-01-01",
             until="2024-12-31",
         )
@@ -508,7 +504,6 @@ class TestSessionStoreSearchSemantic:
         store._conn = mock_conn
 
         result = await store.search_semantic(
-            author="user",
             embedding=[0.1, 0.2, 0.3],
         )
         assert len(result) == 1
@@ -528,7 +523,7 @@ class TestSessionStoreUpsertEmbedding:
         store._conn = mock_conn
 
         await store.upsert_embedding(
-            rowid=1, author="user",
+            rowid=1,
             summary="", tags="", created_at="2024-01-01T00:00:00",
             turn_embedding=[0.1, 0.2, 0.3],
         )
@@ -556,7 +551,7 @@ class TestSessionStoreUpsertEmbedding:
         store._conn = mock_conn
 
         await store.upsert_embedding(
-            rowid=1, author="user",
+            rowid=1,
             summary="updated", tags="new", created_at="2024-01-01T00:00:00",
             turn_embedding=[0.4, 0.5, 0.6],
         )
@@ -575,7 +570,7 @@ class TestSessionStoreHasEmbedding:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.has_embedding(rowid=1, author="user")
+        result = await store.has_embedding(rowid=1)
         assert result is True
 
     @pytest.mark.asyncio
@@ -587,5 +582,5 @@ class TestSessionStoreHasEmbedding:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.has_embedding(rowid=1, author="user")
+        result = await store.has_embedding(rowid=1)
         assert result is False

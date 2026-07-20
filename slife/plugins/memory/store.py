@@ -3,6 +3,8 @@
 One row = one turn (user message + assistant's complete response).
 No sessions, no lifecycle — each turn is independent and immutable.
 Restore loads the most recent N turns by rowid.
+
+Agent isolation is at the file level — each agent_id has its own .db file.
 """
 
 import json
@@ -67,7 +69,6 @@ class SessionStore:
         schema_sql = schema_sql.replace("float[1536]", f"float[{self._embedding_dim}]")
         # Execute each statement individually — vec0 virtual tables
         # can hang in aiosqlite's executescript.
-        schema_errors: list[str] = []
         for stmt in _split_sql(schema_sql):
             stmt = stmt.strip()
             if not stmt:
@@ -76,13 +77,18 @@ class SessionStore:
                 await self._conn.execute(stmt)
             except Exception as e:
                 logger.debug("schema_stmt_error err=%s stmt=%.80s", e, stmt)
-                schema_errors.append(str(e)[:80])
         await self._conn.commit()
         logger.debug("schema_ready")
 
     async def _migrate(self) -> None:
-        """Idempotent column additions for schema evolution."""
+        """Idempotent schema migrations.
+
+        Migrations are ordered and run once.  Each is guarded so it
+        can be re-executed safely across restarts.
+        """
         assert self._conn is not None
+
+        # ── 1. channel column (v0.x → v0.3.x) ──────────────────────
         migrations = [
             "ALTER TABLE diary ADD COLUMN channel TEXT DEFAULT ''",
         ]
@@ -91,13 +97,45 @@ class SessionStore:
                 await self._conn.execute(sql)
                 logger.debug("migrate_applied sql=%s", sql)
             except Exception as e:
-                # "duplicate column name" is expected when column already exists.
-                # Any other error is unexpected and should be logged.
                 err_msg = str(e).lower()
                 if "duplicate column" in err_msg or "already exists" in err_msg:
                     logger.debug("migrate_skipped sql=%s reason=already_exists", sql)
                 else:
                     logger.warning("migrate_failed sql=%s err=%s", sql, e)
+
+        # ── 2. Drop author column (v0.3.x → v0.4.x) ────────────────
+        # Agent isolation is at the file level — each agent_id has its
+        # own .db.  The author column was redundant.
+        try:
+            await self._conn.execute(
+                "SELECT author FROM diary LIMIT 0"
+            )
+        except Exception:
+            # Column already gone — nothing to do
+            logger.debug("migrate_author_already_dropped")
+        else:
+            # Column still exists — drop it.
+            # Must first tear down FTS5 / vec0 objects that reference it,
+            # then recreate them from the current schema.
+            logger.info("migrate_dropping_author_column")
+            for stmt in [
+                "DROP TRIGGER IF EXISTS diary_ai",
+                "DROP TRIGGER IF EXISTS diary_ad",
+                "DROP TABLE IF EXISTS diary_fts",
+                "DROP TABLE IF EXISTS diary_semantic",
+                "ALTER TABLE diary DROP COLUMN author",
+                "DROP INDEX IF EXISTS idx_diary_author",
+            ]:
+                try:
+                    await self._conn.execute(stmt)
+                except Exception as e:
+                    logger.debug("migrate_author_step_failed stmt=%s err=%s", stmt[:60], e)
+
+            # Re-run the schema to recreate FTS5, vec0, and indexes
+            # without the author column.
+            await self._run_schema()
+            logger.info("migrate_author_dropped")
+
         await self._conn.commit()
 
     async def close(self) -> None:
@@ -110,7 +148,6 @@ class SessionStore:
 
     async def save_turn(
         self,
-        author: str = "default",
         user_message: str = "",
         messages: list[dict] | None = None,
         token_count: int = 0,
@@ -126,14 +163,14 @@ class SessionStore:
         messages_json = json.dumps(messages or [], ensure_ascii=False)
 
         cursor = await self._conn.execute(
-            """INSERT INTO diary (author, user_message, messages, summary, tags,
+            """INSERT INTO diary (user_message, messages, summary, tags,
                                   channel, created_at, who_helped, what_model, token_count)
-               VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?)""",
-            (author, user_message, messages_json, channel, now, who_helped, what_model, token_count),
+               VALUES (?, ?, '', '', ?, ?, ?, ?, ?)""",
+            (user_message, messages_json, channel, now, who_helped, what_model, token_count),
         )
         await self._conn.commit()
         rowid = cursor.lastrowid
-        logger.debug("turn_saved author=%s rowid=%s", author, rowid)
+        logger.debug("turn_saved rowid=%s", rowid)
 
         # Embed the full turn text. Skip if it exceeds the model's token
         # limit — semantic search misses this turn, but keyword (FTS5/grep)
@@ -147,7 +184,7 @@ class SessionStore:
                         emb = await embedder.embed_one(embed_text)
                         if emb:
                             await self.upsert_embedding(
-                                rowid=rowid, author=author, summary="", tags="",
+                                rowid=rowid, summary="", tags="",
                                 created_at=now, turn_embedding=emb,
                             )
                     except Exception as e:
@@ -155,45 +192,42 @@ class SessionStore:
 
         return rowid
 
-    async def get_turn(self, rowid: int, author: str = "default") -> dict | None:
+    async def get_turn(self, rowid: int) -> dict | None:
         """Return a single turn by rowid."""
         assert self._conn is not None
         cursor = await self._conn.execute(
-            "SELECT rowid, * FROM diary WHERE rowid = ? AND author = ?",
-            (rowid, author),
+            "SELECT rowid, * FROM diary WHERE rowid = ?",
+            (rowid,),
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def get_recent_turns(
-        self, author: str = "default", limit: int = 50,
-    ) -> list[dict]:
+    async def get_recent_turns(self, limit: int = 50) -> list[dict]:
         """Return the most recent N turns, oldest-first for restore."""
         assert self._conn is not None
-        # Subquery: get the last N rowids, then sort them ascending
         cursor = await self._conn.execute(
-            """SELECT rowid, author, user_message, messages, summary, tags,
+            """SELECT rowid, user_message, messages, summary, tags,
                       channel, created_at, who_helped, what_model, token_count
                FROM diary
-               WHERE author = ? AND rowid IN (
-                   SELECT rowid FROM diary WHERE author = ?
+               WHERE rowid IN (
+                   SELECT rowid FROM diary
                    ORDER BY rowid DESC LIMIT ?
                )
                ORDER BY rowid ASC""",
-            (author, author, limit),
+            (limit,),
         )
         return [dict(row) for row in await cursor.fetchall()]
 
-    async def has_turns(self, author: str = "default") -> bool:
-        """Check if there are any turns for this author."""
+    async def has_turns(self) -> bool:
+        """Check if there are any turns."""
         assert self._conn is not None
         cursor = await self._conn.execute(
-            "SELECT rowid FROM diary WHERE author = ? LIMIT 1", (author,),
+            "SELECT rowid FROM diary LIMIT 1",
         )
         return await cursor.fetchone() is not None
 
     async def count_turns(
-        self, author: str = "default",
+        self,
         since: str | None = None, until: str | None = None,
         query: str | None = None, mode: str = "fts5",
     ) -> dict:
@@ -203,9 +237,7 @@ class SessionStore:
         """
         assert self._conn is not None
 
-        row = await self._conn.execute(
-            "SELECT COUNT(*) FROM diary WHERE author = ?", (author,),
-        )
+        row = await self._conn.execute("SELECT COUNT(*) FROM diary")
         total = (await row.fetchone())[0]
 
         if query and query.strip():
@@ -213,15 +245,13 @@ class SessionStore:
             if mode == "grep":
                 safe = query.replace("%", r"\%").replace("_", r"\_")
                 like_pattern = f"%{safe}%"
-                where = "author = ? AND (user_message LIKE ? OR messages LIKE ?)"
-                params: list = [author, like_pattern, like_pattern]
+                where = "user_message LIKE ? OR messages LIKE ?"
+                params: list = [like_pattern, like_pattern]
             else:
                 fts_query = _to_fts5_query(query)
                 row2 = await self._conn.execute(
-                    "SELECT COUNT(*) FROM diary_fts fts "
-                    "JOIN diary d ON fts.rowid = d.rowid "
-                    "WHERE diary_fts MATCH ? AND fts.author = ?",
-                    (fts_query, author),
+                    "SELECT COUNT(*) FROM diary_fts WHERE diary_fts MATCH ?",
+                    (fts_query,),
                 )
                 filtered = (await row2.fetchone())[0]
                 return {"total": total, "filtered": filtered,
@@ -239,8 +269,8 @@ class SessionStore:
             )
             filtered = (await row2.fetchone())[0]
         elif since or until:
-            clauses = ["author = ?"]
-            params = [author]
+            clauses: list[str] = []
+            params = []
             if since:
                 clauses.append("created_at >= ?")
                 params.append(since)
@@ -261,26 +291,23 @@ class SessionStore:
 
     # ── Browse ─────────────────────────────────────────────────────
 
-    async def list_recent(
-        self, author: str = "default", limit: int = 20,
-    ) -> list[dict]:
+    async def list_recent(self, limit: int = 20) -> list[dict]:
         """List recent turns, newest first. Lightweight — no full messages."""
         assert self._conn is not None
         cursor = await self._conn.execute(
             """SELECT rowid, user_message, summary, tags, created_at,
                       token_count, who_helped, what_model
                FROM diary
-               WHERE author = ?
                ORDER BY rowid DESC
                LIMIT ?""",
-            (author, limit),
+            (limit,),
         )
         return [dict(row) for row in await cursor.fetchall()]
 
     # ── Summarize ──────────────────────────────────────────────────
 
     async def update_summary(
-        self, rowid: int, author: str = "default",
+        self, rowid: int,
         summary: str | None = None, tags: str | None = None,
     ) -> None:
         """Write summary and/or tags for a turn."""
@@ -295,9 +322,9 @@ class SessionStore:
             params.append(tags)
         if not updates:
             return
-        params.extend([rowid, author])
+        params.append(rowid)
         await self._conn.execute(
-            f"UPDATE diary SET {', '.join(updates)} WHERE rowid = ? AND author = ?",
+            f"UPDATE diary SET {', '.join(updates)} WHERE rowid = ?",
             params,
         )
         await self._conn.commit()
@@ -305,7 +332,7 @@ class SessionStore:
     # ── Search ──────────────────────────────────────────────────────
 
     async def search_keyword(
-        self, author: str, query: str, limit: int = 20,
+        self, query: str, limit: int = 20,
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """FTS5 keyword search with snippet highlighting."""
@@ -325,19 +352,19 @@ class SessionStore:
                           snippet(diary_fts, 3, '…', '…', '…', 40) AS snippet, rank
                    FROM diary_fts fts
                    JOIN diary d ON fts.rowid = d.rowid
-                   WHERE diary_fts MATCH ? AND fts.author = ?{time_clauses}
+                   WHERE diary_fts MATCH ?{time_clauses}
                    ORDER BY rank LIMIT ?""",
-                (fts_query, author, *time_params, limit),
+                (fts_query, *time_params, limit),
             )
             results = [dict(row) for row in await cursor.fetchall()]
-            logger.debug("search_keyword author=%s query=%s hits=%s", author, query, len(results))
+            logger.debug("search_keyword query=%s hits=%s", query, len(results))
             return results
         except aiosqlite.OperationalError as e:
             logger.debug("search_keyword_parse_error query=%s err=%s", query, e)
             return []
 
     async def search_semantic(
-        self, author: str, embedding: list[float], limit: int = 20,
+        self, embedding: list[float], limit: int = 20,
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """sqlite-vec KNN on turn_embedding."""
@@ -347,9 +374,9 @@ class SessionStore:
         cursor = await self._conn.execute(
             """SELECT rowid, summary, tags, created_at, distance
                FROM diary_semantic
-               WHERE turn_embedding MATCH ? AND author = ? AND k = ?
+               WHERE turn_embedding MATCH ? AND k = ?
                ORDER BY distance""",
-            (vec_blob, author, fetch_limit),
+            (vec_blob, fetch_limit),
         )
         results = [dict(row) for row in await cursor.fetchall()]
         if since:
@@ -357,36 +384,39 @@ class SessionStore:
         if until:
             results = [r for r in results if r.get("created_at", "") <= until]
         results = results[:limit]
-        logger.debug("search_semantic author=%s hits=%s", author, len(results))
+        logger.debug("search_semantic hits=%s", len(results))
         return results
 
     async def search_time(
-        self, author: str, limit: int = 20,
+        self, limit: int = 20,
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """Time-range browsing of turns."""
         assert self._conn is not None
-        clauses = ["author = ?"]
-        params: list[str | int] = [author]
+        clauses: list[str] = []
+        params: list[str | int] = []
         if since:
             clauses.append("created_at >= ?")
             params.append(since)
         if until:
             clauses.append("created_at <= ?")
             params.append(until)
-        where = " AND ".join(clauses)
+        if clauses:
+            where = "WHERE " + " AND ".join(clauses)
+        else:
+            where = ""
         params.append(limit)
         cursor = await self._conn.execute(
             f"""SELECT rowid, user_message, summary, tags, created_at, token_count
-               FROM diary WHERE {where} ORDER BY created_at DESC LIMIT ?""",
+               FROM diary {where} ORDER BY created_at DESC LIMIT ?""",
             params,
         )
         results = [dict(row) for row in await cursor.fetchall()]
-        logger.debug("search_time author=%s since=%s until=%s hits=%s", author, since, until, len(results))
+        logger.debug("search_time since=%s until=%s hits=%s", since, until, len(results))
         return results
 
     async def search_grep(
-        self, author: str, pattern: str, limit: int = 20,
+        self, pattern: str, limit: int = 20,
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """Exact substring search over user_message + messages."""
@@ -405,19 +435,18 @@ class SessionStore:
             f"""SELECT rowid, user_message, summary, tags, created_at,
                       substr(messages, max(0, instr(messages, ?) - 40), 160) AS context
                FROM diary
-               WHERE author = ?
-                 AND (user_message LIKE ? OR messages LIKE ?){time_clauses}
+               WHERE (user_message LIKE ? OR messages LIKE ?){time_clauses}
                ORDER BY rowid DESC LIMIT ?""",
-            (pattern, author, like_pattern, like_pattern, *time_params, limit),
+            (pattern, like_pattern, like_pattern, *time_params, limit),
         )
         results = [dict(row) for row in await cursor.fetchall()]
-        logger.debug("search_grep author=%s pattern=%s hits=%s", author, pattern[:80], len(results))
+        logger.debug("search_grep pattern=%s hits=%s", pattern[:80], len(results))
         return results
 
     # ── Embedding ───────────────────────────────────────────────────
 
     async def upsert_embedding(
-        self, rowid: int, author: str,
+        self, rowid: int,
         summary: str, tags: str, created_at: str,
         turn_embedding: list[float],
     ) -> None:
@@ -425,27 +454,27 @@ class SessionStore:
         assert self._conn is not None
         vec_blob = _serialize_f32(turn_embedding)
         cursor = await self._conn.execute(
-            "SELECT rowid FROM diary_semantic WHERE rowid = ? AND author = ?",
-            (rowid, author),
+            "SELECT rowid FROM diary_semantic WHERE rowid = ?",
+            (rowid,),
         )
         if await cursor.fetchone():
             await self._conn.execute(
-                "DELETE FROM diary_semantic WHERE rowid = ? AND author = ?",
-                (rowid, author),
+                "DELETE FROM diary_semantic WHERE rowid = ?",
+                (rowid,),
             )
         await self._conn.execute(
-            """INSERT INTO diary_semantic (rowid, author, turn_embedding, summary, tags, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (rowid, author, vec_blob, summary, tags, created_at),
+            """INSERT INTO diary_semantic (rowid, turn_embedding, summary, tags, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (rowid, vec_blob, summary, tags, created_at),
         )
         await self._conn.commit()
-        logger.debug("embedding_upserted author=%s rowid=%s", author, rowid)
+        logger.debug("embedding_upserted rowid=%s", rowid)
 
-    async def has_embedding(self, rowid: int, author: str) -> bool:
+    async def has_embedding(self, rowid: int) -> bool:
         assert self._conn is not None
         cursor = await self._conn.execute(
-            "SELECT rowid FROM diary_semantic WHERE rowid = ? AND author = ?",
-            (rowid, author),
+            "SELECT rowid FROM diary_semantic WHERE rowid = ?",
+            (rowid,),
         )
         return await cursor.fetchone() is not None
 

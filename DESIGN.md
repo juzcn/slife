@@ -735,6 +735,14 @@ messages, rebuild the conversation.
 No trim_count needed — each turn is its own row, immutable once written.
 If no prior turns exist, starts fresh.
 
+**Restore fidelity:** The UI rebuild recreates user messages, assistant responses
+(thinking + text), and tool call widgets from stored OpenAI-format messages.
+However, transient UI state — notably the per-tool-call iteration counter
+(e.g. ``(3/10)`` shown during live execution) — is not stored in the diary and
+is therefore absent from restored widgets.  The iteration counter is derived
+from the agent loop's internal state during live runs; restored tool calls are
+rendered as completed with their results but without iteration numbering.
+
 ### Agent Isolation
 
 Multiple agents on the same machine are isolated by `--agent`:

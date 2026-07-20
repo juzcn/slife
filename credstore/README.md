@@ -4,11 +4,12 @@ Cross-platform credential storage — OS keyring + AES-encrypted file backup.
 
 A standalone secret manager that ships with [Slife](https://github.com/juzcn/slife)
 but does **not** depend on it.  Only two lightweight dependencies: `keyring` and
-`keyrings-cryptfile`.
+`keyrings-cryptfile`.  Available both as a standalone PyPI package and bundled
+with Slife.
 
 ## Install
 
-### One-click (recommended)
+### Standalone (PyPI)
 
 ```bash
 pip install credstore
@@ -18,6 +19,20 @@ Or with uv:
 
 ```bash
 uv tool install credstore
+```
+
+### Bundled with Slife
+
+Installing Slife gives you the `credstore` command automatically — no extra step.
+
+```bash
+uv tool install git+https://github.com/juzcn/slife.git
+```
+
+In a development checkout, run via uv:
+
+```bash
+uv run credstore <command>
 ```
 
 ### Verify

@@ -251,6 +251,8 @@ credstore reset-keyring               # 从加密文件备份恢复所有凭证
 
 每次对话轮次都被永久记录。混合搜索（grep + FTS5 + 通过 vec0 的语义搜索）让 LLM 能够召回过去的工作。记忆系统作为内置插件运行（`slife/plugins/memory/`）—— 独立进程，崩溃不会与写入产生竞争。
 
+重启时，最近的对话轮次会自动恢复到聊天视图中 —— 用户消息、助手响应和工具调用结果均会重新显示。（每次工具调用的迭代计数等瞬时 UI 状态不会被保留。）
+
 ```
 memory_search("ConnectionError")            → 精确错误追踪
 memory_search("MCP 配置", mode="fts5")      → 主题搜索

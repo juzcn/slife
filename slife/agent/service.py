@@ -759,7 +759,6 @@ class AgentService:
             await self._memory_client.call_tool(
                 "memory_save_turn",
                 {
-                    "author": self.config.agent_id,
                     "user_message": user_message,
                     "messages": turn_messages,
                     "token_count": token_count or 0,
@@ -779,7 +778,7 @@ class AgentService:
         try:
             result = await self._memory_client.call_tool(
                 "memory_get_recent_turns",
-                {"author": self.config.agent_id, "limit": limit},
+                {"limit": limit},
             )
             data = json.loads(result)
             return data.get("turns", [])

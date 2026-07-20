@@ -6,13 +6,12 @@
 --
 --  每一行是独立的——没有 session 分组，没有生命周期。
 --  恢复时按 rowid 倒序取最近 N 个 turns 重组上下文。
+--
+--  Agent 隔离在文件级别：每个 agent_id 拥有独立的 .db 文件。
 -- ═══════════════════════════════════════════════════════════════
 
 
 CREATE TABLE IF NOT EXISTS diary (
-
-    -- ▼ 谁写的
-    author         TEXT NOT NULL DEFAULT 'default',
 
     -- ▼ 用户说了什么（独立列，便于搜索和嵌入）
     user_message   TEXT NOT NULL DEFAULT '',
@@ -44,7 +43,6 @@ CREATE TABLE IF NOT EXISTS diary (
 
 -- ── 关键词搜索 ────────────────────────────────────────────────
 CREATE VIRTUAL TABLE IF NOT EXISTS diary_fts USING fts5(
-    author,
     user_message,
     messages,
     summary,
@@ -55,19 +53,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS diary_fts USING fts5(
 );
 
 CREATE TRIGGER IF NOT EXISTS diary_ai AFTER INSERT ON diary BEGIN
-    INSERT INTO diary_fts(rowid, author, user_message, messages, summary, tags, channel)
-    VALUES (new.rowid, new.author, new.user_message, new.messages, new.summary, new.tags, new.channel);
+    INSERT INTO diary_fts(rowid, user_message, messages, summary, tags, channel)
+    VALUES (new.rowid, new.user_message, new.messages, new.summary, new.tags, new.channel);
 END;
 
 CREATE TRIGGER IF NOT EXISTS diary_ad AFTER DELETE ON diary BEGIN
-    INSERT INTO diary_fts(diary_fts, rowid, author, user_message, messages, summary, tags, channel)
-    VALUES ('delete', old.rowid, old.author, old.user_message, old.messages, old.summary, old.tags, old.channel);
+    INSERT INTO diary_fts(diary_fts, rowid, user_message, messages, summary, tags, channel)
+    VALUES ('delete', old.rowid, old.user_message, old.messages, old.summary, old.tags, old.channel);
 END;
 
 
 -- ── 语义搜索 ──────────────────────────────────────────────────
 CREATE VIRTUAL TABLE IF NOT EXISTS diary_semantic USING vec0(
-    author         TEXT PARTITION KEY,
     turn_embedding float[1536],
     +summary       TEXT,
     +tags          TEXT,
@@ -76,5 +73,4 @@ CREATE VIRTUAL TABLE IF NOT EXISTS diary_semantic USING vec0(
 
 
 -- ── 索引 ──────────────────────────────────────────────────────
-CREATE INDEX IF NOT EXISTS idx_diary_author ON diary(author, rowid);
-CREATE INDEX IF NOT EXISTS idx_diary_created ON diary(author, created_at);
+CREATE INDEX IF NOT EXISTS idx_diary_created ON diary(created_at);

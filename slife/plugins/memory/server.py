@@ -49,7 +49,7 @@ mcp = FastMCP(
         "Every turn (user question + your response) is one row. "
         "LLM-visible tools: memory_list_recent, memory_search (grep/fts5/hybrid/time), "
         "memory_open, memory_summarize, memory_check/set/remove_embedding. "
-        "All tools take an author parameter for --agent isolation."
+        "All data is automatically scoped to the current agent."
     ),
 )
 
@@ -61,7 +61,6 @@ mcp = FastMCP(
 
 @mcp.tool(name="memory_save_turn", description="Save a turn. Harness-only.")
 async def memory_save_turn(
-    author: str = "default",
     user_message: str = "",
     messages: list[dict] | None = None,
     token_count: int = 0,
@@ -72,7 +71,7 @@ async def memory_save_turn(
     assert _store is not None
     try:
         rowid = await _store.save_turn(
-            author=author, user_message=user_message, messages=messages,
+            user_message=user_message, messages=messages,
             token_count=token_count, who_helped=who_helped, what_model=what_model,
             channel=channel, embedder=_embedder,
         )
@@ -83,12 +82,10 @@ async def memory_save_turn(
 
 
 @mcp.tool(name="memory_get_recent_turns", description="Load recent turns for restore. Harness-only.")
-async def memory_get_recent_turns(
-    author: str = "default", limit: int = 50,
-) -> str:
+async def memory_get_recent_turns(limit: int = 50) -> str:
     assert _store is not None
     try:
-        turns = await _store.get_recent_turns(author=author, limit=limit)
+        turns = await _store.get_recent_turns(limit=limit)
         return json.dumps({"turns": turns}, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("get_recent_turns_failed")
@@ -109,10 +106,10 @@ async def memory_get_recent_turns(
         "Lightweight — use memory_open to load full content."
     ),
 )
-async def memory_list_recent(author: str = "default", limit: int = 20) -> str:
+async def memory_list_recent(limit: int = 20) -> str:
     assert _store is not None
     try:
-        entries = await _store.list_recent(author=author, limit=limit)
+        entries = await _store.list_recent(limit=limit)
         for e in entries:
             um = e.get("user_message", "")
             if len(um) > 200:
@@ -127,14 +124,13 @@ async def memory_list_recent(author: str = "default", limit: int = 20) -> str:
     name="memory_count",
     description=(
         "Count your knowledge. Returns total turns and filtered count.\n"
-        "- No params: total count for your author.\n"
+        "- No params: total count for the current agent.\n"
         "- since/until: count in a time range (ISO datetime, e.g. '2026-07-01T00:00:00').\n"
         "  Use 'since' alone for 'since last month', 'until' for 'before date'.\n"
         "- query + mode: count turns matching a search (grep/fts5)."
     ),
 )
 async def memory_count(
-    author: str = "default",
     since: str | None = None,
     until: str | None = None,
     query: str | None = None,
@@ -143,7 +139,7 @@ async def memory_count(
     assert _store is not None
     try:
         result = await _store.count_turns(
-            author=author, since=since, until=until, query=query, mode=mode,
+            since=since, until=until, query=query, mode=mode,
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -159,10 +155,10 @@ async def memory_count(
         "Find rowids via memory_list_recent or memory_search."
     ),
 )
-async def memory_open(rowid: int, author: str = "default") -> str:
+async def memory_open(rowid: int) -> str:
     assert _store is not None
     try:
-        turn = await _store.get_turn(rowid=rowid, author=author)
+        turn = await _store.get_turn(rowid=rowid)
         if turn is None:
             return json.dumps(
                 {"error": f"未找到 turn rowid={rowid}"}, ensure_ascii=False,
@@ -192,7 +188,6 @@ async def memory_open(rowid: int, author: str = "default") -> str:
     ),
 )
 async def memory_search(
-    author: str = "default",
     query: str = "",
     mode: str = "hybrid",
     limit: int = 10,
@@ -206,7 +201,7 @@ async def memory_search(
 
     if mode == "time":
         try:
-            hits = await _store.search_time(author=author, limit=limit, since=since, until=until)
+            hits = await _store.search_time(limit=limit, since=since, until=until)
             return json.dumps({"mode": "time", "since": since, "until": until, "results": hits},
                               ensure_ascii=False, indent=2)
         except Exception as e:
@@ -218,28 +213,28 @@ async def memory_search(
 
     try:
         if mode == "grep":
-            hits = await _store.search_grep(author=author, pattern=query, limit=limit,
+            hits = await _store.search_grep(pattern=query, limit=limit,
                                              since=since, until=until)
             return json.dumps({"mode": "grep", "query": query, "results": hits,
                                "hint": "" if hits else f"未找到包含 '{query}' 的记忆"},
                               ensure_ascii=False, indent=2)
 
         if mode == "fts5":
-            hits = await _store.search_keyword(author=author, query=query, limit=limit,
+            hits = await _store.search_keyword(query=query, limit=limit,
                                                 since=since, until=until)
             return json.dumps({"mode": "fts5", "query": query, "results": hits,
                                "hint": "" if hits else f"未找到与 '{query}' 相关的记忆"},
                               ensure_ascii=False, indent=2)
 
         # hybrid
-        keyword_hits = await _store.search_keyword(author=author, query=query, limit=limit * 2,
+        keyword_hits = await _store.search_keyword(query=query, limit=limit * 2,
                                                      since=since, until=until)
         semantic_hits: list[dict] = []
         semantic_available = False
         if _embedder and _embedder.available:
             emb = await _embedder.embed_one(query)
             if emb:
-                semantic_hits = await _store.search_semantic(author=author, embedding=emb,
+                semantic_hits = await _store.search_semantic(embedding=emb,
                                                               limit=limit * 2,
                                                               since=since, until=until)
                 semantic_available = True
@@ -266,12 +261,12 @@ async def memory_search(
     ),
 )
 async def memory_summarize(
-    rowid: int, author: str = "default",
+    rowid: int,
     summary: str | None = None, tags: str | None = None,
 ) -> str:
     assert _store is not None
     try:
-        await _store.update_summary(rowid=rowid, author=author, summary=summary, tags=tags)
+        await _store.update_summary(rowid=rowid, summary=summary, tags=tags)
 
         if summary and _embedder and _embedder.available:
             try:
@@ -279,13 +274,13 @@ async def memory_summarize(
                 if emb:
                     assert _store._conn is not None
                     cursor = await _store._conn.execute(
-                        "SELECT tags, created_at FROM diary WHERE rowid = ? AND author = ?",
-                        (rowid, author),
+                        "SELECT tags, created_at FROM diary WHERE rowid = ?",
+                        (rowid,),
                     )
                     row = await cursor.fetchone()
                     if row:
                         await _store.upsert_embedding(
-                            rowid=rowid, author=author,
+                            rowid=rowid,
                             summary=summary, tags=tags or row["tags"] or "",
                             created_at=row["created_at"], turn_embedding=emb,
                         )
