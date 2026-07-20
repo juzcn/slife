@@ -7,11 +7,27 @@ accidentally mangled.
 
 import asyncio
 import logging
+import sys
 
-from slife.platform import build_python_command
+from slife.platform import build_python_command, _resolve_skill_script
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_input(input_str: str) -> tuple[str, str]:
+    """Split input into (script_or_code, json_args).
+
+    Returns (script, args) where args may be empty.
+    """
+    brace = input_str.find("{")
+    bracket = input_str.find("[")
+    candidates = [i for i in (brace, bracket) if i >= 0]
+    split_at = min(candidates) if candidates else len(input_str)
+
+    if split_at == len(input_str):
+        return input_str.strip(), ""
+    return input_str[:split_at].strip(), input_str[split_at:].strip()
 
 
 class RunPythonScriptTool(Tool):
@@ -38,11 +54,24 @@ class RunPythonScriptTool(Tool):
     }
 
     async def execute(self, **kwargs) -> str:
-        cmd = build_python_command(kwargs["script"])
-        logger.debug("run_python_script cmd=%s", cmd)
+        input_str = kwargs["script"]
 
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
+        # Parse input into script path and optional JSON args
+        if input_str.startswith("-c ") or input_str.startswith("-c"):
+            # -c <code> — pass code directly as argv, no shell involved
+            code = input_str[2:].strip()
+            argv = [sys.executable, "-c", code]
+            logger.debug("run_python_script argv=%s", argv)
+        else:
+            script, args = _parse_input(input_str)
+            script = _resolve_skill_script(script)
+            argv = [sys.executable, script]
+            if args:
+                argv.append(args)
+            logger.debug("run_python_script argv=%s", argv)
+
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

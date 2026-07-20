@@ -154,10 +154,11 @@ class TestModelConfigFromDict:
 class TestConfigFromJSON5:
     """Tests for Config.from_json5 classmethod."""
 
-    def test_file_not_found(self):
+    def test_file_not_found(self, tmp_path):
         """Raises FileNotFoundError for missing config."""
+        missing = tmp_path / "nonexistent" / "slife.json5"
         with pytest.raises(FileNotFoundError) as exc_info:
-            Config.from_json5("/nonexistent/path/slife.json5")
+            Config.from_json5(str(missing))
         assert "not found" in str(exc_info.value)
 
     def test_minimal_config(self, tmp_path, monkeypatch):

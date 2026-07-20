@@ -35,4 +35,4 @@ jobs:
           uv pip install pytest pytest-asyncio pytest-cov pytest-xdist
 
       - name: Run tests
-        run: uv run pytest
+        run: uv run pytest -v --tb=short --no-header --maxfail=5
