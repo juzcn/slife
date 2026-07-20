@@ -16,12 +16,17 @@ class TestBuild:
         assert "credstore" in result
         assert "Never ask for or accept secrets in chat" in result
 
-    def test_mcp_reference(self):
-        """Prompt mentions pre-configured MCP servers and anyapi-mcp-server —
-        this is startup configuration knowledge not found in any tool schema."""
+    def test_mcp_not_hardcoded(self):
+        """MCP servers should NOT be listed in the system prompt —
+        the LLM discovers them at runtime via mcp__mcp_list_servers
+        and mcp__mcp_list_tools.  Hardcoding server names in the
+        prompt would mislead the LLM into calling server names as
+        tool names (e.g. duckduckgo-search) instead of using the
+        namespaced forms (e.g. duckduckgo-search__search)."""
         result = build()
-        assert "anyapi-mcp-server" in result
-        assert "filesystem, fetch, duckduckgo-search" in result
+        assert "duckduckgo-search" not in result
+        assert "filesystem, fetch" not in result
+        assert "anyapi-mcp-server" not in result
 
     def test_no_shell_leak(self):
         """Prompt should not leak shell-specific syntax."""

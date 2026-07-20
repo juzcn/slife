@@ -151,6 +151,38 @@ class Conversation:
             cleaned.append(m)
         return cleaned
 
+    def pop_last_turn(self) -> int:
+        """Remove the last user turn and all subsequent messages.
+
+        A "turn" starts with a user message and includes all assistant
+        and tool messages that follow, up to the next user message or
+        end of the list.  Used to rollback a failed turn so the
+        conversation isn't poisoned for the next attempt.
+
+        Returns:
+            Number of messages removed.
+        """
+        if not self.messages:
+            return 0
+
+        # Find the index of the last user message
+        last_user_idx = None
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i]["role"] == "user":
+                last_user_idx = i
+                break
+
+        if last_user_idx is None:
+            return 0
+
+        removed = len(self.messages) - last_user_idx
+        del self.messages[last_user_idx:]
+        logger.debug(
+            "conv_pop_last_turn removed=%d remaining=%d",
+            removed, len(self.messages),
+        )
+        return removed
+
     def clear(self) -> None:
         """Clear conversation, preserving system prompt if present."""
         old_count = len(self.messages)

@@ -89,6 +89,13 @@ class Inbox:
         while True:
             msg = await self._queue.get()
             await self._process_one(msg)
+            # Notify TUI that processing completed so the status bar
+            # can clear the "⏳ processing" indicator.
+            if self._on_activity:
+                try:
+                    await self._on_activity("idle")
+                except Exception:
+                    pass
 
     async def _process_one(self, msg: AgentMessage) -> None:
         """Process a single message through the agent loop."""
@@ -210,6 +217,30 @@ class Inbox:
                     pass
         except Exception as e:
             logger.warning("inbox_process_error source=%s err=%s", msg.source, e)
+            # Finalize the handler so the TUI spinner stops — without
+            # this the chat view stays in a permanent loading state.
+            if handler is not None:
+                try:
+                    handler.finalize_current()
+                except Exception:
+                    pass
+            # Rollback the failed turn so the conversation isn't
+            # poisoned for the next message (e.g. content-policy
+            # rejections would keep failing on retry otherwise).
+            try:
+                conversation.pop_last_turn()
+            except Exception:
+                pass
+            # Notify TUI so the user sees the error in chat
+            if self._on_activity:
+                try:
+                    await self._on_activity(
+                        "loop_error",
+                        source=msg.source,
+                        error=str(e),
+                    )
+                except Exception:
+                    pass
             if is_remote and self._on_activity:
                 try:
                     await self._on_activity(

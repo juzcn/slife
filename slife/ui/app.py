@@ -351,6 +351,11 @@ class SlifeApp(App):
                 f"✓ task from {source} completed", color="#3fb950",
             )
 
+        elif kind == "idle":
+            # Agent loop finished — refresh status bar to clear
+            # the "⏳ processing" indicator.
+            self._update_status()
+
     # ── Recovery UI ───────────────────────────────────────────────
 
     def _show_system_message(self, text: str, color: str | None = None) -> None:
