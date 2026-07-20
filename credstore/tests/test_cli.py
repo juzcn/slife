@@ -52,6 +52,27 @@ class TestTtyGuards:
 
 
 # ═══════════════════════════════════════════════════════════════
+# main() gates
+# ═══════════════════════════════════════════════════════════════
+
+class TestMainGates:
+    """Tests for pre-dispatch checks in main()."""
+
+    def test_set_requires_master_key(self, mock_backend_locked):
+        """set exits early when master key not set."""
+        assert main(["set", "test/key"]) == 1
+
+    def test_reset_backup_requires_master_key(self, mock_backend_locked):
+        """reset-backup exits early when master key not set."""
+        assert main(["reset-backup"]) == 1
+
+    def test_unknown_command(self):
+        """Unknown command exits with error (SystemExit)."""
+        with pytest.raises(SystemExit):
+            main(["nonexistent-command"])
+
+
+# ═══════════════════════════════════════════════════════════════
 # status
 # ═══════════════════════════════════════════════════════════════
 
@@ -115,6 +136,23 @@ class TestCliSet:
     def test_set_cryptfile_backend_unavailable(self, mock_backend_no_cryptfile, monkeypatch):
         """When cryptfile backend is not installed, set fails hard."""
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "sk-secret")
+        assert main(["set", "test/key"]) == 1
+
+    def test_set_cryptfile_write_value_error(self, mock_backend, in_mem_cryptfile, monkeypatch):
+        """Cryptfile.set_password raises ValueError → exit 1, secret cleaned up."""
+        inputs = iter(["sk-secret", "master-pw"])
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": next(inputs))
+
+        # Make cryptfile set_password raise ValueError via the unlocked_cryptfile mock
+        import credstore._backend as be
+        from contextlib import contextmanager
+        @contextmanager
+        def _fail_cf_write(pw):
+            class _FailingCF:
+                def set_password(self, service, key, secret):
+                    raise ValueError("wrong master password")
+            yield _FailingCF()
+        monkeypatch.setattr(be, "unlocked_cryptfile", _fail_cf_write)
         assert main(["set", "test/key"]) == 1
 
 
@@ -240,6 +278,52 @@ class TestCliList:
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
         assert main(["list"]) == 0
 
+    def test_list_cryptfile_read_fails(self, mock_backend, in_mem_cryptfile, monkeypatch):
+        """Exception during cryptfile key read → exit 1, master_pw cleaned up."""
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
+
+        # Make _read_cryptfile_keys raise
+        import credstore._store as sm
+        monkeypatch.setattr(sm, "_read_cryptfile_keys", lambda cf: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert main(["list"]) == 1
+
+    def test_list_with_synced_keys(self, capsys, mock_backend, in_mem_store, in_mem_cryptfile, monkeypatch):
+        """Keys in both stores with same value → show 'synced'."""
+        in_mem_store["svc/k1"] = "same-val"
+        in_mem_cryptfile["svc/k1"] = "same-val"
+        # Make _enumerate_system_keyring return this key
+        monkeypatch.setattr(
+            "credstore.__main__._enumerate_system_keyring",
+            lambda service, with_values=False: [("svc/k1", "")],
+        )
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
+        assert main(["list"]) == 0
+        out = capsys.readouterr().out
+        assert "synced" in out
+        assert "1 credential" in out
+
+    def test_list_with_mismatched_keys(self, capsys, mock_backend, in_mem_store, in_mem_cryptfile, monkeypatch):
+        """Keys in both stores with different values → show 'MISMATCH'."""
+        in_mem_store["svc/k1"] = "val-a"
+        in_mem_cryptfile["svc/k1"] = "val-b"
+        # Make _enumerate_system_keyring return this key
+        monkeypatch.setattr(
+            "credstore.__main__._enumerate_system_keyring",
+            lambda service, with_values=False: [("svc/k1", "")],
+        )
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
+        assert main(["list"]) == 0
+        out = capsys.readouterr().out
+        assert "MISMATCH" in out
+
+    def test_list_with_cryptfile_only(self, capsys, mock_backend, in_mem_cryptfile, monkeypatch):
+        """Key only in cryptfile → show 'cryptfile only' and suggest reset-keyring."""
+        in_mem_cryptfile["svc/k1"] = "v1"
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
+        assert main(["list"]) == 0
+        out = capsys.readouterr().out
+        assert "reset-keyring" in out
+
 
 # ═══════════════════════════════════════════════════════════════
 # reset-keyring
@@ -257,6 +341,14 @@ class TestCliResetKeyring:
         assert in_mem_store["test/a"] == "val-a"
         assert in_mem_store["test/b"] == "val-b"
 
+    def test_reset_keyring_failure(self, mock_backend, in_mem_cryptfile, monkeypatch):
+        """reset_credentials raises → exit 1, master_pw cleaned up."""
+        in_mem_cryptfile["test/a"] = "val-a"
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
+        import credstore._store as sm
+        monkeypatch.setattr(sm, "reset_credentials", lambda mp: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert main(["reset-keyring"]) == 1
+
 
 # ═══════════════════════════════════════════════════════════════
 # reset-backup
@@ -270,6 +362,29 @@ class TestCliResetBackup:
         assert main(["reset-backup"]) == 0
         out = capsys.readouterr().out
         assert "No credentials" in out
+
+    def test_reset_backup_cryptfile_not_available(self, mock_backend_no_cryptfile, monkeypatch):
+        """cf is None → exit 1."""
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
+        assert main(["reset-backup"]) == 1
+
+    def test_reset_backup_wrong_password(self, mock_backend, monkeypatch):
+        """unlocked_cryptfile raises ValueError → exit 1."""
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
+
+        # Mock _enumerate_system_keyring to return entries so we reach the cryptfile unlock
+        monkeypatch.setattr(
+            "credstore.__main__._enumerate_system_keyring",
+            lambda service, with_values=False: [("test/k", "val")],
+        )
+        # Mock unlocked_cryptfile to raise ValueError (wrong password)
+        import credstore._backend as be
+        from contextlib import contextmanager
+        @contextmanager
+        def _fail_unlock(pw):
+            yield (_ for _ in ()).throw(ValueError("wrong password"))
+        monkeypatch.setattr(be, "unlocked_cryptfile", _fail_unlock)
+        assert main(["reset-backup"]) == 1
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -319,6 +434,186 @@ class TestCliSetPassword:
         out = capsys.readouterr().out
         assert "Master password changed" in out
         assert "2" in out  # 2 credentials re-encrypted
+
+    def test_set_password_change_wrong_old_password(self, mock_backend, in_mem_cryptfile, monkeypatch):
+        """Incorrect old password during change → exit 1."""
+        in_mem_cryptfile["svc/k1"] = "old-secret"
+        import os
+        monkeypatch.setattr(os.path, "exists", lambda p: True)
+
+        # Mock unlocked_cryptfile to raise on old password
+        import credstore._backend as be
+        from contextlib import contextmanager
+        @contextmanager
+        def _fail_old_unlock(pw):
+            yield (_ for _ in ()).throw(ValueError("wrong password"))
+        monkeypatch.setattr(be, "unlocked_cryptfile", _fail_old_unlock)
+
+        inputs = iter(["wrong-old-pw", "new-pw-12345", "new-pw-12345"])
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": next(inputs))
+        assert main(["set-password"]) == 1
+
+    def test_set_password_change_cryptfile_not_available(self, mock_backend, monkeypatch):
+        """cf is None during change → exit 1."""
+        import os
+        monkeypatch.setattr(os.path, "exists", lambda p: True)
+
+        # Mock get_cryptfile to return None
+        import credstore._backend as be
+        monkeypatch.setattr(be, "get_cryptfile", lambda: None)
+
+        inputs = iter(["old-pw", "new-pw-12345", "new-pw-12345"])
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": next(inputs))
+        assert main(["set-password"]) == 1
+
+
+# ═══════════════════════════════════════════════════════════════
+# inject / uninject
+# ═══════════════════════════════════════════════════════════════
+
+@pytest.mark.usefixtures("_tty")
+class TestCliInject:
+    """Tests for 'credstore inject' — persist to system environment."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_persist(self, monkeypatch, tmp_path):
+        """Prevent inject from touching real registry/filesystem."""
+        monkeypatch.setattr("credstore.__main__._setx", lambda k, v: None)
+        monkeypatch.setattr("credstore.__main__._setx_delete", lambda k: None)
+        monkeypatch.setattr("credstore._shell.add_to_profile", lambda key, shell: True)
+        monkeypatch.setattr("credstore.__main__._shell_get_profile_path", lambda shell: "/fake/profile")
+
+    def test_inject_single_bash(self, capsys, mock_backend, in_mem_store):
+        in_mem_store["MY_KEY"] = "my-secret"
+        assert main(["inject", "MY_KEY", "--shell", "bash"]) == 0
+        out = capsys.readouterr().out
+        assert "export MY_KEY='my-secret'" in out
+
+    def test_inject_single_powershell(self, capsys, mock_backend, in_mem_store):
+        in_mem_store["MY_KEY"] = "my-secret"
+        assert main(["inject", "MY_KEY", "--shell", "powershell"]) == 0
+        out = capsys.readouterr().out
+        assert "$env:MY_KEY = 'my-secret'" in out
+
+    def test_inject_single_cmd(self, capsys, mock_backend, in_mem_store):
+        in_mem_store["MY_KEY"] = "my-secret"
+        assert main(["inject", "MY_KEY", "--shell", "cmd"]) == 0
+        out = capsys.readouterr().out
+        assert "set MY_KEY=my-secret" in out
+
+    def test_inject_not_found(self, mock_backend):
+        assert main(["inject", "NONEXISTENT"]) == 1
+
+    def test_inject_multiple_keys(self, capsys, mock_backend, in_mem_store):
+        in_mem_store["KEY1"] = "val1"
+        in_mem_store["KEY2"] = "val2"
+        assert main(["inject", "KEY1", "KEY2", "--shell", "bash"]) == 0
+        out = capsys.readouterr().out
+        assert "export KEY1='val1'" in out
+        assert "export KEY2='val2'" in out
+
+    def test_inject_partial_failure_stops(self, capsys, mock_backend, in_mem_store):
+        """First key succeeds, second not found → exit 1, no output for second."""
+        in_mem_store["KEY1"] = "val1"
+        assert main(["inject", "KEY1", "NONEXISTENT", "--shell", "bash"]) == 1
+        out = capsys.readouterr().out
+        assert "export KEY1='val1'" in out
+        assert "NONEXISTENT" not in out
+
+    def test_inject_value_with_single_quote(self, capsys, mock_backend, in_mem_store):
+        in_mem_store["KEY"] = "val'quote"
+        assert main(["inject", "KEY", "--shell", "bash"]) == 0
+        out = capsys.readouterr().out
+        assert "export KEY='val'\\''quote'" in out
+
+@pytest.mark.usefixtures("_tty")
+class TestCliUninject:
+    """Tests for 'credstore uninject' — remove from system environment."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_persist(self, monkeypatch):
+        """Prevent uninject from touching real registry/filesystem."""
+        monkeypatch.setattr("credstore.__main__._setx", lambda k, v: None)
+        monkeypatch.setattr("credstore.__main__._setx_delete", lambda k: None)
+        monkeypatch.setattr("credstore._shell.remove_from_profile", lambda key, shell: False)
+        monkeypatch.setattr("credstore.__main__._shell_get_profile_path", lambda shell: "/fake/profile")
+
+    def test_uninject_bash(self, capsys, mock_backend):
+        assert main(["uninject", "MY_KEY", "--shell", "bash"]) == 0
+        out = capsys.readouterr().out
+        assert "unset MY_KEY" in out
+
+    def test_uninject_powershell(self, capsys, mock_backend):
+        assert main(["uninject", "MY_KEY", "--shell", "powershell"]) == 0
+        out = capsys.readouterr().out
+        assert "Remove-Item Env:MY_KEY" in out
+
+    def test_uninject_cmd(self, capsys, mock_backend):
+        assert main(["uninject", "MY_KEY", "--shell", "cmd"]) == 0
+        out = capsys.readouterr().out
+        assert "set MY_KEY=" in out
+
+    def test_uninject_multiple_keys(self, capsys, mock_backend):
+        assert main(["uninject", "KEY1", "KEY2", "--shell", "bash"]) == 0
+        out = capsys.readouterr().out
+        assert "unset KEY1" in out
+        assert "unset KEY2" in out
+
+    def test_uninject_never_fails(self, mock_backend):
+        """uninject doesn't touch keyring — always succeeds."""
+        assert main(["uninject", "ANYTHING"]) == 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# enumeration edge cases
+# ═══════════════════════════════════════════════════════════════
+
+class TestEnumerateWindows:
+    """Tests for Windows Credential Manager enumeration."""
+
+    def test_import_error_win32cred(self, monkeypatch):
+        """Both win32cred imports fail → returns empty list."""
+        from credstore._enumerate import _enumerate_windows
+        # Simulate import failure
+        import builtins
+        orig_import = builtins.__import__
+        def _block_win32cred(name, *args, **kwargs):
+            if "win32cred" in name or "win32ctypes" in name:
+                raise ImportError("no win32cred")
+            return orig_import(name, *args, **kwargs)
+        monkeypatch.setattr(builtins, "__import__", _block_win32cred)
+        result = _enumerate_windows("test-service")
+        assert result == []
+
+    def test_keys_only_mode(self, monkeypatch):
+        """with_values=False skips credential blob decoding."""
+        monkeypatch.setattr(
+            "credstore._enumerate._enumerate_windows",
+            lambda service, with_values=False: [("my-key", "")],
+        )
+        from credstore._enumerate import _enumerate_windows
+        result = _enumerate_windows("test-service", with_values=False)
+        for _, val in result:
+            assert val == ""  # no value decoded
+
+    def test_with_values_mode(self, monkeypatch):
+        """with_values=True decodes and returns credential values."""
+        import credstore._enumerate as en
+        monkeypatch.setattr(en, "_enumerate_windows", lambda service, with_values=True: [("my-key", "secret")])
+        result = en._enumerate_windows("test-service", with_values=True)
+        assert len(result) == 1
+        assert result[0][1] == "secret"
+
+
+class TestEnumerateSystemKeyring:
+    """Tests for _enumerate_system_keyring platform dispatch."""
+
+    def test_non_windows_returns_empty(self, monkeypatch):
+        """On non-Windows, returns empty list with stderr message."""
+        monkeypatch.setattr("os.name", "posix")
+        from credstore._enumerate import enumerate_system_keyring
+        result = enumerate_system_keyring("test-service")
+        assert result == []
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -455,7 +750,10 @@ def mock_backend(monkeypatch, in_mem_store, in_mem_cryptfile):
     monkeypatch.setattr("credstore._store._read_cryptfile_keys", _cf_keys)
 
     # Mock _enumerate_system_keyring — never touch real Credential Manager
-    monkeypatch.setattr("credstore.__main__._enumerate_system_keyring", lambda service: [])
+    monkeypatch.setattr(
+        "credstore.__main__._enumerate_system_keyring",
+        lambda service, with_values=False: [],
+    )
 
     return cf
 

@@ -31,6 +31,8 @@ class CredentialCheckTool(Tool):
     Never exposes the full secret — only first 4 + last 4 characters.
     """
 
+    requires_a2a = False
+
     name = "credential_check"
     description = (
         "Check a credential in the OS keyring. "
@@ -65,5 +67,80 @@ class CredentialCheckTool(Tool):
             return f"{key} = {_mask_value(cred_val)} [credstore]"
 
         return f"'{key}' is not stored in the keyring."
+
+
+class InjectCredentialTool(Tool):
+    """Set an environment variable from the OS keyring — temporary, no persistence.
+
+    Reads the secret from the keyring and sets it directly in os.environ.
+    The secret NEVER appears in the return value — the LLM only sees a
+    confirmation message.
+    """
+
+    requires_a2a = False
+
+    name = "inject_credential"
+    description = (
+        "Temporarily set an environment variable from a credential stored "
+        "in the OS keyring.  The secret goes directly into the process "
+        "environment (os.environ) — it is NOT persisted and will be gone "
+        "when the process exits.  Safe for the LLM to call: the return "
+        "value contains only a confirmation, never the secret.  "
+        "Use uninject_credential to remove it when done."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Credential key to load, e.g. 'DEEPSEEK_API_KEY'.",
+            },
+        },
+        "required": ["key"],
+    }
+
+    async def execute(self, **kwargs) -> str:
+        key: str = kwargs["key"]
+
+        from credstore import get_credential
+
+        value = get_credential(key)
+        if value is None:
+            return f"Error: '{key}' not found in the OS keyring."
+
+        os.environ[key] = value
+        del value
+        return f"Set {key} from keyring (temporary, this process only)."
+
+
+class UninjectCredentialTool(Tool):
+    """Remove an environment variable set by inject_credential."""
+
+    requires_a2a = False
+
+    name = "uninject_credential"
+    description = (
+        "Remove an environment variable from the current process.  "
+        "Does NOT touch the keyring — only clears os.environ.  "
+        "Use this to clean up after inject_credential."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Environment variable to remove, e.g. 'DEEPSEEK_API_KEY'.",
+            },
+        },
+        "required": ["key"],
+    }
+
+    async def execute(self, **kwargs) -> str:
+        key: str = kwargs["key"]
+        existed = key in os.environ
+        os.environ.pop(key, None)
+        if existed:
+            return f"Removed {key} from environment."
+        return f"{key} was not set in the environment."
 
 

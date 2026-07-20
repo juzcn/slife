@@ -204,6 +204,7 @@ Quick reference:
 ```bash
 credstore set-password                # first-time setup
 credstore set DEEPSEEK_API_KEY        # store (masked atomic dual-write)
+credstore inject DEEPSEEK_API_KEY     # persist to registry (Win) or profile (Unix)
 credstore get DEEPSEEK_API_KEY        # retrieve, masked output
 credstore list                        # list all stored keys
 credstore status                      # backend status
@@ -217,6 +218,8 @@ credstore status                      # backend status
 | `get KEY -p` | Retrieve (dual-query, plaintext) |
 | `delete KEY` | Remove from both stores |
 | `list` | List all stored keys |
+| `inject KEY` | Persist to system env — registry (Windows) or profile (Unix) |
+| `uninject KEY` | Remove from system env |
 | `reset-keyring` | Restore keyring from cryptfile backup |
 | `reset-backup` | Sync keyring → cryptfile |
 | `status` | Backend status |

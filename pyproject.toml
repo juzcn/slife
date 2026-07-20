@@ -1,6 +1,6 @@
 [project]
 name = "slife"
-version = "0.3.7"
+version = "0.3.8"
 description = "Terminal-based AI agent — a function-calling loop with minimum harness"
 readme = "README.md"
 license = { text = "MIT" }
@@ -24,6 +24,7 @@ dependencies = [
     "keyrings-cryptfile>=1.3.0",
     "paho-mqtt>=2.0.0",
     "requests>=2.31.0",
+    "credstore",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -45,10 +46,9 @@ embeddings = ["llama-cpp-python"]
 
 [project.scripts]
 slife = "slife:main"
-credstore = "credstore.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["slife", "credstore"]
+packages = ["slife"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "slife/skills"
@@ -58,7 +58,6 @@ packages = ["slife", "credstore"]
 include = [
     "/slife",
     "/skills",
-    "/credstore",
     "/README.md",
     "/README.zh-CN.md",
     "/LICENSE",
@@ -82,6 +81,12 @@ dev = [
 extra-index-url = [
     "https://abetlen.github.io/llama-cpp-python/whl/cpu",
 ]
+
+[tool.uv.workspace]
+members = ["credstore"]
+
+[tool.uv.sources]
+credstore = { workspace = true }
 
 [tool.pytest.ini_options]
 minversion = "9.1"

@@ -364,7 +364,9 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 | `run_python_script` | Platform-correct Python invocation with JSON arguments |
 | `get_os_info` | Current OS name for platform-specific shell syntax |
 | `config_env_set` / `config_secret_register` / `get` / `remove` | Manage env vars in slife.json5 — secrets → `${VAR}` refs (no value param), non-secrets → values. `config_env_get` handles shell + config only (no keyring). |
-| `credential_check` | Verify OS keyring credentials — shows masked value (`sk-a…B3f2`) if stored, shell overrides keyring. Never exposes the full secret. |
+| `credential_check` | Verify OS keyring credentials — shows masked value (`sk-a…B3f2`). Never exposes the full secret. |
+| `inject_credential` | Load a secret from keyring into `os.environ` — temporary, this process only. Secret never appears in return value. LLM-safe. |
+| `uninject_credential` | Remove an env var from `os.environ`. No keyring access. LLM-safe. |
 | `cli_add_tool` / `check_installed` / `remove` / `list` | CLI discovery and registration management |
 
 #### 2. Memory Tools
@@ -963,18 +965,18 @@ tests/                  # pytest suite (asyncio_mode=strict, 1250+ tests)
 
 ```
 credstore/
-  __init__.py           # Public API: get_credential, set_credential, delete_credential, etc.
-  __main__.py           # CLI entry point — 8 commands (set-password, status, set, get,
-                        #   delete, list, reset-keyring, reset-backup)
-                        #   @requires_tty decorator guards interactive commands
-                        #   _err() helper for consistent error output
+  __init__.py           # Public API: get/set/delete credential, format_export/unset, etc.
+  __main__.py           # CLI — 10 commands (set-password, status, set, get, delete,
+                        #   list, inject, uninject, reset-keyring, reset-backup)
   _backend.py           # Dual-write backend: system keyring + keyrings.cryptfile
-                        #   unlocked_cryptfile(password): context manager for cryptfile access
+                        #   unlocked_cryptfile(password): context manager
   _config.py            # Config file resolution (credstore.json5, CREDSTORE_FILE env var)
+  _enumerate.py         # Platform-specific credential enumeration (Windows CredMan)
   _resolver.py          # keyring: URI parsing and resolution
-  _store.py             # CredentialStore: get/set/delete/reset with lazy backend init
-  _tty.py               # Platform-agnostic masked terminal input (Windows msvcrt / Unix termios)
-  tests/                # pytest suite (133 tests)
+  _shell.py             # Shell formatting + profile persistence helpers
+  _store.py             # CredentialStore: get/set/delete/reset/list_keys
+  _tty.py               # Cross-platform masked terminal input
+  tests/                # pytest suite (206 tests)
 ```
 
 ## The Knowledge Base Effect

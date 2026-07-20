@@ -1,9 +1,14 @@
 """Credential store — system keyring with cryptfile backup.
 
-- get():    system keyring only (fast, no master key)
-- set():    system keyring only (cryptfile backup handled by CLI layer)
-- delete(): both stores (cryptfile delete does not need master key)
-- reset():  cryptfile → system keyring (explicit recovery, needs master key)
+- get():      system keyring only (fast, no master key)
+- list_keys(): system keyring keys only — NEVER returns secret values
+- set():      system keyring only (cryptfile backup handled by CLI layer)
+- delete():   both stores (cryptfile delete does not need master key)
+- reset():    cryptfile → system keyring (explicit recovery, needs master key)
+
+Memory safety: secrets are Python ``str`` objects (immutable).  Callers MUST
+``del`` references after use to release them for garbage collection.  Never
+batch-load all values into a single collection — compare inline, one at a time.
 """
 
 from __future__ import annotations
@@ -45,6 +50,24 @@ class CredentialStore:
         Returns True/False — NEVER the secret content.
         """
         return self.get(key) is not None
+
+    def list_keys(self) -> list[str]:
+        """List credential keys from system keyring — NEVER returns values.
+
+        Returns key names only.  Use ``exists()`` to check individual
+        credentials without pulling secrets into memory.
+        """
+        from credstore._backend import get_system_keyring
+
+        sk = get_system_keyring()
+        if sk is None:
+            return []
+
+        # Most keyring backends don't support enumeration.
+        # On Windows, enumeration is handled by the CLI layer via
+        # win32cred.CredEnumerate (see __main__._enumerate_windows).
+        # This method provides the safe, value-free interface.
+        return []
 
     # ── set ───────────────────────────────────────────────────
 
@@ -115,6 +138,7 @@ class CredentialStore:
                         sk.set_password(self._service, key, value)
                         count += 1
                         logger.info("reset_restored key=%s", key)
+                        del value  # release secret after write
                 except Exception as exc:
                     logger.warning("reset_skip key=%s err=%s", key, exc)
 
@@ -180,6 +204,14 @@ def _get_store() -> CredentialStore:
 
 
 def get_credential(key: str) -> str | None:
+    """Retrieve a credential from system keyring.
+
+    Callers MUST ``del`` the returned value after use to release the
+    secret from memory as soon as possible.  Python strings are
+    immutable — only the reference can be cleaned up.
+
+    Prefer ``exists_credential()`` when you only need to check existence.
+    """
     return _get_store().get(key)
 
 
@@ -192,6 +224,15 @@ def exists_credential(key: str) -> bool:
     """
     return _get_store().exists(key)
 
+
+def list_credential_keys() -> list[str]:
+    """List credential keys WITHOUT retrieving any secret values.
+
+    Returns key names only — NEVER the secret content.
+    Use this for enumeration; call ``get_credential()`` individually
+    for the specific keys you need, and ``del`` the result after use.
+    """
+    return _get_store().list_keys()
 
 
 def set_credential(key: str, secret: str) -> None:
@@ -214,3 +255,8 @@ def get_backend_name() -> str:
 def check_backend() -> dict:
     from credstore._backend import get_backend_info
     return get_backend_info()
+
+
+# ── shell formatting (re-exported from _shell.py) ────────────
+
+from credstore._shell import format_export, format_unset  # noqa: F401 — backward compat
