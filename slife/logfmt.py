@@ -22,6 +22,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from contextlib import contextmanager
@@ -229,7 +230,7 @@ async def drain_stderr(
         running_check: Optional ``() -> bool`` to stop draining early.
     """
     async for text in read_stderr_lines(process, running_check):
-        logger.debug("[%s] %s", prefix, text)
+        logger.debug("[%s] %s", prefix, sanitize_secrets(text))
 
 
 # ── Log directory resolution ──────────────────────────────────────────
@@ -245,6 +246,45 @@ def resolve_log_dir() -> Path:
 
 
 # ── JSON response helpers ─────────────────────────────────────────────
+
+
+# ── Secret sanitization for stderr / log output ──────────────────────
+
+# Patterns that look like API keys or bearer tokens in free-form text.
+# These are deliberately conservative — they only match well-known
+# prefixes and high-entropy strings that are almost certainly secrets.
+_SECRET_PATTERNS: list[re.Pattern] = [
+    # OpenAI / Anthropic / common API keys
+    re.compile(r"\bsk-(?:ant|agent|proj|svcacct|admin|org)?[A-Za-z0-9_-]{20,}\b"),
+    # GitHub personal access tokens
+    re.compile(r"\bgh[psu]_[A-Za-z0-9]{20,}\b"),
+    # Google OAuth access tokens
+    re.compile(r"\bya29\.[A-Za-z0-9._-]{20,}\b"),
+    # Generic bearer tokens in Authorization headers
+    re.compile(r"(?:Authorization|Bearer)\s+([A-Za-z0-9+/=._-]{20,})", re.IGNORECASE),
+    # key=value patterns with secret-looking values
+    re.compile(r"(?:api_key|apikey|api-key|secret|token|password)\s*[=:]\s*([^\s]{20,})", re.IGNORECASE),
+]
+
+_REDACTED = "<REDACTED>"
+
+
+def sanitize_secrets(text: str) -> str:
+    """Redact API key / token patterns from *text* for safe logging.
+
+    Replaces matched secret substrings with ``<REDACTED>``.
+    Idempotent — safe to call on already-redacted text.
+
+    >>> sanitize_secrets("Authorization: Bearer sk-ant-api03-abc123...")
+    'Authorization: <REDACTED>'
+    >>> sanitize_secrets("normal log message")
+    'normal log message'
+    """
+    if not text or not isinstance(text, str):
+        return text
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub(_REDACTED, text)
+    return text
 
 
 def ok_json(**extra: object) -> str:

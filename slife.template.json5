@@ -1,7 +1,10 @@
 {
   // ── Environment Variables ──────────────────────────────────────
   // ${VAR} references resolve at runtime: shell → OS keyring → default.
-  // Use credstore to store secrets (never paste keys here):
+  //
+  // IMPORTANT: Plaintext API keys are REJECTED at startup.
+  // All api_key fields MUST use ${VAR} references (e.g. ${DEEPSEEK_API_KEY}).
+  // Store the actual key via credstore (never paste keys here):
   //   credstore set DEEPSEEK_API_KEY
   env: {
     BAIDU_API_KEY: "${BAIDU_API_KEY}",
@@ -38,7 +41,10 @@
   // ── Model Provider ─────────────────────────────────────────────
   // Edit for your API provider.  Default uses DeepSeek — replace
   // with OpenAI, Gemini, Ollama, or any OpenAI-compatible endpoint.
+  //
+  // api_key MUST be a ${VAR} reference — plaintext keys are REJECTED.
   // ${DEEPSEEK_API_KEY} resolves from keyring automatically.
+  // Store the key first:  credstore set DEEPSEEK_API_KEY
   models: {
     mode: "merge",
     providers: {

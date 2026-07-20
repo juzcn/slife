@@ -61,9 +61,13 @@ def _resolve_api_key(value: str) -> str:
     if resolved != value:
         return resolved
 
-    # Plaintext
+    # Plaintext — reject: real keys must use ${VAR} or keyring: URI
     if value and len(value) >= 12:
-        logger.warning("plaintext_api_key — store with: credstore set ...")
+        raise ValueError(
+            f"Plaintext API key detected in provider config. "
+            f"Replace the value with ${{VAR}} (e.g. ${{DEEPSEEK_API_KEY}}) "
+            f"and store the real key via: credstore set DEEPSEEK_API_KEY"
+        )
     return value
 
 

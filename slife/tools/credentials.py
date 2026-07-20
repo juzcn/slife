@@ -26,26 +26,35 @@ def _mask_value(value: str) -> str:
 
 
 class CredentialCheckTool(Tool):
-    """Verify credentials in the OS keyring with masked values.
+    """Verify a credential in the OS keyring — masked, LLM-safe.
 
-    Never exposes the full secret — only first 4 + last 4 characters.
+    NEVER exposes the full secret — returns only first 4 + last 4
+    characters (e.g. ``sk-a…B3f2``).  Shell env vars take priority
+    over the keyring.  Use this to check whether a credential is
+    configured before attempting operations that need it.
     """
 
     requires_a2a = False
 
     name = "credential_check"
     description = (
-        "Check a credential in the OS keyring. "
-        "Shows masked value (e.g. 'sk-a…B3f2') if stored. "
-        "Shell env vars override the keyring. "
-        "NEVER exposes the full secret."
+        "Verify a credential in the OS keyring — LLM-safe, never "
+        "exposes the full secret. "
+        "Returns masked value (e.g. 'sk-a…B3f2') if stored, or "
+        "'not stored' if missing. Shell env vars override keyring. "
+        "Use before running operations that need an API key — "
+        "check first, then use inject_credential to load it."
     )
     parameters = {
         "type": "object",
         "properties": {
             "key": {
                 "type": "string",
-                "description": "Credential key, e.g. 'DEEPSEEK_API_KEY'.",
+                "description": (
+                    "Credential key to check, e.g. 'DEEPSEEK_API_KEY', "
+                    "'GITHUB_TOKEN'. Returns masked status only — "
+                    "NEVER the full secret."
+                ),
             },
         },
         "required": ["key"],
@@ -70,30 +79,36 @@ class CredentialCheckTool(Tool):
 
 
 class InjectCredentialTool(Tool):
-    """Set an environment variable from the OS keyring — temporary, no persistence.
+    """Load a secret from the OS keyring into the current process environment.
 
-    Reads the secret from the keyring and sets it directly in os.environ.
-    The secret NEVER appears in the return value — the LLM only sees a
-    confirmation message.
+    Reads the secret from the keyring and sets it directly in os.environ
+    — temporary, this process only, gone when the process exits.  The
+    secret NEVER appears in the return value — the LLM only sees a
+    confirmation.  Use credential_check first to verify the key exists.
+    Use uninject_credential to clean up when done.
     """
 
     requires_a2a = False
 
     name = "inject_credential"
     description = (
-        "Temporarily set an environment variable from a credential stored "
-        "in the OS keyring.  The secret goes directly into the process "
-        "environment (os.environ) — it is NOT persisted and will be gone "
-        "when the process exits.  Safe for the LLM to call: the return "
-        "value contains only a confirmation, never the secret.  "
-        "Use uninject_credential to remove it when done."
+        "Load a secret from the OS keyring into the current process "
+        "environment (os.environ) — temporary, gone on exit. "
+        "LLM-safe: return value is a confirmation ONLY, never the secret. "
+        "The key becomes available to subprocesses spawned after injection. "
+        "Use credential_check first to verify the key exists. "
+        "Use uninject_credential to remove from the environment when done."
     )
     parameters = {
         "type": "object",
         "properties": {
             "key": {
                 "type": "string",
-                "description": "Credential key to load, e.g. 'DEEPSEEK_API_KEY'.",
+                "description": (
+                    "Credential key to load from keyring, e.g. 'DEEPSEEK_API_KEY', "
+                    "'GITHUB_TOKEN'. The secret is placed in os.environ — "
+                    "NEVER returned to the LLM."
+                ),
             },
         },
         "required": ["key"],
@@ -114,22 +129,31 @@ class InjectCredentialTool(Tool):
 
 
 class UninjectCredentialTool(Tool):
-    """Remove an environment variable set by inject_credential."""
+    """Remove an env var from the current process — keyring is untouched.
+
+    Only clears os.environ for this process.  Does NOT touch the OS
+    keyring — the credential remains safely stored.  Use this to clean
+    up after inject_credential when the secret is no longer needed.
+    """
 
     requires_a2a = False
 
     name = "uninject_credential"
     description = (
-        "Remove an environment variable from the current process.  "
-        "Does NOT touch the keyring — only clears os.environ.  "
-        "Use this to clean up after inject_credential."
+        "Remove an env var from the current process environment only. "
+        "Does NOT touch the OS keyring — the secret remains stored. "
+        "Use to clean up after inject_credential when the key is no "
+        "longer needed by subprocesses in this session."
     )
     parameters = {
         "type": "object",
         "properties": {
             "key": {
                 "type": "string",
-                "description": "Environment variable to remove, e.g. 'DEEPSEEK_API_KEY'.",
+                "description": (
+                    "Env var to remove from os.environ, e.g. 'DEEPSEEK_API_KEY'. "
+                    "Only clears current process — keyring secret is unaffected."
+                ),
             },
         },
         "required": ["key"],

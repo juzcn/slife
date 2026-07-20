@@ -39,6 +39,9 @@ What the LLM cannot know (and the prompt provides):
 - That `cli_add_tool` persists discovered CLIs across restarts
 - That `config_secret_register` registers secrets (writes `${VAR}`, user runs `credstore set` in terminal)
 - That `config_env_set` handles non-secret env vars (writes value or `<YOUR_VAR>` placeholder)
+- That `config_env_set` **rejects values that look like secrets** (API key prefixes, token patterns, key names with KEY/SECRET/TOKEN) — use `config_secret_register` instead
+- That **plaintext API keys in `slife.json5` are rejected at startup** — `api_key` fields must use `${VAR}` references
+- That MCP server stderr is **sanitized** before logging — API key patterns are redacted
 - That A2A agents are discovered via `a2a_list_agents` / `a2a_list_subagents`
 - That `a2a_spawn_subagent` creates local workers for parallel computation
 - That every conversation is permanently recorded and searchable via `memory_search`
@@ -408,7 +411,7 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 | `execute_shell` | `asyncio.create_subprocess_shell` with configurable timeout |
 | `run_python_script` | Platform-correct Python invocation with JSON arguments |
 | `get_os_info` | Current OS name for platform-specific shell syntax |
-| `config_env_set` / `config_secret_register` / `get` / `remove` | Manage env vars in slife.json5 — secrets → `${VAR}` refs (no value param), non-secrets → values. `config_env_get` handles shell + config only (no keyring). |
+| `config_env_set` / `config_secret_register` / `get` / `remove` | Manage env vars in slife.json5 — secrets → `${VAR}` refs (no value param), non-secrets → values. `config_env_set` rejects secret-looking values (API key prefixes, token patterns). `config_env_get` handles shell + config only (no keyring). |
 | `credential_check` | Verify OS keyring credentials — shows masked value (`sk-a…B3f2`). Never exposes the full secret. |
 | `inject_credential` | Load a secret from keyring into `os.environ` — temporary, this process only. Secret never appears in return value. LLM-safe. |
 | `uninject_credential` | Remove an env var from `os.environ`. No keyring access. LLM-safe. |
@@ -890,14 +893,25 @@ Slife separates secrets from config into two layers with different security prop
 
 **Secrets never touch the agent process.** The `credstore set <KEY>` CLI reads secrets via masked stdin input (no echo, no shell history) and writes them directly to the OS keyring. **credstore is an interactive-only CLI tool — LLMs cannot invoke it** (it requires direct TTY input).
 
-**Clean separation of config vs. credentials.** `config_env_get` handles only non-secret env vars (shell → slife.json5) — it does NOT query the keyring. `credential_check` handles all secrets (shell → keyring) and shows masked values (e.g. `sk-a…B3f2`). The LLM chooses the right tool — no key-name heuristic needed."
+**Plaintext API keys are rejected at config load time.**  ``api_key`` fields in
+``slife.json5`` must use ``${VAR}`` references or ``keyring:`` URIs — literal key
+values cause a ``ValueError`` at startup.  This prevents accidental key leakage
+through version control or config sharing.
+
+**``config_env_set`` guards against secret leakage.**  The tool rejects values
+that match known API key patterns (``sk-*``, ``ghp_*``, ``ya29.*``, high-entropy
+blobs) or key names containing KEY/SECRET/TOKEN/AUTH.  This is belt-and-suspenders
+on top of the structural split — even if the LLM ignores the tool description,
+the value is blocked before it touches disk.
+
+**Clean separation of config vs. credentials.** `config_env_get` handles only non-secret env vars (shell → slife.json5) — it does NOT query the keyring. `credential_check` handles all secrets (shell → keyring) and shows masked values (e.g. `sk-a…B3f2`). The LLM chooses the right tool — no key-name heuristic needed.
 
 **Two tools for registration — structurally safe.** Secret and non-secret env var registration are separate tools, eliminating the need for runtime key-name detection:
 
 | Tool | Purpose | `value` parameter | Behavior |
 |------|---------|:---:|---|
 | `config_secret_register` | Secrets (API keys, tokens) | ❌ | Writes `${VAR}` placeholder, directs user to run `credstore set <KEY>` in terminal. Always checks if already stored via `credential_check`. |
-| `config_env_set` | Non-secret vars (EDITOR, LANG, etc.) | ✅ optional | Writes value directly, or `<YOUR_VAR>` placeholder if omitted. |
+| `config_env_set` | Non-secret vars (EDITOR, LANG, etc.) | ✅ optional | Writes value directly, or `<YOUR_VAR>` placeholder if omitted. **Rejects values that look like secrets** (API key prefixes, token patterns, high-entropy strings) — use `config_secret_register` for those. |
 
 The split is structural, not heuristic — `config_secret_register` has **no `value` parameter**, so the secret can never enter the LLM context regardless of model behavior.
 

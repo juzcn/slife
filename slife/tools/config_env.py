@@ -21,6 +21,40 @@ logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_PREFIX = "<YOUR_"
 
+# Patterns that indicate a value is likely a secret (API key, token, etc.)
+import re as _re
+
+_SECRET_KEY_HINTS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "AUTH")
+_SECRET_VALUE_PATTERNS = [
+    _re.compile(r"^sk-[A-Za-z0-9_-]{20,}"),     # OpenAI / Anthropic style
+    _re.compile(r"^[A-Za-z0-9+/=]{32,}$"),      # base64-like blob
+    _re.compile(r"^gh[psu]_[A-Za-z0-9]{20,}"),  # GitHub tokens
+    _re.compile(r"^ya29\.[A-Za-z0-9_-]{20,}"),  # Google OAuth
+    _re.compile(r"^[A-Za-z0-9]{32,}$"),          # hex-ish tokens (deepseek, etc.)
+]
+
+
+def _looks_like_secret(key: str, value: str) -> bool:
+    """Return True if *key* or *value* looks like it contains a secret.
+
+    Checks both the variable name (for KEY / SECRET / TOKEN / PASSWORD /
+    AUTH hints) and the value shape (API key prefixes, length, entropy).
+    """
+    # Variable name hints
+    if any(hint in key.upper() for hint in _SECRET_KEY_HINTS):
+        return True
+
+    # Value shape: known prefixes
+    for pat in _SECRET_VALUE_PATTERNS:
+        if pat.match(value):
+            return True
+
+    # Value shape: long enough to be a key and looks structured
+    if len(value) >= 40 and any(c.isupper() for c in value) and any(c.islower() for c in value):
+        return True
+
+    return False
+
 
 def _env_section(raw: dict) -> dict:
     env = raw.setdefault("env", {})
@@ -35,18 +69,25 @@ def _env_section(raw: dict) -> dict:
 
 
 class ConfigEnvSetTool(_ConfigPathMixin, Tool):
-    """Set a non-secret environment variable in slife.json5.
+    """Set a NON-SECRET environment variable in slife.json5.
 
-    For API keys, tokens, and passwords, use config_secret_register instead
-    — it writes a ${VAR} placeholder and directs the user to the terminal.
-    This tool is for regular env vars like EDITOR, LANG, LOG_LEVEL, etc.
+    REJECTS values that look like secrets (API key prefixes, token
+    patterns, high-entropy strings, or key names containing KEY/
+    SECRET/TOKEN/AUTH).  For secrets, use config_secret_register
+    instead — it writes a ${VAR} placeholder and directs the user
+    to store the real key via credstore.
+
+    This tool is for env vars like EDITOR, LANG, LOG_LEVEL, etc.
     """
 
     name = "config_env_set"
     description = (
-        "Set a non-secret env var in slife.json5. "
-        "Writes the value directly (or a <YOUR_VAR> placeholder if omitted). "
-        "For secrets (API keys, tokens, passwords) use config_secret_register."
+        "Set a NON-SECRET env var in slife.json5. "
+        "REJECTS values that look like API keys (sk-*, ghp_*, ya29.*, "
+        "base64 blobs) or key names with KEY/SECRET/TOKEN/AUTH. "
+        "For secrets use config_secret_register — plaintext keys are "
+        "rejected system-wide. "
+        "Omit value to write a <YOUR_VAR> placeholder."
     )
     parameters = {
         "type": "object",
@@ -54,13 +95,17 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):
             "key": {
                 "type": "string",
                 "description": (
-                    "Env var name for a NON-SECRET setting, e.g. 'EDITOR' or 'LOG_LEVEL'. "
-                    "Do NOT use for API keys or tokens — use config_secret_register for those."
+                    "Env var name — NON-SECRET only. Examples: 'EDITOR', 'LANG', 'LOG_LEVEL'. "
+                    "Names with KEY/SECRET/TOKEN/AUTH are REJECTED — use config_secret_register."
                 ),
             },
             "value": {
                 "type": "string",
-                "description": "Value for the env var. Omit to write a <YOUR_VAR> placeholder.",
+                "description": (
+                    "Value for the env var. REJECTED if it looks like an API key "
+                    "(sk-*, ghp_*, ya29.*, long base64/hex strings). "
+                    "Omit to write a <YOUR_VAR> placeholder instead."
+                ),
             },
         },
         "required": ["key"],
@@ -69,6 +114,17 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):
     async def execute(self, **kwargs) -> str:
         key: str = kwargs.get("key", "")
         value: str | None = kwargs.get("value")
+
+        # ── Guard: reject values that look like API keys ──────────
+        if value:
+            if _looks_like_secret(key, value):
+                return (
+                    f"Cannot set '{key}' via config_env_set — the value looks like a secret "
+                    f"(API key, token, or password).\n\n"
+                    f"Use config_secret_register instead to register '{key}' as a "
+                    f"${key} reference, then store the real value securely:\n"
+                    f"  credstore set {key}"
+                )
 
         raw = read_config(self._config_path)
         env = _env_section(raw)
@@ -93,29 +149,37 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):
 
 
 class ConfigSecretRegisterTool(_ConfigPathMixin, Tool):
-    """Register a secret env var in slife.json5.
+    """Register a secret env var (API key, token, password) in slife.json5.
 
-    Writes a ${VAR} placeholder ONLY — the tool has NO value parameter,
-    so the secret can never enter the LLM context.
+    The ONLY safe path for secrets.  Writes a ${VAR} placeholder ONLY
+    — the tool has NO value parameter, so the secret can never enter
+    the LLM context.  Plaintext keys are rejected at startup and by
+    config_env_set — this is the enforced single path.
 
-    The user must run the interactive CLI ``credstore set <KEY>`` in
-    their own terminal to store the real secret in the OS keyring.
-    LLMs cannot invoke credstore — it requires direct TTY input.
+    The user must run ``credstore set <KEY>`` in their own terminal
+    to store the real secret in the OS keyring.  credstore requires
+    direct TTY input — LLMs cannot invoke it.
     """
 
     name = "config_secret_register"
     description = (
-        "Register a secret env var (API key, token, password) in slife.json5. "
-        "Writes a ${VAR} placeholder — NEVER accepts the secret value. "
-        "The user must store the real value via 'credstore set <KEY>' in "
-        "their own terminal (credstore is interactive-only)."
+        "Register a secret env var (API key, token, password) in slife.json5 — "
+        "the ONLY safe path for secrets. "
+        "Writes a ${VAR} placeholder — NEVER accepts or sees the secret value. "
+        "Plaintext keys are rejected everywhere else (startup, config_env_set). "
+        "The user must run 'credstore set <KEY>' in their terminal "
+        "(credstore requires direct TTY — LLMs cannot invoke it)."
     )
     parameters = {
         "type": "object",
         "properties": {
             "key": {
                 "type": "string",
-                "description": "Env var name for the secret, e.g. 'DEEPSEEK_API_KEY'.",
+                "description": (
+                    "Env var name for the secret, e.g. 'DEEPSEEK_API_KEY', "
+                    "'GITHUB_TOKEN', 'SERPER_API_KEY'. "
+                    "The user stores the real value via: credstore set <KEY>"
+                ),
             },
         },
         "required": ["key"],
@@ -147,16 +211,21 @@ class ConfigSecretRegisterTool(_ConfigPathMixin, Tool):
 
 
 class ConfigEnvGetTool(_ConfigPathMixin, Tool):
-    """Read non-secret env vars. Resolution: shell → slife.json5.
+    """Read non-secret env var configuration. Resolution: shell → slife.json5.
 
-    Does NOT query the keyring — use credential_check for API keys and tokens.
+    Does NOT query the OS keyring — ${VAR} references are shown AS-IS
+    (e.g. ``${DEEPSEEK_API_KEY}``), never resolved to their secret values.
+    Use credential_check to verify secrets in the keyring.
+    Use inject_credential to load a secret into the current process.
     """
 
     name = "config_env_get"
     description = (
-        "Read a non-secret env var (shell → slife.json5 → MCP server envs). "
-        "Does NOT check the keyring — use credential_check for secrets. "
-        "Omit key to list all configured variables across root env: and "
+        "Read non-secret env var configuration (shell → slife.json5 → MCP server envs). "
+        "Does NOT query the OS keyring — ${VAR} references are shown as-is "
+        "(e.g. '${DEEPSEEK_API_KEY}'), never resolved. "
+        "Use credential_check to verify secrets in the keyring. "
+        "Omit key to list all configured vars across root env: and "
         "mcp.servers.<name>.env sections."
     )
     parameters = {
@@ -164,7 +233,12 @@ class ConfigEnvGetTool(_ConfigPathMixin, Tool):
         "properties": {
             "key": {
                 "type": "string",
-                "description": "Env var name. Omit to list all.",
+                "description": (
+                    "Env var name to look up. Shows shell value if set, "
+                    "otherwise the slife.json5 entry (${VAR} refs shown as-is). "
+                    "Omit to list all configured vars. "
+                    "For secrets use credential_check instead."
+                ),
             },
         },
         "required": [],
@@ -202,20 +276,31 @@ class ConfigEnvGetTool(_ConfigPathMixin, Tool):
 
 
 class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):
-    """Remove an env var from slife.json5 only."""
+    """Remove an env var REFERENCE from slife.json5 only.
+
+    Does NOT touch the OS keyring or shell environment — only removes
+    what Slife itself configured (${VAR} placeholder or non-secret value).
+    Secrets remain in the keyring and must be deleted via ``credstore delete``.
+    """
 
     name = "config_env_remove"
     description = (
-        "Remove an env var from slife.json5. "
-        "Does NOT touch the OS keyring or shell environment — "
-        "only removes what Slife itself configured."
+        "Remove an env var entry from slife.json5 only. "
+        "Does NOT touch the OS keyring — secrets stored via credstore "
+        "are unaffected. To delete a secret from the keyring the user "
+        "must run 'credstore delete <KEY>' in their terminal. "
+        "Only removes what Slife put in its config file."
     )
     parameters = {
         "type": "object",
         "properties": {
             "key": {
                 "type": "string",
-                "description": "Env var name, e.g. TAVILY_API_KEY.",
+                "description": (
+                    "Env var name to remove from slife.json5. "
+                    "Only removes the config entry (${VAR} ref or value) — "
+                    "the keyring secret (if any) is NOT touched."
+                ),
             },
         },
         "required": ["key"],

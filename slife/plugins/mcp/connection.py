@@ -397,7 +397,8 @@ class MCPServerConnection:
                 text = line.decode("utf-8", errors="replace").rstrip()
                 if text:
                     self._stderr_buffer.append(text + "\n")
-                    logger.debug("mcp_stderr server=%s line=%s", self.config.name, text)
+                    from slife.logfmt import sanitize_secrets
+                    logger.debug("mcp_stderr server=%s line=%s", self.config.name, sanitize_secrets(text))
         except asyncio.CancelledError:
             pass
 

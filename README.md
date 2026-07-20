@@ -167,12 +167,18 @@ You: "Find all TODO comments and create GitHub issues for them"
 
 ## Configuration
 
-Slife uses a **two-layer** configuration model:
+Slife uses a **two-layer** configuration model with **enforced secret protection**:
 
 | Layer | Storage | What goes here |
 |-------|---------|----------------|
 | **Secrets** | OS keyring (credstore) | API keys, tokens, passwords — encrypted at OS level |
 | **Config** | `~/.slife/slife.json5` → `env:` | `${VAR}` references + non-secret values (EDITOR, LANG, etc.) |
+
+**Plaintext API keys are rejected at startup.**  `api_key` fields must use
+``${VAR}`` references (resolved from the OS keyring at runtime) or ``keyring:``
+URIs.  The ``config_env_set`` tool also **rejects values that look like secrets**
+(API key prefixes, high-entropy blobs, or key names containing KEY/SECRET/TOKEN)
+— use ``config_secret_register`` for those instead.
 
 ```json5
 // slife.json5
