@@ -118,8 +118,16 @@ if [ -f "$PYPROJECT" ]; then
     fi
 fi
 
-echo "Installing slife v${VERSION}…"
-uv tool install --python 3.13 --with "$TMP_DIR/slife-main/credstore" "$TMP_DIR/slife-main"
+echo "Building slife v${VERSION}…"
+uv build --out-dir "$TMP_DIR/dist" "$TMP_DIR/slife-main"
+SLIFE_WHEEL=$(echo "$TMP_DIR/dist"/slife-*.whl | head -1)
+if [ -z "$SLIFE_WHEEL" ] || [ ! -f "$SLIFE_WHEEL" ]; then
+    echo -e "${RED}Error: slife wheel not found after build.${NC}"
+    exit 1
+fi
+
+echo "Installing from $(basename "$SLIFE_WHEEL")…"
+uv tool install --python 3.13 "$SLIFE_WHEEL"
 
 # ── 4. Done ──────────────────────────────────────────────────────────
 echo ""

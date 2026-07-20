@@ -156,8 +156,18 @@ try {
         }
     }
 
-    Write-Host "Installing slife v$version…"
-    uv tool install --python 3.13 $extractedDir.FullName
+    Write-Host "Building slife v$version…"
+    $wheelDir = Join-Path $tmpDir "dist"
+    uv build --out-dir $wheelDir $extractedDir.FullName
+
+    $slifeWheel = Get-ChildItem -Path $wheelDir -Filter "slife-*.whl" | Select-Object -First 1
+    if (-not $slifeWheel) {
+        Write-Host "Error: slife wheel not found after build." -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "Installing from $($slifeWheel.Name)…"
+    uv tool install --python 3.13 $slifeWheel.FullName
 
     Write-Host ""
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
