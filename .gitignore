@@ -1,5 +1,4 @@
-# Runtime config — may accumulate secrets written by config_env_set.
-# Only the template (slife.template.json5) is tracked; copies live in ~/.slife/.
+# Runtime config — personal per-user settings; template is slife.template.json5.
 slife.json5
 
 # Credential store encrypted backup

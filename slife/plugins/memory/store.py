@@ -51,7 +51,6 @@ class SessionStore:
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._load_vec_extension()
         await self._run_schema()
-        await self._migrate()
         logger.info("store_ready path=%s wal=on vec_dim=%d", self._db_path, self._embedding_dim)
 
     async def _load_vec_extension(self) -> None:
@@ -79,64 +78,6 @@ class SessionStore:
                 logger.debug("schema_stmt_error err=%s stmt=%.80s", e, stmt)
         await self._conn.commit()
         logger.debug("schema_ready")
-
-    async def _migrate(self) -> None:
-        """Idempotent schema migrations.
-
-        Migrations are ordered and run once.  Each is guarded so it
-        can be re-executed safely across restarts.
-        """
-        assert self._conn is not None
-
-        # ── 1. channel column (v0.x → v0.3.x) ──────────────────────
-        migrations = [
-            "ALTER TABLE diary ADD COLUMN channel TEXT DEFAULT ''",
-        ]
-        for sql in migrations:
-            try:
-                await self._conn.execute(sql)
-                logger.debug("migrate_applied sql=%s", sql)
-            except Exception as e:
-                err_msg = str(e).lower()
-                if "duplicate column" in err_msg or "already exists" in err_msg:
-                    logger.debug("migrate_skipped sql=%s reason=already_exists", sql)
-                else:
-                    logger.warning("migrate_failed sql=%s err=%s", sql, e)
-
-        # ── 2. Drop author column (v0.3.x → v0.4.x) ────────────────
-        # Agent isolation is at the file level — each agent_id has its
-        # own .db.  The author column was redundant.
-        try:
-            await self._conn.execute(
-                "SELECT author FROM diary LIMIT 0"
-            )
-        except Exception:
-            # Column already gone — nothing to do
-            logger.debug("migrate_author_already_dropped")
-        else:
-            # Column still exists — drop it.
-            # Must first tear down FTS5 / vec0 objects that reference it,
-            # then recreate them from the current schema.
-            logger.info("migrate_dropping_author_column")
-            for stmt in [
-                "DROP TRIGGER IF EXISTS diary_ai",
-                "DROP TRIGGER IF EXISTS diary_ad",
-                "DROP TABLE IF EXISTS diary_fts",
-                "DROP TABLE IF EXISTS diary_semantic",
-                "ALTER TABLE diary DROP COLUMN author",
-                "DROP INDEX IF EXISTS idx_diary_author",
-            ]:
-                try:
-                    await self._conn.execute(stmt)
-                except Exception as e:
-                    logger.debug("migrate_author_step_failed stmt=%s err=%s", stmt[:60], e)
-
-            # Re-run the schema to recreate FTS5, vec0, and indexes
-            # without the author column.
-            await self._run_schema()
-            logger.info("migrate_author_dropped")
-
-        await self._conn.commit()
 
     async def close(self) -> None:
         if self._conn:
@@ -573,7 +514,7 @@ def _looks_like_trigger_start(stmt: str) -> bool:
 def _looks_like_trigger_end(stmt: str) -> bool:
     """True if *stmt* ends a trigger body (``END;``)."""
     stripped = stmt.strip().rstrip(";").strip().upper()
-    return stripped == "END"
+    return stripped.endswith("END")
 
 
 def _turn_text_for_embedding(user_message: str, messages: list[dict]) -> str:
