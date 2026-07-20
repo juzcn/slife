@@ -541,7 +541,7 @@ class TestAgentServiceWeChat:
         call_count = [0]
 
         async def mock_call_tool(tool_name, args):
-            if tool_name == "check_messages":
+            if tool_name == "wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
                     return _json.dumps({"messages": [{
@@ -582,7 +582,7 @@ class TestAgentServiceWeChat:
         call_count = [0]
 
         async def mock_call_tool(tool_name, args):
-            if tool_name == "check_messages":
+            if tool_name == "wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
                     return _json.dumps({"messages": [
@@ -618,7 +618,7 @@ class TestAgentServiceWeChat:
         call_count = [0]
 
         async def mock_call_tool(tool_name, args):
-            if tool_name == "check_messages":
+            if tool_name == "wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
                     return _json.dumps({"messages": [{
@@ -652,10 +652,10 @@ class TestAgentServiceWeChat:
 
         await msg.on_reply("今天北京晴，25°C")
 
-        # Verify send_message was called with correct params
+        # Verify wechat_dispatch_reply was called with correct params
         send_calls = [
             c for c in mock_wc.call_tool.call_args_list
-            if c[0][0] == "send_message"
+            if c[0][0] == "wechat_dispatch_reply"
         ]
         assert len(send_calls) == 1
         _, send_args = send_calls[0][0]
@@ -674,7 +674,7 @@ class TestAgentServiceWeChat:
         call_count = [0]
 
         async def mock_call_tool(tool_name, args):
-            if tool_name == "check_messages":
+            if tool_name == "wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
                     return _json.dumps({"messages": [{
@@ -695,16 +695,13 @@ class TestAgentServiceWeChat:
 
         await service._wechat_poll_loop(interval=0.001)
 
-        # verify send_typing was called with status=1
-        typing_calls = [
-            c for c in mock_wc.call_tool.call_args_list
-            if c[0][0] == "send_typing"
-        ]
-        assert len(typing_calls) >= 1
-        _, typing_args = typing_calls[0][0]
-        assert typing_args["to_user_id"] == "wx_1"
-        assert typing_args["context_token"] == "ctx_1"
-        assert typing_args["status"] == 1
+        # After refactor: typing is managed server-side by the plugin.
+        # The harness only calls wechat_drain_incoming; the plugin internally
+        # starts the typing keep-alive. Verify message arrived at inbox instead.
+        mock_inbox.post.assert_called_once()
+        msg = mock_inbox.post.call_args[0][0]
+        assert msg.content == "hello"
+        assert msg.on_reply is not None
 
     @pytest.mark.asyncio
     async def test_wechat_poll_error_handling(self):
@@ -717,7 +714,7 @@ class TestAgentServiceWeChat:
         call_count = [0]
 
         async def mock_call_tool(tool_name, args):
-            if tool_name == "check_messages":
+            if tool_name == "wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
                     raise Exception("network error")
