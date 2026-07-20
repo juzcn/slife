@@ -23,6 +23,31 @@ from slife.platform import resolve_command, terminate_process
 
 logger = logging.getLogger(__name__)
 
+# Pattern for embedded ${VAR} references in arg strings
+import re as _re
+_ENV_REF = _re.compile(r"\$\{(\w+)\}")
+
+
+def _is_env_ref(value: str) -> bool:
+    """True if value is a pure ``${VAR}`` reference (no surrounding text)."""
+    return bool(_ENV_REF.fullmatch(value))
+
+
+def _resolve_embedded_refs(value: str) -> str:
+    """Resolve embedded ``${VAR}`` refs through os.environ → credstore."""
+    from slife.config import _try_credstore_lookup
+
+    def _replace(m):
+        var = m.group(1)
+        env_val = os.environ.get(var)
+        if env_val:
+            return env_val
+        cred_val = _try_credstore_lookup(var)
+        if cred_val:
+            return cred_val
+        return m.group(0)  # unresolved — leave as-is
+    return _ENV_REF.sub(_replace, value)
+
 
 class ServerStatus(Enum):
     DISCONNECTED = "disconnected"
@@ -165,13 +190,23 @@ class MCPServerConnection:
 
     async def _connect_stdio(self) -> None:
         """Spawn server as subprocess and set up pipe I/O."""
+        from slife.config import _resolve_env_or_credstore
+
         exe = resolve_command(self.config.command)
         env = dict(os.environ)
         if self.config.env:
-            env.update(self.config.env)
+            for key, value in self.config.env.items():
+                env[key] = _resolve_env_or_credstore(value)
+
+        # Resolve ${VAR} references in args (e.g. "Authorization: Bearer ${GITHUB_TOKEN}")
+        resolved_args = [
+            _resolve_env_or_credstore(arg) if _is_env_ref(arg)
+            else _resolve_embedded_refs(arg)
+            for arg in self.config.args
+        ]
 
         self._process = await asyncio.create_subprocess_exec(
-            exe, *self.config.args,
+            exe, *resolved_args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

@@ -262,15 +262,40 @@ memory_search(mode="time", since="2026-07") → 按日期浏览
 
 ### 插件系统
 
-Slife 内置三个插件，均使用相同的 MCP stdio 协议：
+Slife 拥有基于 MCP stdio 传输（stdin/stdout 上的 JSON-RPC）的**插件系统**。
+每个插件都是一个使用 FastMCP 作为服务框架的独立子进程 —— 插件崩溃不会影响
+Slife 运行。内置三个插件：
 
-| 插件 | 角色 |
-|------|------|
-| **slife-mcp** | 外部 MCP 服务器代理（stdio + HTTP）— 10 个管理工具 |
-| **slife-memory** | 日记数据库 + 混合搜索（FTS5 + vec0 RRF） |
-| **slife-wechat** | 通过 iLink ClawBot API 双向收发微信消息 |
+| 插件 | 角色 | 连接方式 |
+|------|------|----------|
+| **slife-mcp** | 外部 MCP 服务器网关（stdio + HTTP）— 10 个管理工具 | 通过 slife-mcp 代理 |
+| **slife-memory** | 日记数据库 + 混合搜索（FTS5 + vec0 RRF） | 直接 stdio |
+| **slife-wechat** | 通过 iLink ClawBot API 双向收发微信消息 | 直接 stdio |
 
-第三方插件自动加载已在路线图中 —— 基础设施已就绪。
+**内置插件不是标准 MCP 服务** —— 它们是 Slife 专属的子进程，借用 MCP stdio
+作为进程间通信机制，不能被任意 MCP 客户端消费。slife-memory 和 slife-wechat
+直接连接到 Slife；只有 slife-mcp 作为外部服务器的网关。
+
+**外部 MCP 服务器**（文件系统、网页抓取、搜索 API 等）是通过 slife-mcp 网关
+连接的标准 MCP 兼容程序，在 `slife.json5` 的 `mcp.servers` 中配置：
+
+```json5
+mcp: {
+  servers: {
+    "my-server": {
+      command: "uv", args: ["run", "python", "-m", "my_server"],
+      env: { API_KEY: "${API_KEY}" },
+      description: "我的 MCP 服务器。",
+    },
+  },
+}
+```
+
+> **注意：** 插件的自动发现和管理机制（从目录热加载插件、插件市场等）计划在
+> 下一开发阶段实现。目前三个插件均为内置，在启动时加载；外部 MCP 服务器需在
+> `slife.json5` 中手动配置。
+
+详见 [DESIGN.md § Plugin Architecture](DESIGN.md#plugin-architecture) 了解完整的插件契约和配置参考。
 
 ### A2A — 智能体间通信
 

@@ -182,7 +182,7 @@ class Inbox:
                         channel=str(msg.source),
                     )
                 except Exception:
-                    logger.debug("on_turn_complete_error", exc_info=True)
+                    logger.warning("on_turn_complete_error", exc_info=True)
 
             # Route reply to originating channel (WeChat, etc.)
             if msg.on_reply is not None:

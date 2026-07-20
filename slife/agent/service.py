@@ -725,14 +725,26 @@ class AgentService:
 
         conv = conversation if conversation is not None else self.conversation
 
-        # Extract turn messages: everything after the matching user message
+        # Extract turn messages: everything after the matching user message.
+        # Must handle both plain text (content is a str) and multimodal
+        # messages (content is a list of {type, text/image_url} parts).
         all_messages = list(conv.messages)
         turn_messages: list[dict] = []
         for i in range(len(all_messages) - 1, -1, -1):
             msg = all_messages[i]
-            if msg.get("role") == "user" and msg.get("content") == user_message:
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and content == user_message:
                 turn_messages = all_messages[i + 1:]
                 break
+            if isinstance(content, list):
+                text = "".join(
+                    p.get("text", "") for p in content if p.get("type") == "text"
+                )
+                if text == user_message:
+                    turn_messages = all_messages[i + 1:]
+                    break
 
         # Trim active context (only for the persistent TUI conversation)
         if conversation is None:
@@ -757,7 +769,7 @@ class AgentService:
                 },
             )
         except Exception as e:
-            logger.debug("memory_save_error err=%s", e)
+            logger.warning("memory_save_error err=%s", e)
 
     async def get_recent_turns(self, limit: int = 50) -> list[dict]:
         """Load recent turns for restore. Returns [] if no turns."""

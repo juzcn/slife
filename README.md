@@ -255,33 +255,44 @@ Agent isolation via `--agent alice`. Each agent gets its own DB (`<agent_id>.db`
 
 ### Plugins
 
-Three built-in plugins ship with Slife, all using the same MCP stdio protocol:
+Slife has a **plugin system** built on MCP stdio transport (JSON-RPC over
+stdin/stdout).  A plugin is an independent child process using FastMCP as a
+server framework — if it crashes, Slife continues.  Three built-in plugins ship
+with Slife:
 
-| Plugin | Role |
-|--------|------|
-| **slife-mcp** | Proxy for external MCP servers (stdio + HTTP) — 10 management tools |
-| **slife-memory** | Diary database with hybrid search (FTS5 + vec0 RRF) |
-| **slife-wechat** | Bidirectional WeChat messaging via iLink ClawBot API |
+| Plugin | Role | Connection |
+|--------|------|------------|
+| **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) — 10 management tools | Via slife-mcp proxy |
+| **slife-memory** | Diary database with hybrid search (FTS5 + vec0 RRF) | Direct stdio |
+| **slife-wechat** | Bidirectional WeChat messaging via iLink ClawBot API | Direct stdio |
 
-**Third-party plugins** are standard MCP servers configured in `slife.json5` →
-`mcp.servers`. They auto-connect on startup and their tools are discovered and
-registered automatically. Any MCP-compatible server — in Python, Node.js, Go,
-Rust, or any other language — works as a Slife plugin.
+**Built-in plugins are not standard MCP services** — they are Slife-specific
+child processes that borrow MCP stdio as their IPC mechanism.  They cannot be
+consumed by arbitrary MCP clients.  slife-memory and slife-wechat connect
+directly to Slife; only slife-mcp acts as a gateway to external servers.
+
+**External MCP servers** (filesystem, fetch, search APIs, etc.) are standard
+MCP-compatible programs connected through the slife-mcp gateway.  They are
+configured in `slife.json5` under `mcp.servers`:
 
 ```json5
-// Example: add a custom MCP server
 mcp: {
   servers: {
-    "my-plugin": {
-      command: "uv", args: ["run", "python", "-m", "my_plugin.server"],
+    "my-server": {
+      command: "uv", args: ["run", "python", "-m", "my_server"],
       env: { API_KEY: "${API_KEY}" },
-      description: "My custom MCP server."
+      description: "My MCP server.",
     },
   },
 }
 ```
 
-See [DESIGN.md § Third-Party Plugins](DESIGN.md#third-party-plugins) for the full plugin contract and configuration reference.
+> **Note:** Automatic plugin discovery and management (hot-loading plugins from
+> directories, plugin marketplace, etc.) is planned for the next development
+> phase.  Currently all three plugins are built-in and loaded at startup;
+> external MCP servers are configured manually in `slife.json5`.
+
+See [DESIGN.md § Plugin Architecture](DESIGN.md#plugin-architecture) for the full plugin contract and configuration reference.
 
 ### A2A — Agent-to-Agent
 
