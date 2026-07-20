@@ -46,6 +46,7 @@ embeddings = ["llama-cpp-python"]
 
 [project.scripts]
 slife = "slife:main"
+credstore = "credstore.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["slife"]

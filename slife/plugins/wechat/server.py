@@ -91,6 +91,10 @@ _pending: deque[dict] = deque()
 _seen_keys: set[str] = set()
 _MAX_QUEUED = 200  # keep at most 200 pending messages
 
+# Typing indicator keep-alive — per-conversation tasks managed by the server
+_typing_tasks: dict[str, asyncio.Task] = {}
+_TYPING_REFRESH = 8.0  # seconds between typing indicator refreshes
+
 # QR login state (non-blocking)
 _qr_task: asyncio.Task | None = None
 _qr_status: str = ""  # "" | "waiting" | "scanned" | "confirmed" | "expired" | "error"
@@ -207,16 +211,158 @@ def _start_polling() -> None:
 
 
 def _stop_polling() -> None:
-    """Cancel the background poll task."""
-    global _poll_task, _pending
+    """Cancel the background poll task and all typing keep-alives."""
+    global _poll_task, _pending, _typing_tasks
     if _poll_task is not None and not _poll_task.done():
         _poll_task.cancel()
     _poll_task = None
     _pending.clear()
+    # Cancel all typing keep-alive tasks
+    for task in _typing_tasks.values():
+        if not task.done():
+            task.cancel()
+    _typing_tasks.clear()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Typing indicator keep-alive (server-managed)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _start_typing_keepalive(from_id: str, ctx_token: str) -> None:
+    """Start a background task that refreshes the typing indicator every ~8 s.
+
+    The WeChat iLink typing indicator auto-expires after ~10-20 s.  This
+    keep-alive runs inside the plugin process so the harness (AgentService)
+    doesn't need to know about typing at all.
+    """
+    global _typing_tasks
+
+    # Don't double-start for the same conversation
+    if from_id in _typing_tasks and not _typing_tasks[from_id].done():
+        return
+
+    async def _keep_typing(uid: str, tok: str) -> None:
+        while True:
+            try:
+                await asyncio.sleep(_TYPING_REFRESH)
+                await _client.send_typing(uid, tok, status=1)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+
+    _typing_tasks[from_id] = asyncio.create_task(_keep_typing(from_id, ctx_token))
+
+
+def _stop_typing_keepalive(from_id: str) -> None:
+    """Cancel and remove the typing keep-alive task for a conversation."""
+    global _typing_tasks
+    task = _typing_tasks.pop(from_id, None)
+    if task is not None and not task.done():
+        task.cancel()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LLM-visible tools
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Harness tools (programmatic only — not exposed to LLM)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@mcp.tool(
+    name="wechat_drain_incoming",
+    description="Drain queued incoming WeChat messages. Harness-only.",
+)
+async def wechat_drain_incoming() -> str:
+    """Return all queued incoming messages and auto-start typing for each.
+
+    Called by the AgentService poll loop.  Each returned message gets
+    a typing keep-alive started automatically so the WeChat user sees
+    "对方正在输入…" while the agent processes the message.
+    """
+    global _pending
+
+    if not _client.is_logged_in:
+        return json.dumps({
+            "messages": [],
+            "status": "not_logged_in",
+        }, ensure_ascii=False)
+
+    msgs = list(_pending)
+    _pending.clear()
+
+    # Auto-start typing for each conversation that has a new message
+    for m in msgs:
+        from_id = m.get("to_user_id", "")
+        ctx_token = m.get("context_token", "")
+        if from_id:
+            _start_typing_keepalive(from_id, ctx_token)
+            # Fire an initial typing indicator immediately
+            try:
+                await _client.send_typing(from_id, ctx_token, status=1)
+            except Exception:
+                pass
+
+    return json.dumps({
+        "messages": msgs,
+        "count": len(msgs),
+        "status": "ok",
+    }, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="wechat_dispatch_reply",
+    description="Send a reply and clean up typing indicator. Harness-only.",
+)
+async def wechat_dispatch_reply(
+    to_user_id: str = "",
+    context_token: str = "",
+    text: str = "",
+) -> str:
+    """Send a reply to a WeChat user and stop the typing indicator.
+
+    Called by the inbox on_reply callback after the agent finishes
+    processing a WeChat message.  Handles the full reply flow:
+    stop typing keep-alive → send message → hide typing indicator.
+    """
+    global _client
+
+    if not _client.is_logged_in:
+        return error_json("Not logged in.")
+
+    if not to_user_id.strip() or not text.strip():
+        return error_json("Both to_user_id and text are required.")
+
+    # Stop the typing keep-alive for this conversation
+    _stop_typing_keepalive(to_user_id)
+
+    # Send the reply
+    try:
+        await _client.send_message(to_user_id, context_token or "", text)
+    except Exception as e:
+        logger.exception("dispatch_reply_send_failed to=%s", to_user_id)
+        return error_json(str(e))
+
+    # Hide typing indicator after reply
+    try:
+        await _client.send_typing(to_user_id, context_token or "", status=2)
+    except Exception:
+        pass
+
+    logger.debug("dispatched_reply to=%s len=%d", to_user_id, len(text))
+    return json.dumps({
+        "status": "sent",
+        "to_user_id": to_user_id,
+        "text_length": len(text),
+    }, ensure_ascii=False, indent=2)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# QR code login helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
 

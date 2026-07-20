@@ -576,8 +576,8 @@ class AgentService:
     async def _register_wechat_tools(self) -> None:
         """Discover and register wechat tools as proxy tools.
 
-        Harness-only tools (wechat_poll_messages) are excluded —
-        they are called programmatically, not by the LLM.
+        Harness-only tools (drain_incoming, dispatch_reply) are excluded —
+        they are called programmatically by the poll loop, not by the LLM.
         """
         from slife.mcp.tool_adapter import create_proxy_tools
 
@@ -588,13 +588,16 @@ class AgentService:
             [t["name"] for t in wechat_tools],
         )
 
-        # All wechat tools are LLM-visible — no harness exclusion needed.
-        # Incoming messages are collected by a background poll loop
-        # and surfaced via check_messages.
+        # Harness lifecycle — never exposed to LLM
+        _HARNESS_TOOLS = {
+            "wechat_drain_incoming",
+            "wechat_dispatch_reply",
+        }
 
         tagged = [
             {**t, "server": "wechat"}
             for t in wechat_tools
+            if t["name"] not in _HARNESS_TOOLS
         ]
 
         proxy_tools = create_proxy_tools(self._wechat_client, tagged)
@@ -613,12 +616,12 @@ class AgentService:
         self._wechat_poll_task = asyncio.create_task(self._wechat_poll_loop())
 
     async def _wechat_poll_loop(self, interval: float = 5.0) -> None:
-        """Poll WeChat for new messages and inject them into the inbox.
+        """Poll the wechat plugin for new messages and inject them into the inbox.
 
-        Each WeChat message becomes an AgentMessage with an on_reply
-        callback — when the agent responds, the reply is automatically
-        forwarded back to WeChat.  TUI and WeChat are peer terminals
-        with independent persistent conversations.
+        Uses harness-only tools (wechat_drain_incoming, wechat_dispatch_reply)
+        so all wechat-specific logic — typing indicators, message format —
+        stays inside the plugin process.  The harness only sees generic
+        messages with an on_reply callback.
         """
         import json as _json
         from slife.a2a.identity import AgentMessage, WECHAT
@@ -630,7 +633,7 @@ class AgentService:
                 assert self._wechat_client is not None
 
                 result = await self._wechat_client.call_tool(
-                    "check_messages", {},
+                    "wechat_drain_incoming", {},
                 )
                 data = _json.loads(result)
                 msgs = data.get("messages", [])
@@ -645,38 +648,10 @@ class AgentService:
 
                     wc = self._wechat_client  # local ref for closure
 
-                    # ── Typing indicator keep-alive ──────────────────
-                    # The WeChat iLink typing indicator auto-expires
-                    # after ~10-20 s.  Refresh it every 8 s while the
-                    # agent is processing so the user always sees
-                    # "对方正在输入…" until the reply arrives.
-                    _typing_stop = asyncio.Event()
-
-                    async def _keep_typing(uid=from_id, tok=ctx_token) -> None:
-                        while not _typing_stop.is_set():
-                            try:
-                                await asyncio.sleep(8.0)
-                                if not _typing_stop.is_set():
-                                    await wc.call_tool("send_typing", {
-                                        "to_user_id": uid,
-                                        "context_token": tok,
-                                        "status": 1,
-                                    })
-                            except asyncio.CancelledError:
-                                break
-                            except Exception:
-                                pass
-
-                    _typing_task = asyncio.create_task(_keep_typing())
-
                     async def _reply(reply_text: str,
                                      uid=from_id, tok=ctx_token) -> None:
-                        # Stop the typing keep-alive task
-                        _typing_stop.set()
-                        if not _typing_task.done():
-                            _typing_task.cancel()
                         try:
-                            await wc.call_tool("send_message", {
+                            await wc.call_tool("wechat_dispatch_reply", {
                                 "to_user_id": uid,
                                 "context_token": tok,
                                 "text": reply_text,
@@ -684,16 +659,6 @@ class AgentService:
                             logger.debug("wechat_out to=%s len=%d", uid, len(reply_text))
                         except Exception as e:
                             logger.debug("wechat_reply_error err=%s", e)
-
-                    # Show typing immediately (don't wait for first refresh)
-                    try:
-                        await wc.call_tool("send_typing", {
-                            "to_user_id": from_id,
-                            "context_token": ctx_token,
-                            "status": 1,
-                        })
-                    except Exception:
-                        pass
 
                     msg = AgentMessage(
                         source=WECHAT,

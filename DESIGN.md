@@ -92,35 +92,52 @@ What the LLM cannot know (and the prompt provides):
 
 ### Plugin Architecture
 
-Slife has a **plugin system** built on the MCP stdio protocol. A plugin is any FastMCP server spawned as a child process. It communicates via stdin/stdout, exposes tools through standard `list_tools` / `call_tool` MCP methods, and its tools are automatically registered in Slife's `ToolRegistry`.
+Slife has a **plugin system** built on the MCP stdio transport (JSON-RPC over
+stdin/stdout).  A plugin is an independent child process that uses FastMCP as a
+server framework, but it is **not** a standard MCP service — it is a
+Slife‑specific plugin that borrows MCP stdio as its IPC mechanism.  Tools are
+exposed through the standard ``list_tools`` / ``call_tool`` methods and
+automatically registered in Slife's ``ToolRegistry``.
 
-All three (slife-mcp, slife-memory, slife-wechat) are built-in plugins using this exact mechanism:
+All three (slife-mcp, slife-memory, slife-wechat) are built-in plugins using
+this exact mechanism.  **slife-mcp is the gateway for external MCP services
+only** — memory and wechat connect directly to Slife, not through the proxy:
 
 ```
-Slife ── MCPClient (stdio) ──▶ MCPWrapperProcess ──▶ slife-mcp    (MCP proxy)
-  │                          │                         ├── filesystem (npx)
-  │                          │                         ├── fetch (uvx)
-  │                          │                         └── ... (any MCP server)
-  │                          │
-  │                          └── MCPWrapperProcess ──▶ slife-memory (diary DB)
-  │                          │                         └── ~/.slife/<agent_id>.db
-  │                          │
-  │                          └── MCPWrapperProcess ──▶ slife-wechat (WeChat)
-  │                                                    └── iLink ClawBot API
-  │
-  └── MQTT ──── mosquitto ─── other Slife instances
-  └── JSON-RPC 2.0 ─── subagent (headless)
+                         ┌─ MCPWrapperProcess ── slife-mcp (gateway)
+                         │    │
+                         │    └── ConnectionPool ── external MCP servers
+                         │         ├── filesystem (npx, stdio)
+                         │         ├── fetch (uvx, stdio)
+                         │         ├── remote-api (HTTP POST)
+                         │         └── ... (any MCP server)
+                         │
+Slife ── MCPClient ──────┼─ MCPWrapperProcess ── slife-memory (direct)
+  (stdio per plugin)     │    └── ~/.slife/<agent_id>.db
+                         │
+                         └─ MCPWrapperProcess ── slife-wechat (direct)
+                              └── iLink ClawBot API
+
+  MQTT ──── mosquitto ─── other Slife instances
+  JSON-RPC 2.0 ─── subagent (headless)
 ```
 
 #### The Plugin Contract
 
+A Slife plugin uses **MCP stdio as its IPC transport**, but it is **not a
+standard MCP service** — it cannot be consumed by arbitrary MCP clients.  It
+is a Slife‑specific child process that happens to speak JSON-RPC over
+stdin/stdout via FastMCP.
+
 A plugin must:
 
-1. **Be a FastMCP server** — `mcp = FastMCP("name")` with `mcp.run(transport="stdio")`
+1. **Be a FastMCP server on stdio** — `mcp = FastMCP("name")` with `mcp.run(transport="stdio")`
 2. **Define one or more `@mcp.tool` functions** — these become Slife tools
 3. **Be importable** — `python -m <module>.server` must work
 
-That's the entire contract. No base class, no import hook, no SDK. Just a FastMCP stdio server.
+That's the entire contract. No base class, no import hook, no SDK. Just a
+FastMCP stdio process — the same technology, but a different contract from
+standard MCP services.
 
 #### Infrastructure (reusable)
 
@@ -176,8 +193,21 @@ are routed back via the message's `on_reply` callback.
 | Transport | HTTP long-poll (3s interval) — `getupdates → getconfig → sendtyping → AI → sendmessage` |
 | Session | Token saved in `wechat_<user>.json5`, auto-restored on startup, ~23h validity |
 | TUI integration | Incoming messages appear as `Wechat> hi`, replies stream via shared `TUIHandler` factory |
-| Typing indicator | Keep-alive task refreshes every 8s until reply is sent |
+| Typing indicator | Server-managed keep-alive (8s refresh) — plugin process handles it, harness never sees it |
 | Config | No `user_id` needed — extracted from incoming messages |
+
+**Tool separation** — follows the same harness/LLM pattern as slife-memory:
+
+| Tier | Tools | Visibility |
+|------|-------|------------|
+| Harness | `wechat_drain_incoming`, `wechat_dispatch_reply` | AgentService poll loop — never exposed to LLM |
+| LLM | `login`, `check_messages`, `send_message`, `send_typing`, `check_status`, `logout` | Full agent access for proactive messaging |
+
+**Typing architecture:** when `wechat_drain_incoming` returns new messages, the
+plugin automatically starts a per-conversation typing keep-alive task.  When
+`wechat_dispatch_reply` sends the agent's response, it cancels the keep-alive
+and hides the typing indicator.  The harness (AgentService) never touches typing
+API calls — all wechat-specific logic is contained in the plugin process.
 
 **Reference:** [SiverKing/weixin-ClawBot-API](https://github.com/SiverKing/weixin-ClawBot-API) (MIT).
 
@@ -266,6 +296,21 @@ Both use the same MCP protocol and the same `MCPProxyTool` adapter.
 The distinction is operational — built-in plugins get dedicated lifecycle
 management with direct tool routing; external servers are dynamically managed
 through the slife-mcp proxy with auto-persistence to the config file.
+
+#### Tool Routing (MCPProxyTool.execute)
+
+The `MCPProxyTool.execute()` method (`slife/mcp/tool_adapter.py:103-148`) dispatches
+tool calls through one of three paths based on the tool's server origin:
+
+| Server | Routing path | MCP client used |
+|---|---|---|
+| `mcp` (built-in gateway) | Direct call on the wrapper client; side-effect callbacks for config persistence | `self._mcp_client` → slife-mcp |
+| `memory` / `wechat` (built-in, direct) | Direct call on the dedicated plugin client — no proxy routing | `self._mcp_client` → slife-memory or slife-wechat |
+| External servers | Routed: `mcp_call_tool` → slife-mcp → `ConnectionPool.call_tool()` → external server's JSON-RPC transport | slife-mcp → `ConnectionPool` → `MCPServerConnection` |
+
+This is the code-level realization of the architecture: built-in plugins are
+peers with a direct line to Slife; external servers only speak through the
+slife-mcp gateway.
 
 **Why separate processes:**
 
@@ -432,24 +477,29 @@ External CLI commands the LLM discovers and registers. The tools (`cli_add_tool`
 
 ### slife-mcp — MCP Proxy Plugin
 
-slife-mcp is a built-in plugin that manages persistent connections to external MCP servers. It runs as a child process (stdio), spawned by Slife via `MCPWrapperProcess`.
+slife-mcp is a built-in plugin that manages persistent connections to **external** MCP servers. It runs as a child process (stdio), spawned by Slife via `MCPWrapperProcess`. Other built-in plugins (slife-memory, slife-wechat) connect directly to Slife via their own `MCPWrapperProcess` — they do **not** go through the slife-mcp proxy.
 
 ```
-                   stdio
-slife agent  ←────────────→  slife-mcp (FastMCP)
-                                  ├── filesystem MCP (npx stdio)
-                                  ├── fetch MCP (uvx stdio)
-                                  ├── remote MCP (HTTP POST)
-                                  └── ... (any MCP server)
+                         stdio
+Slife ── MCPClient ────────────▶ slife-mcp (gateway)
+                                      │
+                                      ├── filesystem MCP (npx, stdio)
+                                      ├── fetch MCP (uvx, stdio)
+                                      ├── remote MCP (HTTP POST)
+                                      └── ... (any MCP server)
+
+                         stdio
+Slife ── MCPClient ────────────▶ slife-memory (direct)
+Slife ── MCPClient ────────────▶ slife-wechat (direct)
 ```
 
-**Architecture rationale:** MCP servers are subprocesses. If managed in-process, a Slife crash would orphan them. A separate proxy process means MCP servers stay alive and can be shared across Slife instances.
+**Architecture rationale:** MCP servers are subprocesses. If managed in-process, a Slife crash would orphan them. A separate gateway process (slife-mcp) means external MCP servers stay alive and can be shared across Slife instances. Built-in services (memory, wechat) each get their own process with a direct MCP connection — no proxy routing overhead.
 
 ### Slife side (`slife/mcp/`)
 
 - **MCPClient** (`client.py`): connects via stdio (child process). Uses `asyncio.Queue` adapters to bridge subprocess pipes to MCP's `ClientSession`.
 - **MCPProxyTool** (`tool_adapter.py`): adapts external MCP tools to Slife's `Tool` ABC. Sets `name`/`description`/`parameters` at instance level. Tool names are prefixed with the server name.
-- **MCPWrapperProcess** (`process.py`): generic child process lifecycle management — start, create client from streams, graceful stop (stdin close → SIGTERM → SIGKILL escalation). Used identically for both slife-mcp and slife-memory.
+- **MCPWrapperProcess** (`process.py`): generic child process lifecycle management — start, create client from streams, graceful stop (stdin close → SIGTERM → SIGKILL escalation). Used identically for all three built-in plugins (slife-mcp, slife-memory, slife-wechat).
 
 **Startup flow:**
 1. Spawn `slife.plugins.mcp.server` as child process via `MCPWrapperProcess.start()`

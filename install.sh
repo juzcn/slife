@@ -119,7 +119,7 @@ if [ -f "$PYPROJECT" ]; then
 fi
 
 echo "Installing slife v${VERSION}…"
-uv tool install --python 3.13 "$TMP_DIR/slife-main"
+uv tool install --python 3.13 --with "$TMP_DIR/slife-main/credstore" "$TMP_DIR/slife-main"
 
 # ── 4. Done ──────────────────────────────────────────────────────────
 echo ""
