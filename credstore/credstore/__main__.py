@@ -488,23 +488,22 @@ def _unpersist_key(key: str, shell: str) -> None:
 
 def _setx(key: str, value: str) -> None:
     """Write to HKCU\\Environment directly — no command-line leak."""
-    import winreg
     import ctypes
+    import winreg
+
     key_handle = winreg.OpenKey(
         winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE
     )
     winreg.SetValueEx(key_handle, key, 0, winreg.REG_EXPAND_SZ, value)
     winreg.CloseKey(key_handle)
-    # Broadcast WM_SETTINGCHANGE so running processes pick up the change
-    HWND_BROADCAST = 0xFFFF
-    WM_SETTINGCHANGE = 0x001A
-    ctypes.windll.user32.SendMessageW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment")
+    _broadcast_environment_change()
 
 
 def _setx_delete(key: str) -> None:
     """Delete a value from HKCU\\Environment directly."""
-    import winreg
     import ctypes
+    import winreg
+
     try:
         key_handle = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER, "Environment", 0,
@@ -512,11 +511,44 @@ def _setx_delete(key: str) -> None:
         )
         winreg.DeleteValue(key_handle, key)
         winreg.CloseKey(key_handle)
-        HWND_BROADCAST = 0xFFFF
-        WM_SETTINGCHANGE = 0x001A
-        ctypes.windll.user32.SendMessageW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment")
+        _broadcast_environment_change()
     except FileNotFoundError:
         pass
+
+
+def _broadcast_environment_change() -> None:
+    """Notify running processes that HKCU\\Environment changed.
+
+    Uses ``SendMessageTimeoutW`` with ``SMTO_ABORTIFHUNG`` so a hung
+    top-level window cannot stall the broadcast (and thus the ``inject``
+    or ``uninject`` command).  Falls back to a fire-and-forget
+    ``SendNotifyMessageW`` if the timeout API is unavailable.
+    """
+    import ctypes
+
+    HWND_BROADCAST = 0xFFFF
+    WM_SETTINGCHANGE = 0x001A
+    SMTO_ABORTIFHUNG = 0x0002
+    ENV = "Environment"
+
+    user32 = ctypes.windll.user32
+
+    # Prefer SendMessageTimeoutW — aborts on hung windows after 2 s
+    try:
+        result = ctypes.c_ulong()
+        user32.SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            ENV,
+            SMTO_ABORTIFHUNG,
+            2000,  # 2-second timeout per window
+            ctypes.byref(result),
+        )
+    except Exception:
+        # Fallback: async fire-and-forget (no hang risk, but some
+        # processes may not see the change until restart)
+        user32.SendNotifyMessageW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, ENV)
 
 
 def _shell_get_profile_path(shell: str) -> str:

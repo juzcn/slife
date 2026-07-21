@@ -202,7 +202,12 @@ class TestConfigEnvGetTool:
         cred = _mock_credstore(monkeypatch)
         cred["DEEPSEEK_API_KEY"] = "sk-secret-key-long"
 
-        tool = CredentialCheckTool()
+        monkeypatch.setattr(
+            "slife.tools.credentials.read_config",
+            lambda path: {},
+        )
+
+        tool = CredentialCheckTool(config_path=Path("test.json5"))
         result = await tool.execute(key="DEEPSEEK_API_KEY")
 
         assert "DEEPSEEK_API_KEY" in result
@@ -254,7 +259,12 @@ class TestConfigEnvGetTool:
         cred = _mock_credstore(monkeypatch)
         cred["DEEPSEEK_API_KEY"] = "sk-secret-12345678"
 
-        tool = CredentialCheckTool()
+        monkeypatch.setattr(
+            "slife.tools.credentials.read_config",
+            lambda path: {},
+        )
+
+        tool = CredentialCheckTool(config_path=Path("test.json5"))
         result = await tool.execute(key="DEEPSEEK_API_KEY")
 
         assert "[credstore" in result

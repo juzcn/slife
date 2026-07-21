@@ -353,26 +353,147 @@ startup and reports status via `system_health`.
 
 ## Development
 
-Dev mode is detected via `pyproject.toml` — when `[project] name == "slife"`, data files stay in the project directory for easy debugging. Production installs use `~/.slife/`.
+### Quick Start
 
 ```bash
 git clone https://github.com/juzcn/slife.git
 cd slife
-uv sync
-uv run slife                      # uses ./slife.json5, data stays in ./
-```
-
-For all optional dependencies (embeddings + MQTT):
-
-```bash
 uv sync --all-extras
+uv run slife
 ```
 
-Run tests:
+### Dev Mode vs Production
+
+Dev mode is detected automatically — when `pyproject.toml` has `[project] name == "slife"`, data files stay in the project directory. Production installs use `~/.slife/`.
+
+| Aspect | Dev Mode | Production |
+|--------|----------|------------|
+| Config file | `./slife.json5` | `~/.slife/slife.json5` |
+| Memory DB | `./slife.db` | `~/.slife/slife.db` |
+| Credential store | System keyring (shared) | System keyring (shared) |
+| Cryptfile | `./credentials.crypt` | `~/.credstore/credentials.crypt` |
+| Logs | `./logs/` | `~/.slife/logs/` |
+
+credstore works identically in both modes — secrets are always in the OS keyring, not in the project directory.
+
+### First Run (Dev)
 
 ```bash
-uv run pytest
+# 1. Set up credstore (one-time, creates encrypted backup)
+uv run credstore set-password
+
+# 2. Store API keys (masked input, no echo — paste + Enter)
+uv run credstore set DEEPSEEK_API_KEY
+
+# 3. Launch
+uv run slife
 ```
+
+The default `slife.template.json5` is copied to `slife.json5` on first run. The template ships with pre-configured MCP servers (filesystem, web fetch, DuckDuckGo search, Serper, Tavily, GitHub, Amap Maps). Edit `slife.json5` to customize providers, models, and MCP servers.
+
+### Configuring API Keys (Dev)
+
+Since plaintext keys are rejected system-wide, register secrets first:
+
+```bash
+# Store in OS keyring
+uv run credstore set DEEPSEEK_API_KEY
+uv run credstore set GITHUB_TOKEN
+
+# Register in slife.json5 (or let the agent call config_secret_register)
+# The ${VAR} syntax resolves from keyring at runtime
+```
+
+Then in `slife.json5`:
+```json5
+env: {
+  DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}",
+  GITHUB_TOKEN: "${GITHUB_TOKEN}",
+}
+models: {
+  providers: {
+    deepseek: {
+      api_key: "${DEEPSEEK_API_KEY}",
+      // ...
+    },
+  },
+}
+```
+
+### Project Structure
+
+```
+slife/
+├── slife/                    # Main application package
+│   ├── agent/                # Agent loop, system prompt, LLM client
+│   ├── tools/                # Tool definitions (credential, shell, MCP, etc.)
+│   │   ├── credentials.py    # credential_check, inject/uninject
+│   │   ├── config_env.py     # config_env_set/get/remove, config_secret_register
+│   │   └── base.py           # Tool ABC + require_params helper
+│   ├── plugins/              # Built-in plugins (memory, mcp, wechat)
+│   ├── config.py             # Config loading + ${VAR} resolution
+│   ├── paths.py              # Canonical filesystem paths (dev vs prod)
+│   └── tui/                  # Textual terminal UI
+├── credstore/                # Standalone credential manager (bundled, not PyPI)
+│   └── credstore/
+│       ├── _store.py         # CredentialStore + module-level API
+│       ├── _backend.py       # System keyring + cryptfile backends
+│       ├── __main__.py       # CLI (set, get, list, inject, etc.)
+│       └── _tty.py           # Cross-platform masked terminal input
+├── skills/                   # Skill definitions (on-demand agent plugins)
+├── tests/                    # Test suite (pytest)
+├── slife.json5               # Dev config (git-ignored)
+├── slife.template.json5      # Default config template
+└── pyproject.toml            # Project metadata + dependencies
+```
+
+### Running Tests
+
+```bash
+# All tests
+uv run pytest
+
+# Specific test files
+uv run pytest tests/test_credentials.py -v
+uv run pytest tests/test_config_env.py -v
+
+# credstore tests
+uv run pytest credstore/tests/ -v
+
+# With coverage
+uv run pytest --cov=slife --cov=credstore --cov-report=term-missing
+```
+
+### Running Individual Tools for Debugging
+
+You can exercise tool logic directly without the full TUI:
+
+```python
+import asyncio
+from pathlib import Path
+from slife.tools.credentials import CredentialCheckTool
+
+async def main():
+    tool = CredentialCheckTool(config_path=Path("slife.json5"))
+    result = await tool.execute(key="DEEPSEEK_API_KEY")
+    print(result)
+
+asyncio.run(main())
+```
+
+### Credstore CLI in Dev
+
+```bash
+# All credstore commands work identically in dev mode
+uv run credstore status                # Backend status
+uv run credstore list                  # List stored keys
+uv run credstore get DEEPSEEK_API_KEY  # Retrieve (masked)
+uv run credstore delete SOME_OLD_KEY   # Remove a credential
+```
+
+### Design Docs
+
+See **[DESIGN.md](DESIGN.md)** for full architecture — agent loop, tool system, memory plugin, MCP gateway, A2A mesh, and credential security model. See **[credstore/README.md](credstore/README.md)** for credstore internals and disaster recovery.
 
 ## Design
 

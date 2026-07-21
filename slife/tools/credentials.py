@@ -1,8 +1,9 @@
 """Credential management tools for the LLM agent.
 
 Talk directly to the OS keyring via credstore.  credential_check returns
-masked values (e.g. ``sk-a…B3f2``) so the LLM can verify a credential
-is configured correctly without seeing the full secret.
+a comprehensive status across all sources — shell env, slife.json5
+references, and OS keyring — so the LLM can verify where a credential
+is configured without seeing the full secret.
 Use config_secret_register to register secret env vars in slife.json5
 (writes ${VAR} placeholder — user stores the real value via credstore CLI).
 Use config_env_set / config_env_get for non-secret env vars.
@@ -12,7 +13,9 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
+from slife.tools._config_io import _ConfigPathMixin, read_config
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -25,23 +28,72 @@ def _mask_value(value: str) -> str:
     return "***"
 
 
-class CredentialCheckTool(Tool):
-    """Verify a credential in the OS keyring — masked, LLM-safe.
+def _find_json5_refs(raw: dict, key: str) -> list[str]:
+    """Scan a slife.json5 dict for ``${KEY}`` references.
 
-    NEVER exposes the full secret — returns only first 4 + last 4
-    characters (e.g. ``sk-a…B3f2``).  Shell env vars take priority
-    over the keyring.  Use this to check whether a credential is
-    configured before attempting operations that need it.
+    Returns a list of human-readable paths where *key* is referenced
+    (e.g. ``["env:", "models/providers/deepseek", "mcp/servers/github"]``).
+    """
+    refs: list[str] = []
+    _scan_json5(raw, key, "", refs)
+    return refs
+
+
+def _scan_json5(node, key: str, path: str, refs: list[str]) -> None:
+    """Recursively scan *node* for ``${KEY}`` in string values."""
+    target = f"${{{key}}}"
+
+    if isinstance(node, dict):
+        for k, v in node.items():
+            child_path = f"{path}/{k}" if path else k
+            if isinstance(v, str) and target in v:
+                # Use the parent path (e.g. "env:" or "mcp/servers/github")
+                refs.append(_simplify_path(path) if path else k)
+            elif isinstance(v, (dict, list)):
+                _scan_json5(v, key, child_path, refs)
+    elif isinstance(node, list):
+        for i, item in enumerate(node):
+            if isinstance(item, str) and target in item:
+                refs.append(_simplify_path(path) if path else f"[{i}]")
+            elif isinstance(item, (dict, list)):
+                _scan_json5(item, key, f"{path}[{i}]", refs)
+
+
+def _simplify_path(path: str) -> str:
+    """Convert a raw slash-path to a display-friendly form.
+
+    Examples::
+
+        "env"                  → "env:"
+        "models/providers/ds"  → "models/providers/ds"
+        "mcp/servers/gh/env"   → "mcp/servers/gh"
+    """
+    # Strip trailing "/env" since the key being in env: is the main signal
+    if path.endswith("/env"):
+        path = path[:-4]
+    # Strip leading "/" if present
+    return path.lstrip("/")
+
+
+class CredentialCheckTool(_ConfigPathMixin, Tool):
+    """Check credential status across all sources — masked, LLM-safe.
+
+    Reports where a credential exists (shell env, slife.json5 references,
+    OS keyring) so the LLM can verify configuration before attempting
+    operations that need the key.
+
+    NEVER exposes the full secret — masked values show only first 4 +
+    last 4 characters (e.g. ``sk-a…B3f2``).
     """
 
     requires_a2a = False
 
     name = "credential_check"
     description = (
-        "Verify a credential in the OS keyring — LLM-safe, never "
+        "Check credential status across all sources — LLM-safe, never "
         "exposes the full secret. "
-        "Returns masked value (e.g. 'sk-a…B3f2') if stored, or "
-        "'not stored' if missing. Shell env vars override keyring. "
+        "Reports whether the key is set in: shell environment, "
+        "slife.json5 (${VAR} references), and OS keyring. "
         "Use before running operations that need an API key — "
         "check first, then use inject_credential to load it."
     )
@@ -52,8 +104,8 @@ class CredentialCheckTool(Tool):
                 "type": "string",
                 "description": (
                     "Credential key to check, e.g. 'DEEPSEEK_API_KEY', "
-                    "'GITHUB_TOKEN'. Returns masked status only — "
-                    "NEVER the full secret."
+                    "'GITHUB_TOKEN'. Reports status across shell env, "
+                    "slife.json5, and OS keyring — NEVER the full secret."
                 ),
             },
         },
@@ -65,17 +117,32 @@ class CredentialCheckTool(Tool):
 
         from credstore import get_credential
 
-        # shell takes priority
+        lines = [f"{key} status:"]
+
+        # ── 1. Shell environment ──────────────────────────────
         env_val = os.environ.get(key)
         if env_val:
-            return f"{key} = {_mask_value(env_val)} [shell]"
+            lines.append(f"  [shell]      : ✓ set ({_mask_value(env_val)})")
+        else:
+            lines.append(f"  [shell]      : ✗ not set")
 
-        # Check keyring
+        # ── 2. slife.json5 references ─────────────────────────
+        raw = read_config(self._config_path)
+        refs = _find_json5_refs(raw, key)
+        if refs:
+            locations = ", ".join(refs)
+            lines.append(f"  [slife.json5]: ✓ referenced ({locations})")
+        else:
+            lines.append(f"  [slife.json5]: ✗ not referenced")
+
+        # ── 3. OS keyring ────────────────────────────────────
         cred_val = get_credential(key)
         if cred_val:
-            return f"{key} = {_mask_value(cred_val)} [credstore]"
+            lines.append(f"  [credstore]  : ✓ stored ({_mask_value(cred_val)})")
+        else:
+            lines.append(f"  [credstore]  : ✗ not stored")
 
-        return f"'{key}' is not stored in the keyring."
+        return "\n".join(lines)
 
 
 class InjectCredentialTool(Tool):
