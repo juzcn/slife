@@ -1,6 +1,7 @@
 """Tests for slife.plugins.memory.store — SessionStore and helpers."""
 
 import struct
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,6 +9,7 @@ import pytest
 
 from slife.plugins.memory.store import (
     SessionStore,
+    _normalize_time_param,
     _now,
     _serialize_f32,
     _split_sql,
@@ -62,6 +64,54 @@ class TestToFts5Query:
 
     def test_empty_string(self):
         assert _to_fts5_query("") == '""'
+
+
+class TestNormalizeTimeParam:
+    """Tests for _normalize_time_param."""
+
+    def test_relative_yesterday(self):
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        assert _normalize_time_param("yesterday", "since") == yesterday
+
+    def test_relative_today(self):
+        today = date.today().isoformat()
+        assert _normalize_time_param("today", "since") == today
+
+    def test_relative_tomorrow(self):
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        assert _normalize_time_param("tomorrow", "since") == tomorrow
+
+    def test_relative_now(self):
+        result = _normalize_time_param("now", "since")
+        assert "T" in result  # Full ISO datetime
+
+    def test_case_insensitive(self):
+        today = date.today().isoformat()
+        assert _normalize_time_param("TODAY", "since") == today
+        assert _normalize_time_param("Yesterday", "since") == (date.today() - timedelta(days=1)).isoformat()
+
+    def test_whitespace_stripped(self):
+        today = date.today().isoformat()
+        assert _normalize_time_param("  today  ", "since") == today
+
+    def test_iso_string_passthrough_since(self):
+        assert _normalize_time_param("2026-07-20T14:39:19+08:00", "since") == "2026-07-20T14:39:19+08:00"
+
+    def test_date_only_since_passthrough(self):
+        """Bare-date since works: created_at >= '2026-07-20' includes all records on that day."""
+        assert _normalize_time_param("2026-07-20", "since") == "2026-07-20"
+
+    def test_date_only_until_advances_day(self):
+        """Bare-date until must advance one day so records on that day are included."""
+        assert _normalize_time_param("2026-07-20", "until") == "2026-07-21"
+
+    def test_datetime_until_passthrough(self):
+        """Full datetime until is left alone — the caller specified the time explicitly."""
+        assert _normalize_time_param("2026-07-20T23:59:59", "until") == "2026-07-20T23:59:59"
+
+    def test_invalid_date_passthrough(self):
+        """Garbage input passes through unchanged so the SQL can reject it."""
+        assert _normalize_time_param("not-a-date", "since") == "not-a-date"
 
 
 class TestSplitSql:

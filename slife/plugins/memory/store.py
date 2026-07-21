@@ -10,7 +10,7 @@ Agent isolation is at the file level — each agent_id has its own .db file.
 import json
 import logging
 import struct
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -200,9 +200,11 @@ class SessionStore:
                         "since": since, "until": until}
 
             if since:
+                since = _normalize_time_param(since, role="since")
                 where += " AND created_at >= ?"
                 params.append(since)
             if until:
+                until = _normalize_time_param(until, role="until")
                 where += " AND created_at <= ?"
                 params.append(until)
             row2 = await self._conn.execute(
@@ -213,9 +215,11 @@ class SessionStore:
             clauses: list[str] = []
             params = []
             if since:
+                since = _normalize_time_param(since, role="since")
                 clauses.append("created_at >= ?")
                 params.append(since)
             if until:
+                until = _normalize_time_param(until, role="until")
                 clauses.append("created_at <= ?")
                 params.append(until)
             where = " AND ".join(clauses)
@@ -282,9 +286,11 @@ class SessionStore:
         time_clauses = ""
         time_params: list[str] = []
         if since:
+            since = _normalize_time_param(since, role="since")
             time_clauses += " AND d.created_at >= ?"
             time_params.append(since)
         if until:
+            until = _normalize_time_param(until, role="until")
             time_clauses += " AND d.created_at <= ?"
             time_params.append(until)
         try:
@@ -321,8 +327,10 @@ class SessionStore:
         )
         results = [dict(row) for row in await cursor.fetchall()]
         if since:
+            since = _normalize_time_param(since, role="since")
             results = [r for r in results if r.get("created_at", "") >= since]
         if until:
+            until = _normalize_time_param(until, role="until")
             results = [r for r in results if r.get("created_at", "") <= until]
         results = results[:limit]
         logger.debug("search_semantic hits=%s", len(results))
@@ -337,9 +345,11 @@ class SessionStore:
         clauses: list[str] = []
         params: list[str | int] = []
         if since:
+            since = _normalize_time_param(since, role="since")
             clauses.append("created_at >= ?")
             params.append(since)
         if until:
+            until = _normalize_time_param(until, role="until")
             clauses.append("created_at <= ?")
             params.append(until)
         if clauses:
@@ -367,9 +377,11 @@ class SessionStore:
         time_clauses = ""
         time_params: list[str] = []
         if since:
+            since = _normalize_time_param(since, role="since")
             time_clauses += " AND created_at >= ?"
             time_params.append(since)
         if until:
+            until = _normalize_time_param(until, role="until")
             time_clauses += " AND created_at <= ?"
             time_params.append(until)
         cursor = await self._conn.execute(
@@ -421,6 +433,58 @@ class SessionStore:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
+
+
+# Relative-date patterns that LLMs may pass verbatim despite being told
+# to compute ISO datetimes.  We convert them server-side so search
+# doesn't silently return zero results.
+_RELATIVE_DATES: dict[str, str] = {
+    "today": "",
+    "yesterday": "",
+    "tomorrow": "",
+    "now": "",
+}
+
+
+def _normalize_time_param(value: str, role: str = "since") -> str:
+    """Convert relative date expressions to ISO datetimes.
+
+    LLMs sometimes pass ``"yesterday"`` or ``"today"`` literally
+    instead of computing ISO datetimes.  This normalises those
+    expressions so string-comparison against ``created_at`` works.
+
+    Additionally, when *role* is ``"until"`` and *value* is date-only
+    (10 chars, ``YYYY-MM-DD``), we advance by one day.  A bare-date
+    ``until`` would otherwise exclude all records on that day because
+    their ``created_at`` timestamps sort *after* the date-only string
+    (``"2026-07-20T14:39:19" > "2026-07-20"``).
+    """
+    today = date.today()
+
+    # Populate cached relative dates if needed
+    if not _RELATIVE_DATES["today"]:
+        _RELATIVE_DATES["today"] = today.isoformat()
+        _RELATIVE_DATES["yesterday"] = (today - timedelta(days=1)).isoformat()
+        _RELATIVE_DATES["tomorrow"] = (today + timedelta(days=1)).isoformat()
+        _RELATIVE_DATES["now"] = datetime.now().astimezone().isoformat(
+            timespec="seconds",
+        )
+
+    key = value.strip().lower()
+    if key in _RELATIVE_DATES:
+        value = _RELATIVE_DATES[key]
+
+    # Date-only until: advance one day so records on that day are
+    # included (created_at has a time component that sorts after
+    # the bare date).
+    if role == "until" and len(value) == 10 and "T" not in value:
+        try:
+            d = date.fromisoformat(value)
+            value = (d + timedelta(days=1)).isoformat()
+        except ValueError:
+            pass  # Not a valid ISO date; pass through unchanged
+
+    return value
 
 
 def _split_sql(sql_text: str) -> list[str]:
