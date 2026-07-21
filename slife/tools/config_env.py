@@ -224,6 +224,8 @@ class ConfigEnvGetTool(_ConfigPathMixin, Tool):
         "Read non-secret env var configuration (shell → slife.json5 → MCP server envs). "
         "Does NOT query the OS keyring — ${VAR} references are shown as-is "
         "(e.g. '${DEEPSEEK_API_KEY}'), never resolved. "
+        "Secret values from the shell environment are automatically masked "
+        "(e.g. 'sk-a…B3f2 [shell]'). "
         "Use credential_check to verify secrets in the keyring. "
         "Omit key to list all configured vars across root env: and "
         "mcp.servers.<name>.env sections."
@@ -340,6 +342,9 @@ def _lookup_one(key: str, env: dict, mcp_envs: dict[str, dict]) -> str:
     # shell takes priority
     env_val = os.environ.get(key)
     if env_val:
+        if _looks_like_secret(key, env_val):
+            from slife.tools.credentials import _mask_value
+            return f"{key} = {_mask_value(env_val)} [shell]"
         return f"{key} = {env_val} [shell]"
 
     sources = []
@@ -368,6 +373,9 @@ def _lookup_one(key: str, env: dict, mcp_envs: dict[str, dict]) -> str:
 def _format_one(key: str, value: str) -> str:
     env_val = os.environ.get(key)
     if env_val:
+        if _looks_like_secret(key, env_val):
+            from slife.tools.credentials import _mask_value
+            return f"  {key} = {_mask_value(env_val)} [shell]"
         return f"  {key} = {env_val} [shell]"
 
     is_placeholder = str(value).startswith(_PLACEHOLDER_PREFIX)

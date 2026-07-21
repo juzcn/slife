@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from slife.agent.llm_client import LLMClient, TokenUsage
+from slife.logfmt import sanitize_secrets
 from slife.agent.conversation import Conversation
 from slife.tools.registry import ToolRegistry
 from slife.logfmt import request_scope, elapsed
@@ -277,6 +278,9 @@ class AgentLoop:
             result = await self.tool_registry.execute(
                 tc.name, **tc.arguments
             )
+            # Sanitize secrets BEFORE anything else — prevents API keys
+            # from reaching the LLM context or TUI display.
+            result = sanitize_secrets(result)
             # Truncate oversized tool results so a single large file
             # read doesn't blow up the context window.
             max_chars = self.max_tool_result_chars

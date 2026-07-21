@@ -42,6 +42,9 @@ What the LLM cannot know (and the prompt provides):
 - That `config_env_set` **rejects values that look like secrets** (API key prefixes, token patterns, key names with KEY/SECRET/TOKEN) — use `config_secret_register` instead
 - That **plaintext API keys in `slife.json5` are rejected at startup** — `api_key` fields must use `${VAR}` references
 - That MCP server stderr is **sanitized** before logging — API key patterns are redacted
+- That **all tool output is sanitized** before reaching the LLM — `sanitize_secrets()` in
+  `logfmt.py` is the harness-level guard applied at `AgentLoop._execute_tools()`,
+  the single chokepoint between tool execution and the LLM context
 - That A2A agents are discovered via `a2a_list_agents` / `a2a_list_subagents`
 - That `a2a_spawn_subagent` creates local workers for parallel computation
 - That every conversation is permanently recorded and searchable via `memory_search`
@@ -326,7 +329,7 @@ Single function-calling loop. All tools — native functions, MCP tools, memory 
 ```
 User Input → Conversation.add_user_message()
   → loop: LLM stream → thinking/text chunks → handler callbacks
-    → tool calls? → ToolRegistry.execute() → Conversation.add_tool_result() → loop
+    → tool calls? → ToolRegistry.execute() → sanitize_secrets() → Conversation.add_tool_result() → loop
     → no tool calls? → response text → return
     → save turn to diary (permanent memory)
     → trim context if > 80% window (oldest turns → diary, keep 20%)
@@ -891,7 +894,7 @@ Slife separates secrets from config into two layers with different security prop
 
 ### Design Principles
 
-**Secrets never touch the agent process.** The `credstore set <KEY>` CLI reads secrets via masked stdin input (no echo, no shell history) and writes them directly to the OS keyring. **credstore is an interactive-only CLI tool — LLMs cannot invoke it** (it requires direct TTY input).
+**Secrets never reach the LLM context.** The `credstore set <KEY>` CLI reads secrets via masked stdin input (no echo, no shell history) and writes them directly to the OS keyring. **credstore is an interactive-only CLI tool — LLMs cannot invoke it** (it requires direct TTY input). At runtime, secrets from the keyring may be loaded into ``os.environ`` for subprocess compatibility (MCP servers, embeddings), but ``sanitize_secrets()`` redacts any secret patterns in tool output before they reach the LLM context.
 
 **Plaintext API keys are rejected at config load time.**  ``api_key`` fields in
 ``slife.json5`` must use ``${VAR}`` references or ``keyring:`` URIs — literal key
@@ -904,7 +907,17 @@ blobs) or key names containing KEY/SECRET/TOKEN/AUTH.  This is belt-and-suspende
 on top of the structural split — even if the LLM ignores the tool description,
 the value is blocked before it touches disk.
 
-**Clean separation of config vs. credentials.** `config_env_get` handles only non-secret env vars (shell → slife.json5) — it does NOT query the keyring. `credential_check` handles all secrets (shell → keyring) and shows masked values (e.g. `sk-a…B3f2`). The LLM chooses the right tool — no key-name heuristic needed.
+**Harness-level tool output sanitization.**  ``sanitize_secrets()`` in
+``logfmt.py`` is applied to **every tool result** at ``AgentLoop._execute_tools()``
+— the single chokepoint between tool execution and the LLM context window.
+It redacts API key patterns (``sk-*``, ``ghp_*``, ``ya29.*``, Bearer tokens,
+``key=value`` patterns, 32+ char hex/base64 tokens) with ``<REDACTED>`` before
+the result reaches the conversation, the TUI display, or the LLM.  This is the
+last-resort guard — even if a tool echoes a secret from the environment or reads
+a ``.env`` file, the key never enters the LLM context.  The function is
+idempotent and passes normal text through unchanged.
+
+**Clean separation of config vs. credentials.** `config_env_get` handles non-secret env vars (shell → slife.json5). Secret values detected in the shell environment are automatically masked (``sk-a…B3f2``). It does NOT query the keyring. `credential_check` handles all secrets (shell → keyring) and shows masked values (e.g. `sk-a…B3f2`). The LLM chooses the right tool — no key-name heuristic needed.
 
 **Two tools for registration — structurally safe.** Secret and non-secret env var registration are separate tools, eliminating the need for runtime key-name detection:
 

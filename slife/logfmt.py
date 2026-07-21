@@ -264,19 +264,26 @@ _SECRET_PATTERNS: list[re.Pattern] = [
     re.compile(r"(?:Authorization|Bearer)\s+([A-Za-z0-9+/=._-]{20,})", re.IGNORECASE),
     # key=value patterns with secret-looking values
     re.compile(r"(?:api_key|apikey|api-key|secret|token|password)\s*[=:]\s*([^\s]{20,})", re.IGNORECASE),
+    # Generic hex-ish tokens (32+ chars) — catches API keys without known prefixes
+    re.compile(r"\b[A-Za-z0-9]{32,}\b"),
+    # Base64-like blobs (32+ chars with +/=)
+    re.compile(r"\b[A-Za-z0-9+/=]{32,}\b"),
 ]
 
 _REDACTED = "<REDACTED>"
 
 
 def sanitize_secrets(text: str) -> str:
-    """Redact API key / token patterns from *text* for safe logging.
+    """Redact API key / token patterns from *text*.
 
-    Replaces matched secret substrings with ``<REDACTED>``.
-    Idempotent — safe to call on already-redacted text.
+    Used for log output and tool-result sanitisation before the text
+    reaches the LLM context.  Replaces matched secret substrings with
+    ``<REDACTED>``.  Idempotent — safe to call on already-redacted text.
 
     >>> sanitize_secrets("Authorization: Bearer sk-ant-api03-abc123...")
     'Authorization: <REDACTED>'
+    >>> sanitize_secrets("DEEPSEEK_API_KEY=sk-abcdef1234567890abcdef1234567890ab")
+    '<REDACTED>'
     >>> sanitize_secrets("normal log message")
     'normal log message'
     """

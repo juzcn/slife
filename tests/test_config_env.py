@@ -363,3 +363,110 @@ class TestConfigEnvRemoveTool:
         result = await tool.execute(key="ONLY_IN_ENV")
         assert "nothing to remove" in result
         assert "ONLY_IN_ENV" in os.environ  # NOT touched
+
+
+# ── config_env_get: secret masking ────────────────────────────────
+
+
+class TestConfigEnvGetMasking:
+    """config_env_get masks secret values in os.environ."""
+
+    @pytest.mark.asyncio
+    async def test_single_key_secret_masked_in_shell(self, monkeypatch):
+        """Secret values from shell env are masked in single-key lookup."""
+        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _mock_credstore(monkeypatch)
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-longsecret12345678")
+        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+
+        result = await tool.execute(key="DEEPSEEK_API_KEY")
+        # Must show the [shell] tag but masked value
+        assert "[shell]" in result
+        assert "sk-deepseek-longsecret12345678" not in result
+        # Should show masked format: first 4 + … + last 4
+        assert "sk-d" in result
+        assert "5678" in result
+        assert "…" in result or "..." in result
+
+    @pytest.mark.asyncio
+    async def test_single_key_non_secret_shown_plaintext(self, monkeypatch):
+        """Non-secret values from shell env are shown in full."""
+        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _mock_credstore(monkeypatch)
+        monkeypatch.setenv("EDITOR", "vim")
+        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+
+        result = await tool.execute(key="EDITOR")
+        assert "[shell]" in result
+        assert "vim" in result
+
+    @pytest.mark.asyncio
+    async def test_list_all_masks_secrets(self, monkeypatch):
+        """List-all mode masks secret-looking values from shell."""
+        raw, _ = _mock_config({
+            "env": {
+                "EDITOR": "code",
+                "DEEPSEEK_API_KEY": "${DEEPSEEK_API_KEY}",
+            },
+        }, monkeypatch)
+        _mock_credstore(monkeypatch)
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-very-secret-key-here-98765")
+        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+
+        result = await tool.execute()  # no key — list all
+        # Non-secret shown in full
+        assert "EDITOR" in result
+        # Secret must be masked
+        assert "sk-very-secret-key-here-98765" not in result
+        assert "sk-v" in result  # first 4 chars
+        assert "8765" in result  # last 4 chars
+
+    @pytest.mark.asyncio
+    async def test_list_all_non_secrets_shown(self, monkeypatch):
+        """List-all still shows non-secrets normally."""
+        raw, _ = _mock_config({
+            "env": {"EDITOR": "vim", "LOG_LEVEL": "${LOG_LEVEL}"},
+        }, monkeypatch)
+        _mock_credstore(monkeypatch)
+        monkeypatch.setenv("LOG_LEVEL", "debug")
+        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+
+        result = await tool.execute()
+        assert "[unset]" in result or "vim" in result
+        assert "debug" in result  # Non-secret shown in full
+
+    @pytest.mark.asyncio
+    async def test_token_key_name_triggers_masking(self, monkeypatch):
+        """Keys with TOKEN in the name are masked."""
+        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _mock_credstore(monkeypatch)
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_notarealtokenatall12345678")
+        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+
+        result = await tool.execute(key="GITHUB_TOKEN")
+        assert "ghp_notarealtokenatall12345678" not in result
+        assert "ghp_" in result or "***" in result
+
+    @pytest.mark.asyncio
+    async def test_password_key_name_triggers_masking(self, monkeypatch):
+        """Keys with PASSWORD in the name are masked."""
+        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _mock_credstore(monkeypatch)
+        monkeypatch.setenv("DB_PASSWORD", "super-secret-db-password-longstr")
+        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+
+        result = await tool.execute(key="DB_PASSWORD")
+        assert "super-secret-db-password-longstr" not in result
+        assert "sup" in result  # first 4 chars
+        assert "gstr" in result  # last 4 chars
+
+    @pytest.mark.asyncio
+    async def test_auth_key_name_triggers_masking(self, monkeypatch):
+        """Keys with AUTH in the name are masked."""
+        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _mock_credstore(monkeypatch)
+        monkeypatch.setenv("AUTH_TOKEN", "abcdef1234567890abcdef1234567890ab")
+        tool = ConfigEnvGetTool(config_path=Path("test.json5"))
+
+        result = await tool.execute(key="AUTH_TOKEN")
+        assert "abcdef1234567890abcdef1234567890ab" not in result
