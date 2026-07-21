@@ -65,7 +65,7 @@ Creates `~/.credstore/credentials.crypt` and sets a master password (dev: `./cre
 | `get KEY` | no | Keyring only, masked output (`sk-5f…b722`) |
 | `get KEY -p` | enters it | Dual-query keyring + cryptfile, plaintext. Fails on mismatch |
 | `delete KEY` | enters it | Remove from keyring + cryptfile |
-| `list` | enters it | List all stored credential keys |
+| `list` | enters it | Triple-read: keyring + cryptfile + env vars |
 | `inject KEY...` | no | Persist to system env: registry (Windows) or shell profile (Unix) |
 | `uninject KEY...` | no | Remove from system env: registry (Windows) or shell profile (Unix) |
 | `reset-keyring` | enters it | Restore keyring from cryptfile backup |
@@ -77,7 +77,7 @@ credstore set-password                   # first-time setup
 credstore set DEEPSEEK_API_KEY           # store (masked, atomic dual-write)
 credstore get DEEPSEEK_API_KEY           # retrieve, masked output
 credstore get DEEPSEEK_API_KEY -p        # retrieve plaintext (dual-query)
-credstore list                           # list all stored keys
+credstore list                           # triple-read: keyring + cryptfile + env
 credstore delete OLD_KEY                 # delete from keyring + cryptfile
 
 # System environment injection (persistent)
@@ -90,6 +90,32 @@ credstore reset-keyring                  # restore keyring from cryptfile backup
 credstore reset-backup                   # sync keyring → cryptfile
 credstore status                         # show backend status
 ```
+
+### List Output
+
+`credstore list` performs a **triple-read** — checking the system keyring, encrypted
+cryptfile backup, and current environment variables simultaneously:
+
+```
+  KEY                  SYSTEM KEYRING   CRYPTFILE        ENV    STATUS
+  ────────             ──────────────   ──────────────   ────   ──────
+  ANTHROPIC_API_KEY    ✔                ✔                —      synced
+  DEEPSEEK_API_KEY     ✔                ✔                ✔      synced
+  OPENAI_API_KEY       —                ✔                —      cryptfile only
+  ────────             ──────────────   ──────────────   ────   ──────
+  3 credential(s) — synced: 2, cryptfile only: 1, env: 1
+```
+
+| Column | Meaning |
+|--------|---------|
+| `SYSTEM KEYRING` | ✔ = stored in OS keyring, — = missing |
+| `CRYPTFILE` | ✔ = stored in encrypted backup, — = missing |
+| `ENV` | ✔ = currently set as environment variable, — = not set |
+| `STATUS` | `synced` (both stores match), `keyring only`, `cryptfile only`, or `MISMATCH ⚠` |
+
+The `ENV` column uses `os.environ` — it checks whether the credential key is
+currently exported as an environment variable. No secret values are decoded
+during the check.
 
 ### Environment Variable Injection
 
@@ -128,7 +154,7 @@ credstore mitigates memory leaks through three design rules:
 
 | Rule | Mechanism |
 |------|-----------|
-| **Never batch-load** | `list` collects only key names. Sync comparison fetches one value at a time and immediately `del`-s it |
+| **Never batch-load** | `list` collects only key names from keyring, cryptfile, and `os.environ`. Sync comparison fetches one value at a time and immediately `del`-s it |
 | **Prefer existence checks** | `exists_credential()` / `list_credential_keys()` never retrieve secret content |
 | **Explicit cleanup** | Every CLI handler `del`-s secret references after last use. `set`, `get`, `reset`, `set-password` all clean up on every exit path — including error branches |
 
@@ -138,7 +164,7 @@ credstore mitigates memory leaks through three design rules:
 |-----------|----------------------|
 | `get` | Caller is responsible for `del`-ing the returned value |
 | `set` | `del secret` + `del master_pw` after dual-write (all code paths) |
-| `list` | Values fetched one-at-a-time, compared, `del`-ed immediately |
+| `list` | Values fetched one-at-a-time, compared, `del`-ed immediately. Env vars checked via `os.environ` — no secret values decoded |
 | `inject` | Value read → persisted → `del`-ed. TTY: no secret on stdout. Pipe: secret through pipe only |
 | `uninject` | No secrets involved — registry/profile cleanup only |
 | `reset-keyring` | Each value `del`-ed after writing to keyring |

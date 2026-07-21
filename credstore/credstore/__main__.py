@@ -10,7 +10,7 @@ Commands::
     credstore set <key>           Store a credential (keyring + cryptfile)
     credstore get <key>           Retrieve (keyring; cryptfile fallback on miss)
     credstore delete <key>        Delete a credential
-    credstore list                List all stored credential keys
+    credstore list                List credentials (keyring + cryptfile + env)
     credstore reset-keyring       Restore keyring from cryptfile backup
     credstore reset-backup        Sync system keyring → cryptfile backup
     credstore inject KEY...       Print shell export commands (for eval)
@@ -654,7 +654,11 @@ def _cmd_delete(key: str) -> int:
 
 @requires_tty
 def _cmd_list() -> int:
-    """List credentials from both system keyring and cryptfile backup.
+    """List credentials from system keyring, cryptfile backup, and env vars.
+
+    Triple-read: checks system keyring, cryptfile, and ``os.environ`` for
+    each known credential key.  The ENV column shows whether the key is
+    currently set as an environment variable.
 
     Memory-safe: collects only KEY names, never batch-loads secret
     values.  For sync comparison, retrieves values one at a time
@@ -694,7 +698,10 @@ def _cmd_list() -> int:
             _err(f"cannot read cryptfile — {exc}")
             return 1
 
-    # ── 3. Merge & display (values retrieved one-at-a-time) ────
+    # ── 3. Env vars (keys only — never decode secret values) ────
+    env_keys: set[str] = {k for k in keyring_keys | cryptfile_keys if os.environ.get(k)}
+
+    # ── 4. Merge & display (values retrieved one-at-a-time) ────
     all_keys = sorted(keyring_keys | cryptfile_keys)
 
     if not all_keys:
@@ -710,12 +717,12 @@ def _cmd_list() -> int:
         if cf is not None and master_pw is not None:
             with backend_mod.unlocked_cryptfile(master_pw) as cf_ctx:
                 _print_credential_table_safe(
-                    all_keys, keyring_keys, cryptfile_keys,
+                    all_keys, keyring_keys, cryptfile_keys, env_keys,
                     cryptfile_exists, cf_ctx,
                 )
         else:
             _print_credential_table_safe(
-                all_keys, keyring_keys, cryptfile_keys,
+                all_keys, keyring_keys, cryptfile_keys, env_keys,
                 cryptfile_exists, None,
             )
     finally:
@@ -745,10 +752,13 @@ def _print_credential_table_safe(
     all_keys: list[str],
     keyring_keys: set[str],
     cryptfile_keys: set[str],
+    env_keys: set[str],
     cryptfile_exists: bool,
     cf_ctx,  # unlocked cryptfile or None
 ) -> None:
     """Print a formatted table of credentials with sync status.
+
+    Shows four columns: KEY, SYSTEM KEYRING, CRYPTFILE, ENV, STATUS.
 
     Memory-safe: retrieves values ONE at a time for comparison
     and immediately ``del``-s each after use.  Never batch-loads
@@ -757,17 +767,22 @@ def _print_credential_table_safe(
     key_width = max(len(k) for k in all_keys) + 2
 
     print()
-    print(f"  {'KEY':<{key_width}} SYSTEM KEYRING   CRYPTFILE        STATUS")
-    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ──────────────   ──────")
+    print(f"  {'KEY':<{key_width}} SYSTEM KEYRING   CRYPTFILE        ENV    STATUS")
+    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ──────────────   ────   ──────")
 
     ring_only = 0
     crypt_only = 0
     synced = 0
     mismatched = 0
+    env_set = 0
 
     for key in all_keys:
         in_ring = key in keyring_keys
         in_crypt = key in cryptfile_keys
+        in_env = key in env_keys
+        env_mark = "✔" if in_env else "—"
+        if in_env:
+            env_set += 1
 
         if in_ring and in_crypt:
             # Fetch ONE value from each store, compare, immediately del
@@ -801,9 +816,9 @@ def _print_credential_table_safe(
             crypt_only += 1
             ring_mark, crypt_mark, status = "—", "✔", "cryptfile only"
 
-        print(f"  {key:<{key_width}} {ring_mark:<13}   {crypt_mark:<14}   {status}")
+        print(f"  {key:<{key_width}} {ring_mark:<13}   {crypt_mark:<14}   {env_mark:<4}   {status}")
 
-    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ──────────────   ──────")
+    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ──────────────   ────   ──────")
     parts = []
     if synced:
         parts.append(f"synced: {synced}")
@@ -813,6 +828,8 @@ def _print_credential_table_safe(
         parts.append(f"cryptfile only: {crypt_only}")
     if mismatched:
         parts.append(f"mismatched: {mismatched}")
+    if env_set:
+        parts.append(f"env: {env_set}")
     print(f"  {len(all_keys)} credential(s) — {', '.join(parts)}")
 
     _print_list_tips(ring_only, crypt_only, cryptfile_exists)
