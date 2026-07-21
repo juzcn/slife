@@ -259,7 +259,63 @@ memory_search("that bug fix", mode="hybrid")→ semantic recall
 memory_search(mode="time", since="2026-07") → browse by date
 ```
 
-Agent isolation via `--agent alice`. Each agent gets its own DB (`<agent_id>.db`) in the data directory. Embedding via local GGUF (offline) or OpenAI-compatible API.  See [DESIGN.md § Permanent Memory](DESIGN.md#permanent-memory-slife-memory) for the full architecture.
+#### Schema
+
+One row = one turn. No sessions, no lifecycle — a continuous, time-ordered log.
+
+| Column | Purpose |
+|--------|---------|
+| `user_message` | What the user said |
+| `messages` | Assistant response as OpenAI JSON array (thinking, tool calls, tool results, final text) |
+| `summary` | 1–2 sentence gist, LLM-written via `memory_summarize` |
+| `tags` | Comma-separated topic tags |
+| `created_at` | ISO 8601 with local timezone (e.g. `2026-07-20T14:39:19+08:00`) |
+| `channel` | Source: `human`, `wechat`, or remote agent id |
+| `who_helped` / `what_model` | Agent identity + model used |
+| `token_count` | Tokens consumed by this turn |
+
+Three indexes back the search modes:
+
+| Index | Engine | Purpose |
+|-------|--------|---------|
+| `diary_fts` | FTS5 (content-sync) | BM25 keyword ranking with snippet highlighting |
+| `diary_semantic` | sqlite-vec `vec0` | Cosine KNN on turn embeddings |
+| `idx_diary_created` | B-tree on `created_at` | Time-range scans |
+
+#### Search Modes
+
+| Mode | Backend | Best for |
+|------|---------|----------|
+| `grep` | `LIKE` + `instr()` | Exact strings — error messages, file paths, code |
+| `fts5` | FTS5 + BM25 | Topic / keyword search with ranked snippets |
+| `hybrid` | FTS5 + vec0 KNN → RRF | Natural-language recall merged with keyword precision |
+| `time` | Range scan on `created_at` | Browse by date — no query needed |
+
+**Hybrid search** uses Reciprocal Rank Fusion (RRF, `k=60`) to merge keyword and
+semantic results into a single ranked list. Items appearing high in both lists
+get boosted; items in only one list still get a reasonable score. If no
+embedding backend is configured, hybrid degrades gracefully to FTS5-only.
+
+**Time parameters** (`since`/`until`) accept ISO 8601 datetimes.
+LLMs sometimes pass relative expressions literally (`"yesterday"`, `"today"`)
+instead of computing ISO dates — the server normalizes these before querying.
+Date-only `until` values are automatically advanced by one day so records on
+that day are not excluded by string comparison against their full `created_at`
+timestamps.
+
+#### Embedding
+
+Two backends, configured at runtime via `memory_set_embedding`:
+
+| Backend | Dependency | Default model | Dim |
+|---------|-----------|---------------|-----|
+| **GGUF** (local) | `llama-cpp-python` | `bge-m3` (Q4_K_M) | 1024 |
+| **API** (OpenAI-compatible) | Provider API key | `text-embedding-3-small` | 1536 |
+
+Turns whose text exceeds the model's token limit are **skipped** — no partial
+embedding. Keyword search (FTS5/grep) is unaffected.
+
+Agent isolation via `--agent alice`. Each agent gets its own DB (`<agent_id>.db`) in the data directory. See [DESIGN.md § Permanent Memory](DESIGN.md#permanent-memory-slife-memory) for the full architecture.
 
 ### Plugins
 
