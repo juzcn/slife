@@ -951,11 +951,6 @@ class AgentService:
             logger.debug("subagent_skipped — running as subagent")
             return
 
-        sub_cfg = self.config.subagent_config
-        if sub_cfg is None:
-            logger.debug("subagent_no_config")
-            return
-
         logger.info("subagent_init start")
 
         from slife.subagent.process import SubagentManager, set_manager

@@ -306,6 +306,8 @@ class Config:
             self.wechat_config = WechatConfig()
         if self.a2a_config is None:
             self.a2a_config = A2AConfig()
+        if self.subagent_config is None:
+            self.subagent_config = {"max_subagents": 5, "task_timeout": 120}
 
     # ── Config file I/O helpers ─────────────────────────────────────
 

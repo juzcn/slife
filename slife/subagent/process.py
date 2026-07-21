@@ -268,9 +268,9 @@ class SubagentManager:
         self._counter = 0
         from slife.paths import get_config_path
         self._config_path = str(config._path) if config._path else str(get_config_path())
-        sc = config.subagent_config or {}
-        self._max = sc.get("max_subagents", 5)
-        self._timeout = sc.get("task_timeout", 120)
+        sc = config.subagent_config
+        self._max = sc["max_subagents"]
+        self._timeout = sc["task_timeout"]
 
     @property
     def count(self) -> int: return sum(1 for p in self._subagents.values() if p.is_running)

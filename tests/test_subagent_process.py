@@ -127,8 +127,8 @@ class TestSubagentManagerInit:
         assert manager._max == 3
         assert manager._timeout == 60
 
-    def test_no_subagent_config(self, sample_config):
-        sample_config.subagent_config = None
+    def test_defaults_from_config(self, sample_config):
+        """SubagentManager reads max/task_timeout from the (now always-present) config."""
         manager = SubagentManager(sample_config)
         assert manager._max == 5
         assert manager._timeout == 120

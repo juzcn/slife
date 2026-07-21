@@ -192,13 +192,12 @@ class SlifeApp(App):
             group="a2a-startup",
         )
 
-        # Step 5: Start subagent manager
-        if self.service.config.subagent_config:
-            self.run_worker(
-                self.service.start_subagent(),
-                exclusive=False,
-                group="subagent-startup",
-            )
+        # Step 5: Start subagent manager (always enabled)
+        self.run_worker(
+            self.service.start_subagent(),
+            exclusive=False,
+            group="subagent-startup",
+        )
 
         # Step 6: Start WeChat plugin (if enabled in config)
         if self.service.config.wechat_config and self.service.config.wechat_config.enabled:

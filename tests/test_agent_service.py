@@ -242,10 +242,12 @@ class TestAgentServiceSubagent:
     """Tests for subagent lifecycle."""
 
     @pytest.mark.asyncio
-    async def test_start_subagent_no_config_noop(self):
+    async def test_start_subagent_always_creates_manager(self):
+        """Subagent is always enabled — start_subagent always creates a manager."""
         service = AgentService(make_mock_config())
         await service.start_subagent()
-        assert service._subagent_manager is None
+        assert service._subagent_manager is not None
+        assert service._subagent_manager.count == 0
 
     @pytest.mark.asyncio
     async def test_stop_subagent_noop_when_disabled(self):
