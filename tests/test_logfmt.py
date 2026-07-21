@@ -342,25 +342,25 @@ class TestSanitizeSecrets:
         """OpenAI/Anthropic style sk-* keys are redacted."""
         result = sanitize_secrets("Using key: sk-ant-api03-abc123def456ghi789jkl")
         assert "sk-ant-api03-abc123def456ghi789jkl" not in result
-        assert "<REDACTED>" in result
+        assert "<MASKED>" in result
 
     def test_deepseek_style_sk_key_redacted(self):
         """DeepSeek style sk-* hex keys are redacted."""
         result = sanitize_secrets("DEEPSEEK_API_KEY=sk-abcdef1234567890abcdef1234567890ab")
         assert "sk-abcdef" not in result
-        assert "<REDACTED>" in result
+        assert "<MASKED>" in result
 
     def test_github_token_redacted(self):
         """GitHub personal access tokens are redacted."""
         result = sanitize_secrets("GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz1234")
         assert "ghp_abcdef" not in result
-        assert "<REDACTED>" in result
+        assert "<MASKED>" in result
 
     def test_google_oauth_token_redacted(self):
         """Google OAuth access tokens are redacted."""
         result = sanitize_secrets("token: ya29.abcdefghijklmnopqrstuvwxyz")
         assert "ya29.abc" not in result
-        assert "<REDACTED>" in result
+        assert "<MASKED>" in result
 
     def test_bearer_auth_header_redacted(self):
         """Bearer Authorization headers are redacted."""
@@ -368,13 +368,13 @@ class TestSanitizeSecrets:
             'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0'
         )
         assert "eyJhbGci" not in result
-        assert "<REDACTED>" in result
+        assert "<MASKED>" in result
 
     def test_key_equals_value_pattern_redacted(self):
         """key=value patterns with secret-looking keys are redacted."""
         result = sanitize_secrets("api_key = sk-1234567890abcdef1234567890abcdef")
         assert "sk-12345" not in result
-        assert "<REDACTED>" in result
+        assert "<MASKED>" in result
 
     def test_hex_token_32_chars_redacted(self):
         """Generic 32+ char hex-ish tokens are redacted."""
@@ -382,7 +382,7 @@ class TestSanitizeSecrets:
             "Raw token: abcdef1234567890abcdef1234567890extra"
         )
         assert "abcdef1234567890abcdef1234567890extra" not in result
-        assert "<REDACTED>" in result
+        assert "<MASKED>" in result
 
     def test_normal_text_passes_through(self):
         """Normal text without secrets is unchanged."""

@@ -174,11 +174,10 @@ Slife uses a **two-layer** configuration model with **enforced secret protection
 | **Secrets** | OS keyring (credstore) | API keys, tokens, passwords — encrypted at OS level |
 | **Config** | `~/.slife/slife.json5` → `env:` | `${VAR}` references + non-secret values (EDITOR, LANG, etc.) |
 
-**Plaintext API keys are rejected at startup.**  `api_key` fields must use
-``${VAR}`` references (resolved from the OS keyring at runtime) or ``keyring:``
-URIs.  The ``config_env_set`` tool also **rejects values that look like secrets**
-(API key prefixes, high-entropy blobs, or key names containing KEY/SECRET/TOKEN)
-— use ``config_secret_register`` for those instead.
+**Prefer ``${VAR}`` references.**  ``api_key`` fields should use ``${VAR}``
+references (resolved from the OS keyring at runtime) or ``keyring:`` URIs.
+Use ``config_secret_register`` for secrets — it writes a ``${VAR}`` placeholder
+so the real value stays in the OS keyring.
 
 ```json5
 // slife.json5
@@ -449,7 +448,7 @@ The default `slife.template.json5` is copied to `slife.json5` on first run. The 
 
 ### Configuring API Keys (Dev)
 
-Since plaintext keys are rejected system-wide, register secrets first:
+Register secrets before configuring providers:
 
 ```bash
 # Store in OS keyring

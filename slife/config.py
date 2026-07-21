@@ -49,7 +49,7 @@ def _resolve_api_key(value: str) -> str:
 
     1. ``keyring:`` URI  → credstore
     2. ``${VAR}``        → os.environ → credstore
-    3. plaintext         → as-is (legacy, logged warning)
+    3. plaintext         → as-is
     """
     # keyring: URI
     from credstore import is_keyring_uri, resolve_uri
@@ -61,13 +61,6 @@ def _resolve_api_key(value: str) -> str:
     if resolved != value:
         return resolved
 
-    # Plaintext — reject: real keys must use ${VAR} or keyring: URI
-    if value and len(value) >= 12:
-        raise ValueError(
-            f"Plaintext API key detected in provider config. "
-            f"Replace the value with ${{VAR}} (e.g. ${{DEEPSEEK_API_KEY}}) "
-            f"and store the real key via: credstore set DEEPSEEK_API_KEY"
-        )
     return value
 
 

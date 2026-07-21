@@ -270,27 +270,27 @@ _SECRET_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b[A-Za-z0-9+/=]{32,}\b"),
 ]
 
-_REDACTED = "<REDACTED>"
+_MASKED = "<MASKED>"
 
 
 def sanitize_secrets(text: str) -> str:
-    """Redact API key / token patterns from *text*.
+    """Mask API key / token patterns from *text*.
 
     Used for log output and tool-result sanitisation before the text
     reaches the LLM context.  Replaces matched secret substrings with
-    ``<REDACTED>``.  Idempotent — safe to call on already-redacted text.
+    ``<MASKED>``.  Idempotent — safe to call on already-masked text.
 
     >>> sanitize_secrets("Authorization: Bearer sk-ant-api03-abc123...")
-    'Authorization: <REDACTED>'
+    'Authorization: <MASKED>'
     >>> sanitize_secrets("DEEPSEEK_API_KEY=sk-abcdef1234567890abcdef1234567890ab")
-    '<REDACTED>'
+    '<MASKED>'
     >>> sanitize_secrets("normal log message")
     'normal log message'
     """
     if not text or not isinstance(text, str):
         return text
     for pat in _SECRET_PATTERNS:
-        text = pat.sub(_REDACTED, text)
+        text = pat.sub(_MASKED, text)
     return text
 
 
