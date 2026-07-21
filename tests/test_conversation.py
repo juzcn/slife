@@ -64,6 +64,29 @@ class TestAddUserMessage:
         assert conv.messages[0]["role"] == "user"
         assert conv.messages[0]["content"] == "hello"
 
+    def test_sanitizes_api_keys(self):
+        """User input with API key patterns is sanitized before storage."""
+        conv = Conversation()
+        conv.add_user_message("My key is sk-ant-api03-abc123def456ghi789jkl")
+        assert "sk-ant-api03-abc123def456ghi789jkl" not in conv.messages[0]["content"]
+        assert "<MASKED>" in conv.messages[0]["content"]
+
+    def test_normal_input_passes_through(self):
+        """Normal user input without secrets is unchanged."""
+        conv = Conversation()
+        conv.add_user_message("What is the weather today?")
+        assert conv.messages[0]["content"] == "What is the weather today?"
+
+    def test_input_sanitization_idempotent(self):
+        """Double sanitization produces the same result."""
+        conv = Conversation()
+        conv.add_user_message("api_key=sk-test-key-xxxxyyyyzzzz11112222")
+        first = conv.messages[0]["content"]
+        # Reset and add already-sanitized content
+        conv2 = Conversation()
+        conv2.add_user_message(first)
+        assert conv2.messages[0]["content"] == first
+
 
 # ── add_assistant_message ────────────────────────────────────────────
 

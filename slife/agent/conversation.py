@@ -6,6 +6,7 @@ Supports multimodal messages (text + images) for vision-capable models.
 import logging
 
 from slife.agent.multimodal import encode_image
+from slife.logfmt import sanitize_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,9 @@ class Conversation:
         of content blocks (text + image_url parts). Otherwise, a plain
         text content string is used.
 
+        User input is sanitized to mask any API keys / tokens before the
+        message enters the LLM context or persistent storage.
+
         Args:
             content: The user's text input.
             images: Optional list of image file paths to attach.
@@ -93,6 +97,8 @@ class Conversation:
         # message.  If a previous request was cancelled during tool
         # execution, there may be orphaned tool_calls without results.
         self._repair_orphaned_tool_calls()
+
+        content = sanitize_secrets(content)
 
         if images:
             parts: list[dict] = [{"type": "text", "text": content}]

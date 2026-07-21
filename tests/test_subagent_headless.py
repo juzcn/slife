@@ -156,16 +156,22 @@ class TestMain:
 
     def test_main_default_config_path(self):
         with patch("slife.subagent.headless.asyncio.run") as mock_run:
-            main([])
-            mock_run.assert_called_once()
+            with patch("slife.subagent.headless.run_headless") as mock_rh:
+                main([])
+                mock_run.assert_called_once()
+                mock_rh.assert_called_once_with("slife.json5")
 
     def test_main_custom_config_path(self):
         with patch("slife.subagent.headless.asyncio.run") as mock_run:
-            main(["custom.json5"])
-            mock_run.assert_called_once()
+            with patch("slife.subagent.headless.run_headless") as mock_rh:
+                main(["custom.json5"])
+                mock_run.assert_called_once()
+                mock_rh.assert_called_once_with("custom.json5")
 
     def test_main_with_extra_args(self):
         """Extra args that start with - are filtered out."""
         with patch("slife.subagent.headless.asyncio.run") as mock_run:
-            main(["-v", "--debug", "my_config.json5"])
-            mock_run.assert_called_once()
+            with patch("slife.subagent.headless.run_headless") as mock_rh:
+                main(["-v", "--debug", "my_config.json5"])
+                mock_run.assert_called_once()
+                mock_rh.assert_called_once_with("my_config.json5")

@@ -241,7 +241,7 @@ class TestMCPWrapperProcessStop:
         wp._process = mock_proc
 
         with patch("slife.mcp.process.terminate_process") as mock_term:
-            mock_term.return_value = AsyncMock()()
+            mock_term.return_value = None  # terminate_process returns None
             await wp.stop()
 
             mock_term.assert_called_once_with(
