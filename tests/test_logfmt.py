@@ -406,11 +406,11 @@ class TestSanitizeSecrets:
 
     def test_none_input(self):
         """None input returns None."""
-        assert sanitize_secrets(None) is None
+        assert sanitize_secrets(None) is None  # type: ignore[arg-type]
 
     def test_non_string_input(self):
         """Non-string input is returned as-is."""
-        assert sanitize_secrets(42) == 42
+        assert sanitize_secrets(42) == 42  # type: ignore[arg-type]
 
     def test_empty_string(self):
         """Empty string passes through."""

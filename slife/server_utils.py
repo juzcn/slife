@@ -251,7 +251,7 @@ def create_plugin_server(name: str, instructions: str) -> tuple:
     # TCP connection.  Subsequent requests have no channel for responses.
     # Also patches close_sse_stream to prevent writer.close().
     try:
-        from mcp.server.streamable_http_manager import StreamableHTTPServerTransport as _Mgr
+        from mcp.server.streamable_http import StreamableHTTPServerTransport as _Mgr  # type: ignore[attr-defined]
 
         _original_run_sse = _Mgr._run_sse_writer
 

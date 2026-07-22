@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Awaitable
 from dataclasses import dataclass, field
-from typing import NewType
+from typing import TYPE_CHECKING, NewType
+
+if TYPE_CHECKING:
+    from slife.agent.loop import AgentEventHandler
 
 AgentId = NewType("AgentId", str)
 """Identifies an agent.  Examples: ``"human"``, ``"sub-1"``, ``"desk-01"``."""

@@ -7,10 +7,12 @@ Restore loads the most recent N turns by rowid.
 Agent isolation is at the file level — each agent_id has its own .db file.
 """
 
+# pyright: reportOptionalSubscript=false
+
 import json
 import logging
 import struct
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -55,6 +57,7 @@ class SessionStore:
 
     async def _load_vec_extension(self) -> None:
         import sqlite_vec
+        assert self._conn is not None  # setup() has completed
         await self._conn.enable_load_extension(True)
         await self._conn.load_extension(sqlite_vec.loadable_path())
         await self._conn.enable_load_extension(False)
@@ -63,6 +66,7 @@ class SessionStore:
         logger.info("vec_loaded version=%s", version[0] if version else "unknown")
 
     async def _run_schema(self) -> None:
+        assert self._conn is not None  # setup() has completed
         schema_path = Path(__file__).parent / "schema.sql"
         schema_sql = schema_path.read_text(encoding="utf-8")
         schema_sql = schema_sql.replace("float[1536]", f"float[{self._embedding_dim}]")
@@ -111,6 +115,7 @@ class SessionStore:
         )
         await self._conn.commit()
         rowid = cursor.lastrowid
+        assert rowid is not None  # insert just succeeded
         logger.debug("turn_saved rowid=%s", rowid)
 
         # Embed the full turn text. Skip if it exceeds the model's token

@@ -21,7 +21,7 @@ class ChatView(VerticalScroll):
     async def _on_key(self, event: Key) -> None:
         """Redirect printable keys to the input field."""
         if event.is_printable:
-            inp = self.screen.query_one("#user-input", None)
+            inp = self.screen.query_one("#user-input")
             if inp is not None and not inp.has_focus:
                 inp.focus()
                 await inp._on_key(event)
@@ -139,7 +139,7 @@ class AssistantMessage(Static):
     async def _on_key(self, event: Key) -> None:
         """Redirect printable keys to the input field."""
         if event.is_printable:
-            inp = self.screen.query_one("#user-input", None)
+            inp = self.screen.query_one("#user-input")
             if inp is not None and not inp.has_focus:
                 inp.focus()
                 await inp._on_key(event)
@@ -236,6 +236,7 @@ class AssistantMessage(Static):
 
     def _build_usage_line(self) -> Content:
         """Token usage footer line."""
+        assert self._usage is not None
         return Content.from_markup(
             f"\n[dim]↑ {self._usage.total_tokens:,} tokens "
             f"(in: {self._usage.prompt_tokens:,}, "

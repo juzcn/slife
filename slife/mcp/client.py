@@ -8,7 +8,6 @@ nesting.
 
 import asyncio
 import logging
-import time
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -112,13 +111,13 @@ class MCPClient:
         if self._exit_stack:
             try:
                 await self._exit_stack.aclose()
-            except (Exception, BaseExceptionGroup):
-                pass
             except RuntimeError as e:
                 if "cancel scope" in str(e):
                     logger.debug("cleanup_cancel_scope_suppressed err=%s", e)
                 else:
                     raise
+            except (Exception, BaseExceptionGroup):
+                pass
             # Give pending generator-finalisation callbacks a chance to run
             # in the current task instead of during GC.
             try:
@@ -130,6 +129,7 @@ class MCPClient:
 
     async def list_tools(self) -> list[dict]:
         self._ensure_connected()
+        assert self._session is not None  # post-condition of _ensure_connected
         result = await self._session.list_tools()
         return [
             {"name": t.name, "description": t.description or "", "inputSchema": t.inputSchema}
@@ -145,6 +145,7 @@ class MCPClient:
         error as a normal tool result and can retry or report it.
         """
         self._ensure_connected()
+        assert self._session is not None  # post-condition of _ensure_connected
         args = arguments or {}
         try:
             result = await asyncio.wait_for(
@@ -170,20 +171,22 @@ class MCPClient:
             parts: list[str] = []
             for block in result.content:
                 if hasattr(block, "text"):
-                    parts.append(block.text)
+                    parts.append(block.text)  # type: ignore[union-attr]
             return "Error: " + "\n".join(parts)
 
         parts: list[str] = []
         for block in result.content:
             if hasattr(block, "text"):
-                parts.append(block.text)
+                parts.append(block.text)  # type: ignore[union-attr]
             elif hasattr(block, "data"):
-                parts.append(f"[binary data: {len(block.data)} bytes]")
+                parts.append(f"[binary data: {len(block.data)} bytes]")  # type: ignore[union-attr]
             else:
                 parts.append(str(block))
         return "\n".join(parts)
 
     async def ping(self) -> bool:
+        if self._session is None:
+            return False
         try:
             await self._session.send_ping()
             return True

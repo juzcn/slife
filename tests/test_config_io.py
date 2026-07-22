@@ -1,11 +1,7 @@
 """Tests for Slife.tools._config_io — shared config file read/write helpers."""
 
 import json5
-import logging
 from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
-
-import pytest
 
 from slife.paths import get_config_path
 from slife.tools._config_io import (
@@ -46,6 +42,7 @@ class TestWithFetchedAt:
     def test_adds_timestamp_to_dict(self):
         source = {"name": "myserver", "command": "python"}
         result = with_fetched_at(source)
+        assert result is not None
         assert result["name"] == "myserver"
         assert result["command"] == "python"
         assert "fetched_at" in result
@@ -55,6 +52,7 @@ class TestWithFetchedAt:
         source = {"name": "original"}
         result = with_fetched_at(source)
         assert "fetched_at" not in source
+        assert result is not None
         assert "fetched_at" in result
 
     def test_none_returns_none(self):
@@ -68,6 +66,7 @@ class TestWithFetchedAt:
         source = {"name": "test", "fetched_at": "old_value"}
         result = with_fetched_at(source)
         # setdefault won't override existing keys
+        assert result is not None
         assert result["fetched_at"] == "old_value"
 
 

@@ -368,7 +368,6 @@ class TestAgentServiceStopMemory:
         mock_client.call_tool = AsyncMock(side_effect=Exception("boom"))
         mock_client.disconnect = AsyncMock()
         service._memory_client = mock_client
-        service._diary_rowid = 1
 
         await service.stop_memory()
 
@@ -393,8 +392,8 @@ class TestAgentServiceInbox:
 
         assert inbox._agent_loop is service.agent_loop
         # _on_activity is a bound method — use equality not identity
-        assert inbox._on_activity.__func__ is service._notify_a2a_activity.__func__
-        assert inbox._on_turn_complete.__func__ is service.save_to_memory.__func__
+        assert inbox._on_activity.__func__ is service._notify_a2a_activity.__func__  # type: ignore[union-attr]
+        assert inbox._on_turn_complete.__func__ is service.save_to_memory.__func__  # type: ignore[union-attr]
         # HUMAN conversation is pre-seeded from service.conversation
         assert inbox._conversations._convs.get(HUMAN) is service.conversation
 

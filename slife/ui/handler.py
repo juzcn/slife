@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from slife.agent.llm_client import TokenUsage
 from slife.agent.loop import ToolCallInfo
-from slife.ui.chat import AssistantMessage
+from slife.ui.chat import AssistantMessage, ChatView
 from slife.ui.tool_display import ToolCallWidget
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ class TUIHandler:
 
     def __init__(self, app: SlifeApp, assistant_prefix: str | None = None):
         self._app = app
-        self._chat_view = app.query_one("#chat-view")  # ChatView
+        self._chat_view: ChatView = app.query_one("#chat-view")  # type: ignore[assignment]
         self._assistant_prefix = assistant_prefix
         self._current_assistant: AssistantMessage | None = None
         self._iteration_needs_new_message: bool = False

@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 import uuid
-from pathlib import Path
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from slife.platform import terminate_process
@@ -207,7 +207,8 @@ class SubagentProcess:
 
     async def _read_stdout(self) -> None:
         if not self._process or not self._process.stdout: return
-        reader = self._process.stdout; reader._limit = 10 * 1024 * 1024
+        reader = self._process.stdout
+        reader._limit = 10 * 1024 * 1024  # type: ignore[attr-defined]
         try:
             while self._running:
                 line = await reader.readline()
@@ -293,9 +294,9 @@ class SubagentManager:
         self._subagents: dict[str, SubagentProcess] = {}
         self._counter = 0
         self._config = config
-        sc = config.subagent_config
-        self._max = sc["max_subagents"]
-        self._timeout = sc["task_timeout"]
+        sc = config.subagent_config or {}
+        self._max = sc.get("max_subagents", 5)
+        self._timeout = sc.get("task_timeout", 120)
         # Callback invoked when a subagent task completes:
         #   async def cb(agent_id: str, task_id: str, result: str) -> None
         self.on_task_complete: "Callable | None" = None

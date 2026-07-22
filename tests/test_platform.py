@@ -15,8 +15,8 @@ from slife.platform import (
 # ── build_python_command ───────────────────────────────────────────────
 
 
-class TestRunPythonScript:
-    """Tests for run_python_script."""
+class TestBuildPythonCommand:
+    """Tests for build_python_command."""
 
     def test_no_json_args(self):
         """Script without JSON args (no braces/brackets)."""
@@ -124,7 +124,7 @@ class TestResolveCommand:
             assert "npm" in result.lower()
 
     @patch("shutil.which", return_value=None)
-    def test_windows_unresolvable_falls_back(self, mock_which):
+    def test_windows_unresolvable_falls_back(self, _mock_which):
         if IS_WINDOWS:
             result = resolve_command("nonexistent_xyzzy")
             assert result == "nonexistent_xyzzy"
@@ -191,14 +191,14 @@ class TestTerminateProcess:
     async def test_none_process_noop(self):
         """Terminating None is a no-op."""
         from slife.platform import terminate_process
-        await terminate_process(None, label="test")
+        await terminate_process(None, label="test")  # type: ignore[arg-type]
         # Should not raise
 
     @pytest.mark.asyncio
     async def test_already_exited_noop(self):
         """Process with returncode set needs no termination."""
         import asyncio
-        from unittest.mock import MagicMock, AsyncMock
+        from unittest.mock import MagicMock
         from slife.platform import terminate_process
 
         proc = MagicMock(spec=asyncio.subprocess.Process)
@@ -297,7 +297,7 @@ class TestResolveCommandWindows:
 
     @pytest.mark.skipif(not IS_WINDOWS, reason="Windows only")
     @patch("shutil.which", return_value=None)
-    def test_unresolvable_returns_original(self, mock_which):
+    def test_unresolvable_returns_original(self, _mock_which):
         result = resolve_command("nonexistent_cmd")
         assert result == "nonexistent_cmd"
 
@@ -352,7 +352,7 @@ class TestDesktopNotify:
 
     @patch("subprocess.run")
     @patch("slife.platform._platform.system", return_value="Windows")
-    def test_windows_notification(self, mock_system, mock_run):
+    def test_windows_notification(self, _mock_system, mock_run):
         from slife.platform import desktop_notify
         desktop_notify("Test", "Hello World")
         mock_run.assert_called_once()
@@ -360,7 +360,7 @@ class TestDesktopNotify:
 
     @patch("subprocess.run")
     @patch("slife.platform._platform.system", return_value="Darwin")
-    def test_macos_notification(self, mock_system, mock_run):
+    def test_macos_notification(self, _mock_system, mock_run):
         from slife.platform import desktop_notify
         desktop_notify("Test", "Hello")
         mock_run.assert_called_once()
@@ -368,14 +368,14 @@ class TestDesktopNotify:
 
     @patch("subprocess.run")
     @patch("slife.platform._platform.system", return_value="Linux")
-    def test_linux_notification(self, mock_system, mock_run):
+    def test_linux_notification(self, _mock_system, mock_run):
         from slife.platform import desktop_notify
         desktop_notify("Test", "Hello")
         mock_run.assert_called_once()
 
     @patch("subprocess.run", side_effect=Exception("notify failed"))
     @patch("slife.platform._platform.system", return_value="Windows")
-    def test_notification_exception_swallowed(self, mock_system, mock_run):
+    def test_notification_exception_swallowed(self, _mock_system, _mock_run):
         from slife.platform import desktop_notify
         # Should not raise
         desktop_notify("Test", "Hello")

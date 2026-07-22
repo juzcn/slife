@@ -1,4 +1,6 @@
 {
+  "python.analysis.diagnosticMode": "workspace",
+  "python.analysis.exclude": ["**/venv/**", "**/.venv/**"],
   "mypy-type-checker.enabled": false,
   "files.associations": {
     "*.json5": "json5",

@@ -6,11 +6,17 @@ dynamically-assigned port; this wrapper discovers the port via a
 one-line JSON signal on stdout.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import os
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from slife.mcp.client import MCPClient
 
 from slife.logfmt import get_session_id
 from slife.platform import IS_WINDOWS, terminate_process

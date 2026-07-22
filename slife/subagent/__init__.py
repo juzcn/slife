@@ -28,7 +28,6 @@ from slife.subagent.tools import SubagentSpawnTool, SubagentStopTool
 # Import it directly instead: from slife.subagent.headless import run_headless
 
 __all__ = [
-    "run_headless",
     "SubagentManager",
     "SubagentProcess",
     "SubagentSpawnTool",

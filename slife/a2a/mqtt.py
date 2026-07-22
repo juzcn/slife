@@ -6,6 +6,7 @@ each callback ``put_nowait()`` into an ``asyncio.Queue`` so the async side
 can ``await queue.get()``.
 """
 
+# pyright: reportInvalidTypeForm=false
 from __future__ import annotations
 
 import asyncio
@@ -14,10 +15,9 @@ import logging
 import time as _time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
-if TYPE_CHECKING:
-    import paho.mqtt.client as mqtt
+import paho.mqtt.client as mqtt
 
 from slife.a2a.identity import AgentId
 
@@ -93,23 +93,19 @@ class MQTTAdapter:
         lwt_topic = f"Slife/{self._agent_id}/presence"
         lwt_payload = json.dumps({"status": "offline"})
 
-        self._client = mq.Client(
+        c = mq.Client(  # type: ignore[union-attr]
             mq.CallbackAPIVersion.VERSION2,
             client_id=self._client_id,
             protocol=mq.MQTTv5,
         )
-        self._client.will_set(lwt_topic, lwt_payload, qos=1, retain=False)
-
-        self._client.on_connect = self._on_connect
-        self._client.on_disconnect = self._on_disconnect
-        self._client.on_message = self._on_message
-
-        # Prevent reconnect storm when two instances share the same
-        # agent-id: back off from 5s to 30s between attempts.
-        self._client.reconnect_delay_set(min_delay=5, max_delay=30)
-
-        self._client.connect_async(host, port, keepalive=30)
-        self._client.loop_start()
+        c.will_set(lwt_topic, lwt_payload, qos=1, retain=False)
+        c.on_connect = self._on_connect
+        c.on_disconnect = self._on_disconnect
+        c.on_message = self._on_message
+        c.reconnect_delay_set(min_delay=5, max_delay=30)
+        c.connect_async(host, port, keepalive=30)
+        c.loop_start()
+        self._client = c
 
         # Wait for the connection to complete
         await self._wait_for_connection(timeout=10.0)

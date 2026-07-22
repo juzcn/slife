@@ -12,6 +12,7 @@ search (FTS5) still works fine without vectors.
 
 import logging
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ class EmbeddingClient:
         self._base_url = base_url
         self._gguf_path = gguf_path
         self._dim = dim or _guess_dim(model, gguf_path)
-        self._client = None        # AsyncOpenAI or Llama
+        self._client: Any = None        # AsyncOpenAI or Llama
         self._backend: str = ""    # "gguf" | "api" | ""
         self._available = False
 
@@ -169,13 +170,13 @@ class EmbeddingClient:
 
         if config_path is None:
             config_path = str(get_config_path())
-        config_path = Path(config_path)
-        if not config_path.exists():
-            _log_warn("config_not_found path=%s", config_path)
+        config_path_obj: Path = Path(config_path)
+        if not config_path_obj.exists():
+            _log_warn("config_not_found path=%s", config_path_obj)
             return cls(api_key="", quiet=quiet)
 
         try:
-            raw = json5.loads(config_path.read_text(encoding="utf-8"))
+            raw = json5.loads(config_path_obj.read_text(encoding="utf-8"))
         except (ValueError, OSError) as e:
             _log_warn("config_parse_error err=%s", e)
             return cls(api_key="", quiet=quiet)
@@ -264,10 +265,10 @@ class EmbeddingClient:
             )
             return None
 
-    async def _call_gguf(self, texts: list[str]) -> list[list[float]]:
+    async def _call_gguf(self, texts: list[str]) -> list[list[float]] | None:
         """Generate embeddings using a local GGUF model via llama-cpp."""
         try:
-            from llama_cpp import Llama
+            from llama_cpp import Llama  # type: ignore[import-not-found]
         except ImportError:
             logger.warning(
                 "llama_cpp not installed. Install with: "
@@ -300,7 +301,7 @@ class EmbeddingClient:
 
         return embeddings
 
-    async def _call_api(self, texts: list[str]) -> list[list[float]]:
+    async def _call_api(self, texts: list[str]) -> list[list[float]] | None:
         """Call the OpenAI embeddings API."""
         try:
             from openai import AsyncOpenAI

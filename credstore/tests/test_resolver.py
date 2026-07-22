@@ -22,8 +22,8 @@ class TestIsKeyringUri:
         assert not is_keyring_uri("")
 
     def test_non_string_returns_false(self):
-        assert not is_keyring_uri(None)
-        assert not is_keyring_uri(42)
+        assert not is_keyring_uri(None)  # type: ignore[arg-type]
+        assert not is_keyring_uri(42)  # type: ignore[arg-type]
 
 
 class TestParseKeyringUri:
@@ -38,7 +38,7 @@ class TestParseKeyringUri:
         assert parse_keyring_uri("") is None
 
     def test_parse_non_string_returns_none(self):
-        assert parse_keyring_uri(None) is None
+        assert parse_keyring_uri(None) is None  # type: ignore[arg-type]
 
 
 class TestResolveUri:
@@ -57,7 +57,7 @@ class TestResolveUri:
             resolve_uri("keyring:slife/not-found-key")
 
     def test_non_string_passes_through(self, mock_credstore):
-        assert resolve_uri(42) == 42
+        assert resolve_uri(42) == 42  # type: ignore[arg-type]
 
 
 class TestResolveUriRecursive:
@@ -95,8 +95,8 @@ def mock_credstore(monkeypatch):
     store = sm.CredentialStore()
     # Override methods with in-memory versions (simulates dual-write backing)
     # For resolver tests, we only need get() and set() to work
-    store.get = data.get
-    store.set = data.__setitem__
+    store.get = data.get  # type: ignore[assignment]
+    store.set = data.__setitem__  # type: ignore[assignment]
     store.delete = lambda key: data.pop(key, None) is not None
 
     monkeypatch.setattr(sm, "_store", store)

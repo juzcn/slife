@@ -69,7 +69,7 @@ class StatusBar(Static):
 # ── Main TUI app ───────────────────────────────────────────────────
 
 
-def _restore_prefix(channel: str | None, agent_id: str) -> str:
+def _restore_prefix(channel: str | None, _agent_id: str) -> str:
     """Consistent prefix mapping for restored turns.
 
     Matches the real-time display prefixes used during live operation:
@@ -327,6 +327,8 @@ class SlifeApp(App):
 
         if kind == "agent_change":
             card = kwargs.get("card")
+            if card is None:
+                return
             event = kwargs.get("event", "")
             if event == "online":
                 name = card.display_name or card.agent_id
@@ -362,7 +364,7 @@ class SlifeApp(App):
 
         elif kind == "task_completed":
             source = kwargs.get("source", "unknown")
-            result = kwargs.get("result", "")
+            _result = kwargs.get("result", "")
             chat_view.add_system_message(
                 f"✓ task from {source} completed", color="#3fb950",
             )
@@ -433,7 +435,6 @@ class SlifeApp(App):
                         tool_errors[tcid] = msg.get("is_error", False)
 
             # Build UI ops
-            from slife.ui.chat import UserMessage, AssistantMessage
             ui_ops: list[dict] = []
 
             assistant_indices = [
@@ -508,7 +509,6 @@ class SlifeApp(App):
 
         # ── Phase 3: Rebuild UI ────────────────────────────────────
         chat_view = self.query_one("#chat-view", ChatView)
-        from slife.ui.chat import UserMessage, AssistantMessage
 
         with self.batch_update():
             for op in ui_ops:
@@ -557,7 +557,7 @@ class SlifeApp(App):
     async def _process_message(
         self,
         text: str,
-        images: list[str],
+        images: list[str] | None,
         chat_view: ChatView,
     ) -> None:
         """Run the agent loop and stream results to the TUI."""

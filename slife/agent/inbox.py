@@ -17,6 +17,8 @@ from slife.agent.conversation import Conversation
 from slife.agent.loop import AgentCancelled, MaxIterationsExceeded
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from slife.a2a.client import A2AClient
     from slife.agent.loop import AgentLoop, AgentEventHandler
 
@@ -147,7 +149,6 @@ class Inbox:
                 handler = self._conversations.handler_for(msg.source)
 
             # Run the agent loop
-            from slife.agent.loop import AgentResult
             result = await self._agent_loop.run(
                 user_input=msg.content,
                 conversation=conversation,
@@ -272,6 +273,9 @@ class Inbox:
     ) -> None:
         """Publish a task result back to the requester."""
         import json as _json
+
+        # Callers guarantee _a2a_client is set before invoking
+        assert self._a2a_client is not None
 
         text = result.text if hasattr(result, "text") else str(result)
         payload = _json.dumps({

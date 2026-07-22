@@ -411,7 +411,7 @@ class TestCliCheckInstalledExecute:
 # ── get_cli_tools_summary edge cases ────────────────────────────────────
 
 
-class TestGetCliToolsSummary:
+class TestGetCliToolsSummaryEdgeCases:
     """Tests for get_cli_tools_summary edge cases."""
 
     def test_skips_non_dict_entries(self, tmp_path):

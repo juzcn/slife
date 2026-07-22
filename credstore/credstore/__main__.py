@@ -234,6 +234,9 @@ def _cmd_set_password() -> int:
         return 1
 
     cf_new = backend_mod.get_cryptfile()
+    if cf_new is None:
+        _err("cryptfile backend lost after init — aborting.")
+        return 1
     synced = 0
 
     if is_change:

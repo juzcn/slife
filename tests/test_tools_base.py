@@ -14,52 +14,52 @@ class TestToolABC:
     def test_cannot_instantiate_abstract(self):
         """Cannot instantiate Tool directly (abstract)."""
         with pytest.raises(TypeError):
-            Tool()
+            Tool()  # type: ignore[abstract]
 
     def test_subclass_validation_missing_name(self):
         """Subclass missing 'name' raises TypeError."""
         with pytest.raises(TypeError) as exc_info:
-            class BadTool(Tool):
+            class _BadTool(Tool):
                 description = "desc"
                 parameters = {}
-                async def execute(self, **kwargs): pass
+                async def execute(self, **_kwargs): pass
         assert "name" in str(exc_info.value)
 
     def test_subclass_validation_missing_description(self):
         """Subclass missing 'description' raises TypeError."""
         with pytest.raises(TypeError) as exc_info:
-            class BadTool(Tool):
+            class _BadTool(Tool):
                 name = "bad"
                 parameters = {}
-                async def execute(self, **kwargs): pass
+                async def execute(self, **_kwargs): pass
         assert "description" in str(exc_info.value)
 
     def test_subclass_validation_missing_parameters(self):
         """Subclass missing 'parameters' raises TypeError."""
         with pytest.raises(TypeError) as exc_info:
-            class BadTool(Tool):
+            class _BadTool(Tool):
                 name = "bad"
                 description = "desc"
-                async def execute(self, **kwargs): pass
+                async def execute(self, **_kwargs): pass
         assert "parameters" in str(exc_info.value)
 
     def test_subclass_validation_empty_name(self):
         """Empty string for name raises TypeError."""
         with pytest.raises(TypeError):
-            class BadTool(Tool):
+            class _BadTool(Tool):
                 name = ""
                 description = "desc"
                 parameters = {}
-                async def execute(self, **kwargs): pass
+                async def execute(self, **_kwargs): pass
 
     def test_subclass_validation_none_name(self):
         """None for name raises TypeError."""
         with pytest.raises(TypeError):
-            class BadTool(Tool):
-                name = None
+            class _BadTool(Tool):  # type: ignore[assignment]
+                name = None  # type: ignore[assignment]
                 description = "desc"
                 parameters = {}
-                async def execute(self, **kwargs): pass
+                async def execute(self, **_kwargs): pass
 
     def test_valid_subclass_creation(self):
         """A valid subclass is created without errors."""
@@ -96,7 +96,7 @@ class TestToOpenAIFunction:
                 },
                 "required": ["arg1"],
             }
-            async def execute(self, **kwargs): pass
+            async def execute(self, **_kwargs): pass
 
         fn_def = MyTool.to_openai_function()
 

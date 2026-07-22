@@ -1,9 +1,8 @@
 """Tests for Slife.config — configuration loading and model definitions."""
 
-import json
+# pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
+
 import logging
-import tempfile
-from pathlib import Path
 
 import pytest
 import json5

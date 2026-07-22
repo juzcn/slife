@@ -148,7 +148,7 @@ def _init_cryptfile(password: str | None = None):
         kr = CryptFileKeyring()
         from credstore._config import get_cryptfile_path
         crypt_path = get_cryptfile_path()
-        kr.file_path = crypt_path
+        kr.file_path = crypt_path  # type: ignore[assignment]
         _ensure_dir(Path(crypt_path).parent)
 
         if password:

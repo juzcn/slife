@@ -84,6 +84,14 @@ class AgentEventHandler(Protocol):
         """Called with cumulative token usage after each LLM call."""
         ...
 
+    def finalize_current(self) -> None:
+        """Mark the current (last incomplete) assistant message as complete.
+
+        Called on error/cancel to ensure the TUI spinner stops and the
+        chat view does not stay in a permanent loading state.
+        """
+        ...
+
 
 # ── Stream accumulator ─────────────────────────────────────────────
 

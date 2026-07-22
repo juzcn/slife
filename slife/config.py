@@ -418,6 +418,7 @@ class Config:
         servers[name] = server_entry
 
         self._write_config(raw)
+        assert self.mcp_config is not None  # guaranteed by __post_init__
         self.mcp_config.servers[name] = server_entry
         logger.info("config_save_mcp server=%s", name)
 
@@ -431,6 +432,7 @@ class Config:
         if name in servers:
             del servers[name]
             self._write_config(raw)
+            assert self.mcp_config is not None  # guaranteed by __post_init__
             self.mcp_config.servers.pop(name, None)
             logger.info("config_remove_mcp server=%s", name)
 
@@ -453,6 +455,7 @@ class Config:
                 servers[name]["disclosure"] = disclosure
             self._write_config(raw)
             # Update in-memory state
+            assert self.mcp_config is not None  # guaranteed by __post_init__
             if name in self.mcp_config.servers:
                 if disclosure == "eager":
                     self.mcp_config.servers[name].pop("disclosure", None)
@@ -582,7 +585,8 @@ class Config:
         if api_key_raw.startswith("keyring:"):
             from credstore import parse_keyring_uri
             parsed = parse_keyring_uri(api_key_raw)
-            key_name = parsed.get("key", api_key_raw) if parsed else api_key_raw
+            # parse_keyring_uri returns (service, key) tuple
+            key_name = parsed[1] if parsed else api_key_raw
             return (bool(exists_credential(key_name)), str(key_name))
 
         # ${VAR} reference

@@ -565,7 +565,8 @@ class MCPServerConnection:
             except Exception:
                 pass
 
-        await terminate_process(self._process, label=f"mcp_conn:{self.config.name}")
+        if self._process is not None:
+            await terminate_process(self._process, label=f"mcp_conn:{self.config.name}")
         self._process = None
 
         # -- sse cleanup --

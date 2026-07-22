@@ -57,15 +57,15 @@ def _masked_input_windows() -> str:
     return "".join(chars)
 
 
-def _masked_input_unix() -> str:
-    import termios
-    import tty
+def _masked_input_unix() -> str:  # pyright: ignore[reportUnreachable]
+    import termios  # type: ignore[import-not-found]
+    import tty  # type: ignore[import-not-found]
 
     fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
+    old_settings = termios.tcgetattr(fd)  # type: ignore[attr-defined]
     chars: list[str] = []
     try:
-        tty.setraw(fd)
+        tty.setraw(fd)  # type: ignore[attr-defined]
         while True:
             ch = sys.stdin.read(1)
             if ch in ("\r", "\n"):
@@ -86,5 +86,5 @@ def _masked_input_unix() -> str:
                 sys.stdout.write("*")
                 sys.stdout.flush()
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)  # type: ignore[attr-defined]
     return "".join(chars)

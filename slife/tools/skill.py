@@ -320,7 +320,7 @@ class AddSkillTool(_SkillDirMixin, Tool):
             if archive_b64:
                 result = self._install_from_archive(name, archive_b64, skill_dir)
             else:
-                result = self._install_from_files(name, files, skill_dir)
+                result = self._install_from_files(name, files, skill_dir)  # type: ignore[arg-type]
             self._write_meta_json(skill_dir, source)
             return result
         except Exception as e:

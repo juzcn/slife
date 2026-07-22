@@ -124,7 +124,7 @@ class TestProcess:
 
         mock_service = MagicMock()
         mock_service.agent_loop.run = AsyncMock(
-            side_effect=MaxIterationsExceeded("Too many iterations")
+            side_effect=MaxIterationsExceeded("Too many iterations")  # type: ignore[arg-type]
         )
 
         with patch("slife.subagent.headless._write") as mock_write:

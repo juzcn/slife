@@ -1,5 +1,7 @@
 """Tests for Slife.ui.tool_display — ToolCallWidget and helper logic."""
 
+# pyright: reportAttributeAccessIssue=false
+
 import pytest
 from unittest.mock import MagicMock, patch
 

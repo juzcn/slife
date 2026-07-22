@@ -40,13 +40,14 @@ class TestCreateToolsFromConfig:
         ])
         tool = registry.get("execute_shell")
         assert tool is not None
-        assert tool.timeout == 45
+        assert tool.timeout == 45  # type: ignore[attr-defined]
 
     def test_shell_tool_default_timeout(self):
         """Shell tool uses default timeout when no override given."""
         registry = create_tools_from_config(None)
         tool = registry.get("execute_shell")
-        assert tool.timeout == 30
+        assert tool is not None
+        assert tool.timeout == 30  # type: ignore[attr-defined]
 
     def test_disable_tool(self):
         """Tool can be disabled with enabled: false."""
@@ -62,10 +63,14 @@ class TestCreateToolsFromConfig:
             {"name": "list_skills", "skills_dir": "custom_skills"},
         ])
         # Overridden tool gets custom dir
-        assert str(registry.get("list_skills").skills_dir) == "custom_skills"
+        list_tool = registry.get("list_skills")
+        assert list_tool is not None
+        assert str(list_tool.skills_dir) == "custom_skills"  # type: ignore[attr-defined]
         # Other skill tools use the resolved default (absolute path)
         from slife.paths import get_skills_dir
-        assert str(registry.get("use_skill").skills_dir) == str(get_skills_dir())
+        skill_tool = registry.get("use_skill")
+        assert skill_tool is not None
+        assert str(skill_tool.skills_dir) == str(get_skills_dir())  # type: ignore[attr-defined]
 
 
 class TestRunPythonScriptTool:

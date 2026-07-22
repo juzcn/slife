@@ -382,6 +382,7 @@ class TestProfilePersistence:
         monkeypatch.setitem(os.environ, "PSModulePath", "C:\\Modules")  # not cmd.exe
         from credstore._shell import get_profile_path
         p = get_profile_path("powershell")
+        assert p is not None
         assert p.name == "Microsoft.PowerShell_profile.ps1" or "profile" in str(p).lower()
 
     def test_get_profile_path_cmd(self, monkeypatch):
@@ -395,6 +396,7 @@ class TestProfilePersistence:
         monkeypatch.setattr("os.environ", {"HOME": "/home/user"})
         from credstore._shell import get_profile_path
         p = get_profile_path("bash")
+        assert p is not None
         assert p.name == ".bashrc"
 
     def test_add_to_profile_creates_file(self, tmp_path, monkeypatch):

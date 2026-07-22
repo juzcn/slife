@@ -55,7 +55,7 @@ def get_cli_tools_summary(config_path: Path) -> str:
         line = f"- **{name}**: {desc}  \n  command: `{command}`"
         if install:
             line += f"  \n  install: `{install}`"
-        src_str = format_source_info(source)
+        src_str = format_source_info(source)  # type: ignore[arg-type]
         if src_str:
             line += f"  \n  source: {src_str}"
         lines.append(line)
@@ -108,7 +108,7 @@ class CliCheckInstalled(_ConfigPathMixin, Tool):
             entry = cli_tools.get(cmd)
             if isinstance(entry, dict):
                 found += 1
-                src_str = format_source_info(entry.get("source"))
+                src_str = format_source_info(entry.get("source"))  # type: ignore[arg-type]
                 source_info = f"  source: {src_str}" if src_str else ""
                 install_info = ""
                 if entry.get("install"):

@@ -200,6 +200,7 @@ def _get_store() -> CredentialStore:
     global _store
     if _store is None:
         init_store()
+    assert _store is not None  # init_store() guarantees this
     return _store
 
 

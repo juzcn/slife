@@ -16,7 +16,9 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
@@ -46,6 +48,9 @@ class AgentService:
 
     def __init__(self, config: Config, is_subagent: bool = False):
         self.config = config
+        # __post_init__ guarantees these are never None at runtime
+        assert self.config.a2a_config is not None
+        assert self.config.subagent_config is not None
         self.is_subagent = is_subagent
         self.tool_registry = create_tools_from_config(config.tools, config=config, is_subagent=is_subagent)
         self.llm_client = LLMClient(config.active_model)
@@ -415,7 +420,6 @@ class AgentService:
             return
 
         logger.info("mcp_discover_existing servers=%d", len(servers))
-        mcp_client = self._mcp_client
 
         async def _discover_one(name: str, cfg: dict) -> None:
             try:
@@ -559,7 +563,7 @@ class AgentService:
             except Exception:
                 pass
             try:
-                p.wait(timeout=3.0)
+                p.wait(timeout=3.0)  # type: ignore[call-arg]
             except Exception:
                 try:
                     p.kill()
@@ -577,7 +581,7 @@ class AgentService:
                     except Exception:
                         pass
                     try:
-                        proc._process.wait(timeout=2.0)
+                        proc._process.wait(timeout=2.0)  # type: ignore[call-arg]
                     except Exception:
                         try:
                             proc._process.kill()
@@ -919,6 +923,7 @@ class AgentService:
                 ceiling=self.config.context_ceiling,
             )
 
+        assert self._memory_client is not None  # guarded by memory_enabled
         try:
             await asyncio.wait_for(
                 self._memory_client.call_tool(
@@ -927,7 +932,7 @@ class AgentService:
                         "user_message": user_message,
                         "messages": turn_messages,
                         "token_count": token_count or 0,
-                        "who_helped": self.config.a2a_config.agent_name or "",
+                        "who_helped": (self.config.a2a_config and self.config.a2a_config.agent_name) or "",
                         "what_model": self.config.active_model.ref,
                         "channel": channel,
                     },
@@ -961,6 +966,7 @@ class AgentService:
             logger.debug("get_recent_turns_direct_db_error err=%s", e)
 
         # Fallback: try MCP tool call (server may be able to help)
+        assert self._memory_client is not None  # guarded by memory_enabled
         try:
             result = await self._memory_client.call_tool(
                 "memory_get_recent_turns",
@@ -1177,7 +1183,7 @@ class AgentService:
         record(
             "subagent", "ok",
             key="status", value="ready",
-            hint=f"Subagent manager ready (max_subagents={self.config.subagent_config['max_subagents']}).",
+            hint=f"Subagent manager ready (max_subagents={(self.config.subagent_config or {}).get('max_subagents', '?')}).",
         )
 
     async def stop_subagent(self) -> None:
