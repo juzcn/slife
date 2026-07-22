@@ -2,7 +2,7 @@
 
 import pytest
 
-from slife.tools.base import Tool, make_params, require_params, NO_PARAMS
+from slife.tools.base import Tool, make_params, require_params
 
 
 # ── Tool ABC ──────────────────────────────────────────────────────────
@@ -84,7 +84,7 @@ class TestToolABC:
             name = "default_tool"
             description = "A tool with default from_config."
             parameters = {"type": "object", "properties": {}}
-            async def execute(self, **kwargs): return "ok"
+            async def execute(self, **_kwargs): return "ok"
 
         instance = DefaultTool.from_config({}, None)
         assert isinstance(instance, DefaultTool)

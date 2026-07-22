@@ -125,7 +125,7 @@ def make_params(**fields: dict) -> dict:
 # ── Validation helpers ────────────────────────────────────────────
 
 
-def require_params(**params: str) -> str | None:
+def require_params(**params: object) -> str | None:
     """Validate that all named parameters are non-empty.
 
     Returns an error message string if any parameter is falsy,

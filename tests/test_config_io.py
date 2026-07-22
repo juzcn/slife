@@ -113,10 +113,10 @@ class TestFormatSourceInfo:
 
     def test_non_dict_returns_empty(self):
         """Non-dict input returns empty string."""
-        assert format_source_info("not a dict") == ""
-        assert format_source_info(42) == ""
-        assert format_source_info(None) == ""
-        assert format_source_info([]) == ""
+        assert format_source_info("not a dict") == ""  # type: ignore[arg-type]
+        assert format_source_info(42) == ""  # type: ignore[arg-type]
+        assert format_source_info(None) == ""  # type: ignore[arg-type]
+        assert format_source_info([]) == ""  # type: ignore[arg-type]
 
     def test_empty_dict_returns_empty(self):
         """Empty dict returns empty string."""
