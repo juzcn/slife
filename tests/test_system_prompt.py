@@ -7,6 +7,22 @@ class TestBuild:
     def test_starts_with_slife(self):
         assert build().startswith("You are Slife — agent slife")
 
+    def test_starts_with_custom_agent_id(self):
+        """When only agent_id is given, the alias part is omitted."""
+        result = build(agent_id="mybot")
+        assert result.startswith("You are Slife — agent mybot")
+
+    def test_with_agent_name_includes_alias(self):
+        """When agent_name is given, it appears as an aka alias."""
+        result = build(agent_id="mybot", agent_name="My Bot")
+        assert result.startswith("You are Slife — agent mybot")
+        assert ', aka "My Bot"' in result
+
+    def test_agent_name_not_included_when_empty(self):
+        """When agent_name is empty, no aka clause appears."""
+        result = build(agent_id="mybot")
+        assert "aka" not in result
+
     def test_config_reference(self):
         """Prompt mentions config location and security rules —
         tool usage is covered by individual tool schemas."""

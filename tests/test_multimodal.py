@@ -121,3 +121,51 @@ class TestEnsureMimetypes:
         assert mimetypes.inited is True
         _ensure_mimetypes()
         assert mimetypes.inited is True
+
+    def test_already_initialized_does_not_reinit(self):
+        """When mimetypes is already initialized, init() is not called again."""
+        import mimetypes
+        mimetypes.init()
+        with patch.object(mimetypes, "init") as mock_init:
+            _ensure_mimetypes()
+            mock_init.assert_not_called()
+
+
+# ── encode_image additional edge cases ──────────────────────────────────────
+
+
+class TestEncodeImageEdgeCases:
+    """Additional edge case tests for encode_image."""
+
+    def test_str_path_accepted(self, tmp_path):
+        """encode_image accepts a string path, not just Path."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake png")
+        result = encode_image(str(img))
+        assert result["type"] == "image_url"
+        assert result["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_svg_mime_kept_as_image(self, tmp_path):
+        """SVG files with image/svg+xml MIME type are preserved as image/ type.
+
+        The guard only redirects non-image MIME types to image/png.
+        """
+        img = tmp_path / "icon.svg"
+        img.write_bytes(b"<svg></svg>")
+        result = encode_image(img)
+        # SVG MIME is image/svg+xml — starts with "image/"
+        assert result["image_url"]["url"].startswith("data:image/svg+xml;base64,")
+
+    def test_file_not_found_with_path_object(self):
+        """FileNotFoundError with a Path object."""
+        with pytest.raises(FileNotFoundError) as exc_info:
+            encode_image(Path("/completely/made/up/image.png"))
+        assert "Image not found" in str(exc_info.value)
+
+    def test_not_a_file_with_explicit_dir(self, tmp_path):
+        """ValueError when path points to a directory with trailing content."""
+        subdir = tmp_path / "images"
+        subdir.mkdir()
+        with pytest.raises(ValueError) as exc_info:
+            encode_image(subdir)
+        assert "Not a file" in str(exc_info.value)

@@ -1,11 +1,32 @@
 """Tests for Slife.a2a.config — A2AConfig and Slife.a2a.card — AgentCard."""
 
+import platform
+
 import pytest
 from unittest.mock import patch
 
-from slife.a2a.config import A2AConfig
+from slife.a2a.config import A2AConfig, _default_agent_id
 from slife.a2a.card import AgentCard
 from slife.a2a.identity import AgentId
+
+
+# ── _default_agent_id ────────────────────────────────────────────────────
+
+
+class TestDefaultAgentId:
+    """Tests for the _default_agent_id helper."""
+
+    def test_hostname_with_dots_uses_first_segment(self, monkeypatch):
+        """When hostname is 'myhost.local', agent_id starts with 'myhost-'."""
+        monkeypatch.setattr(platform, "node", lambda: "myhost.local")
+        agent_id = _default_agent_id()
+        assert agent_id.startswith("myhost-")
+
+    def test_empty_hostname_falls_back_to_unknown(self, monkeypatch):
+        """When hostname is empty, agent_id starts with 'unknown-'."""
+        monkeypatch.setattr(platform, "node", lambda: "")
+        agent_id = _default_agent_id()
+        assert agent_id.startswith("unknown-")
 
 
 # ── A2AConfig.from_dict ─────────────────────────────────────────────────
@@ -17,6 +38,15 @@ class TestA2AConfigFromDict:
     def test_none_data_returns_disabled(self):
         cfg = A2AConfig.from_dict(None)
         assert cfg.enabled is False
+
+    def test_none_data_with_custom_agent_id(self):
+        """None data still uses the caller-supplied agent_id."""
+        cfg = A2AConfig.from_dict(None, agent_id="my-agent")
+        assert cfg.agent_id == "my-agent"
+        assert cfg.enabled is False
+        assert cfg.agent_name == ""
+        assert cfg.broker_host == "localhost"
+        assert cfg.broker_port == 1883
 
     def test_empty_data_returns_disabled_with_defaults(self):
         cfg = A2AConfig.from_dict({})
@@ -66,6 +96,24 @@ class TestA2AConfigFromDict:
         """When broker is not a dict, use defaults."""
         cfg = A2AConfig.from_dict(
             {"broker": "just a string"},
+            agent_id="agent-1",
+        )
+        assert cfg.broker_host == "localhost"
+        assert cfg.broker_port == 1883
+
+    def test_broker_is_none_falls_back(self):
+        """When broker is None, use defaults."""
+        cfg = A2AConfig.from_dict(
+            {"broker": None},
+            agent_id="agent-1",
+        )
+        assert cfg.broker_host == "localhost"
+        assert cfg.broker_port == 1883
+
+    def test_broker_is_list_falls_back(self):
+        """When broker is a list (not a dict), use defaults."""
+        cfg = A2AConfig.from_dict(
+            {"broker": [1, 2, 3]},
             agent_id="agent-1",
         )
         assert cfg.broker_host == "localhost"
@@ -130,3 +178,13 @@ class TestAgentCard:
         card = AgentCard.create(agent_id=AgentId("agent-x"))
         assert card.display_name == ""
         assert card.status == "idle"
+
+    def test_create_busy_status(self):
+        card = AgentCard.create(
+            agent_id=AgentId("agent-x"),
+            display_name="X Agent",
+            status="busy",
+        )
+        assert card.agent_id == "agent-x"
+        assert card.display_name == "X Agent"
+        assert card.status == "busy"

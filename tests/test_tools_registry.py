@@ -2,8 +2,50 @@
 
 import pytest
 
-from slife.tools.registry import ToolRegistry
+from slife.tools.registry import ToolRegistry, get_registry, set_registry
 from slife.tools.base import Tool
+
+
+class TestGlobalRegistry:
+    """Tests for module-level get_registry / set_registry."""
+
+    def test_get_registry_returns_none_initially(self):
+        """Before any set_registry call, get_registry returns None (or whatever the
+        module default is — we don't set it, so it may already be None)."""
+        # The _current_registry module var may already be set by other tests.
+        # We store the original, set it to None, test, then restore it.
+        import slife.tools.registry as _mod
+        original = _mod._current_registry
+        try:
+            _mod._current_registry = None
+            assert get_registry() is None
+        finally:
+            _mod._current_registry = original
+
+    def test_set_and_get_registry_round_trip(self):
+        """set_registry() followed by get_registry() returns the same object."""
+        import slife.tools.registry as _mod
+        original = _mod._current_registry
+        try:
+            registry = ToolRegistry()
+            set_registry(registry)
+            assert get_registry() is registry
+        finally:
+            _mod._current_registry = original
+
+    def test_set_registry_overwrites_previous(self):
+        """Calling set_registry twice overwrites the previous value."""
+        import slife.tools.registry as _mod
+        original = _mod._current_registry
+        try:
+            r1 = ToolRegistry()
+            r2 = ToolRegistry()
+            set_registry(r1)
+            assert get_registry() is r1
+            set_registry(r2)
+            assert get_registry() is r2
+        finally:
+            _mod._current_registry = original
 
 
 class TestToolRegistry:

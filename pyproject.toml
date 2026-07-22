@@ -92,15 +92,19 @@ minversion = "9.1"
 testpaths = ["tests"]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "module"
-addopts = "-v --tb=short --strict-markers --strict-config --no-header"
+addopts = "-v --tb=short --strict-markers --strict-config --no-header --color=yes"
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::pytest.PytestDeprecationWarning",
     "ignore::RuntimeWarning:unittest.mock",
     "ignore::RuntimeWarning:_pytest",
+    "ignore::RuntimeWarning:httpcore",
 ]
 markers = [
     "asyncio: mark a test as an async test (auto-applied by asyncio_mode=strict)",
     "slow: mark a test as slow (excluded from quick test runs with -m 'not slow')",
+    "unit: fast, isolated unit test (no I/O, no subprocess)",
+    "integration: test requiring I/O, network, or subprocess",
+    "e2e: end-to-end test requiring a full running system",
 ]
 

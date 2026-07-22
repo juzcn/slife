@@ -18,6 +18,10 @@ from slife.logfmt import (
     read_stderr_lines,
     drain_stderr,
     sanitize_secrets,
+    silence_noisy_loggers,
+    ok_json,
+    error_json,
+    resolve_log_dir,
     FILE_LOG_FORMAT,
 )
 
@@ -420,3 +424,131 @@ class TestSanitizeSecrets:
         """Very short strings without secrets pass through."""
         result = sanitize_secrets("OK")
         assert result == "OK"
+
+
+# ── silence_noisy_loggers ────────────────────────────────────────────────────
+
+
+class TestSilenceNoisyLoggers:
+    """Tests for silence_noisy_loggers."""
+
+    def test_silences_default_loggers(self):
+        """All default noisy loggers are set to WARNING."""
+        with patch("logging.getLogger") as mock_get_logger:
+            silence_noisy_loggers()
+            # Check that setLevel(WARNING) was called for each default logger
+            assert mock_get_logger.call_count >= 11  # default _NOISY_LOGGER_NAMES length
+            for call_args in mock_get_logger.call_args_list:
+                mock_get_logger.return_value.setLevel.assert_called_with(logging.WARNING)
+
+    def test_silences_extra_loggers(self):
+        """Extra logger names are also silenced."""
+        with patch("logging.getLogger") as mock_get_logger:
+            silence_noisy_loggers(extra=("my.custom.logger", "another.one"))
+            mock_get_logger.assert_any_call("my.custom.logger")
+            mock_get_logger.assert_any_call("another.one")
+
+    def test_extra_loggers_not_duplicated(self):
+        """Even if an extra logger is already in defaults, it's still silenced."""
+        # Just verify calling with extras doesn't error
+        silence_noisy_loggers(extra=("openai._base_client",))
+
+
+# ── ok_json ──────────────────────────────────────────────────────────────────
+
+
+class TestOkJson:
+    """Tests for ok_json() helper."""
+
+    def test_basic_ok(self):
+        """Returns status: ok with no extras."""
+        result = ok_json()
+        import json
+        data = json.loads(result)
+        assert data == {"status": "ok"}
+
+    def test_with_extra_keys(self):
+        """Extra keys are included in the output."""
+        result = ok_json(service="test", count=42)
+        import json
+        data = json.loads(result)
+        assert data["status"] == "ok"
+        assert data["service"] == "test"
+        assert data["count"] == 42
+
+    def test_filters_none_values(self):
+        """Keys with None values are omitted."""
+        result = ok_json(name="present", missing=None, count=0, empty_str="")
+        import json
+        data = json.loads(result)
+        assert data["name"] == "present"
+        assert data["count"] == 0
+        assert data["empty_str"] == ""
+        assert "missing" not in data
+
+    def test_all_none_extras(self):
+        """When all extras are None, only status: ok remains."""
+        result = ok_json(a=None, b=None)
+        import json
+        data = json.loads(result)
+        assert data == {"status": "ok"}
+
+
+# ── error_json ───────────────────────────────────────────────────────────────
+
+
+class TestErrorJson:
+    """Tests for error_json() helper."""
+
+    def test_basic_error(self):
+        """Returns status: error with required message."""
+        result = error_json("something went wrong")
+        import json
+        data = json.loads(result)
+        assert data["status"] == "error"
+        assert data["error"] == "something went wrong"
+
+    def test_with_extra_keys(self):
+        """Extra keys are included alongside the error message."""
+        result = error_json("not found", code=404, detail="missing resource")
+        import json
+        data = json.loads(result)
+        assert data["status"] == "error"
+        assert data["error"] == "not found"
+        assert data["code"] == 404
+        assert data["detail"] == "missing resource"
+
+    def test_filters_none_values(self):
+        """Extra keys with None values are omitted."""
+        result = error_json("failed", reason="timeout", suggestion=None)
+        import json
+        data = json.loads(result)
+        assert data["reason"] == "timeout"
+        assert "suggestion" not in data
+
+    def test_all_none_extras(self):
+        """When all extras are None, only status and error remain."""
+        result = error_json("boom", a=None, b=None)
+        import json
+        data = json.loads(result)
+        assert data == {"status": "error", "error": "boom"}
+
+    def test_empty_message(self):
+        """Empty error message is allowed."""
+        result = error_json("")
+        import json
+        data = json.loads(result)
+        assert data["error"] == ""
+
+
+# ── resolve_log_dir ──────────────────────────────────────────────────────────
+
+
+class TestResolveLogDir:
+    """Tests for resolve_log_dir()."""
+
+    def test_resolves_log_dir(self, tmp_path):
+        """Calls slife.paths.get_logs_dir and returns its result."""
+        with patch("slife.paths.get_logs_dir", return_value=tmp_path):
+            result = resolve_log_dir()
+            assert result == tmp_path
