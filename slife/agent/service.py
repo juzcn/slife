@@ -663,7 +663,7 @@ class AgentService:
         # Harness lifecycle — never exposed to LLM
         _HARNESS_TOOLS = {
             "memory_save_turn",
-            "memory_get_last_session",
+            "memory_get_recent_turns",
         }
 
         tagged = [
