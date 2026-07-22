@@ -2,10 +2,29 @@
 
 import logging
 import time as _time
+from typing import TYPE_CHECKING
 
 from slife.tools.base import Tool
 
+if TYPE_CHECKING:
+    pass
+
 logger = logging.getLogger(__name__)
+
+# Module-level reference so meta-tools like list_native_tools can
+# introspect the current registry without a circular dependency.
+_current_registry: "ToolRegistry | None" = None
+
+
+def get_registry() -> "ToolRegistry | None":
+    """Return the live ToolRegistry, or None if not yet initialised."""
+    return _current_registry
+
+
+def set_registry(registry: "ToolRegistry") -> None:
+    """Set the current ToolRegistry (called by the factory)."""
+    global _current_registry
+    _current_registry = registry
 
 
 class ToolRegistry:

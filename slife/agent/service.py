@@ -182,7 +182,14 @@ class AgentService:
         self._mcp_client = client
         self._mcp_port = port
         await self._register_mcp_wrapper_tools()
-        await self._auto_connect_mcp_servers()
+        if self.is_subagent:
+            # Subagents share the main agent's MCP gateway — external
+            # servers are already connected.  Discover and register
+            # their tools without calling mcp_add_server (which would
+            # re-spawn every external server and overload the gateway).
+            await self._discover_existing_mcp_tools()
+        else:
+            await self._auto_connect_mcp_servers()
         logger.info("mcp_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_memory_http(self, port: int) -> None:
@@ -299,7 +306,10 @@ class AgentService:
                         "activate": activate,
                     },
                 )
-                logger.debug("mcp_server_connected name=%s disclosure=%s result=%s", name, disclosure, result)
+                logger.debug(
+                    "mcp_server_connected name=%s disclosure=%s result=%.200s",
+                    name, disclosure, result,
+                )
                 from slife.health import record
                 record(
                     "mcp_server", "ok",
@@ -321,6 +331,44 @@ class AgentService:
 
         await asyncio.gather(
             *(_connect_one(name, cfg) for name, cfg in servers.items())
+        )
+
+    async def _discover_existing_mcp_tools(self) -> None:
+        """Discover tools from already-connected external MCP servers.
+
+        Used by subagents — they share the main agent's MCP gateway, so
+        external servers are already spawned.  Unlike
+        :meth:`_auto_connect_mcp_servers`, this never calls
+        ``mcp_add_server`` — it only lists tools from connected servers
+        and registers them as proxy tools.
+        """
+        mcp_cfg = self.config.mcp_config
+        assert mcp_cfg is not None
+        assert self._mcp_client is not None
+        servers = mcp_cfg.servers
+        if not servers:
+            return
+
+        logger.info("mcp_discover_existing servers=%d", len(servers))
+        mcp_client = self._mcp_client
+
+        async def _discover_one(name: str, cfg: dict) -> None:
+            try:
+                if cfg.get("enabled") is False:
+                    logger.debug("mcp_server_skipped name=%s reason=disabled", name)
+                    return
+                disclosure = cfg.get("disclosure", "eager")
+                if disclosure != "lazy":
+                    await self._discover_and_register_external_tools(server_name=name)
+            except Exception as e:
+                logger.debug("mcp_discover_existing_failed server=%s err=%s", name, e)
+
+        await asyncio.gather(
+            *(_discover_one(name, cfg) for name, cfg in servers.items())
+        )
+        logger.info(
+            "mcp_discover_existing_done tools=%d",
+            len(self.tool_registry.list_tools()),
         )
 
     # ── MCP tool discovery & registration ────────────────────────────
@@ -806,16 +854,19 @@ class AgentService:
             )
 
         try:
-            await self._memory_client.call_tool(
-                "memory_save_turn",
-                {
-                    "user_message": user_message,
-                    "messages": turn_messages,
-                    "token_count": token_count or 0,
-                    "who_helped": self.config.a2a_config.agent_name or "",
-                    "what_model": self.config.active_model.ref,
-                    "channel": channel,
-                },
+            await asyncio.wait_for(
+                self._memory_client.call_tool(
+                    "memory_save_turn",
+                    {
+                        "user_message": user_message,
+                        "messages": turn_messages,
+                        "token_count": token_count or 0,
+                        "who_helped": self.config.a2a_config.agent_name or "",
+                        "what_model": self.config.active_model.ref,
+                        "channel": channel,
+                    },
+                ),
+                timeout=10.0,
             )
         except Exception as e:
             logger.warning("memory_save_error err=%s", e)

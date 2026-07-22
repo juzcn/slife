@@ -171,7 +171,7 @@ class Inbox:
             if msg.reply_to and self._a2a_client:
                 await self._publish_reply(msg.reply_to, msg.correlation_id, result)
 
-            # Persist turn to memory (unified path for all sources)
+            # Persist turn to memory (unified path for all sources).
             if self._on_turn_complete:
                 try:
                     await self._on_turn_complete(

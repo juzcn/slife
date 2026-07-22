@@ -128,10 +128,9 @@
   },
 
   // ── Memory ─────────────────────────────────────────────────────
-  // DB files auto-located at ~/.slife/<agent_id>.db — no config needed.
+  // Always on — DB auto-located at ~/.slife/<agent_id>.db.
+  // Embedding config is optional; without it keyword search still works.
   memory: {
-    enabled: true,
-
     // Local GGUF embeddings (offline).  Install: slife[embeddings]
     // embedding: {
     //   model: "bge-m3",

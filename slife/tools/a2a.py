@@ -77,6 +77,7 @@ class A2AListAgentsTool(Tool):
 
     name = "a2a_list_agents"
     requires_a2a = True
+    _subagent_skip = True  # subagents have no MQTT transport
     description = (
         "List remote agents discovered on the MQTT P2P mesh. "
         "Shows agent_id, display name, and status (idle/busy). "
@@ -116,6 +117,7 @@ class A2AListSubagentsTool(Tool):
     """List local subagents spawned by this instance."""
 
     name = "a2a_list_subagents"
+    _subagent_skip = True  # subagents have no SubagentManager
     description = (
         "List locally-spawned subagent workers (stdin/stdout IPC). "
         "Shows agent_id, PID, and readiness. "
@@ -163,6 +165,7 @@ class A2ASendTaskTool(Tool):
     """Send a task to any agent and wait for the result (synchronous)."""
 
     name = "a2a_send_task"
+    _subagent_skip = True  # subagents have no transport (MQTT or SubagentManager)
     description = (
         "Send a task to any agent and wait for the result. "
         "Works with local subagents and remote MQTT peers — routing is "
@@ -223,6 +226,7 @@ class A2ASendTaskAsyncTool(Tool):
     """Send a task without waiting — fire-and-forget."""
 
     name = "a2a_send_task_async"
+    _subagent_skip = True  # subagents have no transport (MQTT or SubagentManager)
     description = (
         "Send a task to an agent without waiting for the result. "
         "Returns a task_id immediately. "
@@ -304,6 +308,7 @@ class A2AGetTaskResultTool(Tool):
     """
 
     name = "a2a_get_task_result"
+    _subagent_skip = True  # subagents can't send tasks, so results are always empty
     description = (
         "Check the status and result of a task once (non-blocking). "
         "Returns the task record including status (pending/completed/failed/cancelled), "
@@ -387,6 +392,7 @@ class A2ACancelTaskTool(Tool):
     """Cancel a pending or in-flight task."""
 
     name = "a2a_cancel_task"
+    _subagent_skip = True  # subagents have no transport (MQTT or SubagentManager)
     description = (
         "Cancel a pending task (synchronous or asynchronous). "
         "Sends a cancellation notice to the target agent. "
@@ -448,6 +454,7 @@ class A2AListTasksTool(Tool):
     """List tasks with optional status and agent filters — A2A tasks/list."""
 
     name = "a2a_list_tasks"
+    _subagent_skip = True  # subagents can't send tasks, so listings are always empty
     description = (
         "List tasks across all agents, with optional filters. "
         "Supports filtering by agent_id, status (pending/completed/failed/cancelled), "
@@ -531,6 +538,7 @@ class A2ASubscribeTaskTool(Tool):
     """Subscribe to task completion — wait for a task to finish."""
 
     name = "a2a_subscribe_task"
+    _subagent_skip = True  # subagents have no transport to subscribe through
     description = (
         "Wait for an async task to complete. "
         "Blocks until the task finishes (completed, failed, or cancelled) "
@@ -739,6 +747,7 @@ class A2AGetAgentCardTool(Tool):
     """Get the detailed card of a specific agent."""
 
     name = "a2a_agent_card"
+    _subagent_skip = True  # subagents have no transport to look up agents
     description = (
         "Get the detailed Agent Card for a specific agent. "
         "Shows agent_id, display name, status (idle/busy), and whether "
@@ -845,6 +854,7 @@ class A2ABroadcastTool(Tool):
     """Broadcast a task to all known agents."""
 
     name = "a2a_broadcast"
+    _subagent_skip = True  # subagents have no transport to broadcast
     description = (
         "Broadcast a task to all known agents (local subagents AND remote "
         "MQTT peers).  Tasks are sent asynchronously (fire-and-forget). "

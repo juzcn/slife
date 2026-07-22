@@ -94,10 +94,33 @@ class MCPClient:
         logger.info("mcp_client_disconnected")
 
     async def _cleanup(self) -> None:
-        """Close the exit stack, properly exiting all nested contexts."""
+        """Close the exit stack, properly exiting all nested contexts.
+
+        The ``sse_client`` async generator from the MCP library uses
+        ``anyio.create_task_group()`` internally.  When the SSE connection
+        fails during setup (before ``session.initialize()`` succeeds), the
+        TaskGroup's cancel-scope cleanup can raise ``BaseExceptionGroup``
+        or ``RuntimeError`` (task mismatch) — both escape the bare
+        ``except Exception`` and need to be swallowed explicitly.
+
+        A zero-sleep after ``aclose()`` lets the event loop deliver any
+        pending generator finalisation callbacks so they don't fire during
+        garbage collection and crash the process.
+        """
         if self._exit_stack:
             try:
                 await self._exit_stack.aclose()
+            except (Exception, BaseExceptionGroup):
+                pass
+            except RuntimeError as e:
+                if "cancel scope" in str(e):
+                    logger.debug("cleanup_cancel_scope_suppressed err=%s", e)
+                else:
+                    raise
+            # Give pending generator-finalisation callbacks a chance to run
+            # in the current task instead of during GC.
+            try:
+                await asyncio.sleep(0)
             except Exception:
                 pass
             self._exit_stack = None

@@ -30,7 +30,7 @@ def _check_embedding_config() -> list[dict]:
     from slife.plugins.memory.embeddings import EmbeddingClient
     from slife.plugins.memory.embedding_config import read_embedding_config
 
-    client = EmbeddingClient.from_config()
+    client = EmbeddingClient.from_config(quiet=True)
     cfg = read_embedding_config()
 
     if cfg is None:

@@ -11,7 +11,7 @@ import pkgutil
 from typing import TYPE_CHECKING
 
 from slife.tools.base import Tool
-from slife.tools.registry import ToolRegistry
+from slife.tools.registry import ToolRegistry, set_registry
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -40,6 +40,10 @@ def create_tools_from_config(
         [{name: "execute_shell", timeout: 60}, {name: "list_skills", enabled: false}]
     """
     registry = ToolRegistry()
+    # Expose the registry so meta-tools (e.g. list_native_tools) can
+    # introspect it without creating a circular import.
+    set_registry(registry)
+
     override_map: dict[str, dict] = {}
     for entry in (overrides or []):
         name = entry.get("name", "")
@@ -60,10 +64,11 @@ def create_tools_from_config(
             continue
 
         # Skip tools that require the MQTT/A2A mesh when MQTT is not
-        # configured at all (no ``mqtt`` section in slife.json5).
+        # configured or not enabled.  A2AConfig always exists (defaults
+        # to enabled=False), so check the enabled flag, not just presence.
         if getattr(tool_cls, "requires_a2a", False):
             a2a_cfg = getattr(config, "a2a_config", None) if config else None
-            if a2a_cfg is None:
+            if a2a_cfg is None or not a2a_cfg.enabled:
                 logger.debug("tool_skipped_no_a2a_config name=%s", tool_cls.name)
                 continue
 

@@ -93,6 +93,7 @@ class EmbeddingClient:
         base_url: str = "",
         gguf_path: str | None = None,
         dim: int = 0,
+        quiet: bool = False,
     ):
         self._model = model
         self._api_key = api_key
@@ -102,6 +103,8 @@ class EmbeddingClient:
         self._client = None        # AsyncOpenAI or Llama
         self._backend: str = ""    # "gguf" | "api" | ""
         self._available = False
+
+        _log_warn = logger.debug if quiet else logger.warning
 
         # Resolve backend
         if gguf_path and Path(gguf_path).exists():
@@ -113,7 +116,7 @@ class EmbeddingClient:
                     model, gguf_path, self._dim,
                 )
             else:
-                logger.warning(
+                _log_warn(
                     "embeddings_gguf_unavailable — GGUF file found (%s) but "
                     "llama-cpp-python is not installed. Install with: "
                     "pip install llama-cpp-python. "
@@ -128,20 +131,20 @@ class EmbeddingClient:
                     "embeddings_backend=api model=%s dim=%d", model, self._dim,
                 )
             else:
-                logger.warning(
+                _log_warn(
                     "embeddings_api_unavailable — api_key configured but "
                     "openai package is not installed. Install with: "
                     "pip install openai. "
                     "Semantic search will be unavailable; keyword search still works.",
                 )
         else:
-            logger.warning(
+            _log_warn(
                 "embeddings_disabled — no gguf_path or api_key configured. "
                 "Semantic search will be unavailable; keyword search still works."
             )
 
     @classmethod
-    def from_config(cls, config_path: str | None = None) -> "EmbeddingClient":
+    def from_config(cls, config_path: str | None = None, quiet: bool = False) -> "EmbeddingClient":
         """Create an EmbeddingClient from slife.json5 config.
 
         Looks for:
@@ -149,27 +152,33 @@ class EmbeddingClient:
           - memory.embedding.model → model name (for metadata and dim guessing)
           - models.providers.<first>.api_key → for API backend
           - models.providers.<first>.base_url → for API backend
+
+        When *quiet* is True, unavailability messages are logged at DEBUG
+        instead of WARNING — useful for health checks that probe status
+        without alarming the user.
         """
         from slife.paths import get_config_path
+
+        _log_warn = logger.debug if quiet else logger.warning
 
         try:
             import json5
         except ImportError:
-            logger.warning("json5_not_installed — embeddings disabled")
-            return cls(api_key="")
+            _log_warn("json5_not_installed — embeddings disabled")
+            return cls(api_key="", quiet=quiet)
 
         if config_path is None:
             config_path = str(get_config_path())
         config_path = Path(config_path)
         if not config_path.exists():
-            logger.warning("config_not_found path=%s", config_path)
-            return cls(api_key="")
+            _log_warn("config_not_found path=%s", config_path)
+            return cls(api_key="", quiet=quiet)
 
         try:
             raw = json5.loads(config_path.read_text(encoding="utf-8"))
         except (ValueError, OSError) as e:
-            logger.warning("config_parse_error err=%s", e)
-            return cls(api_key="")
+            _log_warn("config_parse_error err=%s", e)
+            return cls(api_key="", quiet=quiet)
 
         # Parse embedding config
         memory_cfg = raw.get("memory", {})
@@ -184,7 +193,7 @@ class EmbeddingClient:
         if gguf_path:
             gguf_path = str(Path(gguf_path).expanduser())
             dim = emb_cfg.get("dim", _guess_dim(model, gguf_path))
-            return cls(model=model, gguf_path=gguf_path, dim=dim)
+            return cls(model=model, gguf_path=gguf_path, dim=dim, quiet=quiet)
 
         # Otherwise, try API backend
         api_key = ""
@@ -200,13 +209,13 @@ class EmbeddingClient:
                     break
 
         if not api_key:
-            logger.warning(
+            _log_warn(
                 "no_api_key and no gguf_path — embeddings disabled. "
                 "FTS5 keyword search will still work."
             )
 
         dim = emb_cfg.get("dim", _guess_dim(model))
-        return cls(model=model, api_key=api_key, base_url=base_url, dim=dim)
+        return cls(model=model, api_key=api_key, base_url=base_url, dim=dim, quiet=quiet)
 
     @property
     def available(self) -> bool:

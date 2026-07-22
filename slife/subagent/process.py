@@ -80,6 +80,10 @@ class SubagentProcess:
         env = dict(os.environ)
         env["SLIFE_SUBAGENT_NAME"] = self._name
         env["SLIFE_CONFIG"] = self._config_json
+        # Subagents share the main agent's MCP tools but don't need
+        # their own memory connection — a duplicate SSE session can
+        # deadlock the memory server's writer.
+        env.pop("SLIFE_MEMORY_PORT", None)
         self._process = await asyncio.create_subprocess_exec(
             *cmd, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)

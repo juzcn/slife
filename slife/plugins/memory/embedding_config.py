@@ -169,7 +169,7 @@ def make_check_report() -> dict:
 
     # Check actual availability
     from slife.plugins.memory.embeddings import EmbeddingClient, _check_runtime
-    client = EmbeddingClient.from_config()
+    client = EmbeddingClient.from_config(quiet=True)
 
     result: dict = {
         "configured": True,
