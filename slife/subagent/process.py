@@ -238,6 +238,8 @@ class SubagentProcess:
                         self._async_results[rpc_id] = result_text
                         get_store().record_result(rpc_id, result_text)
                     self._resolve_push(rpc_id, msg)
+                    # Notify the manager so it can push the result to the user.
+                    self._notify_manager_task_done(rpc_id)
                 elif rpc_id is None:
                     # JSON-RPC notification or ready signal (no id)
                     if "result" in msg and msg["result"].get("ready"):
@@ -257,6 +259,8 @@ class SubagentProcess:
                                 params.get("pct", "?"),
                             )
                         self._resolve_push(task_id, msg)
+                        if method == "tasks/complete" and task_id:
+                            self._notify_manager_task_done(task_id)
         except Exception:
             logger.debug("stdout_read_error name=%s", self._name, exc_info=True)
 
@@ -266,6 +270,19 @@ class SubagentProcess:
             self._process, f"subagent:{self._name}", logger,
             running_check=lambda: self._running,
         )
+
+    def _notify_manager_task_done(self, task_id: str) -> None:
+        """Signal the manager that an async task has completed."""
+        mgr = get_manager()
+        if mgr is not None and mgr.on_task_complete is not None:
+            result_text = self._async_results.get(task_id, "")
+            try:
+                mgr.on_task_complete(self._name, task_id, result_text)
+            except Exception:
+                logger.debug(
+                    "task_complete_callback_error name=%s task=%s",
+                    self._name, task_id, exc_info=True,
+                )
 
 
 class SubagentManager:
@@ -278,6 +295,9 @@ class SubagentManager:
         sc = config.subagent_config
         self._max = sc["max_subagents"]
         self._timeout = sc["task_timeout"]
+        # Callback invoked when a subagent task completes:
+        #   async def cb(agent_id: str, task_id: str, result: str) -> None
+        self.on_task_complete: "Callable | None" = None
 
     @property
     def count(self) -> int: return sum(1 for p in self._subagents.values() if p.is_running)

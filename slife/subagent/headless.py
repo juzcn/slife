@@ -42,6 +42,15 @@ def _write(result=None, error=None, rpc_id=None) -> None:
     sys.stdout.buffer.flush()
 
 
+def _notify(method: str, params: dict | None = None) -> None:
+    """Send a JSON-RPC notification (no ``id``) to the parent process."""
+    msg: dict = {"jsonrpc": "2.0", "method": method}
+    if params is not None:
+        msg["params"] = params
+    sys.stdout.buffer.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+
 async def _process(task_text: str, rpc_id, service) -> None:
     from slife.agent.conversation import Conversation
     from slife.agent.system_prompt import build as build_system_prompt
@@ -61,6 +70,7 @@ async def _process(task_text: str, rpc_id, service) -> None:
                 user_input=task_text, conversation=conv, handler=None,
             )
         _write(result=result.text, rpc_id=rpc_id)
+        _notify("tasks/complete", {"task_id": str(rpc_id)})
         logger.info(
             "task_done id=%s tok_p=%s tok_c=%s tok_t=%s",
             rpc_id,
@@ -71,9 +81,11 @@ async def _process(task_text: str, rpc_id, service) -> None:
     except MaxIterationsExceeded as e:
         logger.warning("task_loop_exceeded id=%s err=%s", rpc_id, e)
         _write(error={"code": -32000, "message": str(e)}, rpc_id=rpc_id)
+        _notify("tasks/complete", {"task_id": str(rpc_id)})
     except Exception as e:
         logger.error("task_error id=%s err=%s", rpc_id, e)
         _write(error={"code": -32000, "message": str(e)}, rpc_id=rpc_id)
+        _notify("tasks/complete", {"task_id": str(rpc_id)})
 
 
 async def run_headless() -> None:

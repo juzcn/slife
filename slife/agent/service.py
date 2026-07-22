@@ -1061,6 +1061,22 @@ class AgentService:
         # (Slife.tools.a2a) can access the live manager at call time.
         set_manager(self._subagent_manager)
 
+        # When a subagent completes an async task, push the result into
+        # the inbox so the user sees it without having to poll.
+        async def _on_subagent_done(agent_id: str, task_id: str, result: str) -> None:
+            from slife.a2a.identity import AgentMessage
+            from slife.agent.conversation import HUMAN
+            msg = AgentMessage(
+                source=HUMAN,
+                content=(
+                    f"子 agent **{agent_id}** 的异步任务已完成（ID: `{task_id}`）：\n\n"
+                    f"{result}"
+                ),
+            )
+            await self.inbox.post(msg)
+
+        self._subagent_manager.on_task_complete = _on_subagent_done
+
         logger.info("subagent_init_done tools=%d", len(self.tool_registry.list_tools()))
         from slife.health import record
         record(
