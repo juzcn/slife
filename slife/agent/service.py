@@ -149,23 +149,31 @@ class AgentService:
 
     async def start_plugin_server(
         self, name: str, module: str,
-    ) -> MCPClient:
+    ) -> bool:
         """Spawn a plugin child process, connect, and register its tools.
 
-        This is the generic entry point for ALL plugin servers —
-        built-in (memory, mcp, wechat) and third-party.  The plugin's
-        ``server.py`` must expose a ``main()`` that calls
-        ``run_plugin_server(mcp)``.
+        Single entry point for ALL plugins — built-in (mcp, memory,
+        wechat) and third-party.  The plugin's ``server.py`` must expose
+        a ``main()`` that calls ``run_plugin_server(mcp)``.
 
-        Returns the connected :class:`MCPClient` so the caller can
-        perform plugin-specific post-connect steps (memory restore,
-        MCP auto-connect, WeChat poll loop).
-
-        Args:
-            name: Short plugin name (e.g. ``"memory"``).
-            module: Fully-qualified server module path
-                (e.g. ``"slife.plugins.memory.server"``).
+        Dispatches internally for MCP (configurable wrapper command) and
+        WeChat (poll loop); everything else uses the generic spawn path.
+        Returns ``True`` on success, ``False`` on controlled failure,
+        raises on unexpected errors.
         """
+        # ── MCP wrapper: custom command, auto-connects external servers ──
+        if name == "mcp":
+            if not self.config.mcp_config:
+                logger.debug("mcp_skipped — no mcp_config")
+                return False
+            await self.start_mcp()
+            return self.mcp_enabled
+
+        # ── WeChat: needs poll loop after registration ──────────────────
+        if name == "wechat":
+            return await self.start_wechat()
+
+        # ── Generic: spawn python -m <module>, connect, register tools ──
         from slife.mcp.process import MCPWrapperProcess
 
         logger.info("plugin_spawn name=%s module=%s", name, module)
@@ -183,10 +191,21 @@ class AgentService:
                      name, len(plugin_tools),
                      [t["name"] for t in plugin_tools])
 
-        # Register as proxy tools — harness-only tools are filtered by
-        # the caller or by plugin-specific naming convention.
+        # Register as proxy tools — filter out harness-only tools.
+        # Plugin servers mark internal tools with "harness-only" in the
+        # description field.  The harness calls these programmatically
+        # via call_tool(); the LLM never needs to see them.
         from slife.mcp.tool_adapter import create_proxy_tools
-        tagged = [{**t, "server": name} for t in plugin_tools]
+        tagged = [
+            {**t, "server": name}
+            for t in plugin_tools
+            if "harness-only" not in t.get("description", "").lower()
+        ]
+        if len(tagged) < len(plugin_tools):
+            logger.debug(
+                "plugin_tools_filtered name=%s kept=%d dropped=%d",
+                name, len(tagged), len(plugin_tools) - len(tagged),
+            )
         proxy_tools = create_proxy_tools(client, tagged)
         for tool in proxy_tools:
             self.tool_registry.register(tool)
@@ -200,7 +219,7 @@ class AgentService:
         setattr(self, f"_{name}_port", process.port)
         os.environ[f"SLIFE_{name.upper()}_PORT"] = str(process.port)
 
-        return client
+        return True
 
     # ── MCP lifecycle ──────────────────────────────────────────────────
 
@@ -228,7 +247,7 @@ class AgentService:
                 hint=f"MCP wrapper failed to start: {e}. "
                      "MCP tools (filesystem, search, etc.) are unavailable.",
             )
-            return
+            raise
         # Fire-and-forget: external MCP servers connect in background
         # so the UI appears immediately. Tools register as each server
         # connects — no need to block startup on slow/hung servers.
@@ -946,13 +965,9 @@ class AgentService:
         """Load recent turns for restore. Returns [] if no turns.
 
         Reads directly from the SQLite database — does NOT go through
-        the MCP tool call / Streamable HTTP transport.  This avoids the
-        SSE connection lifecycle issues and is much faster.
+        the MCP tool call / Streamable HTTP transport.  Independent of
+        whether the memory plugin has been started.
         """
-        if not self.memory_enabled:
-            return []
-
-        # Read directly from SQLite — fast, no MCP transport needed.
         try:
             from slife.plugins.memory.store import SessionStore
             db_path = self._get_memory_db_path()
@@ -965,18 +980,7 @@ class AgentService:
         except Exception as e:
             logger.debug("get_recent_turns_direct_db_error err=%s", e)
 
-        # Fallback: try MCP tool call (server may be able to help)
-        assert self._memory_client is not None  # guarded by memory_enabled
-        try:
-            result = await self._memory_client.call_tool(
-                "memory_get_recent_turns",
-                {"limit": limit},
-            )
-            data = json.loads(result)
-            return data.get("turns", [])
-        except Exception as e:
-            logger.debug("get_recent_turns_error err=%s", e)
-            return []
+        return []
 
     def _get_memory_db_path(self) -> Path | None:
         """Return the memory database path."""

@@ -216,9 +216,16 @@ The harness calls this at startup and spawns every discovered plugin.
 ``slife/plugins/my-plugin/`` and it is picked up on next launch.
 
 Startup order
-  ``memory`` always starts first (synchronously) so session restore
-  can read from its database before the chat UI appears.  All other
-  plugins start in parallel.
+  All plugins start in parallel via a single unified loop — the harness
+  calls ``start_plugin_server()`` for each one, which dispatches internally
+  (MCP for configurable wrapper, WeChat for poll loop, everything else via
+  generic spawn + connect + register).
+
+  **Session restore happens first, before any plugin starts.**  It reads
+  recent turns directly from the SQLite database — a read-only operation
+  that doesn't need the memory plugin.  Decoupling restore from plugin
+  startup means: the UI shows history immediately, and the memory plugin
+  can fail or be slow without blocking the user experience.
 
 For external non‑Python MCP servers (npx, uvx, remote HTTP), use the
 ``mcp.servers`` config section — those are connected via the
@@ -265,7 +272,8 @@ async def query(term: str = "") -> str:
 ### 9.3  Harness-only tools (not exposed to LLM)
 
 Some tools are called programmatically by the harness, not by the LLM.
-Name them clearly and document them:
+Mark them with ``"harness-only"`` in the description — the harness
+automatically filters these out before registering LLM-visible tools:
 
 ```python
 @mcp.tool(
@@ -276,7 +284,8 @@ async def my_plugin_drain_incoming() -> str:
     ...
 ```
 
-The harness filters these out by name before registering LLM-visible tools.
+The harness filters by the ``"harness-only"`` keyword (case-insensitive)
+in the tool description — no hardcoded name lists, no plugin-specific logic.
 
 ---
 

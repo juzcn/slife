@@ -595,9 +595,10 @@ slife/plugins/
 
 Each plugin is a Python package with a `server.py` entry point that follows
 the plugin spec (`docs/plugins.md`).  Built-in plugins get harness-side
-post-connect hooks (memory restore, MCP auto-connect, WeChat poll loop).
-Third-party plugins use generic `start_plugin_server()` — just spawn and
-register tools.
+post-connect hooks (MCP auto-connect, WeChat poll loop); memory and
+third-party plugins use the generic `start_plugin_server()` — spawn,
+connect, register tools (harness-only tools are filtered automatically
+by the ``"harness-only"`` keyword in their description).
 
 ### Slife side (`slife/mcp/`)
 
@@ -606,9 +607,9 @@ register tools.
 - **MCPWrapperProcess** (`process.py`): generic child process lifecycle management — start (subprocess + port discovery), connect (Streamable HTTP client), graceful stop (terminate → kill escalation).  Used identically for all plugins.
 
 **Startup flow:**
-1. Memory plugin starts **first** (synchronous) — reads turns directly from SQLite for fast UI restore
-2. MCP wrapper and WeChat start in **background** workers — UI is already shown
-3. External MCP servers auto-connect in background via `asyncio.create_task` — tools register incrementally as each server connects
+1. **Inbox** starts — the unified message queue
+2. **Session restore** — reads recent turns directly from SQLite (`SessionStore` in-process), no plugin needed.  UI appears with history shown, not a blank screen.
+3. **All plugins** (MCP, memory, WeChat, third-party) start in **parallel** background workers via a single unified loop — `start_plugin_server()` dispatches internally for MCP and WeChat.  External MCP servers then auto-connect in background via `asyncio.create_task` — tools register incrementally as each server connects.
 
 ### Post-Connect Setup
 
@@ -760,18 +761,23 @@ All modes search the full diary including the active session. The LLM can distin
 ### Session Restore (Fast Startup)
 
 On startup, the harness restores the previous session by reading recent turns
-**directly from the SQLite database** — no MCP tool call, no transport overhead.
-`AgentService.get_recent_turns()` uses `SessionStore` in-process, which avoids
-the Streamable HTTP transport entirely for the critical startup path.
+**directly from the SQLite database** — no MCP tool call, no transport overhead,
+and no dependency on the memory plugin process.  `AgentService.get_recent_turns()`
+uses `SessionStore` in-process, which avoids the Streamable HTTP transport
+entirely for the critical startup path.
 
-If the direct DB read fails (missing file, schema error), it falls back to
-calling `memory_get_recent_turns` via the MCP client.
+**Design rationale:** Session restore is a read-only operation.  Coupling it to
+the memory plugin's MCP connection creates an unnecessary startup dependency — if
+the memory plugin is slow to start or fails, the UI would either block or show a
+blank screen.  Reading the DB directly decouples restore from plugin health: the
+UI shows history immediately, and the memory plugin can start in parallel without
+affecting the user's first impression.
 
 The startup sequence is:
 
 1. **Inbox** starts — the unified message queue
-2. **Memory** starts synchronously — spawn plugin, read turns from DB, restore session in UI.  UI appears **with history shown**, not a blank screen.
-3. **MCP + WeChat + subagents** start in background workers — they don't block the UI
+2. **Session restore** — read turns directly from SQLite (no plugin needed), rebuild conversation + UI.  UI appears **with history shown**, not a blank screen.
+3. **All plugins** — MCP, memory, WeChat, third-party — start in parallel background workers via a single unified loop.  Plugins don't block the UI.
 
 ### Embedding
 

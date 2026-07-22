@@ -157,48 +157,26 @@ class SlifeApp(App):
         await self.service.start_inbox()
 
         plugins = discover_plugins()
-        plugin_names = {n for n, _ in plugins}
 
-        # ── Step 1: Memory first (synchronous) — restore session ──────
-        # UI must show with history, not a blank screen.
-        # Reads turns directly from SQLite — fast, bypasses MCP transport.
-        if "memory" in plugin_names and self.service.config.memory_config:
-            try:
-                await self.service.start_memory()
-                turns = await self.service.get_recent_turns()
-                if turns:
-                    self._recovery_info = {"turns": turns}
-                    await self._restore_session()
-            except Exception as e:
-                self._show_system_message(
-                    f"⚠ 记忆服务启动失败: {e}", color="#d29922",
-                )
+        # ── Step 1: Restore session from SQLite (pure read, no services needed) ─
+        # get_recent_turns reads the DB directly via aiosqlite —
+        # completely independent of the memory plugin process.
+        try:
+            turns = await self.service.get_recent_turns()
+            if turns:
+                self._recovery_info = {"turns": turns}
+                await self._restore_session()
+        except Exception as e:
+            logger.debug("session_restore_skip err=%s", e)
 
-        # ── Step 2: MCP + wechat + third-party (background) ───────────
+        # ── Step 2: Start all plugins in parallel (auto-discovered) ──────
         for name, module in plugins:
-            if name == "memory":
-                continue  # already started above
-
-            if name == "mcp" and self.service.config.mcp_config:
-                self.run_worker(
-                    self.service.start_mcp(),
-                    exclusive=False, group="plugin-startup",
-                )
-            elif name == "wechat":
-                if self.service.config.wechat_config and self.service.config.wechat_config.enabled:
-                    self.run_worker(
-                        self.service.start_wechat(),
-                        exclusive=False, group="plugin-startup",
-                    )
-            else:
-                # Third-party plugin — generic startup, no post-connect
-                self.run_worker(
-                    self.service.start_plugin_server(name, module),
-                    exclusive=False, group="plugin-startup",
-                )
-                self._show_system_message(
-                    f"🔌 插件已加载: {name}", color="#3fb950",
-                )
+            self.run_worker(
+                self._start_plugin_safe(
+                    name, self.service.start_plugin_server(name, module),
+                ),
+                exclusive=False, group="plugin-startup",
+            )
 
         # ── Step 3: A2A + Subagent + callbacks (unchanged) ────────────
         self.service.on_a2a_activity(self._on_a2a_activity)
@@ -293,6 +271,25 @@ class SlifeApp(App):
             inbox_busy=inbox.busy if inbox else False,
             inbox_pending=inbox.pending if inbox else 0,
         )
+
+    # ── Plugin startup helpers ────────────────────────────────────
+
+    async def _start_plugin_safe(self, name: str, coro) -> None:
+        """Start a plugin and show unified success/failure in chat."""
+        try:
+            result = await coro
+            if result is False:
+                self._show_system_message(
+                    f"⚠ 插件启动失败: {name}", color="#d29922",
+                )
+            else:
+                self._show_system_message(
+                    f"🔌 插件已加载: {name}", color="#3fb950",
+                )
+        except Exception as e:
+            self._show_system_message(
+                f"⚠ 插件启动失败 ({name}): {e}", color="#d29922",
+            )
 
     # ── Input handling ────────────────────────────────────────────
 

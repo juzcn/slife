@@ -30,8 +30,7 @@ logger = logging.getLogger(__name__)
 def discover_plugins() -> list[tuple[str, str]]:
     """Scan ``slife.plugins.*`` for packages containing ``server.py``.
 
-    Returns a list of ``(name, module_path)`` tuples sorted so that
-    ``memory`` starts first (session restore depends on it)::
+    Returns a list of ``(name, module_path)`` tuples::
 
         [("memory", "slife.plugins.memory.server"),
          ("mcp",    "slife.plugins.mcp.server"),
@@ -63,10 +62,6 @@ def discover_plugins() -> list[tuple[str, str]]:
             plugins.append((short_name, server_module))
         except Exception:
             continue
-
-    # Memory must start first — session restore reads from its DB.
-    _order = {"memory": 0, "mcp": 1, "wechat": 2}
-    plugins.sort(key=lambda x: _order.get(x[0], 99))
 
     logger.debug("plugins_discovered count=%d names=%s",
                  len(plugins), [n for n, _ in plugins])
