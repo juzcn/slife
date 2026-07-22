@@ -126,7 +126,7 @@ uv tool run --from slife pip install "llama-cpp-python @ https://github.com/abet
 
 #### 配置 MQTT 网格
 
-安装 `slife[mqtt]` 后，启动 [Mosquitto](https://mosquitto.org/) broker 并以智能体身份运行：
+`paho-mqtt` 已默认包含。启动 [Mosquitto](https://mosquitto.org/) broker 并以智能体身份运行：
 
 ```bash
 # 终端 1 — 启动 broker（或使用已有实例）
@@ -340,7 +340,7 @@ mcp: {
 | [uv](https://docs.astral.sh/uv/) | 缺失时自动安装 |
 | Node.js | 可选 — 仅用于 npx MCP 服务器 |
 | `llama-cpp-python` | 可选 — `slife[embeddings]` 提供本地 GGUF 嵌入 |
-| `paho-mqtt` | 可选 — `slife[mqtt]` 提供 A2A MQTT 网格 |
+| `paho-mqtt` | 已包含 — A2A MQTT 网格（检测到 Mosquitto 时自动激活） |
 
 ## 开发
 
