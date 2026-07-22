@@ -169,7 +169,7 @@ class AgentService:
         logger.info("mcp_init_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_mcp_http(self, port: int) -> None:
-        """Connect to an already-running MCP wrapper via HTTP SSE.
+        """Connect to an already-running MCP wrapper via Streamable HTTP.
 
         Used by subagents to share the main agent's plugin servers
         instead of spawning their own.
@@ -178,7 +178,7 @@ class AgentService:
 
         logger.info("mcp_http_connect port=%s", port)
         client = MCPClient()
-        await client.connect_sse(f"http://127.0.0.1:{port}/sse")
+        await client.connect(f"http://127.0.0.1:{port}/mcp")
         self._mcp_client = client
         self._mcp_port = port
         await self._register_mcp_wrapper_tools()
@@ -193,24 +193,24 @@ class AgentService:
         logger.info("mcp_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_memory_http(self, port: int) -> None:
-        """Connect to an already-running memory server via HTTP SSE."""
+        """Connect to an already-running memory server via Streamable HTTP."""
         from slife.mcp.client import MCPClient
 
         logger.info("memory_http_connect port=%s", port)
         client = MCPClient()
-        await client.connect_sse(f"http://127.0.0.1:{port}/sse")
+        await client.connect(f"http://127.0.0.1:{port}/mcp")
         self._memory_client = client
         self._memory_port = port
         await self._register_memory_tools()
         logger.info("memory_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_wechat_http(self, port: int) -> None:
-        """Connect to an already-running wechat server via HTTP SSE."""
+        """Connect to an already-running wechat server via Streamable HTTP."""
         from slife.mcp.client import MCPClient
 
         logger.info("wechat_http_connect port=%s", port)
         client = MCPClient()
-        await client.connect_sse(f"http://127.0.0.1:{port}/sse")
+        await client.connect(f"http://127.0.0.1:{port}/mcp")
         self._wechat_client = client
         self._wechat_port = port
         await self._register_wechat_tools()
@@ -219,13 +219,13 @@ class AgentService:
     # ── MCP private helpers ──────────────────────────────────────────
 
     async def _connect_mcp_wrapper(self) -> None:
-        """Spawn the MCP wrapper as a child process via HTTP SSE."""
+        """Spawn the MCP wrapper as a child process via Streamable HTTP."""
         from slife.mcp.process import MCPWrapperProcess
 
         mcp_cfg = self.config.mcp_config
         assert mcp_cfg is not None
 
-        logger.info("mcp_wrapper_spawn transport=sse")
+        logger.info("mcp_wrapper_spawn transport=streamable-http")
         self._mcp_process = MCPWrapperProcess(
             command=mcp_cfg.wrapper_command,
             args=mcp_cfg.wrapper_args,
@@ -559,13 +559,13 @@ class AgentService:
             return False
 
     async def _connect_memory(self) -> None:
-        """Spawn the slife-memory service as a child process via HTTP SSE."""
+        """Spawn the slife-memory service as a child process via Streamable HTTP."""
         from slife.mcp.process import MCPWrapperProcess
 
         mem_cfg = self.config.memory_config
         assert mem_cfg is not None
 
-        logger.info("memory_spawn transport=sse")
+        logger.info("memory_spawn transport=streamable-http")
         self._memory_process = MCPWrapperProcess(
             command=sys.executable,
             args=["-m", "slife.plugins.memory.server"],
@@ -658,10 +658,10 @@ class AgentService:
             return False
 
     async def _connect_wechat(self) -> None:
-        """Spawn the slife-wechat service as a child process via HTTP SSE."""
+        """Spawn the slife-wechat service as a child process via Streamable HTTP."""
         from slife.mcp.process import MCPWrapperProcess
 
-        logger.info("wechat_spawn transport=sse")
+        logger.info("wechat_spawn transport=streamable-http")
         self._wechat_process = MCPWrapperProcess(
             command=sys.executable,
             args=["-m", "slife.plugins.wechat.server"],

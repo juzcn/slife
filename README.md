@@ -318,7 +318,7 @@ Agent isolation via `--agent alice`. Each agent gets its own DB (`<agent_id>.db`
 
 ### Plugins
 
-Slife has a **plugin system** built on HTTP SSE transport (MCP protocol over
+Slife has a **plugin system** built on Streamable HTTP transport (MCP protocol over
 Server-Sent Events on localhost).  Each plugin is an independent child process
 running a FastMCP server on a dynamically-assigned port — zero configuration,
 no port conflicts.  If a plugin crashes, Slife continues.  Three built-in
@@ -326,9 +326,9 @@ plugins ship with Slife:
 
 | Plugin | Role | Connection |
 |--------|------|------------|
-| **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) — 10 management tools | HTTP SSE (shared by parent + subagents) |
-| **slife-memory** | Diary database with hybrid search (FTS5 + vec0 RRF) | HTTP SSE (parent only) |
-| **slife-wechat** | Bidirectional WeChat messaging via iLink ClawBot API | HTTP SSE (shared by parent + subagents) |
+| **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) — 10 management tools | Streamable HTTP (shared by parent + subagents) |
+| **slife-memory** | Diary database with hybrid search (FTS5 + vec0 RRF) | Streamable HTTP (parent only) |
+| **slife-wechat** | Bidirectional WeChat messaging via iLink ClawBot API | Streamable HTTP (shared by parent + subagents) |
 
 **Built-in plugins are not standard MCP services** — they are Slife-specific
 child processes using MCP over SSE as their IPC mechanism.  They cannot be

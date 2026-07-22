@@ -131,9 +131,9 @@ async def run_headless() -> None:
 
     service = AgentService(config, is_subagent=True)
 
-    # Connect to the main agent's plugin servers via HTTP SSE when ports
-    # are provided.  Subagents share the main agent's plugins instead of
-    # spawning their own — avoids duplicate processes and shared state.
+    # Connect to the main agent's plugin servers via Streamable HTTP when
+    # ports are provided.  Subagents share the main agent's plugins instead
+    # of spawning their own — avoids duplicate processes and shared state.
     _mcp_port = os.environ.get("SLIFE_MCP_PORT", "")
     _mem_port = os.environ.get("SLIFE_MEMORY_PORT", "")
     _wc_port = os.environ.get("SLIFE_WECHAT_PORT", "")

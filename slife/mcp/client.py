@@ -1,8 +1,9 @@
-"""MCP client — connects to MCP servers via SSE transport.
+"""MCP client — connects to MCP servers via Streamable HTTP transport.
 
-Uses ``mcp.client.sse.sse_client`` for the transport layer and
-``mcp.ClientSession`` for the MCP protocol, managed via
-``contextlib.AsyncExitStack`` for correct async-context nesting.
+Uses ``mcp.client.streamable_http.streamablehttp_client`` for the
+transport layer and ``mcp.ClientSession`` for the MCP protocol,
+managed via ``contextlib.AsyncExitStack`` for correct async-context
+nesting.
 """
 
 import asyncio
@@ -12,7 +13,7 @@ from contextlib import AsyncExitStack
 from typing import Any
 
 from mcp import ClientSession
-from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamablehttp_client
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ _CONNECT_RETRY_ATTEMPTS = 30  # 3 seconds total
 
 
 class MCPClient:
-    """MCP client for connecting to Slife plugin servers via SSE."""
+    """MCP client for connecting to Slife plugin servers via Streamable HTTP."""
 
     def __init__(self):
         self._session: ClientSession | None = None
@@ -35,8 +36,8 @@ class MCPClient:
     def is_connected(self) -> bool:
         return self._connected
 
-    async def connect_sse(self, url: str) -> None:
-        """Connect to an MCP server via SSE transport.
+    async def connect(self, url: str) -> None:
+        """Connect to an MCP server via Streamable HTTP transport.
 
         Retries on connection failure — the server may still be starting
         (the port signal is sent before uvicorn begins accepting).
@@ -45,14 +46,14 @@ class MCPClient:
             logger.warning("mcp_client_already_connected")
             return
 
-        logger.info("mcp_client_connect transport=sse url=%s", url)
+        logger.info("mcp_client_connect transport=streamable-http url=%s", url)
 
         last_err = None
         for attempt in range(_CONNECT_RETRY_ATTEMPTS):
             try:
                 self._exit_stack = AsyncExitStack()
-                read_stream, write_stream = await self._exit_stack.enter_async_context(
-                    sse_client(url),
+                read_stream, write_stream, _ = await self._exit_stack.enter_async_context(
+                    streamablehttp_client(url),
                 )
                 self._session = await self._exit_stack.enter_async_context(
                     ClientSession(read_stream, write_stream),
@@ -83,7 +84,7 @@ class MCPClient:
 
         self._connected = True
         logger.info(
-            "mcp_client_connected transport=sse url=%s attempts=%d",
+            "mcp_client_connected transport=streamable-http url=%s attempts=%d",
             url, attempt + 1,
         )
 
@@ -96,8 +97,8 @@ class MCPClient:
     async def _cleanup(self) -> None:
         """Close the exit stack, properly exiting all nested contexts.
 
-        The ``sse_client`` async generator from the MCP library uses
-        ``anyio.create_task_group()`` internally.  When the SSE connection
+        The ``streamablehttp_client`` async generator from the MCP library
+        uses ``anyio.create_task_group()`` internally.  When the connection
         fails during setup (before ``session.initialize()`` succeeds), the
         TaskGroup's cancel-scope cleanup can raise ``BaseExceptionGroup``
         or ``RuntimeError`` (task mismatch) — both escape the bare

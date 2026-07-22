@@ -1,7 +1,7 @@
 """MCP wrapper process lifecycle management.
 
 Spawns the plugin child process on agent startup and ensures
-clean shutdown on exit.  The child starts an HTTP SSE server on a
+clean shutdown on exit.  The child starts a Streamable HTTP server on a
 dynamically-assigned port; this wrapper discovers the port via a
 one-line JSON signal on stdout.
 """
@@ -65,7 +65,7 @@ class MCPWrapperProcess:
 
     @property
     def port(self) -> int:
-        """The port the plugin HTTP SSE server is listening on."""
+        """The port the plugin Streamable HTTP server is listening on."""
         return self._port
 
     async def start(self) -> None:
@@ -151,7 +151,7 @@ class MCPWrapperProcess:
         logger.info("wrapper_port pid=%s port=%s", self._process.pid, self._port)
 
     async def create_client(self) -> "MCPClient":
-        """Create an MCPClient connected to the plugin's SSE endpoint.
+        """Create an MCPClient connected to the plugin's Streamable HTTP endpoint.
 
         Disconnecting the client does NOT stop the process — call stop()
         separately to terminate the plugin.
@@ -178,13 +178,13 @@ class MCPWrapperProcess:
                     pass
             raise RuntimeError(
                 f"Plugin child process (pid={self._process.pid}) exited "
-                f"with code {returncode} before SSE connection. "
+                f"with code {returncode} before Streamable HTTP connection. "
                 f"stderr:\n{stderr_tail}"
             )
 
-        url = f"http://127.0.0.1:{self._port}/sse"
+        url = f"http://127.0.0.1:{self._port}/mcp"
         client = MCPClient()
-        await client.connect_sse(url)
+        await client.connect(url)
         return client
 
     async def stop(self) -> None:

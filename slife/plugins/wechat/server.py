@@ -6,7 +6,7 @@ Bidirectional WeChat integration:
   - LLM tools: login, send_message, check_messages, check_status, logout.
 
 Usage:
-    uv run python -m slife.plugins.wechat.server       # auto-assigned port (SSE)
+    uv run python -m slife.plugins.wechat.server       # auto-assigned port (Streamable HTTP)
 """
 
 from __future__ import annotations
@@ -777,7 +777,7 @@ async def wechat_logout() -> str:
 
 
 def main():
-    """Run the slife-wechat server on HTTP SSE transport.
+    """Run the slife-wechat server on HTTP Streamable HTTP transport.
 
     Session restore happens lazily on the first check_status call,
     inside FastMCP's own event loop — this avoids the aiohttp session
@@ -795,7 +795,7 @@ def main():
 
     with elapsed("wechat_run", logger, level=logging.INFO, agent_id=_agent_id, port=str(port)):
         mcp.run(
-            transport="sse", host="127.0.0.1", port=port, sockets=[sock],
+            transport="streamable-http", host="127.0.0.1", port=port, sockets=[sock],
             show_banner=False,
             uvicorn_config={"log_config": None},
         )

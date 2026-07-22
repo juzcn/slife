@@ -131,7 +131,7 @@ def signal_port(port: int) -> None:
     """Write the port to stdout as a JSON line and close stdout.
 
     The parent ``MCPWrapperProcess`` reads this line to discover the
-    dynamically-assigned port before connecting via HTTP SSE.
+    dynamically-assigned port before connecting via Streamable HTTP.
     """
     line = json.dumps({"port": port}, ensure_ascii=False)
     sys.stdout.buffer.write((line + "\n").encode("utf-8"))

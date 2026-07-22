@@ -263,16 +263,16 @@ memory_search(mode="time", since="2026-07") → 按日期浏览
 
 ### 插件系统
 
-Slife 拥有基于 HTTP SSE 传输（localhost 上的 Server-Sent Events，承载 MCP
+Slife 拥有基于 Streamable HTTP 传输（localhost 上的 Server-Sent Events，承载 MCP
 协议）的**插件系统**。每个插件都是一个独立的子进程，在动态分配的端口上运行
 FastMCP 服务器 —— 零配置，无端口冲突。插件崩溃不会影响 Slife 运行。内置三个
 插件：
 
 | 插件 | 角色 | 连接方式 |
 |------|------|----------|
-| **slife-mcp** | 外部 MCP 服务器网关（stdio + HTTP）— 10 个管理工具 | HTTP SSE（父进程 + 子 agent 共享） |
-| **slife-memory** | 日记数据库 + 混合搜索（FTS5 + vec0 RRF） | HTTP SSE（仅父进程） |
-| **slife-wechat** | 通过 iLink ClawBot API 双向收发微信消息 | HTTP SSE（父进程 + 子 agent 共享） |
+| **slife-mcp** | 外部 MCP 服务器网关（stdio + HTTP）— 10 个管理工具 | Streamable HTTP（父进程 + 子 agent 共享） |
+| **slife-memory** | 日记数据库 + 混合搜索（FTS5 + vec0 RRF） | Streamable HTTP（仅父进程） |
+| **slife-wechat** | 通过 iLink ClawBot API 双向收发微信消息 | Streamable HTTP（父进程 + 子 agent 共享） |
 
 **内置插件不是标准 MCP 服务** —— 它们是 Slife 专属的子进程，使用 MCP over SSE
 作为进程间通信机制，不能被任意 MCP 客户端消费。slife-memory 和 slife-wechat

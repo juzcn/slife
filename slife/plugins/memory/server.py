@@ -5,7 +5,7 @@ immutable row.  No sessions, no lifecycle — just turns.
 Restore loads the most recent N turns by rowid.
 
 Usage:
-    uv run python -m slife.plugins.memory.server       # auto-assigned port (SSE)
+    uv run python -m slife.plugins.memory.server       # auto-assigned port (Streamable HTTP)
     uv run python -m slife.plugins.memory.server --port 9877   # fixed port
 """
 
@@ -403,12 +403,12 @@ def main():
     with elapsed("memory_init", logger, level=logging.INFO, db=str(db_path)):
         asyncio.run(_init())
 
-    # Bind free port if not specified, signal parent, start SSE
+    # Bind free port if not specified, signal parent, start Streamable HTTP
     if args.port:
         port = args.port
         logger.info("memory_ready transport=sse port=%s db=%s", port, db_path)
         mcp.run(
-            transport="sse", host="127.0.0.1", port=port,
+            transport="streamable-http", host="127.0.0.1", port=port,
             show_banner=False,
             uvicorn_config={"log_config": None},
         )
@@ -417,7 +417,7 @@ def main():
         logger.info("memory_ready transport=sse port=%s db=%s", port, db_path)
         signal_port(port)
         mcp.run(
-            transport="sse", host="127.0.0.1", port=port, sockets=[sock],
+            transport="streamable-http", host="127.0.0.1", port=port, sockets=[sock],
             show_banner=False,
             uvicorn_config={"log_config": None},
         )

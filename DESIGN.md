@@ -96,16 +96,18 @@ What the LLM cannot know (and the prompt provides):
 
 ### Plugin Architecture
 
-Slife has a **plugin system** built on HTTP SSE (Server-Sent Events) transport.
+Slife has a **plugin system** built on Streamable HTTP transport (MCP 2025-03-26).
 Each plugin is an independent child process running a FastMCP server on a
 dynamically-assigned ``127.0.0.1`` port — zero configuration required.  The
 parent process discovers the port via a one-line JSON signal on stdout, then
-connects via ``mcp.client.sse.sse_client``.
+connects via ``mcp.client.streamable_http.streamablehttp_client``.
 
 Multiple clients (main agent + subagents) connect to the **same** plugin
 servers — subagents no longer spawn their own plugin processes.  Plugin ports
 are passed to subagents via environment variables (``SLIFE_MCP_PORT``,
-``SLIFE_MEMORY_PORT``, ``SLIFE_WECHAT_PORT``).
+``SLIFE_MEMORY_PORT``, ``SLIFE_WECHAT_PORT``).  Streamable HTTP is stateless
+(POST JSON-RPC → JSON response) — no persistent SSE connections, no anyio
+unbuffered stream deadlocks.
 
 **slife-mcp is the gateway for external MCP services** — it supports external
 MCP servers via both **stdio** (spawn process, raw JSON-RPC over pipes) and
@@ -113,7 +115,7 @@ MCP servers via both **stdio** (spawn process, raw JSON-RPC over pipes) and
 connect directly to Slife, not through the proxy:
 
 ```
-                         ┌─ MCPWrapperProcess ── slife-mcp (gateway, HTTP SSE)
+                         ┌─ MCPWrapperProcess ── slife-mcp (gateway, Streamable HTTP)
                          │    │
                          │    └── ConnectionPool ── external MCP servers
                          │         ├── filesystem (npx, stdio)
@@ -121,14 +123,15 @@ connect directly to Slife, not through the proxy:
                          │         ├── remote-api (HTTP POST)
                          │         └── ... (any MCP server, stdio or http)
                          │
-Slife ── MCPClient ──────┼─ MCPWrapperProcess ── slife-memory (HTTP SSE)
-  (SSE, localhost)       │    └── ~/.slife/<agent_id>.db
-                         │
-                         └─ MCPWrapperProcess ── slife-wechat (HTTP SSE)
+Slife ── MCPClient ──────┼─ MCPWrapperProcess ── slife-memory (Streamable HTTP)
+  (Streamable HTTP,      │    └── ~/.slife/<agent_id>.db
+   localhost)            │
+                         └─ MCPWrapperProcess ── slife-wechat (Streamable HTTP)
                               └── iLink ClawBot API
 
   Subagent ── MCPClient ──► same slife-mcp / slife-memory / slife-wechat
-    (SSE, localhost)        (shared plugin servers — no duplicate processes)
+    (Streamable HTTP,       (shared plugin servers — no duplicate processes)
+     localhost)
 
   MQTT ──── mosquitto ─── other Slife instances
   JSON-RPC 2.0 ─── subagent (headless)
@@ -136,17 +139,17 @@ Slife ── MCPClient ──────┼─ MCPWrapperProcess ── slife-m
 
 #### The Plugin Contract
 
-A Slife plugin is a FastMCP server running on **HTTP SSE** transport on
-``127.0.0.1`` with an auto-assigned port.  It uses the MCP protocol over SSE —
-standard MCP clients can connect, but the plugin is Slife‑specific in its tool
-definitions and lifecycle.
+A Slife plugin is a FastMCP server running on **Streamable HTTP** transport on
+``127.0.0.1`` with an auto-assigned port.  It uses the MCP protocol over
+Streamable HTTP — standard MCP clients can connect, but the plugin is
+Slife‑specific in its tool definitions and lifecycle.
 
 A plugin must:
 
 1. **Bind a free port and signal the parent** — call ``bind_free_port()`` to get a
    ``(socket, port)`` tuple, then ``signal_port(port)`` to write ``{"port": N}``
    to stdout so the parent discovers the port.
-2. **Start FastMCP on SSE transport** — ``mcp.run(transport="sse", host="127.0.0.1", port=port, sockets=[sock])``
+2. **Start FastMCP on Streamable HTTP transport** — ``mcp.run(transport="streamable-http", host="127.0.0.1", port=port, sockets=[sock])``
 3. **Define one or more `@mcp.tool` functions** — these become Slife tools
 4. **Be importable** — ``python -m <module>.server`` must work
 
@@ -162,8 +165,8 @@ Every plugin startup follows the same path in `slife/agent/service.py`:
    → asyncio.create_subprocess_exec(exe, *args, stdin=DEVNULL, stdout=PIPE)
    → reads {"port": N} from child stdout → stores self._port
 
-2. MCPClient.connect_sse(url)
-   → mcp.client.sse.sse_client(f"http://127.0.0.1:{port}/sse")
+2. MCPClient.connect(url)
+   → streamablehttp_client(f"http://127.0.0.1:{port}/mcp")
    → ClientSession(read_stream, write_stream) + initialize()
 
 3. list_tools() → discover tool schemas
@@ -184,7 +187,8 @@ mcp.run(transport="sse", sockets=[sock])  # pre-bound socket, no race
 (`SLIFE_MCP_PORT`, `SLIFE_MEMORY_PORT`, `SLIFE_WECHAT_PORT`).  Subagents read
 these env vars and call `connect_mcp_http(port)` / `connect_memory_http(port)`
 / `connect_wechat_http(port)` — they connect to the main agent's plugin
-servers via HTTP SSE instead of spawning their own processes.
+servers via Streamable HTTP instead of spawning their own processes.  Memory
+and wechat are excluded for subagents (ports popped from env).
 
 Key classes in `slife/sse/`:
 
@@ -993,7 +997,7 @@ Separating them means you can commit `slife.json5` to version control (with `${V
 4. **MCP**: built-in plugin — always enabled. External servers configured under `mcp.servers`; each can set `enabled: false` to skip auto-connect.
 5. **Memory**: built-in plugin — always enabled (no config toggle). Embedding backend auto-detected — local GGUF takes priority over API; if neither is configured, semantic search degrades gracefully.
 6. **A2A**: auto-detects Mosquitto at startup. The `mqtt` config section provides broker connection details. `paho-mqtt` is a core dependency.  A2A tools use `requires_a2a = True` — the factory checks `a2a_config.enabled` (set to `True` only after a successful Mosquitto TCP probe), so A2A tools are hidden when the broker is unavailable.  All A2A tools also carry `_subagent_skip = True` — subagents inherit the main agent's tool set but lack MQTT transport and SubagentManager access.
-7. **Subagent**: always available, configured with `max_subagents` and `task_timeout`.  Subagents share MCP/wechat plugin servers via HTTP SSE (ports passed through env vars), but do NOT connect to memory — a duplicate SSE session would deadlock the server.
+7. **Subagent**: always available, configured with `max_subagents` and `task_timeout`.  Subagents share the main agent's MCP plugin server via Streamable HTTP (port passed through env vars).  Memory and wechat are excluded — subagents don't need them.
 8. **Tools**: optional override list — auto-discovery handles defaults.  New tools in `slife/tools/` are auto-discovered.  `list_native_tools` meta-tool distinguishes native tools (from `slife/tools/*.py`) from MCP-proxied tools (via `isinstance(t, MCPProxyTool)`).
 9. **System Health**: `system_health` tool reports live OS info, available shells, workspace status, embedding backend status, MCP server connections, and startup errors — all from a single call.
 
