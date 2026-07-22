@@ -239,15 +239,15 @@ All tools are unified as OpenAI function definitions — the LLM sees no differe
 
 | Category | Examples | Location |
 |----------|----------|----------|
-| **Native** | `execute_shell`, `run_python_script`, `get_os_info` | `slife/tools/*.py` |
+| **Native** | `execute_shell`, `run_python_script`, `get_os_info`, `list_native_tools` | `slife/tools/*.py` |
 | **MCP / REST** | `filesystem__read_file`, `fetch__get`, `serper__search` | Via slife-mcp proxy |
 | **Skills** | On-demand plugins with `list_skills` / `use_skill` | `skills/` directory |
 | **CLI** | Auto-discovered external commands, persisted with `cli_add_tool` | Runtime registration |
-| **A2A** | 13 protocol tools — discovery, routing, lifecycle, broadcast | `slife/tools/a2a.py` |
+| **A2A** | Agent discovery, task routing, lifecycle, broadcast, spawn/stop subagents | `slife/tools/a2a.py` |
 
 ### Memory
 
-Every conversation turn is permanently recorded.  Hybrid search (grep + FTS5 + semantic via vec0) lets the LLM recall past work.  Memory runs as a built-in plugin (`slife/plugins/memory/`) — a separate process so crashes never race with writes.
+**Always on** — no config toggle needed.  Every conversation turn is permanently recorded.  Hybrid search (grep + FTS5 + semantic via vec0) lets the LLM recall past work.  Memory runs as a built-in plugin (`slife/plugins/memory/`) — a separate process so crashes never race with writes.
 
 On restart, recent turns are automatically restored to the chat view — user messages, assistant responses, and tool call results all reappear.  (Transient UI state such as per-tool-call iteration counters is not preserved.)
 
@@ -318,21 +318,23 @@ Agent isolation via `--agent alice`. Each agent gets its own DB (`<agent_id>.db`
 
 ### Plugins
 
-Slife has a **plugin system** built on MCP stdio transport (JSON-RPC over
-stdin/stdout).  A plugin is an independent child process using FastMCP as a
-server framework — if it crashes, Slife continues.  Three built-in plugins ship
-with Slife:
+Slife has a **plugin system** built on HTTP SSE transport (MCP protocol over
+Server-Sent Events on localhost).  Each plugin is an independent child process
+running a FastMCP server on a dynamically-assigned port — zero configuration,
+no port conflicts.  If a plugin crashes, Slife continues.  Three built-in
+plugins ship with Slife:
 
 | Plugin | Role | Connection |
 |--------|------|------------|
-| **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) — 10 management tools | Via slife-mcp proxy |
-| **slife-memory** | Diary database with hybrid search (FTS5 + vec0 RRF) | Direct stdio |
-| **slife-wechat** | Bidirectional WeChat messaging via iLink ClawBot API | Direct stdio |
+| **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) — 10 management tools | HTTP SSE (shared by parent + subagents) |
+| **slife-memory** | Diary database with hybrid search (FTS5 + vec0 RRF) | HTTP SSE (parent only) |
+| **slife-wechat** | Bidirectional WeChat messaging via iLink ClawBot API | HTTP SSE (shared by parent + subagents) |
 
 **Built-in plugins are not standard MCP services** — they are Slife-specific
-child processes that borrow MCP stdio as their IPC mechanism.  They cannot be
+child processes using MCP over SSE as their IPC mechanism.  They cannot be
 consumed by arbitrary MCP clients.  slife-memory and slife-wechat connect
 directly to Slife; only slife-mcp acts as a gateway to external servers.
+Subagents share the main agent's plugin servers — memory is parent-only.
 
 **External MCP servers** (filesystem, fetch, search APIs, etc.) are standard
 MCP-compatible programs connected through the slife-mcp gateway.  They are
@@ -359,7 +361,7 @@ See [DESIGN.md § Plugin Architecture](DESIGN.md#plugin-architecture) for the fu
 
 ### A2A — Agent-to-Agent
 
-Two transports, one interface: **MQTT** (remote peers, enable with `--agent <id>`) and **Subagent** (local child processes, always available).  The unified inbox serializes human keyboard, WeChat, MQTT, and subagent messages through a single queue — only one AgentLoop runs at a time.
+Two transports, one interface: **MQTT** (remote peers, auto-detects Mosquitto at startup) and **Subagent** (local child processes, always available).  The unified inbox serializes human keyboard, WeChat, MQTT, and subagent messages through a single queue — only one AgentLoop runs at a time.  Subagent results are **actively pushed** to the inbox via `tasks/complete` notification — no polling needed.
 
 ### Progressive Disclosure
 

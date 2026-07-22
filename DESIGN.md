@@ -456,10 +456,12 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 | `execute_shell` | `asyncio.create_subprocess_shell` with configurable timeout |
 | `run_python_script` | Platform-correct Python invocation with JSON arguments |
 | `get_os_info` | Current OS name for platform-specific shell syntax |
-| `config_env_set` / `config_secret_register` / `get` / `remove` | Manage env vars in slife.json5 — secrets → `${VAR}` refs (no value param), non-secrets → values. `config_env_get` handles shell + config only (no keyring). |
+| `list_native_tools` | Meta-tool — enumerates native vs MCP-proxied tools via `isinstance()` |
+| `system_health` | Runtime health report — embedding backend, MCP status, missing packages |
+| `config_env_set` / `config_secret_register` / `get` / `remove` | Manage env vars in slife.json5 — secrets → `${VAR}` refs (no value param), non-secrets → values |
 | `credential_check` | Verify OS keyring credentials — shows masked value (`sk-a…B3f2`). Never exposes the full secret. |
-| `inject_credential` | Load a secret from keyring into `os.environ` — temporary, this process only. Secret never appears in return value. LLM-safe. |
-| `uninject_credential` | Remove an env var from `os.environ`. No keyring access. LLM-safe. |
+| `inject_credential` | Load a secret from keyring into `os.environ` — temporary, this process only |
+| `uninject_credential` | Remove an env var from `os.environ`. No keyring access |
 | `cli_add_tool` / `check_installed` / `remove` / `list` | CLI discovery and registration management |
 
 #### 2. Memory Tools
@@ -480,7 +482,7 @@ Harness-level tools are called programmatically by `AgentService` — they're ne
 
 #### 3. A2A Tools
 
-13 auto-discovered tools in `slife/tools/a2a.py` implementing the full A2A protocol — discovery, task routing, lifecycle, and notifications. Transport resolution is lazy: tools look up the live `A2AClient` and `SubagentManager` at call time via module-level references set by `AgentService`.
+13 auto-discovered tools in `slife/tools/a2a.py` implementing the full A2A protocol — discovery, task routing, lifecycle, and notifications. All are marked `_subagent_skip = True` (subagents lack transport — they inherit tools from the parent but the factory filters these out). Transport resolution is lazy: tools look up the live `A2AClient` and `SubagentManager` at call time via module-level references set by `AgentService`.  `a2a_list_agents` uses `requires_a2a = True` — only registered when Mosquitto is detected at startup.
 
 | Tool | Description |
 |------|-------------|
@@ -773,6 +775,8 @@ messages, rebuild the conversation.
 1. `save_to_memory()` is called **once per turn**, after `agent_loop.run()` completes
    (i.e., after the LLM finishes its final response, not after each tool-call
    iteration).  It extracts the just-completed turn's messages and INSERTs a row.
+   The call has a **10-second timeout** — if the memory server is unresponsive, the
+   harness logs a warning and continues; the turn is simply not saved that cycle.
 2. If the user exits or crashes mid-turn — while the LLM is still calling tools,
    reasoning, or streaming — the turn is **not saved**.  Only completed turns are
    persisted.  On restart, the last partial turn is gone; work restarts from the
@@ -848,6 +852,8 @@ Local child-process workers spawned via `asyncio.create_subprocess_exec`. Always
 - **SubagentProcess**: pipe bridge + task dispatch, pending futures for async results
 - **SubagentManager**: spawn/stop/list lifecycle, enforces `max_subagents` limit
 - **Nested prevention**: subagents set `SLIFE_SUBAGENT_NAME` in their environment; `start_subagent()` checks for this and skips creation to prevent recursive spawning
+- **Async push**: when a subagent completes a task, it sends a `tasks/complete` JSON-RPC notification (no `id`) via stdout.  `_read_stdout` catches this, resolves the push future, and triggers `SubagentManager.on_task_complete` — which posts the result to the unified inbox so the user sees it immediately without polling `a2a_get_task_result`.
+- **Memory isolation**: subagents do NOT connect to the memory server (`SLIFE_MEMORY_PORT` is popped from their environment) — a duplicate SSE session would deadlock the memory server's unbuffered anyio write stream.
 - **Ephemeral by design**: subagents exist only while the parent process runs. When Slife exits, `SubagentManager.stop_all()` terminates every subagent. On restart, the LLM spawns fresh ones — there is no persisted subagent registry. This keeps subagents lightweight and stateless, with no cleanup burden across crashes.
 
 ### Unified Inbox
@@ -985,11 +991,11 @@ Separating them means you can commit `slife.json5` to version control (with `${V
 2. **Env**: extracted and injected into `os.environ` so tools and subprocesses can reference values via `${VAR}`.
 3. **Agent**: `max_iterations`, `context_floor`, `context_ceiling`, `tool_result_ceiling`.
 4. **MCP**: built-in plugin — always enabled. External servers configured under `mcp.servers`; each can set `enabled: false` to skip auto-connect.
-5. **Memory**: built-in plugin — always enabled. Embedding backend auto-detected — local GGUF takes priority over API; if neither is configured, semantic search degrades gracefully.
-6. **A2A**: auto-detects Mosquitto at startup. The `mqtt` config section provides broker connection details. `paho-mqtt` is a core dependency — A2A tools are always registered and return helpful errors when the broker is unavailable.
-7. **Subagent**: always available, configured with `max_subagents` and `task_timeout`.
-8. **Tools**: optional override list — auto-discovery handles defaults. A2A tools (`requires_a2a = True`) are registered when `a2a_config` exists in config, regardless of broker connectivity — each tool handles "not connected" gracefully.
-9. **System Health**: `system_health` tool reports live OS info, available shells (bash, cmd, PowerShell), workspace status (dev/prod, uv/pip, readable/writable, git), embedding backend status, MCP server connections, and startup errors — all from a single call.
+5. **Memory**: built-in plugin — always enabled (no config toggle). Embedding backend auto-detected — local GGUF takes priority over API; if neither is configured, semantic search degrades gracefully.
+6. **A2A**: auto-detects Mosquitto at startup. The `mqtt` config section provides broker connection details. `paho-mqtt` is a core dependency.  A2A tools use `requires_a2a = True` — the factory checks `a2a_config.enabled` (set to `True` only after a successful Mosquitto TCP probe), so A2A tools are hidden when the broker is unavailable.  All A2A tools also carry `_subagent_skip = True` — subagents inherit the main agent's tool set but lack MQTT transport and SubagentManager access.
+7. **Subagent**: always available, configured with `max_subagents` and `task_timeout`.  Subagents share MCP/wechat plugin servers via HTTP SSE (ports passed through env vars), but do NOT connect to memory — a duplicate SSE session would deadlock the server.
+8. **Tools**: optional override list — auto-discovery handles defaults.  New tools in `slife/tools/` are auto-discovered.  `list_native_tools` meta-tool distinguishes native tools (from `slife/tools/*.py`) from MCP-proxied tools (via `isinstance(t, MCPProxyTool)`).
+9. **System Health**: `system_health` tool reports live OS info, available shells, workspace status, embedding backend status, MCP server connections, and startup errors — all from a single call.
 
 `${ENV_VAR}` and `${ENV_VAR:-default}` resolution works recursively through dicts and lists. The common `${VAR}` → `os.environ` → credstore lookup chain is consolidated in `_resolve_env_or_credstore()`, shared by `_resolve_api_key()` and `_resolve_mcp_env_var()`.
 
@@ -1034,9 +1040,10 @@ slife/
 
   tools/                # Tool implementations (auto-discovered)
     base.py             #   Tool ABC with __init_subclass__ validation
-    registry.py         #   Name → Tool lookup & execution
+    registry.py         #   Name → Tool lookup & execution + get_registry()
     factory.py          #   Auto-discovery via pkgutil + __subclasses__()
-    a2a.py              #   13 A2A protocol tools
+    a2a.py              #   A2A protocol tools (13 tools, _subagent_skip)
+    list_native_tools.py#   Meta-tool — enumerate native vs MCP-proxied tools
     shell.py            #   execute_shell
     run_python_script.py#   run_python_script
     os_info.py          #   get_os_info

@@ -86,13 +86,12 @@ Slife 默认安装保持精简。按需添加扩展：
 | 扩展 | 包 | 作用 |
 |------|-----|------|
 | `embeddings` | `llama-cpp-python` | 本地 GGUF 嵌入模型，用于语义记忆搜索（离线、无 API 费用）。未安装时 FTS5 关键词搜索仍可正常使用。 |
-| `mqtt` | `paho-mqtt` | A2A 智能体网格（`--agent <id>`）。未安装时子智能体仍可正常使用 —— 仅远程智能体发现需要 MQTT。 |
+
+MQTT 支持（`paho-mqtt`）已默认包含 — A2A agent 网格在检测到 Mosquitto 时自动激活。
 
 ```bash
-# 安装一个或两个扩展：
+# 安装 embeddings 扩展（唯一可选扩展）：
 uv tool install "slife[embeddings]" --reinstall
-uv tool install "slife[mqtt]" --reinstall
-uv tool install "slife[embeddings,mqtt]" --reinstall
 ```
 
 #### 配置本地嵌入模型
@@ -241,11 +240,11 @@ credstore reset-keyring               # 从加密文件备份恢复所有凭证
 
 | 类别 | 示例 | 位置 |
 |------|------|------|
-| **原生** | `execute_shell`、`run_python_script`、`get_os_info` | `slife/tools/*.py` |
+| **原生** | `execute_shell`、`run_python_script`、`get_os_info`、`list_native_tools` | `slife/tools/*.py` |
 | **MCP / REST** | `filesystem__read_file`、`fetch__get`、`serper__search` | 通过 slife-mcp 代理 |
 | **技能** | 按需插件，通过 `list_skills` / `use_skill` 使用 | `skills/` 目录 |
 | **CLI** | 自动发现外部命令，通过 `cli_add_tool` 持久化 | 运行时注册 |
-| **A2A** | 13 个协议工具 — 发现、路由、生命周期、广播 | `slife/tools/a2a.py` |
+| **A2A** | agent 发现、任务路由、生命周期、广播、生成/停止子 agent | `slife/tools/a2a.py` |
 
 ### 记忆系统
 
@@ -264,19 +263,21 @@ memory_search(mode="time", since="2026-07") → 按日期浏览
 
 ### 插件系统
 
-Slife 拥有基于 MCP stdio 传输（stdin/stdout 上的 JSON-RPC）的**插件系统**。
-每个插件都是一个使用 FastMCP 作为服务框架的独立子进程 —— 插件崩溃不会影响
-Slife 运行。内置三个插件：
+Slife 拥有基于 HTTP SSE 传输（localhost 上的 Server-Sent Events，承载 MCP
+协议）的**插件系统**。每个插件都是一个独立的子进程，在动态分配的端口上运行
+FastMCP 服务器 —— 零配置，无端口冲突。插件崩溃不会影响 Slife 运行。内置三个
+插件：
 
 | 插件 | 角色 | 连接方式 |
 |------|------|----------|
-| **slife-mcp** | 外部 MCP 服务器网关（stdio + HTTP）— 10 个管理工具 | 通过 slife-mcp 代理 |
-| **slife-memory** | 日记数据库 + 混合搜索（FTS5 + vec0 RRF） | 直接 stdio |
-| **slife-wechat** | 通过 iLink ClawBot API 双向收发微信消息 | 直接 stdio |
+| **slife-mcp** | 外部 MCP 服务器网关（stdio + HTTP）— 10 个管理工具 | HTTP SSE（父进程 + 子 agent 共享） |
+| **slife-memory** | 日记数据库 + 混合搜索（FTS5 + vec0 RRF） | HTTP SSE（仅父进程） |
+| **slife-wechat** | 通过 iLink ClawBot API 双向收发微信消息 | HTTP SSE（父进程 + 子 agent 共享） |
 
-**内置插件不是标准 MCP 服务** —— 它们是 Slife 专属的子进程，借用 MCP stdio
+**内置插件不是标准 MCP 服务** —— 它们是 Slife 专属的子进程，使用 MCP over SSE
 作为进程间通信机制，不能被任意 MCP 客户端消费。slife-memory 和 slife-wechat
-直接连接到 Slife；只有 slife-mcp 作为外部服务器的网关。
+直接连接到 Slife；只有 slife-mcp 作为外部服务器的网关。子 agent 共享主 agent
+的插件服务器 —— memory 仅父进程连接。
 
 **外部 MCP 服务器**（文件系统、网页抓取、搜索 API 等）是通过 slife-mcp 网关
 连接的标准 MCP 兼容程序，在 `slife.json5` 的 `mcp.servers` 中配置：
@@ -301,7 +302,7 @@ mcp: {
 
 ### A2A — 智能体间通信
 
-两种传输方式，统一接口：**MQTT**（远程节点，通过 `--agent <id>` 启用）和**子智能体**（本地子进程，始终可用）。统一收件箱将人工键盘输入、微信、MQTT 和子智能体消息序列化到单个队列 —— 同一时间只有一个 AgentLoop 运行。
+两种传输方式，统一接口：**MQTT**（远程节点，启动时自动检测 Mosquitto）和**子智能体**（本地子进程，始终可用）。统一收件箱将人工键盘输入、微信、MQTT 和子智能体消息序列化到单个队列 —— 同一时间只有一个 AgentLoop 运行。子 agent 结果通过 `tasks/complete` 通知**主动推送**到收件箱 —— 无需轮询。
 
 ### 渐进式披露
 
