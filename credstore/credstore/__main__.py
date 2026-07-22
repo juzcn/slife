@@ -37,6 +37,7 @@ import sys
 from credstore import _backend as backend_mod
 from credstore import _config as config_mod
 from credstore import _store as store_mod
+from credstore._enumerate import enumerate_system_keyring as _enumerate_system_keyring
 from credstore._tty import masked_input
 
 
@@ -376,7 +377,7 @@ def _cmd_get_password(key: str) -> int:
     value_cf = None
     cf_error: str | None = None
     try:
-        value_cf = _read_cryptfile(key, master_pw)
+        value_cf = backend_mod.read_cryptfile_entry(key, master_pw, store_mod.DEFAULT_SERVICE)
     except Exception as exc:
         cf_error = str(exc)
 
@@ -429,7 +430,7 @@ def _cmd_inject(keys: list[str], shell: str) -> int:
       3. Print the export command for immediate eval.
       4. ``del`` the secret immediately.
     """
-    from credstore._shell import format_export
+    from credstore._shell import format_export, persist_key
 
     for key in keys:
         value = store_mod.get_credential(key)
@@ -440,7 +441,7 @@ def _cmd_inject(keys: list[str], shell: str) -> int:
             )
             return 1
 
-        _persist_key(key, value, shell)
+        persist_key(key, value, shell)
 
         if sys.stdout.isatty():
             _print_inject_activation(shell, key)
@@ -453,112 +454,13 @@ def _cmd_inject(keys: list[str], shell: str) -> int:
 
 def _cmd_uninject(keys: list[str], shell: str) -> int:
     """Remove from system environment + print unset for current shell."""
-    from credstore._shell import format_unset
+    from credstore._shell import format_unset, unpersist_key
 
     for key in keys:
-        _unpersist_key(key, shell)
+        unpersist_key(key, shell)
         print(format_unset(key, shell))
 
     return 0
-
-
-# ── persistence helpers ───────────────────────────────────────
-
-
-def _persist_key(key: str, value: str, shell: str) -> None:
-    """Persist: registry (Windows) or shell profile (Unix)."""
-    if os.name == "nt":
-        _setx(key, value)
-        print(f"# {key} → registry (new shells auto-load)", file=sys.stderr)
-    else:
-        from credstore._shell import add_to_profile
-        added = add_to_profile(key, shell)
-        if added:
-            print(f"# {_shell_get_profile_path(shell)}", file=sys.stderr)
-
-
-def _unpersist_key(key: str, shell: str) -> None:
-    """Remove: registry (Windows) or shell profile (Unix)."""
-    if os.name == "nt":
-        _setx_delete(key)
-        print(f"# {key} removed from registry", file=sys.stderr)
-    else:
-        from credstore._shell import remove_from_profile
-        removed = remove_from_profile(key, shell)
-        if removed:
-            print(f"# {_shell_get_profile_path(shell)}", file=sys.stderr)
-
-
-def _setx(key: str, value: str) -> None:
-    """Write to HKCU\\Environment directly — no command-line leak."""
-    import ctypes
-    import winreg
-
-    key_handle = winreg.OpenKey(
-        winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE
-    )
-    winreg.SetValueEx(key_handle, key, 0, winreg.REG_EXPAND_SZ, value)
-    winreg.CloseKey(key_handle)
-    _broadcast_environment_change()
-
-
-def _setx_delete(key: str) -> None:
-    """Delete a value from HKCU\\Environment directly."""
-    import ctypes
-    import winreg
-
-    try:
-        key_handle = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, "Environment", 0,
-            winreg.KEY_SET_VALUE,
-        )
-        winreg.DeleteValue(key_handle, key)
-        winreg.CloseKey(key_handle)
-        _broadcast_environment_change()
-    except FileNotFoundError:
-        pass
-
-
-def _broadcast_environment_change() -> None:
-    """Notify running processes that HKCU\\Environment changed.
-
-    Uses ``SendMessageTimeoutW`` with ``SMTO_ABORTIFHUNG`` so a hung
-    top-level window cannot stall the broadcast (and thus the ``inject``
-    or ``uninject`` command).  Falls back to a fire-and-forget
-    ``SendNotifyMessageW`` if the timeout API is unavailable.
-    """
-    import ctypes
-
-    HWND_BROADCAST = 0xFFFF
-    WM_SETTINGCHANGE = 0x001A
-    SMTO_ABORTIFHUNG = 0x0002
-    ENV = "Environment"
-
-    user32 = ctypes.windll.user32
-
-    # Prefer SendMessageTimeoutW — aborts on hung windows after 2 s
-    try:
-        result = ctypes.c_ulong()
-        user32.SendMessageTimeoutW(
-            HWND_BROADCAST,
-            WM_SETTINGCHANGE,
-            0,
-            ENV,
-            SMTO_ABORTIFHUNG,
-            2000,  # 2-second timeout per window
-            ctypes.byref(result),
-        )
-    except Exception:
-        # Fallback: async fire-and-forget (no hang risk, but some
-        # processes may not see the change until restart)
-        user32.SendNotifyMessageW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, ENV)
-
-
-def _shell_get_profile_path(shell: str) -> str:
-    """Return a display-friendly profile path string."""
-    from credstore._shell import get_profile_path
-    p = get_profile_path(shell)
-    return str(p) if p else "(unknown)"
 
 
 def _print_inject_activation(shell: str, key: str) -> None:
@@ -623,22 +525,6 @@ def _delete_from_cryptfile(key: str) -> bool:
     except Exception:
         del master_pw
         return False
-
-
-def _read_cryptfile(key: str, master_password: str) -> str | None:
-    """Read a single credential from the cryptfile.
-
-    Returns the secret value, or None if not found.
-    Raises ValueError if the master password is wrong.
-
-    Caller is responsible for ``del``-ing the returned secret.
-    """
-    cf = backend_mod.get_cryptfile()
-    if cf is None:
-        return None
-
-    with backend_mod.unlocked_cryptfile(master_password) as cf:
-        return cf.get_password(store_mod.DEFAULT_SERVICE, key)
 
 
 @requires_tty
@@ -933,11 +819,6 @@ def _cmd_reset_backup() -> int:
     print()
     print(f"Reset {synced} credential(s) in cryptfile backup.")
     return 0
-
-
-# ── enumeration (delegates to _enumerate.py) ──────────────────
-
-from credstore._enumerate import enumerate_system_keyring as _enumerate_system_keyring  # noqa: E402 — kept as private alias for internal CLI use
 
 
 if __name__ == "__main__":

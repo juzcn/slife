@@ -1,12 +1,16 @@
-"""Shell formatting utilities — shared by CLI commands and native tools.
+"""Shell formatting and environment persistence utilities.
 
-These functions format credential key/value pairs as shell export/unset
-statements for ``eval`` consumption.  They do NOT touch the keyring or
-any I/O — pure string formatting.
+Shell formatting: ``format_export`` / ``format_unset`` convert
+key/value pairs into shell export/unset statements for ``eval``
+consumption.  Pure string formatting — no keyring or I/O.
 
 Profile persistence: ``get_profile_path``, ``add_to_profile``, and
 ``remove_from_profile`` manage shell startup files for persistent
-environment variable injection.
+environment variable injection on Unix.  On Windows, ``_setx`` /
+``_setx_delete`` write directly to the registry (HKCU\\Environment).
+
+The ``persist_key`` / ``unpersist_key`` wrappers dispatch to the
+correct backend per ``os.name``.
 
 Memory safety: ``format_export`` receives the secret as a parameter.
 The caller MUST ``del`` the value after calling — Python strings are
@@ -28,6 +32,8 @@ __all__ = [
     "is_persisted",
     "add_to_profile",
     "remove_from_profile",
+    "persist_key",
+    "unpersist_key",
 ]
 
 
@@ -259,3 +265,95 @@ def _remove_key_lines(content: str, key: str) -> str:
         lines.pop()
 
     return "\n".join(lines) + ("\n" if lines else "")
+
+
+# ── Windows registry persistence ──────────────────────────────────
+
+
+def _setx(key: str, value: str) -> None:
+    """Write to HKCU\\Environment directly — no command-line leak."""
+    import ctypes
+    import winreg
+
+    key_handle = winreg.OpenKey(
+        winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE
+    )
+    winreg.SetValueEx(key_handle, key, 0, winreg.REG_EXPAND_SZ, value)
+    winreg.CloseKey(key_handle)
+    _broadcast_environment_change()
+
+
+def _setx_delete(key: str) -> None:
+    """Delete a value from HKCU\\Environment directly."""
+    import ctypes
+    import winreg
+
+    try:
+        key_handle = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, "Environment", 0,
+            winreg.KEY_SET_VALUE,
+        )
+        winreg.DeleteValue(key_handle, key)
+        winreg.CloseKey(key_handle)
+        _broadcast_environment_change()
+    except FileNotFoundError:
+        pass
+
+
+def _broadcast_environment_change() -> None:
+    """Notify running processes that HKCU\\Environment changed.
+
+    Uses ``SendMessageTimeoutW`` with ``SMTO_ABORTIFHUNG`` so a hung
+    top-level window cannot stall the broadcast (and thus the ``inject``
+    or ``uninject`` command).  Falls back to a fire-and-forget
+    ``SendNotifyMessageW`` if the timeout API is unavailable.
+    """
+    import ctypes
+
+    HWND_BROADCAST = 0xFFFF
+    WM_SETTINGCHANGE = 0x001A
+    SMTO_ABORTIFHUNG = 0x0002
+    ENV = "Environment"
+
+    user32 = ctypes.windll.user32
+
+    # Prefer SendMessageTimeoutW — aborts on hung windows after 2 s
+    try:
+        result = ctypes.c_ulong()
+        user32.SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            ENV,
+            SMTO_ABORTIFHUNG,
+            2000,  # 2-second timeout per window
+            ctypes.byref(result),
+        )
+    except Exception:
+        # Fallback: async fire-and-forget (no hang risk, but some
+        # processes may not see the change until restart)
+        user32.SendNotifyMessageW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, ENV)
+
+
+def persist_key(key: str, value: str, shell: str = "auto") -> None:
+    """Persist a credential to system environment.
+
+    On Windows: writes to registry (HKCU\\Environment).
+    On Unix: appends to shell profile file.
+    """
+    if os.name == "nt":
+        _setx(key, value)
+    else:
+        add_to_profile(key, shell)
+
+
+def unpersist_key(key: str, shell: str = "auto") -> None:
+    """Remove a credential from system environment.
+
+    On Windows: deletes from registry (HKCU\\Environment).
+    On Unix: removes from shell profile file.
+    """
+    if os.name == "nt":
+        _setx_delete(key)
+    else:
+        remove_from_profile(key, shell)

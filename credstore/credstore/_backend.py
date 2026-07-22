@@ -194,3 +194,19 @@ def get_active_backend_name() -> str:
     elif _cryptfile is not None:
         return "cryptfile only (system keyring unavailable)"
     return "none"
+
+
+def read_cryptfile_entry(key: str, master_password: str, service: str = "credstore") -> str | None:
+    """Read a single credential from the cryptfile.
+
+    Returns the secret value, or None if not found.
+    Raises ``ValueError`` if the master password is wrong.
+
+    Caller is responsible for ``del``-ing the returned secret.
+    """
+    cf = get_cryptfile()
+    if cf is None:
+        return None
+
+    with unlocked_cryptfile(master_password) as cf_ctx:
+        return cf_ctx.get_password(service, key)

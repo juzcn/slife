@@ -478,10 +478,9 @@ class TestCliInject:
     @pytest.fixture(autouse=True)
     def _mock_persist(self, monkeypatch, tmp_path):
         """Prevent inject from touching real registry/filesystem."""
-        monkeypatch.setattr("credstore.__main__._setx", lambda k, v: None)
-        monkeypatch.setattr("credstore.__main__._setx_delete", lambda k: None)
+        monkeypatch.setattr("credstore._shell._setx", lambda k, v: None)
+        monkeypatch.setattr("credstore._shell._setx_delete", lambda k: None)
         monkeypatch.setattr("credstore._shell.add_to_profile", lambda key, shell: True)
-        monkeypatch.setattr("credstore.__main__._shell_get_profile_path", lambda shell: "/fake/profile")
 
     def test_inject_single_bash(self, capsys, mock_backend, in_mem_store):
         in_mem_store["MY_KEY"] = "my-secret"
@@ -533,10 +532,9 @@ class TestCliUninject:
     @pytest.fixture(autouse=True)
     def _mock_persist(self, monkeypatch):
         """Prevent uninject from touching real registry/filesystem."""
-        monkeypatch.setattr("credstore.__main__._setx", lambda k, v: None)
-        monkeypatch.setattr("credstore.__main__._setx_delete", lambda k: None)
+        monkeypatch.setattr("credstore._shell._setx", lambda k, v: None)
+        monkeypatch.setattr("credstore._shell._setx_delete", lambda k: None)
         monkeypatch.setattr("credstore._shell.remove_from_profile", lambda key, shell: False)
-        monkeypatch.setattr("credstore.__main__._shell_get_profile_path", lambda shell: "/fake/profile")
 
     def test_uninject_bash(self, capsys, mock_backend):
         assert main(["uninject", "MY_KEY", "--shell", "bash"]) == 0

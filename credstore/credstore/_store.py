@@ -257,7 +257,3 @@ def check_backend() -> dict:
     from credstore._backend import get_backend_info
     return get_backend_info()
 
-
-# ── shell formatting (re-exported from _shell.py) ────────────
-
-from credstore._shell import format_export, format_unset  # noqa: F401 — backward compat
