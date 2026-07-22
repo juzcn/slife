@@ -7,28 +7,15 @@ This is the entry point for the slife-mcp child process. It:
 """
 
 import json
-import logging
 import os
 
 from typing import Literal
 
-from fastmcp import FastMCP
-
 from slife.plugins.mcp.connection import ConnectionPool, ServerConfig
-from slife.server_utils import setup_server_logging
+from slife.server_utils import create_plugin_server
 from slife.logfmt import ok_json, error_json
 
-logger = logging.getLogger("slife_mcp")
-
-_log_path = setup_server_logging("_mcp")
-
-# ── Global state ─────────────────────────────────────────────────────
-
-_pool = ConnectionPool()
-
-# ── FastMCP server ──────────────────────────────────────────────────
-
-mcp = FastMCP(
+mcp, _log_path, logger = create_plugin_server(
     "slife-mcp",
     instructions=(
         "slife-mcp is a wrapper service that manages connections to external "
@@ -36,6 +23,10 @@ mcp = FastMCP(
         "discover tools, and call tools on connected servers."
     ),
 )
+
+# ── Global state ─────────────────────────────────────────────────────
+
+_pool = ConnectionPool()
 
 # ═══════════════════════════════════════════════════════════════════════
 # Management tools
@@ -383,27 +374,11 @@ async def mcp_disable_server(name: str) -> str:
 
 
 def main():
-    """Run the slife-mcp wrapper server on Streamable HTTP transport.
+    """Run the slife-mcp wrapper server on Streamable HTTP transport."""
+    from slife.server_utils import run_plugin_server
 
-    Binds a free port on 127.0.0.1, signals the parent process, and
-    starts the SSE server.  Port is auto-assigned by the OS — zero config.
-    """
-    from slife.logfmt import elapsed
-    from slife.server_utils import bind_free_port, signal_port
-
-    sock, port = bind_free_port()
-    logger.info(
-        "mcp_start transport=sse port=%s log=%s pid=%s",
-        port, _log_path, os.getpid(),
-    )
-    signal_port(port)
-
-    with elapsed("mcp_init", logger, level=logging.INFO, transport="streamable-http", port=str(port)):
-        mcp.run(
-        transport="streamable-http", host="127.0.0.1", port=port, sockets=[sock],
-        show_banner=False,
-        uvicorn_config={"log_config": None},
-    )
+    logger.info("mcp_start log=%s pid=%s", _log_path, os.getpid())
+    run_plugin_server(mcp)
     logger.info("mcp_stop")
 
 

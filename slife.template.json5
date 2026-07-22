@@ -16,6 +16,7 @@
     max_iterations: 10,
     context_floor: 0.2,   // trigger trim at 20% remaining
     context_ceiling: 0.8, // trim down to 80% of window
+    tool_timeout: 60,     // each tool call deadline (seconds), 0 = no limit
   },
 
   // ── Subagent ───────────────────────────────────────────────────

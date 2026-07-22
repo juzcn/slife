@@ -290,6 +290,7 @@ class Config:
     context_ceiling: float = 0.8
     tool_result_ceiling: float = 0.2  # max tool result = 20% of context window
     agent_id: str = "slife"
+    tool_timeout: float = 60.0  # seconds, 0 to disable — applies to ALL tools
     mcp_config: MCPConfig | None = None
     memory_config: MemoryConfig | None = None
     wechat_config: WechatConfig | None = None
@@ -325,6 +326,7 @@ class Config:
             "tools": self.tools,
             "env": self.env,
             "max_iterations": self.max_iterations,
+            "tool_timeout": self.tool_timeout,
             "context_floor": self.context_floor,
             "context_ceiling": self.context_ceiling,
             "tool_result_ceiling": self.tool_result_ceiling,
@@ -366,6 +368,7 @@ class Config:
             tools=data.get("tools", []),
             env=data.get("env"),
             max_iterations=data.get("max_iterations", 10),
+            tool_timeout=data.get("tool_timeout", 60.0),
             context_floor=data.get("context_floor", 0.2),
             context_ceiling=data.get("context_ceiling", 0.8),
             tool_result_ceiling=data.get("tool_result_ceiling", 0.2),
@@ -658,6 +661,7 @@ class Config:
         # Agent
         agent = _parse_section(raw, "agent", dict, {})
         max_iterations = agent.get("max_iterations", 10)
+        tool_timeout = agent.get("tool_timeout", 60.0)
         context_floor = agent.get("context_floor", 0.2)
         context_ceiling = agent.get("context_ceiling", 0.8)
         tool_result_ceiling = agent.get("tool_result_ceiling", 0.2)
@@ -736,6 +740,7 @@ class Config:
             tools=tools,
             env=env_section,
             max_iterations=max_iterations,
+            tool_timeout=tool_timeout,
             context_floor=context_floor,
             context_ceiling=context_ceiling,
             tool_result_ceiling=tool_result_ceiling,

@@ -1,7 +1,67 @@
-"""Shared utilities for Slife MCP server entry points.
+"""Slife plugin server specification & shared utilities.
 
-Provides consistent logging setup across all child-process servers:
-slife-mcp, slife-memory, slife-wechat, and slife-subagent.
+═══════════════════════════════════════════════════════════════════════
+Plugin Contract (third-party plugins MUST follow this)
+═══════════════════════════════════════════════════════════════════════
+
+File
+  ``slife/plugins/<name>/server.py`` — a single module with a ``main()``
+  entry point.  The harness spawns it via::
+
+      python -m slife.plugins.<name>.server
+
+FastMCP instance
+  A module-level ``mcp = FastMCP("<name>", instructions="…")`` instance.
+  All tools are decorated with ``@mcp.tool(name="…")``.
+
+Logging
+  Call ``setup_server_logging("<_suffix>")`` at module level.  Returns the
+  per-session log path.  The harness streams stderr to its own log.
+
+Lazy-init rule (CRITICAL)
+  Never call ``asyncio.run()`` — FastMCP's ``mcp.run()`` creates its own
+  event loop and ``aiosqlite`` / ``aiohttp`` connections created in a
+  prior loop will hang forever.  Instead, initialize resources lazily on
+  the first tool call, or use FastMCP's lifespan hooks.
+
+Entry point
+  :func:`run_plugin_server(mcp) <.run_plugin_server>` is the single,
+  one-line call that starts the server.  It handles port binding, parent
+  signalling, and FastMCP startup correctly.
+
+Tool registration
+  The harness connects to the plugin via Streamable HTTP, calls
+  ``tools/list``, and wraps every tool as an ``MCPProxyTool`` via
+  ``slife.mcp.tool_adapter.create_proxy_tools``.  Tools with names in
+  ``<server>__<tool>`` format are placed in the LLM's tool registry.
+
+Minimal example
+  See :file:`slife/plugins/mcp/server.py` (the simplest built-in plugin)::
+
+      # server.py
+      from fastmcp import FastMCP
+      from slife.server_utils import setup_server_logging, run_plugin_server
+
+      _log_path = setup_server_logging("_my_plugin")
+
+      mcp = FastMCP("slife-my-plugin", instructions="…")
+
+      @mcp.tool(name="my_tool")
+      async def my_tool(arg: str = "") -> str:
+          return f"Hello {arg}"
+
+      def main():
+          run_plugin_server(mcp)
+
+      if __name__ == "__main__":
+          main()
+
+Build-time registration
+  The harness auto-discovers plugin tools.  No additional wiring needed.
+
+═══════════════════════════════════════════════════════════════════════
+Shared utilities
+═══════════════════════════════════════════════════════════════════════
 """
 
 import json
@@ -137,6 +197,161 @@ def signal_port(port: int) -> None:
     sys.stdout.buffer.write((line + "\n").encode("utf-8"))
     sys.stdout.buffer.flush()
     sys.stdout.close()
+
+
+# ── Plugin factory & runner ────────────────────────────────────────────
+
+
+def create_plugin_server(name: str, instructions: str) -> tuple:
+    """Create a standard Slife plugin FastMCP server with logging.
+
+    A single call replaces the per-plugin boilerplate of
+    ``setup_server_logging`` + ``logging.getLogger`` + ``FastMCP(…)``::
+
+        from slife.server_utils import create_plugin_server, run_plugin_server
+
+        mcp, _log_path, logger = create_plugin_server(
+            "slife-my-plugin",
+            instructions="My plugin — does X and Y.",
+        )
+
+        @mcp.tool(name="my_tool")
+        async def my_tool(arg: str = "") -> str:
+            return f"Hello {arg}"
+
+        def main():
+            run_plugin_server(mcp)
+
+        if __name__ == "__main__":
+            main()
+
+    Args:
+        name: e.g. ``"slife-mcp"`` — drives the logger name
+            (``slife_mcp``) and log-file suffix (``_mcp``).
+        instructions: FastMCP server instructions string.
+
+    Returns:
+        ``(mcp, log_path, logger)`` — the FastMCP instance ready for
+        ``@mcp.tool`` decoration, the per-session log file path, and
+        a configured logger.
+    """
+    from fastmcp import FastMCP
+
+    # "slife-memory" → suffix="_memory", logger_name="slife_memory"
+    service_suffix = "_" + name.split("-", 1)[-1] if "-" in name else "_" + name
+    logger_name = name.replace("-", "_")
+
+    log_path = setup_server_logging(service_suffix)
+    plogger = logging.getLogger(logger_name)
+    server = FastMCP(name, instructions=instructions)
+
+    # ── Patch: keep GET SSE alive across multiple requests ──────────────
+    # FastMCP's _run_sse_writer uses ``async with sse_stream_writer``
+    # which calls aclose() after each response, tearing down the GET SSE
+    # TCP connection.  Subsequent requests have no channel for responses.
+    # Also patches close_sse_stream to prevent writer.close().
+    try:
+        from mcp.server.streamable_http_manager import StreamableHTTPServerTransport as _Mgr
+
+        _original_run_sse = _Mgr._run_sse_writer
+
+        async def _patched_run_sse_writer(
+            self, request_id, sse_stream_writer,
+            request_stream_reader, priming_event,
+        ):
+            try:
+                # Use async with on reader only — NOT the writer.
+                # The writer must stay alive so the GET SSE connection
+                # persists for future requests.
+                async with request_stream_reader:
+                    if priming_event is not None:
+                        await sse_stream_writer.send(priming_event)
+                    async for event_message in request_stream_reader:
+                        await sse_stream_writer.send(
+                            self._create_event_data(event_message)
+                        )
+                        if isinstance(
+                            event_message.message.root,
+                            __import__("mcp.types").JSONRPCResponse,
+                        ) or isinstance(
+                            event_message.message.root,
+                            __import__("mcp.types").JSONRPCError,
+                        ):
+                            break
+            except Exception:
+                pass
+            finally:
+                self._sse_stream_writers.pop(request_id, None)
+                await self._clean_up_memory_streams(request_id)
+            # Intentionally NO writer close — keeps SSE alive.
+
+        _Mgr._run_sse_writer = _patched_run_sse_writer
+
+        # Also patch close_sse_stream — no writer.close().
+        def _patched_close_sse_stream(self, request_id):
+            self._sse_stream_writers.pop(request_id, None)
+            if request_id in self._request_streams:
+                send_stream, receive_stream = self._request_streams.pop(request_id)
+                try:
+                    send_stream.close()
+                except Exception:
+                    pass
+                try:
+                    receive_stream.close()
+                except Exception:
+                    pass
+
+        _Mgr.close_sse_stream = _patched_close_sse_stream
+        plogger.debug("streamable_http patch applied — SSE stays alive")
+    except Exception:
+        plogger.debug("streamable_http patch skipped")
+
+    return server, log_path, plogger
+
+
+def run_plugin_server(
+    mcp_server,
+    *,
+    port: int = 0,
+    host: str = "127.0.0.1",
+    show_banner: bool = False,
+) -> None:
+    """Start a Slife plugin server on Streamable HTTP transport.
+
+    Handles the port-bind → signal-parent → run boilerplate so every
+    plugin can start with a single call:::
+
+        def main():
+            run_plugin_server(mcp)
+
+    Args:
+        mcp_server: A ``FastMCP`` instance with tools already decorated.
+        port: If 0 (default), the OS assigns a free port and the parent
+            discovers it via stdout.  Pass a non-zero port for debugging.
+        host: Bind address.  Always ``127.0.0.1`` for security — plugins
+            are never exposed to the network.
+        show_banner: Pass ``True`` only when debugging; FastMCP's ASCII
+            art banner is suppressed in normal use.
+
+    This call blocks until the server shuts down.  Set up any module-level
+    global state (e.g. ``_db_path``) BEFORE calling.
+    """
+    if port:
+        logger.info("plugin_ready transport=streamable-http port=%s", port)
+        mcp_server.run(
+            transport="streamable-http", host=host, port=port,
+            show_banner=show_banner,
+            uvicorn_config={"log_config": None},
+        )
+    else:
+        sock, port = bind_free_port()
+        logger.info("plugin_ready transport=streamable-http port=%s", port)
+        signal_port(port)
+        mcp_server.run(
+            transport="streamable-http", host=host, port=port, sockets=[sock],
+            show_banner=show_banner,
+            uvicorn_config={"log_config": None},
+        )
 
 
 # ── JSON response helpers (re-exported from logfmt) ────────────────────

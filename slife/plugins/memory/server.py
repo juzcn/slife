@@ -9,25 +9,35 @@ Usage:
     uv run python -m slife.plugins.memory.server --port 9877   # fixed port
 """
 
+import asyncio
 import json
 import logging
 import os
 from pathlib import Path
 
-from fastmcp import FastMCP
-
 from slife.paths import get_data_dir
 from slife.plugins.memory.store import SessionStore
 from slife.plugins.memory.embeddings import EmbeddingClient
 from slife.plugins.memory.search import merge_hybrid
-from slife.server_utils import setup_server_logging
+from slife.server_utils import create_plugin_server
 
-logger = logging.getLogger("slife_memory")
-
-_log_path = setup_server_logging("_memory")
+mcp, _log_path, logger = create_plugin_server(
+    "slife-memory",
+    instructions=(
+        "slife-memory — turn-based long-term knowledge. "
+        "Every turn (user question + your response) is one row. "
+        "LLM-visible tools: memory_list_recent, memory_search (grep/fts5/hybrid/time), "
+        "memory_open, memory_summarize, memory_check/set/remove_embedding. "
+        "All data is automatically scoped to the current agent."
+    ),
+)
 
 _store: SessionStore | None = None
 _embedder: EmbeddingClient | None = None
+_db_path: Path | None = None
+_init_lock: asyncio.Lock | None = None
+
+
 def _get_db_path() -> Path:
     """Return the database path for the current agent.
 
@@ -42,16 +52,43 @@ def _get_db_path() -> Path:
     return data_dir / f"{agent_id}.db"
 
 
-mcp = FastMCP(
-    "slife-memory",
-    instructions=(
-        "slife-memory — turn-based long-term knowledge. "
-        "Every turn (user question + your response) is one row. "
-        "LLM-visible tools: memory_list_recent, memory_search (grep/fts5/hybrid/time), "
-        "memory_open, memory_summarize, memory_check/set/remove_embedding. "
-        "All data is automatically scoped to the current agent."
-    ),
-)
+async def _ensure_store() -> SessionStore:
+    """Lazy-init the store and embedder inside FastMCP's event loop.
+
+    This MUST run inside ``mcp.run()``'s event loop — ``asyncio.run()``
+    creates a temporary loop that gets destroyed, causing ``aiosqlite``
+    operations to hang forever because their background thread is bound
+    to a loop that no longer exists.
+    """
+    global _store, _embedder, _init_lock
+    if _store is not None:
+        return _store
+
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
+
+    async with _init_lock:
+        if _store is not None:
+            return _store
+
+        assert _db_path is not None
+        logger.info("memory_lazy_init db=%s", _db_path)
+
+        from slife.logfmt import elapsed
+
+        with elapsed("embedder_init", logger, level=logging.INFO):
+            _embedder = EmbeddingClient.from_config()
+        _store = SessionStore(_db_path)
+        with elapsed("store_setup", logger, level=logging.INFO, db=str(_db_path)):
+            await _store.setup(embedding_dim=_embedder.dimension)
+        if _embedder.available:
+            logger.info(
+                "embeddings_ready backend=%s model=%s dim=%d",
+                _embedder.backend, _embedder._model, _embedder.dimension,
+            )
+        else:
+            logger.info("embeddings_disabled")
+        return _store
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -68,9 +105,9 @@ async def memory_save_turn(
     what_model: str = "",
     channel: str = "",
 ) -> str:
-    assert _store is not None
+    store = await _ensure_store()
     try:
-        rowid = await _store.save_turn(
+        rowid = await store.save_turn(
             user_message=user_message, messages=messages,
             token_count=token_count, who_helped=who_helped, what_model=what_model,
             channel=channel, embedder=_embedder,
@@ -83,9 +120,9 @@ async def memory_save_turn(
 
 @mcp.tool(name="memory_get_recent_turns", description="Load recent turns for restore. Harness-only.")
 async def memory_get_recent_turns(limit: int = 50) -> str:
-    assert _store is not None
+    store = await _ensure_store()
     try:
-        turns = await _store.get_recent_turns(limit=limit)
+        turns = await store.get_recent_turns(limit=limit)
         return json.dumps({"turns": turns}, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("get_recent_turns_failed")
@@ -107,9 +144,9 @@ async def memory_get_recent_turns(limit: int = 50) -> str:
     ),
 )
 async def memory_list_recent(limit: int = 20) -> str:
-    assert _store is not None
+    store = await _ensure_store()
     try:
-        entries = await _store.list_recent(limit=limit)
+        entries = await store.list_recent(limit=limit)
         for e in entries:
             um = e.get("user_message", "")
             if len(um) > 200:
@@ -136,9 +173,9 @@ async def memory_count(
     query: str | None = None,
     mode: str = "fts5",
 ) -> str:
-    assert _store is not None
+    store = await _ensure_store()
     try:
-        result = await _store.count_turns(
+        result = await store.count_turns(
             since=since, until=until, query=query, mode=mode,
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
@@ -156,9 +193,9 @@ async def memory_count(
     ),
 )
 async def memory_open(rowid: int) -> str:
-    assert _store is not None
+    store = await _ensure_store()
     try:
-        turn = await _store.get_turn(rowid=rowid)
+        turn = await store.get_turn(rowid=rowid)
         if turn is None:
             return json.dumps(
                 {"error": f"未找到 turn rowid={rowid}"}, ensure_ascii=False,
@@ -194,14 +231,14 @@ async def memory_search(
     since: str | None = None,
     until: str | None = None,
 ) -> str:
-    assert _store is not None
+    store = await _ensure_store()
     mode = mode.lower()
     if mode not in ("grep", "fts5", "hybrid", "time"):
         mode = "hybrid"
 
     if mode == "time":
         try:
-            hits = await _store.search_time(limit=limit, since=since, until=until)
+            hits = await store.search_time(limit=limit, since=since, until=until)
             return json.dumps({"mode": "time", "since": since, "until": until, "results": hits},
                               ensure_ascii=False, indent=2)
         except Exception as e:
@@ -213,28 +250,28 @@ async def memory_search(
 
     try:
         if mode == "grep":
-            hits = await _store.search_grep(pattern=query, limit=limit,
+            hits = await store.search_grep(pattern=query, limit=limit,
                                              since=since, until=until)
             return json.dumps({"mode": "grep", "query": query, "results": hits,
                                "hint": "" if hits else f"未找到包含 '{query}' 的记忆"},
                               ensure_ascii=False, indent=2)
 
         if mode == "fts5":
-            hits = await _store.search_keyword(query=query, limit=limit,
+            hits = await store.search_keyword(query=query, limit=limit,
                                                 since=since, until=until)
             return json.dumps({"mode": "fts5", "query": query, "results": hits,
                                "hint": "" if hits else f"未找到与 '{query}' 相关的记忆"},
                               ensure_ascii=False, indent=2)
 
         # hybrid
-        keyword_hits = await _store.search_keyword(query=query, limit=limit * 2,
+        keyword_hits = await store.search_keyword(query=query, limit=limit * 2,
                                                      since=since, until=until)
         semantic_hits: list[dict] = []
         semantic_available = False
         if _embedder and _embedder.available:
             emb = await _embedder.embed_one(query)
             if emb:
-                semantic_hits = await _store.search_semantic(embedding=emb,
+                semantic_hits = await store.search_semantic(embedding=emb,
                                                               limit=limit * 2,
                                                               since=since, until=until)
                 semantic_available = True
@@ -264,22 +301,22 @@ async def memory_summarize(
     rowid: int,
     summary: str | None = None, tags: str | None = None,
 ) -> str:
-    assert _store is not None
+    store = await _ensure_store()
     try:
-        await _store.update_summary(rowid=rowid, summary=summary, tags=tags)
+        await store.update_summary(rowid=rowid, summary=summary, tags=tags)
 
         if summary and _embedder and _embedder.available:
             try:
                 emb = await _embedder.embed_one(summary)
                 if emb:
-                    assert _store._conn is not None
-                    cursor = await _store._conn.execute(
+                    assert store._conn is not None
+                    cursor = await store._conn.execute(
                         "SELECT tags, created_at FROM diary WHERE rowid = ?",
                         (rowid,),
                     )
                     row = await cursor.fetchone()
                     if row:
-                        await _store.upsert_embedding(
+                        await store.upsert_embedding(
                             rowid=rowid,
                             summary=summary, tags=tags or row["tags"] or "",
                             created_at=row["created_at"], turn_embedding=emb,
@@ -368,59 +405,30 @@ async def memory_remove_embedding() -> str:
 
 
 def main():
+    """Run the slife-memory server on Streamable HTTP transport.
+
+    Store and embedder are lazily initialised on the first tool call
+    INSIDE FastMCP's event loop — this avoids the aiosqlite connection
+    being bound to a temporary loop that gets destroyed by asyncio.run().
+    """
     import argparse
-    from slife.logfmt import elapsed
-    from slife.server_utils import bind_free_port, signal_port
+
+    from slife.server_utils import run_plugin_server
+
+    global _db_path
 
     parser = argparse.ArgumentParser(description="slife-memory server")
     parser.add_argument("--db", default=None)
     parser.add_argument("--port", type=int, default=0)
     args = parser.parse_args()
 
+    _db_path = Path(args.db).expanduser() if args.db else _get_db_path()
+
     logger.info(
-        "memory_start log=%s pid=%s", _log_path, os.getpid(),
+        "memory_start log=%s pid=%s db=%s", _log_path, os.getpid(), _db_path,
     )
 
-    db_path = Path(args.db).expanduser() if args.db else _get_db_path()
-
-    import asyncio
-
-    async def _init():
-        global _store, _embedder
-        with elapsed("embedder_init", logger, level=logging.INFO):
-            _embedder = EmbeddingClient.from_config()
-        _store = SessionStore(db_path)
-        with elapsed("store_setup", logger, level=logging.INFO, db=str(db_path)):
-            await _store.setup(embedding_dim=_embedder.dimension)
-        if _embedder.available:
-            logger.info(
-                "embeddings_ready backend=%s model=%s dim=%d",
-                _embedder.backend, _embedder._model, _embedder.dimension,
-            )
-        else:
-            logger.info("embeddings_disabled")
-
-    with elapsed("memory_init", logger, level=logging.INFO, db=str(db_path)):
-        asyncio.run(_init())
-
-    # Bind free port if not specified, signal parent, start Streamable HTTP
-    if args.port:
-        port = args.port
-        logger.info("memory_ready transport=sse port=%s db=%s", port, db_path)
-        mcp.run(
-            transport="streamable-http", host="127.0.0.1", port=port,
-            show_banner=False,
-            uvicorn_config={"log_config": None},
-        )
-    else:
-        sock, port = bind_free_port()
-        logger.info("memory_ready transport=sse port=%s db=%s", port, db_path)
-        signal_port(port)
-        mcp.run(
-            transport="streamable-http", host="127.0.0.1", port=port, sockets=[sock],
-            show_banner=False,
-            uvicorn_config={"log_config": None},
-        )
+    run_plugin_server(mcp, port=args.port)
 
     logger.info("memory_stop")
 

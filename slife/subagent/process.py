@@ -276,13 +276,14 @@ class SubagentProcess:
         mgr = get_manager()
         if mgr is not None and mgr.on_task_complete is not None:
             result_text = self._async_results.get(task_id, "")
+            import asyncio
             try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return  # no event loop running
+            loop.create_task(
                 mgr.on_task_complete(self._name, task_id, result_text)
-            except Exception:
-                logger.debug(
-                    "task_complete_callback_error name=%s task=%s",
-                    self._name, task_id, exc_info=True,
-                )
+            )
 
 
 class SubagentManager:

@@ -27,10 +27,11 @@ _CONNECT_RETRY_ATTEMPTS = 30  # 3 seconds total
 class MCPClient:
     """MCP client for connecting to Slife plugin servers via Streamable HTTP."""
 
-    def __init__(self):
+    def __init__(self, tool_timeout: float = 60.0):
         self._session: ClientSession | None = None
         self._connected: bool = False
         self._exit_stack: AsyncExitStack | None = None
+        self._tool_timeout = tool_timeout
 
     @property
     def is_connected(self) -> bool:
@@ -136,9 +137,42 @@ class MCPClient:
         ]
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> str:
+        """Call an MCP tool with a configurable timeout.
+
+        Returns the result text on success, or an ``"Error: …"`` string
+        on failure — this function NEVER raises, so a single hung MCP
+        server can't stall the entire agent loop.  The LLM sees the
+        error as a normal tool result and can retry or report it.
+        """
         self._ensure_connected()
         args = arguments or {}
-        result = await self._session.call_tool(name, args)
+        try:
+            result = await asyncio.wait_for(
+                self._session.call_tool(name, args),
+                timeout=self._tool_timeout,
+            )
+        except asyncio.TimeoutError:
+            msg = (
+                f"工具 '{name}' 执行超时（{self._tool_timeout}s）。"
+                f"MCP 服务器未在规定时间内返回结果，请检查服务器状态或网络连接。"
+            )
+            logger.warning("mcp_tool_timeout name=%s timeout=%ds", name, self._tool_timeout)
+            return f"Error: {msg}"
+        except Exception as e:
+            msg = (
+                f"工具 '{name}' 执行失败：{type(e).__name__}: {e}。"
+                f"请检查 MCP 服务器状态。"
+            )
+            logger.warning("mcp_tool_error name=%s err=%s", name, e)
+            return f"Error: {msg}"
+
+        if getattr(result, "isError", False):
+            parts: list[str] = []
+            for block in result.content:
+                if hasattr(block, "text"):
+                    parts.append(block.text)
+            return "Error: " + "\n".join(parts)
+
         parts: list[str] = []
         for block in result.content:
             if hasattr(block, "text"):

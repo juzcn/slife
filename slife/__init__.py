@@ -22,6 +22,37 @@ from slife.ui.app import SlifeApp
 logger = logging.getLogger("slife")
 
 
+def _restore_windows_console() -> None:
+    """Restore the Windows console to a sane default mode.
+
+    Textual sets ``ENABLE_VIRTUAL_TERMINAL_INPUT`` (0x0200) on stdin
+    and clears ``ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT |
+    ENABLE_ECHO_INPUT``.  If ``stop_application_mode()`` is skipped
+    the terminal stays in raw mode.  This restores the standard flags.
+    """
+    try:
+        import ctypes
+        STD_INPUT_HANDLE = -10
+        # Standard stdin flags WITHOUT virtual terminal input (0x0200).
+        # Textual enables VT input which passes arrow keys as raw escape
+        # sequences (^[[A).  Restoring these flags brings them back.
+        SANE_MODE = (
+            0x0001   # ENABLE_PROCESSED_INPUT
+            | 0x0002   # ENABLE_LINE_INPUT
+            | 0x0004   # ENABLE_ECHO_INPUT
+            | 0x0008   # ENABLE_WINDOW_INPUT
+            | 0x0010   # ENABLE_MOUSE_INPUT
+            | 0x0020   # ENABLE_INSERT_MODE
+            | 0x0040   # ENABLE_QUICK_EDIT_MODE
+            | 0x0080   # ENABLE_EXTENDED_FLAGS
+        )
+        h = ctypes.windll.kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        if h != -1:
+            ctypes.windll.kernel32.SetConsoleMode(h, SANE_MODE)
+    except Exception:
+        pass
+
+
 def _check_external_deps() -> None:
     """Check that optional external tools are available.
 
@@ -172,8 +203,14 @@ def main(config_path: str = "slife.json5"):
     try:
         app.run()
     finally:
+        # Restore console mode on Windows — Textual's driver sets
+        # ENABLE_VIRTUAL_TERMINAL_INPUT and clears line-editing flags.
+        # If the driver's stop_application_mode() doesn't run (crash,
+        # anyio task-group interference, etc.), the terminal is left
+        # in raw mode (arrow keys showing ^[[A).  This is the safety net.
+        if sys.platform == "win32":
+            _restore_windows_console()
         # Ensure child processes are cleaned up even on crash.
-        # action_quit() handles the normal path; this is the safety net.
         app.service.kill_child_processes()
 
     # Session ended — log summary

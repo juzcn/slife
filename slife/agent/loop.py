@@ -120,11 +120,13 @@ class AgentLoop:
         tool_registry: ToolRegistry,
         max_iterations: int = 10,
         max_tool_result_chars: int = 0,
+        tool_timeout: float = 60.0,
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
+        self.tool_timeout = tool_timeout
         self._cancel_event = asyncio.Event()
 
     def cancel(self) -> None:
@@ -266,6 +268,12 @@ class AgentLoop:
 
         Emits on_tool_call/on_tool_result via the handler.
         Adds tool result messages to the conversation.
+
+        Every tool call is guarded by :attr:`tool_timeout` — a hung
+        MCP server, network stall, or runaway subprocess can never
+        silently freeze the agent.  The LLM sees the timeout as a
+        normal tool result (``"Error: …"``) so it can retry or
+        report the failure.
         """
         for tc in tool_calls:
             if handler:
@@ -275,9 +283,30 @@ class AgentLoop:
                     max_iterations=self.max_iterations,
                 )
 
-            result = await self.tool_registry.execute(
-                tc.name, **tc.arguments
-            )
+            try:
+                coro = self.tool_registry.execute(tc.name, **tc.arguments)
+                if self.tool_timeout > 0:
+                    result = await asyncio.wait_for(coro, timeout=self.tool_timeout)
+                else:
+                    result = await coro
+            except asyncio.TimeoutError:
+                result = (
+                    f"Error: 工具 '{tc.name}' 执行超时（{self.tool_timeout}s）。"
+                    f"服务器或网络可能无响应，请检查后重试。"
+                )
+                logger.warning(
+                    "tool_timeout name=%s timeout=%ds args=%s",
+                    tc.name, self.tool_timeout,
+                    self._truncate_args(tc.arguments),
+                )
+            except Exception as e:
+                result = (
+                    f"Error: 工具 '{tc.name}' 执行失败：{type(e).__name__}: {e}。"
+                )
+                logger.warning(
+                    "tool_error name=%s err=%s", tc.name, e,
+                )
+
             # Sanitize secrets BEFORE anything else — prevents API keys
             # from reaching the LLM context or TUI display.
             result = sanitize_secrets(result)

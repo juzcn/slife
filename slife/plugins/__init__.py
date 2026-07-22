@@ -1,19 +1,73 @@
-"""Slife built-in plugins — non‑standard MCP stdio services.
+"""Slife plugin auto-discovery — like native tools, but as child processes.
 
-Each plugin runs as an independent child process and communicates
-with Slife via JSON-RPC over stdin/stdout (the MCP stdio transport).
-They use FastMCP as the server framework, but they are **not**
-generic MCP services — they are Slife‑specific plugins that borrow
-the MCP stdio protocol as an IPC mechanism.
+Each plugin is a Python package under ``slife.plugins/<name>/`` with a
+``server.py`` entry point.  The harness auto-discovers them at startup
+via ``pkgutil.iter_modules`` — no config entry needed.
 
-Tools are auto-discovered via ``list_tools`` and registered as
-``MCPProxyTool`` instances in the agent's ``ToolRegistry``.
+Third-party plugin
+  Drop a package into ``slife/plugins/my_plugin/`` with a ``server.py``
+  that follows the :doc:`plugin spec </docs/plugins>`.  It will be
+  discovered and started automatically on next launch.
 
-Harness-only tools (prefixed or listed in a denylist) are called
-programmatically by AgentService — they are never exposed to the LLM.
+Built-in plugins
+  ``memory``, ``mcp``, and ``wechat`` are discovered the same way.
+  They each have a small amount of harness-side post‑connect logic
+  (memory restore, MCP auto‑connect, WeChat poll loop) that is
+  triggered by plugin name rather than by special registration.
 
-Built-in plugins:
-  - slife.plugins.mcp:    MCP proxy — manage external MCP server connections
-  - slife.plugins.memory: Diary database — permanent conversation storage
-  - slife.plugins.wechat: WeChat messaging — bidirectional iLink ClawBot bridge
+External (non‑Python) MCP servers
+  npm‑/uvx‑based servers (filesystem, fetch, serper, etc.) are NOT
+  Python plugins — they are configured in ``slife.json5`` →
+  ``mcp.servers`` and connected via the ``mcp_add_server`` tool.
 """
+
+import pkgutil
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def discover_plugins() -> list[tuple[str, str]]:
+    """Scan ``slife.plugins.*`` for packages containing ``server.py``.
+
+    Returns a list of ``(name, module_path)`` tuples sorted so that
+    ``memory`` starts first (session restore depends on it)::
+
+        [("memory", "slife.plugins.memory.server"),
+         ("mcp",    "slife.plugins.mcp.server"),
+         ("wechat", "slife.plugins.wechat.server"),
+         …]
+
+    Third-party packages under ``slife.plugins/`` are discovered
+    automatically — just add a ``server.py`` with a ``main()``.
+    """
+    import slife.plugins as _pkg
+
+    plugins: list[tuple[str, str]] = []
+
+    for _, name, is_pkg in pkgutil.iter_modules(
+        _pkg.__path__, _pkg.__name__ + "."
+    ):
+        if not is_pkg:
+            continue
+        short_name = name.split(".")[-1]
+        server_module = name + ".server"
+
+        # Check that server.py exists — use the loader to avoid
+        # importing the module (it contains FastMCP setup that must
+        # run in the child process, not here).
+        try:
+            loader = pkgutil.find_loader(server_module)
+            if loader is None:
+                continue
+            plugins.append((short_name, server_module))
+        except Exception:
+            continue
+
+    # Memory must start first — session restore reads from its DB.
+    _order = {"memory": 0, "mcp": 1, "wechat": 2}
+    plugins.sort(key=lambda x: _order.get(x[0], 99))
+
+    logger.debug("plugins_discovered count=%d names=%s",
+                 len(plugins), [n for n, _ in plugins])
+    return plugins

@@ -13,13 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 import time
 from collections import deque
 from pathlib import Path
-
-from fastmcp import FastMCP
 
 from slife.plugins.wechat.client import WechatClawbotClient, BASE_URL
 from slife.plugins.wechat.config import (
@@ -27,14 +24,19 @@ from slife.plugins.wechat.config import (
     save_wechat_config,
     clear_wechat_config,
 )
-from slife.server_utils import setup_server_logging
+from slife.server_utils import create_plugin_server
 from slife.logfmt import ok_json, error_json
 
 SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
 
-logger = logging.getLogger("slife_wechat")
-
-_log_path = setup_server_logging("_wechat")
+mcp, _log_path, logger = create_plugin_server(
+    "slife-wechat",
+    instructions=(
+        "slife-wechat — bidirectional WeChat messaging. "
+        "LLM tools: login (QR scan), send_message (reply), "
+        "check_messages (incoming), check_status, logout."
+    ),
+)
 
 # ── QR code rendering ────────────────────────────────────────────────────
 
@@ -102,17 +104,6 @@ _qr_content: str = ""
 _qr_error: str = ""
 _QR_POLL_INTERVAL = 2.0  # seconds between QR status checks
 _QR_MAX_REFRESH = 3
-
-# ── FastMCP server ──────────────────────────────────────────────────────
-
-mcp = FastMCP(
-    "slife-wechat",
-    instructions=(
-        "slife-wechat — bidirectional WeChat messaging. "
-        "LLM tools: login (QR scan), send_message (reply), "
-        "check_messages (incoming), check_status, logout."
-    ),
-)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Background polling
@@ -777,28 +768,17 @@ async def wechat_logout() -> str:
 
 
 def main():
-    """Run the slife-wechat server on HTTP Streamable HTTP transport.
+    """Run the slife-wechat server on Streamable HTTP transport.
 
     Session restore happens lazily on the first check_status call,
     inside FastMCP's own event loop — this avoids the aiohttp session
     being bound to a temporary loop that gets closed.
     """
-    from slife.logfmt import elapsed
-    from slife.server_utils import bind_free_port, signal_port
+    from slife.server_utils import run_plugin_server
 
-    sock, port = bind_free_port()
-    logger.info(
-        "wechat_start agent_id=%s transport=sse port=%s log=%s pid=%s",
-        _agent_id, port, _log_path, os.getpid(),
-    )
-    signal_port(port)
-
-    with elapsed("wechat_run", logger, level=logging.INFO, agent_id=_agent_id, port=str(port)):
-        mcp.run(
-            transport="streamable-http", host="127.0.0.1", port=port, sockets=[sock],
-            show_banner=False,
-            uvicorn_config={"log_config": None},
-        )
+    logger.info("wechat_start agent_id=%s log=%s pid=%s",
+                _agent_id, _log_path, os.getpid())
+    run_plugin_server(mcp)
     logger.info("wechat_stop agent_id=%s", _agent_id)
 
 

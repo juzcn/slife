@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
@@ -59,6 +60,7 @@ class AgentService:
             tool_registry=self.tool_registry,
             max_iterations=config.max_iterations,
             max_tool_result_chars=max_tool_result_chars,
+            tool_timeout=config.tool_timeout,
         )
         self.conversation = Conversation(
             system_prompt=build_system_prompt(
@@ -138,6 +140,63 @@ class AgentService:
         self.conversation.clear()
         self.session_usage = TokenUsage()
 
+    # ── Plugin auto-discovery & lifecycle ───────────────────────────────
+
+    async def start_plugin_server(
+        self, name: str, module: str,
+    ) -> MCPClient:
+        """Spawn a plugin child process, connect, and register its tools.
+
+        This is the generic entry point for ALL plugin servers —
+        built-in (memory, mcp, wechat) and third-party.  The plugin's
+        ``server.py`` must expose a ``main()`` that calls
+        ``run_plugin_server(mcp)``.
+
+        Returns the connected :class:`MCPClient` so the caller can
+        perform plugin-specific post-connect steps (memory restore,
+        MCP auto-connect, WeChat poll loop).
+
+        Args:
+            name: Short plugin name (e.g. ``"memory"``).
+            module: Fully-qualified server module path
+                (e.g. ``"slife.plugins.memory.server"``).
+        """
+        from slife.mcp.process import MCPWrapperProcess
+
+        logger.info("plugin_spawn name=%s module=%s", name, module)
+
+        process = MCPWrapperProcess(
+            command=sys.executable,
+            args=["-m", module],
+        )
+        await process.start()
+        client = await process.create_client(tool_timeout=self.config.tool_timeout)
+
+        # Discover tools
+        plugin_tools = await client.list_tools()
+        logger.debug("plugin_tools name=%s count=%d names=%s",
+                     name, len(plugin_tools),
+                     [t["name"] for t in plugin_tools])
+
+        # Register as proxy tools — harness-only tools are filtered by
+        # the caller or by plugin-specific naming convention.
+        from slife.mcp.tool_adapter import create_proxy_tools
+        tagged = [{**t, "server": name} for t in plugin_tools]
+        proxy_tools = create_proxy_tools(client, tagged)
+        for tool in proxy_tools:
+            self.tool_registry.register(tool)
+
+        logger.info("plugin_ready name=%s tools=%d",
+                     name, len(self.tool_registry.list_tools()))
+
+        # Store for cleanup
+        setattr(self, f"_{name}_client", client)
+        setattr(self, f"_{name}_process", process)
+        setattr(self, f"_{name}_port", process.port)
+        os.environ[f"SLIFE_{name.upper()}_PORT"] = str(process.port)
+
+        return client
+
     # ── MCP lifecycle ──────────────────────────────────────────────────
 
     async def start_mcp(self) -> None:
@@ -165,7 +224,10 @@ class AgentService:
                      "MCP tools (filesystem, search, etc.) are unavailable.",
             )
             return
-        await self._auto_connect_mcp_servers()
+        # Fire-and-forget: external MCP servers connect in background
+        # so the UI appears immediately. Tools register as each server
+        # connects — no need to block startup on slow/hung servers.
+        asyncio.create_task(self._auto_connect_mcp_servers())
         logger.info("mcp_init_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_mcp_http(self, port: int) -> None:
@@ -176,8 +238,9 @@ class AgentService:
         """
         from slife.mcp.client import MCPClient
 
-        logger.info("mcp_http_connect port=%s", port)
-        client = MCPClient()
+        timeout = self.config.tool_timeout
+        logger.info("mcp_http_connect port=%s timeout=%s", port, timeout)
+        client = MCPClient(tool_timeout=timeout)
         await client.connect(f"http://127.0.0.1:{port}/mcp")
         self._mcp_client = client
         self._mcp_port = port
@@ -196,8 +259,9 @@ class AgentService:
         """Connect to an already-running memory server via Streamable HTTP."""
         from slife.mcp.client import MCPClient
 
+        timeout = self.config.tool_timeout
         logger.info("memory_http_connect port=%s", port)
-        client = MCPClient()
+        client = MCPClient(tool_timeout=timeout)
         await client.connect(f"http://127.0.0.1:{port}/mcp")
         self._memory_client = client
         self._memory_port = port
@@ -208,8 +272,9 @@ class AgentService:
         """Connect to an already-running wechat server via Streamable HTTP."""
         from slife.mcp.client import MCPClient
 
+        timeout = self.config.tool_timeout
         logger.info("wechat_http_connect port=%s", port)
-        client = MCPClient()
+        client = MCPClient(tool_timeout=timeout)
         await client.connect(f"http://127.0.0.1:{port}/mcp")
         self._wechat_client = client
         self._wechat_port = port
@@ -476,13 +541,14 @@ class AgentService:
         Called from the finally block in main() — no event loop required.
         Directly terminates known subprocesses so they don't become
         orphans holding log file handles on Windows.
+
+        Scans for all ``_<name>_process`` attributes — works with
+        auto-discovered plugins, not just the three built-ins.
         """
-        for proc_attr, label in [
-            ("_mcp_process", "mcp"),
-            ("_memory_process", "memory"),
-            ("_wechat_process", "wechat"),
-        ]:
-            wrapper = getattr(self, proc_attr, None)
+        for attr_name in dir(self):
+            if not attr_name.endswith("_process") or not attr_name.startswith("_"):
+                continue
+            wrapper = getattr(self, attr_name, None)
             if wrapper is None:
                 continue
             p = getattr(wrapper, "_process", None)
@@ -872,10 +938,29 @@ class AgentService:
             logger.warning("memory_save_error err=%s", e)
 
     async def get_recent_turns(self, limit: int = 50) -> list[dict]:
-        """Load recent turns for restore. Returns [] if no turns."""
+        """Load recent turns for restore. Returns [] if no turns.
+
+        Reads directly from the SQLite database — does NOT go through
+        the MCP tool call / Streamable HTTP transport.  This avoids the
+        SSE connection lifecycle issues and is much faster.
+        """
         if not self.memory_enabled:
             return []
 
+        # Read directly from SQLite — fast, no MCP transport needed.
+        try:
+            from slife.plugins.memory.store import SessionStore
+            db_path = self._get_memory_db_path()
+            if db_path and db_path.is_file():
+                store = SessionStore(db_path)
+                await store.setup(embedding_dim=0)
+                turns = await store.get_recent_turns(limit=limit)
+                if turns:
+                    return turns
+        except Exception as e:
+            logger.debug("get_recent_turns_direct_db_error err=%s", e)
+
+        # Fallback: try MCP tool call (server may be able to help)
         try:
             result = await self._memory_client.call_tool(
                 "memory_get_recent_turns",
@@ -886,6 +971,17 @@ class AgentService:
         except Exception as e:
             logger.debug("get_recent_turns_error err=%s", e)
             return []
+
+    def _get_memory_db_path(self) -> Path | None:
+        """Return the memory database path."""
+        import os
+        from slife.paths import get_data_dir
+
+        env_path = os.environ.get("SLIFE_MEMORY_DB")
+        if env_path:
+            return Path(env_path)
+        agent_id = os.environ.get("SLIFE_AGENT_ID", "slife")
+        return get_data_dir() / f"{agent_id}.db"
 
     # ── Inbox lifecycle (always active) ────────────────────────────────
 
@@ -1064,8 +1160,7 @@ class AgentService:
         # When a subagent completes an async task, push the result into
         # the inbox so the user sees it without having to poll.
         async def _on_subagent_done(agent_id: str, task_id: str, result: str) -> None:
-            from slife.a2a.identity import AgentMessage
-            from slife.agent.conversation import HUMAN
+            from slife.a2a.identity import AgentMessage, HUMAN
             msg = AgentMessage(
                 source=HUMAN,
                 content=(

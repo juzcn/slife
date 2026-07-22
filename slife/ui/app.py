@@ -134,7 +134,15 @@ class SlifeApp(App):
         yield StatusBar(id="status-bar")
 
     async def on_mount(self) -> None:
-        """Initialize status bar and start Memory + MCP + A2A + Subagent."""
+        """Initialize status bar and start all plugins via auto-discovery.
+
+        Plugins are discovered by scanning ``slife.plugins.*`` — the
+        same mechanism as native tools.  Built-in plugins (memory, mcp,
+        wechat) get their post-connect hooks; third-party plugins are
+        started with the generic :meth:`AgentService.start_plugin_server`.
+        """
+        from slife.plugins import discover_plugins
+
         status = self.query_one("#status-bar", StatusBar)
         status.update_info(
             model=self.service.model_display_name,
@@ -148,70 +156,77 @@ class SlifeApp(App):
         # All input (human, A2A, WeChat) flows through this inbox.
         await self.service.start_inbox()
 
-        # ★ Step 1: Start memory service first (synchronous — fast local startup)
-        if self.service.config.memory_config:
+        plugins = discover_plugins()
+        plugin_names = {n for n, _ in plugins}
+
+        # ── Step 1: Memory first (synchronous) — restore session ──────
+        # UI must show with history, not a blank screen.
+        # Reads turns directly from SQLite — fast, bypasses MCP transport.
+        if "memory" in plugin_names and self.service.config.memory_config:
             try:
                 await self.service.start_memory()
-
-                # Check for recent turns to restore
                 turns = await self.service.get_recent_turns()
                 if turns:
                     self._recovery_info = {"turns": turns}
-                    self.run_worker(
-                        self._restore_session(),
-                        exclusive=True,
-                        group="restore-session",
-                    )
+                    await self._restore_session()
             except Exception as e:
                 self._show_system_message(
                     f"⚠ 记忆服务启动失败: {e}", color="#d29922",
                 )
 
-        # Step 2: Start MCP wrapper in the background
-        if self.service.config.mcp_config:
-            self.run_worker(
-                self.service.start_mcp(),
-                exclusive=False,
-                group="mcp-startup",
-            )
+        # ── Step 2: MCP + wechat + third-party (background) ───────────
+        for name, module in plugins:
+            if name == "memory":
+                continue  # already started above
 
-        # Step 3: Register unified activity callbacks + handler factory.
-        # These serve ALL input channels — A2A, WeChat, etc. —
-        # not just A2A.  Must run BEFORE any channel starts polling
-        # so messages are never dropped before the UI is listening.
+            if name == "mcp" and self.service.config.mcp_config:
+                self.run_worker(
+                    self.service.start_mcp(),
+                    exclusive=False, group="plugin-startup",
+                )
+            elif name == "wechat":
+                if self.service.config.wechat_config and self.service.config.wechat_config.enabled:
+                    self.run_worker(
+                        self.service.start_wechat(),
+                        exclusive=False, group="plugin-startup",
+                    )
+            else:
+                # Third-party plugin — generic startup, no post-connect
+                self.run_worker(
+                    self.service.start_plugin_server(name, module),
+                    exclusive=False, group="plugin-startup",
+                )
+                self._show_system_message(
+                    f"🔌 插件已加载: {name}", color="#3fb950",
+                )
+
+        # ── Step 3: A2A + Subagent + callbacks (unchanged) ────────────
         self.service.on_a2a_activity(self._on_a2a_activity)
         self.service.inbox._conversations.set_default_handler_factory(
             lambda: TUIHandler(self, assistant_prefix=self._assistant_prefix)
         )
 
-        # Step 4: Start A2A P2P mesh in the background
-        # (service probes mosquitto internally — skips if not running)
         self.run_worker(
             self.service.start_a2a(),
-            exclusive=False,
-            group="a2a-startup",
+            exclusive=False, group="a2a-startup",
         )
-
-        # Step 5: Start subagent manager (always enabled)
         self.run_worker(
             self.service.start_subagent(),
-            exclusive=False,
-            group="subagent-startup",
+            exclusive=False, group="subagent-startup",
         )
 
-        # Step 6: Start WeChat plugin (if enabled in config)
-        if self.service.config.wechat_config and self.service.config.wechat_config.enabled:
-            self.run_worker(
-                self.service.start_wechat(),
-                exclusive=False,
-                group="wechat-startup",
-            )
 
     # ── Actions ──────────────────────────────────────────────────
 
     def action_quit(self) -> None:
-        """Quit the app — cancel workers, then fire-and-forget cleanup."""
+        """Quit the app — cancel the agent loop immediately, then
+        clean up child processes.  Order matters: inbox/loop must
+        stop first so MCP wrapper isn't mid-request during shutdown."""
         import asyncio
+
+        # Cancel the agent loop RIGHT NOW — don't let it keep firing
+        # tool calls into the MCP wrapper while we're trying to stop.
+        self.service.inbox.cancel()
 
         for worker in list(self.workers):
             try:
@@ -220,13 +235,15 @@ class SlifeApp(App):
                 pass
 
         async def _cleanup():
+            # Stop inbox first — completes any in-flight message.
+            await _stop_one("inbox", self.service.stop_inbox())
+            # Then kill remaining services.
             stop_coros = {
                 "subagent": self.service.stop_subagent,
                 "a2a": self.service.stop_a2a,
                 "mcp": self.service.stop_mcp,
                 "memory": self.service.stop_memory,
                 "wechat": self.service.stop_wechat,
-                "inbox": self.service.stop_inbox,
             }
             tasks = [_stop_one(n, f()) for n, f in stop_coros.items()]
             if tasks:
@@ -234,7 +251,7 @@ class SlifeApp(App):
 
         async def _stop_one(name: str, coro) -> None:
             try:
-                await asyncio.wait_for(coro, timeout=5.0)
+                await asyncio.wait_for(coro, timeout=3.0)
             except asyncio.TimeoutError:
                 logger.warning("shutdown_timeout service=%s", name)
             except Exception:

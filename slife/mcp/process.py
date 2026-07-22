@@ -150,7 +150,7 @@ class MCPWrapperProcess:
 
         logger.info("wrapper_port pid=%s port=%s", self._process.pid, self._port)
 
-    async def create_client(self) -> "MCPClient":
+    async def create_client(self, tool_timeout: float = 60.0) -> "MCPClient":
         """Create an MCPClient connected to the plugin's Streamable HTTP endpoint.
 
         Disconnecting the client does NOT stop the process — call stop()
@@ -183,18 +183,24 @@ class MCPWrapperProcess:
             )
 
         url = f"http://127.0.0.1:{self._port}/mcp"
-        client = MCPClient()
+        client = MCPClient(tool_timeout=tool_timeout)
         await client.connect(url)
         return client
 
     async def stop(self) -> None:
-        """Stop the plugin child process gracefully."""
+        """Stop the plugin child process.
+
+        Uses a short graceful window — the process is a local child
+        with no unsaved state, so we don't need to wait long.  A fast
+        kill keeps Ctrl‑C exit snappy.
+        """
         if not self._process or not self._running:
             return
 
         logger.info("wrapper_stop pid=%s", self._process.pid)
         await terminate_process(
-            self._process, graceful_timeout=5.0, label="mcp_wrapper",
+            self._process, graceful_timeout=1.0, force_timeout=2.0,
+            label="mcp_wrapper",
         )
         logger.info(
             "wrapper_killed pid=%s",

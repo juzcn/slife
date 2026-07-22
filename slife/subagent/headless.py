@@ -135,8 +135,6 @@ async def run_headless() -> None:
     # ports are provided.  Subagents share the main agent's plugins instead
     # of spawning their own — avoids duplicate processes and shared state.
     _mcp_port = os.environ.get("SLIFE_MCP_PORT", "")
-    _mem_port = os.environ.get("SLIFE_MEMORY_PORT", "")
-    _wc_port = os.environ.get("SLIFE_WECHAT_PORT", "")
 
     if _mcp_port and config.mcp_config:
         try:
@@ -145,19 +143,9 @@ async def run_headless() -> None:
         except Exception as e:
             logger.warning("mcp_http_failed port=%s err=%s", _mcp_port, e)
 
-    if _mem_port and config.memory_config:
-        try:
-            with elapsed("memory_startup", logger, level=logging.INFO, port=_mem_port):
-                await service.connect_memory_http(int(_mem_port))
-        except Exception as e:
-            logger.warning("memory_http_failed port=%s err=%s", _mem_port, e)
-
-    if _wc_port and config.wechat_config and config.wechat_config.enabled:
-        try:
-            with elapsed("wechat_startup", logger, level=logging.INFO, port=_wc_port):
-                await service.connect_wechat_http(int(_wc_port))
-        except Exception as e:
-            logger.warning("wechat_http_failed port=%s err=%s", _wc_port, e)
+    # Subagents share the main agent's tools via MCP — they do NOT
+    # need their own memory or wechat connections.  Those are only
+    # used by the main agent for session persistence and messaging.
 
     _write(result={"ready": True})
     logger.info("subagent_ready")
