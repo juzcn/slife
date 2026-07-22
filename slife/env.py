@@ -6,11 +6,12 @@ recursively resolving through dicts and lists.
 
 import os
 import re
+from typing import Any
 
 _ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::-([^}]*))?\}")
 
 
-def resolve_env(value):
+def resolve_env(value: Any) -> Any:
     """Resolve ``${ENV_VAR}`` and ``${ENV_VAR:-default}`` references recursively.
 
     Accepts str, dict, list, or scalar — dicts and lists are traversed

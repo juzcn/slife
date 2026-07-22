@@ -20,8 +20,6 @@ immutable, so only the reference can be cleaned up.
 from __future__ import annotations
 
 import os
-import re
-import sys
 from pathlib import Path
 
 __all__ = [
@@ -272,7 +270,6 @@ def _remove_key_lines(content: str, key: str) -> str:
 
 def _setx(key: str, value: str) -> None:
     """Write to HKCU\\Environment directly — no command-line leak."""
-    import ctypes
     import winreg
 
     key_handle = winreg.OpenKey(
@@ -285,7 +282,6 @@ def _setx(key: str, value: str) -> None:
 
 def _setx_delete(key: str) -> None:
     """Delete a value from HKCU\\Environment directly."""
-    import ctypes
     import winreg
 
     try:

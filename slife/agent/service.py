@@ -697,6 +697,60 @@ class AgentService:
             self.tool_registry.register(tool)
         logger.debug("%s_tools_registered count=%d", name, len(proxy_tools))
 
+    async def _register_memory_tools(self) -> None:
+        """Discover and register memory plugin tools as proxy tools.
+
+        Called from the HTTP-connect path when a subagent shares the
+        main agent's already-running memory server.
+        """
+        from slife.mcp.tool_adapter import create_proxy_tools
+
+        assert self._memory_client is not None
+        memory_tools = await self._memory_client.list_tools()
+        logger.debug(
+            "memory_tools names=%s",
+            [t["name"] for t in memory_tools],
+        )
+
+        harness_tools = {"memory_save_turn", "memory_get_recent_turns"}
+        tagged = [
+            {**t, "server": "memory"}
+            for t in memory_tools
+            if t["name"] not in harness_tools
+        ]
+
+        proxy_tools = create_proxy_tools(self._memory_client, tagged)
+        for tool in proxy_tools:
+            self.tool_registry.register(tool)
+        logger.debug("memory_tools_registered count=%d", len(proxy_tools))
+
+    async def _register_wechat_tools(self) -> None:
+        """Discover and register wechat plugin tools as proxy tools.
+
+        Called from the HTTP-connect path when a subagent shares the
+        main agent's already-running wechat server.
+        """
+        from slife.mcp.tool_adapter import create_proxy_tools
+
+        assert self._wechat_client is not None
+        wechat_tools = await self._wechat_client.list_tools()
+        logger.debug(
+            "wechat_tools names=%s",
+            [t["name"] for t in wechat_tools],
+        )
+
+        harness_tools = {"wechat_drain_incoming", "wechat_dispatch_reply"}
+        tagged = [
+            {**t, "server": "wechat"}
+            for t in wechat_tools
+            if t["name"] not in harness_tools
+        ]
+
+        proxy_tools = create_proxy_tools(self._wechat_client, tagged)
+        for tool in proxy_tools:
+            self.tool_registry.register(tool)
+        logger.debug("wechat_tools_registered count=%d", len(proxy_tools))
+
     async def start_memory(self) -> bool:
         """Connect to slife-memory and register tools. Returns True on success."""
         mem_cfg = self.config.memory_config
@@ -746,8 +800,10 @@ class AgentService:
             )
 
             # Auto-restore session at startup (triggers server-side poll loop)
+            wechat_client = self._wechat_client
+            assert wechat_client is not None
             try:
-                await self._wechat_client.call_tool("check_status", {})
+                await wechat_client.call_tool("check_status", {})
                 logger.debug("wechat_auto_restore_triggered")
             except Exception:
                 pass

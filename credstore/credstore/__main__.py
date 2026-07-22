@@ -480,12 +480,8 @@ def _print_inject_activation(shell: str, key: str) -> None:
                 f" FOR /F \"delims=\" %i IN ('credstore inject {key}') DO %i",
                 file=sys.stderr,
             )
-    elif fmt == "powershell":
-        print(
-            f"# Run: Invoke-Expression (credstore inject {key})",
-            file=sys.stderr,
-        )
     else:
+        # Unix: _detect_shell() always returns "bash"
         print(f"# Run: eval \"$(credstore inject {key})\"", file=sys.stderr)
 
 

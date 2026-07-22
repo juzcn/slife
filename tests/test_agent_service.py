@@ -2,13 +2,13 @@
 
 import asyncio
 import json as _json
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from slife.agent.service import AgentService
 from slife.agent.llm_client import TokenUsage
-from slife.a2a.identity import AgentMessage, HUMAN, WECHAT
+from slife.a2a.identity import HUMAN, WECHAT
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -350,7 +350,7 @@ class TestAgentServiceStopMemory:
         service = AgentService(make_mock_config())
         mock_process = MagicMock()
         mock_process.stop = AsyncMock()
-        service._memory_process = mock_process
+        service._memory_process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
 
         await service.stop_memory()
 
@@ -483,6 +483,12 @@ class TestAgentServiceWeChat:
         mock_wechat_cfg.enabled = True
         service.config.wechat_config = mock_wechat_cfg
 
+        # _spawn_and_register_plugin is mocked so _wechat_client is never
+        # set — wire up a mock client for the check_status call and poll loop.
+        mock_wechat_client = MagicMock()
+        mock_wechat_client.call_tool = AsyncMock(return_value="{}")
+        service._wechat_client = mock_wechat_client  # pyright: ignore[reportAttributeAccessIssue]
+
         with patch.object(service, "_spawn_and_register_plugin", AsyncMock()) as mock_spawn:
             result = await service.start_wechat()
 
@@ -511,7 +517,7 @@ class TestAgentServiceWeChat:
 
         mock_process = MagicMock()
         mock_process.stop = AsyncMock()
-        service._wechat_process = mock_process
+        service._wechat_process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
 
         await service.stop_wechat()
 
@@ -534,7 +540,7 @@ class TestAgentServiceWeChat:
 
         call_count = [0]
 
-        async def mock_call_tool(tool_name, args):
+        async def mock_call_tool(tool_name, _):
             if tool_name == "wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
@@ -575,7 +581,7 @@ class TestAgentServiceWeChat:
 
         call_count = [0]
 
-        async def mock_call_tool(tool_name, args):
+        async def mock_call_tool(tool_name, _):
             if tool_name == "wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
@@ -611,7 +617,7 @@ class TestAgentServiceWeChat:
 
         call_count = [0]
 
-        async def mock_call_tool(tool_name, args):
+        async def mock_call_tool(tool_name, _):
             if tool_name == "wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
@@ -667,7 +673,7 @@ class TestAgentServiceWeChat:
 
         call_count = [0]
 
-        async def mock_call_tool(tool_name, args):
+        async def mock_call_tool(tool_name, _):
             if tool_name == "wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
@@ -707,7 +713,7 @@ class TestAgentServiceWeChat:
 
         call_count = [0]
 
-        async def mock_call_tool(tool_name, args):
+        async def mock_call_tool(tool_name, _):
             if tool_name == "wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:

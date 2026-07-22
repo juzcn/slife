@@ -18,8 +18,8 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
-from credstore import resolve_uri, is_keyring_uri
 from slife.env import resolve_env
 from slife.tools._config_io import with_fetched_at
 from slife.a2a.config import A2AConfig
@@ -72,7 +72,9 @@ def _resolve_mcp_env_var(value: str) -> str:
     return _resolve_env_or_credstore(value)
 
 
-def _resolve_env_lenient(value):
+_T = TypeVar("_T")
+
+def _resolve_env_lenient(value: _T) -> _T:
     """Resolve ${VAR} references without raising on missing vars.
 
     Missing vars are left as-is (e.g. ``${DEEPSEEK_API_KEY}``) so
