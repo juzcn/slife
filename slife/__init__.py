@@ -53,72 +53,6 @@ def _restore_windows_console() -> None:
         pass
 
 
-def _check_external_deps() -> None:
-    """Check that optional external tools are available.
-
-    Reports status via the health system so ``system_health`` can
-    surface missing tools to the LLM / user.  Does NOT attempt to
-    install anything — the one-click install scripts handle that.
-    """
-    import shutil as _shutil
-    import subprocess as _sp
-
-    from slife.health import record as _record
-
-    # ── Node.js / npm (used by readabilipy for article extraction) ──
-    node_path = _shutil.which("node")
-    npm_path = _shutil.which("npm")
-
-    if node_path:
-        try:
-            r = _sp.run(["node", "--version"], capture_output=True, text=True, timeout=5)
-            if r.returncode == 0:
-                _record("node", "ok", key="version", value=r.stdout.strip(),
-                        hint="Node.js found — fetch MCP can use Readability.js for article extraction.")
-            else:
-                _record("node", "warning", key="exit", value=str(r.returncode),
-                        hint="node exists but returned non-zero. Fetch MCP falls back to pure-Python extraction.")
-        except Exception:
-            _record("node", "warning", key="error", value="unexpected error",
-                    hint="node check failed. Fetch MCP uses pure-Python extraction.")
-    else:
-        _record("node", "warning", key="missing", value="not found",
-                hint="Node.js not installed. Re-run install script or install manually from https://nodejs.org. Fetch MCP uses pure-Python extraction.")
-
-    if npm_path:
-        try:
-            r = _sp.run(["cmd", "/c", "npm", "version"], capture_output=True, text=True, timeout=10) if sys.platform == "win32" else _sp.run(["npm", "version"], capture_output=True, text=True, timeout=5)
-            if r.returncode == 0:
-                _record("npm", "ok", key="version", value=(r.stdout.strip().splitlines()[0] if r.stdout else "?").split(":")[-1].strip().strip("'").strip('"').rstrip(","),
-                        hint="npm found.")
-            else:
-                _record("npm", "warning", key="exit", value=str(r.returncode),
-                        hint="npm exists but returned non-zero.")
-        except Exception:
-            _record("npm", "warning", key="error", value="unexpected error",
-                    hint="npm check failed.")
-    else:
-        _record("npm", "warning", key="missing", value="not found",
-                hint="npm not installed. Re-run install script or install Node.js from https://nodejs.org.")
-
-    # ── uv / uvx (used to run MCP servers) ──
-    uv_path = _shutil.which("uv")
-    if uv_path:
-        try:
-            r = _sp.run(["uv", "--version"], capture_output=True, text=True, timeout=5)
-            if r.returncode == 0:
-                _record("uv", "ok", key="version", value=r.stdout.strip(),
-                        hint="uv found — MCP servers can be spawned via uvx.")
-            else:
-                _record("uv", "warning", key="exit", value=str(r.returncode),
-                        hint="uv exists but returned non-zero.")
-        except Exception:
-            _record("uv", "warning", key="error", value="unexpected error")
-    else:
-        _record("uv", "warning", key="missing", value="not found",
-                hint="uv not installed. Re-run the install script or install from https://astral.sh.")
-
-
 def main(config_path: str = "slife.json5"):
     """Entry point for the Slife TUI application.
 
@@ -170,7 +104,8 @@ def main(config_path: str = "slife.json5"):
     )
 
     # Check external tooling availability (best-effort, reports via health system)
-    _check_external_deps()
+    from slife.health import check_external_deps
+    check_external_deps()
 
     # Log env vars from config (already applied to os.environ by Config.from_json5)
     if config.env:

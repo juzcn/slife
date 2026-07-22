@@ -104,6 +104,8 @@ def setup_server_logging(
 
     Returns the log file path.
     """
+    from slife.logfmt import configure_root_logging
+
     if log_dir is None:
         log_dir = resolve_log_dir()
 
@@ -113,30 +115,24 @@ def setup_server_logging(
 
     _agent_id = os.environ.get("SLIFE_AGENT_ID", "slife")
 
-    _stderr_fmt = logging.Formatter(
+    stderr_fmt = logging.Formatter(
         "%(asctime)s [%(levelname)-5s] %(name)s | %(message)s",
         datefmt="%H:%M:%S",
     )
 
-    _root = logging.getLogger()
-    _root.setLevel(logging.DEBUG)
-
-    # Remove existing handlers to avoid duplicates on module reload
-    _root.handlers.clear()
-
-    _stderr = logging.StreamHandler(sys.stderr)
-    _stderr.setLevel(logging.DEBUG)
-    _stderr.setFormatter(_stderr_fmt)
-    _root.addHandler(_stderr)
-
-    log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = log_dir / f"{ts}_{_agent_id}_{service_name}.log"
-    _file = logging.FileHandler(log_path, encoding="utf-8")
-    _file.setLevel(logging.DEBUG)
-    _file.setFormatter(SessionFormatter(FILE_LOG_FORMAT))
-    _root.addHandler(_file)
 
+    configure_root_logging(
+        stderr_level=logging.DEBUG,
+        stderr_format=stderr_fmt,
+        file_path=log_path,
+        file_level=logging.DEBUG,
+        file_format=SessionFormatter(FILE_LOG_FORMAT),
+        clear_existing=True,
+    )
+
+    # Silence FastMCP-internal loggers (in addition to the standard set)
     silence_noisy_loggers(extra=_FASTMCP_NOISE)
 
     return log_path

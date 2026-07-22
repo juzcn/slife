@@ -316,3 +316,56 @@ def error_json(message: str, **extra: object) -> str:
         **{k: v for k, v in extra.items() if v is not None},
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+# ── Shared root-logging setup ──────────────────────────────────────────
+
+
+def configure_root_logging(
+    stderr_level: int = logging.DEBUG,
+    stderr_format: logging.Formatter | None = None,
+    file_path: Path | None = None,
+    file_level: int = logging.DEBUG,
+    file_format: logging.Formatter | None = None,
+    *,
+    clear_existing: bool = False,
+) -> logging.Handler:
+    """Configure the root logger with stderr and optional file handlers.
+
+    Used by both the main harness (:func:`slife.bootstrap.setup_logging`)
+    and plugin servers (:func:`slife.server_utils.setup_server_logging`).
+
+    Args:
+        stderr_level: Log level for the stderr stream handler.
+        stderr_format: Formatter for stderr output.
+        file_path: If given, a ``FileHandler`` is added writing to this path.
+        file_level: Log level for the file handler.
+        file_format: Formatter for the file handler.
+        clear_existing: Remove existing root handlers before adding new ones.
+
+    Returns:
+        The stderr ``StreamHandler`` (for callers that need a reference).
+    """
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    if clear_existing:
+        root.handlers.clear()
+
+    if stderr_format is None:
+        stderr_format = logging.Formatter("%(message)s")
+
+    stderr_handler = logging.StreamHandler()
+    stderr_handler.setLevel(stderr_level)
+    stderr_handler.setFormatter(stderr_format)
+    root.addHandler(stderr_handler)
+
+    if file_path is not None:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(file_path, encoding="utf-8")
+        fh.setLevel(file_level)
+        fh.setFormatter(file_format or SessionFormatter(FILE_LOG_FORMAT))
+        root.addHandler(fh)
+
+    silence_noisy_loggers()
+    return stderr_handler

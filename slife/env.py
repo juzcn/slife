@@ -6,37 +6,15 @@ recursively resolving through dicts and lists.
 
 import os
 import re
-from typing import TypeVar, overload
-
-_T = TypeVar("_T")
 
 _ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::-([^}]*))?\}")
 
 
-@overload
-def resolve_env(value: str) -> str: ...
-
-
-@overload
-def resolve_env(value: dict[str, _T]) -> dict[str, _T]: ...
-
-
-@overload
-def resolve_env(value: list[_T]) -> list[_T]: ...
-
-
-@overload
-def resolve_env(value: _T) -> _T: ...
-
-
 def resolve_env(value):
-    """Resolve ${ENV_VAR} and ${ENV_VAR:-default} references recursively.
+    """Resolve ``${ENV_VAR}`` and ``${ENV_VAR:-default}`` references recursively.
 
-    Args:
-        value: A str, dict, list, or scalar to resolve.
-
-    Returns:
-        The value with all env var references replaced.
+    Accepts str, dict, list, or scalar — dicts and lists are traversed
+    and every string value is resolved.  Scalars pass through unchanged.
 
     Raises:
         KeyError: If a referenced env var is not set and no default is given.

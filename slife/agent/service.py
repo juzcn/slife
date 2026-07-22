@@ -254,26 +254,32 @@ class AgentService:
         asyncio.create_task(self._auto_connect_mcp_servers())
         logger.info("mcp_init_done tools=%d", len(self.tool_registry.list_tools()))
 
+    # ── HTTP-connect helpers (subagents share the main agent's plugins) ──
+
+    async def _connect_plugin_http(self, name: str, port: int) -> None:
+        """Connect to an already-running plugin via Streamable HTTP.
+
+        Shared by :meth:`connect_mcp_http`, :meth:`connect_memory_http`,
+        and :meth:`connect_wechat_http`.
+        """
+        from slife.mcp.client import MCPClient
+
+        timeout = self.config.tool_timeout
+        logger.info("%s_http_connect port=%s", name, port)
+        client = MCPClient(tool_timeout=timeout)
+        await client.connect(f"http://127.0.0.1:{port}/mcp")
+        setattr(self, f"_{name}_client", client)
+        setattr(self, f"_{name}_port", port)
+
     async def connect_mcp_http(self, port: int) -> None:
         """Connect to an already-running MCP wrapper via Streamable HTTP.
 
         Used by subagents to share the main agent's plugin servers
         instead of spawning their own.
         """
-        from slife.mcp.client import MCPClient
-
-        timeout = self.config.tool_timeout
-        logger.info("mcp_http_connect port=%s timeout=%s", port, timeout)
-        client = MCPClient(tool_timeout=timeout)
-        await client.connect(f"http://127.0.0.1:{port}/mcp")
-        self._mcp_client = client
-        self._mcp_port = port
+        await self._connect_plugin_http("mcp", port)
         await self._register_mcp_wrapper_tools()
         if self.is_subagent:
-            # Subagents share the main agent's MCP gateway — external
-            # servers are already connected.  Discover and register
-            # their tools without calling mcp_add_server (which would
-            # re-spawn every external server and overload the gateway).
             await self._discover_existing_mcp_tools()
         else:
             await self._auto_connect_mcp_servers()
@@ -281,27 +287,13 @@ class AgentService:
 
     async def connect_memory_http(self, port: int) -> None:
         """Connect to an already-running memory server via Streamable HTTP."""
-        from slife.mcp.client import MCPClient
-
-        timeout = self.config.tool_timeout
-        logger.info("memory_http_connect port=%s", port)
-        client = MCPClient(tool_timeout=timeout)
-        await client.connect(f"http://127.0.0.1:{port}/mcp")
-        self._memory_client = client
-        self._memory_port = port
+        await self._connect_plugin_http("memory", port)
         await self._register_memory_tools()
         logger.info("memory_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_wechat_http(self, port: int) -> None:
         """Connect to an already-running wechat server via Streamable HTTP."""
-        from slife.mcp.client import MCPClient
-
-        timeout = self.config.tool_timeout
-        logger.info("wechat_http_connect port=%s", port)
-        client = MCPClient(tool_timeout=timeout)
-        await client.connect(f"http://127.0.0.1:{port}/mcp")
-        self._wechat_client = client
-        self._wechat_port = port
+        await self._connect_plugin_http("wechat", port)
         await self._register_wechat_tools()
         logger.info("wechat_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
@@ -540,23 +532,54 @@ class AgentService:
             if removed:
                 logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
 
+    # ── Stop helpers ────────────────────────────────────────────────────
+
+    async def _stop_plugin(self, name: str, *, has_poll_task: bool = False) -> None:
+        """Disconnect client and stop process for plugin *name*.
+
+        Args:
+            name: Plugin short name (``"mcp"``, ``"memory"``, ``"wechat"``).
+            has_poll_task: If True, cancel ``self._<name>_poll_task`` first.
+        """
+        if has_poll_task:
+            poll_task = getattr(self, f"_{name}_poll_task", None)
+            if poll_task:
+                poll_task.cancel()
+                try:
+                    await poll_task
+                except asyncio.CancelledError:
+                    pass
+                setattr(self, f"_{name}_poll_task", None)
+
+        client = getattr(self, f"_{name}_client", None)
+        if client and client.is_connected:
+            try:
+                await client.disconnect()
+            except Exception as e:
+                logger.debug("%s_disconnect_error err=%s", name, e)
+            setattr(self, f"_{name}_client", None)
+
+        process = getattr(self, f"_{name}_process", None)
+        if process:
+            try:
+                await process.stop()
+            except Exception as e:
+                logger.debug("%s_process_stop_error err=%s", name, e)
+            setattr(self, f"_{name}_process", None)
+
+        logger.info("%s_shutdown", name)
+
     async def stop_mcp(self) -> None:
         """Shut down the MCP wrapper and clean up."""
-        if self._mcp_client:
-            try:
-                await self._mcp_client.disconnect()
-            except Exception as e:
-                logger.debug("mcp_disconnect_error err=%s", e)
-            self._mcp_client = None
+        await self._stop_plugin("mcp")
 
-        if self._mcp_process:
-            try:
-                await self._mcp_process.stop()
-            except Exception as e:
-                logger.debug("mcp_process_stop_error err=%s", e)
-            self._mcp_process = None
+    async def stop_memory(self) -> None:
+        """Disconnect and shut down the memory service. No diary to close."""
+        await self._stop_plugin("memory")
 
-        logger.info("mcp_shutdown")
+    async def stop_wechat(self) -> None:
+        """Shut down the WeChat plugin and clean up."""
+        await self._stop_plugin("wechat", has_poll_task=True)
 
     def kill_child_processes(self) -> None:
         """Synchronous best-effort child process cleanup.
@@ -619,6 +642,61 @@ class AgentService:
         """Whether the WeChat plugin is connected."""
         return self._wechat_client is not None and self._wechat_client.is_connected
 
+    # ── Plugin spawn + register helper ────────────────────────────────
+
+    async def _spawn_and_register_plugin(
+        self,
+        name: str,
+        module: str,
+        harness_tools: set[str],
+    ) -> None:
+        """Spawn a plugin child process, connect, and register its LLM-visible tools.
+
+        Handles the common pattern: spawn MCPWrapperProcess → set env var →
+        create client → list tools → filter harness-only tools →
+        create_proxy_tools → register.
+
+        Args:
+            name: Plugin short name (``"memory"``, ``"wechat"``).
+            module: Python module path to spawn (e.g. ``slife.plugins.memory.server``).
+            harness_tools: Set of tool names that are harness-only (excluded from LLM).
+        """
+        from slife.mcp.process import MCPWrapperProcess
+        from slife.mcp.tool_adapter import create_proxy_tools
+
+        logger.info("%s_spawn transport=streamable-http", name)
+        process = MCPWrapperProcess(
+            command=sys.executable,
+            args=["-m", module],
+        )
+        await process.start()
+        port = process.port
+        env_key = f"SLIFE_{name.upper()}_PORT"
+        os.environ[env_key] = str(port)
+
+        client = await process.create_client()
+        setattr(self, f"_{name}_process", process)
+        setattr(self, f"_{name}_port", port)
+        setattr(self, f"_{name}_client", client)
+
+        # Discover and register LLM-visible tools
+        plugin_tools = await client.list_tools()
+        logger.debug(
+            "%s_tools names=%s", name,
+            [t["name"] for t in plugin_tools],
+        )
+
+        tagged = [
+            {**t, "server": name}
+            for t in plugin_tools
+            if t["name"] not in harness_tools
+        ]
+
+        proxy_tools = create_proxy_tools(client, tagged)
+        for tool in proxy_tools:
+            self.tool_registry.register(tool)
+        logger.debug("%s_tools_registered count=%d", name, len(proxy_tools))
+
     async def start_memory(self) -> bool:
         """Connect to slife-memory and register tools. Returns True on success."""
         mem_cfg = self.config.memory_config
@@ -626,8 +704,11 @@ class AgentService:
 
         logger.info("memory_init start")
         try:
-            await self._connect_memory()
-            await self._register_memory_tools()
+            await self._spawn_and_register_plugin(
+                "memory",
+                "slife.plugins.memory.server",
+                harness_tools={"memory_save_turn", "memory_get_recent_turns"},
+            )
             logger.info("memory_init_done tools=%d", len(self.tool_registry.list_tools()))
             from slife.health import record
             record(
@@ -647,73 +728,6 @@ class AgentService:
             )
             return False
 
-    async def _connect_memory(self) -> None:
-        """Spawn the slife-memory service as a child process via Streamable HTTP."""
-        from slife.mcp.process import MCPWrapperProcess
-
-        mem_cfg = self.config.memory_config
-        assert mem_cfg is not None
-
-        logger.info("memory_spawn transport=streamable-http")
-        self._memory_process = MCPWrapperProcess(
-            command=sys.executable,
-            args=["-m", "slife.plugins.memory.server"],
-        )
-        await self._memory_process.start()
-        self._memory_port = self._memory_process.port
-        os.environ["SLIFE_MEMORY_PORT"] = str(self._memory_port)
-        self._memory_client = await self._memory_process.create_client()
-
-    async def _register_memory_tools(self) -> None:
-        """Discover and register memory tools as proxy tools.
-
-        Harness-only tools (save_turn, get_recent_turns) are excluded —
-        they are called programmatically, not by the LLM.
-        """
-        from slife.mcp.tool_adapter import create_proxy_tools
-
-        assert self._memory_client is not None
-        memory_tools = await self._memory_client.list_tools()
-        logger.debug(
-            "memory_tools names=%s",
-            [t["name"] for t in memory_tools],
-        )
-
-        # Harness lifecycle — never exposed to LLM
-        _HARNESS_TOOLS = {
-            "memory_save_turn",
-            "memory_get_recent_turns",
-        }
-
-        tagged = [
-            {**t, "server": "memory"}
-            for t in memory_tools
-            if t["name"] not in _HARNESS_TOOLS
-        ]
-
-        proxy_tools = create_proxy_tools(self._memory_client, tagged)
-        for tool in proxy_tools:
-            self.tool_registry.register(tool)
-        logger.debug("memory_tools_registered count=%d", len(proxy_tools))
-
-    async def stop_memory(self) -> None:
-        """Disconnect and shut down the memory service. No diary to close."""
-        if self._memory_client and self._memory_client.is_connected:
-            try:
-                await self._memory_client.disconnect()
-            except Exception as e:
-                logger.debug("memory_disconnect_error err=%s", e)
-            self._memory_client = None
-
-        if self._memory_process:
-            try:
-                await self._memory_process.stop()
-            except Exception as e:
-                logger.debug("memory_process_stop_error err=%s", e)
-            self._memory_process = None
-
-        logger.info("memory_shutdown")
-
     # ── WeChat lifecycle ───────────────────────────────────────────────
 
     async def start_wechat(self) -> bool:
@@ -725,8 +739,22 @@ class AgentService:
 
         logger.info("wechat_init start")
         try:
-            await self._connect_wechat()
-            await self._register_wechat_tools()
+            await self._spawn_and_register_plugin(
+                "wechat",
+                "slife.plugins.wechat.server",
+                harness_tools={"wechat_drain_incoming", "wechat_dispatch_reply"},
+            )
+
+            # Auto-restore session at startup (triggers server-side poll loop)
+            try:
+                await self._wechat_client.call_tool("check_status", {})
+                logger.debug("wechat_auto_restore_triggered")
+            except Exception:
+                pass
+
+            # Start background poll loop — injects WeChat messages into the inbox
+            self._wechat_poll_task = asyncio.create_task(self._wechat_poll_loop())
+
             logger.info("wechat_init_done tools=%d", len(self.tool_registry.list_tools()))
             from slife.health import record
             record(
@@ -745,62 +773,6 @@ class AgentService:
                      "WeChat messaging is unavailable.",
             )
             return False
-
-    async def _connect_wechat(self) -> None:
-        """Spawn the slife-wechat service as a child process via Streamable HTTP."""
-        from slife.mcp.process import MCPWrapperProcess
-
-        logger.info("wechat_spawn transport=streamable-http")
-        self._wechat_process = MCPWrapperProcess(
-            command=sys.executable,
-            args=["-m", "slife.plugins.wechat.server"],
-        )
-        await self._wechat_process.start()
-        self._wechat_port = self._wechat_process.port
-        os.environ["SLIFE_WECHAT_PORT"] = str(self._wechat_port)
-        self._wechat_client = await self._wechat_process.create_client()
-
-    async def _register_wechat_tools(self) -> None:
-        """Discover and register wechat tools as proxy tools.
-
-        Harness-only tools (drain_incoming, dispatch_reply) are excluded —
-        they are called programmatically by the poll loop, not by the LLM.
-        """
-        from slife.mcp.tool_adapter import create_proxy_tools
-
-        assert self._wechat_client is not None
-        wechat_tools = await self._wechat_client.list_tools()
-        logger.debug(
-            "wechat_tools names=%s",
-            [t["name"] for t in wechat_tools],
-        )
-
-        # Harness lifecycle — never exposed to LLM
-        _HARNESS_TOOLS = {
-            "wechat_drain_incoming",
-            "wechat_dispatch_reply",
-        }
-
-        tagged = [
-            {**t, "server": "wechat"}
-            for t in wechat_tools
-            if t["name"] not in _HARNESS_TOOLS
-        ]
-
-        proxy_tools = create_proxy_tools(self._wechat_client, tagged)
-        for tool in proxy_tools:
-            self.tool_registry.register(tool)
-        logger.debug("wechat_tools_registered count=%d", len(proxy_tools))
-
-        # Auto-restore session at startup (triggers server-side poll loop)
-        try:
-            await self._wechat_client.call_tool("check_status", {})
-            logger.debug("wechat_auto_restore_triggered")
-        except Exception:
-            pass
-
-        # Start background poll loop — injects WeChat messages into the inbox
-        self._wechat_poll_task = asyncio.create_task(self._wechat_poll_loop())
 
     async def _wechat_poll_loop(self, interval: float = 5.0) -> None:
         """Poll the wechat plugin for new messages and inject them into the inbox.
@@ -864,32 +836,6 @@ class AgentService:
             await asyncio.sleep(interval)
 
         logger.info("wechat_poll_loop_stop")
-
-    async def stop_wechat(self) -> None:
-        """Shut down the WeChat plugin and clean up."""
-        if hasattr(self, "_wechat_poll_task") and self._wechat_poll_task:
-            self._wechat_poll_task.cancel()
-            try:
-                await self._wechat_poll_task
-            except asyncio.CancelledError:
-                pass
-            self._wechat_poll_task = None
-
-        if self._wechat_client and self._wechat_client.is_connected:
-            try:
-                await self._wechat_client.disconnect()
-            except Exception as e:
-                logger.debug("wechat_disconnect_error err=%s", e)
-            self._wechat_client = None
-
-        if self._wechat_process:
-            try:
-                await self._wechat_process.stop()
-            except Exception as e:
-                logger.debug("wechat_process_stop_error err=%s", e)
-            self._wechat_process = None
-
-        logger.info("wechat_shutdown")
 
     async def save_to_memory(
         self,

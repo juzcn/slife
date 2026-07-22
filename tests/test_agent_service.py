@@ -192,11 +192,9 @@ class TestAgentServiceMemory:
     async def test_start_memory_always_runs(self):
         config = make_mock_config()
         service = AgentService(config)
-        with patch.object(service, "_connect_memory", AsyncMock()) as mock_connect, \
-             patch.object(service, "_register_memory_tools", AsyncMock()) as mock_register:
+        with patch.object(service, "_spawn_and_register_plugin", AsyncMock()) as mock_spawn:
             result = await service.start_memory()
-            mock_connect.assert_called_once()
-            mock_register.assert_called_once()
+            mock_spawn.assert_called_once()
             assert result is True
 
     @pytest.mark.asyncio
@@ -485,16 +483,11 @@ class TestAgentServiceWeChat:
         mock_wechat_cfg.enabled = True
         service.config.wechat_config = mock_wechat_cfg
 
-        with patch.object(service, "_connect_wechat", AsyncMock()) as mock_connect, \
-             patch.object(service, "_register_wechat_tools", AsyncMock()) as mock_register:
+        with patch.object(service, "_spawn_and_register_plugin", AsyncMock()) as mock_spawn:
             result = await service.start_wechat()
 
-            mock_connect.assert_called_once()
-            mock_register.assert_called_once()
+            mock_spawn.assert_called_once()
             assert result is True
-            # Note: _wechat_poll_task is created inside _register_wechat_tools
-            # (which is mocked here), so it won't be set in this test.
-            # The poll task creation is covered by the poll loop tests below.
 
     @pytest.mark.asyncio
     async def test_stop_wechat_cancels_poll_and_disconnects(self):

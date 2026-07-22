@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from slife.logfmt import SessionFormatter, FILE_LOG_FORMAT, silence_noisy_loggers, resolve_log_dir
+from slife.logfmt import SessionFormatter, FILE_LOG_FORMAT, resolve_log_dir
 
 logger = logging.getLogger("slife")
 
@@ -40,11 +40,12 @@ def setup_logging(
         (log_path, console_handler) — console is already at WARNING;
         detailed output goes to the per-session log file.
     """
+    from slife.logfmt import configure_root_logging
+
     root = logging.getLogger()
 
     # Dedup: skip if handlers already set up (e.g. tests calling main() repeatedly)
     if root.handlers:
-        # Find the first StreamHandler that writes to stderr
         console = next(
             (h for h in root.handlers if isinstance(h, logging.StreamHandler)
              and getattr(h, 'stream', None) is not None),
@@ -53,26 +54,14 @@ def setup_logging(
         if console is not None:
             return _session_log_path(agent_id), console
 
-    root.setLevel(logging.DEBUG)
-
-    # Console handler — WARNING from the start to prevent terminal flash
-    # before Textual's alternate screen takes over.  Any log output on
-    # stderr between startup and TUI init is briefly visible to the user
-    # and disappears when the alternate screen activates, creating a
-    # jarring "flash" of text.
-    console = logging.StreamHandler()
-    console.setLevel(logging.WARNING)
-    console.setFormatter(logging.Formatter("%(message)s"))
-    root.addHandler(console)
-
-    # File handler — detailed format with session/request IDs, one per session
     log_path = _session_log_path(agent_id)
-    file_handler = logging.FileHandler(log_path, encoding="utf-8")
-    file_handler.setLevel(level)
-    file_handler.setFormatter(SessionFormatter(FILE_LOG_FORMAT))
-    root.addHandler(file_handler)
+    file_fmt = SessionFormatter(FILE_LOG_FORMAT)
 
-    # Silence noisy third-party HTTP/logging libraries.
-    silence_noisy_loggers()
+    console = configure_root_logging(
+        stderr_level=logging.WARNING,
+        file_path=log_path,
+        file_level=level,
+        file_format=file_fmt,
+    )
 
     return log_path, console
