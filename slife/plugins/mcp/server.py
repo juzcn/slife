@@ -46,9 +46,12 @@ mcp = FastMCP(
     name="mcp_add_server",
     description=(
         "Connect to an external MCP server and make its tools available. "
-        "Two transports are supported:\n"
+        "Three transports are supported:\n"
         "- stdio: provide `command` and `args` to spawn a local process.\n"
-        "- http: provide `url` (and optionally `headers`) for a remote server.\n"
+        "- http (SSE): provide `url` pointing to the server's SSE endpoint "
+        "(e.g. http://host:port/sse). The gateway auto-detects SSE vs "
+        "streamable HTTP.\n"
+        "- http (streamable): provide `url` for a stateless MCP endpoint.\n"
         "Research the server's docs first. "
         "For the `env` parameter: use ${VAR} references for secrets "
         "(e.g. SERPER_API_KEY: '${SERPER_API_KEY}'). NEVER pass plaintext "
