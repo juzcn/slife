@@ -348,6 +348,84 @@ class TestSessionStoreGetRecentTurns:
         assert result[0]["user_message"] == "Turn 1"
         assert result[1]["user_message"] == "Turn 2"
 
+    @pytest.mark.asyncio
+    async def test_get_recent_turns_real_db(self, tmp_path):
+        """Integration test: read recent turns from a real SQLite DB."""
+        import json
+
+        db_path = tmp_path / "memory.db"
+
+        # ── Set up schema directly (bypass setup() to avoid sqlite_vec) ──
+        import aiosqlite
+
+        conn = await aiosqlite.connect(str(db_path))
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("""\
+            CREATE TABLE IF NOT EXISTS diary (
+                user_message   TEXT NOT NULL DEFAULT '',
+                messages       TEXT NOT NULL DEFAULT '[]',
+                summary        TEXT DEFAULT '',
+                tags           TEXT DEFAULT '',
+                created_at     TEXT NOT NULL,
+                channel        TEXT DEFAULT '',
+                who_helped     TEXT DEFAULT '',
+                what_model     TEXT DEFAULT '',
+                token_count    INTEGER NOT NULL DEFAULT 0
+            )""")
+        await conn.commit()
+
+        # ── Insert 5 turns ──
+        for i in range(1, 6):
+            await conn.execute(
+                """INSERT INTO diary
+                   (user_message, messages, created_at, who_helped, what_model, token_count)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    f"User message {i}",
+                    json.dumps([{"role": "assistant", "content": f"Reply {i}"}]),
+                    f"2026-07-22T10:0{i}:00",
+                    "deepseek-v4-flash",
+                    "deepseek/deepseek-v4-flash",
+                    100 + i,
+                ),
+            )
+        await conn.commit()
+        await conn.close()
+
+        # ── Read back via SessionStore ──
+        store = SessionStore(db_path)
+        store._conn = await aiosqlite.connect(str(db_path))
+        store._conn.row_factory = aiosqlite.Row
+
+        # With limit=3, should return the 3 most recent (rows 3,4,5), oldest-first
+        result = await store.get_recent_turns(limit=3)
+        assert len(result) == 3
+        assert result[0]["user_message"] == "User message 3"
+        assert result[1]["user_message"] == "User message 4"
+        assert result[2]["user_message"] == "User message 5"
+
+        # All columns should be present in each row
+        for turn in result:
+            assert "rowid" in turn
+            assert "user_message" in turn
+            assert "messages" in turn
+            assert "created_at" in turn
+            assert "who_helped" in turn
+            assert "what_model" in turn
+            assert "token_count" in turn
+
+        # Verify messages are parseable JSON
+        assert json.loads(result[0]["messages"])[0]["content"] == "Reply 3"
+
+        # No limit: should return all 5, oldest-first
+        all_result = await store.get_recent_turns(limit=50)
+        assert len(all_result) == 5
+        assert all_result[0]["user_message"] == "User message 1"
+        assert all_result[4]["user_message"] == "User message 5"
+
+        await store._conn.close()
+
 
 class TestSessionStoreHasTurns:
     """Tests for has_turns."""

@@ -564,7 +564,12 @@ class TestMCPServerConnectionHTTP:
 
     @pytest.mark.asyncio
     async def test_http_headers_passed_to_client(self):
-        """Custom config.headers are merged into the httpx client headers."""
+        """Custom config.headers are used in Streamable HTTP requests.
+
+        _connect_http first creates a bare httpx client for SSE detection,
+        then re-creates it with headers for Streamable HTTP POST requests.
+        Headers are also passed to the SSE detection stream() call.
+        """
         import httpx
 
         cfg = ServerConfig(
@@ -574,13 +579,30 @@ class TestMCPServerConnectionHTTP:
         )
         conn = MCPServerConnection(cfg)
 
+        # Mock the SSE detection stream to raise, falling through
+        # to Streamable HTTP where config.headers are merged.
+        mock_client1 = MagicMock(spec=httpx.AsyncClient)
+        mock_client1.stream = MagicMock(side_effect=ConnectionError("refused"))
+        mock_client1.aclose = AsyncMock()
+
+        mock_client2 = MagicMock(spec=httpx.AsyncClient)
+
         with patch.object(httpx, "AsyncClient") as mock_cls:
-            mock_client = MagicMock()
-            mock_cls.return_value = mock_client
+            mock_cls.side_effect = [mock_client1, mock_client2]
+
             await conn._connect_http()
 
-            # Verify AsyncClient was constructed with merged headers
-            call_kwargs = mock_cls.call_args.kwargs
-            assert call_kwargs["headers"]["Authorization"] == "Bearer mytoken"
-            assert call_kwargs["headers"]["Content-Type"] == "application/json"
-            assert "text/event-stream" in call_kwargs["headers"]["Accept"]
+            # First AsyncClient: no headers (bare client for SSE detection)
+            assert mock_cls.call_count == 2
+            first_kwargs = mock_cls.call_args_list[0].kwargs
+            assert "headers" not in first_kwargs
+
+            # SSE detection stream() was called with custom headers + Accept
+            mock_client1.stream.assert_called_once()
+            stream_kwargs = mock_client1.stream.call_args.kwargs
+            assert stream_kwargs["headers"]["Authorization"] == "Bearer mytoken"
+            assert stream_kwargs["headers"]["Accept"] == "text/event-stream"
+
+            # Second AsyncClient: includes custom headers
+            second_kwargs = mock_cls.call_args_list[1].kwargs
+            assert second_kwargs["headers"]["Authorization"] == "Bearer mytoken"

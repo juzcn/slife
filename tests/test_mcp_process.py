@@ -187,13 +187,13 @@ class TestMCPWrapperProcessCreateClient:
 
         with patch("slife.mcp.client.MCPClient") as MockClient:
             mock_client = MagicMock()
-            mock_client.connect_sse = AsyncMock()
+            mock_client.connect = AsyncMock()
             MockClient.return_value = mock_client
 
             result = await wp.create_client()
             assert result is mock_client
-            mock_client.connect_sse.assert_awaited_once_with(
-                "http://127.0.0.1:12345/sse",
+            mock_client.connect.assert_awaited_once_with(
+                "http://127.0.0.1:12345/mcp",
             )
 
     @pytest.mark.asyncio
@@ -244,7 +244,7 @@ class TestMCPWrapperProcessStop:
             await wp.stop()
 
             mock_term.assert_called_once_with(
-                mock_proc, graceful_timeout=5.0, label="mcp_wrapper",
+                mock_proc, graceful_timeout=1.0, force_timeout=2.0, label="mcp_wrapper",
             )
             assert wp._running is False
             assert wp._process is None
