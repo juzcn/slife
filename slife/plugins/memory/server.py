@@ -5,8 +5,8 @@ immutable row.  No sessions, no lifecycle — just turns.
 Restore loads the most recent N turns by rowid.
 
 Usage:
-    uv run python -m slife_memory.server               # auto-detect transport
-    uv run python -m slife_memory.server --port 9877   # HTTP mode
+    uv run python -m slife.plugins.memory.server       # auto-assigned port (SSE)
+    uv run python -m slife.plugins.memory.server --port 9877   # fixed port
 """
 
 import json
@@ -370,9 +370,11 @@ async def memory_remove_embedding() -> str:
 def main():
     import argparse
     from slife.logfmt import elapsed
+    from slife.server_utils import bind_free_port, signal_port
 
     parser = argparse.ArgumentParser(description="slife-memory server")
     parser.add_argument("--db", default=None)
+    parser.add_argument("--port", type=int, default=0)
     args = parser.parse_args()
 
     logger.info(
@@ -401,8 +403,25 @@ def main():
     with elapsed("memory_init", logger, level=logging.INFO, db=str(db_path)):
         asyncio.run(_init())
 
-    logger.info("memory_ready transport=stdio db=%s", db_path)
-    mcp.run(transport="stdio")
+    # Bind free port if not specified, signal parent, start SSE
+    if args.port:
+        port = args.port
+        logger.info("memory_ready transport=sse port=%s db=%s", port, db_path)
+        mcp.run(
+            transport="sse", host="127.0.0.1", port=port,
+            show_banner=False,
+            uvicorn_config={"log_config": None},
+        )
+    else:
+        sock, port = bind_free_port()
+        logger.info("memory_ready transport=sse port=%s db=%s", port, db_path)
+        signal_port(port)
+        mcp.run(
+            transport="sse", host="127.0.0.1", port=port, sockets=[sock],
+            show_banner=False,
+            uvicorn_config={"log_config": None},
+        )
+
     logger.info("memory_stop")
 
 

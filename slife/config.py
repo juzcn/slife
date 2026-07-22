@@ -309,6 +309,74 @@ class Config:
         if self.subagent_config is None:
             self.subagent_config = {"max_subagents": 5, "task_timeout": 120}
 
+    # ── Serialization (for subagent inheritance) ────────────────────
+
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-compatible dict for subagent inheritance.
+
+        Subagents receive this over ``SLIFE_CONFIG`` instead of reading
+        the json5 file — they inherit the main agent's in-memory config.
+        """
+        from dataclasses import asdict
+
+        return {
+            "models": [asdict(m) for m in self.models],
+            "active_model_ref": self.active_model_ref,
+            "tools": self.tools,
+            "env": self.env,
+            "max_iterations": self.max_iterations,
+            "context_floor": self.context_floor,
+            "context_ceiling": self.context_ceiling,
+            "tool_result_ceiling": self.tool_result_ceiling,
+            "agent_id": self.agent_id,
+            "mcp_config": asdict(self.mcp_config) if self.mcp_config else None,
+            "memory_config": asdict(self.memory_config) if self.memory_config else None,
+            "wechat_config": asdict(self.wechat_config) if self.wechat_config else None,
+            "a2a_config": asdict(self.a2a_config) if self.a2a_config else None,
+            "subagent_config": self.subagent_config,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Config":
+        """Reconstruct a Config from a dict (inverse of ``to_dict()``).
+
+        Used by subagents to deserialize ``SLIFE_CONFIG``.
+        """
+        models = [ModelConfig(**m) for m in data.get("models", [])]
+
+        mcp_cfg = data.get("mcp_config")
+        if isinstance(mcp_cfg, dict):
+            mcp_cfg = MCPConfig(**mcp_cfg)
+
+        mem_cfg = data.get("memory_config")
+        if isinstance(mem_cfg, dict):
+            mem_cfg = MemoryConfig(**mem_cfg)
+
+        wc_cfg = data.get("wechat_config")
+        if isinstance(wc_cfg, dict):
+            wc_cfg = WechatConfig(**wc_cfg)
+
+        a2a_cfg = data.get("a2a_config")
+        if isinstance(a2a_cfg, dict):
+            a2a_cfg = A2AConfig(**a2a_cfg)
+
+        return cls(
+            models=models,
+            active_model_ref=data.get("active_model_ref", ""),
+            tools=data.get("tools", []),
+            env=data.get("env"),
+            max_iterations=data.get("max_iterations", 10),
+            context_floor=data.get("context_floor", 0.2),
+            context_ceiling=data.get("context_ceiling", 0.8),
+            tool_result_ceiling=data.get("tool_result_ceiling", 0.2),
+            agent_id=data.get("agent_id", "slife"),
+            mcp_config=mcp_cfg,
+            memory_config=mem_cfg,
+            wechat_config=wc_cfg,
+            a2a_config=a2a_cfg,
+            subagent_config=data.get("subagent_config"),
+        )
+
     # ── Config file I/O helpers ─────────────────────────────────────
 
     def _read_config(self, action: str, server: str) -> dict | None:

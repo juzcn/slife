@@ -83,7 +83,7 @@ What the LLM cannot know (and the prompt provides):
 │  cli.py  skill.py  a2a.py                                        │
 │                                                                   │
 │  Memory Tools       Skills         MCP Tools        A2A Tools    │
-│  slife/plugins/memory/  skills/ dir  slife/mcp/    slife/a2a/   │
+│  slife/plugins/memory/  skills/ dir  slife/sse/    slife/a2a/   │
 │  (MCP service)      SKILL.md       (MCP proxy)      MQTT+subagent│
 ├──────────────────────────────────────────────────────────────────┤
 │  LLM Client (AsyncOpenAI)                                        │
@@ -96,31 +96,39 @@ What the LLM cannot know (and the prompt provides):
 
 ### Plugin Architecture
 
-Slife has a **plugin system** built on the MCP stdio transport (JSON-RPC over
-stdin/stdout).  A plugin is an independent child process that uses FastMCP as a
-server framework, but it is **not** a standard MCP service — it is a
-Slife‑specific plugin that borrows MCP stdio as its IPC mechanism.  Tools are
-exposed through the standard ``list_tools`` / ``call_tool`` methods and
-automatically registered in Slife's ``ToolRegistry``.
+Slife has a **plugin system** built on HTTP SSE (Server-Sent Events) transport.
+Each plugin is an independent child process running a FastMCP server on a
+dynamically-assigned ``127.0.0.1`` port — zero configuration required.  The
+parent process discovers the port via a one-line JSON signal on stdout, then
+connects via ``mcp.client.sse.sse_client``.
 
-All three (slife-mcp, slife-memory, slife-wechat) are built-in plugins using
-this exact mechanism.  **slife-mcp is the gateway for external MCP services
-only** — memory and wechat connect directly to Slife, not through the proxy:
+Multiple clients (main agent + subagents) connect to the **same** plugin
+servers — subagents no longer spawn their own plugin processes.  Plugin ports
+are passed to subagents via environment variables (``SLIFE_MCP_PORT``,
+``SLIFE_MEMORY_PORT``, ``SLIFE_WECHAT_PORT``).
+
+**slife-mcp is the gateway for external MCP services** — it supports external
+MCP servers via both **stdio** (spawn process, raw JSON-RPC over pipes) and
+**http** (POST JSON-RPC to Streamable HTTP endpoints).  Memory and wechat
+connect directly to Slife, not through the proxy:
 
 ```
-                         ┌─ MCPWrapperProcess ── slife-mcp (gateway)
+                         ┌─ MCPWrapperProcess ── slife-mcp (gateway, HTTP SSE)
                          │    │
                          │    └── ConnectionPool ── external MCP servers
                          │         ├── filesystem (npx, stdio)
                          │         ├── fetch (uvx, stdio)
                          │         ├── remote-api (HTTP POST)
-                         │         └── ... (any MCP server)
+                         │         └── ... (any MCP server, stdio or http)
                          │
-Slife ── MCPClient ──────┼─ MCPWrapperProcess ── slife-memory (direct)
-  (stdio per plugin)     │    └── ~/.slife/<agent_id>.db
+Slife ── MCPClient ──────┼─ MCPWrapperProcess ── slife-memory (HTTP SSE)
+  (SSE, localhost)       │    └── ~/.slife/<agent_id>.db
                          │
-                         └─ MCPWrapperProcess ── slife-wechat (direct)
+                         └─ MCPWrapperProcess ── slife-wechat (HTTP SSE)
                               └── iLink ClawBot API
+
+  Subagent ── MCPClient ──► same slife-mcp / slife-memory / slife-wechat
+    (SSE, localhost)        (shared plugin servers — no duplicate processes)
 
   MQTT ──── mosquitto ─── other Slife instances
   JSON-RPC 2.0 ─── subagent (headless)
@@ -128,31 +136,35 @@ Slife ── MCPClient ──────┼─ MCPWrapperProcess ── slife-m
 
 #### The Plugin Contract
 
-A Slife plugin uses **MCP stdio as its IPC transport**, but it is **not a
-standard MCP service** — it cannot be consumed by arbitrary MCP clients.  It
-is a Slife‑specific child process that happens to speak JSON-RPC over
-stdin/stdout via FastMCP.
+A Slife plugin is a FastMCP server running on **HTTP SSE** transport on
+``127.0.0.1`` with an auto-assigned port.  It uses the MCP protocol over SSE —
+standard MCP clients can connect, but the plugin is Slife‑specific in its tool
+definitions and lifecycle.
 
 A plugin must:
 
-1. **Be a FastMCP server on stdio** — `mcp = FastMCP("name")` with `mcp.run(transport="stdio")`
-2. **Define one or more `@mcp.tool` functions** — these become Slife tools
-3. **Be importable** — `python -m <module>.server` must work
+1. **Bind a free port and signal the parent** — call ``bind_free_port()`` to get a
+   ``(socket, port)`` tuple, then ``signal_port(port)`` to write ``{"port": N}``
+   to stdout so the parent discovers the port.
+2. **Start FastMCP on SSE transport** — ``mcp.run(transport="sse", host="127.0.0.1", port=port, sockets=[sock])``
+3. **Define one or more `@mcp.tool` functions** — these become Slife tools
+4. **Be importable** — ``python -m <module>.server`` must work
 
 That's the entire contract. No base class, no import hook, no SDK. Just a
-FastMCP stdio process — the same technology, but a different contract from
-standard MCP services.
+FastMCP SSE process — zero configuration, auto-assigned port.
 
 #### Infrastructure (reusable)
 
 Every plugin startup follows the same path in `slife/agent/service.py`:
 
 ```
-1. MCPWrapperProcess(command, args, server_module).start()
-   → asyncio.create_subprocess_exec(exe, *args, stdin=PIPE, stdout=PIPE)
+1. MCPWrapperProcess(command, args).start()
+   → asyncio.create_subprocess_exec(exe, *args, stdin=DEVNULL, stdout=PIPE)
+   → reads {"port": N} from child stdout → stores self._port
 
-2. MCPClient.connect_streams(process.stdout, process.stdin)
-   → JSON-RPC over asyncio.Queue adapters + ClientSession
+2. MCPClient.connect_sse(url)
+   → mcp.client.sse.sse_client(f"http://127.0.0.1:{port}/sse")
+   → ClientSession(read_stream, write_stream) + initialize()
 
 3. list_tools() → discover tool schemas
 
@@ -160,13 +172,45 @@ Every plugin startup follows the same path in `slife/agent/service.py`:
    → registered in ToolRegistry
 ```
 
-Key classes in `slife/mcp/`:
+Port discovery (zero-config) via `slife/server_utils.py`:
+
+```python
+sock, port = bind_free_port()          # bind 127.0.0.1:0, OS assigns port
+signal_port(port)                      # write {"port": N}\n to stdout
+mcp.run(transport="sse", sockets=[sock])  # pre-bound socket, no race
+```
+
+**Subagent sharing:** the main agent stores plugin ports in `os.environ`
+(`SLIFE_MCP_PORT`, `SLIFE_MEMORY_PORT`, `SLIFE_WECHAT_PORT`).  Subagents read
+these env vars and call `connect_mcp_http(port)` / `connect_memory_http(port)`
+/ `connect_wechat_http(port)` — they connect to the main agent's plugin
+servers via HTTP SSE instead of spawning their own processes.
+
+Key classes in `slife/sse/`:
 
 | Class | Role |
 |-------|------|
-| `MCPClient` (`client.py`) | stdio MCP connection — `connect_streams()`, `list_tools()`, `call_tool()` |
+| `MCPClient` (`client.py`) | SSE MCP connection — `connect_sse(url)`, `list_tools()`, `call_tool()` |
 | `MCPProxyTool` (`tool_adapter.py`) | Adapts an MCP tool to Slife's `Tool` ABC. Sets `name`/`description`/`parameters` at instance level, tool names prefixed as `{server}__{tool}` |
-| `MCPWrapperProcess` (`process.py`) | Child process lifecycle — `start()`, `create_client()`, `stop()` |
+| `MCPWrapperProcess` (`process.py`) | Child process lifecycle — `start()` (spawn + read port signal), `create_client()` (connect SSE), `stop()` |
+
+#### slife-mcp — External MCP Gateway (Dual Transport)
+
+slife-mcp is the **unified gateway** for all external MCP server connections.
+The main agent never connects to external MCP servers directly — it always
+routes through slife-mcp's `ConnectionPool` (`slife/plugins/sse/connection.py`).
+
+External MCP servers are connected via **two transports**:
+
+| Transport | Mechanism | When to use |
+|-----------|-----------|-------------|
+| **stdio** | Spawn subprocess, raw JSON-RPC over pipes | Local MCP servers installed via npx/uvx (filesystem, fetch, etc.) |
+| **http** | POST JSON-RPC via `httpx.AsyncClient` | Remote MCP endpoints or Streamable HTTP servers |
+
+Both transports share the same `MCPServerConnection` class — `_request()` and
+`_notify()` dispatch to `_request_stdio()` or `_request_http()` based on
+`ServerConfig.transport`.  The transport is auto-detected: if `url` is set →
+http, otherwise → stdio.
 
 #### Harness Tools vs. LLM Tools
 
@@ -240,7 +284,7 @@ mcp: {
       description: "My custom MCP server.",
     },
     "remote-api": {                      // HTTP example
-      url: "https://api.example.com/mcp",
+      url: "https://api.example.com/sse",
       headers: { Authorization: "Bearer ${TOKEN}" },
       description: "Remote MCP server over HTTP.",
     },
@@ -303,7 +347,7 @@ through the slife-mcp proxy with auto-persistence to the config file.
 
 #### Tool Routing (MCPProxyTool.execute)
 
-The `MCPProxyTool.execute()` method (`slife/mcp/tool_adapter.py:103-148`) dispatches
+The `MCPProxyTool.execute()` method (`slife/sse/tool_adapter.py:103-148`) dispatches
 tool calls through one of three paths based on the tool's server origin:
 
 | Server | Routing path | MCP client used |
@@ -499,7 +543,7 @@ Slife ── MCPClient ────────────▶ slife-wechat (dir
 
 **Architecture rationale:** MCP servers are subprocesses. If managed in-process, a Slife crash would orphan them. A separate gateway process (slife-mcp) means external MCP servers stay alive and can be shared across Slife instances. Built-in services (memory, wechat) each get their own process with a direct MCP connection — no proxy routing overhead.
 
-### Slife side (`slife/mcp/`)
+### Slife side (`slife/sse/`)
 
 - **MCPClient** (`client.py`): connects via stdio (child process). Uses `asyncio.Queue` adapters to bridge subprocess pipes to MCP's `ClientSession`.
 - **MCPProxyTool** (`tool_adapter.py`): adapts external MCP tools to Slife's `Tool` ABC. Sets `name`/`description`/`parameters` at instance level. Tool names are prefixed with the server name.
@@ -511,7 +555,7 @@ Slife ── MCPClient ────────────▶ slife-wechat (dir
 3. Discover wrapper management tools, create proxies
 4. Auto-connect pre-configured servers in parallel; eager servers get their tools discovered immediately, lazy servers connect but skip registration
 
-### slife-mcp side (`slife/plugins/mcp/`)
+### slife-mcp side (`slife/plugins/sse/`)
 
 A FastMCP server running on stdio transport. Always spawned as a child process.
 

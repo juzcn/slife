@@ -44,6 +44,10 @@ class Tool(ABC):
     # The factory skips registration when a2a_config is absent or disabled.
     requires_a2a: ClassVar[bool] = False
 
+    # Set to True on tools that should NOT be available to subagents.
+    # Subagents inherit the main agent's tool set but skip these.
+    _subagent_skip: ClassVar[bool] = False
+
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
         for attr in ("name", "description", "parameters"):

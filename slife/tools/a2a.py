@@ -629,6 +629,7 @@ class A2ASubscribeTaskTool(Tool):
 
 class SubagentSpawnTool(Tool):
     """Spawn a new local subagent worker process."""
+    _subagent_skip = True  # subagents must not spawn more subagents
 
     name = "a2a_spawn_subagent"
     description = (
@@ -681,6 +682,7 @@ class SubagentSpawnTool(Tool):
 
 class SubagentStopTool(Tool):
     """Stop a locally-managed subagent process."""
+    _subagent_skip = True  # subagents must not manage sibling subagents
 
     name = "a2a_stop_subagent"
     description = (

@@ -4,8 +4,10 @@ Provides consistent logging setup across all child-process servers:
 slife-mcp, slife-memory, slife-wechat, and slife-subagent.
 """
 
+import json
 import logging
 import os
+import socket
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -106,6 +108,35 @@ def shutdown_server_logging(extra_logger_names: tuple[str, ...] = ()) -> None:
             except Exception:
                 pass
         child.handlers.clear()
+
+
+# ── Port binding ──────────────────────────────────────────────────────
+
+
+def bind_free_port(host: str = "127.0.0.1") -> tuple[socket.socket, int]:
+    """Bind a socket to *host*:0 and return ``(socket, port)``.
+
+    The OS assigns a free port.  The returned socket is pre-bound and
+    can be passed directly to FastMCP via ``sockets=[sock]`` — no race
+    between port discovery and server startup.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, 0))
+    port = sock.getsockname()[1]
+    return sock, port
+
+
+def signal_port(port: int) -> None:
+    """Write the port to stdout as a JSON line and close stdout.
+
+    The parent ``MCPWrapperProcess`` reads this line to discover the
+    dynamically-assigned port before connecting via HTTP SSE.
+    """
+    line = json.dumps({"port": port}, ensure_ascii=False)
+    sys.stdout.buffer.write((line + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
+    sys.stdout.close()
 
 
 # ── JSON response helpers (re-exported from logfmt) ────────────────────

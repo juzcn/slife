@@ -28,25 +28,11 @@ class TestMCPWrapperProcessInit:
         wp = MCPWrapperProcess(args=["-c", "print('hi')"])
         assert wp._args == ["-c", "print('hi')"]
 
-    def test_custom_server_module(self):
-        wp = MCPWrapperProcess(server_module="custom.server")
-        assert wp._args == ["-m", "custom.server"]
-
-    def test_custom_command_overrides_server_module(self):
-        wp = MCPWrapperProcess(command="python3", server_module="custom.server")
-        assert wp._command == "python3"
-        assert wp._args == ["-m", "custom.server"]
-
     def test_initial_state_not_running(self):
         wp = MCPWrapperProcess()
         assert wp._running is False
         assert wp._process is None
-
-    def test_custom_args_overrides_server_module(self):
-        wp = MCPWrapperProcess(
-            args=["-m", "other.module"], server_module="custom.server",
-        )
-        assert wp._args == ["-m", "other.module"]
+        assert wp._port == 0
 
 
 class TestMCPWrapperProcessProperties:
@@ -104,11 +90,12 @@ class TestMCPWrapperProcessStart:
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             with patch("slife.mcp.process.logger"):
-                with patch("slife.mcp.process.asyncio.create_task"):
-                    await wp.start()
+                with patch.object(wp, "_read_port_signal", AsyncMock()):
+                    with patch("slife.mcp.process.asyncio.create_task"):
+                        await wp.start()
 
-            assert wp._running is True
-            assert wp._process is mock_proc
+                assert wp._running is True
+                assert wp._process is mock_proc
 
     @pytest.mark.asyncio
     async def test_start_passes_env_vars(self):
@@ -120,10 +107,11 @@ class TestMCPWrapperProcessStart:
         with patch("asyncio.create_subprocess_exec") as mock_create:
             mock_create.return_value = mock_proc
             with patch("slife.mcp.process.logger"):
-                with patch("slife.mcp.process.get_session_id",
-                           return_value="test-sid-1234"):
-                    with patch("slife.mcp.process.asyncio.create_task"):
-                        await wp.start()
+                with patch.object(wp, "_read_port_signal", AsyncMock()):
+                    with patch("slife.mcp.process.get_session_id",
+                               return_value="test-sid-1234"):
+                        with patch("slife.mcp.process.asyncio.create_task"):
+                            await wp.start()
 
             call_kwargs = mock_create.call_args[1]
             assert "env" in call_kwargs
@@ -160,9 +148,23 @@ class TestMCPWrapperProcessCreateClient:
             await wp.create_client()
 
     @pytest.mark.asyncio
+    async def test_raises_when_port_not_discovered(self):
+        wp = MCPWrapperProcess()
+        wp._running = True
+        mock_proc = MagicMock(spec=asyncio.subprocess.Process)
+        mock_proc.pid = 42
+        mock_proc.returncode = None
+        wp._process = mock_proc
+        # _port is still 0
+
+        with pytest.raises(RuntimeError, match="port not discovered"):
+            await wp.create_client()
+
+    @pytest.mark.asyncio
     async def test_raises_when_process_exited(self):
         wp = MCPWrapperProcess()
         wp._running = True
+        wp._port = 12345
         mock_proc = MagicMock(spec=asyncio.subprocess.Process)
         mock_proc.pid = 42
         mock_proc.returncode = 1  # Exited with error
@@ -170,38 +172,35 @@ class TestMCPWrapperProcessCreateClient:
         mock_proc.stderr.read = AsyncMock(return_value=b"crash info\n")
         wp._process = mock_proc
 
-        with pytest.raises(RuntimeError, match="MCP child process.*exited"):
+        with pytest.raises(RuntimeError, match="exited with code 1"):
             await wp.create_client()
 
     @pytest.mark.asyncio
     async def test_creates_client_successfully(self):
         wp = MCPWrapperProcess()
         wp._running = True
+        wp._port = 12345
         mock_proc = MagicMock(spec=asyncio.subprocess.Process)
         mock_proc.pid = 42
         mock_proc.returncode = None  # Still running
-        mock_proc.stdout = MagicMock()
-        mock_proc.stdin = MagicMock()
         wp._process = mock_proc
 
-        # MCPClient is imported inside create_client() via:
-        #   from slife.mcp.client import MCPClient
         with patch("slife.mcp.client.MCPClient") as MockClient:
             mock_client = MagicMock()
-            mock_client.connect_streams = AsyncMock()
+            mock_client.connect_sse = AsyncMock()
             MockClient.return_value = mock_client
 
             result = await wp.create_client()
             assert result is mock_client
-            mock_client.connect_streams.assert_awaited_once_with(
-                read_stream=mock_proc.stdout,
-                write_stream=mock_proc.stdin,
+            mock_client.connect_sse.assert_awaited_once_with(
+                "http://127.0.0.1:12345/sse",
             )
 
     @pytest.mark.asyncio
     async def test_stderr_read_error_is_handled(self):
         wp = MCPWrapperProcess()
         wp._running = True
+        wp._port = 12345
         mock_proc = MagicMock(spec=asyncio.subprocess.Process)
         mock_proc.pid = 42
         mock_proc.returncode = 1

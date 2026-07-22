@@ -227,6 +227,7 @@ class AddSkillTool(_SkillDirMixin, Tool):
     """
 
     name = "add_skill"
+    _subagent_skip = True  # subagent should not modify skills on disk
     description = (
         "Write skill files to the skills directory. Accepts either "
         "individual {path, content} files or a base64-encoded "
@@ -418,6 +419,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):
     """
 
     name = "remove_skill"
+    _subagent_skip = True  # subagent should not modify skills on disk
     description = (
         "Delete a skill directory and all its contents from the "
         "skills directory."

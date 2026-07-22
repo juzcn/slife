@@ -43,6 +43,7 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):
     """
 
     name = "config_env_set"
+    _subagent_skip = True  # subagent has no config _path
     description = (
         "Set an env var in slife.json5. "
         "For secrets (API keys) prefer config_secret_register — it writes "
@@ -104,6 +105,7 @@ class ConfigSecretRegisterTool(_ConfigPathMixin, Tool):
     """
 
     name = "config_secret_register"
+    _subagent_skip = True  # subagent has no config _path
     description = (
         "Register a secret env var (API key, token, password) in slife.json5. "
         "Writes a ${VAR} placeholder — NEVER accepts or sees the secret value. "
@@ -224,6 +226,7 @@ class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):
     """
 
     name = "config_env_remove"
+    _subagent_skip = True  # subagent has no config _path
     description = (
         "Remove an env var entry from slife.json5 only. "
         "Does NOT touch the OS keyring — secrets stored via credstore "

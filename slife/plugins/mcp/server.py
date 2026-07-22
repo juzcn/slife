@@ -1,7 +1,7 @@
 """slife-mcp wrapper server — FastMCP server with MCP connection management tools.
 
 This is the entry point for the slife-mcp child process. It:
-  1. Starts a FastMCP server on stdio transport
+  1. Starts a FastMCP server on HTTP SSE transport (auto-assigned port)
   2. Exposes management tools for the slife agent to control external MCP connections
   3. Maintains persistent connections to external MCP servers
 """
@@ -380,17 +380,27 @@ async def mcp_disable_server(name: str) -> str:
 
 
 def main():
-    """Run the slife-mcp wrapper server on stdio transport.
+    """Run the slife-mcp wrapper server on HTTP SSE transport.
 
-    Always uses stdio — slife-mcp is always spawned as a child process.
+    Binds a free port on 127.0.0.1, signals the parent process, and
+    starts the SSE server.  Port is auto-assigned by the OS — zero config.
     """
     from slife.logfmt import elapsed
+    from slife.server_utils import bind_free_port, signal_port
 
+    sock, port = bind_free_port()
     logger.info(
-        "mcp_start transport=stdio log=%s pid=%s", _log_path, os.getpid(),
+        "mcp_start transport=sse port=%s log=%s pid=%s",
+        port, _log_path, os.getpid(),
     )
-    with elapsed("mcp_init", logger, level=logging.INFO, transport="stdio"):
-        mcp.run(transport="stdio")
+    signal_port(port)
+
+    with elapsed("mcp_init", logger, level=logging.INFO, transport="sse", port=str(port)):
+        mcp.run(
+        transport="sse", host="127.0.0.1", port=port, sockets=[sock],
+        show_banner=False,
+        uvicorn_config={"log_config": None},
+    )
     logger.info("mcp_stop")
 
 

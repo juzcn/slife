@@ -1,60 +1,11 @@
-"""Tests for Slife.mcp.client — MCPClient and adapters."""
+"""Tests for Slife.mcp.client — MCPClient (SSE transport)."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from slife.mcp.client import (
-    MCPClient,
-    _ReadAdapter,
-    _WriteAdapter,
-)
-
-
-# ── _ReadAdapter / _WriteAdapter ────────────────────────────────────────────
-
-
-class TestReadAdapter:
-    """Tests for _ReadAdapter."""
-
-    @pytest.mark.asyncio
-    async def test_receive_returns_from_queue(self):
-        queue = asyncio.Queue()
-        await queue.put("test_message")
-        adapter = _ReadAdapter(queue, MagicMock())
-
-        result = await adapter.receive()
-        assert result == "test_message"
-
-    @pytest.mark.asyncio
-    async def test_aiter_yields_items(self):
-        queue = asyncio.Queue()
-        await queue.put("first")
-        await queue.put("second")
-
-        async def closer():
-            await asyncio.sleep(0.01)
-            await queue.put(None)  # sentinel
-
-        adapter = _ReadAdapter(queue, MagicMock())
-        items = []
-        # We check __aiter__ returns self
-        assert adapter.__aiter__() is adapter
-
-
-class TestWriteAdapter:
-    """Tests for _WriteAdapter."""
-
-    @pytest.mark.asyncio
-    async def test_send_puts_to_queue(self):
-        queue = asyncio.Queue()
-        adapter = _WriteAdapter(queue)
-
-        await adapter.send("msg")
-
-        result = await queue.get()
-        assert result == "msg"
+from slife.mcp.client import MCPClient
 
 
 # ── MCPClient ───────────────────────────────────────────────────────────────
@@ -70,7 +21,7 @@ class TestMCPClientProperties:
     def test_initial_state(self):
         client = MCPClient()
         assert client._session is None
-        assert client._process is None
+        assert client._exit_stack is None
 
 
 class TestMCPClientDisconnect:
@@ -85,6 +36,7 @@ class TestMCPClientDisconnect:
 
         assert not client.is_connected
         assert client._session is None
+        assert client._exit_stack is None
 
     @pytest.mark.asyncio
     async def test_disconnect_handles_clean_shutdown(self):
@@ -219,3 +171,90 @@ class TestMCPClientPing:
 
         result = await client.ping()
         assert result is False
+
+
+class TestMCPClientConnectSSE:
+    """Tests for connect_sse (SSE transport with retry)."""
+
+    @pytest.mark.asyncio
+    async def test_connect_sse_sets_state(self):
+        client = MCPClient()
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+
+        with patch("slife.mcp.client.sse_client") as mock_sse:
+            mock_read = MagicMock()
+            mock_write = MagicMock()
+            mock_sse_ctx = MagicMock()
+            mock_sse_ctx.__aenter__ = AsyncMock(
+                return_value=(mock_read, mock_write),
+            )
+            mock_sse_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_sse.return_value = mock_sse_ctx
+
+            with patch("slife.mcp.client.ClientSession") as mock_session_cls:
+                mock_session_ctx = MagicMock()
+                mock_session_ctx.__aenter__ = AsyncMock(
+                    return_value=mock_session,
+                )
+                mock_session_ctx.__aexit__ = AsyncMock(return_value=None)
+                mock_session_cls.return_value = mock_session_ctx
+
+                await client.connect_sse("http://127.0.0.1:1234/sse")
+
+                assert client.is_connected is True
+                assert client._session is mock_session
+                assert client._exit_stack is not None
+                mock_session.initialize.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_sse_already_connected(self):
+        client = MCPClient()
+        client._connected = True
+
+        with patch("slife.mcp.client.logger") as mock_logger:
+            await client.connect_sse("http://127.0.0.1:1234/sse")
+            mock_logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_sse_retries_on_failure(self):
+        """ConnectionError triggers retry, eventually succeeds."""
+        client = MCPClient()
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+
+        with patch("slife.mcp.client.sse_client") as mock_sse:
+            call_count = [0]
+
+            def _make_ctx():
+                mock_read = MagicMock()
+                mock_write = MagicMock()
+                mock_ctx = MagicMock()
+                mock_ctx.__aenter__ = AsyncMock(
+                    return_value=(mock_read, mock_write),
+                )
+                mock_ctx.__aexit__ = AsyncMock(return_value=None)
+                return mock_ctx
+
+            fail_ctx = MagicMock()
+            fail_ctx.__aenter__ = AsyncMock(side_effect=ConnectionError("refused"))
+            fail_ctx.__aexit__ = AsyncMock(return_value=None)
+
+            mock_sse.side_effect = [
+                fail_ctx,
+                fail_ctx,
+                _make_ctx(),
+            ]
+
+            with patch("slife.mcp.client.ClientSession") as mock_sc:
+                mock_sc_ctx = MagicMock()
+                mock_sc_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+                mock_sc_ctx.__aexit__ = AsyncMock(return_value=None)
+                mock_sc.return_value = mock_sc_ctx
+
+                with patch("slife.mcp.client.asyncio.sleep", AsyncMock()):
+                    await client.connect_sse("http://127.0.0.1:1234/sse")
+
+                assert client.is_connected is True

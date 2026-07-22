@@ -14,6 +14,7 @@ through a unified Inbox.
 import asyncio
 import json
 import logging
+import os
 import sys
 
 from slife.agent.system_prompt import build as build_system_prompt
@@ -42,9 +43,10 @@ class AgentService:
     per-source conversations.
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, is_subagent: bool = False):
         self.config = config
-        self.tool_registry = create_tools_from_config(config.tools, config=config)
+        self.is_subagent = is_subagent
+        self.tool_registry = create_tools_from_config(config.tools, config=config, is_subagent=is_subagent)
         self.llm_client = LLMClient(config.active_model)
         # Max tool result = tool_result_ceiling × context_window × 3 chars/token
         max_tool_result_chars = int(
@@ -89,14 +91,17 @@ class AgentService:
         # MCP integration state
         self._mcp_client: MCPClient | None = None
         self._mcp_process = None
+        self._mcp_port: int = 0
 
         # Memory integration state
         self._memory_client: MCPClient | None = None
         self._memory_process = None
+        self._memory_port: int = 0
 
         # WeChat integration state
         self._wechat_client: MCPClient | None = None
         self._wechat_process = None
+        self._wechat_port: int = 0
 
         # A2A integration state
         self._a2a_client = None
@@ -163,21 +168,64 @@ class AgentService:
         await self._auto_connect_mcp_servers()
         logger.info("mcp_init_done tools=%d", len(self.tool_registry.list_tools()))
 
+    async def connect_mcp_http(self, port: int) -> None:
+        """Connect to an already-running MCP wrapper via HTTP SSE.
+
+        Used by subagents to share the main agent's plugin servers
+        instead of spawning their own.
+        """
+        from slife.mcp.client import MCPClient
+
+        logger.info("mcp_http_connect port=%s", port)
+        client = MCPClient()
+        await client.connect_sse(f"http://127.0.0.1:{port}/sse")
+        self._mcp_client = client
+        self._mcp_port = port
+        await self._register_mcp_wrapper_tools()
+        await self._auto_connect_mcp_servers()
+        logger.info("mcp_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
+
+    async def connect_memory_http(self, port: int) -> None:
+        """Connect to an already-running memory server via HTTP SSE."""
+        from slife.mcp.client import MCPClient
+
+        logger.info("memory_http_connect port=%s", port)
+        client = MCPClient()
+        await client.connect_sse(f"http://127.0.0.1:{port}/sse")
+        self._memory_client = client
+        self._memory_port = port
+        await self._register_memory_tools()
+        logger.info("memory_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
+
+    async def connect_wechat_http(self, port: int) -> None:
+        """Connect to an already-running wechat server via HTTP SSE."""
+        from slife.mcp.client import MCPClient
+
+        logger.info("wechat_http_connect port=%s", port)
+        client = MCPClient()
+        await client.connect_sse(f"http://127.0.0.1:{port}/sse")
+        self._wechat_client = client
+        self._wechat_port = port
+        await self._register_wechat_tools()
+        logger.info("wechat_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
+
     # ── MCP private helpers ──────────────────────────────────────────
 
     async def _connect_mcp_wrapper(self) -> None:
-        """Spawn the MCP wrapper as a child process via stdio."""
+        """Spawn the MCP wrapper as a child process via HTTP SSE."""
         from slife.mcp.process import MCPWrapperProcess
 
         mcp_cfg = self.config.mcp_config
         assert mcp_cfg is not None
 
-        logger.info("mcp_wrapper_spawn transport=stdio")
+        logger.info("mcp_wrapper_spawn transport=sse")
         self._mcp_process = MCPWrapperProcess(
             command=mcp_cfg.wrapper_command,
             args=mcp_cfg.wrapper_args,
         )
         await self._mcp_process.start()
+        self._mcp_port = self._mcp_process.port
+        os.environ["SLIFE_MCP_PORT"] = str(self._mcp_port)
         self._mcp_client = await self._mcp_process.create_client()
 
     async def _register_mcp_wrapper_tools(self) -> None:
@@ -463,19 +511,20 @@ class AgentService:
             return False
 
     async def _connect_memory(self) -> None:
-        """Spawn the slife-memory service as a child process via stdio."""
+        """Spawn the slife-memory service as a child process via HTTP SSE."""
         from slife.mcp.process import MCPWrapperProcess
 
         mem_cfg = self.config.memory_config
         assert mem_cfg is not None
 
-        logger.info("memory_spawn transport=stdio")
+        logger.info("memory_spawn transport=sse")
         self._memory_process = MCPWrapperProcess(
             command=sys.executable,
             args=["-m", "slife.plugins.memory.server"],
-            server_module="slife.plugins.memory.server",
         )
         await self._memory_process.start()
+        self._memory_port = self._memory_process.port
+        os.environ["SLIFE_MEMORY_PORT"] = str(self._memory_port)
         self._memory_client = await self._memory_process.create_client()
 
     async def _register_memory_tools(self) -> None:
@@ -561,16 +610,17 @@ class AgentService:
             return False
 
     async def _connect_wechat(self) -> None:
-        """Spawn the slife-wechat service as a child process via stdio."""
+        """Spawn the slife-wechat service as a child process via HTTP SSE."""
         from slife.mcp.process import MCPWrapperProcess
 
-        logger.info("wechat_spawn transport=stdio")
+        logger.info("wechat_spawn transport=sse")
         self._wechat_process = MCPWrapperProcess(
             command=sys.executable,
             args=["-m", "slife.plugins.wechat.server"],
-            server_module="slife.plugins.wechat.server",
         )
         await self._wechat_process.start()
+        self._wechat_port = self._wechat_process.port
+        os.environ["SLIFE_WECHAT_PORT"] = str(self._wechat_port)
         self._wechat_client = await self._wechat_process.create_client()
 
     async def _register_wechat_tools(self) -> None:

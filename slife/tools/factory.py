@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 def create_tools_from_config(
     overrides: list[dict] | None = None,
     config: "Config | None" = None,
+    is_subagent: bool = False,
 ) -> ToolRegistry:
     """Build a ToolRegistry by auto-discovering all Tool subclasses.
 
@@ -29,6 +30,11 @@ def create_tools_from_config(
     can find them. The optional ``overrides`` list matches entries
     by ``name`` against each tool's ``Tool.name`` to customise
     or disable individual tools.
+
+    When *is_subagent* is True, tools marked with ``_subagent_skip``
+    are excluded — subagents inherit the main agent's tool set but
+    filter out tools that aren't suitable (e.g. spawning more
+    subagents, writing config files).
 
     Example overrides:
         [{name: "execute_shell", timeout: 60}, {name: "list_skills", enabled: false}]
@@ -48,12 +54,13 @@ def create_tools_from_config(
             logger.info("tool_disabled name=%s", tool_cls.name)
             continue
 
+        # Subagent filter — exclude tools marked _subagent_skip.
+        if is_subagent and getattr(tool_cls, "_subagent_skip", False):
+            logger.debug("tool_skipped_subagent name=%s", tool_cls.name)
+            continue
+
         # Skip tools that require the MQTT/A2A mesh when MQTT is not
         # configured at all (no ``mqtt`` section in slife.json5).
-        # We do NOT gate on a2a_config.enabled — that flag is set at
-        # runtime after the Mosquitto probe, which happens *after* tool
-        # registration.  Each tool handles "A2A client not connected"
-        # gracefully with a user-friendly error message.
         if getattr(tool_cls, "requires_a2a", False):
             a2a_cfg = getattr(config, "a2a_config", None) if config else None
             if a2a_cfg is None:

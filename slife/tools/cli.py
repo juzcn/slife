@@ -136,6 +136,7 @@ class CliAddTool(_ConfigPathMixin, Tool):
     """
 
     name = "cli_add_tool"
+    _subagent_skip = True  # subagent has no config _path to write to
     description = (
         "Persist an external CLI command to slife.json5 with its name, "
         "invocation, description, and optional install instructions. "
@@ -219,6 +220,7 @@ class CliRemoveTool(_ConfigPathMixin, Tool):
     """Remove a previously registered CLI tool."""
 
     name = "cli_remove_tool"
+    _subagent_skip = True  # subagent has no config _path to write to
     description = "Delete a CLI command registration from slife.json5."
     parameters = {
         "type": "object",

@@ -48,9 +48,11 @@ def clear_manager() -> None:
 class SubagentProcess:
     """Single subagent child process with JSON-RPC 2.0 IPC."""
 
-    def __init__(self, name: str, config_path: str | Path):
+    def __init__(self, name: str, config: "Config"):
+        import json as _json
+
         self._name = name
-        self._config_path = str(config_path)
+        self._config_json = _json.dumps(config.to_dict(), ensure_ascii=False)
         self._process: asyncio.subprocess.Process | None = None
         self._running = False
         self._stdout_task: asyncio.Task | None = None
@@ -73,9 +75,11 @@ class SubagentProcess:
 
     async def start(self) -> None:
         if self._running: return
-        cmd = [sys.executable, "-m", "slife.subagent.headless", self._config_path]
-        logger.info("spawn name=%s cmd=%s", self._name, " ".join(cmd))
-        env = dict(os.environ); env["SLIFE_SUBAGENT_NAME"] = self._name
+        cmd = [sys.executable, "-m", "slife.subagent.headless"]
+        logger.info("spawn name=%s", self._name)
+        env = dict(os.environ)
+        env["SLIFE_SUBAGENT_NAME"] = self._name
+        env["SLIFE_CONFIG"] = self._config_json
         self._process = await asyncio.create_subprocess_exec(
             *cmd, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
@@ -266,8 +270,7 @@ class SubagentManager:
     def __init__(self, config: "Config"):
         self._subagents: dict[str, SubagentProcess] = {}
         self._counter = 0
-        from slife.paths import get_config_path
-        self._config_path = str(config._path) if config._path else str(get_config_path())
+        self._config = config
         sc = config.subagent_config
         self._max = sc["max_subagents"]
         self._timeout = sc["task_timeout"]
@@ -279,7 +282,7 @@ class SubagentManager:
         if self.count >= self._max: raise RuntimeError(f"Max {self._max} subagents reached")
         if name is None: self._counter += 1; name = f"sub-{self._counter}"
         if name in self._subagents and self._subagents[name].is_running: return name
-        proc = SubagentProcess(name, self._config_path)
+        proc = SubagentProcess(name, self._config)
         await proc.start(); self._subagents[name] = proc
         return name
 

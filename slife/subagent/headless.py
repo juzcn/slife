@@ -76,7 +76,7 @@ async def _process(task_text: str, rpc_id, service) -> None:
         _write(error={"code": -32000, "message": str(e)}, rpc_id=rpc_id)
 
 
-async def run_headless(config_path: str = "slife.json5") -> None:
+async def run_headless() -> None:
     global _log_path
     from slife.config import Config
     from slife.agent.service import AgentService
@@ -85,14 +85,29 @@ async def run_headless(config_path: str = "slife.json5") -> None:
     _suffix = f"_{_name}" if _name else "_subagent"
     _log_path = setup_server_logging(_suffix)
     logger.info(
-        "subagent_start config=%s log=%s name=%s pid=%s",
-        config_path, _log_path,
+        "subagent_start log=%s name=%s pid=%s",
+        _log_path,
         os.environ.get("SLIFE_SUBAGENT_NAME", "?"),
         os.getpid(),
     )
 
-    with elapsed("config_load", logger, level=logging.INFO, path=config_path):
-        config = Config.from_json5(config_path)
+    # Inherit config from the main agent via SLIFE_CONFIG env var.
+    # Subagents never read the json5 file — they get the main agent's
+    # in-memory config directly.
+    _config_json = os.environ.get("SLIFE_CONFIG", "")
+    if _config_json:
+        import json as _json
+        with elapsed("config_load", logger, level=logging.INFO, source="SLIFE_CONFIG"):
+            config = Config.from_dict(_json.loads(_config_json))
+    else:
+        # Standalone mode: read config from file (fallback).
+        import sys as _sys
+        _config_path = next(
+            (a for a in _sys.argv[1:] if not a.startswith("-")), "slife.json5",
+        )
+        with elapsed("config_load", logger, level=logging.INFO, path=_config_path):
+            config = Config.from_json5(_config_path)
+
     logger.info(
         "config_loaded model=%s tools=%d memory=%s mcp=%s a2a=%s",
         config.active_model.ref,
@@ -102,13 +117,35 @@ async def run_headless(config_path: str = "slife.json5") -> None:
         "on" if config.a2a_config else "off",
     )
 
-    service = AgentService(config)
-    if config.mcp_config:
+    service = AgentService(config, is_subagent=True)
+
+    # Connect to the main agent's plugin servers via HTTP SSE when ports
+    # are provided.  Subagents share the main agent's plugins instead of
+    # spawning their own — avoids duplicate processes and shared state.
+    _mcp_port = os.environ.get("SLIFE_MCP_PORT", "")
+    _mem_port = os.environ.get("SLIFE_MEMORY_PORT", "")
+    _wc_port = os.environ.get("SLIFE_WECHAT_PORT", "")
+
+    if _mcp_port and config.mcp_config:
         try:
-            with elapsed("mcp_startup", logger, level=logging.INFO):
-                await service.start_mcp()
+            with elapsed("mcp_startup", logger, level=logging.INFO, port=_mcp_port):
+                await service.connect_mcp_http(int(_mcp_port))
         except Exception as e:
-            logger.warning("mcp_failed err=%s", e)
+            logger.warning("mcp_http_failed port=%s err=%s", _mcp_port, e)
+
+    if _mem_port and config.memory_config:
+        try:
+            with elapsed("memory_startup", logger, level=logging.INFO, port=_mem_port):
+                await service.connect_memory_http(int(_mem_port))
+        except Exception as e:
+            logger.warning("memory_http_failed port=%s err=%s", _mem_port, e)
+
+    if _wc_port and config.wechat_config and config.wechat_config.enabled:
+        try:
+            with elapsed("wechat_startup", logger, level=logging.INFO, port=_wc_port):
+                await service.connect_wechat_http(int(_wc_port))
+        except Exception as e:
+            logger.warning("wechat_http_failed port=%s err=%s", _wc_port, e)
 
     _write(result={"ready": True})
     logger.info("subagent_ready")
@@ -178,14 +215,13 @@ async def run_headless(config_path: str = "slife.json5") -> None:
             service.session_usage.total_tokens,
         )
         await service.stop_mcp()
+        await service.stop_memory()
+        await service.stop_wechat()
         shutdown_server_logging()
 
 
 def main(argv: list[str] | None = None) -> None:
-    config_path = next(
-        (a for a in (argv or []) if not a.startswith("-")), "slife.json5",
-    )
-    asyncio.run(run_headless(config_path))
+    asyncio.run(run_headless())
 
 
 if __name__ == "__main__":
