@@ -549,47 +549,66 @@ External CLI commands the LLM discovers and registers. The tools (`cli_add_tool`
 
 ### slife-mcp — MCP Proxy Plugin
 
-slife-mcp is a built-in plugin that manages persistent connections to **external** MCP servers. It runs as a child process (stdio), spawned by Slife via `MCPWrapperProcess`. Other built-in plugins (slife-memory, slife-wechat) connect directly to Slife via their own `MCPWrapperProcess` — they do **not** go through the slife-mcp proxy.
+slife-mcp is a built-in plugin that manages persistent connections to **external** MCP servers.  It runs as a child process spawned by Slife via `MCPWrapperProcess`.  Built-in plugins (slife-mcp, slife-memory, slife-wechat) each run as independent child processes communicating via **Streamable HTTP** — they do **not** go through the slife-mcp proxy.
 
 ```
-                         stdio
-Slife ── MCPClient ────────────▶ slife-mcp (gateway)
-                                      │
-                                      ├── filesystem MCP (npx, stdio)
-                                      ├── fetch MCP (uvx, stdio)
-                                      ├── remote MCP (HTTP POST)
-                                      └── ... (any MCP server)
+                    Streamable HTTP
+Slife ── MCPClient ─────────────────▶ slife-mcp (gateway)
+                                          │
+                                          ├── filesystem MCP (npx, stdio)
+                                          ├── fetch MCP (uvx, stdio)
+                                          ├── remote MCP (HTTP POST)
+                                          └── ... (any MCP server)
 
-                         stdio
-Slife ── MCPClient ────────────▶ slife-memory (direct)
-Slife ── MCPClient ────────────▶ slife-wechat (direct)
+                    Streamable HTTP
+Slife ── MCPClient ─────────────────▶ slife-memory (direct)
+Slife ── MCPClient ─────────────────▶ slife-wechat (direct)
 ```
 
-**Architecture rationale:** MCP servers are subprocesses. If managed in-process, a Slife crash would orphan them. A separate gateway process (slife-mcp) means external MCP servers stay alive and can be shared across Slife instances. Built-in services (memory, wechat) each get their own process with a direct MCP connection — no proxy routing overhead.
+**Architecture rationale:** MCP servers are subprocesses.  A separate gateway process (slife-mcp) means external MCP servers stay alive and can be shared across Slife instances.  Built-in services (memory, wechat) each get their own process with a direct MCP connection — no proxy routing overhead.
 
-### Slife side (`slife/sse/`)
+### Plugin Transport: Streamable HTTP
 
-- **MCPClient** (`client.py`): connects via stdio (child process). Uses `asyncio.Queue` adapters to bridge subprocess pipes to MCP's `ClientSession`.
-- **MCPProxyTool** (`tool_adapter.py`): adapts external MCP tools to Slife's `Tool` ABC. Sets `name`/`description`/`parameters` at instance level. Tool names are prefixed with the server name.
-- **MCPWrapperProcess** (`process.py`): generic child process lifecycle management — start, create client from streams, graceful stop (stdin close → SIGTERM → SIGKILL escalation). Used identically for all three built-in plugins (slife-mcp, slife-memory, slife-wechat).
+All plugins communicate with the harness via **Streamable HTTP** (MCP spec 2025-11-25).
+The transport is managed by `mcp.client.streamable_http.streamablehttp_client`
+on the client side and FastMCP's `transport="streamable-http"` on the server side.
+
+A monkey-patch in `slife/server_utils.py` (`create_plugin_server`) prevents
+FastMCP from closing the GET SSE writer after each response.  Without this
+patch, the SSE connection is torn down after every request/response cycle
+and subsequent tool calls hang until timeout (60 s).  The patch pops writers
+from the tracking dict without calling ``writer.close()``, keeping the GET SSE
+alive for the session lifetime.
+
+### Plugin Auto-Discovery
+
+Plugins are discovered at startup by `slife/plugins/__init__.py:discover_plugins()`:
+
+```
+slife/plugins/
+  memory/server.py      → "memory"
+  mcp/server.py         → "mcp"
+  wechat/server.py      → "wechat"
+  any_third_party/       → auto-discovered if it has server.py
+    server.py
+```
+
+Each plugin is a Python package with a `server.py` entry point that follows
+the plugin spec (`docs/plugins.md`).  Built-in plugins get harness-side
+post-connect hooks (memory restore, MCP auto-connect, WeChat poll loop).
+Third-party plugins use generic `start_plugin_server()` — just spawn and
+register tools.
+
+### Slife side (`slife/mcp/`)
+
+- **MCPClient** (`client.py`): connects via Streamable HTTP.  Uses `mcp.client.streamable_http.streamablehttp_client` for transport and `mcp.ClientSession` for the MCP protocol, managed via `contextlib.AsyncExitStack`.
+- **MCPProxyTool** (`tool_adapter.py`): adapts external MCP tools to Slife's `Tool` ABC.  Sets `name`/`description`/`parameters` at instance level.  Tool names are prefixed with the server name.
+- **MCPWrapperProcess** (`process.py`): generic child process lifecycle management — start (subprocess + port discovery), connect (Streamable HTTP client), graceful stop (terminate → kill escalation).  Used identically for all plugins.
 
 **Startup flow:**
-1. Spawn `slife.plugins.mcp.server` as child process via `MCPWrapperProcess.start()`
-2. Connect via `MCPClient.connect_streams()` over stdio pipes
-3. Discover wrapper management tools, create proxies
-4. Auto-connect pre-configured servers in parallel; eager servers get their tools discovered immediately, lazy servers connect but skip registration
-
-### slife-mcp side (`slife/plugins/sse/`)
-
-A FastMCP server running on stdio transport. Always spawned as a child process.
-
-**Management tools:** `mcp_add_server` / `mcp_remove_server` / `mcp_list_servers` / `mcp_list_tools` / `mcp_check_server` / `mcp_set_disclosure` / `mcp_call_tool` / `mcp_reload`
-
-**Connection pool** (`connection.py`): supports two transports for connecting to external MCP servers:
-- **stdio**: spawn server as subprocess, raw JSON-RPC over pipes
-- **http**: POST JSON-RPC to a Streamable HTTP MCP endpoint (with `mcp-session-id` header management)
-
-No anyio, no `ClientSession` — avoids TaskGroup conflicts with FastMCP.
+1. Memory plugin starts **first** (synchronous) — reads turns directly from SQLite for fast UI restore
+2. MCP wrapper and WeChat start in **background** workers — UI is already shown
+3. External MCP servers auto-connect in background via `asyncio.create_task` — tools register incrementally as each server connects
 
 ### Post-Connect Setup
 
@@ -679,7 +698,7 @@ same architecture as slife-mcp.
 ### Architecture
 
 ```
-                         MCP protocol (stdio)
+                   Streamable HTTP
 slife agent ───────────────┼────────────────
                            │
                     ┌──────────────┐
@@ -737,6 +756,22 @@ CREATE TABLE diary (
 All modes search the full diary including the active session. The LLM can distinguish between results already in context and genuinely new findings — no need for the harness to pre-filter.
 
 **Reciprocal Rank Fusion (RRF):** hybrid mode merges keyword results and semantic results with RRF, producing a single ranked list. If no embedding backend is configured, hybrid degrades gracefully to FTS5-only.
+
+### Session Restore (Fast Startup)
+
+On startup, the harness restores the previous session by reading recent turns
+**directly from the SQLite database** — no MCP tool call, no transport overhead.
+`AgentService.get_recent_turns()` uses `SessionStore` in-process, which avoids
+the Streamable HTTP transport entirely for the critical startup path.
+
+If the direct DB read fails (missing file, schema error), it falls back to
+calling `memory_get_recent_turns` via the MCP client.
+
+The startup sequence is:
+
+1. **Inbox** starts — the unified message queue
+2. **Memory** starts synchronously — spawn plugin, read turns from DB, restore session in UI.  UI appears **with history shown**, not a blank screen.
+3. **MCP + WeChat + subagents** start in background workers — they don't block the UI
 
 ### Embedding
 
