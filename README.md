@@ -124,7 +124,7 @@ Alternative CUDA wheels: `v0.3.34-cu132`, `v0.3.34-cu125`; AMD: `v0.3.34-hip-rad
 
 #### Setting Up the MQTT Mesh
 
-After installing `slife[mqtt]`, run a [Mosquitto](https://mosquitto.org/) broker and launch with an agent identity:
+`paho-mqtt` is included by default.  Run a [Mosquitto](https://mosquitto.org/) broker and launch with an agent identity:
 
 ```bash
 # Terminal 1 — start the broker (or use your existing one)
