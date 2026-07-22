@@ -82,7 +82,7 @@ def _restore_prefix(channel: str | None, _agent_id: str) -> str:
     if ch == "human":
         return "You> "
     if ch == "wechat":
-        return "You(Wechat)"
+        return "You(Wechat)> "
     if ch:
         return f"{ch}(a2a)"
     # Backward compat: old turns saved before channel was introduced
@@ -353,7 +353,7 @@ class SlifeApp(App):
             # Peer terminal (WeChat etc.) — show with channel prefix
             source = kwargs.get("source", "wechat")
             content = kwargs.get("content", "").strip()
-            chat_view.add_user_message(content, prefix="You(Wechat)")
+            chat_view.add_user_message(content, prefix="You(Wechat)> ")
 
         elif kind == "loop_error":
             error = kwargs.get("error", "")
