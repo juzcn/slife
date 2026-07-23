@@ -931,7 +931,7 @@ class TestConfigFromJSON5EdgeCases:
             "agent": "not-a-dict",
         }))
         config = Config.from_json5(str(cfg_path))
-        assert config.max_iterations == 10
+        assert config.max_iterations == 30
 
     def test_env_not_dict(self, tmp_path, monkeypatch):
         """Non-dict env section uses empty dict."""

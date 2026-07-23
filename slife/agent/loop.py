@@ -65,7 +65,7 @@ class AgentEventHandler(Protocol):
         ...
 
     async def on_tool_call(
-        self, tool_call: ToolCallInfo, iteration: int = 0, max_iterations: int = 10
+        self, tool_call: ToolCallInfo, iteration: int = 0, max_iterations: int = 30
     ) -> None:
         """Called before a tool is executed.
 
@@ -126,7 +126,7 @@ class AgentLoop:
         self,
         llm_client: LLMClient,
         tool_registry: ToolRegistry,
-        max_iterations: int = 10,
+        max_iterations: int = 30,
         max_tool_result_chars: int = 0,
         tool_timeout: float = 60.0,
     ):

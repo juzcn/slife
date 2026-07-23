@@ -189,7 +189,7 @@ class TestAgentLoopConstruction:
     def test_default_max_iterations(self, sample_model_config, empty_registry):
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
-        assert loop.max_iterations == 10
+        assert loop.max_iterations == 30
 
 
 # ── _process_stream ───────────────────────────────────────────────────

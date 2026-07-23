@@ -167,7 +167,7 @@ class ToolCallWidget(Static):
         tool_args: dict,
         tool_call_id: str,
         iteration: int = 0,
-        max_iterations: int = 10,
+        max_iterations: int = 30,
     ):
         self.tool_name = tool_name
         self.tool_args = tool_args

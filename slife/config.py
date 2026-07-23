@@ -287,7 +287,7 @@ class Config:
     active_model_ref: str
     tools: list[dict]
     env: dict | None = None
-    max_iterations: int = 10
+    max_iterations: int = 30
     context_floor: float = 0.2
     context_ceiling: float = 0.8
     tool_result_ceiling: float = 0.2  # max tool result = 20% of context window
@@ -369,7 +369,7 @@ class Config:
             active_model_ref=data.get("active_model_ref", ""),
             tools=data.get("tools", []),
             env=data.get("env"),
-            max_iterations=data.get("max_iterations", 10),
+            max_iterations=data.get("max_iterations", 30),
             tool_timeout=data.get("tool_timeout", 60.0),
             context_floor=data.get("context_floor", 0.2),
             context_ceiling=data.get("context_ceiling", 0.8),
@@ -666,7 +666,7 @@ class Config:
 
         # Agent
         agent = _parse_section(raw, "agent", dict, {})
-        max_iterations = agent.get("max_iterations", 10)
+        max_iterations = agent.get("max_iterations", 30)
         tool_timeout = agent.get("tool_timeout", 60.0)
         context_floor = agent.get("context_floor", 0.2)
         context_ceiling = agent.get("context_ceiling", 0.8)

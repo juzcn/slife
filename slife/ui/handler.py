@@ -88,7 +88,7 @@ class TUIHandler:
             self._chat_view.scroll_end(animate=False)
 
     async def on_tool_call(
-        self, tool_call: ToolCallInfo, iteration: int = 0, max_iterations: int = 10
+        self, tool_call: ToolCallInfo, iteration: int = 0, max_iterations: int = 30
     ) -> None:
         """Mount a tool call widget in the chat view."""
         widget = ToolCallWidget(
