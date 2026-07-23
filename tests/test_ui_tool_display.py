@@ -51,7 +51,7 @@ class TestToolCallWidget:
         # Verify Content was passed to update() — check plain text
         content = w.update.call_args[0][0]
         text = content.plain
-        assert "Running" in text or "Searching" in text
+        assert "Web search" in text
 
     def test_set_complete_success(self):
         w = _make_widget()
@@ -82,7 +82,7 @@ class TestToolCallWidget:
         content = w._build_content()
         text = content.plain
         assert "▸" in text
-        assert "Searching web" in text
+        assert "Web search" in text
         assert "Arguments" not in text
         assert "Result" not in text
 
@@ -120,20 +120,20 @@ class TestToolCallWidget:
         content = w._header_line()
         text = content.plain
         assert "▸" in text
-        assert "Searching web" in text
+        assert "Web search" in text
 
     def test_header_line_running_shows_friendly_label(self):
         w = _make_widget(_status="running")
         content = w._header_line()
         text = content.plain
-        assert "Searching web" in text
+        assert "Web search" in text
         assert "running" in text
 
-    def test_header_line_done_shows_past_tense_label(self):
+    def test_header_line_done_shows_label(self):
         w = _make_widget(_status="done")
         content = w._header_line()
         text = content.plain
-        assert "Searched web" in text
+        assert "Web search" in text
 
     def test_header_line_error(self):
         w = _make_widget(_status="error")
@@ -159,15 +159,15 @@ class TestToolCallWidget:
         text = content.plain
         assert "…" in text
 
-    def test_header_line_execute_shell_shows_command(self):
+    def test_header_line_run_command_shows_command(self):
         w = _make_widget(
-            tool_name="execute_shell",
+            tool_name="run_command",
             tool_args={"command": "npm test"},
             _status="running",
         )
         content = w._header_line()
         text = content.plain
-        assert "Running command" in text
+        assert "Run command" in text
         assert "npm test" in text
 
     def test_header_line_unknown_tool_falls_back_to_name(self):
@@ -229,15 +229,16 @@ class TestToolCallWidget:
         text = content.plain
         assert "no arguments" in text
 
-    def test_detail_block_highlights_primary_arg(self):
+    def test_detail_block_shows_all_args(self):
         w = _make_widget(
             tool_name="web_search",
             tool_args={"query": "cats", "num": 5},
         )
         content = w._detail_block()
-        markup = content.markup
-        assert "d29922" in markup  # amber highlight for primary arg key
-        assert "8b949e" in markup  # dim for secondary arg key
+        text = content.plain
+        assert "query" in text
+        assert "cats" in text
+        assert "num" in text
 
     def test_detail_block_truncates_long_arg_values(self):
         w = _make_widget(tool_args={"query": "y" * 600})
@@ -255,34 +256,29 @@ class TestToolCallWidget:
 class TestHelperFunctions:
     """Tests for the module-level helpers."""
 
-    def test_friendly_label_running_known_tool(self):
+    def test_friendly_label_from_tool_name(self):
         from slife.ui.tool_display import _friendly_label
-        assert _friendly_label("execute_shell", "running") == "Running command"
-        assert _friendly_label("web_search", "running") == "Searching web"
-
-    def test_friendly_label_done_known_tool(self):
-        from slife.ui.tool_display import _friendly_label
-        assert _friendly_label("execute_shell", "done") == "Ran command"
-        assert _friendly_label("web_search", "done") == "Searched web"
+        assert _friendly_label("run_command", "running") == "Run command"
+        assert _friendly_label("web_search", "done") == "Web search"
 
     def test_friendly_label_unknown_tool(self):
         from slife.ui.tool_display import _friendly_label
         label = _friendly_label("my_custom_tool", "running")
         assert "My custom tool" in label
 
-    def test_primary_arg_value_known_tool(self):
+    def test_primary_arg_value_returns_first_string(self):
         from slife.ui.tool_display import _primary_arg_value
-        val = _primary_arg_value("web_search", {"query": "cats", "num": 5})
+        val = _primary_arg_value({"query": "cats", "num": 5})
         assert val == "cats"
 
     def test_primary_arg_value_fallback_to_first_string(self):
         from slife.ui.tool_display import _primary_arg_value
-        val = _primary_arg_value("unknown_tool", {"x": 1, "y": "hello"})
+        val = _primary_arg_value({"x": 1, "y": "hello"})
         assert val == "hello"
 
     def test_primary_arg_value_no_string_returns_none(self):
         from slife.ui.tool_display import _primary_arg_value
-        val = _primary_arg_value("unknown_tool", {"x": 1, "y": 2})
+        val = _primary_arg_value({"x": 1, "y": 2})
         assert val is None
 
     def test_unique_suffix_increments(self):

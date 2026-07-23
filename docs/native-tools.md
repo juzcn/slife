@@ -13,8 +13,8 @@ no network, no subprocess, no serialization.  Every LLM-visible tool is a
 │  AgentLoop                              │
 │  ├─ LLMClient  (streaming API)          │
 │  ├─ ToolRegistry                        │
-│  │   ├─ ShellTool          (native)     │
 │  │   ├─ GetOsInfoTool      (native)     │
+│  │   ├─ RunPythonScriptTool (native)     │
 │  │   ├─ MCPProxyTool       (plugin)     │
 │  │   └─ …                              │
 │  └─ Conversation                        │
@@ -189,11 +189,11 @@ the main agent's config.
 When a tool needs runtime configuration (timeout, directory paths, etc.):
 
 ```python
-class ShellTool(Tool):
-    name = "execute_shell"
-    description = "Execute a shell command."
+class MyTool(Tool):
+    name = "my_tool"
+    description = "A configurable tool."
     parameters = make_params(
-        command={"type": "string", "description": "The command to run."},
+        name={"type": "string", "description": "A required input."},
     )
 
     def __init__(self, timeout: int = 30):
@@ -203,11 +203,7 @@ class ShellTool(Tool):
     def from_config(cls, cfg, config):
         return cls(timeout=cfg.get("timeout", 30))
 
-    async def execute(self, command: str = "", **kwargs) -> str:
-        proc = await asyncio.create_subprocess_shell(command, …)
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=self.timeout,
-        )
+    async def execute(self, name: str = "", **kwargs) -> str:
         ...
 ```
 
@@ -216,7 +212,7 @@ Users can override the timeout in `slife.json5`:
 ```json5
 {
   tools: [
-    { name: "execute_shell", timeout: 60 },
+    { name: "my_tool", timeout: 60 },
   ],
 }
 ```
@@ -233,7 +229,7 @@ Users can override the timeout in `slife.json5`:
 | `config_env_*` | Configuration | `config_env_set`, `config_secret_register` |
 | `credential_*` | Credentials | `credential_check`, `inject_credential` |
 | `memory_*` | Memory (plugin-proxied) | `memory_search`, `memory_open` |
-| `execute_*` / `run_*` | Code Execution | `execute_shell`, `run_python_script` |
+| `run_*` | Code Execution | `run_python_script`, `run_command` (iflow-mcp) |
 | `list_*` | Discovery/Meta | `list_native_tools`, `list_skills` |
 | `system_*` | System | `system_health`, `get_os_info` |
 
@@ -379,7 +375,7 @@ for t in registry.list_tools():
 | File | Tools | Pattern |
 |------|-------|---------|
 | `os_info.py` | 1 (`get_os_info`) | Simplest — no params, no deps |
-| `shell.py` | 1 (`execute_shell`) | `from_config` + subprocess |
+| `shell.py` | 1 (`execute_shell`) | ⚠️ 默认禁用 — 由 iflow-mcp `run_command` 替代 |
 | `pip.py` | 1 (`install_python_package`) | Subprocess with async timeout |
 | `run_python_script.py` | 1 (`run_python_script`) | Input parsing + subprocess |
 | `credentials.py` | 3 (`credential_check`, `inject_credential`, `uninject_credential`) | `_ConfigPathMixin` + multi-tool |

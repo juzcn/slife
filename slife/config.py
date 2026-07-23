@@ -220,6 +220,13 @@ class MCPConfig:
                 if isinstance(senv, dict):
                     for k, v in senv.items():
                         senv[k] = _resolve_mcp_env_var(str(v))
+            # Resolve ${VAR} in auth section (client_id, client_secret)
+            if isinstance(scfg, dict) and "auth" in scfg:
+                auth = scfg["auth"]
+                if isinstance(auth, dict):
+                    for auth_key in ("client_id", "client_secret"):
+                        if auth_key in auth:
+                            auth[auth_key] = _resolve_mcp_env_var(str(auth[auth_key]))
 
         wrapper = data.get("wrapper", {})
         if not isinstance(wrapper, dict):
@@ -398,7 +405,7 @@ class Config:
         from slife.tools._config_io import write_config
         write_config(self._path, raw)
 
-    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None, url: str = "", headers: dict[str, str] | None = None) -> None:
+    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None, url: str = "", headers: dict[str, str] | None = None, require_approval: bool = False, auth: dict | None = None) -> None:
         """Persist an MCP server to the config file."""
         raw = self._read_config("save_mcp", name)
         if raw is None:
@@ -414,6 +421,10 @@ class Config:
             server_entry["description"] = description
         if env:
             server_entry["env"] = dict(env)
+        if require_approval:
+            server_entry["require_approval"] = True
+        if auth:
+            server_entry["auth"] = dict(auth)
         source = with_fetched_at(source)
         if source:
             server_entry["source"] = source

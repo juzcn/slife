@@ -152,7 +152,7 @@ credstore set DEEPSEEK_API_KEY        # masked input, no echo
 slife
 ```
 
-The default config (`slife.json5`) ships with pre-configured MCP servers (filesystem, web fetch, DuckDuckGo search).
+The default config (`slife.json5`) ships with pre-configured MCP servers (iflow-mcp for filesystem+shell, file-search for code search, web fetch, DuckDuckGo search).
 
 ## How It Works
 
@@ -160,7 +160,7 @@ Slife is a **function-calling loop**. You type a message → the LLM decides wha
 
 ```
 You: "Find all TODO comments and create GitHub issues for them"
-  → LLM calls execute_shell("rg TODO")
+  → LLM calls run_command("rg TODO")
   → LLM calls github__create_issue(...) for each one
   → LLM: "Created 7 issues. All linked in the description above."
 ```
@@ -239,8 +239,8 @@ All tools are unified as OpenAI function definitions — the LLM sees no differe
 
 | Category | Examples | Location |
 |----------|----------|----------|
-| **Native** | `execute_shell`, `run_python_script`, `get_os_info`, `list_native_tools` | `slife/tools/*.py` |
-| **MCP / REST** | `filesystem__read_file`, `fetch__get`, `serper__search` | Via slife-mcp proxy |
+| **Native** | `run_python_script`, `get_os_info`, `list_native_tools`, `system_health` | `slife/tools/*.py` |
+| **MCP / REST** | `run_command`, `read`, `write`, `edit`, `grep`, `search_content`, `fetch` | Via slife-mcp proxy |
 | **Skills** | On-demand plugins with `list_skills` / `use_skill` | `skills/` directory |
 | **CLI** | Auto-discovered external commands, persisted with `cli_add_tool` | Runtime registration |
 | **A2A** | Agent discovery, task routing, lifecycle, broadcast, spawn/stop subagents | `slife/tools/a2a.py` |
@@ -446,7 +446,7 @@ uv run credstore set DEEPSEEK_API_KEY
 uv run slife
 ```
 
-The default `slife.template.json5` is copied to `slife.json5` on first run. The template ships with pre-configured MCP servers (filesystem, web fetch, DuckDuckGo search, Serper, Tavily, GitHub, Amap Maps). Edit `slife.json5` to customize providers, models, and MCP servers.
+The default `slife.template.json5` is copied to `slife.json5` on first run. The template ships with pre-configured MCP servers (iflow-mcp for filesystem+shell, file-search for code search, web fetch, DuckDuckGo search, Serper, Tavily, GitHub, Amap Maps). Edit `slife.json5` to customize providers, models, and MCP servers.
 
 ### Configuring API Keys (Dev)
 

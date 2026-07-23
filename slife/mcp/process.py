@@ -203,6 +203,12 @@ class MCPWrapperProcess:
         if not self._process or not self._running:
             return
 
+        # Signal stderr drain to stop BEFORE killing the process.
+        # This prevents "unclosed transport" ResourceWarning from the
+        # proactor event loop on Windows when the pipe is GC'd mid-read.
+        self._running = False
+        await asyncio.sleep(0)
+
         logger.info("wrapper_stop pid=%s", self._process.pid)
         await terminate_process(
             self._process, graceful_timeout=1.0, force_timeout=2.0,
@@ -212,7 +218,6 @@ class MCPWrapperProcess:
             "wrapper_killed pid=%s",
             self._process.pid if self._process else "?",
         )
-        self._running = False
         self._process = None
         self._port = 0
 

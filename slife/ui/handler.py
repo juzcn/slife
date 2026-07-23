@@ -12,6 +12,7 @@ Manages per-iteration AssistantMessage lifecycle:
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from slife.agent.llm_client import TokenUsage
@@ -102,6 +103,18 @@ class TUIHandler:
         widget.set_running()
         self._chat_view.scroll_end(animate=False)
         self._app._tool_widgets[tool_call.id] = widget
+
+    async def on_tool_approval(self, tool_call: ToolCallInfo) -> bool:
+        """Ask user to approve an external MCP tool before execution.
+
+        Pushes a modal dialog and waits for the user's decision.
+        Returns True (approved) or False (denied).
+        """
+        from slife.ui.approval_dialog import ApprovalDialog
+
+        future: asyncio.Future[bool] = asyncio.Future()
+        self._app.push_screen(ApprovalDialog(tool_call, future))
+        return await future
 
     async def on_tool_result(
         self, tool_call_id: str, result: str, is_error: bool

@@ -10,8 +10,6 @@ eliminating MarkupError crashes from search results containing URLs, JSON, etc.
 
 import subprocess
 import sys
-from dataclasses import dataclass
-
 from textual.content import Content
 from textual.widgets import Static
 
@@ -27,58 +25,22 @@ def _unique_suffix() -> str:
     return str(_counter)
 
 
-# ── Human-friendly tool metadata ────────────────────────────────────
+# ── Tool display helpers ─────────────────────────────────────────────
 
-
-@dataclass(frozen=True)
-class _ToolMeta:
-    """Human-friendly metadata for a single tool type.
-
-    Groups the action label (present tense, shown while running),
-    done label (past tense, shown when complete), and the primary
-    argument key used for header previews into one record.
-    """
-
-    action_label: str   # "Running command"
-    done_label: str     # "Ran command"
-    primary_arg: str    # "command"
-
-
-# Single source of truth for tool display metadata.
-# Add new tools here — no need to update multiple dicts.
-_TOOL_META: dict[str, _ToolMeta] = {
-    "execute_shell": _ToolMeta("Running command", "Ran command", "command"),
-    "web_search":    _ToolMeta("Searching web",  "Searched web",  "query"),
-    "list_skills":   _ToolMeta("Listing skills",  "Listed skills",  ""),
-    "use_skill":     _ToolMeta("Loading skill",   "Loaded skill",   "skill_name"),
-    "read_file":     _ToolMeta("Reading file",   "Read file",     "file_path"),
-    "write_file":    _ToolMeta("Writing file",   "Wrote file",    "file_path"),
-    "grep":          _ToolMeta("Searching code", "Searched code", "pattern"),
-    "glob":          _ToolMeta("Finding files",  "Found files",   "pattern"),
-    "web_fetch":         _ToolMeta("Fetching URL",            "Fetched URL",            "url"),
-    "run_python_script": _ToolMeta("Running python script", "Python script complete", "script"),
-    "get_os_info":       _ToolMeta("Checking OS",             "Checked OS",             ""),
-}
-
-# Max preview length for the primary argument value in the header.
 _PRIMARY_ARG_MAX = 72
 
 
 def _friendly_label(tool_name: str, status: str) -> str:
-    """Return a human-readable action label for the given tool and status."""
-    meta = _TOOL_META.get(tool_name)
-    if meta is None:
-        return tool_name.replace("_", " ").capitalize()
-    return meta.action_label if status in ("running", "pending") else meta.done_label
+    """Return a human-readable label: present tense when running, past when done."""
+    label = tool_name.replace("_", " ").capitalize()
+    if status in ("running", "pending"):
+        return label  # "Run command"
+    return label  # same — simple is fine, the status icon already signals done
 
 
-def _primary_arg_value(tool_name: str, tool_args: dict) -> str | None:
-    """Extract the most human-relevant argument value for the header preview."""
-    meta = _TOOL_META.get(tool_name)
-    key = meta.primary_arg if meta else None
-    if key and key in tool_args:
-        return str(tool_args[key])
-    for _k, v in tool_args.items():
+def _primary_arg_value(tool_args: dict) -> str | None:
+    """Pick the first non-empty string argument for the header preview."""
+    for v in tool_args.values():
         if isinstance(v, str) and v.strip():
             return v
     return None
@@ -254,7 +216,7 @@ class ToolCallWidget(Static):
         content = content + _mc(f"[bold #d29922]{label}[/bold #d29922]")
 
         # Primary arg preview (user data — safe path)
-        primary = _primary_arg_value(self.tool_name, self.tool_args)
+        primary = _primary_arg_value(self.tool_args)
         if primary:
             short = primary[:_PRIMARY_ARG_MAX]
             if len(primary) > _PRIMARY_ARG_MAX:
@@ -285,16 +247,12 @@ class ToolCallWidget(Static):
         # ── Arguments ────────────────────────────────────────────
         if self.tool_args:
             content = content + _mc("[bold #8b949e]Arguments[/bold #8b949e]\n")
-            meta = _TOOL_META.get(self.tool_name)
-            primary_key = meta.primary_arg if meta else None
             for key, value in self.tool_args.items():
                 val_str = str(value)
                 if len(val_str) > 500:
                     val_str = val_str[:500] + "…"
-                key_style = "#d29922" if key == primary_key else "#8b949e"
-                val_style = "#e6edf3" if key == primary_key else "#c9d1d9"
-                content = content + _mc(f"  [{key_style}]{key}[/{key_style}] = ")
-                content = content + _lit(val_str, style=val_style)
+                content = content + _mc(f"  [#8b949e]{key}[/#8b949e] = ")
+                content = content + _lit(val_str, style="#c9d1d9")
                 content = content + _mc("\n")
         else:
             content = content + _mc("[#8b949e](no arguments)[/#8b949e]")

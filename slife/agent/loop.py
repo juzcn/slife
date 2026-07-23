@@ -74,6 +74,15 @@ class AgentEventHandler(Protocol):
         """
         ...
 
+    async def on_tool_approval(self, tool_call: ToolCallInfo) -> bool:
+        """Called before executing a tool that requires user approval.
+
+        Return True to proceed with execution, False to deny.
+        Default implementation approves everything — handlers that
+        don't implement this method will auto-approve.
+        """
+        return True
+
     async def on_tool_result(
         self, tool_call_id: str, result: str, is_error: bool
     ) -> None:
@@ -290,6 +299,18 @@ class AgentLoop:
                     iteration=iteration,
                     max_iterations=self.max_iterations,
                 )
+
+            # ── Approval gate ──────────────────────────────────────
+            tool = self.tool_registry.get(tc.name)
+            if getattr(tool, 'requires_approval', False):
+                approved = await handler.on_tool_approval(tc) if handler else True
+                if not approved:
+                    result = "Error: 用户拒绝了工具执行。"
+                    result = sanitize_secrets(result)
+                    if handler:
+                        await handler.on_tool_result(tc.id, result, is_error=True)
+                    conversation.add_tool_result(tc.id, result)
+                    continue
 
             try:
                 coro = self.tool_registry.execute(tc.name, **tc.arguments)

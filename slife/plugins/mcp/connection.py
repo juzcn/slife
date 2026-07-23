@@ -71,6 +71,8 @@ class ServerConfig:
     enabled: bool = True  # False = don't auto-connect at startup
     description: str = ""
     active: bool = True  # False = connected but tools not disclosed yet
+    require_approval: bool = False  # True = user must confirm each tool call
+    auth: dict | None = None  # OAuth config for device code flow
 
     @property
     def transport(self) -> str:
@@ -127,6 +129,40 @@ class MCPServerConnection:
         """Toggle whether this server's tools are disclosed."""
         self._active = value
 
+    async def _ensure_oauth_token(self) -> None:
+        """Obtain or refresh an OAuth token and inject it into connection headers.
+
+        Called before transport connect when ``config.auth.type == "oauth"``.
+        Mutates ``self.config.headers`` in place — the transport layer
+        picks up the token automatically.
+        """
+        from slife.mcp.oauth import (
+            get_valid_token,
+            run_device_code_flow,
+            refresh_access_token,
+        )
+
+        auth = self.config.auth
+        assert auth is not None  # guarded by caller
+        name = self.config.name
+
+        tokens = get_valid_token(name)
+        if tokens is None:
+            # Try refresh first (may have expired with valid refresh_token)
+            try:
+                tokens = await refresh_access_token(auth, name)
+            except Exception:
+                logger.info("oauth_refresh_failed server=%s — running device flow", name)
+                tokens = await run_device_code_flow(auth, name)
+
+        # Inject token into headers
+        if self.config.headers is None:
+            self.config.headers = {}
+        self.config.headers["Authorization"] = (
+            f"{tokens.token_type} {tokens.access_token}"
+        )
+        logger.info("oauth_token_injected server=%s", name)
+
     async def connect(self) -> None:
         if self._status == ServerStatus.CONNECTED:
             logger.info("mcp_already_connected server=%s", self.config.name)
@@ -135,6 +171,11 @@ class MCPServerConnection:
         self._status = ServerStatus.CONNECTING
         self._error = None
         self._stderr_buffer.clear()
+
+        # ── OAuth pre-check ───────────────────────────────────────
+        if self.config.auth and self.config.auth.get("type") == "oauth":
+            await self._ensure_oauth_token()
+
         t0 = _time.monotonic()
         transport = self.config.transport
         logger.info(
@@ -659,6 +700,7 @@ class ConnectionPool:
                 "url": conn.config.url,
                 "description": conn.config.description,
                 "active": conn.active,
+                "require_approval": conn.config.require_approval,
             }
             for name, conn in self._connections.items()
         ]

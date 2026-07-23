@@ -384,6 +384,7 @@ class AgentService:
                         "env": cfg.get("env"),
                         "url": cfg.get("url", ""),
                         "headers": cfg.get("headers"),
+                        "auth": cfg.get("auth"),
                         "activate": activate,
                     },
                 )
@@ -458,6 +459,12 @@ class AgentService:
         from slife.mcp.tool_adapter import create_proxy_tools
 
         assert self._mcp_client is not None
+        # Read per-server require_approval from config
+        mcp_cfg = self.config.mcp_config
+        assert mcp_cfg is not None
+        server_cfg = mcp_cfg.servers.get(server_name, {})
+        require_approval = bool(server_cfg.get("require_approval", False))
+
         try:
             tools_json = await self._mcp_client.call_tool(
                 "mcp_list_tools", {"server": server_name}
@@ -468,6 +475,7 @@ class AgentService:
             if external:
                 proxy_tools = create_proxy_tools(
                     self._mcp_client, external,
+                    require_approval=require_approval,
                     on_server_added=self._persist_server,
                     on_server_removed=self._unpersist_server,
                 )

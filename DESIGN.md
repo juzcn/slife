@@ -118,7 +118,8 @@ connect directly to Slife, not through the proxy:
                          ┌─ MCPWrapperProcess ── slife-mcp (gateway, Streamable HTTP)
                          │    │
                          │    └── ConnectionPool ── external MCP servers
-                         │         ├── filesystem (npx, stdio)
+                         │         ├── iflow-mcp (uvx, stdio)
+                         │         ├── file-search (npx, stdio)
                          │         ├── fetch (uvx, stdio)
                          │         ├── remote-api (HTTP POST)
                          │         └── ... (any MCP server, stdio or http)
@@ -460,8 +461,8 @@ Validation happens at class definition time via `__init_subclass__` — a tool w
 Tool loading (`slife/tools/factory.py`) uses `pkgutil.iter_modules` to import every module in `slife.tools.*`, then walks `Tool.__subclasses__()` recursively to discover all valid tool classes. No manual registry — a new `.py` file in `slife/tools/` is automatically picked up.
 
 The `slife.json5` `tools` array is optional. Use it only to:
-- Override defaults: `{name: "execute_shell", timeout: 60}`
-- Disable a tool: `{name: "list_skills", enabled: false}`
+- Override defaults: `{name: "run_python_script", timeout: 60}`
+- Disable a tool: `{name: "execute_shell", enabled: false}`
 
 Config overrides match by `Tool.name`. A2A tools are skipped when A2A is not enabled (`requires_a2a = True`).
 
@@ -475,7 +476,8 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 
 | Tool | Implementation |
 |------|---------------|
-| `execute_shell` | `asyncio.create_subprocess_shell` with configurable timeout |
+| `run_command` | iflow-mcp — shell execution with session persistence, timeout, interactive input |
+| `execute_shell` | ⚠️ 默认禁用 — 由 iflow-mcp `run_command` 替代 |
 | `run_python_script` | Platform-correct Python invocation with JSON arguments |
 | `get_os_info` | Current OS name for platform-specific shell syntax |
 | `list_native_tools` | Meta-tool — enumerates native vs MCP-proxied tools via `isinstance()` |
@@ -539,11 +541,11 @@ Skills use progressive disclosure — a lightweight list first, full content onl
 
 #### 5. MCP Tools
 
-External MCP servers connected through slife-mcp, adapted via `MCPProxyTool` and registered with a `{server}__` prefix (e.g. `filesystem__read_file`, `serper__search`). Supports progressive disclosure via `disclosure: "lazy"`.
+External MCP servers connected through slife-mcp, adapted via `MCPProxyTool` and registered with a `{server}__` prefix (e.g. `iflow-mcp__read`, `file-search__search_content`, `serper__search`). Supports progressive disclosure via `disclosure: "lazy"`.
 
 #### 6. CLI Tools
 
-External CLI commands the LLM discovers and registers. The tools (`cli_add_tool`, etc.) manage the discovery registry — actual execution goes through `execute_shell`. Registered CLIs are persisted in `slife.json5` and survive restarts.
+External CLI commands the LLM discovers and registers. The tools (`cli_add_tool`, etc.) manage the discovery registry — actual execution goes through `run_command` (iflow-mcp). Registered CLIs are persisted in `slife.json5` and survive restarts.
 
 ## MCP Integration
 
@@ -555,7 +557,8 @@ slife-mcp is a built-in plugin that manages persistent connections to **external
                     Streamable HTTP
 Slife ── MCPClient ─────────────────▶ slife-mcp (gateway)
                                           │
-                                          ├── filesystem MCP (npx, stdio)
+                                          ├── iflow-mcp (uvx, stdio)
+                                          ├── file-search (npx, stdio)
                                           ├── fetch MCP (uvx, stdio)
                                           ├── remote MCP (HTTP POST)
                                           └── ... (any MCP server)
@@ -1108,7 +1111,7 @@ slife/
     factory.py          #   Auto-discovery via pkgutil + __subclasses__()
     a2a.py              #   A2A protocol tools (13 tools, _subagent_skip)
     list_native_tools.py#   Meta-tool — enumerate native vs MCP-proxied tools
-    shell.py            #   execute_shell
+    shell.py            #   execute_shell (disabled — replaced by iflow-mcp run_command)
     run_python_script.py#   run_python_script
     os_info.py          #   get_os_info
     skill.py            #   list_skills / use_skill / add_skill / remove_skill

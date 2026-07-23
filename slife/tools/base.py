@@ -11,7 +11,7 @@ File
 Class contract
   Every tool MUST define four class attributes::
 
-      name        : str   — unique identifier (kebab-case, e.g. "my_tool")
+      name        : str   — unique identifier (snake_case, e.g. "my_tool")
       description : str   — LLM-visible description (one sentence)
       parameters  : dict  — JSON Schema for function arguments
       execute()   : async → str  — the tool's implementation
@@ -165,6 +165,11 @@ class Tool(ABC):
     # Set to True on tools that should NOT be available to subagents.
     # Subagents inherit the main agent's tool set but skip these.
     _subagent_skip: ClassVar[bool] = False
+
+    # Set to True on tools that require user approval before execution.
+    # Default False — no approval needed.  External MCP server tools
+    # inherit this from the server's ``require_approval`` config.
+    requires_approval: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)

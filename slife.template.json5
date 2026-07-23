@@ -11,6 +11,12 @@
     // SERPER_API_KEY: "${SERPER_API_KEY}",
   },
 
+  // ── Tools ──────────────────────────────────────────────────────
+  // Override defaults: set timeout, or disable a tool with enabled: false.
+  tools: [
+    // {name: "execute_shell", enabled: false},
+  ],
+
   // ── Agent Behavior ─────────────────────────────────────────────
   agent: {
     max_iterations: 30,
@@ -82,12 +88,35 @@
 
   // ── MCP Servers ────────────────────────────────────────────────
   // Add any MCP-compatible server here (Python, Node, Go, Rust).
+  //
+  // Server fields:
+  //   command / args:  for stdio transport (local subprocess)
+  //   url / headers:   for HTTP transport (remote endpoint)
+  //   env:             ${VAR} references resolved at connection time
+  //   require_approval: true = user must confirm each tool call (default false)
+  //   auth:            OAuth 2.0 device code flow configuration (optional)
+  //
+  //   OAuth example:
+  //     auth: {
+  //       type: "oauth",
+  //       client_id: "${MY_CLIENT_ID}",
+  //       client_secret: "${MY_CLIENT_SECRET}",
+  //       device_auth_url: "https://provider.com/device/code",
+  //       token_url: "https://provider.com/oauth/token",
+  //       scopes: ["read", "write"],
+  //     }
   mcp: {
     servers: {
-      filesystem: {
+      "iflow-mcp": {
+        command: "uvx",
+        args: ["--from", "iflow-mcp-mcp-claude-code", "claudecode"],
+        description: "Local filesystem + shell + notebook — read, write, edit, grep, multi-edit, AST search.",
+        // require_approval: true,
+      },
+      "file-search": {
         command: "npx",
-        args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
-        description: "Local filesystem — read, write, list, search files.",
+        args: ["-y", "file-search-mcp"],
+        description: "Fast codebase search via ripgrep — search_files, search_content, fuzzy_find, tree.",
       },
       fetch: {
         command: "uvx",

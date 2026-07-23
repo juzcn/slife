@@ -66,6 +66,7 @@ async def mcp_add_server(
     description: str = "",
     activate: bool = True,
     source: dict | None = None,
+    auth: dict | None = None,
 ) -> str:
     if not command and not url:
         return error_json(
@@ -82,6 +83,7 @@ async def mcp_add_server(
         headers=headers,
         description=description,
         active=activate,
+        auth=auth,
     )
 
     try:
