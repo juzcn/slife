@@ -137,7 +137,7 @@ async def reload_embedder() -> dict:
             "available": False,
             "message": (
                 "Embedding 未配置 — 语义搜索不可用，关键词搜索 (FTS5) 仍可正常工作。"
-                "使用 memory_set_embedding 配置 GGUF 本地模型或 OpenAI API。"
+                "使用 memory_set_embedding 配置: gguf / transformer / api。"
             ),
         }
 
@@ -158,11 +158,16 @@ def make_check_report() -> dict:
                 "关键词搜索 (grep / fts5 / time) 仍可正常工作。"
                 "使用 memory_set_embedding 配置: "
                 "GGUF 本地模型: backend=gguf model=bge-m3 gguf_path=... "
+                "或 Transformer 本地模型: backend=transformer model=BAAI/bge-m3 "
                 "或 OpenAI API: backend=api model=text-embedding-3-small"
             ),
         }
 
-    backend = "gguf" if cfg.get("gguf_path") else "api"
+    backend = (
+        "gguf" if cfg.get("gguf_path") else
+        "transformer" if cfg.get("backend") == "transformer" else
+        "api"
+    )
     model = cfg.get("model", "")
     dim = cfg.get("dim", 1024)
     gguf_path = cfg.get("gguf_path")
@@ -181,12 +186,18 @@ def make_check_report() -> dict:
 
     if gguf_path:
         result["gguf_path"] = gguf_path
+    if cfg.get("backend"):
+        result["cfg_backend"] = cfg["backend"]
 
     if client.available:
         # All good — add a confirmation hint.
         if backend == "gguf":
             result["hint"] = (
                 f"GGUF 嵌入模型已就绪: {model} (dim={dim}, path={gguf_path})"
+            )
+        elif backend == "transformer":
+            result["hint"] = (
+                f"Transformer 嵌入模型已就绪: {model} (dim={dim})"
             )
         else:
             result["hint"] = (
@@ -200,7 +211,7 @@ def make_check_report() -> dict:
                 result["gguf_error"] = file_msg
                 result["hint"] = (
                     f"GGUF 文件不可用: {file_msg}。"
-                    "下载模型文件或使用 memory_set_embedding 切换到 API 后端。"
+                    "下载模型文件或使用 memory_set_embedding 切换到 transformer / API 后端。"
                 )
             elif not _check_runtime("gguf"):
                 result["hint"] = (
@@ -213,6 +224,18 @@ def make_check_report() -> dict:
                 result["hint"] = (
                     f"GGUF 后端不可用，原因未知。文件: {gguf_path}"
                 )
+        elif backend == "transformer":
+            if not _check_runtime("transformer"):
+                result["hint"] = (
+                    f"Transformer 模型已配置 ({model})，但 sentence-transformers 未安装。"
+                    "运行: pip install sentence-transformers。"
+                    "在此之前语义搜索 (hybrid 模式) 不可用；"
+                    "关键词搜索 (grep/fts5/time) 仍可正常工作。"
+                )
+            else:
+                result["hint"] = (
+                    f"Transformer 后端不可用，原因未知。模型: {model}"
+                )
         else:  # api
             if not _check_runtime("api"):
                 result["hint"] = (
@@ -224,7 +247,7 @@ def make_check_report() -> dict:
             else:
                 result["hint"] = (
                     "API backend 缺少 api_key。确认 models.providers 中配置了 api_key，"
-                    "或改用 GGUF 本地模型: memory_set_embedding backend=gguf"
+                    "或改用 GGUF / transformer 本地模型: memory_set_embedding backend=gguf 或 backend=transformer"
                 )
 
     return result

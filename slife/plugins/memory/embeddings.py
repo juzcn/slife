@@ -1,8 +1,9 @@
 """Embedding client — generates vectors for semantic search.
 
-Supports two backends:
+Supports three backends:
   1. Local GGUF model (llama-cpp-python) — offline, no API cost
-  2. OpenAI-compatible API — remote, requires API key
+  2. Local transformer model (sentence-transformers) — offline, HF hub
+  3. OpenAI-compatible API — remote, requires API key
 
 Configured via slife.json5 → memory.embedding.
 
@@ -46,8 +47,9 @@ def _guess_max_tokens(model: str) -> int:
 
 #: Maps each backend to the import that proves it's usable at runtime.
 _BACKEND_RUNTIME_IMPORTS: dict[str, tuple[str, str]] = {
-    "gguf": ("llama_cpp", "llama-cpp-python"),
-    "api":  ("openai",   "openai"),
+    "gguf":        ("llama_cpp",              "llama-cpp-python"),
+    "transformer": ("sentence_transformers",  "sentence-transformers"),
+    "api":         ("openai",                 "openai"),
 }
 
 
@@ -95,15 +97,18 @@ class EmbeddingClient:
         gguf_path: str | None = None,
         dim: int = 0,
         quiet: bool = False,
+        backend: str = "",
+        device: str = "",
     ):
         self._model = model
         self._api_key = api_key
         self._base_url = base_url
         self._gguf_path = gguf_path
         self._dim = dim or _guess_dim(model, gguf_path)
-        self._client: Any = None        # AsyncOpenAI or Llama
-        self._backend: str = ""    # "gguf" | "api" | ""
+        self._client: Any = None        # AsyncOpenAI, Llama, or SentenceTransformer
+        self._backend: str = ""         # "gguf" | "transformer" | "api" | ""
         self._available = False
+        self._device = device           # "cpu" | "cuda" (transformer only)
 
         _log_warn = logger.debug if quiet else logger.warning
 
@@ -124,6 +129,22 @@ class EmbeddingClient:
                     "Semantic search will be unavailable; keyword search still works.",
                     gguf_path,
                 )
+        elif backend == "transformer":
+            self._backend = "transformer"
+            self._available = _check_runtime("transformer")
+            if self._available:
+                logger.info(
+                    "embeddings_backend=transformer model=%s dim=%d",
+                    model, self._dim,
+                )
+            else:
+                _log_warn(
+                    "embeddings_transformer_unavailable — model=%s configured but "
+                    "sentence-transformers is not installed. Install with: "
+                    "pip install sentence-transformers. "
+                    "Semantic search will be unavailable; keyword search still works.",
+                    model,
+                )
         elif api_key:
             self._backend = "api"
             self._available = _check_runtime("api")
@@ -140,7 +161,7 @@ class EmbeddingClient:
                 )
         else:
             _log_warn(
-                "embeddings_disabled — no gguf_path or api_key configured. "
+                "embeddings_disabled — no gguf_path, transformer model, or api_key configured. "
                 "Semantic search will be unavailable; keyword search still works."
             )
 
@@ -188,13 +209,20 @@ class EmbeddingClient:
             emb_cfg = {}
 
         model = emb_cfg.get("model", "bge-m3")
+        cfg_backend = emb_cfg.get("backend", "")
         gguf_path = emb_cfg.get("gguf_path")
+        device = emb_cfg.get("device", "")
 
         # If a GGUF path is configured, use it (takes priority over API)
         if gguf_path:
             gguf_path = str(Path(gguf_path).expanduser())
             dim = emb_cfg.get("dim", _guess_dim(model, gguf_path))
             return cls(model=model, gguf_path=gguf_path, dim=dim, quiet=quiet)
+
+        # If backend is explicitly "transformer", use local HF model
+        if cfg_backend == "transformer":
+            dim = emb_cfg.get("dim", _guess_dim(model))
+            return cls(model=model, backend="transformer", dim=dim, device=device, quiet=quiet)
 
         # Otherwise, try API backend
         api_key = ""
@@ -257,6 +285,8 @@ class EmbeddingClient:
         try:
             if self._backend == "gguf":
                 return await self._call_gguf(valid)
+            elif self._backend == "transformer":
+                return await self._call_transformer(valid)
             else:
                 return await self._call_api(valid)
         except Exception as e:
@@ -300,6 +330,53 @@ class EmbeddingClient:
             embeddings.append(emb)
 
         return embeddings
+
+    async def _call_transformer(self, texts: list[str]) -> list[list[float]] | None:
+        """Generate embeddings using a local HuggingFace model via
+        sentence-transformers."""
+        try:
+            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
+        except ImportError:
+            logger.warning(
+                "sentence_transformers not installed. Install with: "
+                "pip install sentence-transformers"
+            )
+            return None
+
+        if self._client is None:
+            logger.info(
+                "loading_transformer model=%s device=%s",
+                self._model, self._device or "auto",
+            )
+            # SentenceTransformer can block on first load (model download +
+            # warm-up).  Run in a thread to avoid blocking the event loop.
+            import asyncio
+            device = self._device or None  # None = auto-detect
+            self._client = await asyncio.to_thread(
+                SentenceTransformer,
+                self._model,
+                device=device,
+            )
+            # Sniff the real output dimension
+            actual_dim = self._client.get_sentence_embedding_dimension()
+            if actual_dim and actual_dim != self._dim:
+                logger.info(
+                    "transformer_dim_override configured=%d actual=%d",
+                    self._dim, actual_dim,
+                )
+                self._dim = actual_dim
+            logger.info("transformer_loaded model=%s dim=%d", self._model, self._dim)
+
+        # encode() is synchronous but fast for small batches;
+        # run in thread to stay async-safe.
+        import asyncio as _asyncio
+        embeddings = await _asyncio.to_thread(
+            self._client.encode,
+            texts,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        return [emb.tolist() for emb in embeddings]
 
     async def _call_api(self, texts: list[str]) -> list[list[float]] | None:
         """Call the OpenAI embeddings API."""

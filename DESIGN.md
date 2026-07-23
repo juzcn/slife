@@ -812,10 +812,11 @@ for memory recall, stripped before sending to the API.
 
 ### Embeddings
 
-Semantic search (`hybrid` mode) uses vector embeddings via two configurable backends:
+Semantic search (`hybrid` mode) uses vector embeddings via three configurable backends:
 
 1. **Local GGUF model** (llama-cpp-python) — offline, no API cost, BGE-M3 by default (1024-dim)
-2. **OpenAI-compatible API** — uses api_key from models.providers, text-embedding-3-small by default (1536-dim)
+2. **Local Transformer model** (sentence-transformers) — offline, no API cost, any HuggingFace model (e.g. `BAAI/bge-m3`)
+3. **OpenAI-compatible API** — uses api_key from models.providers, text-embedding-3-small by default (1536-dim)
 
 Embedding config is managed at runtime via `memory_check_embedding`, `memory_set_embedding`, and `memory_remove_embedding` — no restart needed.
 

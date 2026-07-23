@@ -41,7 +41,7 @@ Homepage = "https://github.com/juzcn/slife"
 Repository = "https://github.com/juzcn/slife"
 
 [project.optional-dependencies]
-embeddings = ["llama-cpp-python"]
+embeddings = ["llama-cpp-python", "sentence-transformers"]
 
 [project.scripts]
 slife = "slife:main"

@@ -347,19 +347,23 @@ async def memory_check_embedding() -> str:
 
 
 @mcp.tool(name="memory_set_embedding",
-          description="Configure the embedding backend: 'gguf' or 'api'.")
+          description="Configure the embedding backend: 'gguf', 'transformer', or 'api'.")
 async def memory_set_embedding(
     backend: str = "", model: str = "bge-m3",
     gguf_path: str | None = None, dim: int = 0,
+    device: str = "",
 ) -> str:
     from slife.plugins.memory.embedding_config import (
         write_embedding_config, validate_gguf_path,
         get_first_provider_api_key, reload_embedder,
     )
     backend = backend.lower().strip()
-    if backend not in ("gguf", "api"):
-        return json.dumps({"error": f"不支持的后端 '{backend}'。可选: 'gguf' 或 'api'"}, ensure_ascii=False, indent=2)
-    cfg: dict = {"model": model}
+    if backend not in ("gguf", "transformer", "api"):
+        return json.dumps(
+            {"error": f"不支持的后端 '{backend}'。可选: 'gguf'、'transformer' 或 'api'"},
+            ensure_ascii=False, indent=2,
+        )
+    cfg: dict = {"model": model, "backend": backend}
     if backend == "gguf":
         if not gguf_path:
             return json.dumps({"error": "GGUF 后端需要 gguf_path 参数"}, ensure_ascii=False, indent=2)
@@ -369,6 +373,12 @@ async def memory_set_embedding(
         cfg["gguf_path"] = msg
         if dim > 0:
             cfg["dim"] = dim
+    elif backend == "transformer":
+        # Model name is the HuggingFace model ID (e.g. "BAAI/bge-m3")
+        if dim > 0:
+            cfg["dim"] = dim
+        if device:
+            cfg["device"] = device
     elif backend == "api":
         if not get_first_provider_api_key():
             return json.dumps({"error": "API 后端需要 api_key"}, ensure_ascii=False, indent=2)

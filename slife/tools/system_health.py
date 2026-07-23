@@ -44,7 +44,8 @@ def _check_embedding_config() -> list[dict]:
                 "Semantic search (hybrid mode) will NOT work. "
                 "Keyword search (grep/fts5/time) still works normally. "
                 "Use memory_set_embedding to configure one: "
-                "GGUF local model or OpenAI-compatible API."
+                "GGUF local model, transformer (sentence-transformers), "
+                "or OpenAI-compatible API."
             ),
         })
         return results
@@ -62,6 +63,15 @@ def _check_embedding_config() -> list[dict]:
                 "value": "gguf",
                 "hint": f"GGUF model ready: {cfg.get('model', '?')} "
                         f"(dim={client.dimension}, path={gguf_path})",
+            })
+        elif backend == "transformer":
+            results.append({
+                "component": "embeddings",
+                "level": "ok",
+                "key": "backend",
+                "value": "transformer",
+                "hint": f"Transformer model ready: {cfg.get('model', '?')} "
+                        f"(dim={client.dimension})",
             })
         else:
             results.append({
@@ -85,6 +95,20 @@ def _check_embedding_config() -> list[dict]:
                     "llama-cpp-python is NOT installed. "
                     "Semantic search (hybrid mode) will NOT work. "
                     "Install with: pip install llama-cpp-python. "
+                    "Keyword search (grep/fts5/time) still works normally."
+                ),
+            })
+        elif backend == "transformer":
+            results.append({
+                "component": "embeddings",
+                "level": "warning",
+                "key": "backend",
+                "value": "transformer",
+                "hint": (
+                    f"Transformer model configured ({cfg.get('model', '?')}) but "
+                    "sentence-transformers is NOT installed. "
+                    "Semantic search (hybrid mode) will NOT work. "
+                    "Install with: pip install sentence-transformers. "
                     "Keyword search (grep/fts5/time) still works normally."
                 ),
             })
