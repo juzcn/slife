@@ -140,8 +140,28 @@ try {
     Write-Host ""
     Write-Host "Downloading slife…"
 
+    # PowerShell 5.1's Invoke-WebRequest can throw IndexOutOfRangeException
+    # on GitHub's HTTP response headers.  Set TLS 1.2 and use curl.exe as
+    # a fallback (curl is bundled with Windows 10 build 17063+).
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
     $zipFile = Join-Path $tmpDir "slife.zip"
-    Invoke-WebRequest -Uri $slifeTarball -OutFile $zipFile
+    try {
+        Invoke-WebRequest -Uri $slifeTarball -OutFile $zipFile -ErrorAction Stop
+    } catch [System.IndexOutOfRangeException] {
+        Write-Host "  Invoke-WebRequest failed (PowerShell 5.1 bug), trying curl.exe…" -ForegroundColor Yellow
+        $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+        if ($curl) {
+            curl.exe -fsSL -o $zipFile $slifeTarball
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "Error: curl.exe failed to download slife." -ForegroundColor Red
+                exit 1
+            }
+        } else {
+            Write-Host "Error: download failed and curl.exe not found." -ForegroundColor Red
+            exit 1
+        }
+    }
     Expand-Archive -Path $zipFile -DestinationPath $tmpDir -Force
 
     $extractedDir = Get-ChildItem -Path $tmpDir -Directory | Select-Object -First 1
