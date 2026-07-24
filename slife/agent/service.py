@@ -375,12 +375,28 @@ class AgentService:
                     return
                 disclosure = cfg.get("disclosure", "eager")
                 activate = disclosure != "lazy"
+
+                # ── os_paths: auto-detect OS-accessible paths ──────────
+                # When a file MCP has ``os_paths: true``, inject every
+                # OS-accessible path as a ``--allow-path`` arg so the LLM
+                # can reach anything the OS user can.  Permissions are
+                # enforced by the OS kernel — not by the MCP config.
+                args = list(cfg.get("args", []))
+                if cfg.get("os_paths"):
+                    from slife.os_detect import get_os_accessible_paths
+                    os_paths = get_os_accessible_paths()
+                    for p in os_paths:
+                        args.extend(["--allow-path", p])
+                    logger.debug(
+                        "mcp_os_paths server=%s paths=%s", name, os_paths,
+                    )
+
                 result = await mcp_client.call_tool(
                     "mcp_add_server",
                     {
                         "name": name,
                         "command": cfg.get("command", ""),
-                        "args": cfg.get("args", []),
+                        "args": args,
                         "env": cfg.get("env"),
                         "url": cfg.get("url", ""),
                         "headers": cfg.get("headers"),

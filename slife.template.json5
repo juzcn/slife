@@ -110,6 +110,7 @@
       "iflow-mcp": {
         command: "uvx",
         args: ["--from", "iflow-mcp-mcp-claude-code", "claudecode"],
+        os_paths: true,  // Auto-add all OS-accessible paths as --allow-path (trust LLM, OS perms as safety net)
         description: "Local filesystem + shell + notebook — read, write, edit, grep, multi-edit, AST search.",
         // require_approval: true,
       },

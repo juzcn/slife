@@ -307,6 +307,49 @@ Dynamic management at runtime is also supported — the LLM can call
 `mcp_remove_server` to disconnect and clean up, and `mcp_set_disclosure` to
 toggle between eager and lazy modes.
 
+#### os_paths — Auto-Detect OS-Accessible Paths
+
+File MCPs like `iflow-mcp` accept `--allow-path` arguments to restrict which
+directories the server can access.  Rather than hard-coding paths in static
+config, Slife can auto-detect every path the OS user can access and inject them
+at startup.  The OS kernel enforces the actual permissions — the MCP layer
+doesn't need to duplicate that.
+
+**Philosophy.**  This is the direct implementation of "no sandboxing beyond the
+OS" from the Negative Space principles.  The LLM can attempt any file operation;
+the OS blocks what the user lacks rights for.
+
+**Mechanism.**  Per-server config flag `os_paths: true`:
+
+```json5
+mcp: {
+  servers: {
+    "iflow-mcp": {
+      command: "uvx",
+      args: ["--from", "iflow-mcp-mcp-claude-code", "claudecode"],
+      os_paths: true,  // Auto-add OS-accessible paths as --allow-path
+      description: "Local filesystem + shell + notebook …",
+    },
+  },
+}
+```
+
+At startup, `_auto_connect_mcp_servers()` (`slife/agent/service.py`) checks
+for `os_paths` before spawning each server, calls `get_os_accessible_paths()`
+(`slife/os_detect.py`), and appends `--allow-path <path>` for each detected
+path to the server's args.
+
+**Detection logic** (`slife/os_detect.py`):
+
+| Platform | Strategy | Example result |
+|---|---|---|
+| Windows | Iterates A–Z drive letters, `os.path.exists()` check | `["C:\\", "D:\\"]` |
+| Linux / macOS | Returns `["/"]` — kernel blocks what user can't access | `["/"]` |
+
+No external dependencies — uses only `os.path.exists` and `os.access`.
+The detection runs once at startup during server spawn; paths are resolved
+before the server process is created.
+
 #### The Plugin Contract
 
 A third-party plugin must:
