@@ -6,13 +6,7 @@ cli_remove_tool:       remove a registered CLI
 cli_list_tools:        list all registered CLI tools
 
 Registered CLIs are persisted to slife.json5 → cli_tools: section.
-The LLM calls these tools via execute_shell — these tools only manage
-the registry, they don't execute commands.
-
-Flow:
-  1. User mentions an unknown CLI → LLM runs "cmd --help"
-  2. LLM understands the CLI → calls cli_add_tool to remember it
-  3. Next session → cli_list_tools shows it, LLM knows what it is
+These tools only manage the registry — they don't execute commands.
 """
 
 import logging
@@ -130,7 +124,7 @@ class CliAddTool(_ConfigPathMixin, Tool):
     """Register a CLI tool so the LLM can discover it in future turns.
 
     Does NOT execute the CLI — just records its existence, what it does,
-    and how to install it. The LLM calls execute_shell to actually run it.
+    and how to install it.
 
     Call this after you've verified the CLI works (--help succeeded).
     """
