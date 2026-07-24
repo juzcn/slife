@@ -293,6 +293,13 @@ class AgentLoop:
         report the failure.
         """
         for tc in tool_calls:
+            # Check cancellation before each tool — allows Escape to
+            # skip remaining tools in the batch without waiting for
+            # the current one to finish.
+            if self._cancel_event.is_set():
+                logger.info("agent_cancelled before_tool iter=%d", iteration)
+                break
+
             if handler:
                 await handler.on_tool_call(
                     tc,
@@ -350,6 +357,12 @@ class AgentLoop:
                 await handler.on_tool_result(tc.id, result, is_error)
 
             conversation.add_tool_result(tc.id, result)
+
+            # Check cancellation after each tool — skip remaining tools
+            # if the user pressed Escape during execution.
+            if self._cancel_event.is_set():
+                logger.info("agent_cancelled after_tool iter=%d", iteration)
+                break
 
     # ── Main loop ──────────────────────────────────────────────────
 
