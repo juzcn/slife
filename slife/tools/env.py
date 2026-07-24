@@ -86,14 +86,15 @@ def _format_one(key: str, value: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 class ConfigEnvSetTool(_ConfigPathMixin, Tool):
-    """Write an env var to slife.json5. Works for any value, including secrets."""
+    """Write an env var to slife.json5. For any non-secret value; use ${VAR} references for secrets."""
 
     name = "config_env_set"
     _subagent_skip = True
     description = (
-        "Write an env var to slife.json5. Works for any value — plain config "
-        "or secrets like API keys. Omit value to write a <YOUR_VAR> placeholder "
-        "for the user to fill in."
+        "Write an env var to slife.json5. For any non-secret value "
+        "(EDITOR, LANG, etc.) or a ${VAR} reference to a credstore secret. "
+        "Omit value to write a <YOUR_VAR> placeholder for the user to fill in. "
+        "Never write plaintext secrets — use credstore set on the CLI for those."
     )
     parameters = {
         "type": "object",

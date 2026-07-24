@@ -1,6 +1,6 @@
 # Slife
 
-**Terminal-based AI agent** — chat with an LLM that can execute shell commands, read and write files, search the web, call REST APIs, connect to MCP servers, spawn subagents for parallel work, communicate with other Slife instances over MQTT, and remember everything permanently.
+**Terminal-based AI agent** — chat with an LLM that can call tools (MCP, native, A2A), read and write files, search the web, execute code, connect to MCP servers, spawn subagents for parallel work, communicate with other Slife instances over MQTT, and remember everything permanently.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -160,7 +160,7 @@ Slife is a **function-calling loop**. You type a message → the LLM decides wha
 
 ```
 You: "Find all TODO comments and create GitHub issues for them"
-  → LLM calls run_command("rg TODO")
+  → LLM calls search_content("TODO")
   → LLM calls github__create_issue(...) for each one
   → LLM: "Created 7 issues. All linked in the description above."
 ```
@@ -176,7 +176,7 @@ Slife uses a **two-layer** configuration model with **enforced secret protection
 
 **Prefer ``${VAR}`` references.**  ``api_key`` fields should use ``${VAR}``
 references (resolved from the OS keyring at runtime) or ``keyring:`` URIs.
-Use ``config_secret_register`` for secrets — it writes a ``${VAR}`` placeholder
+Use ``config_env_set`` for secrets — write a ``${VAR}`` placeholder
 so the real value stays in the OS keyring.
 
 ```json5
@@ -235,11 +235,11 @@ See **[credstore/README.md](credstore/README.md)** for disaster recovery, Python
 
 ### Tools
 
-All tools are unified as OpenAI function definitions — the LLM sees no difference between a native shell command, an MCP tool, or a REST API endpoint.
+All tools are unified as OpenAI function definitions — the LLM sees no difference between a native tool, an MCP tool, or a REST API endpoint.
 
 | Category | Examples | Location |
 |----------|----------|----------|
-| **Native** | `run_python_script`, `get_os_info`, `list_native_tools`, `system_health` | `slife/tools/*.py` |
+| **Native** | `check_os_info`, `check_skills_dir`, `run_python_script`, `system_health`, `list_native_tools` | `slife/tools/*.py` |
 | **MCP / REST** | `run_command`, `read`, `write`, `edit`, `grep`, `search_content`, `fetch` | Via slife-mcp proxy |
 | **Skills** | On-demand plugins with `list_skills` / `use_skill` | `skills/` directory |
 | **CLI** | Auto-discovered external commands, persisted with `cli_add_tool` | Runtime registration |
@@ -457,7 +457,7 @@ Register secrets before configuring providers:
 uv run credstore set DEEPSEEK_API_KEY
 uv run credstore set GITHUB_TOKEN
 
-# Register in slife.json5 (or let the agent call config_secret_register)
+# Register in slife.json5 (or let the agent call config_env_set)
 # The ${VAR} syntax resolves from keyring at runtime
 ```
 
@@ -483,10 +483,14 @@ models: {
 slife/
 ├── slife/                    # Main application package
 │   ├── agent/                # Agent loop, system prompt, LLM client
-│   ├── tools/                # Tool definitions (credential, shell, MCP, etc.)
-│   │   ├── credentials.py    # credential_check, inject/uninject
-│   │   ├── config_env.py     # config_env_set/get/remove, config_secret_register
-│   │   └── base.py           # Tool ABC + require_params helper
+│   ├── tools/                # Tool definitions (auto-discovered)
+│   │   ├── env.py             #   config_env_set/get/remove, credential_check, inject/uninject
+│   │   ├── exec.py            #   run_python_script, install_python_package
+│   │   ├── system.py          #   check_os_info, check_shells, system_health, list_native_tools
+│   │   ├── skill.py           #   check_skills_dir, list_skills, use_skill, add/remove_skill
+│   │   ├── cli.py             #   cli_add_tool, cli_check_installed, cli_list_tools, cli_remove_tool
+│   │   ├── a2a.py             #   A2A protocol (13 tools)
+│   │   └── base.py            #   Tool ABC + make_params + require_params
 │   ├── plugins/              # Built-in plugins (memory, mcp, wechat)
 │   ├── config.py             # Config loading + ${VAR} resolution
 │   ├── paths.py              # Canonical filesystem paths (dev vs prod)
@@ -511,7 +515,7 @@ slife/
 uv run pytest
 
 # Specific test files
-uv run pytest tests/test_credentials.py -v
+uv run pytest tests/test_env.py -v
 uv run pytest tests/test_config_env.py -v
 
 # credstore tests

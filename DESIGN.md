@@ -27,18 +27,20 @@ It's a chat window with tools. The LLM is in full control — including of when 
 
 **The system prompt contains only project-specific information not in the LLM's training data.**
 
-The prompt is rendered from `slife/agent/templates/system_prompt.j2` via Jinja2. The LLM already knows function calling, shell syntax, error handling, and tool-use patterns. Teaching any of this is noise.
+The prompt is rendered from `slife/agent/templates/system_prompt.j2` via Jinja2. The LLM already knows function calling, error handling, and tool-use patterns. Teaching any of this is noise.
 
 What the LLM cannot know (and the prompt provides):
 
 - The `list_skills` / `use_skill` flow — a Slife-specific convention
+- The absolute skills directory path — skill scripts in SKILL.md use relative paths
 - That secrets live in the OS keyring (credstore), config lives in `~/.slife/slife.json5 → env:`
 - That pre-configured MCP servers need no auth
 - That MCP servers default to eager, with lazy as an option for large tool sets
 - That `anyapi-mcp-server` converts OpenAPI specs to tools
 - That `cli_add_tool` persists discovered CLIs across restarts
-- That `config_secret_register` registers secrets (writes `${VAR}`, user runs `credstore set` in terminal)
-- That `config_env_set` handles non-secret env vars (writes value or `<YOUR_VAR>` placeholder)
+- That `config_env_set` handles env vars — plain values or `${VAR}` references to credstore
+- That `credential_check` / `inject_credential` / `uninject_credential` manage keyring secrets
+- That the credstore CLI (`credstore set`) is interactive-only — LLMs cannot invoke it
 - That MCP server stderr is **sanitized** before logging — API key patterns are masked
 - That **all tool output is sanitized** before reaching the LLM — `sanitize_secrets()` in
   `logfmt.py` is the harness-level guard applied at `AgentLoop._execute_tools()`,
@@ -79,8 +81,7 @@ What the LLM cannot know (and the prompt provides):
 │  Conversation: full context + automatic window trimming            │
 ├──────────┴──────────────┴──────────────┴─────────────────────────┤
 │  Native Tools (auto-discovered from slife/tools/*)                │
-│  shell.py  run_python_script.py  os_info.py  config_env.py       │
-│  cli.py  skill.py  a2a.py                                        │
+│  exec.py  system.py  env.py  cli.py  skill.py  a2a.py            │
 │                                                                   │
 │  Memory Tools       Skills         MCP Tools        A2A Tools    │
 │  slife/plugins/memory/  skills/ dir  slife/sse/    slife/a2a/   │
@@ -519,17 +520,19 @@ Built-in tools implemented directly in Python, auto-discovered from `slife/tools
 
 | Tool | Implementation |
 |------|---------------|
-| `run_command` | iflow-mcp — shell execution with session persistence, timeout, interactive input |
-| `execute_shell` | ⚠️ 默认禁用 — 由 iflow-mcp `run_command` 替代 |
 | `run_python_script` | Platform-correct Python invocation with JSON arguments |
-| `get_os_info` | Current OS name for platform-specific shell syntax |
-| `list_native_tools` | Meta-tool — enumerates native vs MCP-proxied tools via `isinstance()` |
-| `system_health` | Runtime health report — embedding backend, MCP status, missing packages |
-| `config_env_set` / `config_secret_register` / `get` / `remove` | Manage env vars in slife.json5 — secrets → `${VAR}` refs (no value param), non-secrets → values |
-| `credential_check` | Verify OS keyring credentials — shows masked value (`sk-a…B3f2`). Never exposes the full secret. |
+| `install_python_package` | Install PyPI packages into slife's environment via uv |
+| `check_os_info` / `check_shells` / `check_workspace` | System introspection (OS, shells, workspace) |
+| `check_skills_dir` | Report skills directory absolute path and installed skills |
+| `system_health` | Runtime health report — embedding backend, MCP status, all subsystems |
+| `list_native_tools` | Meta-tool — enumerates native vs MCP-proxied tools |
+| `config_env_set` / `get` / `remove` | Manage env vars in slife.json5 — plain values or `${VAR}` references |
+| `credential_check` | Verify credentials across shell/config/keyring. Values always masked. |
 | `inject_credential` | Load a secret from keyring into `os.environ` — temporary, this process only |
-| `uninject_credential` | Remove an env var from `os.environ`. No keyring access |
-| `cli_add_tool` / `check_installed` / `remove` / `list` | CLI discovery and registration management |
+| `uninject_credential` | Remove an env var from `os.environ`. No keyring access. |
+| `list_skills` / `use_skill` / `add_skill` / `remove_skill` | Skill discovery and loading |
+| `cli_add_tool` / `cli_check_installed` / `cli_remove_tool` / `cli_list_tools` | CLI discovery and registration |
+| `a2a_*` (13 tools) | Agent-to-Agent — discovery, task routing, lifecycle, notifications |
 
 #### 2. Memory Tools
 
@@ -1035,7 +1038,7 @@ Slife separates secrets from config into two layers with different security prop
 │  ─────────────────────────────────────────────────  │
 │  credstore set <KEY>          ← masked stdin input  │
 │  credential_check <KEY>       ← masked value        │
-│  (interactive-only CLI — LLMs cannot invoke)        │
+│  (credstore CLI is interactive-only)                │
 └────────────────────┬────────────────────────────────┘
                      │  ${VAR} reference
                      ▼
@@ -1043,7 +1046,6 @@ Slife separates secrets from config into two layers with different security prop
 │  slife.json5 → env: section                         │
 │  Plain config file.  Holds refs, not secrets.       │
 │  ─────────────────────────────────────────────────  │
-│  config_secret_register <KEY>  ← secrets            │
 │  config_env_set <KEY> [value]  ← any value          │
 │  config_env_get [key]                              │
 │  config_env_remove <KEY>       ← config only        │
@@ -1052,7 +1054,7 @@ Slife separates secrets from config into two layers with different security prop
 
 ### Design Principles
 
-**Secrets never reach the LLM context.** The `credstore set <KEY>` CLI reads secrets via masked stdin input (no echo, no shell history) and writes them directly to the OS keyring. **credstore is an interactive-only CLI tool — LLMs cannot invoke it** (it requires direct TTY input). At runtime, secrets from the keyring may be loaded into ``os.environ`` for subprocess compatibility (MCP servers, embeddings).
+**Secrets never reach the LLM context.** Tool outputs are auto-sanitized — secrets matching known patterns are replaced with `<MASKED>` before reaching the LLM. The `credstore set <KEY>` CLI reads secrets via masked stdin input (no echo, no shell history) and writes them directly to the OS keyring. **The credstore CLI is interactive-only — LLMs cannot invoke it** (it requires direct TTY input). At runtime, secrets from the keyring may be loaded via `inject_credential` into ``os.environ`` for subprocess compatibility (MCP servers, embeddings).
 
 **Harness-level tool output sanitization.**  ``sanitize_secrets()`` in
 ``logfmt.py`` is applied to **every tool result** at ``AgentLoop._execute_tools()``
@@ -1066,14 +1068,7 @@ idempotent and passes normal text through unchanged.
 
 **Clean separation of config vs. credentials.** `config_env_get` handles env vars (shell → slife.json5). `credential_check` handles secrets (shell → keyring) and shows masked values (e.g. `sk-a…B3f2`). The LLM chooses the right tool.
 
-**Two tools for registration — structurally safe.** Secret and non-secret env var registration are separate tools:
-
-| Tool | Purpose | `value` parameter | Behavior |
-|------|---------|:---:|---|
-| `config_secret_register` | Secrets (API keys, tokens) | ❌ | Writes `${VAR}` placeholder, directs user to run `credstore set <KEY>` in terminal. Always checks if already stored via `credential_check`. |
-| `config_env_set` | Non-secret vars (EDITOR, LANG, etc.) | ✅ optional | Writes value directly, or `<YOUR_VAR>` placeholder if omitted. |
-
-The split is structural, not heuristic — `config_secret_register` has **no `value` parameter**, so the secret can never enter the LLM context regardless of model behavior.
+**One tool for env var registration.** `config_env_set` handles all env vars:
 
 **Resolution at runtime.** `config_env_get` resolves env vars: shell → slife.json5. `credential_check` resolves secrets: shell → OS keyring, with values masked (`sk-a…B3f2`). The two tools are separate — the LLM picks the right one.
 
@@ -1087,7 +1082,7 @@ The split is structural, not heuristic — `config_secret_register` has **no `va
 |---|---|---|
 | **What lives here** | Actual secret values | References (`${VAR}`) and non-secret config |
 | **Encryption** | OS-level (Keychain/Linux keyring/Win DPAPI) | Plaintext file |
-| **Who writes** | User via `credstore set` CLI | Agent via `config_secret_register` / `config_env_set` |
+| **Who writes** | User via `credstore set` CLI | Agent via `config_env_set` |
 | **Who reads** | `credential_check` (masked value from keyring) | `config_env_get` (shell + config only, no keyring) |
 | **Survives** | OS user profile changes | Git version control |
 
@@ -1152,15 +1147,12 @@ slife/
     base.py             #   Tool ABC with __init_subclass__ validation
     registry.py         #   Name → Tool lookup & execution + get_registry()
     factory.py          #   Auto-discovery via pkgutil + __subclasses__()
+    exec.py             #   execute_shell (disabled), run_python_script, install_python_package
+    system.py           #   check_os_info, check_shells, check_workspace, system_health, list_native_tools
+    env.py              #   config_env_set/get/remove, credential_check, inject/uninject_credential
+    skill.py            #   check_skills_dir, list_skills, use_skill, add_skill, remove_skill
+    cli.py              #   cli_add_tool, cli_check_installed, cli_remove_tool, cli_list_tools
     a2a.py              #   A2A protocol tools (13 tools, _subagent_skip)
-    list_native_tools.py#   Meta-tool — enumerate native vs MCP-proxied tools
-    shell.py            #   execute_shell (disabled — replaced by iflow-mcp run_command)
-    run_python_script.py#   run_python_script
-    os_info.py          #   get_os_info
-    skill.py            #   list_skills / use_skill / add_skill / remove_skill
-    config_env.py       #   config_env_set / config_secret_register / get / remove
-    credentials.py      #   credential_check — masked keyring lookup
-    cli.py              #   cli_add_tool / check_installed / remove / list
     _config_io.py       #   Shared JSON5 read/write helpers + _ConfigPathMixin
 
   mcp/                  # MCP client + plugin infrastructure
