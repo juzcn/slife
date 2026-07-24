@@ -10,7 +10,7 @@ import json
 import logging
 from pathlib import Path
 
-from slife.tools._config_io import format_source_info, now_iso, with_fetched_at
+from slife.tools._config_io import format_source_info, with_fetched_at
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -188,19 +188,20 @@ class ListSkillsTool(_SkillDirMixin, Tool):
 
 
 class UseSkillTool(_SkillDirMixin, Tool):
-    """Load a specific skill's full documentation into context."""
+    """Load a skill's full SKILL.md documentation into context."""
 
     name = "use_skill"
     description = (
-        "Return the complete contents of a skill's SKILL.md file, "
-        "including its full instructions and documentation."
+        "Return the complete SKILL.md content for a named skill, "
+        "including all instructions and documentation. "
+        "Use list_skills first to discover available skill names."
     )
     parameters = {
         "type": "object",
         "properties": {
             "skill_name": {
                 "type": "string",
-                "description": "Skill name from list_skills",
+                "description": "Exact skill name from list_skills output.",
             },
         },
         "required": ["skill_name"],

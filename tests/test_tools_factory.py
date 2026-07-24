@@ -14,13 +14,11 @@ class TestCreateToolsFromConfig:
         names = {t.name for t in registry.list_tools()}
         assert "execute_shell" in names
         assert "run_python_script" in names
-        assert "get_os_info" in names
         assert "list_skills" in names
         assert "use_skill" in names
         assert "add_skill" in names
         assert "remove_skill" in names
         assert "config_env_set" in names
-        assert "config_secret_register" in names
         assert "config_env_get" in names
         assert "config_env_remove" in names
         assert "cli_add_tool" in names
@@ -79,7 +77,7 @@ class TestRunPythonScriptTool:
     @pytest.mark.asyncio
     async def test_execute_runs_script(self):
         """execute() runs a Python one-liner and returns output."""
-        from slife.tools.run_python_script import RunPythonScriptTool
+        from slife.tools.exec import RunPythonScriptTool
         tool = RunPythonScriptTool()
         result = await tool.execute(script="-c print('hello')")
         assert "hello" in result
@@ -87,7 +85,7 @@ class TestRunPythonScriptTool:
     @pytest.mark.asyncio
     async def test_execute_missing_script_returns_error(self):
         """execute() returns error info for a failing command."""
-        from slife.tools.run_python_script import RunPythonScriptTool
+        from slife.tools.exec import RunPythonScriptTool
         tool = RunPythonScriptTool()
         result = await tool.execute(script="-c raise SystemExit(1)")
         assert "Error" in result

@@ -5,9 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from slife.tools.system_health import (
-    _check_embedding_config,
-    _check_wechat_status,
+from slife.tools.system import (
+    check_embedding,
+    check_wechat,
     _group_by_component,
     _component_status,
     _build_summary,
@@ -157,14 +157,14 @@ class TestBuildSummary:
         assert "1 error(s): c" in summary
 
 
-# ── _check_embedding_config ───────────────────────────────────────────
+# ── check_embedding ───────────────────────────────────────────
 
 
 class TestCheckEmbeddingConfig:
-    """Tests for _check_embedding_config()."""
+    """Tests for check_embedding()."""
 
     def test_no_config_returns_warning(self):
-        # These are imported inside _check_embedding_config via:
+        # These are imported inside check_embedding via:
         #   from slife.plugins.memory.embedding_config import read_embedding_config
         #   from slife.plugins.memory.embeddings import EmbeddingClient
         with patch(
@@ -172,7 +172,7 @@ class TestCheckEmbeddingConfig:
             return_value=None,
         ):
             with patch("slife.plugins.memory.embeddings.EmbeddingClient"):
-                result = _check_embedding_config()
+                result = check_embedding()
                 assert len(result) == 1
                 assert result[0]["component"] == "embeddings"
                 assert result[0]["level"] == "warning"
@@ -194,7 +194,7 @@ class TestCheckEmbeddingConfig:
                 "slife.plugins.memory.embedding_config.read_embedding_config",
                 return_value=cfg,
             ):
-                result = _check_embedding_config()
+                result = check_embedding()
                 assert len(result) == 1
                 assert result[0]["level"] == "ok"
                 assert result[0]["value"] == "gguf"
@@ -215,7 +215,7 @@ class TestCheckEmbeddingConfig:
                 "slife.plugins.memory.embedding_config.read_embedding_config",
                 return_value=cfg,
             ):
-                result = _check_embedding_config()
+                result = check_embedding()
                 assert len(result) == 1
                 assert result[0]["level"] == "ok"
                 assert result[0]["value"] == "api"
@@ -235,7 +235,7 @@ class TestCheckEmbeddingConfig:
                 "slife.plugins.memory.embedding_config.read_embedding_config",
                 return_value=cfg,
             ):
-                result = _check_embedding_config()
+                result = check_embedding()
                 assert len(result) == 1
                 assert result[0]["level"] == "warning"
                 assert result[0]["value"] == "gguf"
@@ -255,7 +255,7 @@ class TestCheckEmbeddingConfig:
                 "slife.plugins.memory.embedding_config.read_embedding_config",
                 return_value=cfg,
             ):
-                result = _check_embedding_config()
+                result = check_embedding()
                 assert len(result) == 1
                 assert result[0]["level"] == "warning"
                 assert result[0]["value"] == "api"
@@ -274,26 +274,26 @@ class TestCheckEmbeddingConfig:
                 "slife.plugins.memory.embedding_config.read_embedding_config",
                 return_value={"model": "x"},
             ):
-                result = _check_embedding_config()
+                result = check_embedding()
                 assert len(result) == 1
                 assert result[0]["level"] == "warning"
-                assert result[0]["value"] == "unknown"
+                assert result[0]["value"] == "unknown_backend"
 
 
-# ── _check_wechat_status ──────────────────────────────────────────────
+# ── check_wechat ──────────────────────────────────────────────
 
 
 class TestCheckWechatStatus:
-    """Tests for _check_wechat_status()."""
+    """Tests for check_wechat()."""
 
     def test_config_none_returns_unknown(self):
         """When config is None and slife.json5 doesn't exist, returns unknown."""
-        # Config is imported inside _check_wechat_status via:
+        # Config is imported inside check_wechat via:
         #   from slife.config import Config, parse_cli_agent
         with patch("slife.config.Config") as MockConfig:
             MockConfig.from_json5.side_effect = Exception("no config")
             with patch("pathlib.Path.exists", return_value=False):
-                result = _check_wechat_status(config=None)
+                result = check_wechat(config=None)
                 assert len(result) == 1
                 assert result[0]["component"] == "wechat"
                 assert result[0]["key"] == "enabled"
@@ -304,7 +304,7 @@ class TestCheckWechatStatus:
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = False
 
-        result = _check_wechat_status(config=mock_config)
+        result = check_wechat(config=mock_config)
         assert len(result) == 1
         assert result[0]["value"] == "disabled"
 
@@ -314,13 +314,13 @@ class TestCheckWechatStatus:
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
-        # load_wechat_config is imported inside _check_wechat_status via:
+        # load_wechat_config is imported inside check_wechat via:
         #   from slife.plugins.wechat.config import load_wechat_config
         with patch(
             "slife.plugins.wechat.config.load_wechat_config",
             return_value={},
         ):
-            result = _check_wechat_status(config=mock_config)
+            result = check_wechat(config=mock_config)
             assert len(result) == 1
             assert result[0]["key"] == "status"
             assert result[0]["value"] == "not_logged_in"
@@ -338,7 +338,7 @@ class TestCheckWechatStatus:
             "slife.plugins.wechat.config.load_wechat_config",
             return_value={"bot_token": "tok", "saved_at": old_time},
         ):
-            result = _check_wechat_status(config=mock_config)
+            result = check_wechat(config=mock_config)
             assert len(result) == 1
             assert result[0]["value"] == "session_expired"
 
@@ -355,19 +355,19 @@ class TestCheckWechatStatus:
             "slife.plugins.wechat.config.load_wechat_config",
             return_value={"bot_token": "tok", "saved_at": now},
         ):
-            result = _check_wechat_status(config=mock_config)
+            result = check_wechat(config=mock_config)
             assert len(result) == 1
             assert result[0]["value"] == "logged_in"
 
     def test_config_load_exception_falls_back_to_default(self):
-        """When config loading fails, _check_wechat_status falls back
+        """When config loading fails, check_wechat falls back
         to trying to load config from disk itself."""
         with patch(
             "slife.config.Config"
         ) as MockConfig:
             MockConfig.from_json5.side_effect = Exception("parse error")
             with patch("pathlib.Path.exists", return_value=True):
-                result = _check_wechat_status(config=None)
+                result = check_wechat(config=None)
                 # If loading throws, config stays None, so we get "unknown"
                 assert len(result) == 1
                 assert result[0]["value"] == "unknown"
@@ -385,7 +385,7 @@ class TestSystemHealthToolMetadata:
 
     def test_description(self):
         tool = SystemHealthTool()
-        assert "system health" in tool.description.lower()
+        assert "health report" in tool.description.lower()
 
     def test_parameters_empty(self):
         tool = SystemHealthTool()
@@ -399,43 +399,34 @@ class TestSystemHealthToolExecute:
     @pytest.mark.asyncio
     async def test_execute_returns_json(self):
         tool = SystemHealthTool()
-        with patch(
-            "slife.tools.system_health.get_startup_records",
-            return_value=[],
-        ):
-            with patch(
-                "slife.tools.system_health._check_wechat_status",
-                return_value=[],
-            ):
-                result = await tool.execute()
-                parsed = json.loads(result)
-                assert "healthy" in parsed
-                assert "summary" in parsed
-                assert "components" in parsed
+        with patch("slife.tools.system.get_startup_records", return_value=[]), \
+             patch("slife.tools.system.check_os_info", return_value=[]), \
+             patch("slife.tools.system.check_shells", return_value=[]), \
+             patch("slife.tools.system.check_workspace", return_value=[]), \
+             patch("slife.tools.system.check_embedding", return_value=[]), \
+             patch("slife.tools.system.check_wechat", return_value=[]):
+            result = await tool.execute()
+            parsed = json.loads(result)
+            assert "healthy" in parsed
+            assert "summary" in parsed
+            assert "components" in parsed
 
     @pytest.mark.asyncio
     async def test_execute_includes_startup_records(self):
         tool = SystemHealthTool()
         startup_entries = [
-            {
-                "component": "startup",
-                "level": "ok",
-                "key": "bootstrap",
-                "value": "done",
-                "hint": "all good",
-            }
+            {"component": "startup", "level": "ok", "key": "bootstrap",
+             "value": "done", "hint": "all good"},
         ]
-        with patch(
-            "slife.tools.system_health.get_startup_records",
-            return_value=startup_entries,
-        ):
-            with patch(
-                "slife.tools.system_health._check_wechat_status",
-                return_value=[],
-            ):
-                result = await tool.execute()
-                parsed = json.loads(result)
-                assert "startup" in parsed["components"]
+        with patch("slife.tools.system.get_startup_records", return_value=startup_entries), \
+             patch("slife.tools.system.check_os_info", return_value=[]), \
+             patch("slife.tools.system.check_shells", return_value=[]), \
+             patch("slife.tools.system.check_workspace", return_value=[]), \
+             patch("slife.tools.system.check_embedding", return_value=[]), \
+             patch("slife.tools.system.check_wechat", return_value=[]):
+            result = await tool.execute()
+            parsed = json.loads(result)
+            assert "startup" in parsed["components"]
 
     @pytest.mark.asyncio
     async def test_execute_with_warnings_is_not_healthy(self):
@@ -444,18 +435,16 @@ class TestSystemHealthToolExecute:
             {"component": "db", "level": "warning", "key": "schema",
              "value": "migrated", "hint": "check logs"},
         ]
-        with patch(
-            "slife.tools.system_health.get_startup_records",
-            return_value=startup_entries,
-        ):
-            with patch(
-                "slife.tools.system_health._check_wechat_status",
-                return_value=[],
-            ):
-                result = await tool.execute()
-                parsed = json.loads(result)
-                assert parsed["healthy"] is False
-                assert "warning" in parsed["summary"].lower()
+        with patch("slife.tools.system.get_startup_records", return_value=startup_entries), \
+             patch("slife.tools.system.check_os_info", return_value=[]), \
+             patch("slife.tools.system.check_shells", return_value=[]), \
+             patch("slife.tools.system.check_workspace", return_value=[]), \
+             patch("slife.tools.system.check_embedding", return_value=[]), \
+             patch("slife.tools.system.check_wechat", return_value=[]):
+            result = await tool.execute()
+            parsed = json.loads(result)
+            assert parsed["healthy"] is False
+            assert "warning" in parsed["summary"].lower()
 
     @pytest.mark.asyncio
     async def test_execute_all_healthy(self):
@@ -465,18 +454,20 @@ class TestSystemHealthToolExecute:
             {"component": "b", "level": "ok"},
         ]
         with patch(
-            "slife.tools.system_health.get_startup_records",
+            "slife.tools.system.get_startup_records",
             return_value=startup_entries,
+        ), patch(
+            "slife.tools.system.check_os_info", return_value=[],
+        ), patch(
+            "slife.tools.system.check_shells", return_value=[],
+        ), patch(
+            "slife.tools.system.check_workspace", return_value=[],
+        ), patch(
+            "slife.tools.system.check_embedding", return_value=[],
+        ), patch(
+            "slife.tools.system.check_wechat", return_value=[],
         ):
-            with patch(
-                "slife.tools.system_health._check_wechat_status",
-                return_value=[],
-            ):
-                with patch(
-                    "slife.tools.system_health._check_embedding_config",
-                    return_value=[],
-                ):
-                    result = await tool.execute()
-                    parsed = json.loads(result)
-                    assert parsed["healthy"] is True
-                    assert "ok" in parsed["summary"].lower()
+            result = await tool.execute()
+            parsed = json.loads(result)
+            assert parsed["healthy"] is True
+            assert "ok" in parsed["summary"].lower()

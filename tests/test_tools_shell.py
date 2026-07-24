@@ -4,7 +4,7 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from slife.tools.shell import ShellTool
+from slife.tools.exec import ShellTool
 
 
 # ── Tool metadata ─────────────────────────────────────────────────────
@@ -17,7 +17,7 @@ class TestShellMetadata:
         assert ShellTool.name == "execute_shell"
 
     def test_description(self):
-        assert "Execute a shell command" in ShellTool.description
+        assert "Run a shell command" in ShellTool.description
 
     def test_parameters(self):
         params = ShellTool.parameters

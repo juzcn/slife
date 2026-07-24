@@ -10,6 +10,7 @@ from slife.platform import (
     IS_WINDOWS,
     get_os_info,
 )
+from slife.tools.system import CheckOsInfoTool
 
 
 # ── build_python_command ───────────────────────────────────────────────
@@ -77,16 +78,19 @@ class TestPlatformDetection:
             assert os_name == system
 
 
-class TestGetOsInfoTool:
-    """Tests for the standalone GetOsInfoTool."""
+class TestCheckOsInfoTool:
+    """Tests for the standalone CheckOsInfoTool."""
 
     @pytest.mark.asyncio
     async def test_execute_returns_os_name(self):
-        """Tool returns a known OS name."""
-        from slife.tools.os_info import GetOsInfoTool
-        tool = GetOsInfoTool()
+        """Tool returns JSON with OS name."""
+        tool = CheckOsInfoTool()
         result = await tool.execute()
-        assert result in ("Windows", "Linux", "macOS")
+        import json
+        data = json.loads(result)
+        assert len(data) >= 1
+        assert data[0]["key"] == "system"
+        assert data[0]["value"] in ("Windows", "Linux", "Darwin")
 
 
 class TestRunPythonScriptTool:
@@ -95,7 +99,7 @@ class TestRunPythonScriptTool:
     @pytest.mark.asyncio
     async def test_execute_runs_script(self):
         """Tool executes a simple Python one-liner and returns output."""
-        from slife.tools.run_python_script import RunPythonScriptTool
+        from slife.tools.exec import RunPythonScriptTool
         tool = RunPythonScriptTool()
         result = await tool.execute(script="-c print('hello')")
         assert "hello" in result

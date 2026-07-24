@@ -18,7 +18,7 @@ Flow:
 import logging
 from pathlib import Path
 
-from slife.tools._config_io import _ConfigPathMixin, format_source_info, now_iso, read_config, with_fetched_at, write_config
+from slife.tools._config_io import _ConfigPathMixin, format_source_info, read_config, with_fetched_at, write_config
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -217,17 +217,20 @@ class CliAddTool(_ConfigPathMixin, Tool):
 
 
 class CliRemoveTool(_ConfigPathMixin, Tool):
-    """Remove a previously registered CLI tool."""
+    """Remove a registered CLI tool from slife.json5."""
 
     name = "cli_remove_tool"
-    _subagent_skip = True  # subagent has no config _path to write to
-    description = "Delete a CLI command registration from slife.json5."
+    _subagent_skip = True
+    description = (
+        "Delete a CLI command registration from slife.json5. "
+        "Does not uninstall the actual command — only removes slife's record of it."
+    )
     parameters = {
         "type": "object",
         "properties": {
             "name": {
                 "type": "string",
-                "description": "Name of the CLI tool to remove (from cli_list_tools).",
+                "description": "CLI name to remove, from cli_list_tools output.",
             },
         },
         "required": ["name"],

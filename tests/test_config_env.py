@@ -1,16 +1,13 @@
-"""Tests for slife.tools.config_env — env var management tools."""
+"""Tests for slife.tools.env — env var management tools."""
 
 import os
 from pathlib import Path
-from unittest.mock import patch
-
 import pytest
 
-from slife.tools.config_env import (
+from slife.tools.env import (
     _env_section,
     _PLACEHOLDER_PREFIX,
     ConfigEnvSetTool,
-    ConfigSecretRegisterTool,
     ConfigEnvGetTool,
     ConfigEnvRemoveTool,
 )
@@ -21,13 +18,13 @@ from slife.tools.config_env import (
 
 def _mock_config(data: dict, monkeypatch):
     """Mock read_config and write_config for a test."""
-    import slife.tools.config_env
+    import slife.tools.env
 
     raw = dict(data)
-    monkeypatch.setattr(slife.tools.config_env, "read_config", lambda path: raw)
+    monkeypatch.setattr(slife.tools.env, "read_config", lambda path: raw)
     written = []
     monkeypatch.setattr(
-        slife.tools.config_env, "write_config",
+        slife.tools.env, "write_config",
         lambda path, r: written.append(dict(r)),
     )
     return raw, written
@@ -117,66 +114,6 @@ class TestConfigEnvSetTool:
         assert raw["env"]["EDITOR"] == "vim"
 
 
-# ── ConfigSecretRegisterTool ──────────────────────────────────
-
-
-class TestConfigSecretRegisterTool:
-    @pytest.mark.asyncio
-    async def test_registers_placeholder(self, monkeypatch):
-        """Writes ${KEY} placeholder, directs to CLI."""
-        raw, written = _mock_config({}, monkeypatch)
-        _mock_credstore(monkeypatch)
-        tool = ConfigSecretRegisterTool(config_path=Path("test.json5"))
-
-        result = await tool.execute(key="DEEPSEEK_API_KEY")
-
-        assert raw["env"]["DEEPSEEK_API_KEY"] == "${DEEPSEEK_API_KEY}"
-        assert "credstore set" in result
-        assert "[OK]" in result
-        assert len(written) == 1
-
-    @pytest.mark.asyncio
-    async def test_no_value_parameter(self):
-        """Schema has NO value field — structurally impossible to pass secrets."""
-        tool = ConfigSecretRegisterTool(config_path=Path("test.json5"))
-        assert "value" not in tool.parameters["properties"]
-
-    @pytest.mark.asyncio
-    async def test_reports_already_stored(self, monkeypatch):
-        """If credential already in keyring, reports it."""
-        raw, _ = _mock_config({}, monkeypatch)
-        cred = _mock_credstore(monkeypatch)
-        cred["DEEPSEEK_API_KEY"] = "sk-secret"
-
-        tool = ConfigSecretRegisterTool(config_path=Path("test.json5"))
-        result = await tool.execute(key="DEEPSEEK_API_KEY")
-
-        assert "already stored in keyring" in result
-
-    @pytest.mark.asyncio
-    async def test_reports_not_yet_stored(self, monkeypatch):
-        """If credential not in keyring, reports not yet stored."""
-        raw, _ = _mock_config({}, monkeypatch)
-        _mock_credstore(monkeypatch)
-
-        tool = ConfigSecretRegisterTool(config_path=Path("test.json5"))
-        result = await tool.execute(key="DEEPSEEK_API_KEY")
-
-        assert "not yet stored" in result
-
-    @pytest.mark.asyncio
-    async def test_mentions_interactive_only(self, monkeypatch):
-        """Response tells LLM that credstore is interactive-only."""
-        raw, _ = _mock_config({}, monkeypatch)
-        _mock_credstore(monkeypatch)
-
-        tool = ConfigSecretRegisterTool(config_path=Path("test.json5"))
-        result = await tool.execute(key="DEEPSEEK_API_KEY")
-
-        assert "interactive" in result.lower()
-        assert "LLMs cannot invoke" in result
-
-
 # ── ConfigEnvGetTool ─────────────────────────────────────────
 
 
@@ -197,13 +134,13 @@ class TestConfigEnvGetTool:
     async def test_get_from_credstore(self, monkeypatch):
         """credential_check handles keyring, not config_env_get."""
         # Import the test target
-        from slife.tools.credentials import CredentialCheckTool
+        from slife.tools.env import CredentialCheckTool
 
         cred = _mock_credstore(monkeypatch)
         cred["DEEPSEEK_API_KEY"] = "sk-secret-key-long"
 
         monkeypatch.setattr(
-            "slife.tools.credentials.read_config",
+            "slife.tools.env.read_config",
             lambda path: {},
         )
 
@@ -254,13 +191,13 @@ class TestConfigEnvGetTool:
     @pytest.mark.asyncio
     async def test_credential_check_masked_value(self, monkeypatch):
         """credential_check shows masked value from credstore."""
-        from slife.tools.credentials import CredentialCheckTool
+        from slife.tools.env import CredentialCheckTool
 
         cred = _mock_credstore(monkeypatch)
         cred["DEEPSEEK_API_KEY"] = "sk-secret-12345678"
 
         monkeypatch.setattr(
-            "slife.tools.credentials.read_config",
+            "slife.tools.env.read_config",
             lambda path: {},
         )
 
