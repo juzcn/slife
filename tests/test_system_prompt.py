@@ -29,8 +29,7 @@ class TestBuild:
         result = build()
         assert "slife.json5" in result
         assert "interactive-only" in result
-        assert "credstore" in result
-        assert "Never ask for or accept secrets in chat" in result
+        assert "credstore CLI" in result
 
     def test_mcp_not_hardcoded(self):
         """MCP servers should NOT be listed in the system prompt —

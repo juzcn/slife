@@ -167,6 +167,60 @@ class _SkillDirMixin:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+class CheckSkillsDirTool(_SkillDirMixin, Tool):
+    """Report the absolute path to the skills directory.
+
+    Skills live in different locations depending on the environment:
+    dev mode uses ``<project>/skills/``, production uses the bundled
+    package directory or ``~/.slife/skills/``.  Call this to resolve
+    relative paths like ``skills/<name>/scripts/…`` to absolute paths.
+    """
+
+    name = "check_skills_dir"
+    description = (
+        "Return the absolute path to the skills directory and the list "
+        "of installed skill subdirectories. Use this to resolve relative "
+        "skill script paths (e.g. 'skills/baidu-search/scripts/search.py') "
+        "to actual filesystem paths."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
+
+    async def execute(self, **kwargs) -> str:
+        resolved = self.skills_dir.resolve()
+        lines = [
+            f"Skills directory: {resolved}",
+            "",
+        ]
+        if resolved.is_dir():
+            items = sorted(
+                d for d in resolved.iterdir()
+                if d.is_dir() and (d / "SKILL.md").exists()
+            )
+            if items:
+                lines.append("Installed skills (with script paths):")
+                for d in items:
+                    scripts_dir = d / "scripts"
+                    if scripts_dir.is_dir():
+                        scripts = sorted(
+                            str(p.relative_to(d))
+                            for p in scripts_dir.iterdir()
+                            if p.is_file()
+                        )
+                        for s in scripts:
+                            lines.append(f"  {d.name}/{s}")
+                    else:
+                        lines.append(f"  {d.name}/ (no scripts/)")
+            else:
+                lines.append("No installed skills found.")
+        else:
+            lines.append("[WARN] Skills directory does not exist.")
+        return "\n".join(lines)
+
+
 class ListSkillsTool(_SkillDirMixin, Tool):
     """List all available skills with their names and descriptions."""
 
