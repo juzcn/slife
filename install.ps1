@@ -241,7 +241,6 @@ try {
     Write-Host ""
     Write-Host "Optional extras:" -ForegroundColor Cyan
     Write-Host "  pip install 'slife[embeddings]'"
-    Write-Host "  pip install 'slife[mqtt]'"
     Write-Host ""
     Write-Host "More info: https://github.com/juzcn/slife" -ForegroundColor Cyan
 
