@@ -100,6 +100,7 @@ class HttpStreamableTransport(TransportAdapter):
         )
 
         last_err = None
+        attempt: int = -1
         for attempt in range(10):  # retry: server may still be starting
             try:
                 self._exit_stack = AsyncExitStack()

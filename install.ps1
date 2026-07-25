@@ -186,22 +186,39 @@ try {
         exit 1
     }
 
-    Write-Host "Installing from $($slifeWheel.Name)…"
-    uv tool install --python 3.13 $slifeWheel.FullName
+    $installDir = "$env:USERPROFILE\.slife"
+
+    # Remove previous installation if it exists
+    if (Test-Path $installDir) {
+        Write-Host "Removing previous installation…" -ForegroundColor Yellow
+        Remove-Item -Recurse -Force $installDir
+    }
+
+    Write-Host "Installing to $installDir…"
+    uv venv --seed --python 3.13 "$installDir"
+    & "$installDir\Scripts\pip.exe" install $slifeWheel.FullName
+
+    # Add to user PATH permanently
+    $scriptsDir = "$installDir\Scripts"
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($userPath -notlike "*$scriptsDir*") {
+        [Environment]::SetEnvironmentVariable("Path", "$scriptsDir;$userPath", "User")
+    }
+    $env:PATH = "$scriptsDir;$env:PATH"
 
     Write-Host ""
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
     Write-Host "  Slife v$version installed successfully! 🎉  " -ForegroundColor Green
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Quick start:" -ForegroundColor Cyan
+    Write-Host "Restart your terminal, then:" -ForegroundColor Cyan
     Write-Host "  credstore set-password              # set up encrypted backup (first time)"
     Write-Host "  credstore set DEEPSEEK_API_KEY       # store your API key"
     Write-Host "  slife                                # launch the TUI"
     Write-Host ""
     Write-Host "Optional extras:" -ForegroundColor Cyan
-    Write-Host "  uv tool install --python 3.13 'slife[embeddings]' --reinstall"
-    Write-Host "  uv tool install --python 3.13 'slife[mqtt]' --reinstall"
+    Write-Host "  pip install 'slife[embeddings]'"
+    Write-Host "  pip install 'slife[mqtt]'"
     Write-Host ""
     Write-Host "More info: https://github.com/juzcn/slife" -ForegroundColor Cyan
 

@@ -97,6 +97,7 @@ filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::pytest.PytestDeprecationWarning",
     "ignore::RuntimeWarning:unittest.mock",
+    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
     "ignore::RuntimeWarning:_pytest",
     "ignore::RuntimeWarning:httpcore",
 ]

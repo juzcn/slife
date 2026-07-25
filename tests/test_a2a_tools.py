@@ -418,25 +418,34 @@ class TestA2ASubscribeTaskTool:
         assert "Already done" in result
 
     @pytest.mark.asyncio
-    async def test_poll_until_complete(self):
+    async def test_single_check_returns_status(self):
         from slife.a2a.task_store import get_store, clear_store
-        import asyncio
 
         clear_store()
         store = get_store()
         store.record_send("t1", "agent-1", "task", "mqtt")
 
-        async def delayed_result():
-            await asyncio.sleep(0.05)
-            store.record_result("t1", "Delayed done")
+        with patch(MANAGER_PATH, return_value=None), \
+             patch(CLIENT_PATH, return_value=None):
+            tool = A2ASubscribeTaskTool()
+            result = await tool.execute(agent_id="agent-1", task_id="t1")
+            assert "pending" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_completed_task_returns_result(self):
+        from slife.a2a.task_store import get_store, clear_store
+
+        clear_store()
+        store = get_store()
+        store.record_send("t1", "agent-1", "task", "mqtt")
+        store.record_result("t1", "all done")
 
         with patch(MANAGER_PATH, return_value=None), \
              patch(CLIENT_PATH, return_value=None):
             tool = A2ASubscribeTaskTool()
-            task = asyncio.create_task(delayed_result())
-            result = await tool.execute(agent_id="agent-1", task_id="t1", timeout=2.0)
-            await task
+            result = await tool.execute(agent_id="agent-1", task_id="t1")
             assert "completed" in result.lower()
+            assert "all done" in result
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -348,6 +348,7 @@ class TestInboxProcessOne:
     async def test_process_error_publishes_reply(self, mock_loop, mock_store,
                                                   mock_a2a_client):
         from slife.agent.inbox import Inbox
+        mock_a2a_client.publish_message = AsyncMock()
         inbox = Inbox(mock_loop, mock_store, a2a_client=mock_a2a_client)
 
         mock_loop.run = AsyncMock(side_effect=ValueError("broken"))
@@ -357,8 +358,8 @@ class TestInboxProcessOne:
                              reply_to="Slife/human/tasks", corr_id="err-1")
         await inbox._process_one(msg)
 
-        mock_a2a_client._adapter.publish.assert_awaited_once()
-        call_args = mock_a2a_client._adapter.publish.call_args
+        mock_a2a_client.publish_message.assert_awaited_once()
+        call_args = mock_a2a_client.publish_message.call_args
         assert "Error" in call_args[0][1]  # payload contains error
 
     @pytest.mark.asyncio
@@ -499,7 +500,7 @@ class TestInboxPublishReply:
         mock_loop = MagicMock()
         mock_store = MagicMock()
         mock_a2a = MagicMock()
-        mock_a2a._adapter.publish = AsyncMock()
+        mock_a2a.publish_message = AsyncMock()
 
         inbox = Inbox(mock_loop, mock_store, a2a_client=mock_a2a)
 
@@ -507,10 +508,8 @@ class TestInboxPublishReply:
         mock_result.text = "the answer"
 
         await inbox._publish_reply("topic/reply", "corr-42", mock_result)
-        mock_a2a._adapter.publish.assert_awaited_once_with(
-            "topic/reply", mock_a2a._adapter.publish.call_args[0][1], qos=1,
-        )
-        payload = mock_a2a._adapter.publish.call_args[0][1]
+        mock_a2a.publish_message.assert_awaited_once()
+        payload = mock_a2a.publish_message.call_args[0][1]
         assert "corr-42" in payload
         assert "the answer" in payload
 
@@ -520,12 +519,12 @@ class TestInboxPublishReply:
         mock_loop = MagicMock()
         mock_store = MagicMock()
         mock_a2a = MagicMock()
-        mock_a2a._adapter.publish = AsyncMock()
+        mock_a2a.publish_message = AsyncMock()
 
         inbox = Inbox(mock_loop, mock_store, a2a_client=mock_a2a)
 
         await inbox._publish_reply("t/x", None, "just a string")
-        mock_a2a._adapter.publish.assert_awaited_once()
+        mock_a2a.publish_message.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_publish_with_empty_correlation_id(self):
@@ -533,14 +532,14 @@ class TestInboxPublishReply:
         mock_loop = MagicMock()
         mock_store = MagicMock()
         mock_a2a = MagicMock()
-        mock_a2a._adapter.publish = AsyncMock()
+        mock_a2a.publish_message = AsyncMock()
 
         inbox = Inbox(mock_loop, mock_store, a2a_client=mock_a2a)
         mock_result = MagicMock()
         mock_result.text = "result"
 
         await inbox._publish_reply("t/y", None, mock_result)
-        payload = mock_a2a._adapter.publish.call_args[0][1]
+        payload = mock_a2a.publish_message.call_args[0][1]
         assert '"correlation_id": ""' in payload
 
 

@@ -49,6 +49,7 @@ class MCPClient:
         logger.info("mcp_client_connect transport=streamable-http url=%s", url)
 
         last_err = None
+        attempt: int = -1
         for attempt in range(_CONNECT_RETRY_ATTEMPTS):
             try:
                 self._exit_stack = AsyncExitStack()

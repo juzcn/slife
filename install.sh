@@ -126,8 +126,27 @@ if [ -z "$SLIFE_WHEEL" ] || [ ! -f "$SLIFE_WHEEL" ]; then
     exit 1
 fi
 
-echo "Installing from $(basename "$SLIFE_WHEEL")…"
-uv tool install --python 3.13 "$SLIFE_WHEEL"
+INSTALL_DIR="$HOME/.slife"
+
+# Remove previous installation if it exists
+if [ -d "$INSTALL_DIR" ]; then
+    echo -e "${YELLOW}Removing previous installation…${NC}"
+    rm -rf "$INSTALL_DIR"
+fi
+
+echo "Installing to $INSTALL_DIR…"
+uv venv --seed --python 3.13 "$INSTALL_DIR"
+"$INSTALL_DIR/bin/pip" install "$SLIFE_WHEEL"
+
+# Add to PATH in shell profiles
+for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+    if [ -f "$rc" ]; then
+        if ! grep -q "$INSTALL_DIR/bin" "$rc" 2>/dev/null; then
+            echo "export PATH=\"$INSTALL_DIR/bin:\$PATH\"" >> "$rc"
+        fi
+    fi
+done
+export PATH="$INSTALL_DIR/bin:$PATH"
 
 # ── 4. Done ──────────────────────────────────────────────────────────
 echo ""
@@ -135,13 +154,12 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║  Slife v${VERSION} installed successfully! 🎉  ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${CYAN}Quick start:${NC}"
+echo -e "${CYAN}Restart your terminal, then:${NC}"
 echo "  credstore set-password              # set up encrypted backup (first time)"
 echo "  credstore set DEEPSEEK_API_KEY       # store your API key"
 echo "  slife                                # launch the TUI"
 echo ""
 echo -e "${CYAN}Optional extras:${NC}"
-echo "  uv tool install --python 3.13 'slife[embeddings]' --reinstall"
-echo "  uv tool install --python 3.13 'slife[mqtt]' --reinstall"
+echo "  pip install 'slife[embeddings]'"
 echo ""
 echo -e "${CYAN}More info:${NC} https://github.com/juzcn/slife"

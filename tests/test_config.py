@@ -792,7 +792,7 @@ class TestConfigA2A:
         config = Config.from_json5(str(cfg_path), agent_id="bob")
         assert config.a2a_config is not None
         assert config.a2a_config.agent_id == "bob"
-        assert config.a2a_config.enabled is False  # runtime probe sets this
+        assert config.a2a_config.enabled is True  # auto-enabled when mqtt config present
 
 
 # ── Config.from_json5 edge cases ────────────────────────────────────────

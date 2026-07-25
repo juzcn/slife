@@ -332,7 +332,10 @@ def check_wechat(config=None) -> list[dict]:
         from slife.plugins.wechat.client import WechatClawbotClient
         SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
     except ImportError:
-        SESSION_MAX_AGE = 23 * 3600
+        results.append({"component": "wechat", "level": "warning", "key": "status",
+                        "value": "plugin_unavailable",
+                        "hint": "WeChat plugin is enabled but the wechat package is not installed."})
+        return results
 
     session = load_wechat_config(config.agent_id, get_data_dir())
 

@@ -133,6 +133,8 @@ class Inbox:
             await self._a2a_client.update_status("busy")
         self._processing = True
 
+        conversation = None
+        handler = None
         try:
             # Reset cancel state for the new message
             self._agent_loop.reset_cancel()
@@ -228,10 +230,11 @@ class Inbox:
             # Rollback the failed turn so the conversation isn't
             # poisoned for the next message (e.g. content-policy
             # rejections would keep failing on retry otherwise).
-            try:
-                conversation.pop_last_turn()
-            except Exception:
-                pass
+            if conversation is not None:
+                try:
+                    conversation.pop_last_turn()
+                except Exception:
+                    pass
             # Notify TUI so the user sees the error in chat
             if self._on_activity:
                 try:

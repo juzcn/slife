@@ -207,6 +207,7 @@ class TestTerminateProcess:
 
         proc = MagicMock(spec=asyncio.subprocess.Process)
         proc.returncode = 0
+        proc.stdin = None  # required by _close_pipe_transports in finally
         await terminate_process(proc, label="test")
         proc.terminate.assert_not_called()
         proc.kill.assert_not_called()
@@ -224,7 +225,9 @@ class TestTerminateProcess:
         proc.wait = AsyncMock(return_value=0)
 
         await terminate_process(proc, label="test")
-        proc.stdin.close.assert_called_once()
+        # Called twice: once to signal EOF before terminate,
+        # once in _close_pipe_transports for resource cleanup.
+        assert proc.stdin.close.call_count == 2
 
     @pytest.mark.asyncio
     async def test_process_lookup_error_swallowed(self):
