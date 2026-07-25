@@ -1061,7 +1061,7 @@ class AgentService:
 
     async def start_a2a(
         self, handler_factory: "Callable[[], Any] | None" = None,
-    ) -> None:
+    ) -> bool:
         """Connect to MQTT broker for remote agent P2P mesh.
 
         Called during app startup after MCP initialization.
@@ -1073,11 +1073,15 @@ class AgentService:
             handler_factory: Optional callable that creates a TUI handler
                 for each incoming A2A task.  When provided, remote tasks
                 stream to the chat view just like human-typed messages.
+
+        Returns:
+            ``True`` when A2A connects successfully, ``False`` when it is
+            disabled or the broker is unreachable.
         """
         a2a_cfg = self.config.a2a_config
         if a2a_cfg is None or not a2a_cfg.enabled:
             logger.debug("a2a_disabled")
-            return
+            return False
 
         logger.info("a2a_init start")
 
@@ -1105,7 +1109,8 @@ class AgentService:
                     "a2a_broker_not_found host=%s port=%d — A2A disabled",
                     a2a_cfg.broker_host, a2a_cfg.broker_port,
                 )
-                return
+                a2a_cfg.enabled = False
+                return False
             a2a_cfg.enabled = True
 
         # Create and connect the A2A client
@@ -1136,7 +1141,7 @@ class AgentService:
                      "P2P agent mesh is unavailable.",
             )
             a2a_cfg.enabled = False
-            return
+            return False
 
         # Wire the existing inbox to A2A
         # (Inbox was already created in __init__; now inject the
@@ -1162,6 +1167,8 @@ class AgentService:
         # (Slife.tools.a2a) can discover the live client at call time.
         from slife.a2a.client import set_client
         set_client(self._a2a_client)
+
+        return True
 
     def set_inbox_handler_factory(self, factory) -> None:
         """Register a factory that creates TUI handlers for inbox messages.

@@ -185,7 +185,7 @@ class SlifeApp(App):
         )
 
         self.run_worker(
-            self.service.start_a2a(),
+            self._start_a2a_safe(),
             exclusive=False, group="a2a-startup",
         )
         self.run_worker(
@@ -289,6 +289,27 @@ class SlifeApp(App):
         except Exception as e:
             self._show_system_message(
                 f"⚠ 插件启动失败 ({name}): {e}", color="#d29922",
+            )
+
+    async def _start_a2a_safe(self) -> None:
+        """Start A2A mesh and show status — only notifies on success.
+
+        A2A is not a plugin (it is discovered via broker probe, not
+        ``discover_plugins``), so it gets its own startup helper.
+        When the broker is unreachable we stay silent — that is the
+        expected default when Mosquitto is not running.
+        """
+        try:
+            result = await self.service.start_a2a()
+            if result is True:
+                a2a_cfg = self.service.config.a2a_config
+                agent_id = a2a_cfg.agent_id if a2a_cfg else "slife"
+                self._show_system_message(
+                    f"🔌 多Agent已就绪: {agent_id}", color="#3fb950",
+                )
+        except Exception as e:
+            self._show_system_message(
+                f"⚠ A2A 启动失败: {e}", color="#d29922",
             )
 
     # ── Input handling ────────────────────────────────────────────

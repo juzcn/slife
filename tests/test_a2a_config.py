@@ -48,16 +48,16 @@ class TestA2AConfigFromDict:
         assert cfg.broker_host == "localhost"
         assert cfg.broker_port == 1883
 
-    def test_empty_data_returns_disabled_with_defaults(self):
+    def test_empty_data_returns_enabled_with_defaults(self):
         cfg = A2AConfig.from_dict({})
-        assert cfg.enabled is False  # runtime probe sets this
+        assert cfg.enabled is True  # user has mqtt section → probe at runtime
         assert cfg.agent_id == "slife"  # default agent_id
         assert cfg.agent_name == ""
 
     def test_user_becomes_agent_id(self):
         cfg = A2AConfig.from_dict({}, agent_id="bob")
         assert cfg.agent_id == "bob"
-        assert cfg.enabled is False  # runtime probe sets this
+        assert cfg.enabled is True  # user has mqtt section → probe at runtime
 
     def test_agent_name_from_data(self):
         cfg = A2AConfig.from_dict({"agent_name": "My Agent"}, agent_id="bob")

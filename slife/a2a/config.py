@@ -72,8 +72,15 @@ class A2AConfig:
             broker = data.get("broker", {}) if isinstance(data.get("broker"), dict) else {}
             agent_name = data.get("agent_name", "")
 
+        # The mqtt section provides connection details only.
+        # A2A enablement is decided at runtime by the Mosquitto TCP probe —
+        # the json5 mqtt section never carries an "enabled" field.
+        # When data is None (no mqtt section), enabled stays False —
+        # start_a2a() won't even attempt a probe.
+        default_enabled = isinstance(data, dict)
+
         return cls(
-            enabled=False,  # set to True at runtime after mosquitto probe
+            enabled=default_enabled,  # downgraded at runtime on probe failure
             agent_id=agent_id,
             agent_name=agent_name,
             transport=(data or {}).get("transport", "mqtt"),
