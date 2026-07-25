@@ -213,20 +213,45 @@ class MCPConfig:
         if not isinstance(servers, dict):
             servers = {}
 
-        # Resolve ${VAR} in each server's env section
+        # Resolve ${VAR} and keyring: references in each server's env + auth.
+        # Resolution order: shell env > credstore > config literal
         for sname, scfg in servers.items():
             if isinstance(scfg, dict) and "env" in scfg:
                 senv = scfg["env"]
                 if isinstance(senv, dict):
                     for k, v in senv.items():
-                        senv[k] = _resolve_mcp_env_var(str(v))
+                        raw_val = str(v)
+                        resolved = _resolve_mcp_env_var(raw_val)
+                        senv[k] = resolved
+                        if raw_val != resolved:
+                            logger.info(
+                                "mcp_env_resolved server=%s key=%s", sname, k,
+                            )
+                        elif raw_val.startswith("${") and raw_val.endswith("}"):
+                            logger.warning(
+                                "mcp_env_unresolved server=%s key=%s var=%s — "
+                                "not in shell or credstore",
+                                sname, k, raw_val[2:-1],
+                            )
             # Resolve ${VAR} in auth section (client_id, client_secret)
             if isinstance(scfg, dict) and "auth" in scfg:
                 auth = scfg["auth"]
                 if isinstance(auth, dict):
                     for auth_key in ("client_id", "client_secret"):
                         if auth_key in auth:
-                            auth[auth_key] = _resolve_mcp_env_var(str(auth[auth_key]))
+                            raw_val = str(auth[auth_key])
+                            resolved = _resolve_mcp_env_var(raw_val)
+                            auth[auth_key] = resolved
+                            if raw_val != resolved:
+                                logger.info(
+                                    "mcp_auth_resolved server=%s key=%s", sname, auth_key,
+                                )
+                            elif raw_val.startswith("${") and raw_val.endswith("}"):
+                                logger.warning(
+                                    "mcp_auth_unresolved server=%s key=%s var=%s — "
+                                    "not in shell or credstore",
+                                    sname, auth_key, raw_val[2:-1],
+                                )
 
         wrapper = data.get("wrapper", {})
         if not isinstance(wrapper, dict):
