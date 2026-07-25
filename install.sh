@@ -136,7 +136,7 @@ fi
 
 echo "Installing to $INSTALL_DIR…"
 uv venv --seed --python "$PYTHON" "$INSTALL_DIR"
-"$INSTALL_DIR/bin/pip" install "$SLIFE_WHEEL"
+uv pip install --python "$INSTALL_DIR/bin/python" "$SLIFE_WHEEL"
 
 # Add to PATH in shell profiles
 for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
