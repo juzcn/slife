@@ -17,6 +17,7 @@ import json
 import logging
 import time as _time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 import paho.mqtt.client as mqtt
@@ -41,9 +42,17 @@ def _get_mqtt():
     return mqtt
 
 
-#: Backward-compatible alias — new code should use
-#: :class:`~slife.a2a.transport.TransportMessage` directly.
-MQTTMessage = TransportMessage
+@dataclass
+class MQTTMessage(TransportMessage):
+    """MQTT-specific message with QoS and retain flag.
+
+    Extends :class:`TransportMessage` with transport-level metadata.
+    Can be used wherever ``TransportMessage`` is expected.
+    """
+
+    qos: int = 0
+    retain: bool = False
+
 
 
 class MQTTAdapter(TransportAdapter):

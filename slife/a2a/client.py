@@ -24,12 +24,11 @@ import logging
 import time as _time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 from slife.a2a.card import AgentCard
 from slife.a2a.config import A2AConfig
 from slife.a2a.identity import AgentId, AgentMessage
-from slife.a2a.mqtt import MQTTAdapter, MQTTMessage
+from slife.a2a.mqtt import MQTTAdapter
 from slife.a2a.transport import TransportAdapter, TransportMessage
 
 
@@ -253,7 +252,7 @@ class A2AClient:
             "reply_to": f"Slife/{self._agent_id}/tasks/result",
         })
 
-        future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._pending_tasks[corr_id] = future
 
         logger.debug(
@@ -526,7 +525,7 @@ class A2AClient:
         )
 
         # Merge both streams into a single queue we can select on
-        merged: asyncio.Queue[MQTTMessage] = asyncio.Queue()
+        merged: "asyncio.Queue[TransportMessage]" = asyncio.Queue()
 
         async def forward(adapter, topic_filter):
             """Forward every message from *topic_filter* into *merged*."""
@@ -567,7 +566,7 @@ class A2AClient:
             f_inbox.cancel()
             f_result.cancel()
 
-    async def _handle_incoming_task(self, msg: MQTTMessage) -> None:
+    async def _handle_incoming_task(self, msg: TransportMessage) -> None:
         """Process an incoming task request."""
         try:
             data = json.loads(msg.payload)
@@ -594,7 +593,7 @@ class A2AClient:
             )
             await self._incoming_task_callback(agent_msg)
 
-    async def _handle_result(self, msg: MQTTMessage) -> None:
+    async def _handle_result(self, msg: TransportMessage) -> None:
         """Process a task result (correlation_id match).
 
         Resolves synchronous waiters; stores async results for later

@@ -65,7 +65,7 @@ class TransportAdapter(ABC):
 
     @abstractmethod
     async def publish(
-        self, topic: str, payload: str, qos: int = 1,
+        self, topic: str, payload: str, qos: int = 1, retain: bool = False,
     ) -> None:
         """Publish *payload* to *topic*.
 
