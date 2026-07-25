@@ -196,12 +196,15 @@ try {
 
     Write-Host "Installing to $installDir…"
     uv venv --seed --python "$pythonPath" "$installDir"
+    $pipLog = Join-Path $tmpDir "pip-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    uv pip install --python "$installDir\Scripts\python.exe" $slifeWheel.FullName | Out-Null
+    uv pip install --python "$installDir\Scripts\python.exe" $slifeWheel.FullName > $pipLog 2>&1
+    $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
-    if ($LASTEXITCODE -ne 0) {
+    if (-not $ok) {
         Write-Host "Error: slife installation failed." -ForegroundColor Red
+        Get-Content $pipLog
         exit 1
     }
 
