@@ -74,9 +74,26 @@ class CheckOsInfoTool(Tool):
 # check_shells
 # ═══════════════════════════════════════════════════════════════════════
 
+def _detect_current_shell() -> str:
+    """Detect the shell that launched slife (the parent shell)."""
+    if os.name != "nt":
+        return os.environ.get("SHELL", os.environ.get("SHELL", "sh"))
+    # Windows: PowerShell sets PSModulePath; otherwise assume cmd
+    if os.environ.get("PSModulePath"):
+        return "powershell"
+    return "cmd"
+
+
 def check_shells() -> list[dict]:
     """Return shell availability as health-check entries."""
     results: list[dict] = []
+
+    # Report the shell slife is running under first — LLM should match
+    # command syntax to this shell, not to shells merely on PATH.
+    current = _detect_current_shell()
+    results.append({"component": "shell", "level": "ok", "key": "current_shell",
+                    "value": current,
+                    "hint": f"slife is running under {current}. Use {current} syntax for shell commands."})
 
     pwsh_path = which("powershell.exe" if os.name == "nt" else "pwsh") or which("powershell")
     if pwsh_path:
