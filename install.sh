@@ -146,10 +146,11 @@ if [ -d "$INSTALL_DIR" ]; then
             wechat_*.json5)                   cp -R "$item" "$BACKUP_DIR/" ;;
         esac
     done
-    # Wipe old installation entirely
+    # Wipe old installation entirely, then create fresh venv.
+    # --clear ensures uv handles leftover files even if rm couldn't
+    # delete everything.  User data is already backed up so --clear is safe.
     rm -rf "$INSTALL_DIR"
-    # Create fresh venv
-    uv venv --seed --python "$PYTHON" "$INSTALL_DIR"
+    uv venv --seed --clear --python "$PYTHON" "$INSTALL_DIR"
     # Restore user data
     if [ -d "$BACKUP_DIR" ]; then
         cp -R "$BACKUP_DIR"/* "$INSTALL_DIR/"

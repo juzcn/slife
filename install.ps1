@@ -210,10 +210,12 @@ try {
                 Copy-Item -Recurse -Force $item.FullName "$backupDir\"
             }
         }
-        # Wipe old installation entirely
-        Remove-Item -Recurse -Force $installDir
-        # Create fresh venv
-        uv venv --seed --python "$pythonPath" "$installDir"
+        # Wipe old installation entirely, then create fresh venv.
+        # --clear ensures uv handles leftover files even if Remove-Item
+        # couldn't delete everything (locked files, etc.).  User data is
+        # already backed up to $backupDir so --clear is safe.
+        Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
+        uv venv --seed --clear --python "$pythonPath" "$installDir"
         # Restore user data
         if (Test-Path $backupDir) {
             Get-ChildItem $backupDir | ForEach-Object {
