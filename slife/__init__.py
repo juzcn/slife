@@ -81,7 +81,13 @@ def main(config_path: str = "slife.json5"):
     os.environ["SLIFE_SESSION_ID"] = sid
     os.environ["SLIFE_AGENT_ID"] = agent_id
 
-    log_path, console_handler = setup_logging(agent_id=agent_id)
+    # Force UTF-8 encoding for Python subprocesses on Windows.
+    # Without this, Python defaults to the system code page (e.g. GBK / cp936)
+    # and crashes when printing characters outside that encoding to stdout.
+    if sys.platform == "win32":
+        os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+    log_path, _ = setup_logging(agent_id=agent_id)
 
     logger.debug("log_path=%s", log_path)
     logger.debug("data_dir=%s", data_dir)
