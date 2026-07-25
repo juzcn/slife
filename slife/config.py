@@ -683,25 +683,50 @@ class Config:
         context_ceiling = agent.get("context_ceiling", 0.8)
         tool_result_ceiling = agent.get("tool_result_ceiling", 0.2)
 
-        # Env -- inject into os.environ so tools can reference vars via ${VAR}
-        # Resolution order: os.environ ->credstore (keyring) ->config value
+        # Env -- inject into os.environ so child processes (MCP wrappers,
+        # sub-agents) inherit credentials.  Resolution order:
+        #   shell env  >  credstore (keyring)  >  config value  >  config ${VAR}
         env_section = _parse_section(raw, "env", dict, {})
         for key, value in env_section.items():
+            str_value = str(value)
             # 1. Already set in environment (user's shell) -- keep it
             if os.environ.get(key):
+                logger.debug("env_from_shell key=%s", key)
                 continue
-            # 2. Try credstore
+            # 2. Try credstore (keyring) — the canonical source for secrets
             cred_value = _try_credstore_lookup(key)
             if cred_value:
                 os.environ[key] = cred_value
+                logger.info("env_from_credstore key=%s", key)
                 continue
-            # 3. Fall back to config value (with env var resolution)
-            try:
-                resolved = resolve_env(str(value))
-            except KeyError:
-                resolved = str(value)
-            if resolved and not str(resolved).startswith("${"):
-                os.environ[key] = str(resolved)
+            # 3. Config value is a ${VAR} reference — try to resolve VAR
+            #    through credstore first, then os.environ, then raise.
+            if str_value.startswith("${") and str_value.endswith("}"):
+                var_name = str_value[2:-1]
+                if var_name != key:
+                    # Cross-reference: key=A, value=${B} — resolve B from credstore
+                    cred_value = _try_credstore_lookup(var_name)
+                    if cred_value:
+                        os.environ[key] = cred_value
+                        logger.info("env_from_credstore key=%s via=%s", key, var_name)
+                        continue
+                # Same name or cross-reference not in credstore — try os.environ
+                env_val = os.environ.get(var_name)
+                if env_val:
+                    os.environ[key] = env_val
+                    logger.info("env_from_shell key=%s via=%s", key, var_name)
+                    continue
+                # ${VAR} unresolved — warn and do NOT inject the placeholder
+                logger.warning(
+                    "env_unresolved key=%s var=%s — credential not in shell or "
+                    "credstore; child processes (MCP/subagent) will not have it. "
+                    "Run: credstore set %s",
+                    key, var_name, var_name,
+                )
+                continue
+            # 4. Plain config value — inject directly
+            os.environ[key] = str_value
+            logger.info("env_from_config key=%s", key)
         logger.debug("config_env_vars count=%d", len(env_section))
 
         # Tools (optional -- auto-discovery handles defaults)
