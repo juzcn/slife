@@ -128,9 +128,32 @@ class MCPClient:
         self._session = None
 
     async def list_tools(self) -> list[dict]:
+        """Return tools from the connected MCP server.
+
+        Wraps ``session.list_tools()`` with a timeout so a hung
+        Streamable HTTP session can't block the caller indefinitely.
+        On Windows / ProactorEventLoop, concurrent sessions to the
+        same server may hang if the underlying SSE transport gets
+        into a bad state — the timeout ensures we fail fast instead
+        of blocking for 30+ seconds.
+        """
         self._ensure_connected()
         assert self._session is not None  # post-condition of _ensure_connected
-        result = await self._session.list_tools()
+        # list_tools is a local Streamable HTTP call — should complete
+        # in under 15s even with hundreds of tools.  Cap the timeout
+        # so a stuck SSE session on a subagent doesn't outlive the
+        # parent's 30s spawn timeout.
+        list_timeout = min(self._tool_timeout, 20.0)
+        try:
+            result = await asyncio.wait_for(
+                self._session.list_tools(),
+                timeout=list_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"list_tools timed out after {list_timeout}s — "
+                f"the MCP server may have a stuck SSE session"
+            )
         return [
             {"name": t.name, "description": t.description or "", "inputSchema": t.inputSchema}
             for t in result.tools

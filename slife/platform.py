@@ -104,6 +104,34 @@ def build_python_command(input_str: str) -> str:
         return f"{python} {script} '{args}'"
 
 
+def _close_pipe_transports(process: asyncio.subprocess.Process) -> None:
+    """Close stdin/stdout/stderr pipe transports on *process*.
+
+    On Windows ProactorEventLoop, subprocess pipes are wrapped in
+    ``_ProactorBasePipeTransport``.  If these aren't explicitly closed
+    before the process handle becomes invalid, ``__del__`` tries to
+    access ``self._sock.fileno()`` on a closed pipe and raises
+    ``ValueError: I/O operation on closed pipe`` during GC.
+
+    Call this after the subprocess has exited to silence the warning.
+    """
+    # stdin is a StreamWriter — close() is public.
+    if process.stdin:
+        try:
+            process.stdin.close()
+        except Exception:
+            pass
+    # stdout / stderr are StreamReader — transport is at ._transport.
+    for attr in ("stdout", "stderr"):
+        pipe = getattr(process, attr, None)
+        if pipe is None:
+            continue
+        try:
+            pipe._transport.close()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
 async def terminate_process(
     process: asyncio.subprocess.Process,
     *,
@@ -118,6 +146,9 @@ async def terminate_process(
     3. Wait *graceful_timeout* seconds for graceful exit.
     4. Force-kill if still running.
     5. Wait *force_timeout* seconds for kill to take effect.
+    6. Close remaining pipe transports (prevents ``ResourceWarning``
+       on Windows ProactorEventLoop where the pipe handle is already
+       invalid by the time ``__del__`` runs).
 
     Swallows ``ProcessLookupError`` (already exited) and logs otherwise.
     """
@@ -153,6 +184,13 @@ async def terminate_process(
         pass  # Already exited
     except Exception as e:
         logger.debug("process_terminate_error label=%s err=%s", label, e)
+    finally:
+        # Close stdout/stderr transports to prevent "unclosed transport"
+        # ResourceWarning on Windows.  On ProactorEventLoop, if the pipe
+        # handle is already invalid when __del__ runs, accessing
+        # self._sock.fileno() raises "I/O operation on closed pipe".
+        # Closing transports here marks them closed so __del__ is a no-op.
+        _close_pipe_transports(process)
 
 
 def desktop_notify(title: str, message: str) -> None:

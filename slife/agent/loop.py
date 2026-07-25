@@ -286,20 +286,25 @@ class AgentLoop:
         Emits on_tool_call/on_tool_result via the handler.
         Adds tool result messages to the conversation.
 
-        Every tool call is guarded by :attr:`tool_timeout` — a hung
-        MCP server, network stall, or runaway subprocess can never
-        silently freeze the agent.  The LLM sees the timeout as a
-        normal tool result (``"Error: …"``) so it can retry or
-        report the failure.
-        """
-        for tc in tool_calls:
-            # Check cancellation before each tool — allows Escape to
-            # skip remaining tools in the batch without waiting for
-            # the current one to finish.
-            if self._cancel_event.is_set():
-                logger.info("agent_cancelled before_tool iter=%d", iteration)
-                break
+        Tools are executed **concurrently** — when the LLM issues
+        multiple independent tool calls (e.g. two subscribe operations),
+        they run in parallel via :func:`asyncio.gather`.  Each tool is
+        still individually guarded by :attr:`tool_timeout`.
 
+        Tools requiring user approval serialize behind an
+        :class:`asyncio.Lock` so only one modal dialog appears at a time.
+        """
+        # Check cancellation before starting the batch
+        if self._cancel_event.is_set():
+            logger.info("agent_cancelled before_batch iter=%d", iteration)
+            return
+
+        # Serialize approval dialogs — concurrent modals would overlap
+        _approval_lock = asyncio.Lock()
+
+        async def _run_one(tc: ToolCallInfo) -> None:
+            """Execute a single tool call with timeout, sanitization, and
+            handler notifications.  Safe to run concurrently."""
             if handler:
                 await handler.on_tool_call(
                     tc,
@@ -307,17 +312,18 @@ class AgentLoop:
                     max_iterations=self.max_iterations,
                 )
 
-            # ── Approval gate ──────────────────────────────────────
+            # ── Approval gate (serialised via lock) ─────────────────
             tool = self.tool_registry.get(tc.name)
             if getattr(tool, 'requires_approval', False):
-                approved = await handler.on_tool_approval(tc) if handler else True
+                async with _approval_lock:
+                    approved = await handler.on_tool_approval(tc) if handler else True
                 if not approved:
                     result = "Error: 用户拒绝了工具执行。"
                     result = sanitize_secrets(result)
                     if handler:
                         await handler.on_tool_result(tc.id, result, is_error=True)
                     conversation.add_tool_result(tc.id, result)
-                    continue
+                    return
 
             try:
                 coro = self.tool_registry.execute(tc.name, **tc.arguments)
@@ -358,11 +364,7 @@ class AgentLoop:
 
             conversation.add_tool_result(tc.id, result)
 
-            # Check cancellation after each tool — skip remaining tools
-            # if the user pressed Escape during execution.
-            if self._cancel_event.is_set():
-                logger.info("agent_cancelled after_tool iter=%d", iteration)
-                break
+        await asyncio.gather(*(_run_one(tc) for tc in tool_calls))
 
     # ── Main loop ──────────────────────────────────────────────────
 

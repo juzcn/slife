@@ -1,6 +1,7 @@
 """A2A (Agent-to-Agent) — two transports, one protocol.
 
-MQTT for remote instances, stdin/stdout for local subagents.
+MQTT for remote instances, HTTP Streamable for local/remote HTTP,
+stdin/stdout for local subagents.
 The LLM sees one agent pool via the unified A2A toolset in
 :mod:`slife.tools.a2a`.
 
@@ -13,6 +14,7 @@ from slife.a2a.client import A2AClient
 from slife.a2a.config import A2AConfig
 from slife.a2a.identity import AgentId, AgentMessage, HUMAN
 from slife.a2a.mqtt import MQTTAdapter
+from slife.a2a.transport import TransportAdapter, TransportMessage
 from slife.a2a.tools import (  # noqa: F401
     A2ABroadcastTool,
     A2ACancelTaskTool,
@@ -50,4 +52,6 @@ __all__ = [
     "MQTTAdapter",
     "SubagentSpawnTool",
     "SubagentStopTool",
+    "TransportAdapter",
+    "TransportMessage",
 ]

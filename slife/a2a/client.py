@@ -30,6 +30,7 @@ from slife.a2a.card import AgentCard
 from slife.a2a.config import A2AConfig
 from slife.a2a.identity import AgentId, AgentMessage
 from slife.a2a.mqtt import MQTTAdapter, MQTTMessage
+from slife.a2a.transport import TransportAdapter, TransportMessage
 
 
 class DuplicateAgentError(RuntimeError):
@@ -72,10 +73,15 @@ IncomingTaskCallback = Callable[[AgentMessage], Awaitable[None]]
 class A2AClient:
     """P2P A2A client — each Slife instance has one."""
 
-    def __init__(self, config: A2AConfig):
+    def __init__(
+        self, config: A2AConfig, transport: TransportAdapter | None = None,
+    ):
         self._config = config
         self._agent_id = AgentId(config.agent_id)
-        self._adapter = MQTTAdapter(config.agent_id)
+        self._adapter: TransportAdapter = (
+            transport if transport is not None
+            else MQTTAdapter(config.agent_id)
+        )
 
         # Peer tracking: agent_id → (AgentCard, last_heard_at)
         self._peers: dict[AgentId, tuple[AgentCard, float]] = {}
@@ -186,6 +192,20 @@ class A2AClient:
 
         await self._adapter.disconnect()
         logger.info("a2a_disconnected id=%s", self._agent_id)
+
+    # ── Public transport proxies ────────────────────────────────────
+    # These exist so external code (Inbox, SubagentManager) never
+    # reaches through self._adapter directly.
+
+    async def publish_message(
+        self, topic: str, payload: str, qos: int = 1,
+    ) -> None:
+        """Publish *payload* to *topic* on the underlying transport."""
+        await self._adapter.publish(topic, payload, qos=qos)
+
+    async def subscribe_topic(self, topic: str, qos: int = 1) -> None:
+        """Subscribe to *topic* on the underlying transport."""
+        await self._adapter.subscribe(topic, qos=qos)
 
     # ── Status ────────────────────────────────────────────────────────
 

@@ -444,7 +444,7 @@ class SubagentManager:
         if client is not None:
             try:
                 import json as _json
-                await client._adapter.subscribe(notify_topic)
+                await client.subscribe_topic(notify_topic)
                 logger.info(
                     "subagent_push_mqtt_bridge task=%s agent=%s topic=%s",
                     task_id, agent_id, notify_topic,
@@ -457,7 +457,7 @@ class SubagentManager:
                     "action": "set_push_notification",
                     "notify_topic": notify_topic,
                 })
-                await client._adapter.publish(
+                await client.publish_message(
                     f"Slife/{agent_id}/tasks/inbox", setup, qos=1,
                 )
             except Exception as e:

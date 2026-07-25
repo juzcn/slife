@@ -29,8 +29,17 @@ class A2AConfig:
     agent_name: str = ""
     """Optional human-readable display name."""
 
+    transport: str = "mqtt"
+    """Transport type: ``"mqtt"`` (default) or ``"http"`` (Streamable HTTP)."""
+
     broker_host: str = "localhost"
     broker_port: int = 1883
+
+    http_host: str = "127.0.0.1"
+    """HTTP Streamable server host (only used when ``transport == "http"``)."""
+
+    http_port: int = 0
+    """HTTP Streamable server port (0 = auto-assign, only when ``transport == "http"``)."""
 
     heartbeat_interval: int = 15
     """Seconds between presence heartbeat publishes."""
@@ -67,8 +76,11 @@ class A2AConfig:
             enabled=False,  # set to True at runtime after mosquitto probe
             agent_id=agent_id,
             agent_name=agent_name,
+            transport=(data or {}).get("transport", "mqtt"),
             broker_host=broker.get("host", "localhost"),
             broker_port=broker.get("port", 1883),
+            http_host=(data or {}).get("http_host", "127.0.0.1"),
+            http_port=(data or {}).get("http_port", 0),
             heartbeat_interval=(data or {}).get("heartbeat_interval", 15),
             heartbeat_timeout=(data or {}).get("heartbeat_timeout", 45),
             task_timeout=(data or {}).get("task_timeout", 120),

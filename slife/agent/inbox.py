@@ -282,7 +282,7 @@ class Inbox:
             "correlation_id": corr_id or "",
             "result": text,
         })
-        await self._a2a_client._adapter.publish(reply_to, payload, qos=1)
+        await self._a2a_client.publish_message(reply_to, payload, qos=1)
 
 
 class ConversationStore:

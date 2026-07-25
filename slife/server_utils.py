@@ -241,67 +241,6 @@ def create_plugin_server(name: str, instructions: str) -> tuple:
     plogger = logging.getLogger(logger_name)
     server = FastMCP(name, instructions=instructions)
 
-    # ── Patch: keep GET SSE alive across multiple requests ──────────────
-    # FastMCP's _run_sse_writer uses ``async with sse_stream_writer``
-    # which calls aclose() after each response, tearing down the GET SSE
-    # TCP connection.  Subsequent requests have no channel for responses.
-    # Also patches close_sse_stream to prevent writer.close().
-    try:
-        from mcp.server.streamable_http import StreamableHTTPServerTransport as _Mgr  # type: ignore[attr-defined]
-
-        _original_run_sse = _Mgr._run_sse_writer
-
-        async def _patched_run_sse_writer(
-            self, request_id, sse_stream_writer,
-            request_stream_reader, priming_event,
-        ):
-            try:
-                # Use async with on reader only — NOT the writer.
-                # The writer must stay alive so the GET SSE connection
-                # persists for future requests.
-                async with request_stream_reader:
-                    if priming_event is not None:
-                        await sse_stream_writer.send(priming_event)
-                    async for event_message in request_stream_reader:
-                        await sse_stream_writer.send(
-                            self._create_event_data(event_message)
-                        )
-                        if isinstance(
-                            event_message.message.root,
-                            __import__("mcp.types").JSONRPCResponse,
-                        ) or isinstance(
-                            event_message.message.root,
-                            __import__("mcp.types").JSONRPCError,
-                        ):
-                            break
-            except Exception:
-                pass
-            finally:
-                self._sse_stream_writers.pop(request_id, None)
-                await self._clean_up_memory_streams(request_id)
-            # Intentionally NO writer close — keeps SSE alive.
-
-        _Mgr._run_sse_writer = _patched_run_sse_writer
-
-        # Also patch close_sse_stream — no writer.close().
-        def _patched_close_sse_stream(self, request_id):
-            self._sse_stream_writers.pop(request_id, None)
-            if request_id in self._request_streams:
-                send_stream, receive_stream = self._request_streams.pop(request_id)
-                try:
-                    send_stream.close()
-                except Exception:
-                    pass
-                try:
-                    receive_stream.close()
-                except Exception:
-                    pass
-
-        _Mgr.close_sse_stream = _patched_close_sse_stream
-        plogger.debug("streamable_http patch applied — SSE stays alive")
-    except Exception:
-        plogger.debug("streamable_http patch skipped")
-
     return server, log_path, plogger
 
 
@@ -337,6 +276,7 @@ def run_plugin_server(
         mcp_server.run(
             transport="streamable-http", host=host, port=port,
             show_banner=show_banner,
+            json_response=True,
             uvicorn_config={"log_config": None},
         )
     else:
@@ -346,6 +286,7 @@ def run_plugin_server(
         mcp_server.run(
             transport="streamable-http", host=host, port=port, sockets=[sock],
             show_banner=show_banner,
+            json_response=True,
             uvicorn_config={"log_config": None},
         )
 

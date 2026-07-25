@@ -97,18 +97,17 @@ What the LLM cannot know (and the prompt provides):
 
 ### Plugin Architecture
 
-Slife has a **plugin system** built on Streamable HTTP transport (MCP 2025-03-26).
-Each plugin is an independent child process running a FastMCP server on a
-dynamically-assigned ``127.0.0.1`` port — zero configuration required.  The
-parent process discovers the port via a one-line JSON signal on stdout, then
+Slife has a **plugin system** built on Streamable HTTP transport (MCP protocol, standard
+``mcp`` library).  Each plugin is an independent child process running a FastMCP
+server on a dynamically-assigned ``127.0.0.1`` port — zero configuration required.
+The parent process discovers the port via a one-line JSON signal on stdout, then
 connects via ``mcp.client.streamable_http.streamablehttp_client``.
 
+Both client and server use the standard ``mcp`` library — no monkey-patches.
 Multiple clients (main agent + subagents) connect to the **same** plugin
 servers — subagents no longer spawn their own plugin processes.  Plugin ports
 are passed to subagents via environment variables (``SLIFE_MCP_PORT``,
-``SLIFE_MEMORY_PORT``, ``SLIFE_WECHAT_PORT``).  Streamable HTTP is stateless
-(POST JSON-RPC → JSON response) — no persistent SSE connections, no anyio
-unbuffered stream deadlocks.
+``SLIFE_MEMORY_PORT``, ``SLIFE_WECHAT_PORT``).
 
 **slife-mcp is the gateway for external MCP services** — it supports external
 MCP servers via both **stdio** (spawn process, raw JSON-RPC over pipes) and
@@ -142,16 +141,16 @@ Slife ── MCPClient ──────┼─ MCPWrapperProcess ── slife-m
 #### The Plugin Contract
 
 A Slife plugin is a FastMCP server running on **Streamable HTTP** transport on
-``127.0.0.1`` with an auto-assigned port.  It uses the MCP protocol over
-Streamable HTTP — standard MCP clients can connect, but the plugin is
-Slife‑specific in its tool definitions and lifecycle.
+``127.0.0.1`` with an auto-assigned port.  FastMCP uses the standard ``mcp``
+library's ``StreamableHTTPServerTransport`` under the hood — the same transport
+as the client side.
 
 A plugin must:
 
 1. **Bind a free port and signal the parent** — call ``bind_free_port()`` to get a
    ``(socket, port)`` tuple, then ``signal_port(port)`` to write ``{"port": N}``
    to stdout so the parent discovers the port.
-2. **Start FastMCP on Streamable HTTP transport** — ``mcp.run(transport="streamable-http", host="127.0.0.1", port=port, sockets=[sock])``
+2. **Start FastMCP on Streamable HTTP transport** — ``mcp.run(transport="streamable-http", host="127.0.0.1", port=port, sockets=[sock])`` (uses standard ``mcp`` library transport)
 3. **Define one or more `@mcp.tool` functions** — these become Slife tools
 4. **Be importable** — ``python -m <module>.server`` must work
 
@@ -196,7 +195,7 @@ Key classes in `slife/sse/`:
 
 | Class | Role |
 |-------|------|
-| `MCPClient` (`client.py`) | SSE MCP connection — `connect_sse(url)`, `list_tools()`, `call_tool()` |
+| `MCPClient` (`client.py`) | Streamable HTTP MCP connection — `connect(url)`, `list_tools()`, `call_tool()` |
 | `MCPProxyTool` (`tool_adapter.py`) | Adapts an MCP tool to Slife's `Tool` ABC. Sets `name`/`description`/`parameters` at instance level, tool names prefixed as `{server}__{tool}` |
 | `MCPWrapperProcess` (`process.py`) | Child process lifecycle — `start()` (spawn + read port signal), `create_client()` (connect SSE), `stop()` |
 
@@ -619,15 +618,10 @@ Slife ── MCPClient ─────────────────▶ sl
 ### Plugin Transport: Streamable HTTP
 
 All plugins communicate with the harness via **Streamable HTTP** (MCP spec 2025-11-25).
-The transport is managed by `mcp.client.streamable_http.streamablehttp_client`
-on the client side and FastMCP's `transport="streamable-http"` on the server side.
-
-A monkey-patch in `slife/server_utils.py` (`create_plugin_server`) prevents
-FastMCP from closing the GET SSE writer after each response.  Without this
-patch, the SSE connection is torn down after every request/response cycle
-and subsequent tool calls hang until timeout (60 s).  The patch pops writers
-from the tracking dict without calling ``writer.close()``, keeping the GET SSE
-alive for the session lifetime.
+The transport is managed by ``mcp.client.streamable_http.streamablehttp_client``
+on the client side and FastMCP's ``transport="streamable-http"`` on the server side.
+Both client and server use the standard ``mcp`` library — no monkey-patches or
+custom transport implementations.
 
 ### Plugin Auto-Discovery
 
@@ -932,30 +926,55 @@ Two transports, unified interface. The LLM sees one agent pool.
 ```
                     a2a_list_agents / a2a_send_task
                            │
-            ┌──────────────┴──────────────┐
-            │                             │
-     MQTT Transport              Subagent Transport
-     (--agent enables)            (always available)
+            ┌──────────────┼──────────────┐
+            │              │              │
+     MQTT Transport   HTTP Transport   Subagent Transport
+     (P2P mesh)       (Streamable)     (always available)
 
-  ┌─────────────────┐       ┌──────────────────────┐
-  │ MQTT Broker      │       │ Parent Process        │
-  │ (mosquitto)      │       │  SubagentManager      │
-  │                  │       │  ├─ sub-1 (headless)  │
-  │ slife/+/presence │       │  │  JSON-RPC stdin/stdout
-  │ slife/+/inbox    │       │  ├─ sub-2 (headless)  │
-  │ slife/+/result   │       │  │  JSON-RPC stdin/stdout
-  └─────────────────┘       │  └─ ...               │
-                            └──────────────────────┘
+  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐
+  │ MQTT Broker   │ │ HTTP Server   │ │ Parent Process        │
+  │ (mosquitto)   │ │ (FastMCP)     │ │  SubagentManager      │
+  │               │ │               │ │  ├─ sub-1 (headless)  │
+  │ slife/+/pres* │ │ POST /tasks   │ │  │  JSON-RPC stdin/out │
+  │ slife/+/inbox │ │ GET /results  │ │  ├─ sub-2 (headless)  │
+  │ slife/+/result│ │ (SSE stream)  │ │  │  JSON-RPC stdin/out │
+  └──────────────┘ └──────────────┘ │  └─ ...               │
+                                    └──────────────────────┘
 ```
 
-### MQTT Transport (`slife/a2a/`)
+### A2A Transport Abstraction (`slife/a2a/`)
+
+All A2A transports implement ``TransportAdapter`` (`transport.py:TransportAdapter`)
+— a protocol-agnostic message bus with ``connect``/``disconnect``/``publish``/``subscribe``/``messages``.
+``TransportMessage`` is the minimal wire type (``topic`` + ``payload``).
+
+| Transport | Class | Backend |
+|-----------|-------|---------|
+| MQTT | ``MQTTAdapter`` | paho-mqtt → ``asyncio.Queue`` bridge, Last Will and Testament |
+| HTTP Streamable | ``HttpStreamableTransport`` | ``mcp.client.streamable_http.streamablehttp_client`` (standard) |
+
+The ``A2AClient`` accepts an optional ``TransportAdapter`` — defaults to MQTT for backward compatibility.
+
+### MQTT Transport
 
 Remote Slife instances discover each other and delegate tasks over MQTT. Enabled via `--agent <id>` CLI flag.
 
-- **MQTTAdapter** (`mqtt.py`): paho-mqtt → `asyncio.Queue` bridge with Last Will and Testament (instant offline detection)
+- **MQTTAdapter** (`mqtt.py`): implements ``TransportAdapter``, paho-mqtt → ``asyncio.Queue`` bridge with LWT
 - **A2AClient** (`client.py`): presence heartbeat, peer discovery (subscribe to `slife/+/presence`), task routing (publish to target inbox, listen on own result topic)
 - **BrokerManager** (`broker.py`): optional mosquitto auto-spawn if not already running
 - **TaskStore** (`task_store.py`): shared task-lifecycle tracking — every send, result, and cancellation across both transports, with status, timestamps, and result text
+
+### HTTP Streamable Transport
+
+Direct agent-to-agent communication using the standard ``mcp`` library's Streamable HTTP
+(same transport as MCP plugins).  Topic-based pub/sub maps to HTTP endpoints:
+``Slife/<agent>/tasks/inbox`` → ``POST /tasks/inbox``, responses via SSE stream.
+
+- **HttpStreamableTransport** (`http.py`): client-side implementation using ``streamablehttp_client``
+  (same pattern as ``MCPClient``).  ``connect``/``disconnect`` are functional;
+  ``publish``/``subscribe``/``messages`` are skeletons — full implementation when
+  A2A HTTP server (FastMCP endpoint) is built.
+- ``A2AConfig.transport`` selects the transport: ``"mqtt"`` (default) or ``"http"``.
 
 ### Subagent Transport (`slife/subagent/`)
 
@@ -1130,14 +1149,16 @@ slife/
     templates/
       system_prompt.j2  #   Lean system prompt template
 
-  a2a/                  # Agent-to-Agent (MQTT + subagent)
+  a2a/                  # Agent-to-Agent (MQTT + HTTP Streamable + subagent)
     identity.py         #   AgentId, AgentMessage
     card.py             #   AgentCard
+    transport.py        #   TransportAdapter ABC + TransportMessage
     client.py           #   A2AClient — P2P mesh, presence, task routing
-    mqtt.py             #   MQTTAdapter — paho-mqtt → asyncio bridge
+    mqtt.py             #   MQTTAdapter — implements TransportAdapter
+    http.py             #   HttpStreamableTransport — mcp library client skeleton
     broker.py           #   BrokerManager — mosquitto lifecycle
     task_store.py       #   TaskRecord + TaskStore — lifecycle tracking
-    config.py           #   A2AConfig (enabled via --agent)
+    config.py           #   A2AConfig (transport: mqtt | http)
 
   subagent/             # Local child-process workers
     headless.py         #   JSON-RPC 2.0 runner (no TUI)

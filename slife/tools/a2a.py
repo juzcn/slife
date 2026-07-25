@@ -9,11 +9,10 @@ Tool inventory (13 tools, A2A protocol aligned)
 ----------------------------------------------
 A2A method              slife tool                status
 message/send            a2a_send_task             full
-message/stream          a2a_subscribe_task        streaming via MQTT
 tasks/get               a2a_get_task_result       full (TaskRecord)
 tasks/list              a2a_list_tasks            full (filterable)
 tasks/cancel            a2a_cancel_task           full
-tasks/subscribe         a2a_subscribe_task        blocking wait + poll
+tasks/subscribe         a2a_subscribe_task        non-blocking status check
 —                       a2a_list_agents           MQTT peers only
 —                       a2a_list_subagents        local workers only
 —                       a2a_spawn_subagent        agent lifecycle
@@ -23,9 +22,9 @@ tasks/subscribe         a2a_subscribe_task        blocking wait + poll
 —                       a2a_broadcast             scatter/gather
 
 Note: a2a_send_task_async internally registers an event-driven Future
-(local subagents) or subscribes to a reply topic (MQTT), so
-a2a_subscribe_task waits without polling.  No separate push-
-notification tool is needed.
+so results are pushed to the chat inbox automatically on completion.
+a2a_subscribe_task is non-blocking — it returns the current status
+and suggests polling with a2a_get_task_result if still pending.
 """
 
 from __future__ import annotations
@@ -230,9 +229,9 @@ class A2ASendTaskAsyncTool(Tool):
     description = (
         "Send a task to an agent without waiting for the result. "
         "Returns a task_id immediately. "
-        "Use a2a_subscribe_task(task_id, agent_id) to wait for completion "
-        "(event-driven for local subagents — no polling overhead). "
-        "Alternatively use a2a_get_task_result for a one-shot status check. "
+        "Results are pushed to the chat inbox automatically on completion. "
+        "Use a2a_get_task_result for a one-shot status check, or "
+        "a2a_subscribe_task for a non-blocking status lookup. "
         "Works with local subagents and remote MQTT peers. "
         "Use a2a_list_agents and a2a_list_subagents first to discover agents."
     )
@@ -275,8 +274,8 @@ class A2ASendTaskAsyncTool(Tool):
                     f"Task sent asynchronously.\n"
                     f"  Task ID: {rpc_id}\n"
                     f"  Agent: {agent_id}\n"
-                    f'  Use a2a_subscribe_task with task_id="{rpc_id}" '
-                    f'and agent_id="{agent_id}" to wait for the result.'
+                    f'  Use a2a_get_task_result with task_id="{rpc_id}" '
+                    f'and agent_id="{agent_id}" to check the result.'
                 )
             except Exception as e:
                 return f"Error sending async task to subagent '{agent_id}': {e}"
@@ -291,8 +290,8 @@ class A2ASendTaskAsyncTool(Tool):
                     f"Task sent asynchronously.\n"
                     f"  Task ID: {corr_id}\n"
                     f"  Agent: {agent_id} (MQTT)\n"
-                    f'  Use a2a_subscribe_task with task_id="{corr_id}" '
-                    f'and agent_id="{agent_id}" to wait for the result.'
+                    f'  Use a2a_get_task_result with task_id="{corr_id}" '
+                    f'and agent_id="{agent_id}" to check the result.'
                 )
             except Exception as e:
                 return f"Error sending async task to agent '{agent_id}': {e}"
@@ -314,7 +313,7 @@ class A2AGetTaskResultTool(Tool):
         "Returns the task record including status (pending/completed/failed/cancelled), "
         "timestamps, and result text. "
         "Use after a2a_send_task_async to check if a task is done without waiting. "
-        "To wait for completion, use a2a_subscribe_task instead. "
+        "To check status, use a2a_subscribe_task. "
         "For a list of all tasks, use a2a_list_tasks."
     )
     parameters: dict = {
@@ -383,7 +382,7 @@ class A2AGetTaskResultTool(Tool):
         if rec.result is not None:
             lines.append(f"  Result:\n{rec.result}")
         elif rec.status == "pending":
-            lines.append("  Result: (still pending — use a2a_subscribe_task to wait)")
+            lines.append("  Result: (still pending — use a2a_get_task_result to check)")
 
         return "\n".join(lines)
 
@@ -540,14 +539,13 @@ class A2ASubscribeTaskTool(Tool):
     name = "a2a_subscribe_task"
     _subagent_skip = True  # subagents have no transport to subscribe through
     description = (
-        "Wait for an async task to complete. "
-        "Blocks until the task finishes (completed, failed, or cancelled) "
-        "or the timeout is reached. "
-        "Use after a2a_send_task_async to wait for the result. "
-        "For local subagents: event-driven (no polling — returns as soon "
-        "as the result arrives). "
-        "For MQTT peers: waits for reply via the result topic. "
-        "Prefer this over polling with a2a_get_task_result."
+        "Check the status of an async task (non-blocking). "
+        "Returns the result if the task has completed; otherwise returns "
+        "the current status and suggests polling with a2a_get_task_result. "
+        "Use after a2a_send_task_async to check task progress. "
+        "For completed tasks: returns the full result immediately. "
+        "For pending tasks: returns status — results are pushed to the "
+        "chat inbox automatically when the task completes."
     )
     parameters: dict = {
         "type": "object",
@@ -560,74 +558,52 @@ class A2ASubscribeTaskTool(Tool):
                 "type": "string",
                 "description": "The task_id to subscribe to.",
             },
-            "timeout": {
-                "type": "number",
-                "description": "Max seconds to wait (default 120).",
-            },
         },
         "required": ["agent_id", "task_id"],
     }
 
     async def execute(
-        self, agent_id: str = "", task_id: str = "", timeout: float = 120.0, **kwargs,
+        self, agent_id: str = "", task_id: str = "", **kwargs,
     ) -> str:
         if err := require_params(agent_id=agent_id, task_id=task_id):
             return err
 
-        from slife.a2a.identity import AgentId
         from slife.a2a.task_store import get_store
 
         manager, client = _get_transports()
         store = get_store()
 
-        # Check if already completed
+        # Consume any result that may have arrived
+        if manager is not None:
+            manager.get_task_result(agent_id, task_id)
+        if client is not None:
+            client.get_task_result(task_id)
+
+        # Check the task store for final status
         rec = store.get(task_id)
-        if rec is not None and rec.status in ("completed", "failed", "cancelled"):
+        if rec is None:
             return (
-                f"Task already {rec.status}.\n"
+                f"Task '{task_id}' not found. "
+                f"It may have been pruned or the task_id is incorrect."
+            )
+
+        if rec.status in ("completed", "failed", "cancelled"):
+            status_emoji = {"completed": "✅", "failed": "❌", "cancelled": "🚫"}
+            emoji = status_emoji.get(rec.status, "❓")
+            return (
+                f"{emoji} Task {rec.status}.\n"
                 f"  Task ID: {task_id}\n"
                 f"  Result: {rec.result or '(no result)'}"
             )
 
-        # Try subscribing via transport
-        result = None
-
-        # Local subagent
-        if manager is not None and agent_id in manager.list():
-            try:
-                result = await manager.subscribe_task(agent_id, task_id, timeout)
-            except TimeoutError:
-                return f"Subscribe timed out after {timeout}s. Task '{task_id}' is still pending."
-            except Exception as e:
-                return f"Error subscribing to task: {e}"
-
-        # MQTT peer
-        if result is None and client is not None:
-            try:
-                result = await client.subscribe_task(task_id, timeout)
-            except TimeoutError:
-                return f"Subscribe timed out after {timeout}s. Task '{task_id}' is still pending."
-            except Exception as e:
-                return f"Error subscribing to task: {e}"
-
-        if result is not None:
-            return f"Task completed.\n  Task ID: {task_id}\n  Result: {result}"
-
-        # Fallback: wait via polling the task store
-        import asyncio as _asyncio
-        import time as _time
-        deadline = _time.monotonic() + timeout
-        while _time.monotonic() < deadline:
-            rec = store.get(task_id)
-            if rec is not None and rec.status in ("completed", "failed", "cancelled"):
-                return (
-                    f"Task {rec.status}.\n"
-                    f"  Task ID: {task_id}\n"
-                    f"  Result: {rec.result or '(no result)'}"
-                )
-            await _asyncio.sleep(0.5)
-
-        return f"Subscribe timed out after {timeout}s. Task '{task_id}' is still pending."
+        # Still pending — LLM should poll with a2a_get_task_result
+        return (
+            f"⏳ Task is still pending.\n"
+            f"  Task ID: {task_id}\n"
+            f"  Agent: {agent_id}\n"
+            f"  Use a2a_get_task_result to check progress. "
+            f"Results are pushed to the chat inbox automatically on completion."
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

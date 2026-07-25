@@ -1,6 +1,6 @@
 # Slife
 
-**Terminal-based AI agent** — chat with an LLM that can call tools (MCP, native, A2A), read and write files, search the web, execute code, connect to MCP servers, spawn subagents for parallel work, communicate with other Slife instances over MQTT, and remember everything permanently.
+**Terminal-based AI agent** — chat with an LLM that can call tools (MCP, native, A2A), read and write files, search the web, execute code, connect to MCP servers, spawn subagents for parallel work, communicate with other Slife instances over MQTT or HTTP Streamable, and remember everything permanently.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -318,8 +318,8 @@ Agent isolation via `--agent alice`. Each agent gets its own DB (`<agent_id>.db`
 
 ### Plugins
 
-Slife has a **plugin system** built on Streamable HTTP transport (MCP protocol over
-Server-Sent Events on localhost).  Each plugin is an independent child process
+Slife has a **plugin system** built on Streamable HTTP transport (MCP protocol, standard
+``mcp`` library).  Each plugin is an independent child process
 running a FastMCP server on a dynamically-assigned port — zero configuration,
 no port conflicts.  If a plugin crashes, Slife continues.  Three built-in
 plugins ship with Slife:
@@ -361,7 +361,16 @@ See [DESIGN.md § Plugin Architecture](DESIGN.md#plugin-architecture) for the fu
 
 ### A2A — Agent-to-Agent
 
-Two transports, one interface: **MQTT** (remote peers, auto-detects Mosquitto at startup) and **Subagent** (local child processes, always available).  The unified inbox serializes human keyboard, WeChat, MQTT, and subagent messages through a single queue — only one AgentLoop runs at a time.  Subagent results are **actively pushed** to the inbox via `tasks/complete` notification — no polling needed.
+Two transports, one interface: **MQTT** (remote peers, auto-detects Mosquitto at startup), **HTTP Streamable** (direct agent-to-agent, same protocol as MCP), and **Subagent** (local child processes, always available).  The unified inbox serializes human keyboard, WeChat, MQTT, and subagent messages through a single queue — only one AgentLoop runs at a time.  Subagent results are **actively pushed** to the inbox via `tasks/complete` notification — no polling needed.
+
+Configure transport in `slife.json5`:
+```json5
+mqtt: {
+  transport: "mqtt",   // "mqtt" (default) or "http"
+  http_host: "127.0.0.1",
+  http_port: 0,         // 0 = auto-assign
+}
+```
 
 ### Progressive Disclosure
 

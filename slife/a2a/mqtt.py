@@ -4,6 +4,9 @@ Follows the same pattern as ``slife/mcp/client.py`` (_ReadAdapter / _WriteAdapte
 paho's threaded ``loop_start()`` delivers callbacks on a background thread;
 each callback ``put_nowait()`` into an ``asyncio.Queue`` so the async side
 can ``await queue.get()``.
+
+Implements :class:`~slife.a2a.transport.TransportAdapter` so A2A protocol
+code works with any transport (MQTT, HTTP Streamable, …).
 """
 
 # pyright: reportInvalidTypeForm=false
@@ -14,12 +17,12 @@ import json
 import logging
 import time as _time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from typing import Any
 
 import paho.mqtt.client as mqtt
 
 from slife.a2a.identity import AgentId
+from slife.a2a.transport import TransportAdapter, TransportMessage
 
 logger = logging.getLogger(__name__)
 
@@ -38,18 +41,13 @@ def _get_mqtt():
     return mqtt
 
 
-@dataclass
-class MQTTMessage:
-    """A decoded MQTT message delivered through the async interface."""
-
-    topic: str
-    payload: str
-    qos: int
-    retain: bool
+#: Backward-compatible alias — new code should use
+#: :class:`~slife.a2a.transport.TransportMessage` directly.
+MQTTMessage = TransportMessage
 
 
-class MQTTAdapter:
-    """asyncio-friendly paho-mqtt wrapper.
+class MQTTAdapter(TransportAdapter):
+    """asyncio-friendly paho-mqtt wrapper — implements :class:`TransportAdapter`.
 
     Usage::
 
@@ -71,7 +69,7 @@ class MQTTAdapter:
         self._agent_id = client_id
         self._client_id = f"{client_id}-{_os.getpid()}"
         self._client: mqtt.Client | None = None
-        self._queues: dict[str, asyncio.Queue[MQTTMessage]] = {}
+        self._queues: dict[str, asyncio.Queue[TransportMessage]] = {}
         self._connected = False
 
         # Keep-alive ping tracking
@@ -169,7 +167,7 @@ class MQTTAdapter:
             self._queues[topic] = asyncio.Queue()
         logger.debug("a2a_mqtt_subscribed topic=%s", topic)
 
-    async def messages(self, topic_filter: str) -> AsyncIterator[MQTTMessage]:
+    async def messages(self, topic_filter: str) -> AsyncIterator[TransportMessage]:
         """Async iterator yielding messages matching the given topic filter.
 
         Must call ``subscribe()`` for the same filter first.
@@ -223,11 +221,9 @@ class MQTTAdapter:
         msg: mqtt.MQTTMessage,
     ) -> None:
         """Route incoming messages to the matching asyncio.Queue(s)."""
-        mqtt_msg = MQTTMessage(
+        transport_msg = TransportMessage(
             topic=msg.topic,
             payload=msg.payload.decode("utf-8", errors="replace"),
-            qos=msg.qos,
-            retain=msg.retain,
         )
 
         logger.debug(
@@ -242,7 +238,7 @@ class MQTTAdapter:
             if mq.topic_matches_sub(topic_filter, msg.topic):
                 matched = True
                 try:
-                    queue.put_nowait(mqtt_msg)
+                    queue.put_nowait(transport_msg)
                     logger.debug(
                         "a2a_mqtt_routed topic=%s -> filter=%s",
                         msg.topic, topic_filter,

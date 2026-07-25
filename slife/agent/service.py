@@ -276,12 +276,17 @@ class AgentService:
 
         Used by subagents to share the main agent's plugin servers
         instead of spawning their own.
+
+        Subagents only register the MCP wrapper management tools
+        (mcp_list_tools, mcp_call_tool, …).  They do NOT eagerly
+        discover tools from all external servers — that avoids
+        sending N concurrent requests through a single SSE session.
+        Subagents can discover per-server tools on demand via
+        ``mcp_list_tools``.
         """
         await self._connect_plugin_http("mcp", port)
         await self._register_mcp_wrapper_tools()
-        if self.is_subagent:
-            await self._discover_existing_mcp_tools()
-        else:
+        if not self.is_subagent:
             await self._auto_connect_mcp_servers()
         logger.info("mcp_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
@@ -319,10 +324,13 @@ class AgentService:
     async def _register_mcp_wrapper_tools(self) -> None:
         """Discover and register wrapper management tools as proxy tools.
 
-        Excludes mcp_call_tool — external MCP tools are registered
-        directly with full schemas, so the LLM never needs to call
-        mcp_call_tool manually. (It still exists on the wrapper for
-        internal routing by MCPProxyTool.execute.)
+        For the main agent, excludes ``mcp_call_tool`` — external MCP
+        tools are registered directly with full schemas, so the LLM
+        never needs to call it manually.
+
+        For subagents, **includes** ``mcp_call_tool`` — subagents do
+        not eagerly discover external MCP tools, so they need
+        ``mcp_call_tool`` to invoke tools on external servers.
         """
         from slife.mcp.tool_adapter import create_proxy_tools
 
@@ -336,7 +344,7 @@ class AgentService:
         tagged = [
             {**t, "server": "mcp"}
             for t in wrapper_tools
-            if t["name"] != "mcp_call_tool"
+            if self.is_subagent or t["name"] != "mcp_call_tool"
         ]
 
         proxy_tools = create_proxy_tools(
@@ -439,6 +447,10 @@ class AgentService:
         :meth:`_auto_connect_mcp_servers`, this never calls
         ``mcp_add_server`` — it only lists tools from connected servers
         and registers them as proxy tools.
+
+        Each ``mcp_list_tools`` call uses its own POST SSE stream,
+        so concurrent requests are safe with the standard MCP library
+        transport.
         """
         mcp_cfg = self.config.mcp_config
         assert mcp_cfg is not None
@@ -463,6 +475,7 @@ class AgentService:
         await asyncio.gather(
             *(_discover_one(name, cfg) for name, cfg in servers.items())
         )
+
         logger.info(
             "mcp_discover_existing_done tools=%d",
             len(self.tool_registry.list_tools()),
@@ -1068,23 +1081,40 @@ class AgentService:
 
         logger.info("a2a_init start")
 
-        # Probe for pre-existing Mosquitto — user must start it first
-        from slife.a2a.broker import probe_broker
-        if not await probe_broker(a2a_cfg.broker_host, a2a_cfg.broker_port):
-            logger.info(
-                "a2a_broker_not_found host=%s port=%d — A2A disabled",
-                a2a_cfg.broker_host, a2a_cfg.broker_port,
-            )
-            return
+        # ── Transport selection ──────────────────────────────────────
+        from slife.a2a.client import A2AClient, DuplicateAgentError
 
-        # Broker found — enable A2A
-        a2a_cfg.enabled = True
+        transport_adapter = None
+
+        if a2a_cfg.transport == "http":
+            # HTTP Streamable transport — no broker needed.
+            # Server side (FastMCP endpoint) is not yet implemented;
+            # create the client transport skeleton for now.
+            from slife.a2a.http import HttpStreamableTransport
+            logger.info(
+                "a2a_transport transport=http host=%s port=%s",
+                a2a_cfg.http_host, a2a_cfg.http_port or "<auto>",
+            )
+            transport_adapter = HttpStreamableTransport(a2a_cfg.agent_id)
+            a2a_cfg.enabled = True
+        else:
+            # Default MQTT — probe for pre-existing Mosquitto.
+            from slife.a2a.broker import probe_broker
+            if not await probe_broker(a2a_cfg.broker_host, a2a_cfg.broker_port):
+                logger.info(
+                    "a2a_broker_not_found host=%s port=%d — A2A disabled",
+                    a2a_cfg.broker_host, a2a_cfg.broker_port,
+                )
+                return
+            a2a_cfg.enabled = True
 
         # Create and connect the A2A client
-        from slife.a2a.client import A2AClient, DuplicateAgentError
-        self._a2a_client = A2AClient(a2a_cfg)
+        self._a2a_client = A2AClient(a2a_cfg, transport=transport_adapter)
         try:
-            await self._a2a_client.connect()
+            if a2a_cfg.transport != "http":
+                # MQTT: connect to broker now.
+                # HTTP: connect deferred — server is not yet started.
+                await self._a2a_client.connect()
             from slife.health import record
             record(
                 "a2a", "ok",
