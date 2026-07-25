@@ -196,7 +196,7 @@ try {
 
     Write-Host "Installing to $installDir…"
     uv venv --seed --python "$pythonPath" "$installDir"
-    uv pip install --python "$installDir\Scripts\python.exe" $slifeWheel.FullName
+    uv pip install --quiet --python "$installDir\Scripts\python.exe" $slifeWheel.FullName
 
     # Add to user PATH permanently
     $scriptsDir = "$installDir\Scripts"
