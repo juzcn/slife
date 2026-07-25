@@ -196,7 +196,11 @@ try {
 
     Write-Host "Installing to $installDir…"
     uv venv --seed --python "$pythonPath" "$installDir"
-    uv pip install --quiet --python "$installDir\Scripts\python.exe" $slifeWheel.FullName
+    uv pip install --python "$installDir\Scripts\python.exe" $slifeWheel.FullName 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Error: slife installation failed." -ForegroundColor Red
+        exit 1
+    }
 
     # Add to user PATH permanently
     $scriptsDir = "$installDir\Scripts"
