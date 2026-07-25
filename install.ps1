@@ -196,7 +196,10 @@ try {
 
     Write-Host "Installing to $installDir…"
     uv venv --seed --python "$pythonPath" "$installDir"
-    uv pip install --python "$installDir\Scripts\python.exe" $slifeWheel.FullName 2>&1 | Out-Null
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    uv pip install --python "$installDir\Scripts\python.exe" $slifeWheel.FullName | Out-Null
+    $ErrorActionPreference = $prevEAP
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Error: slife installation failed." -ForegroundColor Red
         exit 1
