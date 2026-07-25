@@ -521,8 +521,9 @@ class SlifeApp(App):
             return
 
         # ── Phase 2: Switch state ──────────────────────────────────
-        from slife.agent.conversation import Conversation
-        self.service.conversation = Conversation()
+        # Replace messages on the existing conversation object so the
+        # inbox's ConversationStore (which holds a reference to the same
+        # object via _convs[HUMAN]) sees the restored history.
         self.service.conversation.messages = all_messages
 
         # ── Phase 3: Rebuild UI ────────────────────────────────────
