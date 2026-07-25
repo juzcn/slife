@@ -68,7 +68,7 @@ if [ -z "$PYTHON" ]; then
 else
     echo -e "${GREEN}found${NC}"
 fi
-echo -e "  Selected: ${CYAN}$PYTHON${NC} ($(uv run --python 3.13 python --version 2>&1))"
+echo -e "  Selected: ${CYAN}$PYTHON${NC} ($(uv run --python "$PYTHON" python --version 2>&1))"
 
 # Ensure uv-managed Python and its scripts directory are on PATH.
 # This guarantees "python3" and "python" resolve to the real interpreter,
@@ -135,7 +135,7 @@ if [ -d "$INSTALL_DIR" ]; then
 fi
 
 echo "Installing to $INSTALL_DIR…"
-uv venv --seed --python 3.13 "$INSTALL_DIR"
+uv venv --seed --python "$PYTHON" "$INSTALL_DIR"
 "$INSTALL_DIR/bin/pip" install "$SLIFE_WHEEL"
 
 # Add to PATH in shell profiles

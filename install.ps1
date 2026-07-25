@@ -78,7 +78,7 @@ try {
         Write-Host "found" -ForegroundColor Green
         $pythonPath = (Get-Command $python).Source
     }
-    $pyVer = uv run --python 3.13 python --version 2>&1
+    $pyVer = uv run --python "$pythonPath" python --version 2>&1
     Write-Host "  Selected: $pythonPath ($pyVer)" -ForegroundColor Cyan
 
     # Disable Windows Store app execution aliases that shadow real Python.
@@ -195,7 +195,7 @@ try {
     }
 
     Write-Host "Installing to $installDir…"
-    uv venv --seed --python 3.13 "$installDir"
+    uv venv --seed --python "$pythonPath" "$installDir"
     & "$installDir\Scripts\pip.exe" install $slifeWheel.FullName
 
     # Add to user PATH permanently
