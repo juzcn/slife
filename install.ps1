@@ -188,10 +188,23 @@ try {
 
     $installDir = "$env:USERPROFILE\.slife"
 
-    # Remove previous installation if it exists
+    # Remove previous installation's venv artifacts only — keep user data
+    # (slife.json5, *.db, logs/, wechat_*.json5, credentials.crypt).
     if (Test-Path $installDir) {
-        Write-Host "Removing previous installation…" -ForegroundColor Yellow
-        Remove-Item -Recurse -Force $installDir
+        Write-Host "Upgrading existing installation…" -ForegroundColor Yellow
+        foreach ($item in Get-ChildItem $installDir) {
+            $name = $item.Name
+            if ($name -eq "slife.json5" -or
+                $name -eq "credentials.crypt" -or
+                $name -eq "logs" -or
+                $name -like "*.db" -or
+                $name -like "*.db-shm" -or
+                $name -like "*.db-wal" -or
+                $name -like "wechat_*.json5") {
+                continue  # user data — keep
+            }
+            Remove-Item -Recurse -Force $item.FullName
+        }
     }
 
     Write-Host "Installing to $installDir…"

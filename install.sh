@@ -128,10 +128,19 @@ fi
 
 INSTALL_DIR="$HOME/.slife"
 
-# Remove previous installation if it exists
+# Remove previous installation's venv artifacts only — keep user data
+# (slife.json5, *.db, logs/, wechat_*.json5, credentials.crypt).
 if [ -d "$INSTALL_DIR" ]; then
-    echo -e "${YELLOW}Removing previous installation…${NC}"
-    rm -rf "$INSTALL_DIR"
+    echo -e "${YELLOW}Upgrading existing installation…${NC}"
+    for item in "$INSTALL_DIR"/*; do
+        name="$(basename "$item")"
+        case "$name" in
+            slife.json5|credentials.crypt|logs) continue ;;  # user data — keep
+            *.db|*.db-shm|*.db-wal)           continue ;;  # memory database
+            wechat_*.json5)                   continue ;;  # WeChat session
+            *) rm -rf "$item" ;;
+        esac
+    done
 fi
 
 echo "Installing to $INSTALL_DIR…"
