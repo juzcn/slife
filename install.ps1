@@ -190,8 +190,14 @@ try {
 
     # Remove previous installation's venv artifacts only — keep user data
     # (slife.json5, *.db, logs/, wechat_*.json5, credentials.crypt).
+    # uv venv requires the target directory to not exist, so we stash
+    # user data, wipe the directory, create the venv, then restore.
+    Write-Host "Installing to $installDir…"
     if (Test-Path $installDir) {
         Write-Host "Upgrading existing installation…" -ForegroundColor Yellow
+        $backupDir = Join-Path $tmpDir "slife-user-backup"
+        New-Item -ItemType Directory -Force $backupDir | Out-Null
+        # Save user data
         foreach ($item in Get-ChildItem $installDir) {
             $name = $item.Name
             if ($name -eq "slife.json5" -or
@@ -201,14 +207,22 @@ try {
                 $name -like "*.db-shm" -or
                 $name -like "*.db-wal" -or
                 $name -like "wechat_*.json5") {
-                continue  # user data — keep
+                Copy-Item -Recurse -Force $item.FullName "$backupDir\"
             }
-            Remove-Item -Recurse -Force $item.FullName
         }
+        # Wipe old installation entirely
+        Remove-Item -Recurse -Force $installDir
+        # Create fresh venv
+        uv venv --seed --python "$pythonPath" "$installDir"
+        # Restore user data
+        if (Test-Path $backupDir) {
+            Get-ChildItem $backupDir | ForEach-Object {
+                Copy-Item -Recurse -Force $_.FullName "$installDir\"
+            }
+        }
+    } else {
+        uv venv --seed --python "$pythonPath" "$installDir"
     }
-
-    Write-Host "Installing to $installDir…"
-    uv venv --seed --python "$pythonPath" "$installDir"
     $pipLog = Join-Path $tmpDir "pip-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"

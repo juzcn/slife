@@ -130,21 +130,34 @@ INSTALL_DIR="$HOME/.slife"
 
 # Remove previous installation's venv artifacts only — keep user data
 # (slife.json5, *.db, logs/, wechat_*.json5, credentials.crypt).
+# uv venv requires the target directory to not exist, so we stash
+# user data, wipe the directory, create the venv, then restore.
+echo "Installing to $INSTALL_DIR…"
 if [ -d "$INSTALL_DIR" ]; then
     echo -e "${YELLOW}Upgrading existing installation…${NC}"
+    BACKUP_DIR="$TMPDIR/slife-user-backup-$$"
+    mkdir -p "$BACKUP_DIR"
+    # Save user data
     for item in "$INSTALL_DIR"/*; do
         name="$(basename "$item")"
         case "$name" in
-            slife.json5|credentials.crypt|logs) continue ;;  # user data — keep
-            *.db|*.db-shm|*.db-wal)           continue ;;  # memory database
-            wechat_*.json5)                   continue ;;  # WeChat session
-            *) rm -rf "$item" ;;
+            slife.json5|credentials.crypt|logs) cp -R "$item" "$BACKUP_DIR/" ;;
+            *.db|*.db-shm|*.db-wal)           cp -R "$item" "$BACKUP_DIR/" ;;
+            wechat_*.json5)                   cp -R "$item" "$BACKUP_DIR/" ;;
         esac
     done
+    # Wipe old installation entirely
+    rm -rf "$INSTALL_DIR"
+    # Create fresh venv
+    uv venv --seed --python "$PYTHON" "$INSTALL_DIR"
+    # Restore user data
+    if [ -d "$BACKUP_DIR" ]; then
+        cp -R "$BACKUP_DIR"/* "$INSTALL_DIR/"
+        rm -rf "$BACKUP_DIR"
+    fi
+else
+    uv venv --seed --python "$PYTHON" "$INSTALL_DIR"
 fi
-
-echo "Installing to $INSTALL_DIR…"
-uv venv --seed --python "$PYTHON" "$INSTALL_DIR"
 uv pip install --python "$INSTALL_DIR/bin/python" "$SLIFE_WHEEL" > /dev/null || {
     echo -e "${RED}Error: slife installation failed.${NC}"
     exit 1
