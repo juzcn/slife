@@ -16,17 +16,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify tag matches version
+      - name: Verify tag matches versions
         run: |
           TAG_VERSION="${{ github.ref_name }}"
           TAG_VERSION="${TAG_VERSION#v}"
+
+          # Verify slife version
           PKG_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "ERROR: tag v$TAG_VERSION != pyproject.toml version $PKG_VERSION"
-            echo "Update pyproject.toml version before tagging."
+            echo "ERROR: tag v$TAG_VERSION != slife version $PKG_VERSION"
             exit 1
           fi
-          echo "Version $PKG_VERSION — OK"
+          echo "slife $PKG_VERSION — OK"
+
+          # Verify credstore version
+          CRED_VERSION=$(python -c "import tomllib; print(tomllib.load(open('credstore/pyproject.toml','rb'))['project']['version'])")
+          if [ "$TAG_VERSION" != "$CRED_VERSION" ]; then
+            echo "ERROR: tag v$TAG_VERSION != credstore version $CRED_VERSION"
+            exit 1
+          fi
+          echo "credstore $CRED_VERSION — OK"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -36,8 +45,11 @@ jobs:
       - name: Install build tools
         run: pip install build twine
 
-      - name: Build package
+      - name: Build slife
         run: python -m build
+
+      - name: Build credstore
+        run: cd credstore && python -m build
 
       - name: Publish to PyPI
         uses: nick-fields/retry@v4
@@ -50,4 +62,4 @@ jobs:
             # OIDC token exchange sometimes hits PyPI's short connect timeout
             # (5 s).  Retry up to 3× with 15 s back-off to absorb transient
             # network issues.
-            twine upload --verbose dist/*
+            twine upload --verbose dist/* credstore/dist/*

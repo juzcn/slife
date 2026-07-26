@@ -277,6 +277,19 @@ try {
         exit 1
     }
 
+    # Verify credstore CLI is available (bundled with slife).
+    Write-Host -NoNewline "Verifying credstore CLI… "
+    try {
+        & "$installDir\Scripts\credstore.exe" --help 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "√ ready" -ForegroundColor Green
+        } else {
+            Write-Host "warning: credstore CLI not found" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "warning: credstore CLI not found" -ForegroundColor Yellow
+    }
+
     # Add to user PATH permanently
     $scriptsDir = "$installDir\Scripts"
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")

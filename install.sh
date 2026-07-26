@@ -202,6 +202,14 @@ uv pip install --python "$INSTALL_DIR/bin/python" "$TMP_DIR/slife-main" > "$PIP_
     exit 1
 }
 
+# Verify credstore CLI is available (bundled with slife).
+echo -n "Verifying credstore CLI… "
+if "$INSTALL_DIR/bin/credstore" --help &>/dev/null; then
+    echo -e "${GREEN}✓${NC} ready"
+else
+    echo -e "${YELLOW}warning: credstore CLI not found${NC}"
+fi
+
 # ── 6. Add to PATH ──────────────────────────────────────────────────
 # Append to common shell profiles if the entry isn't already present.
 # Use grep -F (fixed-string) for robustness against special characters
