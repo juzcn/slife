@@ -209,33 +209,40 @@ class AgentLoop:
             )
         return result
 
-    # ── Universal timeout injection ─────────────────────────────────
+    # ── Universal meta-param injection ──────────────────────────────
 
     @staticmethod
-    def _inject_timeout_param(functions: list[dict]) -> list[dict]:
-        """Add ``_timeout`` as an optional parameter to every function def
-        that doesn't already have its own ``timeout`` parameter.
+    def _inject_meta_params(functions: list[dict]) -> list[dict]:
+        """Add ``_timeout`` and ``_async`` as optional parameters to every
+        function def that doesn't already have a native equivalent.
 
-        The LLM can pass ``_timeout`` on ANY tool call to override the
-        global ``tool_timeout`` for that single invocation.  The loop
-        strips it before dispatching to the tool.
+        The LLM can pass these on ANY tool call:
+          - ``_timeout`` (number) — override global ``tool_timeout``
+          - ``_async`` (boolean) — run in background, return task_id immediately
 
-        Tools that natively expose ``timeout`` (e.g. ``execute_shell``)
-        are skipped — their own parameter already serves this purpose.
+        Both are stripped before dispatch.  Tools with a native ``timeout``
+        parameter (e.g. ``execute_shell``) are skipped for ``_timeout``.
         """
         for func in functions:
             schema = func.get("function", {}).get("parameters", {})
             props = schema.setdefault("properties", {})
-            # Skip if the tool already has a native timeout parameter
-            if "timeout" in props or "_timeout" in props:
-                continue
-            props["_timeout"] = {
-                "type": "number",
-                "description": (
-                    "可选。本次调用的超时秒数，覆盖全局默认值。"
-                    "用于网络请求、大文件操作等需要更长时间的场景。"
-                ),
-            }
+            if "timeout" not in props and "_timeout" not in props:
+                props["_timeout"] = {
+                    "type": "number",
+                    "description": (
+                        "可选。本次调用的超时秒数，覆盖全局默认值。"
+                        "用于网络请求、大文件操作等需要更长时间的场景。"
+                    ),
+                }
+            if "async" not in props and "_async" not in props:
+                props["_async"] = {
+                    "type": "boolean",
+                    "description": (
+                        "设为 true 时后台异步执行，立即返回 task_id。"
+                        "用于耗时很长的操作——用 check_async 查询结果，"
+                        "用 cancel_async 取消。"
+                    ),
+                }
         return functions
 
     # ── Stream processing ──────────────────────────────────────────
@@ -262,7 +269,7 @@ class AgentLoop:
 
         async for chunk in self.llm_client.chat_stream(
             messages=conversation.to_openai_messages(),
-            tools=self._inject_timeout_param(
+            tools=self._inject_meta_params(
                 self.tool_registry.to_openai_functions()
             ),
         ):
@@ -343,15 +350,13 @@ class AgentLoop:
                     max_iterations=self.max_iterations,
                 )
 
-            # ── Dynamic per-call timeout ──────────────────────────
-            # The LLM can pass _timeout on ANY tool to override the
-            # global tool_timeout for this single invocation.
+            # ── Dynamic per-call timeout / async ─────────────────
+            # LLM can pass _async (boolean) or _timeout (number) on
+            # ANY tool call.  _async takes priority — if true, the
+            # tool is scheduled in background and we return immediately.
             actual_args = dict(tc.arguments)
+            is_async = actual_args.pop("_async", None)
             inline_timeout = actual_args.pop("_timeout", None)
-            if inline_timeout is not None:
-                effective_timeout = float(inline_timeout) if float(inline_timeout) > 0 else 0.0
-            else:
-                effective_timeout = self.tool_timeout
 
             # ── Approval gate (serialised via lock) ─────────────────
             tool = self.tool_registry.get(tc.name)
@@ -365,6 +370,30 @@ class AgentLoop:
                         await handler.on_tool_result(tc.id, result, is_error=True)
                     conversation.add_tool_result(tc.id, result)
                     return
+
+            if is_async:
+                # ── Async: schedule background task ─────────────
+                from slife.tools.async_tasks import schedule as schedule_async
+
+                coro = self.tool_registry.execute(tc.name, **actual_args)
+                task_id = schedule_async(coro)
+                result = (
+                    f"✓ 异步任务已启动。\n"
+                    f"  task_id: {task_id}\n"
+                    f"  tool: {tc.name}\n"
+                    f"  使用 check_async(task_id=\"{task_id}\") 查询结果。\n"
+                    f"  使用 cancel_async(task_id=\"{task_id}\") 取消任务。"
+                )
+                result = sanitize_secrets(result)
+                if handler:
+                    await handler.on_tool_result(tc.id, result, is_error=False)
+                conversation.add_tool_result(tc.id, result)
+                return
+
+            if inline_timeout is not None:
+                effective_timeout = float(inline_timeout) if float(inline_timeout) > 0 else 0.0
+            else:
+                effective_timeout = self.tool_timeout
 
             try:
                 coro = self.tool_registry.execute(tc.name, **actual_args)
