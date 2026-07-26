@@ -427,7 +427,8 @@ User Input → Conversation.add_user_message()
 
 - **Streaming**: thinking and text tokens are emitted in real-time via `AgentEventHandler` protocol callbacks. The TUI renders them as they arrive.
 - **Tool accumulation**: tool call deltas are accumulated across streaming chunks, then deserialized and executed as a batch.
-- **Tool timeout**: `tool_timeout` (default 60s) wraps every tool call with `asyncio.wait_for()`.  Timeout/exception → logged warning + ``"Error: …"`` string returned to the LLM.  Never silent, never crashes the loop.
+- **Tool timeout**: `tool_timeout` (default 60s) wraps every tool call with `asyncio.wait_for()` at the Agent Loop level.  The MCP Client does NOT apply its own timeout — the Loop is the single point of enforcement.  Timeout/exception → logged warning + ``"Error: …"`` string returned to the LLM.  Never silent, never crashes the loop.
+- **Per-call timeout override**: the LLM can pass ``_timeout`` (seconds) as an extra argument to **any** tool to override the global default for that single invocation.  Tools that already have a native ``timeout`` parameter (e.g. ``execute_shell``) use that instead — ``_timeout`` is not injected for those.  The Loop strips ``_timeout`` before dispatching.
 - **Iteration limit**: `max_iterations` (default 10) prevents infinite loops.
 - **Orphan repair**: if the user interrupts mid-tool-execution, orphaned tool calls without results are repaired before the next user message to keep the conversation well-formed for the API.
 
@@ -473,15 +474,22 @@ the LLM makes — MCP servers, filesystem operations, web searches, CLI commands
 and any future tool type.  If a tool doesn't respond within the timeout, the
 agent loop converts the `TimeoutError` into an ``"Error: …"`` tool result that
 the LLM can see and react to (retry, fall back, or report to the user).
-Zero disables the timeout.  The timeout is applied at two layers:
+Zero disables the timeout.  The timeout is applied at a single layer:
 
 1. **Agent loop** (`AgentLoop._execute_tools`) — wraps every tool with
-   `asyncio.wait_for()` as the universal safety net.
-2. **MCP client** (`MCPClient.call_tool`) — adds a secondary timeout on the
-   Streamable HTTP request so a hung external server never stalls the agent
-   silently.
+   ``asyncio.wait_for()`` as the universal safety net.
 
-Both layers log a warning and return an ``Error:`` string — exceptions are
+The MCP Client (`MCPClient.call_tool`) does **not** apply its own timeout —
+it relies on the Loop for enforcement, ensuring per-call overrides propagate
+correctly.
+
+**Per-call override** — the LLM can pass ``_timeout`` (seconds) on any tool
+call to override ``tool_timeout`` for that single invocation.  The Loop
+injects ``_timeout`` into every tool's JSON Schema (except tools that already
+have a native ``timeout`` parameter, e.g. ``execute_shell``).  The parameter
+is stripped before the tool executes: ``fetch__fetch(_timeout=180, url="...")``.
+
+The agent loop logs a warning and returns an ``Error:`` string — exceptions are
 never swallowed and never crash the agent loop.
 
 ## Tool System

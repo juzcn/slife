@@ -161,28 +161,23 @@ class MCPClient:
         ]
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> str:
-        """Call an MCP tool with a configurable timeout.
+        """Call an MCP tool.
 
         Returns the result text on success, or an ``"Error: …"`` string
         on failure — this function NEVER raises, so a single hung MCP
         server can't stall the entire agent loop.  The LLM sees the
         error as a normal tool result and can retry or report it.
+
+        Timeout enforcement is handled by the Agent Loop (``agent/loop.py``)
+        via ``asyncio.wait_for`` — this method does NOT apply its own
+        timeout, so per-call overrides (e.g. ``call_tool_with_timeout``)
+        propagate correctly.
         """
         self._ensure_connected()
         assert self._session is not None  # post-condition of _ensure_connected
         args = arguments or {}
         try:
-            result = await asyncio.wait_for(
-                self._session.call_tool(name, args),
-                timeout=self._tool_timeout,
-            )
-        except asyncio.TimeoutError:
-            msg = (
-                f"工具 '{name}' 执行超时（{self._tool_timeout}s）。"
-                f"MCP 服务器未在规定时间内返回结果，请检查服务器状态或网络连接。"
-            )
-            logger.info("mcp_tool_timeout name=%s timeout=%ds", name, self._tool_timeout)
-            return f"Error: {msg}"
+            result = await self._session.call_tool(name, args)
         except Exception as e:
             msg = (
                 f"工具 '{name}' 执行失败：{type(e).__name__}: {e}。"

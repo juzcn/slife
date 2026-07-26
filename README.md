@@ -200,6 +200,27 @@ active_model: "deepseek/deepseek-v4-pro",
 
 `${ENV_VAR}` and `${ENV_VAR:-default}` syntax works everywhere — values resolve at runtime via shell → keyring → config.
 
+### Tool Timeout
+
+Every tool call has a **60-second deadline** by default (`agent.tool_timeout`).  The LLM can override this per-call by passing `_timeout` (seconds) to any tool:
+
+```json5
+// slife.json5
+agent: {
+  tool_timeout: 60,  // global default (seconds), 0 = disabled
+}
+```
+
+```
+// LLM usage — the LLM decides which tools need more time:
+fetch__fetch(_timeout=180, url="https://slow.site")       // slow web page → 3 minutes
+execute_shell(timeout=120, command="npm install")         // native timeout param (no underscore)
+```
+
+The Loop injects `_timeout` into every tool's schema automatically — no config needed.  Tools with their own `timeout` parameter (like `execute_shell`) use that instead.
+
+See [DESIGN.md § Agent Loop](DESIGN.md#agent-loop) for the full architecture.
+
 ## Credential Management
 
 Slife ships with **[credstore](credstore/README.md)** — a standalone cross-platform secret manager backed by the OS keyring with AES-encrypted file backup.  It has its own [full documentation](credstore/README.md).

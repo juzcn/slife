@@ -209,6 +209,35 @@ class AgentLoop:
             )
         return result
 
+    # ── Universal timeout injection ─────────────────────────────────
+
+    @staticmethod
+    def _inject_timeout_param(functions: list[dict]) -> list[dict]:
+        """Add ``_timeout`` as an optional parameter to every function def
+        that doesn't already have its own ``timeout`` parameter.
+
+        The LLM can pass ``_timeout`` on ANY tool call to override the
+        global ``tool_timeout`` for that single invocation.  The loop
+        strips it before dispatching to the tool.
+
+        Tools that natively expose ``timeout`` (e.g. ``execute_shell``)
+        are skipped — their own parameter already serves this purpose.
+        """
+        for func in functions:
+            schema = func.get("function", {}).get("parameters", {})
+            props = schema.setdefault("properties", {})
+            # Skip if the tool already has a native timeout parameter
+            if "timeout" in props or "_timeout" in props:
+                continue
+            props["_timeout"] = {
+                "type": "number",
+                "description": (
+                    "可选。本次调用的超时秒数，覆盖全局默认值。"
+                    "用于网络请求、大文件操作等需要更长时间的场景。"
+                ),
+            }
+        return functions
+
     # ── Stream processing ──────────────────────────────────────────
 
     async def _process_stream(
@@ -233,7 +262,9 @@ class AgentLoop:
 
         async for chunk in self.llm_client.chat_stream(
             messages=conversation.to_openai_messages(),
-            tools=self.tool_registry.to_openai_functions(),
+            tools=self._inject_timeout_param(
+                self.tool_registry.to_openai_functions()
+            ),
         ):
             if chunk.thinking:
                 thinking_parts.append(chunk.thinking)
@@ -312,6 +343,16 @@ class AgentLoop:
                     max_iterations=self.max_iterations,
                 )
 
+            # ── Dynamic per-call timeout ──────────────────────────
+            # The LLM can pass _timeout on ANY tool to override the
+            # global tool_timeout for this single invocation.
+            actual_args = dict(tc.arguments)
+            inline_timeout = actual_args.pop("_timeout", None)
+            if inline_timeout is not None:
+                effective_timeout = float(inline_timeout) if float(inline_timeout) > 0 else 0.0
+            else:
+                effective_timeout = self.tool_timeout
+
             # ── Approval gate (serialised via lock) ─────────────────
             tool = self.tool_registry.get(tc.name)
             if getattr(tool, 'requires_approval', False):
@@ -326,19 +367,19 @@ class AgentLoop:
                     return
 
             try:
-                coro = self.tool_registry.execute(tc.name, **tc.arguments)
-                if self.tool_timeout > 0:
-                    result = await asyncio.wait_for(coro, timeout=self.tool_timeout)
+                coro = self.tool_registry.execute(tc.name, **actual_args)
+                if effective_timeout > 0:
+                    result = await asyncio.wait_for(coro, timeout=effective_timeout)
                 else:
                     result = await coro
             except asyncio.TimeoutError:
                 result = (
-                    f"Error: 工具 '{tc.name}' 执行超时（{self.tool_timeout}s）。"
+                    f"Error: 工具 '{tc.name}' 执行超时（{effective_timeout}s）。"
                     f"服务器或网络可能无响应，请检查后重试。"
                 )
                 logger.info(
                     "tool_timeout name=%s timeout=%ds args=%s",
-                    tc.name, self.tool_timeout,
+                    tc.name, effective_timeout,
                     self._truncate_args(tc.arguments),
                 )
             except Exception as e:
