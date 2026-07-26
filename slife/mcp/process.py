@@ -119,28 +119,33 @@ class MCPWrapperProcess:
             self._running = False
             raise
 
+    async def _read_stderr_tail(self) -> str:
+        """Read remaining stderr from the child process (best-effort)."""
+        if not self._process or not self._process.stderr:
+            return "(stderr not available)"
+        try:
+            remaining = await self._process.stderr.read()
+            return remaining.decode("utf-8", errors="replace")[-2000:] or "(empty)"
+        except Exception:
+            return "(stderr read failed)"
+
     async def _read_port_signal(self) -> None:
         """Read the port-discovery JSON line from child stdout."""
         assert self._process and self._process.stdout
 
         try:
             line = await asyncio.wait_for(
-                self._process.stdout.readline(), timeout=10.0,
+                self._process.stdout.readline(), timeout=15.0,
             )
         except asyncio.TimeoutError:
+            stderr_tail = await self._read_stderr_tail()
             raise RuntimeError(
-                "Plugin process did not send port signal within 10s"
+                f"Plugin process (pid={self._process.pid}) did not send "
+                f"port signal within 15s. stderr:\n{stderr_tail}"
             )
 
         if not line:
-            # EOF before port signal — child crashed
-            stderr_tail = ""
-            if self._process.stderr:
-                try:
-                    remaining = await self._process.stderr.read()
-                    stderr_tail = remaining.decode("utf-8", errors="replace")[-2000:]
-                except Exception:
-                    pass
+            stderr_tail = await self._read_stderr_tail()
             raise RuntimeError(
                 f"Plugin process (pid={self._process.pid}) exited before "
                 f"sending port signal. stderr:\n{stderr_tail}"
