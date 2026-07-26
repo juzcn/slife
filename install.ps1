@@ -61,22 +61,23 @@ try {
         $uvPython = uv python find 3.13 2>$null
         if ($uvPython) {
             Write-Host "found (uv-managed)" -ForegroundColor Green
-            $pythonPath = $uvPython
+            $pythonPath = (Resolve-Path $uvPython).Path
         } else {
             Write-Host "not found" -ForegroundColor Yellow
             Write-Host "Installing Python 3.13 via uv…" -ForegroundColor Yellow
             uv python install 3.13
-            $pythonPath = uv python find 3.13 2>$null
-            if (-not $pythonPath) {
+            $uvPython = uv python find 3.13 2>$null
+            if (-not $uvPython) {
                 Write-Host "Error: could not install Python 3.13." -ForegroundColor Red
                 Write-Host "Install manually from https://python.org/downloads/"
                 exit 1
             }
+            $pythonPath = (Resolve-Path $uvPython).Path
             Write-Host "√ Installed at: $pythonPath" -ForegroundColor Green
         }
     } else {
         Write-Host "found" -ForegroundColor Green
-        $pythonPath = (Get-Command $python).Source
+        $pythonPath = (Resolve-Path (Get-Command $python).Source).Path
     }
     $pyVer = uv run --python "$pythonPath" python --version 2>&1
     Write-Host "  Selected: $pythonPath ($pyVer)" -ForegroundColor Cyan
@@ -205,25 +206,29 @@ try {
     }
 
     # ── 5. Create/repair venv ─────────────────────────────────────────
-    # Always clean old venv artifacts then recreate.  User data (logs,
-    # slife.json5, *.db, .credstore) stays untouched.
+    # UV_VENV_CLEAR handles both first install and upgrades safely —
+    # it clears old venv files in-place, even if locked.  User data
+    # (logs, slife.json5, *.db, .credstore) is never touched.
     Write-Host "Installing slife v$version to $installDir…"
-    if (Test-Path $installDir) {
-        foreach ($d in @("Scripts", "Lib", "Include")) {
-            Remove-Item -Recurse -Force "$installDir\$d" -ErrorAction SilentlyContinue
-        }
-        Remove-Item -Force "$installDir\pyvenv.cfg" -ErrorAction SilentlyContinue
-    }
-    # --clear handles the case where old venv files are locked and
-    # could not be removed (e.g. a crashed slife session).
+    $pipLog = Join-Path $tmpDir "pip-install.log"
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     $env:UV_VENV_CLEAR = "1"
-    uv venv --python "$pythonPath" "$installDir"
+    uv venv --python "$pythonPath" "$installDir" > $pipLog 2>&1
+    $ok = ($LASTEXITCODE -eq 0)
     Remove-Item Env:\UV_VENV_CLEAR -ErrorAction SilentlyContinue
+    $ErrorActionPreference = $prevEAP
+    if (-not $ok) {
+        Write-Host "Error: failed to create virtual environment at $installDir." -ForegroundColor Red
+        Write-Host "The directory may be locked by a running slife process." -ForegroundColor Yellow
+        Write-Host "Close all slife windows and try again." -ForegroundColor Yellow
+        Get-Content $pipLog
+        exit 1
+    }
 
     # Install pip into the venv (the only seed package we need — slife's
     # error messages guide users to run "pip install", so pip must be
     # available; setuptools and wheel are unnecessary for end users).
-    $pipLog = Join-Path $tmpDir "pip-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     uv pip install --python "$installDir\Scripts\python.exe" pip > $pipLog 2>&1
