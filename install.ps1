@@ -205,46 +205,28 @@ try {
     }
 
     # ── 5. Create venv + install slife ──────────────────────────────────
-    # On upgrade we keep user data: slife.json5, *.db, logs/, wechat_*.json5,
-    # credentials.crypt.  uv venv needs the target directory absent, so we
-    # stash user data → wipe → create venv → restore.
+    # On upgrade: user data files in ~\.slife stay put — we only move them
+    # aside while recreating the venv, then move back.
+    # .credstore data is never touched by this script.
     Write-Host "Installing slife v$version to $installDir…"
     if (Test-Path $installDir) {
         Write-Host "Upgrading existing installation…" -ForegroundColor Yellow
-        $backupDir = Join-Path $tmpDir "slife-user-backup"
-        New-Item -ItemType Directory -Force $backupDir | Out-Null
-        # Save user data
+        $stashDir = Join-Path $tmpDir "slife-user-stash"
+        New-Item -ItemType Directory -Force $stashDir | Out-Null
+        # Move user data aside; venv artifacts stay behind for deletion.
         foreach ($item in Get-ChildItem $installDir) {
             $name = $item.Name
-            if ($name -eq "slife.json5" -or
-                $name -eq "credentials.crypt" -or
-                $name -eq "logs" -or
-                $name -like "*.db" -or
-                $name -like "*.db-shm" -or
-                $name -like "*.db-wal" -or
-                $name -like "wechat_*.json5") {
-                Copy-Item -Recurse -Force $item.FullName "$backupDir\"
+            if ($name -ne "Scripts" -and $name -ne "Lib" -and $name -ne "Include" -and $name -ne "pyvenv.cfg") {
+                Move-Item -Force $item.FullName "$stashDir\"
             }
         }
-
-        # Verify critical backups exist before destroying the old install.
-        if ((Test-Path "$installDir\slife.json5") -and -not (Test-Path "$backupDir\slife.json5")) {
-            Write-Host "Error: failed to back up slife.json5 — aborting upgrade to keep your data safe." -ForegroundColor Red
-            exit 1
-        }
-
-        # Wipe old installation entirely, then create fresh venv.
-        # --clear ensures uv handles leftover files even if Remove-Item
-        # couldn't delete everything (locked files, etc.).  User data is
-        # already backed up to $backupDir so --clear is safe.
         Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
-        uv venv --clear --python "$pythonPath" "$installDir"
-        # Restore user data
-        if (Test-Path $backupDir) {
-            Get-ChildItem $backupDir | ForEach-Object {
-                Copy-Item -Recurse -Force $_.FullName "$installDir\"
-            }
+        uv venv --python "$pythonPath" "$installDir"
+        # Move user data back.
+        Get-ChildItem $stashDir -ErrorAction SilentlyContinue | ForEach-Object {
+            Move-Item -Force $_.FullName "$installDir\"
         }
+        Remove-Item -Recurse -Force $stashDir -ErrorAction SilentlyContinue
     } else {
         uv venv --python "$pythonPath" "$installDir"
     }

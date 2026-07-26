@@ -138,51 +138,27 @@ if command -v df &>/dev/null; then
 fi
 
 # ── 5. Create venv + install slife ──────────────────────────────────
-# On upgrade we keep user data: slife.json5, *.db, logs/, wechat_*.json5,
-# credentials.crypt.  uv venv needs the target directory absent, so we
-# stash user data → wipe → create venv → restore.
+# On upgrade: user data files in ~/.slife stay put — we only move them
+# aside while recreating the venv, then move back (same-fs mv is instant).
+# .credstore data is never touched by this script.
 echo "Installing slife v${VERSION} to $INSTALL_DIR…"
 if [ -d "$INSTALL_DIR" ]; then
     echo -e "${YELLOW}Upgrading existing installation…${NC}"
-    BACKUP_DIR="$TMP_DIR/slife-user-backup-$$"
-    mkdir -p "$BACKUP_DIR"
-
-    # Save user data — track what we expect to find so we can verify.
-    BACKUP_MANIFEST=""
+    STASH_DIR="$TMP_DIR/slife-user-stash"
+    mkdir -p "$STASH_DIR"
+    # Move user data aside, leave venv artifacts behind for deletion.
     for item in "$INSTALL_DIR"/*; do
         name="$(basename "$item")"
         case "$name" in
-            slife.json5|credentials.crypt|logs)
-                cp -R "$item" "$BACKUP_DIR/" && BACKUP_MANIFEST="$BACKUP_MANIFEST $name"
-                ;;
-            *.db|*.db-shm|*.db-wal)
-                cp -R "$item" "$BACKUP_DIR/" && BACKUP_MANIFEST="$BACKUP_MANIFEST $name"
-                ;;
-            wechat_*.json5)
-                cp -R "$item" "$BACKUP_DIR/" && BACKUP_MANIFEST="$BACKUP_MANIFEST $name"
-                ;;
+            bin|lib|include|pyvenv.cfg|Scripts|Lib|Include) ;;  # venv — skip
+            *) mv "$item" "$STASH_DIR/" ;;
         esac
     done
-
-    # Verify critical backups exist before destroying the old install.
-    for critical in slife.json5; do
-        if [ -f "$INSTALL_DIR/$critical" ] && [ ! -f "$BACKUP_DIR/$critical" ]; then
-            echo -e "${RED}Error: failed to back up $critical — aborting upgrade to keep your data safe.${NC}"
-            exit 1
-        fi
-    done
-
-    # Wipe old installation, then create fresh venv.
-    # --clear ensures uv handles leftover files even if rm couldn't
-    # delete everything (locked files, etc.).
     rm -rf "$INSTALL_DIR"
-    uv venv --clear --python "$PYTHON" "$INSTALL_DIR"
-    # Restore user data (only if backup has files — avoid glob failure
-    # on empty directory with "set -e").
-    if [ -d "$BACKUP_DIR" ] && [ "$(ls -A "$BACKUP_DIR" 2>/dev/null)" ]; then
-        cp -R "$BACKUP_DIR"/* "$INSTALL_DIR/"
-        rm -rf "$BACKUP_DIR"
-    fi
+    uv venv --python "$PYTHON" "$INSTALL_DIR"
+    # Move user data back (harmless if stash is empty).
+    mv "$STASH_DIR"/* "$INSTALL_DIR/" 2>/dev/null || true
+    rm -rf "$STASH_DIR"
 else
     uv venv --python "$PYTHON" "$INSTALL_DIR"
 fi
