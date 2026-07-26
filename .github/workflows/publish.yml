@@ -51,15 +51,20 @@ jobs:
       - name: Build credstore
         run: cd credstore && python -m build
 
-      - name: Publish to PyPI
+      - name: Publish slife to PyPI
         uses: nick-fields/retry@v4
         with:
           timeout_minutes: 5
           max_attempts: 3
           retry_on: error
           retry_wait_seconds: 15
-          command: |
-            # OIDC token exchange sometimes hits PyPI's short connect timeout
-            # (5 s).  Retry up to 3× with 15 s back-off to absorb transient
-            # network issues.
-            twine upload --verbose dist/* credstore/dist/*
+          command: twine upload --verbose dist/*
+
+      - name: Publish credstore to PyPI
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          retry_on: error
+          retry_wait_seconds: 15
+          command: twine upload --verbose credstore/dist/*
