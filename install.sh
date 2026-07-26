@@ -27,7 +27,7 @@ echo ""
 # uv's installer is a standalone binary — no Python required.
 if ! command -v uv &>/dev/null; then
     echo -e "${YELLOW}Installing uv (package manager)…${NC}"
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+    curl --progress-bar -Lf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
 echo -e "${GREEN}✓${NC} uv $(uv --version 2>&1)"
@@ -87,7 +87,7 @@ else
     echo -e "${YELLOW}not found${NC}"
     if command -v apt-get &>/dev/null; then
         echo -e "${YELLOW}Installing Node.js via apt…${NC}"
-        curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+        curl --progress-bar -fL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
         sudo apt-get install -y nodejs
     elif command -v brew &>/dev/null; then
         echo -e "${YELLOW}Installing Node.js via Homebrew…${NC}"
@@ -102,79 +102,125 @@ else
     fi
 fi
 
-# ── 3. Download and install slife ────────────────────────────────────
+# ── 3. Download and verify slife ────────────────────────────────────
 echo ""
 echo "Downloading slife…"
-curl -fsSL "$SLIFE_TARBALL" -o "$TMP_DIR/slife.tar.gz"
+curl --progress-bar -fL "$SLIFE_TARBALL" -o "$TMP_DIR/slife.tar.gz"
+
+# Print SHA256 so users can verify integrity if desired.
+echo "  SHA256: $(sha256sum "$TMP_DIR/slife.tar.gz" 2>/dev/null || shasum -a 256 "$TMP_DIR/slife.tar.gz" 2>/dev/null || echo '(sha256sum not available)')"
+
 tar xzf "$TMP_DIR/slife.tar.gz" -C "$TMP_DIR"
 
-# Read version from pyproject.toml
+# Read version from pyproject.toml.
+# Use portable sed (no GNU -P extension) so this works on macOS too.
 VERSION="unknown"
 PYPROJECT="$TMP_DIR/slife-main/pyproject.toml"
 if [ -f "$PYPROJECT" ]; then
-    EXTRACTED_VERSION=$(grep -oP 'version\s*=\s*"\K[^"]+' "$PYPROJECT" 2>/dev/null || echo "")
+    EXTRACTED_VERSION=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$PYPROJECT" 2>/dev/null || echo "")
     if [ -n "$EXTRACTED_VERSION" ]; then
         VERSION="$EXTRACTED_VERSION"
     fi
 fi
 
-echo "Building slife v${VERSION}…"
-uv build --out-dir "$TMP_DIR/dist" "$TMP_DIR/slife-main"
-SLIFE_WHEEL=$(echo "$TMP_DIR/dist"/slife-*.whl | head -1)
-if [ -z "$SLIFE_WHEEL" ] || [ ! -f "$SLIFE_WHEEL" ]; then
-    echo -e "${RED}Error: slife wheel not found after build.${NC}"
-    exit 1
-fi
-
 INSTALL_DIR="$HOME/.slife"
 
-# Remove previous installation's venv artifacts only — keep user data
-# (slife.json5, *.db, logs/, wechat_*.json5, credentials.crypt).
-# uv venv requires the target directory to not exist, so we stash
-# user data, wipe the directory, create the venv, then restore.
-echo "Installing to $INSTALL_DIR…"
+# ── 4. Disk space check ─────────────────────────────────────────────
+# A full install (Python + slife + deps) can use ~500 MB.  Require at
+# least 1 GB free to leave breathing room.
+if command -v df &>/dev/null; then
+    FREE_KB=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}' || echo "0")
+    if [ "$FREE_KB" -gt 0 ] 2>/dev/null && [ "$FREE_KB" -lt 1048576 ]; then
+        FREE_MB=$((FREE_KB / 1024))
+        echo -e "${YELLOW}Warning: only ~${FREE_MB} MB free on $HOME.${NC}"
+        echo "Installation may fail due to insufficient disk space."
+    fi
+fi
+
+# ── 5. Create venv + install slife ──────────────────────────────────
+# On upgrade we keep user data: slife.json5, *.db, logs/, wechat_*.json5,
+# credentials.crypt.  uv venv needs the target directory absent, so we
+# stash user data → wipe → create venv → restore.
+echo "Installing slife v${VERSION} to $INSTALL_DIR…"
 if [ -d "$INSTALL_DIR" ]; then
     echo -e "${YELLOW}Upgrading existing installation…${NC}"
-    BACKUP_DIR="$TMPDIR/slife-user-backup-$$"
+    BACKUP_DIR="$TMP_DIR/slife-user-backup-$$"
     mkdir -p "$BACKUP_DIR"
-    # Save user data
+
+    # Save user data — track what we expect to find so we can verify.
+    BACKUP_MANIFEST=""
     for item in "$INSTALL_DIR"/*; do
         name="$(basename "$item")"
         case "$name" in
-            slife.json5|credentials.crypt|logs) cp -R "$item" "$BACKUP_DIR/" ;;
-            *.db|*.db-shm|*.db-wal)           cp -R "$item" "$BACKUP_DIR/" ;;
-            wechat_*.json5)                   cp -R "$item" "$BACKUP_DIR/" ;;
+            slife.json5|credentials.crypt|logs)
+                cp -R "$item" "$BACKUP_DIR/" && BACKUP_MANIFEST="$BACKUP_MANIFEST $name"
+                ;;
+            *.db|*.db-shm|*.db-wal)
+                cp -R "$item" "$BACKUP_DIR/" && BACKUP_MANIFEST="$BACKUP_MANIFEST $name"
+                ;;
+            wechat_*.json5)
+                cp -R "$item" "$BACKUP_DIR/" && BACKUP_MANIFEST="$BACKUP_MANIFEST $name"
+                ;;
         esac
     done
-    # Wipe old installation entirely, then create fresh venv.
+
+    # Verify critical backups exist before destroying the old install.
+    for critical in slife.json5; do
+        if [ -f "$INSTALL_DIR/$critical" ] && [ ! -f "$BACKUP_DIR/$critical" ]; then
+            echo -e "${RED}Error: failed to back up $critical — aborting upgrade to keep your data safe.${NC}"
+            exit 1
+        fi
+    done
+
+    # Wipe old installation, then create fresh venv.
     # --clear ensures uv handles leftover files even if rm couldn't
-    # delete everything.  User data is already backed up so --clear is safe.
+    # delete everything (locked files, etc.).
     rm -rf "$INSTALL_DIR"
-    uv venv --seed --clear --python "$PYTHON" "$INSTALL_DIR"
-    # Restore user data
-    if [ -d "$BACKUP_DIR" ]; then
+    uv venv --clear --python "$PYTHON" "$INSTALL_DIR"
+    # Restore user data (only if backup has files — avoid glob failure
+    # on empty directory with "set -e").
+    if [ -d "$BACKUP_DIR" ] && [ "$(ls -A "$BACKUP_DIR" 2>/dev/null)" ]; then
         cp -R "$BACKUP_DIR"/* "$INSTALL_DIR/"
         rm -rf "$BACKUP_DIR"
     fi
 else
-    uv venv --seed --python "$PYTHON" "$INSTALL_DIR"
+    uv venv --python "$PYTHON" "$INSTALL_DIR"
 fi
-uv pip install --python "$INSTALL_DIR/bin/python" "$SLIFE_WHEEL" > /dev/null || {
+
+# Install pip into the venv (the only seed package we need — slife's
+# error messages guide users to run "pip install", so pip must be
+# available; setuptools and wheel are unnecessary for end users).
+uv pip install --python "$INSTALL_DIR/bin/python" pip
+
+# Install slife from source into the venv.
+echo "Installing slife and dependencies…"
+PIP_LOG="$TMP_DIR/pip-install.log"
+uv pip install --python "$INSTALL_DIR/bin/python" "$TMP_DIR/slife-main" > "$PIP_LOG" 2>&1 || {
     echo -e "${RED}Error: slife installation failed.${NC}"
+    echo "Last 40 lines of install log:"
+    tail -n 40 "$PIP_LOG"
     exit 1
 }
 
-# Add to PATH in shell profiles
-for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+# ── 6. Add to PATH ──────────────────────────────────────────────────
+# Append to common shell profiles if the entry isn't already present.
+# Use grep -F (fixed-string) for robustness against special characters
+# in the path.
+for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.config/fish/config.fish"; do
     if [ -f "$rc" ]; then
-        if ! grep -q "$INSTALL_DIR/bin" "$rc" 2>/dev/null; then
-            echo "export PATH=\"$INSTALL_DIR/bin:\$PATH\"" >> "$rc"
+        if ! grep -qF "$INSTALL_DIR/bin" "$rc" 2>/dev/null; then
+            # fish uses a different syntax for PATH.
+            if echo "$rc" | grep -q fish; then
+                echo "fish_add_path \"$INSTALL_DIR/bin\"" >> "$rc"
+            else
+                echo "export PATH=\"$INSTALL_DIR/bin:\$PATH\"" >> "$rc"
+            fi
         fi
     fi
 done
 export PATH="$INSTALL_DIR/bin:$PATH"
 
-# ── 4. Done ──────────────────────────────────────────────────────────
+# ── 7. Done ──────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║  Slife v${VERSION} installed successfully! 🎉  ║${NC}"

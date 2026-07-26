@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Slife one-click installer for Windows PowerShell.
 
@@ -122,12 +122,22 @@ try {
             Write-Host "Installing Node.js LTS via winget…" -ForegroundColor Yellow
             winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
             if ($LASTEXITCODE -eq 0) {
+                # Refresh PATH from both machine- and user-level so the new
+                # Node.js is visible in this session.
                 $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
                 try {
                     $nv = node --version 2>&1
-                    Write-Host "√ node $nv installed" -ForegroundColor Green
-                    $haveNode = $true
-                } catch { }
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Host "√ node $nv installed" -ForegroundColor Green
+                        $haveNode = $true
+                    } else {
+                        Write-Host "  Node.js installed but not yet on PATH.  Restart your terminal after installation." -ForegroundColor Yellow
+                    }
+                } catch {
+                    Write-Host "  Node.js installed but not yet on PATH.  Restart your terminal after installation." -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "  winget install returned exit code $LASTEXITCODE — skipped." -ForegroundColor Yellow
             }
         }
         if (-not $haveNode) {
@@ -136,7 +146,7 @@ try {
         }
     }
 
-    # ── 3. Download and install slife ────────────────────────────────────
+    # ── 3. Download and verify slife ────────────────────────────────────
     Write-Host ""
     Write-Host "Downloading slife…"
 
@@ -162,37 +172,43 @@ try {
             exit 1
         }
     }
-    Expand-Archive -Path $zipFile -DestinationPath $tmpDir -Force
 
+    # Print SHA256 so users can verify integrity if desired.
+    $zipHash = (Get-FileHash -Algorithm SHA256 $zipFile).Hash
+    Write-Host "  SHA256: $zipHash" -ForegroundColor DarkGray
+
+    Expand-Archive -Path $zipFile -DestinationPath $tmpDir -Force
     $extractedDir = Get-ChildItem -Path $tmpDir -Directory | Select-Object -First 1
 
-    # Read version from pyproject.toml
+    # Read version from pyproject.toml (anchor at line start so we only
+    # match the project version, not a dependency version specifier).
     $version = "unknown"
     $pyprojectPath = Join-Path $extractedDir.FullName "pyproject.toml"
     if (Test-Path $pyprojectPath) {
         $content = Get-Content $pyprojectPath -Raw
-        if ($content -match 'version\s*=\s*"([^"]+)"') {
+        if ($content -match '(?m)^version\s*=\s*"([^"]+)"') {
             $version = $matches[1]
         }
     }
 
-    Write-Host "Building slife v$version…"
-    $wheelDir = Join-Path $tmpDir "dist"
-    uv build --out-dir $wheelDir $extractedDir.FullName
-
-    $slifeWheel = Get-ChildItem -Path $wheelDir -Filter "slife-*.whl" | Select-Object -First 1
-    if (-not $slifeWheel) {
-        Write-Host "Error: slife wheel not found after build." -ForegroundColor Red
-        exit 1
-    }
-
     $installDir = "$env:USERPROFILE\.slife"
 
-    # Remove previous installation's venv artifacts only — keep user data
-    # (slife.json5, *.db, logs/, wechat_*.json5, credentials.crypt).
-    # uv venv requires the target directory to not exist, so we stash
-    # user data, wipe the directory, create the venv, then restore.
-    Write-Host "Installing to $installDir…"
+    # ── 4. Disk space check ─────────────────────────────────────────────
+    # A full install (Python + slife + deps) can use ~500 MB.  Require at
+    # least 1 GB free to leave breathing room.
+    $driveLetter = $env:USERPROFILE.Substring(0, 1)
+    $freeBytes = (Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue).Free
+    if ($freeBytes -and $freeBytes -lt 1GB) {
+        $freeGB = [math]::Round($freeBytes / 1GB, 1)
+        Write-Host "Warning: only ~${freeGB} GB free on ${driveLetter}: drive." -ForegroundColor Yellow
+        Write-Host "Installation may fail due to insufficient disk space." -ForegroundColor Yellow
+    }
+
+    # ── 5. Create venv + install slife ──────────────────────────────────
+    # On upgrade we keep user data: slife.json5, *.db, logs/, wechat_*.json5,
+    # credentials.crypt.  uv venv needs the target directory absent, so we
+    # stash user data → wipe → create venv → restore.
+    Write-Host "Installing slife v$version to $installDir…"
     if (Test-Path $installDir) {
         Write-Host "Upgrading existing installation…" -ForegroundColor Yellow
         $backupDir = Join-Path $tmpDir "slife-user-backup"
@@ -210,12 +226,19 @@ try {
                 Copy-Item -Recurse -Force $item.FullName "$backupDir\"
             }
         }
+
+        # Verify critical backups exist before destroying the old install.
+        if ((Test-Path "$installDir\slife.json5") -and -not (Test-Path "$backupDir\slife.json5")) {
+            Write-Host "Error: failed to back up slife.json5 — aborting upgrade to keep your data safe." -ForegroundColor Red
+            exit 1
+        }
+
         # Wipe old installation entirely, then create fresh venv.
         # --clear ensures uv handles leftover files even if Remove-Item
         # couldn't delete everything (locked files, etc.).  User data is
         # already backed up to $backupDir so --clear is safe.
         Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
-        uv venv --seed --clear --python "$pythonPath" "$installDir"
+        uv venv --clear --python "$pythonPath" "$installDir"
         # Restore user data
         if (Test-Path $backupDir) {
             Get-ChildItem $backupDir | ForEach-Object {
@@ -223,12 +246,29 @@ try {
             }
         }
     } else {
-        uv venv --seed --python "$pythonPath" "$installDir"
+        uv venv --python "$pythonPath" "$installDir"
     }
+
+    # Install pip into the venv (the only seed package we need — slife's
+    # error messages guide users to run "pip install", so pip must be
+    # available; setuptools and wheel are unnecessary for end users).
     $pipLog = Join-Path $tmpDir "pip-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    uv pip install --python "$installDir\Scripts\python.exe" $slifeWheel.FullName > $pipLog 2>&1
+    uv pip install --python "$installDir\Scripts\python.exe" pip > $pipLog 2>&1
+    $ok = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $prevEAP
+    if (-not $ok) {
+        Write-Host "Error: failed to install pip into the virtual environment." -ForegroundColor Red
+        Get-Content $pipLog
+        exit 1
+    }
+
+    # Install slife from source into the venv.
+    Write-Host "Installing slife and dependencies…"
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    uv pip install --python "$installDir\Scripts\python.exe" $extractedDir.FullName > $pipLog 2>&1
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
