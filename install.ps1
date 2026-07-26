@@ -58,26 +58,26 @@ try {
 
     if (-not $python) {
         # Not on PATH — check if uv already manages a Python 3.13
-        $uvPython = uv python find 3.13 2>$null
+        $uvPython = (uv python find 3.13 2>$null).Trim()
         if ($uvPython) {
             Write-Host "found (uv-managed)" -ForegroundColor Green
-            $pythonPath = (Resolve-Path $uvPython).Path
+            $pythonPath = [System.IO.Path]::GetFullPath($uvPython)
         } else {
             Write-Host "not found" -ForegroundColor Yellow
             Write-Host "Installing Python 3.13 via uv…" -ForegroundColor Yellow
             uv python install 3.13
-            $uvPython = uv python find 3.13 2>$null
+            $uvPython = (uv python find 3.13 2>$null).Trim()
             if (-not $uvPython) {
                 Write-Host "Error: could not install Python 3.13." -ForegroundColor Red
                 Write-Host "Install manually from https://python.org/downloads/"
                 exit 1
             }
-            $pythonPath = (Resolve-Path $uvPython).Path
+            $pythonPath = [System.IO.Path]::GetFullPath($uvPython)
             Write-Host "√ Installed at: $pythonPath" -ForegroundColor Green
         }
     } else {
         Write-Host "found" -ForegroundColor Green
-        $pythonPath = (Resolve-Path (Get-Command $python).Source).Path
+        $pythonPath = [System.IO.Path]::GetFullPath((Get-Command $python).Source)
     }
     $pyVer = uv run --python "$pythonPath" python --version 2>&1
     Write-Host "  Selected: $pythonPath ($pyVer)" -ForegroundColor Cyan
@@ -205,32 +205,37 @@ try {
         Write-Host "Installation may fail due to insufficient disk space." -ForegroundColor Yellow
     }
 
-    # ── 5. Create/repair venv ─────────────────────────────────────────
-    # Only replace venv artifacts — user data (logs, slife.json5,
-    # *.db, .credstore) MUST stay untouched.
+    # ── 5. Create venv + install slife ──────────────────────────────────
+    # On upgrade: user data files in ~\.slife stay put — we only move them
+    # aside while recreating the venv, then move back.
+    # .credstore data is never touched by this script.
     Write-Host "Installing slife v$version to $installDir…"
-    $pipLog = Join-Path $tmpDir "pip-install.log"
     if (Test-Path $installDir) {
-        foreach ($d in @("Scripts", "Lib", "Include")) {
-            Remove-Item -Recurse -Force "$installDir\$d" -ErrorAction SilentlyContinue
+        Write-Host "Upgrading existing installation…" -ForegroundColor Yellow
+        $stashDir = Join-Path $tmpDir "slife-user-stash"
+        New-Item -ItemType Directory -Force $stashDir | Out-Null
+        # Move user data aside; venv artifacts stay behind for deletion.
+        foreach ($item in Get-ChildItem $installDir) {
+            $name = $item.Name
+            if ($name -ne "Scripts" -and $name -ne "Lib" -and $name -ne "Include" -and $name -ne "pyvenv.cfg") {
+                Move-Item -Force $item.FullName "$stashDir\" -ErrorAction SilentlyContinue
+            }
         }
-        Remove-Item -Force "$installDir\pyvenv.cfg" -ErrorAction SilentlyContinue
-    }
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    uv venv --python "$pythonPath" "$installDir" > $pipLog 2>&1
-    $ok = ($LASTEXITCODE -eq 0)
-    $ErrorActionPreference = $prevEAP
-    if (-not $ok) {
-        Write-Host "Error: failed to create virtual environment." -ForegroundColor Red
-        Write-Host "Close all slife windows and try again." -ForegroundColor Yellow
-        Get-Content $pipLog
-        exit 1
+        Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
+        uv venv --python "$pythonPath" "$installDir"
+        # Move user data back.
+        Get-ChildItem $stashDir -ErrorAction SilentlyContinue | ForEach-Object {
+            Move-Item -Force $_.FullName "$installDir\" -ErrorAction SilentlyContinue
+        }
+        Remove-Item -Recurse -Force $stashDir -ErrorAction SilentlyContinue
+    } else {
+        uv venv --python "$pythonPath" "$installDir"
     }
 
     # Install pip into the venv (the only seed package we need — slife's
     # error messages guide users to run "pip install", so pip must be
     # available; setuptools and wheel are unnecessary for end users).
+    $pipLog = Join-Path $tmpDir "pip-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     uv pip install --python "$installDir\Scripts\python.exe" pip > $pipLog 2>&1
