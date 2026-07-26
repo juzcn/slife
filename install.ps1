@@ -16,7 +16,8 @@
 
 $ErrorActionPreference = "Stop"
 
-$slifeTarball = "https://github.com/juzcn/slife/archive/refs/heads/main.zip"
+$slifeRepo = "https://github.com/juzcn/slife"
+$slifeTarball = "$slifeRepo/archive/refs/heads/main.zip"
 $tmpDir = Join-Path $env:TEMP "slife-install-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 New-Item -ItemType Directory -Force $tmpDir | Out-Null
 
@@ -27,18 +28,37 @@ try {
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host ""
 
-    # ── 1. Ensure uv is available ───────────────────────────────────────
-    # uv's installer is standalone — no Python required.
+    # ── Pre-flight summary ──────────────────────────────────────────
+    $installDir = "$env:USERPROFILE\.slife"
+    Write-Host "Install directory : " -NoNewline
+    Write-Host $installDir -ForegroundColor Cyan
+    Write-Host "Python            : auto-install 3.13 if needed"
+    Write-Host "Node.js           : install if missing (optional, for web fetch)"
+    Write-Host "Disk space needed : ~500 MB"
+    Write-Host ""
+
+    # ── 0. Disk space check (before any download) ────────────────────
+    $driveLetter = $env:USERPROFILE.Substring(0, 1)
+    $freeBytes = (Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue).Free
+    if ($freeBytes -and $freeBytes -lt 1GB) {
+        $freeGB = [math]::Round($freeBytes / 1GB, 1)
+        Write-Host "Error: only ~${freeGB} GB free on ${driveLetter}: drive (need >= 1 GB)." -ForegroundColor Red
+        Write-Host "Free up space and try again.  Help: $slifeRepo" -ForegroundColor Yellow
+        exit 1
+    }
+
+    # ── 1. Ensure uv is available ───────────────────────────────────
+    Write-Host "[1/6] Checking uv (package manager)..." -ForegroundColor Yellow
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Write-Host "Installing uv (package manager)…" -ForegroundColor Yellow
+        Write-Host "  Installing uv..." -ForegroundColor Yellow
         powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
         $env:PATH = "$env:USERPROFILE\.local\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
     }
     $uvVer = uv --version 2>&1
-    Write-Host "√ uv $uvVer" -ForegroundColor Green
+    Write-Host "  [OK] uv $uvVer" -ForegroundColor Green
 
-    # ── 2. Ensure Python >= 3.13 is available ───────────────────────────
-    Write-Host -NoNewline "Checking for Python >= 3.13… "
+    # ── 2. Ensure Python >= 3.13 is available ───────────────────────
+    Write-Host "[2/6] Checking Python >= 3.13..." -ForegroundColor Yellow
     $python = $null
     foreach ($candidate in @("python3.13", "python3", "python")) {
         $found = Get-Command $candidate -ErrorAction SilentlyContinue
@@ -52,93 +72,86 @@ try {
                     $python = $candidate
                     break
                 }
+                Write-Host "  Found $candidate ($ver) -- too old (need >= 3.13)" -ForegroundColor Yellow
             } catch { }
         }
     }
 
     if (-not $python) {
-        # Not on PATH — check if uv already manages a Python 3.13
+        # Not on PATH -- check if uv already manages a Python 3.13
         $uvPython = (uv python find 3.13 2>$null).Trim()
         if ($uvPython) {
-            Write-Host "found (uv-managed)" -ForegroundColor Green
+            Write-Host "  found (uv-managed)" -ForegroundColor Green
             $pythonPath = [System.IO.Path]::GetFullPath($uvPython)
         } else {
-            Write-Host "not found" -ForegroundColor Yellow
-            Write-Host "Installing Python 3.13 via uv…" -ForegroundColor Yellow
+            Write-Host "  Python >= 3.13 not found, installing via uv..." -ForegroundColor Yellow
             uv python install 3.13
             $uvPython = (uv python find 3.13 2>$null).Trim()
             if (-not $uvPython) {
                 Write-Host "Error: could not install Python 3.13." -ForegroundColor Red
-                Write-Host "Install manually from https://python.org/downloads/"
+                Write-Host "Install manually from https://python.org/downloads/" -ForegroundColor Yellow
+                Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
                 exit 1
             }
             $pythonPath = [System.IO.Path]::GetFullPath($uvPython)
-            Write-Host "√ Installed at: $pythonPath" -ForegroundColor Green
+            Write-Host "  [OK] Installed at: $pythonPath" -ForegroundColor Green
         }
     } else {
-        Write-Host "found" -ForegroundColor Green
+        Write-Host "  found" -ForegroundColor Green
         $pythonPath = [System.IO.Path]::GetFullPath((Get-Command $python).Source)
     }
     $pyVer = uv run --python "$pythonPath" python --version 2>&1
     Write-Host "  Selected: $pythonPath ($pyVer)" -ForegroundColor Cyan
 
     # Disable Windows Store app execution aliases that shadow real Python.
-    # The "python" and "python3" commands in PowerShell often redirect to the
-    # Microsoft Store instead of running an actual interpreter — even after a
-    # real Python is installed.  Removing these aliases lets the real Python
-    # on PATH take precedence.
-    Write-Host "Removing Windows Store Python aliases…" -ForegroundColor Yellow
+    Write-Host "  Removing Windows Store Python aliases..." -ForegroundColor Yellow
     foreach ($alias in @("python", "python3")) {
         $aliasPath = "$env:LOCALAPPDATA\Microsoft\WindowsApps\$alias.exe"
         if (Test-Path $aliasPath) {
             try {
                 Remove-Item $aliasPath -Force -ErrorAction Stop
-                Write-Host "  Removed: $aliasPath" -ForegroundColor Green
+                Write-Host "    Removed: $aliasPath" -ForegroundColor Green
             } catch {
-                Write-Host "  Could not remove $aliasPath (admin rights needed, skipped)" -ForegroundColor Yellow
+                Write-Host "    Could not remove $aliasPath (admin rights needed, skipped)" -ForegroundColor Yellow
             }
         }
     }
     # Refresh PATH so the freshly-installed Python takes effect
     $env:PATH = "$(Split-Path $pythonPath -Parent);$env:PATH"
 
-    # ── 2.5 Ensure Node.js / npm is available ───────────────────────────
-    Write-Host -NoNewline "Checking for Node.js / npm… "
+    # ── 3. Ensure Node.js / npm is available ────────────────────────
+    Write-Host "[3/6] Checking Node.js / npm..." -ForegroundColor Yellow
     $haveNode = $false
     try {
         $nodeVer = node --version 2>&1
         $npmVer = npm --version 2>&1
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "found" -ForegroundColor Green
-            Write-Host "  node $nodeVer, npm $npmVer" -ForegroundColor Cyan
+            Write-Host "  [OK] node $nodeVer, npm $npmVer" -ForegroundColor Green
             $haveNode = $true
         } else {
             throw "not working"
         }
     } catch {
-        Write-Host "not found" -ForegroundColor Yellow
-        # Try winget first (Windows 10+/11)
+        Write-Host "  not found" -ForegroundColor Yellow
         $winget = Get-Command winget -ErrorAction SilentlyContinue
         if ($winget) {
-            Write-Host "Installing Node.js LTS via winget…" -ForegroundColor Yellow
+            Write-Host "  Installing Node.js LTS via winget..." -ForegroundColor Yellow
             winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
             if ($LASTEXITCODE -eq 0) {
-                # Refresh PATH from both machine- and user-level so the new
-                # Node.js is visible in this session.
                 $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
                 try {
                     $nv = node --version 2>&1
                     if ($LASTEXITCODE -eq 0) {
-                        Write-Host "√ node $nv installed" -ForegroundColor Green
+                        Write-Host "  [OK] node $nv installed" -ForegroundColor Green
                         $haveNode = $true
                     } else {
-                        Write-Host "  Node.js installed but not yet on PATH.  Restart your terminal after installation." -ForegroundColor Yellow
+                        Write-Host "  Installed -- restart your terminal to use Node.js." -ForegroundColor Yellow
                     }
                 } catch {
-                    Write-Host "  Node.js installed but not yet on PATH.  Restart your terminal after installation." -ForegroundColor Yellow
+                    Write-Host "  Installed -- restart your terminal to use Node.js." -ForegroundColor Yellow
                 }
             } else {
-                Write-Host "  winget install returned exit code $LASTEXITCODE — skipped." -ForegroundColor Yellow
+                Write-Host "  winget install failed (exit $LASTEXITCODE)." -ForegroundColor Yellow
             }
         }
         if (-not $haveNode) {
@@ -147,9 +160,8 @@ try {
         }
     }
 
-    # ── 3. Download and verify slife ────────────────────────────────────
-    Write-Host ""
-    Write-Host "Downloading slife…"
+    # ── 4. Download and verify slife ────────────────────────────────
+    Write-Host "[4/6] Downloading slife..." -ForegroundColor Yellow
 
     # PowerShell 5.1's Invoke-WebRequest can throw IndexOutOfRangeException
     # on GitHub's HTTP response headers.  Set TLS 1.2 and use curl.exe as
@@ -160,16 +172,18 @@ try {
     try {
         Invoke-WebRequest -Uri $slifeTarball -OutFile $zipFile -ErrorAction Stop
     } catch [System.IndexOutOfRangeException] {
-        Write-Host "  Invoke-WebRequest failed (PowerShell 5.1 bug), trying curl.exe…" -ForegroundColor Yellow
+        Write-Host "  Invoke-WebRequest failed (PowerShell 5.1 bug), trying curl.exe..." -ForegroundColor Yellow
         $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
         if ($curl) {
             curl.exe -fsSL -o $zipFile $slifeTarball
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "Error: curl.exe failed to download slife." -ForegroundColor Red
+                Write-Host "Error: download failed. Check your network and try again." -ForegroundColor Red
+                Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
                 exit 1
             }
         } else {
             Write-Host "Error: download failed and curl.exe not found." -ForegroundColor Red
+            Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
             exit 1
         }
     }
@@ -192,26 +206,13 @@ try {
         }
     }
 
-    $installDir = "$env:USERPROFILE\.slife"
-
-    # ── 4. Disk space check ─────────────────────────────────────────────
-    # A full install (Python + slife + deps) can use ~500 MB.  Require at
-    # least 1 GB free to leave breathing room.
-    $driveLetter = $env:USERPROFILE.Substring(0, 1)
-    $freeBytes = (Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue).Free
-    if ($freeBytes -and $freeBytes -lt 1GB) {
-        $freeGB = [math]::Round($freeBytes / 1GB, 1)
-        Write-Host "Warning: only ~${freeGB} GB free on ${driveLetter}: drive." -ForegroundColor Yellow
-        Write-Host "Installation may fail due to insufficient disk space." -ForegroundColor Yellow
-    }
-
-    # ── 5. Create venv + install slife ──────────────────────────────────
-    # On upgrade: user data files in ~\.slife stay put — we only move them
+    # ── 5. Create venv + install slife ──────────────────────────────
+    # On upgrade: user data files in ~\.slife stay put -- we only move them
     # aside while recreating the venv, then move back.
     # .credstore data is never touched by this script.
-    Write-Host "Installing slife v$version to $installDir…"
+    Write-Host "[5/6] Installing slife v$version to $installDir..." -ForegroundColor Yellow
     if (Test-Path $installDir) {
-        Write-Host "Upgrading existing installation…" -ForegroundColor Yellow
+        Write-Host "  Upgrading existing installation..." -ForegroundColor Yellow
         $stashDir = Join-Path $tmpDir "slife-user-stash"
         New-Item -ItemType Directory -Force $stashDir | Out-Null
         # Move user data aside; venv artifacts stay behind for deletion.
@@ -222,68 +223,84 @@ try {
             }
         }
         Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
-        uv venv --python "$pythonPath" "$installDir"
+        uv venv --python "$pythonPath" --seed "$installDir"
         # Move user data back.
         Get-ChildItem $stashDir -ErrorAction SilentlyContinue | ForEach-Object {
             Move-Item -Force $_.FullName "$installDir\" -ErrorAction SilentlyContinue
         }
         Remove-Item -Recurse -Force $stashDir -ErrorAction SilentlyContinue
     } else {
-        uv venv --python "$pythonPath" "$installDir"
+        uv venv --python "$pythonPath" --seed "$installDir"
     }
 
-    # Install pip into the venv (the only seed package we need — slife's
-    # error messages guide users to run "pip install", so pip must be
-    # available; setuptools and wheel are unnecessary for end users).
-    $pipLog = Join-Path $tmpDir "pip-install.log"
+    # Install slife from source into the venv (pip already seeded).
+    Write-Host "  Installing slife and dependencies..." -ForegroundColor Yellow
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    uv pip install --python "$installDir\Scripts\python.exe" pip > $pipLog 2>&1
+    & uv pip install --python "$installDir\Scripts\python.exe" $extractedDir.FullName
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
-        Write-Host "Error: failed to install pip into the virtual environment." -ForegroundColor Red
-        Get-Content $pipLog
+        Write-Host "Error: slife installation failed (see output above)." -ForegroundColor Red
+        Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
         exit 1
     }
 
-    # Install slife from source into the venv.
-    Write-Host "Installing slife and dependencies…"
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    uv pip install --python "$installDir\Scripts\python.exe" $extractedDir.FullName > $pipLog 2>&1
-    $ok = ($LASTEXITCODE -eq 0)
-    $ErrorActionPreference = $prevEAP
-    if (-not $ok) {
-        Write-Host "Error: slife installation failed." -ForegroundColor Red
-        Get-Content $pipLog
-        exit 1
+    # Verify slife and credstore are installed correctly.
+    Write-Host "  Verifying installation..." -ForegroundColor Yellow
+    $allOk = $true
+
+    # Check slife package is importable.
+    try {
+        & "$installDir\Scripts\python.exe" -c "import slife; import credstore"
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "    [OK] slife + credstore packages" -ForegroundColor Green
+        } else {
+            Write-Host "    warning: import check failed" -ForegroundColor Yellow
+            $allOk = $false
+        }
+    } catch {
+        Write-Host "    warning: import check failed" -ForegroundColor Yellow
+        $allOk = $false
     }
 
-    # Verify credstore CLI is available (bundled with slife).
-    Write-Host -NoNewline "Verifying credstore CLI… "
+    # Check credstore CLI entry point.
     try {
         & "$installDir\Scripts\credstore.exe" --help 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "√ ready" -ForegroundColor Green
+            Write-Host "    [OK] credstore CLI" -ForegroundColor Green
         } else {
-            Write-Host "warning: credstore CLI not found" -ForegroundColor Yellow
+            Write-Host "    warning: credstore CLI not found" -ForegroundColor Yellow
         }
     } catch {
-        Write-Host "warning: credstore CLI not found" -ForegroundColor Yellow
+        Write-Host "    warning: credstore CLI not found" -ForegroundColor Yellow
     }
 
-    # Add to user PATH permanently
+    # Check slife CLI entry point.
+    try {
+        & "$installDir\Scripts\slife.exe" --help 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "    [OK] slife CLI" -ForegroundColor Green
+        } else {
+            Write-Host "    warning: slife CLI check returned non-zero (entry point exists)" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "    warning: slife CLI entry point not found" -ForegroundColor Yellow
+    }
+
+    # ── 6. Add to PATH ──────────────────────────────────────────────
+    Write-Host "[6/6] Configuring PATH..." -ForegroundColor Yellow
     $scriptsDir = "$installDir\Scripts"
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($userPath -notlike "*$scriptsDir*") {
         [Environment]::SetEnvironmentVariable("Path", "$scriptsDir;$userPath", "User")
     }
     $env:PATH = "$scriptsDir;$env:PATH"
+    Write-Host "  [OK] Added to PATH" -ForegroundColor Green
 
     Write-Host ""
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
-    Write-Host "  Slife v$version installed successfully! 🎉  " -ForegroundColor Green
+    Write-Host "  Slife v$version installed successfully!     " -ForegroundColor Green
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
     Write-Host ""
     Write-Host "Restart your terminal, then:" -ForegroundColor Cyan
@@ -294,7 +311,7 @@ try {
     Write-Host "Optional extras:" -ForegroundColor Cyan
     Write-Host "  pip install 'slife[embeddings]'"
     Write-Host ""
-    Write-Host "More info: https://github.com/juzcn/slife" -ForegroundColor Cyan
+    Write-Host "More info: $slifeRepo" -ForegroundColor Cyan
 
 } finally {
     if (Test-Path $tmpDir) {
