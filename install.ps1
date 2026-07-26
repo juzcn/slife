@@ -217,7 +217,7 @@ try {
         foreach ($item in Get-ChildItem $installDir) {
             $name = $item.Name
             if ($name -ne "Scripts" -and $name -ne "Lib" -and $name -ne "Include" -and $name -ne "pyvenv.cfg") {
-                Move-Item -Force $item.FullName "$stashDir\"
+                Move-Item -Force $item.FullName "$stashDir\" -ErrorAction SilentlyContinue
             }
         }
         Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
