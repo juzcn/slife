@@ -336,7 +336,7 @@ class AgentLoop:
                     f"Error: 工具 '{tc.name}' 执行超时（{self.tool_timeout}s）。"
                     f"服务器或网络可能无响应，请检查后重试。"
                 )
-                logger.warning(
+                logger.info(
                     "tool_timeout name=%s timeout=%ds args=%s",
                     tc.name, self.tool_timeout,
                     self._truncate_args(tc.arguments),
@@ -345,7 +345,7 @@ class AgentLoop:
                 result = (
                     f"Error: 工具 '{tc.name}' 执行失败：{type(e).__name__}: {e}。"
                 )
-                logger.warning(
+                logger.info(
                     "tool_error name=%s err=%s", tc.name, e,
                 )
 

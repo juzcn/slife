@@ -181,14 +181,14 @@ class MCPClient:
                 f"工具 '{name}' 执行超时（{self._tool_timeout}s）。"
                 f"MCP 服务器未在规定时间内返回结果，请检查服务器状态或网络连接。"
             )
-            logger.warning("mcp_tool_timeout name=%s timeout=%ds", name, self._tool_timeout)
+            logger.info("mcp_tool_timeout name=%s timeout=%ds", name, self._tool_timeout)
             return f"Error: {msg}"
         except Exception as e:
             msg = (
                 f"工具 '{name}' 执行失败：{type(e).__name__}: {e}。"
                 f"请检查 MCP 服务器状态。"
             )
-            logger.warning("mcp_tool_error name=%s err=%s", name, e)
+            logger.info("mcp_tool_error name=%s err=%s", name, e)
             return f"Error: {msg}"
 
         if getattr(result, "isError", False):
