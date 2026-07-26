@@ -213,10 +213,10 @@ try {
         Write-Host "Upgrading existing installation…" -ForegroundColor Yellow
         $stashDir = Join-Path $tmpDir "slife-user-stash"
         New-Item -ItemType Directory -Force $stashDir | Out-Null
-        # Move user data aside; venv + logs stay behind for deletion.
+        # Move user data aside; venv artifacts stay behind for deletion.
         foreach ($item in Get-ChildItem $installDir) {
             $name = $item.Name
-            if ($name -ne "Scripts" -and $name -ne "Lib" -and $name -ne "Include" -and $name -ne "pyvenv.cfg" -and $name -ne "logs") {
+            if ($name -ne "Scripts" -and $name -ne "Lib" -and $name -ne "Include" -and $name -ne "pyvenv.cfg") {
                 Move-Item -Force $item.FullName "$stashDir\" -ErrorAction SilentlyContinue
             }
         }
