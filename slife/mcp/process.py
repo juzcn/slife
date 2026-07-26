@@ -114,9 +114,11 @@ class MCPWrapperProcess:
             logger.error("wrapper_exec_not_found cmd=%s err=%s", self._command, e)
             self._running = False
             raise
-        except Exception as e:
-            logger.error("wrapper_start_failed err=%s", e)
-            self._running = False
+        except Exception:
+            # Clean up the subprocess transport so GC doesn't trip over
+            # closed pipes on Windows (ValueError: I/O operation on
+            # closed pipe) during event-loop shutdown.
+            await self._cleanup_failed_start()
             raise
 
     async def _read_stderr_tail(self) -> str:
@@ -197,6 +199,27 @@ class MCPWrapperProcess:
         client = MCPClient(tool_timeout=tool_timeout)
         await client.connect(url)
         return client
+
+    async def _cleanup_failed_start(self) -> None:
+        """Terminate the child process after a failed start attempt.
+
+        Ensures pipes and transports are properly closed so the Windows
+        ProactorEventLoop doesn't raise ``ValueError: I/O operation on
+        closed pipe`` during GC.
+        """
+        if not self._process:
+            return
+        logger.debug("wrapper_cleanup_failed pid=%s", self._process.pid)
+        try:
+            self._process.kill()
+        except Exception:
+            pass
+        try:
+            await self._process.wait()
+        except Exception:
+            pass
+        self._process = None
+        self._running = False
 
     async def stop(self) -> None:
         """Stop the plugin child process.
