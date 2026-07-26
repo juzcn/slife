@@ -235,13 +235,16 @@ try {
 
     # Install slife from source into the venv (pip already seeded).
     Write-Host "  Installing slife and dependencies..." -ForegroundColor Yellow
+    $pipLog = Join-Path $tmpDir "pip-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & uv pip install --python "$installDir\Scripts\python.exe" $extractedDir.FullName
+    & uv pip install --python "$installDir\Scripts\python.exe" $extractedDir.FullName > $pipLog 2>&1
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
-        Write-Host "Error: slife installation failed (see output above)." -ForegroundColor Red
+        Write-Host "Error: slife installation failed." -ForegroundColor Red
+        Write-Host "Last lines of install log:" -ForegroundColor Yellow
+        Get-Content $pipLog -Tail 20
         Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
         exit 1
     }

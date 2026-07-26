@@ -182,8 +182,11 @@ fi
 
 # Install slife from source into the venv (pip already seeded).
 echo -e "${YELLOW}  Installing slife and dependencies…${NC}"
-uv pip install --python "$INSTALL_DIR/bin/python" "$TMP_DIR/slife-main" || {
-    echo -e "${RED}Error: slife installation failed (see output above).${NC}"
+PIP_LOG="$TMP_DIR/pip-install.log"
+uv pip install --python "$INSTALL_DIR/bin/python" "$TMP_DIR/slife-main" > "$PIP_LOG" 2>&1 || {
+    echo -e "${RED}Error: slife installation failed.${NC}"
+    echo -e "${YELLOW}Last lines of install log:${NC}"
+    tail -n 20 "$PIP_LOG"
     echo -e "${YELLOW}Help: $SLIFE_REPO${NC}"
     exit 1
 }
