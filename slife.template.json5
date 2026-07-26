@@ -118,9 +118,9 @@
         // require_approval: true,
       },
       "ax-local-tools": {
-        command: "npx",
-        args: ["-y", "ax-local-operations-mcp"],
-        description: "Local system ops — execute_command (pwsh/bash, event-driven capture preserves stderr on timeout), file_operation/edit/search/compare/hash/permissions/archive/watch, task_manager, workspace_manager, time_tool, environment_memory.",
+        command: "ax-local-operations-mcp",
+        args: [],
+        description: "Local system ops — execute_command (pwsh/bash, event-driven capture preserves stderr on timeout), file_operation/edit/search/compare/hash/permissions/archive/watch, task_manager, workspace_manager, time_tool, environment_memory. Install: npm install -g ax-local-operations-mcp --ignore-scripts",
       },
       "file-search": {
         command: "npx",
