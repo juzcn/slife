@@ -206,21 +206,23 @@ try {
     }
 
     # ── 5. Create/repair venv ─────────────────────────────────────────
-    # UV_VENV_CLEAR handles both first install and upgrades safely —
-    # it clears old venv files in-place, even if locked.  User data
-    # (logs, slife.json5, *.db, .credstore) is never touched.
+    # Only replace venv artifacts — user data (logs, slife.json5,
+    # *.db, .credstore) MUST stay untouched.
     Write-Host "Installing slife v$version to $installDir…"
     $pipLog = Join-Path $tmpDir "pip-install.log"
+    if (Test-Path $installDir) {
+        foreach ($d in @("Scripts", "Lib", "Include")) {
+            Remove-Item -Recurse -Force "$installDir\$d" -ErrorAction SilentlyContinue
+        }
+        Remove-Item -Force "$installDir\pyvenv.cfg" -ErrorAction SilentlyContinue
+    }
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    $env:UV_VENV_CLEAR = "1"
     uv venv --python "$pythonPath" "$installDir" > $pipLog 2>&1
     $ok = ($LASTEXITCODE -eq 0)
-    Remove-Item Env:\UV_VENV_CLEAR -ErrorAction SilentlyContinue
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
-        Write-Host "Error: failed to create virtual environment at $installDir." -ForegroundColor Red
-        Write-Host "The directory may be locked by a running slife process." -ForegroundColor Yellow
+        Write-Host "Error: failed to create virtual environment." -ForegroundColor Red
         Write-Host "Close all slife windows and try again." -ForegroundColor Yellow
         Get-Content $pipLog
         exit 1
