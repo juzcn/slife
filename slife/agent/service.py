@@ -73,6 +73,10 @@ class AgentService:
                 agent_name=self.config.a2a_config.agent_name,
             ),
         )
+        # Expose the conversation so tools (e.g. clear_context) can
+        # access it without creating a circular import.
+        from slife.agent.conversation import set_conversation
+        set_conversation(self.conversation)
         self.session_usage = TokenUsage()
 
         # ── Unified message queue (always active) ──────────────────

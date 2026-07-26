@@ -10,6 +10,22 @@ from slife.logfmt import sanitize_secrets
 
 logger = logging.getLogger(__name__)
 
+# Module-level reference so tools (e.g. clear_context) can access the
+# active conversation without a circular dependency.  Set by AgentService
+# at initialisation time.
+_current_conversation: "Conversation | None" = None
+
+
+def get_conversation() -> "Conversation | None":
+    """Return the active Conversation, or None if not yet initialised."""
+    return _current_conversation
+
+
+def set_conversation(conv: "Conversation") -> None:
+    """Set the active Conversation (called by AgentService)."""
+    global _current_conversation
+    _current_conversation = conv
+
 
 class Conversation:
     """Manages the message list for an LLM conversation.
@@ -199,6 +215,55 @@ class Conversation:
         )
         self.messages = [system_msg] if system_msg else []
         logger.debug("conv_clear removed=%d", old_count - len(self.messages))
+
+    def clear_history(self) -> int:
+        """Clear all old turns, preserving system prompt and the current turn.
+
+        The "current turn" starts with the last user message and includes
+        all following assistant and tool messages.  This is safe to call
+        from within a tool — the assistant(tool_calls) and pending tool
+        results are preserved so the conversation stays well-formed.
+
+        Returns:
+            Number of messages removed.
+        """
+        if not self.messages:
+            return 0
+
+        # Find the last user message (start of the current turn)
+        last_user_idx: int | None = None
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i]["role"] == "user":
+                last_user_idx = i
+                break
+
+        if last_user_idx is None:
+            return 0
+
+        # System prompt is always at index 0 if present
+        system_msg = (
+            self.messages[0]
+            if self.messages and self.messages[0]["role"] == "system"
+            else None
+        )
+
+        # Keep: system prompt (if present) + everything from the last user
+        # message onwards (the current turn).
+        kept: list[dict] = []
+        if system_msg is not None and last_user_idx > 0:
+            kept.append(system_msg)
+        kept.extend(self.messages[last_user_idx:])
+
+        old_count = len(self.messages)
+        self.messages = kept
+        removed = old_count - len(self.messages)
+
+        if removed > 0:
+            logger.debug(
+                "conv_clear_history removed=%d remaining=%d (system+current turn)",
+                removed, len(self.messages),
+            )
+        return removed
 
     # ── Context window trimming ──────────────────────────────────
 
