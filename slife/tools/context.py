@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class ClearContextTool(Tool):
-    """Clear the current LLM conversation context, preserving the system prompt.
+    """Clear slife's LLM conversation history, preserving the system prompt.
 
     Use this when the conversation has accumulated irrelevant, contradictory,
     or confusing information that degrades response quality (context pollution).
@@ -23,14 +23,13 @@ class ClearContextTool(Tool):
 
     name = "clear_context"
     description = (
-        "Clear the current conversation history to reset the LLM's context. "
-        "This preserves the system prompt but removes all prior messages "
+        "Clear slife's LLM conversation history. "
+        "Preserves the system prompt but removes all prior messages "
         "(user, assistant, and tool results). "
         "Use when context pollution is degrading response quality — e.g. "
         "repeated errors, contradictory information, or irrelevant tangents "
         "that the model can't ignore. "
-        "After calling this, the conversation is fresh and the next message "
-        "starts a clean turn."
+        "After clearing, the next message starts a clean turn."
     )
     parameters = NO_PARAMS
 
@@ -59,8 +58,8 @@ class ClearContextTool(Tool):
         )
 
         return (
-            f"[OK] Context cleared. "
+            f"[OK] slife context cleared. "
             f"Removed {removed} old message(s); {remaining} remaining "
             f"(system prompt + current turn preserved). "
-            f"Memory / persistent storage is NOT affected."
+            f"Persistent memory / storage is NOT affected."
         )
