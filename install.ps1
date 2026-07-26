@@ -213,23 +213,21 @@ try {
         Write-Host "Upgrading existing installation…" -ForegroundColor Yellow
         $stashDir = Join-Path $tmpDir "slife-user-stash"
         New-Item -ItemType Directory -Force $stashDir | Out-Null
-        # Move user data aside; venv artifacts stay behind for deletion.
+        # Move user data aside; venv + logs stay behind for deletion.
         foreach ($item in Get-ChildItem $installDir) {
             $name = $item.Name
-            if ($name -ne "Scripts" -and $name -ne "Lib" -and $name -ne "Include" -and $name -ne "pyvenv.cfg") {
+            if ($name -ne "Scripts" -and $name -ne "Lib" -and $name -ne "Include" -and $name -ne "pyvenv.cfg" -and $name -ne "logs") {
                 Move-Item -Force $item.FullName "$stashDir\" -ErrorAction SilentlyContinue
             }
         }
         Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
-        # If locked files prevented full removal (e.g. logs from a crashed
-        # session), uv venv --clear reuses the directory safely.
-        $env:UV_VENV_CLEAR = "1"
+        # If locked logs prevented full deletion, clear in-place.
+        if (Test-Path $installDir) { $env:UV_VENV_CLEAR = "1" }
         uv venv --python "$pythonPath" "$installDir"
         Remove-Item Env:\UV_VENV_CLEAR -ErrorAction SilentlyContinue
-        # Restore user data — Copy-Item merges directories so existing
-        # subdirs (e.g. logs/ created by the new install) don't collide.
+        # Restore user data.
         Get-ChildItem $stashDir -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item -Recurse -Force $_.FullName "$installDir\" -ErrorAction SilentlyContinue
+            Move-Item -Force $_.FullName "$installDir\" -ErrorAction SilentlyContinue
         }
         Remove-Item -Recurse -Force $stashDir -ErrorAction SilentlyContinue
     } else {
