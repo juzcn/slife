@@ -214,7 +214,11 @@ try {
         }
         Remove-Item -Force "$installDir\pyvenv.cfg" -ErrorAction SilentlyContinue
     }
+    # --clear handles the case where old venv files are locked and
+    # could not be removed (e.g. a crashed slife session).
+    $env:UV_VENV_CLEAR = "1"
     uv venv --python "$pythonPath" "$installDir"
+    Remove-Item Env:\UV_VENV_CLEAR -ErrorAction SilentlyContinue
 
     # Install pip into the venv (the only seed package we need — slife's
     # error messages guide users to run "pip install", so pip must be
