@@ -110,11 +110,17 @@
   mcp: {
     servers: {
       "iflow-mcp": {
+        enabled: false,  // Python port has timeout issues on Windows; replaced by ax-local-tools
         command: "uvx",
         args: ["--from", "iflow-mcp-mcp-claude-code", "claudecode"],
-        os_paths: true,  // Auto-add all OS-accessible paths as --allow-path (trust LLM, OS perms as safety net)
+        os_paths: true,
         description: "Local filesystem + shell + notebook — read, write, edit, grep, multi-edit, AST search.",
         // require_approval: true,
+      },
+      "ax-local-tools": {
+        command: "npx",
+        args: ["-y", "ax-local-operations-mcp"],
+        description: "Local system ops — execute_command (pwsh/bash, event-driven capture preserves stderr on timeout), file_operation/edit/search/compare/hash/permissions/archive/watch, task_manager, workspace_manager, time_tool, environment_memory.",
       },
       "file-search": {
         command: "npx",
