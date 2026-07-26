@@ -204,23 +204,17 @@ try {
         Write-Host "Installation may fail due to insufficient disk space." -ForegroundColor Yellow
     }
 
-    # ── 5. Create venv + install slife ──────────────────────────────────
-    # On upgrade: user data files in ~\.slife stay put — we only move them
-    # aside while recreating the venv, then move back.
-    # .credstore data is never touched by this script.
+    # ── 5. Create/repair venv ─────────────────────────────────────────
+    # Always clean old venv artifacts then recreate.  User data (logs,
+    # slife.json5, *.db, .credstore) stays untouched.
     Write-Host "Installing slife v$version to $installDir…"
     if (Test-Path $installDir) {
-        Write-Host "Upgrading existing installation…" -ForegroundColor Yellow
-        # Only replace the venv — user data (logs, slife.json5, *.db)
-        # stays untouched.
         foreach ($d in @("Scripts", "Lib", "Include")) {
             Remove-Item -Recurse -Force "$installDir\$d" -ErrorAction SilentlyContinue
         }
         Remove-Item -Force "$installDir\pyvenv.cfg" -ErrorAction SilentlyContinue
-        uv venv --python "$pythonPath" "$installDir"
-    } else {
-        uv venv --python "$pythonPath" "$installDir"
     }
+    uv venv --python "$pythonPath" "$installDir"
 
     # Install pip into the venv (the only seed package we need — slife's
     # error messages guide users to run "pip install", so pip must be
