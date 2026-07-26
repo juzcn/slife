@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Slife one-click installer for Windows PowerShell.
 
