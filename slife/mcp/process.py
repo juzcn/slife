@@ -135,13 +135,13 @@ class MCPWrapperProcess:
 
         try:
             line = await asyncio.wait_for(
-                self._process.stdout.readline(), timeout=15.0,
+                self._process.stdout.readline(), timeout=30.0,
             )
         except asyncio.TimeoutError:
             stderr_tail = await self._read_stderr_tail()
             raise RuntimeError(
                 f"Plugin process (pid={self._process.pid}) did not send "
-                f"port signal within 15s. stderr:\n{stderr_tail}"
+                f"port signal within 30s. stderr:\n{stderr_tail}"
             )
 
         if not line:
