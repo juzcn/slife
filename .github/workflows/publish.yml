@@ -34,10 +34,20 @@ jobs:
           python-version: '3.13'
 
       - name: Install build tools
-        run: pip install build
+        run: pip install build twine
 
       - name: Build package
         run: python -m build
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          retry_on: error
+          retry_wait_seconds: 15
+          command: |
+            # OIDC token exchange sometimes hits PyPI's short connect timeout
+            # (5 s).  Retry up to 3× with 15 s back-off to absorb transient
+            # network issues.
+            twine upload --verbose dist/*
