@@ -211,25 +211,13 @@ try {
     Write-Host "Installing slife v$version to $installDir…"
     if (Test-Path $installDir) {
         Write-Host "Upgrading existing installation…" -ForegroundColor Yellow
-        $stashDir = Join-Path $tmpDir "slife-user-stash"
-        New-Item -ItemType Directory -Force $stashDir | Out-Null
-        # Move user data aside; venv artifacts stay behind for deletion.
-        foreach ($item in Get-ChildItem $installDir) {
-            $name = $item.Name
-            if ($name -ne "Scripts" -and $name -ne "Lib" -and $name -ne "Include" -and $name -ne "pyvenv.cfg") {
-                Move-Item -Force $item.FullName "$stashDir\" -ErrorAction SilentlyContinue
-            }
+        # Only replace the venv — user data (logs, slife.json5, *.db)
+        # stays untouched.
+        foreach ($d in @("Scripts", "Lib", "Include")) {
+            Remove-Item -Recurse -Force "$installDir\$d" -ErrorAction SilentlyContinue
         }
-        Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
-        # If locked logs prevented full deletion, clear in-place.
-        if (Test-Path $installDir) { $env:UV_VENV_CLEAR = "1" }
+        Remove-Item -Force "$installDir\pyvenv.cfg" -ErrorAction SilentlyContinue
         uv venv --python "$pythonPath" "$installDir"
-        Remove-Item Env:\UV_VENV_CLEAR -ErrorAction SilentlyContinue
-        # Restore user data.
-        Get-ChildItem $stashDir -ErrorAction SilentlyContinue | ForEach-Object {
-            Move-Item -Force $_.FullName "$installDir\" -ErrorAction SilentlyContinue
-        }
-        Remove-Item -Recurse -Force $stashDir -ErrorAction SilentlyContinue
     } else {
         uv venv --python "$pythonPath" "$installDir"
     }
