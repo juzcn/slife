@@ -322,13 +322,15 @@ class EmbeddingClient:
             return None
 
         if self._client is None:
+            gguf_path = self._gguf_path
+            assert gguf_path is not None  # guaranteed by _backend == "gguf"
             logger.info(
-                "loading_gguf path=%s dim=%d", self._gguf_path, self._dim,
+                "loading_gguf path=%s dim=%d", gguf_path, self._dim,
             )
             # llama-cpp-python's Llama constructor is not async,
             # but it's fast enough to call synchronously.
             self._client = Llama(
-                model_path=self._gguf_path,
+                model_path=gguf_path,
                 embedding=True,
                 n_ctx=8192,
                 verbose=False,
