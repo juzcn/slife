@@ -77,32 +77,47 @@ try {
         }
     }
 
-    $weInstalledPython = $false
     if (-not $python) {
-        # Not on PATH -- check if uv already manages a Python 3.13
-        $uvPython = (uv python find 3.13 2>$null).Trim()
-        if ($uvPython) {
-            Write-Host "  found (uv-managed)" -ForegroundColor Green
-            $pythonPath = [System.IO.Path]::GetFullPath($uvPython)
+        Write-Host "  Python >= 3.13 not found, installing via winget..." -ForegroundColor Yellow
+        $winget = Get-Command winget -ErrorAction SilentlyContinue
+        if ($winget) {
+            winget install Python.Python.3.13 --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "Error: winget install failed." -ForegroundColor Red
+                Write-Host "Install manually from https://python.org/downloads/" -ForegroundColor Yellow
+                exit 1
+            }
+            # winget installs to %LOCALAPPDATA%\Programs\Python\Python313\
+            # and adds to PATH.  Refresh the session PATH so we can find it.
+            $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+            $pyExe = Get-Command python -ErrorAction SilentlyContinue
+            if (-not $pyExe) {
+                Write-Host "Error: Python installed but not on PATH. Restart your terminal." -ForegroundColor Red
+                exit 1
+            }
+            $pythonPath = [System.IO.Path]::GetFullPath($pyExe.Source)
         } else {
-            Write-Host "  Python >= 3.13 not found, installing via uv..." -ForegroundColor Yellow
+            Write-Host "  winget not available, falling back to uv..." -ForegroundColor Yellow
             uv python install 3.13
-            $weInstalledPython = $true
             $uvPython = (uv python find 3.13 2>$null).Trim()
             if (-not $uvPython) {
                 Write-Host "Error: could not install Python 3.13." -ForegroundColor Red
-                Write-Host "Install manually from https://python.org/downloads/" -ForegroundColor Yellow
-                Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
                 exit 1
             }
             $pythonPath = [System.IO.Path]::GetFullPath($uvPython)
-            Write-Host "  [OK] Installed at: $pythonPath" -ForegroundColor Green
+            $pythonDir = Split-Path $pythonPath -Parent
+            $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+            if ($userPath -notlike "*$pythonDir*") {
+                [Environment]::SetEnvironmentVariable("Path", "$pythonDir;$userPath", "User")
+            }
+            $env:PATH = "$pythonDir;$env:PATH"
         }
+        Write-Host "  [OK] Python 3.13 installed" -ForegroundColor Green
     } else {
         Write-Host "  found" -ForegroundColor Green
         $pythonPath = [System.IO.Path]::GetFullPath((Get-Command $python).Source)
     }
-    $pyVer = uv run --python "$pythonPath" python --version 2>&1
+    $pyVer = & "$pythonPath" --version 2>&1
     Write-Host "  Selected: $pythonPath ($pyVer)" -ForegroundColor Cyan
 
     # Disable Windows Store app execution aliases that shadow real Python.
@@ -117,18 +132,6 @@ try {
                 Write-Host "    Could not remove $aliasPath (admin rights needed, skipped)" -ForegroundColor Yellow
             }
         }
-    }
-
-    # ── System-level setup — only when WE installed Python ──────────
-    # If Python already existed on the system, we don't touch it.
-    if ($weInstalledPython) {
-        $pythonDir = Split-Path $pythonPath -Parent
-        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-        if ($userPath -notlike "*$pythonDir*") {
-            [Environment]::SetEnvironmentVariable("Path", "$pythonDir;$userPath", "User")
-        }
-        $env:PATH = "$pythonDir;$env:PATH"
-        Write-Host "  [OK] python3.13 ready" -ForegroundColor Green
     }
 
     # ── 3. Ensure npx (Node.js) is available ────────────────────────
@@ -345,10 +348,11 @@ try {
     $localBin = "$env:USERPROFILE\.local\bin"
     New-Item -ItemType Directory -Force $localBin | Out-Null
 
-    # Clean up stale .exe shims from older installs (uv tool install or
-    # pre-Step-6-rework).  PATHEXT has .EXE before .CMD — an old .exe would
-    # shadow our .cmd wrapper.
-    foreach ($stale in @("$localBin\slife.exe", "$localBin\credstore.exe")) {
+    # Clean up stale shims from older installs.
+    foreach ($stale in @(
+        "$localBin\slife.exe", "$localBin\credstore.exe",
+        "$localBin\python.cmd", "$localBin\pip.cmd"
+    )) {
         if (Test-Path $stale) {
             Remove-Item $stale -Force
             Write-Host "  Removed stale shim: $stale" -ForegroundColor DarkGray

@@ -69,49 +69,45 @@ for candidate in python3.13 python3 python; do
     fi
 done
 
-WE_INSTALLED_PYTHON=false
 if [ -z "$PYTHON" ]; then
-    # Not on PATH — check if uv already manages a Python 3.13
-    UV_PYTHON="$(uv python find 3.13 2>/dev/null || echo "")"
-    if [ -n "$UV_PYTHON" ]; then
-        echo -e "${GREEN}  found (uv-managed)${NC}"
-        PYTHON="$UV_PYTHON"
+    echo -e "${YELLOW}  Python >= 3.13 not found, installing…${NC}"
+    INSTALLED=false
+    if command -v apt-get &>/dev/null; then
+        echo -e "${YELLOW}  Installing Python 3.13 via apt…${NC}"
+        sudo apt-get update -qq && sudo apt-get install -y python3.13 python3.13-venv 2>/dev/null && INSTALLED=true
+    elif command -v brew &>/dev/null; then
+        echo -e "${YELLOW}  Installing Python 3.13 via Homebrew…${NC}"
+        brew install python@3.13 2>/dev/null && INSTALLED=true
+    elif command -v dnf &>/dev/null; then
+        echo -e "${YELLOW}  Installing Python 3.13 via dnf…${NC}"
+        sudo dnf install -y python3.13 2>/dev/null && INSTALLED=true
+    elif command -v pacman &>/dev/null; then
+        echo -e "${YELLOW}  Installing Python 3.13 via pacman…${NC}"
+        sudo pacman -S --noconfirm python 2>/dev/null && INSTALLED=true
+    fi
+    if [ "$INSTALLED" = true ]; then
+        PYTHON="$(command -v python3.13 2>/dev/null || command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")"
+        if [ -z "$PYTHON" ]; then
+            echo -e "${RED}Error: Python 3.13 installed but not found on PATH.${NC}"
+            exit 1
+        fi
     else
-        echo -e "${YELLOW}  Python >= 3.13 not found, installing via uv…${NC}"
+        echo -e "${YELLOW}  No package manager available, falling back to uv…${NC}"
         uv python install 3.13
-        WE_INSTALLED_PYTHON=true
         PYTHON="$(uv python find 3.13 2>/dev/null || echo "")"
         if [ -z "$PYTHON" ]; then
             echo -e "${RED}Error: could not install Python 3.13.${NC}"
             echo -e "${YELLOW}Install manually from https://python.org/downloads/${NC}"
-            echo -e "${YELLOW}Help: $SLIFE_REPO${NC}"
             exit 1
         fi
-        echo -e "${GREEN}  ✓${NC} Installed at: ${CYAN}$PYTHON${NC}"
+        PYTHON_DIR="$(dirname "$PYTHON")"
+        export PATH="$PYTHON_DIR:$HOME/.local/bin:$PATH"
     fi
+    echo -e "${GREEN}  ✓${NC} Python 3.13 installed"
 else
     echo -e "${GREEN}  found${NC}"
 fi
-echo -e "  Selected: ${CYAN}$PYTHON${NC} ($(uv run --python "$PYTHON" python --version 2>&1))"
-
-# ── System-level setup — only when WE installed Python ──────────────
-# If Python already existed on the system, we don't touch it.
-if [ "$WE_INSTALLED_PYTHON" = true ]; then
-    PYTHON_DIR="$(dirname "$PYTHON")"
-    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.config/fish/config.fish"; do
-        if [ -f "$rc" ]; then
-            if ! grep -qF "$PYTHON_DIR" "$rc" 2>/dev/null; then
-                if echo "$rc" | grep -q fish; then
-                    echo "fish_add_path $PYTHON_DIR" >> "$rc"
-                else
-                    echo "export PATH=\"$PYTHON_DIR:\$PATH\"" >> "$rc"
-                fi
-            fi
-        fi
-    done
-    export PATH="$PYTHON_DIR:$HOME/.local/bin:$PATH"
-    echo -e "${GREEN}  ✓${NC} python3.13 ready"
-fi
+echo -e "  Selected: ${CYAN}$PYTHON${NC} ($($PYTHON --version 2>&1))"
 
 # ── 3. Ensure npx (Node.js) is available ─────────────────────────────
 echo -e "${YELLOW}[3/6] Checking npx (Node.js package runner)…${NC}"
