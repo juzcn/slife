@@ -333,6 +333,16 @@ try {
     $localBin = "$env:USERPROFILE\.local\bin"
     New-Item -ItemType Directory -Force $localBin | Out-Null
 
+    # Clean up stale .exe shims from older installs (uv tool install or
+    # pre-Step-6-rework).  PATHEXT has .EXE before .CMD — an old .exe would
+    # shadow our .cmd wrapper.
+    foreach ($stale in @("$localBin\slife.exe", "$localBin\credstore.exe")) {
+        if (Test-Path $stale) {
+            Remove-Item $stale -Force
+            Write-Host "  Removed stale shim: $stale" -ForegroundColor DarkGray
+        }
+    }
+
     $slifeExe   = "$installDir\Scripts\slife.exe"
     $credstoreExe = "$installDir\Scripts\credstore.exe"
 
