@@ -83,18 +83,26 @@ credstore list                             # list all stored credentials
 
 | Extra | Package | What it enables |
 |-------|---------|-----------------|
-| `embeddings` | `llama-cpp-python` | Local GGUF embeddings for semantic memory search (offline, no API cost). Without it, FTS5 keyword search still works. |
+| `gguf` | `llama-cpp-python` | Local GGUF embeddings for semantic memory search (offline, no API cost). Without it, FTS5 keyword search still works. |
+| `transformer` | `sentence-transformers` | HuggingFace transformer embeddings. Heavier (~2 GB). |
+| `embeddings` | all of the above | Convenience meta-extra — installs both gguf + transformer. |
 
 MQTT support (`paho-mqtt`) is now included by default — A2A agent mesh auto-activates when Mosquitto is detected.
 
 ```bash
-# Install with embeddings extra (only optional extra left):
+# GGUF local embeddings (recommended, ~30 MB):
+uv tool install "slife[gguf]" --reinstall
+
+# Or HuggingFace transformer embeddings (~2 GB):
+uv tool install "slife[transformer]" --reinstall
+
+# Or both:
 uv tool install "slife[embeddings]" --reinstall
 ```
 
 #### Setting Up Local Embeddings
 
-After installing `slife[embeddings]`, download a GGUF model and configure it:
+After installing `slife[gguf]`, download a GGUF model and configure it:
 
 ```bash
 # 1. Download a GGUF embedding model (BGE-M3, Q4_K_M quantized, ~300 MiB)
@@ -115,7 +123,7 @@ slife
 **Windows users**: `llama-cpp-python` needs a pre-built wheel (no C++ compiler required).  The Vulkan variant works on any GPU and falls back to CPU:
 
 ```bash
-uv tool install "slife[embeddings]" --reinstall
+uv tool install "slife[gguf]" --reinstall
 # Then install the platform wheel into the tool's venv:
 uv tool run --from slife pip install "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
 ```
@@ -430,7 +438,7 @@ The install script handles everything automatically.  Nothing to install beforeh
 | [uvx](https://docs.astral.sh/uv/) (Python package runner) | Auto-installed via uv if missing |
 | [npx](https://nodejs.org/) (Node.js package runner) | Auto-installed via winget (Windows) / apt, brew, dnf, pacman (Linux) if missing — **required** for MCP servers |
 | Mosquitto (MQTT broker) | Optional — interactive install prompt. Needed only for A2A multi-agent mesh |
-| `llama-cpp-python` | Optional — `slife[embeddings]` for local GGUF embeddings |
+| `llama-cpp-python` | Optional — `slife[gguf]` for local GGUF embeddings (or `slife[embeddings]` for all) |
 | `paho-mqtt` | Included — A2A MQTT mesh (auto-activates when Mosquitto is detected) |
 
 **npx** is required by 6 MCP servers: `file-search`, `serper`, `tavily-mcp`, `github`,

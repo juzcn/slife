@@ -85,18 +85,26 @@ Slife 默认安装保持精简。按需添加扩展：
 
 | 扩展 | 包 | 作用 |
 |------|-----|------|
-| `embeddings` | `llama-cpp-python` | 本地 GGUF 嵌入模型，用于语义记忆搜索（离线、无 API 费用）。未安装时 FTS5 关键词搜索仍可正常使用。 |
+| `gguf` | `llama-cpp-python` | 本地 GGUF 嵌入模型，用于语义记忆搜索（离线、无 API 费用）。未安装时 FTS5 关键词搜索仍可正常使用。 |
+| `transformer` | `sentence-transformers` | HuggingFace transformer 嵌入模型（约 2 GB，含 PyTorch）。 |
+| `embeddings` | 以上全部 | 便捷元包 — 同时安装 gguf + transformer。 |
 
 MQTT 支持（`paho-mqtt`）已默认包含 — A2A agent 网格在检测到 Mosquitto 时自动激活。
 
 ```bash
-# 安装 embeddings 扩展（唯一可选扩展）：
+# GGUF 本地嵌入（推荐，约 30 MB）：
+uv tool install "slife[gguf]" --reinstall
+
+# 或 HuggingFace transformer 嵌入（约 2 GB）：
+uv tool install "slife[transformer]" --reinstall
+
+# 或全部：
 uv tool install "slife[embeddings]" --reinstall
 ```
 
 #### 配置本地嵌入模型
 
-安装 `slife[embeddings]` 后，下载 GGUF 模型并配置：
+安装 `slife[gguf]` 后，下载 GGUF 模型并配置：
 
 ```bash
 # 1. 下载 GGUF 嵌入模型（BGE-M3，Q4_K_M 量化，约 300 MiB）
@@ -117,7 +125,7 @@ slife
 **Windows 用户**：`llama-cpp-python` 需要预编译 wheel（无需 C++ 编译器）。Vulkan 版本兼容所有 GPU，无 GPU 时自动回退 CPU：
 
 ```bash
-uv tool install "slife[embeddings]" --reinstall
+uv tool install "slife[gguf]" --reinstall
 # 将平台 wheel 安装到工具的 venv 中：
 uv tool run --from slife pip install "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
 ```
@@ -340,7 +348,7 @@ mcp: {
 | [uvx](https://docs.astral.sh/uv/)（Python 包执行器） | 缺失时通过 uv 自动安装 |
 | [npx](https://nodejs.org/)（Node.js 包执行器） | 缺失时通过 winget（Windows）/ apt、brew、dnf、pacman（Linux）自动安装 — MCP 服务器 **必需** |
 | Mosquitto（MQTT broker） | 可选 — 交互式安装提示。仅 A2A 多 Agent 网格需要 |
-| `llama-cpp-python` | 可选 — `slife[embeddings]` 提供本地 GGUF 嵌入 |
+| `llama-cpp-python` | 可选 — `slife[gguf]` 提供本地 GGUF 嵌入（或用 `slife[embeddings]` 安装全部） |
 | `paho-mqtt` | 已包含 — A2A MQTT 网格（检测到 Mosquitto 时自动激活） |
 
 ## 开发
