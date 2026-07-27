@@ -78,39 +78,64 @@ try {
     }
 
     if (-not $python) {
-        Write-Host "  Python >= 3.13 not found, installing via winget..." -ForegroundColor Yellow
-        $winget = Get-Command winget -ErrorAction SilentlyContinue
-        if ($winget) {
-            winget install Python.Python.3.13 --accept-package-agreements --accept-source-agreements
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "Error: winget install failed." -ForegroundColor Red
-                Write-Host "Install manually from https://python.org/downloads/" -ForegroundColor Yellow
-                exit 1
+        # Check known install locations before reaching for winget.
+        # Python 3.13 may already be installed but not on PATH (e.g.
+        # fresh winget install whose registry PATH hasn't propagated,
+        # or Python.org installer with "Add to PATH" unchecked).
+        $pyExe = $null
+        $pyDir = $null
+        $knownDirs = @(
+            "$env:LOCALAPPDATA\Programs\Python\Python313",        # winget / python.org per-user
+            "$env:ProgramFiles\Python313",                         # python.org all-users
+            "$env:SystemDrive\Python313"                           # python.org root
+        )
+        foreach ($dir in $knownDirs) {
+            $candidate = "$dir\python.exe"
+            if (Test-Path $candidate) {
+                $pyDir = $dir
+                $pyExe = $candidate
+                Write-Host "  Found Python at $pyDir (not on PATH)" -ForegroundColor Yellow
+                break
             }
-            # winget installs to %LOCALAPPDATA%\Programs\Python\Python313\
-            # The registry PATH may lag during upgrades — look up the
-            # installation directory directly.
-            $pyDir = "$env:LOCALAPPDATA\Programs\Python\Python313"
-            $pyExe = "$pyDir\python.exe"
-            if (-not (Test-Path $pyExe)) {
-                # Fallback: refresh PATH and search
-                $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-                $cmd = Get-Command python -ErrorAction SilentlyContinue
-                if (-not $cmd) {
-                    Write-Host "Error: Python installed but not found. Restart your terminal." -ForegroundColor Red
+        }
+
+        if (-not $pyExe) {
+            Write-Host "  Python >= 3.13 not found, installing via winget..." -ForegroundColor Yellow
+            $winget = Get-Command winget -ErrorAction SilentlyContinue
+            if ($winget) {
+                winget install Python.Python.3.13 --accept-package-agreements --accept-source-agreements
+                # winget exits non-zero when the package is already installed
+                # and no upgrade is available — that's fine, check the disk.
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "  winget exited with code $LASTEXITCODE (may already be installed)" -ForegroundColor Yellow
+                }
+                # winget installs to %LOCALAPPDATA%\Programs\Python\Python313\
+                $pyDir = "$env:LOCALAPPDATA\Programs\Python\Python313"
+                $pyExe = "$pyDir\python.exe"
+                if (-not (Test-Path $pyExe)) {
+                    # Last resort: refresh PATH and search
+                    $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+                    $cmd = Get-Command python -ErrorAction SilentlyContinue
+                    if ($cmd) {
+                        $pyExe = $cmd.Source
+                        $pyDir = [System.IO.Path]::GetDirectoryName($pyExe)
+                    }
+                }
+                if (-not (Test-Path $pyExe)) {
+                    Write-Host "Error: Python 3.13 not found after installation." -ForegroundColor Red
+                    Write-Host "Install manually from https://python.org/downloads/" -ForegroundColor Yellow
                     exit 1
                 }
-                $pyExe = $cmd.Source
+            } else {
+                Write-Host "Error: winget not available." -ForegroundColor Red
+                Write-Host "Install Python 3.13 manually from https://python.org/downloads/" -ForegroundColor Yellow
+                exit 1
             }
-            $pythonPath = [System.IO.Path]::GetFullPath($pyExe)
-            # Ensure the Python directory is on the current session PATH
-            $env:PATH = "$pyDir;$pyDir\Scripts;$env:PATH"
-        } else {
-            Write-Host "Error: winget not available." -ForegroundColor Red
-            Write-Host "Install Python 3.13 manually from https://python.org/downloads/" -ForegroundColor Yellow
-            exit 1
         }
-        Write-Host "  [OK] Python 3.13 installed" -ForegroundColor Green
+        $pythonPath = [System.IO.Path]::GetFullPath($pyExe)
+        # Ensure the Python directory is on the current session PATH
+        $env:PATH = "$pyDir;$pyDir\Scripts;$env:PATH"
+        Write-Host "  [OK] Python 3.13 ready" -ForegroundColor Green
     } else {
         Write-Host "  found" -ForegroundColor Green
         $pythonPath = [System.IO.Path]::GetFullPath((Get-Command $python).Source)
