@@ -92,9 +92,29 @@ else
 fi
 echo -e "  Selected: ${CYAN}$PYTHON${NC} ($(uv run --python "$PYTHON" python --version 2>&1))"
 
-# Ensure uv-managed Python and its scripts directory are on PATH.
+# Ensure Python's directory is on PATH persistently.  Python is a
+# system-level tool — the user should be able to run it for any purpose.
 PYTHON_DIR="$(dirname "$PYTHON")"
+for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.config/fish/config.fish"; do
+    if [ -f "$rc" ]; then
+        if ! grep -qF "$PYTHON_DIR" "$rc" 2>/dev/null; then
+            if echo "$rc" | grep -q fish; then
+                echo "fish_add_path $PYTHON_DIR" >> "$rc"
+            else
+                echo "export PATH=\"$PYTHON_DIR:\$PATH\"" >> "$rc"
+            fi
+        fi
+    fi
+done
 export PATH="$PYTHON_DIR:$HOME/.local/bin:$PATH"
+
+# If the found Python has a versioned name, create a plain "python"
+# symlink so both the user and the LLM can just type "python".
+PYTHON_NAME="$(basename "$PYTHON")"
+if [ "$PYTHON_NAME" != "python" ] && [ -d "$PYTHON_DIR" ]; then
+    ln -sf "$PYTHON" "$PYTHON_DIR/python" 2>/dev/null || true
+    echo -e "  ${GRAY}python → $PYTHON_NAME${NC}"
+fi
 
 # ── 3. Ensure npx (Node.js) is available ─────────────────────────────
 echo -e "${YELLOW}[3/6] Checking npx (Node.js package runner)…${NC}"

@@ -116,8 +116,28 @@ try {
             }
         }
     }
-    # Refresh PATH so the freshly-installed Python takes effect
-    $env:PATH = "$(Split-Path $pythonPath -Parent);$env:PATH"
+
+    # Ensure Python's directory is on PATH — persistently, not just this
+    # session.  Python is a system-level tool; the user should be able to
+    # run it for any purpose, not just for slife.
+    $pythonDir = Split-Path $pythonPath -Parent
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($userPath -notlike "*$pythonDir*") {
+        [Environment]::SetEnvironmentVariable("Path", "$pythonDir;$userPath", "User")
+    }
+    $env:PATH = "$pythonDir;$env:PATH"
+
+    # If the found Python has a versioned name (python3.13, python3),
+    # create a plain "python.cmd" shim so both the user and the LLM
+    # can just type "python".
+    $pythonName = Split-Path $pythonPath -Leaf
+    if ($pythonName -ne "python.exe") {
+        $pythonCmd = "$pythonDir\python.cmd"
+        @"
+@""$pythonPath"" %*
+"@ | Out-File -FilePath $pythonCmd -Encoding ASCII
+        Write-Host "  python.cmd → $pythonName" -ForegroundColor DarkGray
+    }
 
     # ── 3. Ensure npx (Node.js) is available ────────────────────────
     Write-Host "[3/6] Checking npx (Node.js package runner)..." -ForegroundColor Yellow
