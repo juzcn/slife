@@ -97,20 +97,9 @@ try {
             }
             $pythonPath = [System.IO.Path]::GetFullPath($pyExe.Source)
         } else {
-            Write-Host "  winget not available, falling back to uv..." -ForegroundColor Yellow
-            uv python install 3.13
-            $uvPython = (uv python find 3.13 2>$null).Trim()
-            if (-not $uvPython) {
-                Write-Host "Error: could not install Python 3.13." -ForegroundColor Red
-                exit 1
-            }
-            $pythonPath = [System.IO.Path]::GetFullPath($uvPython)
-            $pythonDir = Split-Path $pythonPath -Parent
-            $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-            if ($userPath -notlike "*$pythonDir*") {
-                [Environment]::SetEnvironmentVariable("Path", "$pythonDir;$userPath", "User")
-            }
-            $env:PATH = "$pythonDir;$env:PATH"
+            Write-Host "Error: winget not available." -ForegroundColor Red
+            Write-Host "Install Python 3.13 manually from https://python.org/downloads/" -ForegroundColor Yellow
+            exit 1
         }
         Write-Host "  [OK] Python 3.13 installed" -ForegroundColor Green
     } else {

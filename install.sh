@@ -92,16 +92,9 @@ if [ -z "$PYTHON" ]; then
             exit 1
         fi
     else
-        echo -e "${YELLOW}  No package manager available, falling back to uv…${NC}"
-        uv python install 3.13
-        PYTHON="$(uv python find 3.13 2>/dev/null || echo "")"
-        if [ -z "$PYTHON" ]; then
-            echo -e "${RED}Error: could not install Python 3.13.${NC}"
-            echo -e "${YELLOW}Install manually from https://python.org/downloads/${NC}"
-            exit 1
-        fi
-        PYTHON_DIR="$(dirname "$PYTHON")"
-        export PATH="$PYTHON_DIR:$HOME/.local/bin:$PATH"
+        echo -e "${RED}Error: no supported package manager found.${NC}"
+        echo -e "${YELLOW}Install Python 3.13 manually from https://python.org/downloads${NC}"
+        exit 1
     fi
     echo -e "${GREEN}  ✓${NC} Python 3.13 installed"
 else
