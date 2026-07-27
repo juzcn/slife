@@ -88,14 +88,23 @@ try {
                 exit 1
             }
             # winget installs to %LOCALAPPDATA%\Programs\Python\Python313\
-            # and adds to PATH.  Refresh the session PATH so we can find it.
-            $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-            $pyExe = Get-Command python -ErrorAction SilentlyContinue
-            if (-not $pyExe) {
-                Write-Host "Error: Python installed but not on PATH. Restart your terminal." -ForegroundColor Red
-                exit 1
+            # The registry PATH may lag during upgrades — look up the
+            # installation directory directly.
+            $pyDir = "$env:LOCALAPPDATA\Programs\Python\Python313"
+            $pyExe = "$pyDir\python.exe"
+            if (-not (Test-Path $pyExe)) {
+                # Fallback: refresh PATH and search
+                $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+                $cmd = Get-Command python -ErrorAction SilentlyContinue
+                if (-not $cmd) {
+                    Write-Host "Error: Python installed but not found. Restart your terminal." -ForegroundColor Red
+                    exit 1
+                }
+                $pyExe = $cmd.Source
             }
-            $pythonPath = [System.IO.Path]::GetFullPath($pyExe.Source)
+            $pythonPath = [System.IO.Path]::GetFullPath($pyExe)
+            # Ensure the Python directory is on the current session PATH
+            $env:PATH = "$pyDir;$pyDir\Scripts;$env:PATH"
         } else {
             Write-Host "Error: winget not available." -ForegroundColor Red
             Write-Host "Install Python 3.13 manually from https://python.org/downloads/" -ForegroundColor Yellow
