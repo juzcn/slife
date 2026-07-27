@@ -336,17 +336,26 @@ class SessionStore:
         """
         assert self._conn is not None
         vec_blob = _serialize_f32(embedding)
-        fetch_limit = (limit * 3) if (since or until) else limit
+        # Fetch extra rows to account for duplicate diary_rowid entries
+        # (one turn → multiple chunks).  Dedup in Python: vec0 KNN does
+        # not allow GROUP BY.
+        fetch_limit = (limit * 4) if (since or until) else (limit * 2)
         cursor = await self._conn.execute(
-            """SELECT diary_rowid AS rowid, summary, tags, created_at,
-                      MIN(distance) AS distance
+            """SELECT diary_rowid AS rowid, summary, tags, created_at, distance
                FROM diary_semantic
                WHERE turn_embedding MATCH ? AND k = ?
-               GROUP BY diary_rowid
                ORDER BY distance""",
             (vec_blob, fetch_limit),
         )
-        results = [dict(row) for row in await cursor.fetchall()]
+        # Deduplicate by diary_rowid — keep best (lowest) distance per turn
+        seen: set[int] = set()
+        results: list[dict] = []
+        for row in await cursor.fetchall():
+            r = dict(row)
+            rid = r.get("rowid")
+            if rid is not None and rid not in seen:
+                seen.add(rid)
+                results.append(r)
         if since:
             since = _normalize_time_param(since, role="since")
             results = [r for r in results if r.get("created_at", "") >= since]
