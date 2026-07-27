@@ -265,7 +265,7 @@ class TestSessionStoreSaveTurn:
         mock_embedder = MagicMock()
         mock_embedder.available = True
         mock_embedder.max_tokens = 8192
-        mock_embedder.embed_one = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        mock_embedder.embed = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
 
         rowid = await store.save_turn(
             user_message="Hello",
@@ -273,11 +273,11 @@ class TestSessionStoreSaveTurn:
         )
 
         assert rowid == 1
-        mock_embedder.embed_one.assert_called()
+        mock_embedder.embed.assert_called()
 
     @pytest.mark.asyncio
-    async def test_save_turn_embedder_skip_on_overflow(self):
-        """When the turn text exceeds the model's token limit, skip embedding."""
+    async def test_save_turn_chunks_long_text(self):
+        """Long turns are chunked — embedder.embed() receives multiple chunks."""
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = MagicMock()
@@ -288,16 +288,21 @@ class TestSessionStoreSaveTurn:
 
         mock_embedder = MagicMock()
         mock_embedder.available = True
-        mock_embedder.max_tokens = 1  # Very small limit
+        mock_embedder.max_tokens = 8192
+        # Return one embedding per chunk
+        mock_embedder.embed = AsyncMock(return_value=[[0.1] * 1024] * 3)
 
+        long_msg = "\n".join([f"line {i}" for i in range(500)])
         rowid = await store.save_turn(
-            user_message="Hello world " * 500,  # Way over the limit
+            user_message=long_msg,
             embedder=mock_embedder,
         )
 
         assert rowid == 1
-        # embed_one should NOT have been called — text was too long
-        mock_embedder.embed_one.assert_not_called()
+        # embed() should have been called with multiple chunks
+        mock_embedder.embed.assert_called_once()
+        chunks = mock_embedder.embed.call_args[0][0]
+        assert len(chunks) > 1  # Long text → multiple chunks
 
 
 class TestSessionStoreGetTurn:
@@ -651,39 +656,30 @@ class TestSessionStoreUpsertEmbedding:
         store._conn = mock_conn
 
         await store.upsert_embedding(
-            rowid=1,
+            diary_rowid=1, chunk_index=0,
             summary="", tags="", created_at="2024-01-01T00:00:00",
             turn_embedding=[0.1, 0.2, 0.3],
         )
-        assert mock_conn.execute.call_count == 2  # SELECT + INSERT
+        assert mock_conn.execute.call_count == 1  # INSERT only (no SELECT needed)
         mock_conn.commit.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_upsert_update_existing(self):
+        """upsert_embedding always INSERTs — caller handles clearing old chunks."""
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
-        # First call: check existing -> found; second: DELETE; third: INSERT
-        call_count = [0]
-
-        async def _side_effect(*args, **kwargs):
-            call_count[0] += 1
-            cursor = AsyncMock()
-            if call_count[0] == 1:
-                cursor.fetchone = AsyncMock(return_value={"rowid": 1})
-            else:
-                cursor.fetchone = AsyncMock(return_value=None)
-            return cursor
-
-        mock_conn.execute = AsyncMock(side_effect=_side_effect)
+        mock_conn.execute = AsyncMock(return_value=AsyncMock())
         mock_conn.commit = AsyncMock()
         store._conn = mock_conn
 
         await store.upsert_embedding(
-            rowid=1,
+            diary_rowid=1, chunk_index=0,
             summary="updated", tags="new", created_at="2024-01-01T00:00:00",
             turn_embedding=[0.4, 0.5, 0.6],
         )
-        assert mock_conn.execute.call_count == 3  # SELECT + DELETE + INSERT
+        # Single INSERT — _clear_chunks() is called separately by the caller
+        mock_conn.execute.assert_called_once()
+        mock_conn.commit.assert_called_once()
 
 
 class TestSessionStoreHasEmbedding:
@@ -698,7 +694,7 @@ class TestSessionStoreHasEmbedding:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.has_embedding(rowid=1)
+        result = await store.has_embedding(diary_rowid=1)
         assert result is True
 
     @pytest.mark.asyncio
@@ -710,5 +706,5 @@ class TestSessionStoreHasEmbedding:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        result = await store.has_embedding(rowid=1)
+        result = await store.has_embedding(diary_rowid=1)
         assert result is False
