@@ -1,7 +1,7 @@
 """Embedding configuration helpers — read, write, validate, reload.
 
 Used by the memory_set_embedding / memory_check_embedding /
-memory_remove_embedding MCP tools to manage the ``memory.embedding``
+memory_disable_embedding MCP tools to manage the ``memory.embedding``
 section of ``slife.json5`` at runtime.
 """
 
