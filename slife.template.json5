@@ -14,8 +14,6 @@
   // ── Tools ──────────────────────────────────────────────────────
   // Override defaults: set timeout, or disable a tool with enabled: false.
   tools: [
-     {name: "execute_shell", enabled: false},
-     {name: "run_python_script", enabled: true},
      {name: "install_python_package",enabled: false}
   ],
 
