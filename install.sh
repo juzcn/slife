@@ -271,23 +271,32 @@ else
     echo -e "    ${YELLOW}warning: slife CLI check returned non-zero (entry point exists)${NC}"
 fi
 
-# ── 6. Add to PATH ───────────────────────────────────────────────────
-echo -e "${YELLOW}[6/6] Configuring PATH…${NC}"
-# Append to common shell profiles if the entry isn't already present.
+# ── 6. Create entry-point symlinks (venv stays private) ─────────────
+echo -e "${YELLOW}[6/6] Configuring entry points…${NC}"
+
+# Symlink only slife + credstore into ~/.local/bin (already on PATH from Step 1).
+# The venv's python, pip, etc. stay private — only the two user-facing commands
+# are exposed globally.
+mkdir -p "$HOME/.local/bin"
+ln -sf "$INSTALL_DIR/bin/slife" "$HOME/.local/bin/slife"
+ln -sf "$INSTALL_DIR/bin/credstore" "$HOME/.local/bin/credstore"
+
+# Ensure ~/.local/bin is persisted in shell profiles (Step 1 added it to the
+# current session, but the profile entry makes it permanent).
 for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.config/fish/config.fish"; do
     if [ -f "$rc" ]; then
-        if ! grep -qF "$INSTALL_DIR/bin" "$rc" 2>/dev/null; then
-            # fish uses a different syntax for PATH.
+        if ! grep -qF "$HOME/.local/bin" "$rc" 2>/dev/null; then
             if echo "$rc" | grep -q fish; then
-                echo "fish_add_path \"$INSTALL_DIR/bin\"" >> "$rc"
+                echo "fish_add_path $HOME/.local/bin" >> "$rc"
             else
-                echo "export PATH=\"$INSTALL_DIR/bin:\$PATH\"" >> "$rc"
+                echo "export PATH=\"$HOME/.local/bin:\$PATH\"" >> "$rc"
             fi
         fi
     fi
 done
-export PATH="$INSTALL_DIR/bin:$PATH"
-echo -e "${GREEN}  ✓${NC} Added to PATH"
+export PATH="$HOME/.local/bin:$PATH"
+
+echo -e "${GREEN}  ✓${NC} slife + credstore commands ready"
 
 # ── 7. Done ───────────────────────────────────────────────────────────
 echo ""
@@ -295,7 +304,7 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║  Slife v${VERSION} installed successfully! 🎉  ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${CYAN}Restart your terminal, then:${NC}"
+echo -e "${CYAN}Get started:${NC}"
 echo "  credstore set-password              # set up encrypted backup (first time)"
 echo "  credstore set DEEPSEEK_API_KEY       # store your API key"
 echo "  slife                                # launch the TUI"

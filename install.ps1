@@ -335,22 +335,49 @@ try {
         Write-Host "    warning: slife CLI entry point not found" -ForegroundColor Yellow
     }
 
-    # ── 6. Add to PATH ──────────────────────────────────────────────
-    Write-Host "[6/6] Configuring PATH..." -ForegroundColor Yellow
-    $scriptsDir = "$installDir\Scripts"
+    # ── 6. Create entry-point scripts (venv stays private) ──────────
+    Write-Host "[6/6] Configuring entry points..." -ForegroundColor Yellow
+
+    # Create wrapper .cmd files in ~/.local/bin (already on PATH from Step 1).
+    # This exposes ONLY slife + credstore — not python, pip, or any venv internals.
+    $localBin = "$env:USERPROFILE\.local\bin"
+    New-Item -ItemType Directory -Force $localBin | Out-Null
+
+    $slifeExe   = "$installDir\Scripts\slife.exe"
+    $credstoreExe = "$installDir\Scripts\credstore.exe"
+
+    @"
+@""$slifeExe"" %*
+"@ | Out-File -FilePath "$localBin\slife.cmd" -Encoding ASCII
+
+    @"
+@""$credstoreExe"" %*
+"@ | Out-File -FilePath "$localBin\credstore.cmd" -Encoding ASCII
+
+    # Ensure ~/.local/bin is persisted in user PATH (Step 1 added it to
+    # the current session, but not necessarily to the registry).
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -notlike "*$scriptsDir*") {
-        [Environment]::SetEnvironmentVariable("Path", "$scriptsDir;$userPath", "User")
+    if ($userPath -notlike "*$localBin*") {
+        [Environment]::SetEnvironmentVariable("Path", "$localBin;$userPath", "User")
     }
-    $env:PATH = "$scriptsDir;$env:PATH"
-    Write-Host "  [OK] Added to PATH" -ForegroundColor Green
+    $env:PATH = "$localBin;$env:PATH"
+
+    # Clean up stale entry from older installs that put the venv itself on PATH.
+    $scriptsDir = "$installDir\Scripts"
+    $cleanedPath = ($userPath -split ';' | Where-Object { $_ -ne $scriptsDir }) -join ';'
+    if ($cleanedPath -ne $userPath) {
+        [Environment]::SetEnvironmentVariable("Path", $cleanedPath, "User")
+        Write-Host "  Cleaned up old PATH entry." -ForegroundColor DarkGray
+    }
+
+    Write-Host "  [OK] slife + credstore commands ready" -ForegroundColor Green
 
     Write-Host ""
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
     Write-Host "  Slife v$version installed successfully!     " -ForegroundColor Green
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Restart your terminal, then:" -ForegroundColor Cyan
+    Write-Host "Get started:" -ForegroundColor Cyan
     Write-Host "  credstore set-password              # set up encrypted backup (first time)"
     Write-Host "  credstore set DEEPSEEK_API_KEY       # store your API key"
     Write-Host "  slife                                # launch the TUI"
