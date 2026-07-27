@@ -18,7 +18,7 @@
 
 ## 安装
 
-**零前提。** 安装脚本会自动安装 Python 3.13 和 uv（如需要），然后将 slife 安装到隔离环境中。无需 git、无需 Node.js、无需 C++ 编译器。
+**零前提。** 安装脚本会自动安装 Python 3.13、uvx（通过 uv）和 npx（通过 Node.js）（如需要），然后将 slife 安装到隔离环境中。无需 git、无需 C++ 编译器。
 
 ### 方式一：安装脚本（推荐）
 
@@ -337,8 +337,9 @@ mcp: {
 | 组件 | 状态 |
 |------|------|
 | Python ≥ 3.13 | 缺失时通过 uv 自动安装 |
-| [uv](https://docs.astral.sh/uv/) | 缺失时自动安装 |
-| Node.js | 可选 — 仅用于 npx MCP 服务器 |
+| [uvx](https://docs.astral.sh/uv/)（Python 包执行器） | 缺失时通过 uv 自动安装 |
+| [npx](https://nodejs.org/)（Node.js 包执行器） | 缺失时通过 winget（Windows）/ apt、brew、dnf、pacman（Linux）自动安装 — MCP 服务器 **必需** |
+| Mosquitto（MQTT broker） | 可选 — 交互式安装提示。仅 A2A 多 Agent 网格需要 |
 | `llama-cpp-python` | 可选 — `slife[embeddings]` 提供本地 GGUF 嵌入 |
 | `paho-mqtt` | 已包含 — A2A MQTT 网格（检测到 Mosquitto 时自动激活） |
 

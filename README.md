@@ -18,7 +18,7 @@
 
 ## Install
 
-**Zero prerequisites.**  The install script auto-installs Python 3.13, uv, and Node.js if needed — then installs slife in an isolated environment.  No git, no C++ compiler required.
+**Zero prerequisites.**  The install script auto-installs Python 3.13, uvx (via uv), and npx (via Node.js) if needed — then installs slife in an isolated environment.  No git, no C++ compiler required.
 
 ### Option 1: Install Script (Recommended)
 
@@ -427,16 +427,20 @@ The install script handles everything automatically.  Nothing to install beforeh
 | Component | Status |
 |-----------|--------|
 | Python ≥ 3.13 | Auto-installed via uv if missing |
-| [uv](https://docs.astral.sh/uv/) | Auto-installed if missing |
-| Node.js LTS | Auto-installed via winget (Windows) / apt, brew, dnf, pacman (Linux) if missing |
+| [uvx](https://docs.astral.sh/uv/) (Python package runner) | Auto-installed via uv if missing |
+| [npx](https://nodejs.org/) (Node.js package runner) | Auto-installed via winget (Windows) / apt, brew, dnf, pacman (Linux) if missing — **required** for MCP servers |
+| Mosquitto (MQTT broker) | Optional — interactive install prompt. Needed only for A2A multi-agent mesh |
 | `llama-cpp-python` | Optional — `slife[embeddings]` for local GGUF embeddings |
 | `paho-mqtt` | Included — A2A MQTT mesh (auto-activates when Mosquitto is detected) |
 
-**Node.js** is used by the fetch MCP server (`mcp-server-fetch`) for
-Readability.js-powered article extraction.  If unavailable, fetch falls back to
-pure-Python extraction — fully functional but with slightly lower article quality.
-The install script auto-installs Node.js when missing; the runtime checks at
-startup and reports status via `system_health`.
+**npx** is required by 6 MCP servers: `file-search`, `serper`, `tavily-mcp`, `github`,
+`amap-maps`, `filesystem`.  The install script auto-installs Node.js when `npx` is
+missing, and exits with a clear error message listing affected servers if installation
+fails.
+
+**Mosquitto** is optional — the install script detects existing installations, offers
+interactive install via your system package manager, and prints start instructions.
+Without it, slife works normally; only the A2A multi-agent mesh is unavailable.
 
 ## Development
 
