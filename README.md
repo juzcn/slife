@@ -333,15 +333,23 @@ timestamps.
 
 #### Embedding
 
-Two backends, configured at runtime via `memory_set_embedding`:
+Three backends, configured at runtime:
 
 | Backend | Dependency | Default model | Dim |
 |---------|-----------|---------------|-----|
-| **GGUF** (local) | `llama-cpp-python` | `bge-m3` (Q4_K_M) | 1024 |
+| **GGUF** (local) | `slife[gguf]` | `bge-m3` (Q4_K_M) | 1024 |
+| **Transformer** (local) | `slife[transformer]` | `BAAI/bge-m3` | 1024 |
 | **API** (OpenAI-compatible) | Provider API key | `text-embedding-3-small` | 1536 |
 
-Turns whose text exceeds the model's token limit are **skipped** — no partial
-embedding. Keyword search (FTS5/grep) is unaffected.
+| Tool | Purpose |
+|------|---------|
+| `memory_set_embedding` | Configure backend + model |
+| `memory_set_enabled(enabled)` | Toggle on/off (preserves config + data) |
+| `memory_check_embedding` | Status, reindex progress, unembedded count |
+
+Long turns are **chunked** at paragraph boundaries (~500 tokens, 1-paragraph
+overlap) — every turn contributes to semantic search, no silent skipping.
+`memory_set_embedding` triggers background re-indexing automatically.
 
 Agent isolation via `--agent alice`. Each agent gets its own DB (`<agent_id>.db`) in the data directory. See [DESIGN.md § Permanent Memory](DESIGN.md#permanent-memory-slife-memory) for the full architecture.
 

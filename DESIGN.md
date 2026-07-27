@@ -869,7 +869,19 @@ Semantic search (`hybrid` mode) uses vector embeddings via three configurable ba
 2. **Local Transformer model** (sentence-transformers) — offline, no API cost, any HuggingFace model (e.g. `BAAI/bge-m3`)
 3. **OpenAI-compatible API** — uses api_key from models.providers, text-embedding-3-small by default (1536-dim)
 
-Embedding config is managed at runtime via `memory_check_embedding`, `memory_set_embedding`, and `memory_remove_embedding` — no restart needed.
+Embedding config is managed at runtime via seven LLM-visible tools — no restart needed:
+
+| Tool | Purpose |
+|------|---------|
+| `memory_set_embedding` | Configure / switch backend and model |
+| `memory_set_enabled` | Toggle semantic search on/off (preserves config + data) |
+| `memory_check_embedding` | View status, reindex progress, unembedded count |
+| `memory_search(mode="hybrid")` | Hybrid search (FTS5 + vec0 RRF) |
+
+Long turns are split into paragraph-boundary chunks (~500 tokens, 1-paragraph
+overlap) so every turn contributes to semantic search.  `memory_set_embedding`
+triggers background re-indexing automatically — harness-only `memory_reindex`
+handles batching so the event loop is never blocked.
 
 **Windows: llama-cpp-python** cannot be built from source (no C++ compiler).
 Install a pre-built wheel instead:

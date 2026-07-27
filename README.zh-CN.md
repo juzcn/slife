@@ -267,7 +267,25 @@ memory_search("那个 bug 修复", mode="hybrid") → 语义召回
 memory_search(mode="time", since="2026-07") → 按日期浏览
 ```
 
-通过 `--agent alice` 实现智能体隔离，每个智能体在数据目录拥有独立的数据库文件（`<agent_id>.db`）。嵌入模型支持本地 GGUF（离线）或 OpenAI 兼容 API。完整架构参见 [DESIGN.md § Permanent Memory](DESIGN.md#permanent-memory-slife-memory)。
+三种嵌入后端，运行时通过工具配置：
+
+| 后端 | 依赖 | 维度 |
+|------|------|------|
+| **GGUF**（本地） | `slife[gguf]` | 1024 |
+| **Transformer**（本地） | `slife[transformer]` | 1024 |
+| **API**（OpenAI 兼容） | API key | 1536 |
+
+| 工具 | 用途 |
+|------|------|
+| `memory_set_embedding` | 配置/切换后端和模型 |
+| `memory_set_enabled(enabled)` | 开关语义搜索（保留配置和数据） |
+| `memory_check_embedding` | 查看状态、重建索引进度 |
+| `memory_search(mode="hybrid")` | 混合搜索（FTS5 + 语义 RRF） |
+
+长 turn 按段落边界**分段嵌入**（~500 tokens/块，1 段重叠），每条记录都能参与语义搜索。
+`memory_set_embedding` 配置后自动触发后台索引重建。
+
+通过 `--agent alice` 实现智能体隔离，每个智能体在数据目录拥有独立的数据库文件（`<agent_id>.db`）。完整架构参见 [DESIGN.md § Permanent Memory](DESIGN.md#permanent-memory-slife-memory)。
 
 ### 插件系统
 
