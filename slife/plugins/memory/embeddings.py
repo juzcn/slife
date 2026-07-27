@@ -109,6 +109,7 @@ class EmbeddingClient:
         quiet: bool = False,
         backend: str = "",
         device: str = "",
+        enabled: bool = True,
     ):
         self._model = model
         self._api_key = api_key
@@ -119,6 +120,14 @@ class EmbeddingClient:
         self._backend: str = ""         # "gguf" | "transformer" | "api" | ""
         self._available = False
         self._device = device           # "cpu" | "cuda" (transformer only)
+        self._enabled = enabled         # False when user called memory_disable_embedding
+
+        # Explicitly disabled — skip all backend detection.
+        if not enabled:
+            self._available = False
+            if not quiet:
+                logger.info("embeddings_disabled_by_user")
+            return
 
         _log_warn = logger.debug if quiet else logger.warning
 
@@ -222,17 +231,18 @@ class EmbeddingClient:
         cfg_backend = emb_cfg.get("backend", "")
         gguf_path = emb_cfg.get("gguf_path")
         device = emb_cfg.get("device", "")
+        enabled = emb_cfg.get("enabled", True)
 
         # If a GGUF path is configured, use it (takes priority over API)
         if gguf_path:
             gguf_path = str(Path(gguf_path).expanduser())
             dim = emb_cfg.get("dim", _guess_dim(model, gguf_path))
-            return cls(model=model, gguf_path=gguf_path, dim=dim, quiet=quiet)
+            return cls(model=model, gguf_path=gguf_path, dim=dim, quiet=quiet, enabled=enabled)
 
         # If backend is explicitly "transformer", use local HF model
         if cfg_backend == "transformer":
             dim = emb_cfg.get("dim", _guess_dim(model))
-            return cls(model=model, backend="transformer", dim=dim, device=device, quiet=quiet)
+            return cls(model=model, backend="transformer", dim=dim, device=device, quiet=quiet, enabled=enabled)
 
         # Otherwise, try API backend
         api_key = ""
@@ -259,7 +269,7 @@ class EmbeddingClient:
             )
 
         dim = emb_cfg.get("dim", _guess_dim(model))
-        return cls(model=model, api_key=api_key, base_url=base_url, dim=dim, quiet=quiet)
+        return cls(model=model, api_key=api_key, base_url=base_url, dim=dim, quiet=quiet, enabled=enabled)
 
     @property
     def available(self) -> bool:

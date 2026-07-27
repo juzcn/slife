@@ -61,6 +61,22 @@ def remove_embedding_config() -> None:
     logger.info("embedding_config_removed")
 
 
+def set_embedding_enabled(enabled: bool) -> bool:
+    """Set *enabled* flag on the current embedding config.
+
+    Returns True if the config exists and was updated, False if there
+    is no config to enable/disable.
+    """
+    cfg = read_embedding_config()
+    if cfg is None:
+        logger.info("embedding_enable_skipped — no config to enable/disable")
+        return False
+    cfg["enabled"] = enabled
+    write_embedding_config(cfg)
+    logger.info("embedding_enabled=%s", enabled)
+    return True
+
+
 def get_first_provider_api_key() -> str:
     """Return the api_key from the first configured provider, or ''."""
     raw = _read_raw()
