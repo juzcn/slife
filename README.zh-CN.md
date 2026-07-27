@@ -358,7 +358,7 @@ mcp: {
 ```bash
 git clone https://github.com/juzcn/slife.git
 cd slife
-uv sync
+uv sync --all-extras              # --all-extras 包含 gguf/transformer 嵌入后端
 uv run slife                      # 使用 ./slife.json5，数据文件在 ./
 ```
 
