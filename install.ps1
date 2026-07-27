@@ -77,6 +77,7 @@ try {
         }
     }
 
+    $weInstalledPython = $false
     if (-not $python) {
         # Not on PATH -- check if uv already manages a Python 3.13
         $uvPython = (uv python find 3.13 2>$null).Trim()
@@ -86,6 +87,7 @@ try {
         } else {
             Write-Host "  Python >= 3.13 not found, installing via uv..." -ForegroundColor Yellow
             uv python install 3.13
+            $weInstalledPython = $true
             $uvPython = (uv python find 3.13 2>$null).Trim()
             if (-not $uvPython) {
                 Write-Host "Error: could not install Python 3.13." -ForegroundColor Red
@@ -117,26 +119,32 @@ try {
         }
     }
 
-    # Ensure Python's directory is on PATH — persistently, not just this
-    # session.  Python is a system-level tool; the user should be able to
-    # run it for any purpose, not just for slife.
-    $pythonDir = Split-Path $pythonPath -Parent
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -notlike "*$pythonDir*") {
-        [Environment]::SetEnvironmentVariable("Path", "$pythonDir;$userPath", "User")
-    }
-    $env:PATH = "$pythonDir;$env:PATH"
+    # ── System-level setup — only when WE installed Python ──────────
+    # If Python already existed on the system, we don't touch it.
+    # The user's PATH, python, and pip are their own business.
+    if ($weInstalledPython) {
+        $pythonDir = Split-Path $pythonPath -Parent
+        # Persist in user PATH
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        if ($userPath -notlike "*$pythonDir*") {
+            [Environment]::SetEnvironmentVariable("Path", "$pythonDir;$userPath", "User")
+        }
+        $env:PATH = "$pythonDir;$env:PATH"
 
-    # If the found Python has a versioned name (python3.13, python3),
-    # create a plain "python.cmd" shim so both the user and the LLM
-    # can just type "python".
-    $pythonName = Split-Path $pythonPath -Leaf
-    if ($pythonName -ne "python.exe") {
-        $pythonCmd = "$pythonDir\python.cmd"
-        @"
+        # Versioned name (python3.13) → plain "python.cmd" shim
+        $pythonName = Split-Path $pythonPath -Leaf
+        if ($pythonName -ne "python.exe") {
+            @"
 @""$pythonPath"" %*
-"@ | Out-File -FilePath $pythonCmd -Encoding ASCII
-        Write-Host "  python.cmd → $pythonName" -ForegroundColor DarkGray
+"@ | Out-File -FilePath "$pythonDir\python.cmd" -Encoding ASCII
+            Write-Host "  [OK] python ready" -ForegroundColor Green
+        }
+
+        # pip.cmd shim
+        @"
+@python -m pip %*
+"@ | Out-File -FilePath "$pythonDir\pip.cmd" -Encoding ASCII
+        Write-Host "  [OK] pip ready" -ForegroundColor Green
     }
 
     # ── 3. Ensure npx (Node.js) is available ────────────────────────
