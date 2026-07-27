@@ -455,22 +455,55 @@ async def memory_summarize(
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(name="memory_check_embedding",
-          description="Check the current embedding configuration status.")
+@mcp.tool(
+    name="memory_check_embedding",
+    description=(
+        "Check embedding backend status and reindex progress.\n"
+        "Returns: configured backend, model, dimension, available flag,\n"
+        "unembedded count (turns still waiting for reindex), and a hint\n"
+        "with actionable next steps."
+    ),
+)
 async def memory_check_embedding() -> str:
     from slife.plugins.memory.embedding_config import make_check_report
     try:
-        return json.dumps(make_check_report(), ensure_ascii=False, indent=2)
+        report = make_check_report()
+        unembedded = await _count_unembedded()
+        report["unembedded"] = unembedded
+        if unembedded > 0 and report.get("available"):
+            report["hint"] = (
+                report.get("hint", "") +
+                f" 后台索引进行中 — {unembedded} 条 turn 待嵌入。"
+            ).strip()
+        return json.dumps(report, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("check_embedding_failed")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(name="memory_set_embedding",
-          description="Configure the embedding backend: 'gguf', 'transformer', or 'api'.")
+@mcp.tool(
+    name="memory_set_embedding",
+    description=(
+        "Configure the embedding backend and start background re-indexing.\n"
+        "\n"
+        "Backends:\n"
+        "  'gguf'        — local GGUF model (offline, ~30 MB). Requires gguf_path.\n"
+        "  'transformer' — HuggingFace sentence-transformers (~2 GB). Requires slife[transformer].\n"
+        "  'api'         — OpenAI-compatible API. Uses the first provider's api_key.\n"
+        "\n"
+        "After configuration, existing turns without embeddings are automatically\n"
+        "re-indexed in the background. Hybrid search becomes available once the\n"
+        "first batch completes — no need to wait for the full re-index.\n"
+        "\n"
+        "To switch models: call again with the new backend/model. Old embeddings\n"
+        "are cleared and re-indexing starts from scratch."
+    ),
+)
 async def memory_set_embedding(
-    backend: str = "", model: str = "bge-m3",
-    gguf_path: str | None = None, dim: int = 0,
+    backend: str = "",
+    model: str = "bge-m3",
+    gguf_path: str | None = None,
+    dim: int = 0,
     device: str = "",
 ) -> str:
     from slife.plugins.memory.embedding_config import (
