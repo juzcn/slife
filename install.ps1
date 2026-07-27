@@ -373,9 +373,8 @@ try {
     Write-Host "  slife                                # launch the TUI"
     Write-Host ""
     Write-Host "Optional extras:" -ForegroundColor Cyan
-    Write-Host "  # Windows: llama-cpp-python needs a pre-built wheel (no C++ compiler)"
-    Write-Host "  pip install 'slife[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu"
-    Write-Host "  pip install 'slife[transformer]'       # HuggingFace embeddings (~2 GB)"
+    Write-Host "  $installDir\Scripts\pip install 'slife[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu"
+    Write-Host "  $installDir\Scripts\pip install 'slife[transformer]'       # HuggingFace embeddings (~2 GB)"
     Write-Host ""
     Write-Host "More info: $slifeRepo" -ForegroundColor Cyan
 
