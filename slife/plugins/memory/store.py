@@ -118,23 +118,32 @@ class SessionStore:
         assert rowid is not None  # insert just succeeded
         logger.debug("turn_saved rowid=%s", rowid)
 
-        # Embed the full turn text. Skip if it exceeds the model's token
-        # limit — semantic search misses this turn, but keyword (FTS5/grep)
-        # search still works.  No truncation: partial knowledge is misleading.
+        # Embed the turn text in chunks.  Long turns (multi-tool calls,
+        # large file reads) are split at paragraph boundaries so every
+        # turn contributes to semantic search — no silent skipping.
         if embedder is not None and embedder.available:
             embed_text = _turn_text_for_embedding(user_message, messages or [])
             if embed_text.strip():
-                est_tokens = len(embed_text) // 4  # ~4 chars per token
-                if est_tokens <= embedder.max_tokens:
-                    try:
-                        emb = await embedder.embed_one(embed_text)
-                        if emb:
-                            await self.upsert_embedding(
-                                rowid=rowid, summary="", tags="",
-                                created_at=now, turn_embedding=emb,
-                            )
-                    except Exception as e:
-                        logger.debug("embedding_save_skipped rowid=%s err=%s", rowid, e)
+                try:
+                    chunks = _chunk_text(embed_text)
+                    # Filter chunks that exceed the token limit (unlikely
+                    # with 2000-char chunks, but a safety net).
+                    valid_chunks = [
+                        c for c in chunks
+                        if len(c) // 4 <= embedder.max_tokens
+                    ]
+                    if valid_chunks:
+                        embeddings = await embedder.embed(valid_chunks)
+                        if embeddings:
+                            for idx, emb in enumerate(embeddings):
+                                if emb:
+                                    await self.upsert_embedding(
+                                        diary_rowid=rowid, chunk_index=idx,
+                                        summary="", tags="",
+                                        created_at=now, turn_embedding=emb,
+                                    )
+                except Exception as e:
+                    logger.debug("embedding_save_skipped rowid=%s err=%s", rowid, e)
 
         return rowid
 
@@ -319,14 +328,21 @@ class SessionStore:
         self, embedding: list[float], limit: int = 20,
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
-        """sqlite-vec KNN on turn_embedding."""
+        """sqlite-vec KNN on turn_embedding, deduplicated by diary_rowid.
+
+        A single turn can produce multiple chunks — we keep only the best
+        (lowest distance) match per turn so the result list has one entry
+        per turn.
+        """
         assert self._conn is not None
         vec_blob = _serialize_f32(embedding)
-        fetch_limit = limit * 3 if (since or until) else limit
+        fetch_limit = (limit * 3) if (since or until) else limit
         cursor = await self._conn.execute(
-            """SELECT rowid, summary, tags, created_at, distance
+            """SELECT diary_rowid AS rowid, summary, tags, created_at,
+                      MIN(distance) AS distance
                FROM diary_semantic
                WHERE turn_embedding MATCH ? AND k = ?
+               GROUP BY diary_rowid
                ORDER BY distance""",
             (vec_blob, fetch_limit),
         )
@@ -404,35 +420,41 @@ class SessionStore:
     # ── Embedding ───────────────────────────────────────────────────
 
     async def upsert_embedding(
-        self, rowid: int,
+        self, diary_rowid: int, chunk_index: int,
         summary: str, tags: str, created_at: str,
         turn_embedding: list[float],
     ) -> None:
-        """Insert or update a turn embedding."""
+        """Insert or update one chunk embedding for a turn.
+
+        Each turn can produce multiple chunks — *chunk_index* is 0-based.
+        When re-embedding (e.g. after summary update), all chunks for
+        the same *diary_rowid* are replaced.
+        """
         assert self._conn is not None
         vec_blob = _serialize_f32(turn_embedding)
-        cursor = await self._conn.execute(
-            "SELECT rowid FROM diary_semantic WHERE rowid = ?",
-            (rowid,),
-        )
-        if await cursor.fetchone():
-            await self._conn.execute(
-                "DELETE FROM diary_semantic WHERE rowid = ?",
-                (rowid,),
-            )
         await self._conn.execute(
-            """INSERT INTO diary_semantic (rowid, turn_embedding, summary, tags, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (rowid, vec_blob, summary, tags, created_at),
+            """INSERT INTO diary_semantic
+               (turn_embedding, diary_rowid, chunk_index, summary, tags, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (vec_blob, diary_rowid, chunk_index, summary, tags, created_at),
         )
         await self._conn.commit()
-        logger.debug("embedding_upserted rowid=%s", rowid)
+        logger.debug("embedding_upserted diary_rowid=%s chunk=%s", diary_rowid, chunk_index)
 
-    async def has_embedding(self, rowid: int) -> bool:
+    async def _clear_chunks(self, diary_rowid: int) -> None:
+        """Delete all embedding chunks for a turn (prep for re-embed)."""
+        assert self._conn is not None
+        await self._conn.execute(
+            "DELETE FROM diary_semantic WHERE diary_rowid = ?",
+            (diary_rowid,),
+        )
+        await self._conn.commit()
+
+    async def has_embedding(self, diary_rowid: int) -> bool:
         assert self._conn is not None
         cursor = await self._conn.execute(
-            "SELECT rowid FROM diary_semantic WHERE rowid = ?",
-            (rowid,),
+            "SELECT rowid FROM diary_semantic WHERE diary_rowid = ? LIMIT 1",
+            (diary_rowid,),
         )
         return await cursor.fetchone() is not None
 
@@ -598,6 +620,54 @@ def _turn_text_for_embedding(user_message: str, messages: list[dict]) -> str:
         if content and msg.get("role") in ("assistant", "tool"):
             parts.append(content)
     return "\n".join(p for p in parts if p)
+
+
+# ── Chunking ────────────────────────────────────────────────────────
+
+CHUNK_SIZE_CHARS = 2000     # ~500 tokens — well under bge-m3's 8192 limit
+CHUNK_OVERLAP_LINES = 1     # carry last paragraph into the next chunk
+
+
+def _chunk_text(
+    text: str,
+    chunk_size: int = CHUNK_SIZE_CHARS,
+    overlap_lines: int = CHUNK_OVERLAP_LINES,
+) -> list[str]:
+    """Split *text* into overlapping chunks on paragraph boundaries.
+
+    Each chunk is at most *chunk_size* characters (soft limit — a single
+    paragraph that exceeds the limit becomes its own chunk).  The last
+    *overlap_lines* paragraphs of chunk N become the first paragraphs of
+    chunk N+1, preserving cross-chunk context for the embedding model.
+    """
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    if not paragraphs:
+        return []
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for para in paragraphs:
+        # If adding this paragraph would exceed the limit and we already
+        # have content, flush the current chunk.
+        if current and current_len + len(para) > chunk_size:
+            chunks.append("\n".join(current))
+            # Keep the last *overlap_lines* paragraphs as context for
+            # the next chunk.
+            if overlap_lines and len(current) > overlap_lines:
+                current = current[-overlap_lines:]
+                current_len = sum(len(p) for p in current)
+            else:
+                current = []
+                current_len = 0
+        current.append(para)
+        current_len += len(para)
+
+    if current:
+        chunks.append("\n".join(current))
+
+    return chunks or [text]
 
 
 def _to_fts5_query(query: str) -> str:

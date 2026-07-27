@@ -64,8 +64,13 @@ END;
 
 
 -- ── 语义搜索 ──────────────────────────────────────────────────
+-- One turn → one or more chunks (long turns are split by paragraph).
+-- diary_rowid references diary.rowid; chunk_index is 0-based within a turn.
+-- search_semantic groups results by diary_rowid (best chunk wins).
 CREATE VIRTUAL TABLE IF NOT EXISTS diary_semantic USING vec0(
     turn_embedding float[1536],
+    +diary_rowid   INTEGER,
+    +chunk_index   INTEGER,
     +summary       TEXT,
     +tags          TEXT,
     +created_at    TEXT

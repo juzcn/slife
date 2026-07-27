@@ -351,8 +351,10 @@ async def memory_summarize(
                     )
                     row = await cursor.fetchone()
                     if row:
+                        # Replace old chunks (summary is short — one chunk)
+                        await store._clear_chunks(rowid)
                         await store.upsert_embedding(
-                            rowid=rowid,
+                            diary_rowid=rowid, chunk_index=0,
                             summary=summary, tags=tags or row["tags"] or "",
                             created_at=row["created_at"], turn_embedding=emb,
                         )
