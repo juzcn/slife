@@ -121,30 +121,14 @@ try {
 
     # ── System-level setup — only when WE installed Python ──────────
     # If Python already existed on the system, we don't touch it.
-    # The user's PATH, python, and pip are their own business.
     if ($weInstalledPython) {
         $pythonDir = Split-Path $pythonPath -Parent
-        # Persist in user PATH
         $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
         if ($userPath -notlike "*$pythonDir*") {
             [Environment]::SetEnvironmentVariable("Path", "$pythonDir;$userPath", "User")
         }
         $env:PATH = "$pythonDir;$env:PATH"
-
-        # Versioned name (python3.13) → plain "python.cmd" shim
-        $pythonName = Split-Path $pythonPath -Leaf
-        if ($pythonName -ne "python.exe") {
-            @"
-@""$pythonPath"" %*
-"@ | Out-File -FilePath "$pythonDir\python.cmd" -Encoding ASCII
-            Write-Host "  [OK] python ready" -ForegroundColor Green
-        }
-
-        # pip.cmd shim
-        @"
-@python -m pip %*
-"@ | Out-File -FilePath "$pythonDir\pip.cmd" -Encoding ASCII
-        Write-Host "  [OK] pip ready" -ForegroundColor Green
+        Write-Host "  [OK] python3.13 ready" -ForegroundColor Green
     }
 
     # ── 3. Ensure npx (Node.js) is available ────────────────────────
@@ -379,7 +363,7 @@ try {
 "@ | Out-File -FilePath "$localBin\slife.cmd" -Encoding ASCII
 
     @"
-@""$credstoreExe"" %*
+@"$credstoreExe"" %*
 "@ | Out-File -FilePath "$localBin\credstore.cmd" -Encoding ASCII
 
     # Ensure ~/.local/bin is persisted in user PATH (Step 1 added it to

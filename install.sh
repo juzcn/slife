@@ -110,22 +110,7 @@ if [ "$WE_INSTALLED_PYTHON" = true ]; then
         fi
     done
     export PATH="$PYTHON_DIR:$HOME/.local/bin:$PATH"
-
-    # Versioned name (python3.13) → plain "python" symlink
-    PYTHON_NAME="$(basename "$PYTHON")"
-    if [ "$PYTHON_NAME" != "python" ] && [ -d "$PYTHON_DIR" ]; then
-        ln -sf "$PYTHON" "$PYTHON_DIR/python" 2>/dev/null || true
-    fi
-
-    # pip wrapper
-    if ! command -v pip &>/dev/null && [ -d "$PYTHON_DIR" ]; then
-        cat > "$PYTHON_DIR/pip" << 'SCRIPT'
-#!/usr/bin/env sh
-exec python -m pip "$@"
-SCRIPT
-        chmod +x "$PYTHON_DIR/pip"
-    fi
-    echo -e "${GREEN}  ✓${NC} python + pip ready"
+    echo -e "${GREEN}  ✓${NC} python3.13 ready"
 fi
 
 # ── 3. Ensure npx (Node.js) is available ─────────────────────────────
