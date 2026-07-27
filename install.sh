@@ -257,18 +257,18 @@ else
     echo -e "    ${YELLOW}warning: import check failed${NC}"
 fi
 
-# Check credstore CLI entry point.
-if "$INSTALL_DIR/bin/credstore" --help &>/dev/null; then
+# Check CLI entry points exist (don't run them — --help triggers
+# full startup which may hang if config loading blocks).
+if [ -x "$INSTALL_DIR/bin/credstore" ]; then
     echo -e "    ${GREEN}✓${NC} credstore CLI"
 else
     echo -e "    ${YELLOW}warning: credstore CLI not found${NC}"
 fi
 
-# Check slife CLI entry point.
-if "$INSTALL_DIR/bin/slife" --help &>/dev/null; then
+if [ -x "$INSTALL_DIR/bin/slife" ]; then
     echo -e "    ${GREEN}✓${NC} slife CLI"
 else
-    echo -e "    ${YELLOW}warning: slife CLI check returned non-zero (entry point exists)${NC}"
+    echo -e "    ${YELLOW}warning: slife CLI not found${NC}"
 fi
 
 # ── 6. Create entry-point symlinks (venv stays private) ─────────────

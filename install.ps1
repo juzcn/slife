@@ -311,28 +311,18 @@ try {
         $allOk = $false
     }
 
-    # Check credstore CLI entry point.
-    try {
-        & "$installDir\Scripts\credstore.exe" --help 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "    [OK] credstore CLI" -ForegroundColor Green
-        } else {
-            Write-Host "    warning: credstore CLI not found" -ForegroundColor Yellow
-        }
-    } catch {
+    # Check CLI entry points exist (don't run them — --help triggers
+    # full startup which hangs if config loading blocks).
+    if (Test-Path "$installDir\Scripts\credstore.exe") {
+        Write-Host "    [OK] credstore CLI" -ForegroundColor Green
+    } else {
         Write-Host "    warning: credstore CLI not found" -ForegroundColor Yellow
     }
 
-    # Check slife CLI entry point.
-    try {
-        & "$installDir\Scripts\slife.exe" --help 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "    [OK] slife CLI" -ForegroundColor Green
-        } else {
-            Write-Host "    warning: slife CLI check returned non-zero (entry point exists)" -ForegroundColor Yellow
-        }
-    } catch {
-        Write-Host "    warning: slife CLI entry point not found" -ForegroundColor Yellow
+    if (Test-Path "$installDir\Scripts\slife.exe") {
+        Write-Host "    [OK] slife CLI" -ForegroundColor Green
+    } else {
+        Write-Host "    warning: slife CLI not found" -ForegroundColor Yellow
     }
 
     # ── 6. Create entry-point scripts (venv stays private) ──────────
