@@ -165,6 +165,21 @@ async def _count_unembedded() -> int:
         return 0
 
 
+async def _count_all_embedded() -> int:
+    """Count already-embedded turns (non-blocking if store is ready)."""
+    if _store is None:
+        return 0
+    try:
+        assert _store._conn is not None
+        cursor = await _store._conn.execute(
+            "SELECT COUNT(DISTINCT diary_rowid) FROM diary_semantic",
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+    except Exception:
+        return 0
+
+
 async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
     """Core reindex logic — shared by memory_reindex and _background_reindex.
 
@@ -573,14 +588,24 @@ async def memory_reindex(reset: bool = False, batch_limit: int = 10) -> str:
         return json.dumps({"complete": False, "error": str(e)})
 
 
-@mcp.tool(name="memory_remove_embedding",
-          description="Remove the embedding configuration.")
+@mcp.tool(
+    name="memory_remove_embedding",
+    description=(
+        "Remove the embedding configuration and disable semantic search.\n"
+        "Existing embeddings in the database are preserved — if you re-enable\n"
+        "the same model later, they are reused without re-indexing.\n"
+        "Keyword search (FTS5/grep/time) continues to work normally."
+    ),
+)
 async def memory_remove_embedding() -> str:
     from slife.plugins.memory.embedding_config import remove_embedding_config, reload_embedder
     try:
         remove_embedding_config()
         status = await reload_embedder()
+        embedded_count = await _count_all_embedded()
         status["message"] = "Embedding 配置已移除。语义搜索已禁用，关键词搜索仍可用。"
+        if embedded_count > 0:
+            status["preserved"] = f"{embedded_count} 条已有嵌入保留，重新启用同模型无需重建。"
         return json.dumps(status, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("remove_embedding_failed")
