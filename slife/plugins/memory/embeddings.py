@@ -72,6 +72,16 @@ def _check_runtime(backend: str) -> bool:
         return False
 
 
+def _looks_like_placeholder(value: str) -> bool:
+    """True if *value* is an unresolved ``${VAR}`` or ``${VAR:-default}`` placeholder.
+
+    The install template ships with ``api_key: "${DEEPSEEK_API_KEY}"`` —
+    these are NOT real API keys and should be skipped when probing
+    provider configs for an embedding backend.
+    """
+    return value.startswith("${") and value.endswith("}")
+
+
 class EmbeddingClient:
     """Generates embeddings using a local GGUF model or OpenAI API.
 
@@ -234,6 +244,11 @@ class EmbeddingClient:
             if isinstance(pcfg, dict):
                 api_key = pcfg.get("api_key", "")
                 base_url = pcfg.get("base_url", "")
+                # Skip unresolved ${VAR} placeholders — they are NOT real API keys.
+                # The install template ships with api_key: "${DEEPSEEK_API_KEY}"
+                # and real resolution happens at the Config level, not here.
+                if api_key and _looks_like_placeholder(api_key):
+                    api_key = ""
                 if api_key:
                     break
 

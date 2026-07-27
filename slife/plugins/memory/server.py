@@ -38,6 +38,32 @@ _db_path: Path | None = None
 _init_lock: asyncio.Lock | None = None
 
 
+def _hybrid_fallback_reason() -> str:
+    """Return a human-readable reason why hybrid search fell back to FTS5."""
+    if _embedder is None:
+        return "hybrid 降级为 fts5 — embedding 后端未初始化"
+    if not _embedder.available:
+        cfg = _embedder._backend
+        if cfg == "gguf":
+            if _embedder._gguf_path:
+                if Path(_embedder._gguf_path).exists():
+                    return ("hybrid 降级为 fts5 — llama-cpp-python 未安装。"
+                            "运行: pip install llama-cpp-python")
+                return ("hybrid 降级为 fts5 — GGUF 文件未找到。"
+                        "下载模型后使用 memory_set_embedding 配置路径")
+            return "hybrid 降级为 fts5 — 未配置 GGUF 模型路径"
+        if cfg == "api":
+            return ("hybrid 降级为 fts5 — API key 为未解析的 ${VAR} 占位符或缺失。"
+                    "使用 memory_set_embedding backend=api 配置真实 API key，"
+                    "或改用本地模型: memory_set_embedding backend=gguf")
+        return ("hybrid 降级为 fts5 — embedding 后端不可用。"
+                "使用 memory_check_embedding 查看详情，"
+                "使用 memory_set_embedding 配置嵌入后端")
+    # embedder.available is True but embed_one() returned None
+    return ("hybrid 降级为 fts5 — 查询嵌入生成失败（API 调用异常或超时）。"
+            "检查 API key 是否正确，或切换为本地模型")
+
+
 def _get_db_path() -> Path:
     """Return the database path for the current agent.
 
@@ -277,11 +303,20 @@ async def memory_search(
                 semantic_available = True
 
         merged = merge_hybrid(keyword_hits, semantic_hits)
+
+        # Build diagnostic hint when hybrid mode degrades to keyword-only.
+        hint = ""
+        if merged:
+            if not semantic_available:
+                hint = _hybrid_fallback_reason()
+        else:
+            hint = "没有找到相关的记忆"
+
         return json.dumps({
             "mode": "hybrid" if semantic_available else "fts5",
             "query": query,
             "results": merged[:limit],
-            "hint": "" if merged else "没有找到相关的记忆",
+            "hint": hint,
         }, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("search_failed")
