@@ -33,7 +33,7 @@ try {
     Write-Host "Install directory : " -NoNewline
     Write-Host $installDir -ForegroundColor Cyan
     Write-Host "Python            : auto-install 3.13 if needed"
-    Write-Host "Node.js           : install if missing (optional, for web fetch)"
+    Write-Host "npx               : auto-install Node.js if needed (required for MCP servers)"
     Write-Host "Disk space needed : ~500 MB"
     Write-Host ""
 
@@ -47,15 +47,15 @@ try {
         exit 1
     }
 
-    # ── 1. Ensure uv is available ───────────────────────────────────
-    Write-Host "[1/6] Checking uv (package manager)..." -ForegroundColor Yellow
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Write-Host "  Installing uv..." -ForegroundColor Yellow
+    # ── 1. Ensure uvx is available (bundled with uv) ──────────────────
+    Write-Host "[1/6] Checking uvx (Python package runner)..." -ForegroundColor Yellow
+    if (-not (Get-Command uvx -ErrorAction SilentlyContinue)) {
+        Write-Host "  Installing uv (includes uvx)..." -ForegroundColor Yellow
         powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
         $env:PATH = "$env:USERPROFILE\.local\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
     }
-    $uvVer = uv --version 2>&1
-    Write-Host "  [OK] uv $uvVer" -ForegroundColor Green
+    $uvxVer = uvx --version 2>&1
+    Write-Host "  [OK] uvx $uvxVer" -ForegroundColor Green
 
     # ── 2. Ensure Python >= 3.13 is available ───────────────────────
     Write-Host "[2/6] Checking Python >= 3.13..." -ForegroundColor Yellow
@@ -119,20 +119,21 @@ try {
     # Refresh PATH so the freshly-installed Python takes effect
     $env:PATH = "$(Split-Path $pythonPath -Parent);$env:PATH"
 
-    # ── 3. Ensure Node.js / npm is available ────────────────────────
-    Write-Host "[3/6] Checking Node.js / npm..." -ForegroundColor Yellow
-    $haveNode = $false
-    try {
-        $nodeVer = node --version 2>&1
-        $npmVer = npm --version 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  [OK] node $nodeVer, npm $npmVer" -ForegroundColor Green
-            $haveNode = $true
-        } else {
-            throw "not working"
-        }
-    } catch {
-        Write-Host "  not found" -ForegroundColor Yellow
+    # ── 3. Ensure npx (Node.js) is available ────────────────────────
+    Write-Host "[3/6] Checking npx (Node.js package runner)..." -ForegroundColor Yellow
+    $haveNpx = $false
+    if (Get-Command npx -ErrorAction SilentlyContinue) {
+        try {
+            $npxVer = npx --version 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  [OK] npx v$npxVer" -ForegroundColor Green
+                $haveNpx = $true
+            }
+        } catch { }
+    }
+
+    if (-not $haveNpx) {
+        Write-Host "  npx not found, installing Node.js..." -ForegroundColor Yellow
         $winget = Get-Command winget -ErrorAction SilentlyContinue
         if ($winget) {
             Write-Host "  Installing Node.js LTS via winget..." -ForegroundColor Yellow
@@ -140,25 +141,68 @@ try {
             if ($LASTEXITCODE -eq 0) {
                 $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
                 try {
-                    $nv = node --version 2>&1
+                    $nv = npx --version 2>&1
                     if ($LASTEXITCODE -eq 0) {
-                        Write-Host "  [OK] node $nv installed" -ForegroundColor Green
-                        $haveNode = $true
-                    } else {
-                        Write-Host "  Installed -- restart your terminal to use Node.js." -ForegroundColor Yellow
+                        Write-Host "  [OK] npx v$nv installed" -ForegroundColor Green
+                        $haveNpx = $true
                     }
-                } catch {
-                    Write-Host "  Installed -- restart your terminal to use Node.js." -ForegroundColor Yellow
-                }
-            } else {
-                Write-Host "  winget install failed (exit $LASTEXITCODE)." -ForegroundColor Yellow
+                } catch { }
             }
         }
-        if (-not $haveNode) {
-            Write-Host "  Skipped: fetch MCP will use Python-based article extraction." -ForegroundColor Yellow
-            Write-Host "  Install manually: https://nodejs.org (LTS recommended)" -ForegroundColor Yellow
+
+        if (-not $haveNpx) {
+            Write-Host "  ┌─────────────────────────────────────────────────────┐" -ForegroundColor Red
+            Write-Host "  │  WARNING: npx not available.                       │" -ForegroundColor Red
+            Write-Host "  │                                                     │" -ForegroundColor Red
+            Write-Host "  │  These MCP servers require npx and will NOT work:    │" -ForegroundColor Red
+            Write-Host "  │    file-search, serper, tavily-mcp, github,          │" -ForegroundColor Red
+            Write-Host "  │    amap-maps, filesystem                             │" -ForegroundColor Red
+            Write-Host "  │                                                     │" -ForegroundColor Red
+            Write-Host "  │  Install Node.js LTS from https://nodejs.org         │" -ForegroundColor Red
+            Write-Host "  │  then re-run this installer.                         │" -ForegroundColor Red
+            Write-Host "  └─────────────────────────────────────────────────────┘" -ForegroundColor Red
+            Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
+            exit 1
         }
     }
+
+    # ── Optional: Mosquitto MQTT broker (for A2A multi-agent mesh) ──
+    Write-Host "[optional] Checking Mosquitto (MQTT broker for multi-agent mesh)..." -ForegroundColor Yellow
+    if (Get-Command mosquitto -ErrorAction SilentlyContinue) {
+        Write-Host "  [OK] mosquitto found" -ForegroundColor Green
+    } else {
+        Write-Host "  Mosquitto not found." -ForegroundColor Yellow
+        Write-Host "  Required for: A2A multi-agent mesh communication" -ForegroundColor DarkGray
+        Write-Host "  Without it:  slife works normally, just without P2P agent features" -ForegroundColor DarkGray
+        try {
+            $choice = Read-Host "  Install Mosquitto? (y/n, default: n)"
+        } catch {
+            $choice = "n"
+        }
+        if ($choice -eq 'y' -or $choice -eq 'Y') {
+            $winget = Get-Command winget -ErrorAction SilentlyContinue
+            if ($winget) {
+                Write-Host "  Installing Mosquitto via winget..." -ForegroundColor Yellow
+                winget install EclipseFoundation.Mosquitto --accept-package-agreements --accept-source-agreements
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "  [OK] Mosquitto installed" -ForegroundColor Green
+                    Write-Host "  To start Mosquitto:" -ForegroundColor Cyan
+                    Write-Host "    net start mosquitto" -ForegroundColor Cyan
+                    Write-Host "  Or run manually:" -ForegroundColor Cyan
+                    Write-Host "    mosquitto -d -p 1883" -ForegroundColor Cyan
+                } else {
+                    Write-Host "  winget install failed. Install manually:" -ForegroundColor Yellow
+                    Write-Host "    https://mosquitto.org/download/" -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "  No supported package manager found (winget not available)." -ForegroundColor Yellow
+                Write-Host "  Install manually: https://mosquitto.org/download/" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "  Skipped. Install later with: winget install EclipseFoundation.Mosquitto" -ForegroundColor DarkGray
+        }
+    }
+    Write-Host ""
 
     # ── 4. Download and verify slife ────────────────────────────────
     Write-Host "[4/6] Downloading slife..." -ForegroundColor Yellow

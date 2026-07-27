@@ -29,7 +29,7 @@ echo ""
 INSTALL_DIR="$HOME/.slife"
 echo "Install directory : ${CYAN}$INSTALL_DIR${NC}"
 echo "Python            : auto-install 3.13 if needed"
-echo "Node.js           : install if missing (optional, for web fetch)"
+echo "npx               : auto-install Node.js if needed (required for MCP servers)"
 echo "Disk space needed : ~500 MB"
 echo ""
 
@@ -44,14 +44,14 @@ if command -v df &>/dev/null; then
     fi
 fi
 
-# ── 1. Ensure uv is available ────────────────────────────────────────
-echo -e "${YELLOW}[1/6] Checking uv (package manager)…${NC}"
-if ! command -v uv &>/dev/null; then
-    echo -e "${YELLOW}  Installing uv…${NC}"
+# ── 1. Ensure uvx is available (bundled with uv) ────────────────────
+echo -e "${YELLOW}[1/6] Checking uvx (Python package runner)…${NC}"
+if ! command -v uvx &>/dev/null; then
+    echo -e "${YELLOW}  Installing uv (includes uvx)…${NC}"
     curl --progress-bar -Lf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
-echo -e "${GREEN}  ✓${NC} uv $(uv --version 2>&1)"
+echo -e "${GREEN}  ✓${NC} uvx $(uvx --version 2>&1)"
 
 # ── 2. Ensure Python >= 3.13 is available ────────────────────────────
 echo -e "${YELLOW}[2/6] Checking Python >= 3.13…${NC}"
@@ -96,14 +96,16 @@ echo -e "  Selected: ${CYAN}$PYTHON${NC} ($(uv run --python "$PYTHON" python --v
 PYTHON_DIR="$(dirname "$PYTHON")"
 export PATH="$PYTHON_DIR:$HOME/.local/bin:$PATH"
 
-# ── 3. Ensure Node.js / npm is available ─────────────────────────────
-echo -e "${YELLOW}[3/6] Checking Node.js / npm…${NC}"
-HAVE_NODE=false
-if command -v node &>/dev/null && command -v npm &>/dev/null; then
-    echo -e "${GREEN}  ✓${NC} node $(node --version), npm $(npm --version)"
-    HAVE_NODE=true
-else
-    echo -e "${YELLOW}  not found${NC}"
+# ── 3. Ensure npx (Node.js) is available ─────────────────────────────
+echo -e "${YELLOW}[3/6] Checking npx (Node.js package runner)…${NC}"
+HAVE_NPX=false
+if command -v npx &>/dev/null; then
+    echo -e "${GREEN}  ✓${NC} npx v$(npx --version 2>&1)"
+    HAVE_NPX=true
+fi
+
+if [ "$HAVE_NPX" = false ]; then
+    echo -e "${YELLOW}  npx not found, installing Node.js…${NC}"
     # Try official repos (safe — no curl-to-shell).  Do NOT pipe
     # third-party scripts directly into sudo bash (security risk).
     if command -v apt-get &>/dev/null; then
@@ -118,13 +120,67 @@ else
         sudo pacman -S --noconfirm nodejs npm 2>/dev/null || true
     fi
     # Re-check after install attempt
-    if command -v node &>/dev/null && command -v npm &>/dev/null; then
-        echo -e "${GREEN}  ✓${NC} node $(node --version), npm $(npm --version)"
-        HAVE_NODE=true
+    if command -v npx &>/dev/null; then
+        echo -e "${GREEN}  ✓${NC} npx v$(npx --version 2>&1)"
+        HAVE_NPX=true
     fi
-    if [ "$HAVE_NODE" = false ]; then
-        echo -e "${YELLOW}  Skipped: fetch MCP will use Python-based article extraction.${NC}"
-        echo -e "${YELLOW}  Install manually: https://nodejs.org (LTS recommended)${NC}"
+    if [ "$HAVE_NPX" = false ]; then
+        echo -e "${RED}  ┌─────────────────────────────────────────────────────┐${NC}"
+        echo -e "${RED}  │  WARNING: npx not available.                       │${NC}"
+        echo -e "${RED}  │                                                     │${NC}"
+        echo -e "${RED}  │  These MCP servers require npx and will NOT work:    │${NC}"
+        echo -e "${RED}  │    file-search, serper, tavily-mcp, github,          │${NC}"
+        echo -e "${RED}  │    amap-maps, filesystem                             │${NC}"
+        echo -e "${RED}  │                                                     │${NC}"
+        echo -e "${RED}  │  Install Node.js LTS from https://nodejs.org         │${NC}"
+        echo -e "${RED}  │  then re-run this installer.                         │${NC}"
+        echo -e "${RED}  └─────────────────────────────────────────────────────┘${NC}"
+        echo -e "${YELLOW}Help: $SLIFE_REPO${NC}"
+        exit 1
+    fi
+fi
+
+# ── Optional: Mosquitto MQTT broker (for A2A multi-agent mesh) ────────
+echo -e "${YELLOW}[optional] Checking Mosquitto (MQTT broker for multi-agent mesh)…${NC}"
+if command -v mosquitto &>/dev/null; then
+    echo -e "${GREEN}  ✓${NC} mosquitto found"
+else
+    echo -e "${YELLOW}  Mosquitto not found.${NC}"
+    echo -e "${GRAY}  Required for: A2A multi-agent mesh communication${NC}"
+    echo -e "${GRAY}  Without it:  slife works normally, just without P2P agent features${NC}"
+    if [ -t 0 ]; then
+        read -p "  Install Mosquitto? (y/n, default: n): " choice
+    else
+        choice="n"
+    fi
+    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
+        if command -v apt-get &>/dev/null; then
+            echo -e "${YELLOW}  Installing Mosquitto via apt…${NC}"
+            sudo apt-get install -y mosquitto mosquitto-clients 2>/dev/null || true
+        elif command -v brew &>/dev/null; then
+            echo -e "${YELLOW}  Installing Mosquitto via Homebrew…${NC}"
+            brew install mosquitto 2>/dev/null || true
+        elif command -v dnf &>/dev/null; then
+            echo -e "${YELLOW}  Installing Mosquitto via dnf…${NC}"
+            sudo dnf install -y mosquitto 2>/dev/null || true
+        elif command -v pacman &>/dev/null; then
+            echo -e "${YELLOW}  Installing Mosquitto via pacman…${NC}"
+            sudo pacman -S --noconfirm mosquitto 2>/dev/null || true
+        else
+            echo -e "${YELLOW}  No supported package manager found.${NC}"
+            echo -e "${YELLOW}  Install manually: https://mosquitto.org/download/${NC}"
+        fi
+        # Re-check
+        if command -v mosquitto &>/dev/null; then
+            echo -e "${GREEN}  ✓${NC} Mosquitto installed"
+            echo -e "${CYAN}  To start Mosquitto:${NC}"
+            echo "    mosquitto -d"
+            echo -e "${CYAN}  Or as a system service:${NC}"
+            echo "    sudo systemctl enable --now mosquitto   # systemd (Linux)"
+            echo "    brew services start mosquitto           # Homebrew (macOS)"
+        fi
+    else
+        echo -e "${GRAY}  Skipped. Install later with your package manager.${NC}"
     fi
 fi
 
