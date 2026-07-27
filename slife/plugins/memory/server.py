@@ -499,19 +499,18 @@ async def memory_check_embedding() -> str:
 @mcp.tool(
     name="memory_set_embedding",
     description=(
-        "Configure the embedding backend and start background re-indexing.\n"
+        "Configure or re-enable the embedding backend.\n"
+        "Also use this to re-enable after memory_disable_embedding —\n"
+        "re-enabling the same model reuses existing embeddings, no re-index needed.\n"
         "\n"
         "Backends:\n"
         "  'gguf'        — local GGUF model (offline, ~30 MB). Requires gguf_path.\n"
         "  'transformer' — HuggingFace sentence-transformers (~2 GB). Requires slife[transformer].\n"
         "  'api'         — OpenAI-compatible API. Uses the first provider's api_key.\n"
         "\n"
-        "After configuration, existing turns without embeddings are automatically\n"
-        "re-indexed in the background. Hybrid search becomes available once the\n"
-        "first batch completes — no need to wait for the full re-index.\n"
-        "\n"
-        "To switch models: call again with the new backend/model. Old embeddings\n"
-        "are cleared and re-indexing starts from scratch."
+        "On first config or model change, existing turns are automatically\n"
+        "re-indexed in the background. Hybrid search works as soon as the\n"
+        "first batch completes."
     ),
 )
 async def memory_set_embedding(
@@ -589,15 +588,16 @@ async def memory_reindex(reset: bool = False, batch_limit: int = 10) -> str:
 
 
 @mcp.tool(
-    name="memory_remove_embedding",
+    name="memory_disable_embedding",
     description=(
-        "Remove the embedding configuration and disable semantic search.\n"
-        "Existing embeddings in the database are preserved — if you re-enable\n"
-        "the same model later, they are reused without re-indexing.\n"
+        "Disable semantic search (hybrid mode falls back to FTS5).\n"
+        "Configuration and existing embeddings in the database are preserved —\n"
+        "use memory_set_embedding to re-enable with the same or a new model.\n"
+        "Re-enabling the same model reuses existing embeddings without re-indexing.\n"
         "Keyword search (FTS5/grep/time) continues to work normally."
     ),
 )
-async def memory_remove_embedding() -> str:
+async def memory_disable_embedding() -> str:
     from slife.plugins.memory.embedding_config import remove_embedding_config, reload_embedder
     try:
         remove_embedding_config()
