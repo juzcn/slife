@@ -588,61 +588,40 @@ async def memory_reindex(reset: bool = False, batch_limit: int = 10) -> str:
 
 
 @mcp.tool(
-    name="memory_enable_embedding",
+    name="memory_set_enabled",
     description=(
-        "Re-enable semantic search after memory_disable_embedding.\n"
-        "Uses the existing configuration — no parameters needed.\n"
-        "Existing embeddings are reused; only turns saved while disabled\n"
-        "need re-indexing (runs automatically in the background)."
+        "Enable or disable semantic search.\n"
+        "- enabled=true  → re-enable (reuses existing config + embeddings).\n"
+        "- enabled=false → disable (config + embeddings preserved).\n"
+        "When re-enabling, turns saved while disabled are auto re-indexed.\n"
+        "Use memory_set_embedding to configure/switch the backend and model."
     ),
 )
-async def memory_enable_embedding() -> str:
+async def memory_set_enabled(enabled: bool) -> str:
     from slife.plugins.memory.embedding_config import set_embedding_enabled, reload_embedder
     try:
-        ok = set_embedding_enabled(True)
+        ok = set_embedding_enabled(enabled)
         if not ok:
             return json.dumps(
                 {"error": "没有已配置的 embedding。先使用 memory_set_embedding 配置。"},
                 ensure_ascii=False,
             )
         status = await reload_embedder()
-        unembedded = await _count_unembedded()
-        if unembedded > 0:
-            asyncio.create_task(_background_reindex())
-            status["reindex"] = f"后台索引已启动，{unembedded} 条待处理"
+
+        if enabled:
+            unembedded = await _count_unembedded()
+            if unembedded > 0:
+                asyncio.create_task(_background_reindex())
+                status["reindex"] = f"后台索引已启动，{unembedded} 条待处理"
+            status["message"] = "语义搜索已启用。"
+        else:
+            embedded_count = await _count_all_embedded()
+            status["message"] = "语义搜索已禁用。关键词搜索仍可用。"
+            if embedded_count > 0:
+                status["preserved"] = f"{embedded_count} 条已有嵌入保留。"
         return json.dumps(status, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("enable_embedding_failed")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-@mcp.tool(
-    name="memory_disable_embedding",
-    description=(
-        "Disable semantic search (hybrid mode falls back to FTS5).\n"
-        "Configuration and existing embeddings are preserved —\n"
-        "use memory_enable_embedding to re-enable (no re-index needed),\n"
-        "or memory_set_embedding to switch to a different model.\n"
-        "Keyword search (FTS5/grep/time) continues to work normally."
-    ),
-)
-async def memory_disable_embedding() -> str:
-    from slife.plugins.memory.embedding_config import set_embedding_enabled, reload_embedder
-    try:
-        ok = set_embedding_enabled(False)
-        if not ok:
-            return json.dumps(
-                {"error": "没有已配置的 embedding。先使用 memory_set_embedding 配置。"},
-                ensure_ascii=False,
-            )
-        status = await reload_embedder()
-        embedded_count = await _count_all_embedded()
-        status["message"] = "语义搜索已禁用。关键词搜索仍可用。"
-        if embedded_count > 0:
-            status["preserved"] = f"{embedded_count} 条已有嵌入保留。"
-        return json.dumps(status, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.exception("disable_embedding_failed")
+        logger.exception("set_enabled_failed")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
