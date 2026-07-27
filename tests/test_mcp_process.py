@@ -91,7 +91,7 @@ class TestMCPWrapperProcessStart:
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             with patch("slife.mcp.process.logger"):
                 with patch.object(wp, "_read_port_signal", AsyncMock()):
-                    with patch("slife.mcp.process.asyncio.create_task"):
+                    with patch.object(wp, "_log_stderr", AsyncMock()):
                         await wp.start()
 
                 assert wp._running is True
