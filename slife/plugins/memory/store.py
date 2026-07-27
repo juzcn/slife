@@ -450,6 +450,48 @@ class SessionStore:
         )
         await self._conn.commit()
 
+    async def get_unembedded_turns(self, limit: int = 100) -> list[dict]:
+        """Return turns that have no embedding in diary_semantic.
+
+        These need re-indexing after embedding config is added or changed.
+        Returns lightweight rows: rowid, user_message, messages, created_at.
+        """
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            """SELECT d.rowid, d.user_message, d.messages, d.created_at
+               FROM diary d
+               WHERE d.rowid NOT IN (
+                   SELECT DISTINCT diary_rowid FROM diary_semantic
+               )
+               ORDER BY d.rowid
+               LIMIT ?""",
+            (limit,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def count_unembedded(self) -> int:
+        """Count turns that need re-indexing."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            """SELECT COUNT(*) FROM diary d
+               WHERE d.rowid NOT IN (
+                   SELECT DISTINCT diary_rowid FROM diary_semantic
+               )""",
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def clear_all_embeddings(self) -> int:
+        """Delete all rows from diary_semantic. Returns count deleted."""
+        assert self._conn is not None
+        cursor = await self._conn.execute("SELECT COUNT(*) FROM diary_semantic")
+        row = await cursor.fetchone()
+        count = row[0] if row else 0
+        await self._conn.execute("DELETE FROM diary_semantic")
+        await self._conn.commit()
+        logger.info("embeddings_cleared count=%d", count)
+        return count
+
     async def has_embedding(self, diary_rowid: int) -> bool:
         assert self._conn is not None
         cursor = await self._conn.execute(

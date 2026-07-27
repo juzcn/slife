@@ -434,6 +434,84 @@ async def memory_set_embedding(
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
+@mcp.tool(
+    name="memory_reindex",
+    description=(
+        "Re-embed all turns that are missing embeddings.\n"
+        "Use after: (1) configuring embeddings for the first time, "
+        "or (2) changing the embedding model/dimension.\n"
+        "If the embedding model changed, pass reset=true to clear "
+        "old embeddings first and re-index everything from scratch.\n"
+        "Processes in batches — may take a while for large databases.\n"
+        "Returns {total, indexed, complete} so you can call it repeatedly "
+        "until complete=true."
+    ),
+)
+async def memory_reindex(reset: bool = False, batch_limit: int = 20) -> str:
+    store = await _ensure_store()
+    if not _embedder or not _embedder.available:
+        return json.dumps(
+            {"error": "embedding 后端不可用。先使用 memory_set_embedding 配置。"},
+            ensure_ascii=False,
+        )
+
+    try:
+        if reset:
+            cleared = await store.clear_all_embeddings()
+            logger.info("reindex_reset cleared=%d", cleared)
+
+        total = await store.count_unembedded()
+        if total == 0:
+            return json.dumps(
+                {"total": 0, "indexed": 0, "complete": True,
+                 "message": "所有 turn 已嵌入，无需重建索引。"},
+                ensure_ascii=False, indent=2,
+            )
+
+        from slife.plugins.memory.store import _chunk_text, _turn_text_for_embedding
+
+        turns = await store.get_unembedded_turns(limit=batch_limit)
+        indexed = 0
+        for turn in turns:
+            try:
+                embed_text = _turn_text_for_embedding(
+                    turn["user_message"],
+                    json.loads(turn.get("messages", "[]")),
+                )
+                if embed_text.strip():
+                    chunks = _chunk_text(embed_text)
+                    valid = [c for c in chunks if len(c) // 4 <= _embedder.max_tokens]
+                    if valid:
+                        embeddings = await _embedder.embed(valid)
+                        if embeddings:
+                            for idx, emb in enumerate(embeddings):
+                                if emb:
+                                    await store.upsert_embedding(
+                                        diary_rowid=turn["rowid"], chunk_index=idx,
+                                        summary="", tags="",
+                                        created_at=turn["created_at"],
+                                        turn_embedding=emb,
+                                    )
+                indexed += 1
+            except Exception as e:
+                logger.debug("reindex_skip rowid=%s err=%s", turn["rowid"], e)
+
+        remaining = await store.count_unembedded()
+        return json.dumps({
+            "total": total,
+            "indexed": indexed,
+            "remaining": remaining,
+            "complete": remaining == 0,
+            "message": (
+                "所有 turn 已重建索引。" if remaining == 0
+                else f"已索引 {indexed} 条，还有 {remaining} 条。再次调用继续。"
+            ),
+        }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.exception("reindex_failed")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
 @mcp.tool(name="memory_remove_embedding",
           description="Remove the embedding configuration.")
 async def memory_remove_embedding() -> str:
