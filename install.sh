@@ -188,12 +188,13 @@ if [ -n "$SLIFE_LINE" ]; then
         OLD_PYTHON="$SLIFE_VENV/bin/python"
         if [ -x "$OLD_PYTHON" ]; then
             echo -e "  ${GRAY}Capturing installed packages from previous installation…${NC}"
-            # Normalize to bare package names (strip version, URL, and
-            # editable install prefixes).  Skip -e entries.
+            # Save full freeze (with versions) for display.
+            PRESERVED_FULL="${TMPDIR:-/tmp}/slife-preserved-full.txt"
             uv pip freeze --python "$OLD_PYTHON" 2>/dev/null \
                 | grep -v '^-e ' \
-                | sed 's/ @ .*//; s/==.*//' \
-                | grep -vE '^(slife|credstore)$' > "$PRESERVED_REQS" || true
+                | grep -vE '^(slife|credstore)[ @=]' > "$PRESERVED_FULL" || true
+            # Save name-only list for diff.
+            sed 's/ @ .*//; s/==.*//' "$PRESERVED_FULL" > "$PRESERVED_REQS"
             _count=$(wc -l < "$PRESERVED_REQS" 2>/dev/null || echo 0)
             if [ "$_count" -gt 0 ]; then
                 echo -e "  ${GRAY}Detected $_count packages to preserve${NC}"
@@ -278,7 +279,12 @@ if [ -s "$PRESERVED_REQS" ]; then
             echo -e "  ${GRAY}All packages already present — nothing to re-add${NC}"
             PRESERVE_OK=1
         else
-            echo -e "${YELLOW}  Re-adding $_extra_count extra packages…${NC}"
+            echo -e "${YELLOW}  Re-adding $_extra_count extra packages:${NC}"
+            # Show versions from full freeze.
+            while IFS= read -r _pkg; do
+                _ver=$(grep "^$_pkg[ @=]" "$PRESERVED_FULL" 2>/dev/null | head -1 || echo "$_pkg")
+                echo -e "    ${GRAY}$_ver${NC}"
+            done < "$EXTRA_REQS"
             # shellcheck disable=SC2086
             if uv pip install --python "$NEW_PYTHON" $EXTRA_INDEX_ARGS -r "$EXTRA_REQS" >> "$TOOL_INSTALL_LOG" 2>&1; then
                 PRESERVE_OK=1
