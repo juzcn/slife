@@ -5,7 +5,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from slife.paths import get_skills_dir
+from slife.paths import get_skills_dir, is_dev
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)))
@@ -25,4 +25,5 @@ def build(agent_id: str = "slife", agent_name: str = "") -> str:
         current_date=today.isoformat(),
         current_weekday=today.strftime("%A"),
         skills_dir=str(get_skills_dir().resolve()),
+        is_dev=is_dev(),
     ).strip()

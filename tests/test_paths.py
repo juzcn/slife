@@ -7,37 +7,37 @@ import pytest
 from slife import paths
 
 
-# ── _is_dev ──────────────────────────────────────────────────────────────
+# ── is_dev ──────────────────────────────────────────────────────────────
 
 
 class TestIsDev:
-    """Tests for the _is_dev helper."""
+    """Tests for the is_dev helper."""
 
     def test_returns_true_when_project_name_is_slife(self, tmp_path, monkeypatch):
         """A pyproject.toml with project.name == 'slife' means dev mode."""
         toml = tmp_path / "pyproject.toml"
         toml.write_text('[project]\nname = "slife"\n', encoding="utf-8")
         monkeypatch.chdir(tmp_path)
-        assert paths._is_dev() is True
+        assert paths.is_dev() is True
 
     def test_returns_false_when_project_name_differs(self, tmp_path, monkeypatch):
         """A pyproject.toml with a different project.name is NOT dev mode."""
         toml = tmp_path / "pyproject.toml"
         toml.write_text('[project]\nname = "other-package"\n', encoding="utf-8")
         monkeypatch.chdir(tmp_path)
-        assert paths._is_dev() is False
+        assert paths.is_dev() is False
 
     def test_returns_false_when_toml_missing(self, tmp_path, monkeypatch):
         """No pyproject.toml at all means production."""
         monkeypatch.chdir(tmp_path)
-        assert paths._is_dev() is False
+        assert paths.is_dev() is False
 
     def test_returns_false_when_toml_is_invalid(self, tmp_path, monkeypatch):
         """A malformed pyproject.toml is treated as non-dev."""
         toml = tmp_path / "pyproject.toml"
         toml.write_text("not valid toml {{{", encoding="utf-8")
         monkeypatch.chdir(tmp_path)
-        assert paths._is_dev() is False
+        assert paths.is_dev() is False
 
 
 # ── get_data_dir ─────────────────────────────────────────────────────────
@@ -54,13 +54,13 @@ class TestGetDataDir:
     def test_dev_mode_returns_cwd(self, monkeypatch):
         """In dev mode the project root (CWD) is the data dir."""
         monkeypatch.delenv("SLIFE_DATA_DIR", raising=False)
-        monkeypatch.setattr(paths, "_is_dev", lambda: True)
+        monkeypatch.setattr(paths, "is_dev", lambda: True)
         assert paths.get_data_dir() == Path.cwd()
 
     def test_production_returns_dot_slife_in_home(self, monkeypatch):
         """In production, data lives under ~/.slife/."""
         monkeypatch.delenv("SLIFE_DATA_DIR", raising=False)
-        monkeypatch.setattr(paths, "_is_dev", lambda: False)
+        monkeypatch.setattr(paths, "is_dev", lambda: False)
         assert paths.get_data_dir() == Path.home() / ".slife"
 
 

@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 
 try:
-    from slife.paths import _is_dev as _is_slife_dev
+    from slife.paths import is_dev as _is_slife_dev
 except ImportError:  # standalone credstore (not installed with slife)
     try:
         import tomllib

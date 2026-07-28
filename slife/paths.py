@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 
-def _is_dev() -> bool:
+def is_dev() -> bool:
     """Check whether we're running from the slife source tree."""
     try:
         import tomllib
@@ -32,7 +32,7 @@ def get_data_dir() -> Path:
     env = os.environ.get("SLIFE_DATA_DIR")
     if env:
         return Path(env)
-    if _is_dev():
+    if is_dev():
         return Path.cwd()
     return Path.home() / ".slife"
 
