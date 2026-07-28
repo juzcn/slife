@@ -26,8 +26,8 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 
 # ── Pre-flight summary ──────────────────────────────────────────────
-INSTALL_DIR="$HOME/.slife"
-echo "Install directory : ${CYAN}$INSTALL_DIR${NC}"
+echo "Install method    : uv tool install (isolated environment)"
+echo "User data         : ${CYAN}$HOME/.slife/${NC}"
 echo "Python            : auto-install 3.13 if needed"
 echo "npx               : auto-install Node.js if needed (required for MCP servers)"
 echo "Disk space needed : ~500 MB"
@@ -210,85 +210,36 @@ if [ -f "$PYPROJECT" ]; then
     fi
 fi
 
-# ── 5. Create venv + install slife ───────────────────────────────────
-# On upgrade: user data files in ~/.slife stay put — we only move them
-# aside while recreating the venv, then move back (same-fs mv is instant).
-# .credstore data is never touched by this script.
-echo -e "${YELLOW}[5/6] Installing slife v${VERSION} to $INSTALL_DIR…${NC}"
-if [ -d "$INSTALL_DIR" ]; then
-    echo -e "${YELLOW}  Upgrading existing installation…${NC}"
-    STASH_DIR="$TMP_DIR/slife-user-stash"
-    mkdir -p "$STASH_DIR"
-    # Move user data aside, leave venv artifacts behind for deletion.
-    for item in "$INSTALL_DIR"/* "$INSTALL_DIR"/.*; do
-        [ -e "$item" ] || continue
-        name="$(basename "$item")"
-        case "$name" in
-            .|..) ;;
-            bin|lib|include|pyvenv.cfg|Scripts|Lib|Include) ;;  # venv — skip
-            *) mv "$item" "$STASH_DIR/" 2>/dev/null || true ;;
-        esac
+# ── 5. Install slife with uv tool install ────────────────────────────
+# uv tool install creates an isolated venv, installs slife + credstore
+# (workspace member), and places the executables in ~/.local/bin.
+# User data (~/.slife/) is never touched by the installer.
+echo -e "${YELLOW}[5/6] Installing slife v${VERSION}…${NC}"
+
+# Clean up old venv artifacts if migrating from a previous install
+# that placed the venv inside ~/.slife/.  User data (config, logs,
+# DBs, skills) is preserved — we only remove venv internals.
+if [ -f "$HOME/.slife/pyvenv.cfg" ]; then
+    echo -e "${YELLOW}  Cleaning up old venv-based installation…${NC}"
+    for artifact in bin lib include pyvenv.cfg Scripts Lib Include; do
+        [ -e "$HOME/.slife/$artifact" ] && rm -rf "$HOME/.slife/$artifact"
     done
-    rm -rf "$INSTALL_DIR"
-    uv venv --python "$PYTHON" --seed "$INSTALL_DIR"
-    # Move user data back (harmless if stash is empty).
-    if [ -n "$(ls -A "$STASH_DIR" 2>/dev/null)" ]; then
-        shopt -s dotglob 2>/dev/null || true
-        mv "$STASH_DIR"/* "$INSTALL_DIR/" 2>/dev/null || true
-        shopt -u dotglob 2>/dev/null || true
-    fi
-    rm -rf "$STASH_DIR"
-else
-    uv venv --python "$PYTHON" --seed "$INSTALL_DIR"
 fi
 
-# Install slife from source into the venv (pip already seeded).
-echo -e "${YELLOW}  Installing slife and dependencies…${NC}"
-PIP_LOG="$TMP_DIR/pip-install.log"
-uv pip install --python "$INSTALL_DIR/bin/python" "$TMP_DIR/slife-main" > "$PIP_LOG" 2>&1 || {
+TOOL_INSTALL_LOG="$TMP_DIR/tool-install.log"
+uv tool install --from "$TMP_DIR/slife-main" --python "$PYTHON" slife > "$TOOL_INSTALL_LOG" 2>&1 || {
     echo -e "${RED}Error: slife installation failed.${NC}"
     echo -e "${YELLOW}Last lines of install log:${NC}"
-    tail -n 20 "$PIP_LOG"
+    tail -n 20 "$TOOL_INSTALL_LOG"
     echo -e "${YELLOW}Help: $SLIFE_REPO${NC}"
     exit 1
 }
 
-# Verify slife and credstore are installed correctly.
-echo -e "${YELLOW}  Verifying installation…${NC}"
+# ── 6. Clean up previous installation artifacts ──────────────────────
+echo -e "${YELLOW}[6/6] Cleaning up previous installation artifacts…${NC}"
 
-# Check slife + credstore packages are importable.
-if "$INSTALL_DIR/bin/python" -c "import slife; import credstore" 2>/dev/null; then
-    echo -e "    ${GREEN}✓${NC} slife + credstore packages"
-else
-    echo -e "    ${YELLOW}warning: import check failed${NC}"
-fi
-
-# Check CLI entry points exist (don't run them — --help triggers
-# full startup which may hang if config loading blocks).
-if [ -x "$INSTALL_DIR/bin/credstore" ]; then
-    echo -e "    ${GREEN}✓${NC} credstore CLI"
-else
-    echo -e "    ${YELLOW}warning: credstore CLI not found${NC}"
-fi
-
-if [ -x "$INSTALL_DIR/bin/slife" ]; then
-    echo -e "    ${GREEN}✓${NC} slife CLI"
-else
-    echo -e "    ${YELLOW}warning: slife CLI not found${NC}"
-fi
-
-# ── 6. Create entry-point symlinks (venv stays private) ─────────────
-echo -e "${YELLOW}[6/6] Configuring entry points…${NC}"
-
-# Symlink only slife + credstore into ~/.local/bin (already on PATH from Step 1).
-# The venv's python, pip, etc. stay private — only the two user-facing commands
-# are exposed globally.
-mkdir -p "$HOME/.local/bin"
-ln -sf "$INSTALL_DIR/bin/slife" "$HOME/.local/bin/slife"
-ln -sf "$INSTALL_DIR/bin/credstore" "$HOME/.local/bin/credstore"
-
-# Ensure ~/.local/bin is persisted in shell profiles (Step 1 added it to the
-# current session, but the profile entry makes it permanent).
+# Ensure ~/.local/bin is on PATH (uv puts tool executables here,
+# and Step 1 only added it to the current session).
 for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.config/fish/config.fish"; do
     if [ -f "$rc" ]; then
         if ! grep -qF "$HOME/.local/bin" "$rc" 2>/dev/null; then
@@ -316,7 +267,7 @@ echo "  credstore set DEEPSEEK_API_KEY       # store your API key"
 echo "  slife                                # launch the TUI"
 echo ""
 echo -e "${CYAN}Optional extras:${NC}"
-echo "  $INSTALL_DIR/bin/pip install 'slife[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu"
-echo "  $INSTALL_DIR/bin/pip install 'slife[transformer]'       # HuggingFace embeddings (~2 GB)"
+echo "  uv tool install --with \"slife[gguf]\" slife    # local GGUF models"
+echo "  uv tool install --with \"slife[transformer]\" slife  # HuggingFace embeddings (~2 GB)"
 echo ""
 echo -e "${CYAN}More info:${NC} $SLIFE_REPO"

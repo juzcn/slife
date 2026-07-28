@@ -29,9 +29,8 @@ try {
     Write-Host ""
 
     # ── Pre-flight summary ──────────────────────────────────────────
-    $installDir = "$env:USERPROFILE\.slife"
-    Write-Host "Install directory : " -NoNewline
-    Write-Host $installDir -ForegroundColor Cyan
+    Write-Host "Install method    : uv tool install (isolated environment)"
+    Write-Host "User data         : $env:USERPROFILE\.slife\"
     Write-Host "Python            : auto-install 3.13 if needed"
     Write-Host "npx               : auto-install Node.js if needed (required for MCP servers)"
     Write-Host "Disk space needed : ~500 MB"
@@ -288,125 +287,66 @@ try {
         }
     }
 
-    # ── 5. Create venv + install slife ──────────────────────────────
-    # On upgrade: user data files in ~\.slife stay put -- we only move them
-    # aside while recreating the venv, then move back.
-    # .credstore data is never touched by this script.
-    Write-Host "[5/6] Installing slife v$version to $installDir..." -ForegroundColor Yellow
-    if (Test-Path $installDir) {
-        Write-Host "  Upgrading existing installation..." -ForegroundColor Yellow
-        $stashDir = Join-Path $tmpDir "slife-user-stash"
-        New-Item -ItemType Directory -Force $stashDir | Out-Null
-        # Move user data aside; venv artifacts stay behind for deletion.
-        foreach ($item in Get-ChildItem $installDir) {
-            $name = $item.Name
-            if ($name -ne "Scripts" -and $name -ne "Lib" -and $name -ne "Include" -and $name -ne "pyvenv.cfg") {
-                Move-Item -Force $item.FullName "$stashDir\" -ErrorAction SilentlyContinue
+    # ── 5. Install slife with uv tool install ────────────────────────
+    # uv tool install creates an isolated venv, installs slife + credstore
+    # (workspace member), and places the executables in ~/.local/bin.
+    # User data (~/.slife/) is never touched by the installer.
+    Write-Host "[5/6] Installing slife v$version..." -ForegroundColor Yellow
+
+    # Clean up old venv artifacts if migrating from a previous install
+    # that placed the venv inside ~/.slife/.  User data (config, logs,
+    # DBs, skills) is preserved — we only remove venv internals.
+    if (Test-Path "$env:USERPROFILE\.slife\pyvenv.cfg") {
+        Write-Host "  Cleaning up old venv-based installation..." -ForegroundColor Yellow
+        foreach ($venvArtifact in @("Scripts", "Lib", "Include", "pyvenv.cfg")) {
+            $artifactPath = "$env:USERPROFILE\.slife\$venvArtifact"
+            if (Test-Path $artifactPath) {
+                Remove-Item -Recurse -Force $artifactPath -ErrorAction SilentlyContinue
             }
         }
-        Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
-        uv venv --python "$pythonPath" --seed "$installDir"
-        # Move user data back.
-        Get-ChildItem $stashDir -ErrorAction SilentlyContinue | ForEach-Object {
-            Move-Item -Force $_.FullName "$installDir\" -ErrorAction SilentlyContinue
-        }
-        Remove-Item -Recurse -Force $stashDir -ErrorAction SilentlyContinue
-    } else {
-        uv venv --python "$pythonPath" --seed "$installDir"
     }
 
-    # Install slife from source into the venv (pip already seeded).
-    Write-Host "  Installing slife and dependencies..." -ForegroundColor Yellow
-    $pipLog = Join-Path $tmpDir "pip-install.log"
+    $toolInstallLog = Join-Path $tmpDir "tool-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & uv pip install --python "$installDir\Scripts\python.exe" $extractedDir.FullName > $pipLog 2>&1
+    & uv tool install --from $extractedDir.FullName --python "$pythonPath" slife > $toolInstallLog 2>&1
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
         Write-Host "Error: slife installation failed." -ForegroundColor Red
         Write-Host "Last lines of install log:" -ForegroundColor Yellow
-        Get-Content $pipLog -Tail 20
+        Get-Content $toolInstallLog -Tail 20
         Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
         exit 1
     }
 
-    # Verify slife and credstore are installed correctly.
-    Write-Host "  Verifying installation..." -ForegroundColor Yellow
-    $allOk = $true
+    # ── 6. Clean up previous installation artifacts ──────────────────
+    Write-Host "[6/6] Cleaning up previous installation artifacts..." -ForegroundColor Yellow
 
-    # Check slife package is importable.
-    try {
-        & "$installDir\Scripts\python.exe" -c "import slife; import credstore"
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "    [OK] slife + credstore packages" -ForegroundColor Green
-        } else {
-            Write-Host "    warning: import check failed" -ForegroundColor Yellow
-            $allOk = $false
-        }
-    } catch {
-        Write-Host "    warning: import check failed" -ForegroundColor Yellow
-        $allOk = $false
-    }
-
-    # Check CLI entry points exist (don't run them — --help triggers
-    # full startup which hangs if config loading blocks).
-    if (Test-Path "$installDir\Scripts\credstore.exe") {
-        Write-Host "    [OK] credstore CLI" -ForegroundColor Green
-    } else {
-        Write-Host "    warning: credstore CLI not found" -ForegroundColor Yellow
-    }
-
-    if (Test-Path "$installDir\Scripts\slife.exe") {
-        Write-Host "    [OK] slife CLI" -ForegroundColor Green
-    } else {
-        Write-Host "    warning: slife CLI not found" -ForegroundColor Yellow
-    }
-
-    # ── 6. Create entry-point scripts (venv stays private) ──────────
-    Write-Host "[6/6] Configuring entry points..." -ForegroundColor Yellow
-
-    # Create wrapper .cmd files in ~/.local/bin (already on PATH from Step 1).
-    # This exposes ONLY slife + credstore — not python, pip, or any venv internals.
     $localBin = "$env:USERPROFILE\.local\bin"
-    New-Item -ItemType Directory -Force $localBin | Out-Null
 
-    # Clean up stale shims from older installs.
-    foreach ($stale in @(
-        "$localBin\slife.exe", "$localBin\credstore.exe",
-        "$localBin\python.cmd", "$localBin\pip.cmd"
-    )) {
+    # Remove stale .cmd wrappers from the old install approach.
+    foreach ($stale in @("$localBin\slife.cmd", "$localBin\credstore.cmd")) {
         if (Test-Path $stale) {
             Remove-Item $stale -Force
-            Write-Host "  Removed stale shim: $stale" -ForegroundColor DarkGray
+            Write-Host "  Removed stale wrapper: $stale" -ForegroundColor DarkGray
         }
     }
 
-    $slifeExe   = "$installDir\Scripts\slife.exe"
-    $credstoreExe = "$installDir\Scripts\credstore.exe"
-
-    @"
-@""$slifeExe" %*
-"@ | Out-File -FilePath "$localBin\slife.cmd" -Encoding ASCII
-
-    @"
-@"$credstoreExe" %*
-"@ | Out-File -FilePath "$localBin\credstore.cmd" -Encoding ASCII
-
-    # Ensure ~/.local/bin is persisted in user PATH (Step 1 added it to
-    # the current session, but not necessarily to the registry).
+    # Ensure ~/.local/bin is on PATH (uv puts tool executables here,
+    # and Step 1 only added it to the current session).
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($userPath -notlike "*$localBin*") {
         [Environment]::SetEnvironmentVariable("Path", "$localBin;$userPath", "User")
     }
     $env:PATH = "$localBin;$env:PATH"
 
-    # Clean up stale entry from older installs that put the venv itself on PATH.
-    $scriptsDir = "$installDir\Scripts"
+    # Clean up old PATH entries that pointed to the venv Scripts directory.
+    $scriptsDir = "$env:USERPROFILE\.slife\Scripts"
     $cleanedPath = ($userPath -split ';' | Where-Object { $_ -ne $scriptsDir }) -join ';'
     if ($cleanedPath -ne $userPath) {
         [Environment]::SetEnvironmentVariable("Path", $cleanedPath, "User")
-        Write-Host "  Cleaned up old PATH entry." -ForegroundColor DarkGray
+        Write-Host "  Removed stale PATH entry: $scriptsDir" -ForegroundColor DarkGray
     }
 
     Write-Host "  [OK] slife + credstore commands ready" -ForegroundColor Green
@@ -422,8 +362,8 @@ try {
     Write-Host "  slife                                # launch the TUI"
     Write-Host ""
     Write-Host "Optional extras:" -ForegroundColor Cyan
-    Write-Host "  $installDir\Scripts\pip install 'slife[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu"
-    Write-Host "  $installDir\Scripts\pip install 'slife[transformer]'       # HuggingFace embeddings (~2 GB)"
+    Write-Host "  uv tool install --with `"slife[gguf]`" slife    # local GGUF models"
+    Write-Host "  uv tool install --with `"slife[transformer]`" slife  # HuggingFace embeddings (~2 GB)"
     Write-Host ""
     Write-Host "More info: $slifeRepo" -ForegroundColor Cyan
 
