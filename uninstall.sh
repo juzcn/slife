@@ -43,6 +43,9 @@ if [ -d "$DATA_DIR" ]; then
     SIZE=$(du -sh "$DATA_DIR" 2>/dev/null | cut -f1)
     REMAIN+=("  ~/.slife/           (${SIZE:-?}) — config, logs, databases, skills")
 fi
+if [ -d "$HOME/.credstore" ]; then
+    REMAIN+=("  ~/.credstore/       — encrypted credential backup")
+fi
 
 if [ ${#REMAIN[@]} -gt 0 ]; then
     echo -e "${YELLOW}Data files NOT removed (delete manually if desired):${NC}"

@@ -49,6 +49,10 @@ if (Test-Path $dataDir) {
     $size = "{0:F1} MB" -f ((Get-ChildItem $dataDir -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB)
     $remain += "  ~\.slife\           ($size) — config, logs, databases, skills"
 }
+$credstoreDir = "$env:USERPROFILE\.credstore"
+if (Test-Path $credstoreDir) {
+    $remain += "  ~\.credstore\       — encrypted credential backup"
+}
 
 if ($remain.Count -gt 0) {
     Write-Host "Data files NOT removed (delete manually if desired):" -ForegroundColor Yellow
