@@ -188,7 +188,15 @@ async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
     """
     store = await _ensure_store()
     if not _embedder or not _embedder.available:
-        return {"complete": True, "reason": "embedder unavailable"}
+        # If embedding is configured but the runtime check fails
+        # (e.g. llama-cpp-python not installed yet), keep retrying.
+        # If embedding was never configured, exit cleanly — the task
+        # will be restarted by memory_set_embedding when needed.
+        from slife.plugins.memory.embedding_config import read_embedding_config
+        cfg = read_embedding_config()
+        if cfg and cfg.get("enabled", True):
+            return {"complete": False, "reason": "embedder unavailable, will retry"}
+        return {"complete": True, "reason": "embedder not configured"}
 
     if reset:
         cleared = await store.clear_all_embeddings()
