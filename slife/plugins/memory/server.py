@@ -473,10 +473,9 @@ async def memory_summarize(
 @mcp.tool(
     name="memory_check_embedding",
     description=(
-        "Check embedding backend status and reindex progress.\n"
-        "Returns: configured backend, model, dimension, available flag,\n"
-        "unembedded count (turns still waiting for reindex), and a hint\n"
-        "with actionable next steps."
+        "Check embedding backend status and reindex progress. "
+        "Returns backend, model, dimension, available flag, "
+        "unembedded count, and actionable next-step hints."
     ),
 )
 async def memory_check_embedding() -> str:
@@ -499,18 +498,12 @@ async def memory_check_embedding() -> str:
 @mcp.tool(
     name="memory_set_embedding",
     description=(
-        "Configure or re-enable the embedding backend.\n"
-        "Also use this to re-enable after memory_disable_embedding —\n"
-        "re-enabling the same model reuses existing embeddings, no re-index needed.\n"
-        "\n"
-        "Backends:\n"
-        "  'gguf'        — local GGUF model (offline, ~30 MB). Requires gguf_path.\n"
-        "  'transformer' — HuggingFace sentence-transformers (~2 GB). Requires slife[transformer].\n"
-        "  'api'         — OpenAI-compatible API. Uses the first provider's api_key.\n"
-        "\n"
-        "On first config or model change, existing turns are automatically\n"
-        "re-indexed in the background. Hybrid search works as soon as the\n"
-        "first batch completes."
+        "Configure the embedding backend for semantic (hybrid) search. "
+        "Re-enable via memory_set_enabled(enabled=true) — reuses existing "
+        "embeddings, no re-index needed. "
+        "On first config or model change, existing turns are auto re-indexed "
+        "in the background; hybrid search works as soon as the first batch "
+        "completes."
     ),
 )
 async def memory_set_embedding(
@@ -520,6 +513,17 @@ async def memory_set_embedding(
     dim: int = 0,
     device: str = "",
 ) -> str:
+    """Configure the embedding backend.
+
+    Args:
+        backend: ``"gguf"``, ``"transformer"``, or ``"api"``.
+        model: Model name. Default ``"bge-m3"``. For API backend this is
+            the OpenAI model ID (e.g. ``"text-embedding-3-small"``).
+        gguf_path: Path to .gguf file. Required when ``backend="gguf"``.
+        dim: Explicit embedding dimension. Auto-detected when 0 (default).
+        device: Device override for transformer backend
+            (``"cpu"`` / ``"cuda"``). Auto-detect when empty.
+    """
     from slife.plugins.memory.embedding_config import (
         write_embedding_config, validate_gguf_path,
         get_first_provider_api_key, reload_embedder,
@@ -590,11 +594,10 @@ async def memory_reindex(reset: bool = False, batch_limit: int = 10) -> str:
 @mcp.tool(
     name="memory_set_enabled",
     description=(
-        "Enable or disable semantic search.\n"
-        "- enabled=true  → re-enable (reuses existing config + embeddings).\n"
-        "- enabled=false → disable (config + embeddings preserved).\n"
-        "When re-enabling, turns saved while disabled are auto re-indexed.\n"
-        "Use memory_set_embedding to configure/switch the backend and model."
+        "Enable or disable semantic (hybrid) search. "
+        "Disabling preserves embeddings; re-enabling auto re-indexes "
+        "turns saved while disabled. "
+        "Use memory_set_embedding to configure backend/model first."
     ),
 )
 async def memory_set_enabled(enabled: bool) -> str:
