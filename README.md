@@ -65,18 +65,47 @@ After installation, the `slife` and `credstore` commands are available globally:
 | Package files | `~/.local/share/uv/tools/slife/` |
 | User data | `~/.slife/` (auto-created on first run) |
 
-### Uninstall
+### Update / Reinstall
+
+Re-running the install script **preserves optional packages** (llama-cpp-python, sentence-transformers) that were installed in the previous venv — no need to re-add extras manually after an update.
 
 ```bash
-uv tool uninstall slife
+# Re-run the install script — preserves extras automatically
+curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
 ```
 
-User data (config, memory DB, WeChat sessions, credentials backup) lives in `~/.slife/`. In development (when a `slife.json5` exists in the current directory), data stays in the project directory for easy debugging. Delete manually if desired:
+### Uninstall
+
+Use the uninstall script (or `uv tool uninstall slife` directly — same effect).
+
+**macOS / Linux / WSL:**
 
 ```bash
-rm -rf ~/.slife                            # all user data (production)
-credstore delete DEEPSEEK_API_KEY          # remove a stored secret
-credstore list                             # list all stored credentials
+curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/uninstall.sh | bash
+```
+
+**Windows PowerShell:**
+
+```powershell
+.\uninstall.ps1
+```
+
+`uv tool uninstall slife` removes both `slife` and `credstore` (they share the same isolated venv).  User data files are listed after uninstall but **not removed** — delete them manually if desired:
+
+| Path | Contents |
+|------|----------|
+| `~/.slife/` | Config, memory DB, logs, WeChat sessions, skills |
+| `~/.credstore/` | Encrypted credential backup (cryptfile) |
+
+**Full reset** = uninstall + delete data + reinstall:
+
+```bash
+# 1. Uninstall
+curl -fsSL https://.../uninstall.sh | bash
+# 2. Delete user data (optional — the uninstall script reminds you)
+rm -rf ~/.slife ~/.credstore
+# 3. Reinstall
+curl -fsSL https://.../install.sh | bash
 ```
 
 ### Optional Extras
@@ -120,12 +149,12 @@ slife
 # > check embedding status
 ```
 
-**Windows users**: `llama-cpp-python` needs a pre-built wheel (no C++ compiler required).  The Vulkan variant works on any GPU and falls back to CPU:
+**Windows users**: `llama-cpp-python` needs a pre-built wheel (no C++ compiler required).  The Vulkan variant works on any GPU and falls back to CPU.  Use `uv pip install` to install into slife's venv:
 
 ```bash
 uv tool install "slife[gguf]" --reinstall
 # Then install the platform wheel into the tool's venv:
-uv tool run --from slife pip install "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+uv pip install --python "$(uv tool list --show-paths | grep 'slife v' | sed -n 's/.*(\(.*\)).*/\1/p')/bin/python" "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
 ```
 
 Alternative CUDA wheels: `v0.3.34-cu132`, `v0.3.34-cu125`; AMD: `v0.3.34-hip-radeon`.
