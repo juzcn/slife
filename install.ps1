@@ -200,7 +200,7 @@ try {
     $prevInstall = uv tool list 2>&1 | Select-String "slife"
     if ($prevInstall) {
         Write-Host "  Removing previous slife installation..." -ForegroundColor Yellow
-        & uv tool uninstall slife 2>&1 | Out-Null
+        $null = uv tool uninstall slife 2>$null
     }
 
     # Clean up old venv artifacts if migrating from a previous install
