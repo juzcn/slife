@@ -16,7 +16,7 @@ from pathlib import Path
 from slife.bootstrap import setup_logging
 from slife.config import Config, parse_cli_agent
 from slife.logfmt import init_session_id
-from slife.paths import get_data_dir, get_config_path
+from slife.paths import get_config_path, get_data_dir, get_skills_dir
 from slife.ui.app import SlifeApp
 
 logger = logging.getLogger("slife")
@@ -75,6 +75,16 @@ def main(config_path: str = "slife.json5"):
         _cp = get_config_path()  # resolve to ~/.slife/slife.json5 or CWD/slife.json5
     os.environ["SLIFE_DATA_DIR"] = data_dir
     os.environ["SLIFE_CONFIG_DIR"] = data_dir
+
+    # Seed skills from the installed package to the data directory on
+    # first run, so users can edit and add their own skills.
+    _skills_dir = get_skills_dir()
+    if not _skills_dir.exists():
+        _pkg_skills = Path(__file__).resolve().parent / "skills"
+        if _pkg_skills.is_dir():
+            import shutil as _shutil
+            _shutil.copytree(_pkg_skills, _skills_dir)
+            logger.info("skills_seeded from=%s to=%s", _pkg_skills, _skills_dir)
 
     # Generate session ID — shared with MCP subprocess via env var
     sid = init_session_id()

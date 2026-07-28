@@ -54,7 +54,6 @@ credstore = "credstore.__main__:main"
 packages = ["slife"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"skills" = "slife/skills"
 "credstore/credstore" = "credstore"
 "slife.template.json5" = "slife/slife.template.json5"
 

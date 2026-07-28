@@ -105,33 +105,14 @@ class TestGetDbPath:
 
 
 class TestGetSkillsDir:
-    """Tests for get_skills_dir."""
+    """Tests for get_skills_dir — always returns data_dir/skills."""
 
-    def test_package_skills_dir_exists(self, monkeypatch, tmp_path):
-        """When the skills dir exists next to paths.py, return it."""
-        pkg_dir = tmp_path / "slife"
-        pkg_dir.mkdir()
-        skills_dir = pkg_dir / "skills"
-        skills_dir.mkdir()
-        dummy_paths = pkg_dir / "paths.py"
-        dummy_paths.write_text("")
-        monkeypatch.setattr(paths, "__file__", str(dummy_paths))
-        result = paths.get_skills_dir()
-        assert result.resolve() == skills_dir.resolve()
-
-    def test_falls_back_to_data_dir_skills(self, monkeypatch, tmp_path):
-        """When the package skills dir doesn't exist, use data_dir/skills."""
+    def test_returns_data_dir_skills(self, monkeypatch, tmp_path):
+        """Skills live under the data directory."""
         monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path / "data"))
-        # Ensure the package skills dir check fails
-        monkeypatch.setattr(
-            paths, "__file__",
-            str(tmp_path / "slife" / "paths.py"),
-        )
-        result = paths.get_skills_dir()
-        assert result == tmp_path / "data" / "skills"
+        assert paths.get_skills_dir() == tmp_path / "data" / "skills"
 
     def test_env_var_flows_through(self, monkeypatch):
-        """When SLIFE_DATA_DIR is set, the fallback uses it."""
+        """When SLIFE_DATA_DIR is set, skills path uses it."""
         monkeypatch.setenv("SLIFE_DATA_DIR", "/env-data")
-        result = paths.get_skills_dir()
-        assert result == Path("/env-data/skills")
+        assert paths.get_skills_dir() == Path("/env-data/skills")

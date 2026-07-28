@@ -77,10 +77,7 @@ def get_environment_info() -> dict:
 def get_skills_dir() -> Path:
     """Directory containing skill subdirectories.
 
-    In production, skills are bundled inside the installed slife package.
-    In dev mode, they're at ``<project_root>/skills/``.
+    Always ``<data_dir>/skills/`` — ``~/.slife/skills/`` in production,
+    ``<project_root>/skills/`` in dev mode.
     """
-    pkg_skills = Path(__file__).resolve().parent / "skills"
-    if pkg_skills.is_dir():
-        return pkg_skills
     return get_data_dir() / "skills"
