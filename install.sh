@@ -238,20 +238,33 @@ if [ -s "$PRESERVED_REQS" ]; then
         PYPROJECT="$TMP_DIR/slife-main/pyproject.toml"
         if [ -f "$PYPROJECT" ]; then
             _in_tool_uv=""
+            _collect=""
             while IFS= read -r _line; do
                 case "$_line" in
-                    '['tool.uv']') _in_tool_uv=1 ;;
+                    '['tool.uv']') _in_tool_uv=1; continue ;;
                     '['*']') [ -n "$_in_tool_uv" ] && break ;;
                 esac
                 if [ -n "$_in_tool_uv" ]; then
-                    _url=$(echo "$_line" | sed -n 's/.*extra-index-url[[:space:]]*=[[:space:]]*\["\([^"]*\)"\].*/\1/p')
+                    # Multi-line array: extra-index-url = ["..."]
+                    if [ -z "$_collect" ] && echo "$_line" | grep -q 'extra-index-url[[:space:]]*=[[:space:]]*\['; then
+                        _collect="$_line"
+                    elif [ -n "$_collect" ]; then
+                        _collect="$_collect $_line"
+                        echo "$_line" | grep -q '\]' && break
+                    fi
+                    # Single-line: extra-index-url = "..." or extra-index-url = ["..."]
+                    _url=$(echo "$_line" | sed -n 's/.*extra-index-url[[:space:]]*=[[:space:]]*\[*"\([^"]*\)"\]*.*/\1/p')
                     if [ -n "$_url" ]; then
-                        _url=$(echo "$_url" | sed "s/^\[//; s/\]$//; s/\"//g; s/,$//; s/^[[:space:]]*//; s/[[:space:]]*$//")
-                        [ -n "$_url" ] && EXTRA_INDEX_ARGS="--extra-index-url $_url"
+                        EXTRA_INDEX_ARGS="--extra-index-url $_url"
                         break
                     fi
                 fi
             done < "$PYPROJECT"
+            # Fallback: extract URL from collected multi-line value
+            if [ -z "$EXTRA_INDEX_ARGS" ] && [ -n "$_collect" ]; then
+                _url=$(echo "$_collect" | sed 's/.*=\s*\[//; s/\]//; s/"//g; s/,//g; s/^[[:space:]]*//; s/[[:space:]]*$//')
+                [ -n "$_url" ] && EXTRA_INDEX_ARGS="--extra-index-url $_url"
+            fi
         fi
 
         # Diff old freeze against new venv — only re-add packages not

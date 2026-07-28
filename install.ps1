@@ -279,11 +279,25 @@ try {
             if (Test-Path $pyprojectPath) {
                 $pyprojectContent = Get-Content $pyprojectPath -Raw
                 $inToolUv = $false
-                foreach ($line in ($pyprojectContent -split "`n")) {
+                $lines = $pyprojectContent -split "`n"
+                for ($i = 0; $i -lt $lines.Count; $i++) {
+                    $line = $lines[$i]
                     if ($line -match '^\[tool\.uv\]') { $inToolUv = $true; continue }
                     if ($inToolUv -and $line -match '^\[') { break }
-                    if ($inToolUv -and $line -match 'extra-index-url\s*=\s*\[?') {
-                        $url = ($line -split '=\s*')[1] -replace '^\[', '' -replace '\]$', '' -replace '"', '' -replace "'", '' -replace ',$', '' -replace '^\s*\[', '' -replace '\]\s*$', ''
+                    if ($inToolUv -and $line -match 'extra-index-url\s*=\s*\[') {
+                        # Multi-line array: collect lines until ]
+                        $collect = $line -replace '.*=\s*\[', ''
+                        while ($i + 1 -lt $lines.Count -and $collect -notmatch '\]') {
+                            $i++
+                            $collect += $lines[$i]
+                        }
+                        $url = ($collect -replace '"', '' -replace "'", '' -replace '\]', '' -replace ',', '' -replace '\s+', '').Trim()
+                        if ($url) { $extraIndexArgs += @("--extra-index-url", $url) }
+                        break
+                    }
+                    if ($inToolUv -and $line -match 'extra-index-url\s*=\s*"') {
+                        # Single-line value
+                        $url = ($line -split '=\s*"')[1] -replace '"', '' -replace ',$', '' -replace '\s+', ''
                         if ($url) { $extraIndexArgs += @("--extra-index-url", $url.Trim()) }
                         break
                     }
