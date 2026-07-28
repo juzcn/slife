@@ -5,7 +5,9 @@ set -euo pipefail
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
 #
-# No prerequisites — the script installs Python 3.13 and uv if needed.
+# No prerequisites — the script installs uv if needed, then uses
+# ``uv tool install`` to install slife in an isolated environment.
+# Python 3.13 is managed automatically by uv.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -28,7 +30,7 @@ echo ""
 # ── Pre-flight summary ──────────────────────────────────────────────
 echo "Install method    : uv tool install (isolated environment)"
 echo "User data         : ${CYAN}$HOME/.slife/${NC}"
-echo "Python            : auto-install 3.13 if needed"
+echo "Python            : managed by uv (3.13)"
 echo "npx               : auto-install Node.js if needed (required for MCP servers)"
 echo "Disk space needed : ~500 MB"
 echo ""
@@ -44,66 +46,17 @@ if command -v df &>/dev/null; then
     fi
 fi
 
-# ── 1. Ensure uvx is available (bundled with uv) ────────────────────
-echo -e "${YELLOW}[1/6] Checking uvx (Python package runner)…${NC}"
-if ! command -v uvx &>/dev/null; then
-    echo -e "${YELLOW}  Installing uv (includes uvx)…${NC}"
+# ── 1. Ensure uv is available ──────────────────────────────────────
+echo -e "${YELLOW}[1/5] Ensuring uv is available…${NC}"
+if ! command -v uv &>/dev/null; then
+    echo -e "${YELLOW}  Installing uv…${NC}"
     curl --progress-bar -Lf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
-echo -e "${GREEN}  ✓${NC} uvx $(uvx --version 2>&1)"
+echo -e "${GREEN}  ✓${NC} uv $(uv --version 2>&1)"
 
-# ── 2. Ensure Python >= 3.13 is available ────────────────────────────
-echo -e "${YELLOW}[2/6] Checking Python >= 3.13…${NC}"
-PYTHON=""
-for candidate in python3.13 python3 python; do
-    if command -v "$candidate" &>/dev/null; then
-        ver=$("$candidate" -c 'import sys; print(".".join(map(str, sys.version_info[:2])))' 2>/dev/null || echo "0.0")
-        major=$(echo "$ver" | cut -d. -f1)
-        minor=$(echo "$ver" | cut -d. -f2)
-        if [ "$major" -gt 3 ] || ([ "$major" -eq 3 ] && [ "$minor" -ge 13 ]); then
-            PYTHON="$candidate"
-            break
-        fi
-        echo -e "  Found $candidate ($ver) — too old (need >= 3.13)" >&2
-    fi
-done
-
-if [ -z "$PYTHON" ]; then
-    echo -e "${YELLOW}  Python >= 3.13 not found, installing…${NC}"
-    INSTALLED=false
-    if command -v apt-get &>/dev/null; then
-        echo -e "${YELLOW}  Installing Python 3.13 via apt…${NC}"
-        sudo apt-get update -qq && sudo apt-get install -y python3.13 python3.13-venv 2>/dev/null && INSTALLED=true
-    elif command -v brew &>/dev/null; then
-        echo -e "${YELLOW}  Installing Python 3.13 via Homebrew…${NC}"
-        brew install python@3.13 2>/dev/null && INSTALLED=true
-    elif command -v dnf &>/dev/null; then
-        echo -e "${YELLOW}  Installing Python 3.13 via dnf…${NC}"
-        sudo dnf install -y python3.13 2>/dev/null && INSTALLED=true
-    elif command -v pacman &>/dev/null; then
-        echo -e "${YELLOW}  Installing Python 3.13 via pacman…${NC}"
-        sudo pacman -S --noconfirm python 2>/dev/null && INSTALLED=true
-    fi
-    if [ "$INSTALLED" = true ]; then
-        PYTHON="$(command -v python3.13 2>/dev/null || command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")"
-        if [ -z "$PYTHON" ]; then
-            echo -e "${RED}Error: Python 3.13 installed but not found on PATH.${NC}"
-            exit 1
-        fi
-    else
-        echo -e "${RED}Error: no supported package manager found.${NC}"
-        echo -e "${YELLOW}Install Python 3.13 manually from https://python.org/downloads${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}  ✓${NC} Python 3.13 installed"
-else
-    echo -e "${GREEN}  found${NC}"
-fi
-echo -e "  Selected: ${CYAN}$PYTHON${NC} ($($PYTHON --version 2>&1))"
-
-# ── 3. Ensure npx (Node.js) is available ─────────────────────────────
-echo -e "${YELLOW}[3/6] Checking npx (Node.js package runner)…${NC}"
+# ── 2. Ensure npx (Node.js) is available ─────────────────────────────
+echo -e "${YELLOW}[2/5] Ensuring npx (Node.js) is available…${NC}"
 HAVE_NPX=false
 if command -v npx &>/dev/null; then
     echo -e "${GREEN}  ✓${NC} npx v$(npx --version 2>&1)"
@@ -190,9 +143,9 @@ else
     fi
 fi
 
-# ── 4. Download and verify slife ─────────────────────────────────────
+# ── 3. Download and verify slife ─────────────────────────────────────
 echo ""
-echo -e "${YELLOW}[4/6] Downloading slife…${NC}"
+echo -e "${YELLOW}[3/5] Downloading slife…${NC}"
 curl --progress-bar -fL "$SLIFE_TARBALL" -o "$TMP_DIR/slife.tar.gz"
 
 # Print SHA256 so users can verify integrity if desired.
@@ -210,15 +163,15 @@ if [ -f "$PYPROJECT" ]; then
     fi
 fi
 
-# ── 5. Install slife with uv tool install ────────────────────────────
+# ── 4. Install slife with uv tool install ────────────────────────────
 # uv tool install creates an isolated venv, installs slife + credstore
 # (workspace member), and places the executables in ~/.local/bin.
-# User data (~/.slife/) is never touched by the installer.
-echo -e "${YELLOW}[5/6] Installing slife v${VERSION}…${NC}"
+# Python 3.13 is managed automatically by uv.
+# User data (~/.slife/) is never touched.
+echo -e "${YELLOW}[4/5] Installing slife v${VERSION}…${NC}"
 
 # Clean up old venv artifacts if migrating from a previous install
-# that placed the venv inside ~/.slife/.  User data (config, logs,
-# DBs, skills) is preserved — we only remove venv internals.
+# that placed the venv inside ~/.slife/.  User data is preserved.
 if [ -f "$HOME/.slife/pyvenv.cfg" ]; then
     echo -e "${YELLOW}  Cleaning up old venv-based installation…${NC}"
     for artifact in bin lib include pyvenv.cfg Scripts Lib Include; do
@@ -227,7 +180,7 @@ if [ -f "$HOME/.slife/pyvenv.cfg" ]; then
 fi
 
 TOOL_INSTALL_LOG="$TMP_DIR/tool-install.log"
-uv tool install --from "$TMP_DIR/slife-main" --python "$PYTHON" --with pip slife > "$TOOL_INSTALL_LOG" 2>&1 || {
+uv tool install --from "$TMP_DIR/slife-main" --python 3.13 --with pip slife > "$TOOL_INSTALL_LOG" 2>&1 || {
     echo -e "${RED}Error: slife installation failed.${NC}"
     echo -e "${YELLOW}Last lines of install log:${NC}"
     tail -n 20 "$TOOL_INSTALL_LOG"
@@ -235,8 +188,8 @@ uv tool install --from "$TMP_DIR/slife-main" --python "$PYTHON" --with pip slife
     exit 1
 }
 
-# ── 6. Clean up previous installation artifacts ──────────────────────
-echo -e "${YELLOW}[6/6] Cleaning up previous installation artifacts…${NC}"
+# ── 5. Clean up previous installation artifacts ──────────────────────
+echo -e "${YELLOW}[5/5] Cleaning up previous installation artifacts…${NC}"
 
 # Ensure ~/.local/bin is on PATH (uv puts tool executables here,
 # and Step 1 only added it to the current session).
@@ -255,7 +208,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 echo -e "${GREEN}  ✓${NC} slife + credstore commands ready"
 
-# ── 7. Done ───────────────────────────────────────────────────────────
+# ── 6. Done ───────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║  Slife v${VERSION} installed successfully! 🎉  ║${NC}"

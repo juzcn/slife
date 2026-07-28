@@ -3,8 +3,9 @@
     Slife one-click installer for Windows PowerShell.
 
 .DESCRIPTION
-    No prerequisites — the script installs Python 3.13 and uv if needed,
-    then installs slife in an isolated environment.
+    No prerequisites — the script installs uv if needed, then uses
+    ``uv tool install`` to install slife in an isolated environment.
+    Python 3.13 is managed automatically by uv.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 | iex"
@@ -31,7 +32,7 @@ try {
     # ── Pre-flight summary ──────────────────────────────────────────
     Write-Host "Install method    : uv tool install (isolated environment)"
     Write-Host "User data         : $env:USERPROFILE\.slife\"
-    Write-Host "Python            : auto-install 3.13 if needed"
+    Write-Host "Python            : managed by uv (3.13)"
     Write-Host "npx               : auto-install Node.js if needed (required for MCP servers)"
     Write-Host "Disk space needed : ~500 MB"
     Write-Host ""
@@ -46,118 +47,18 @@ try {
         exit 1
     }
 
-    # ── 1. Ensure uvx is available (bundled with uv) ──────────────────
-    Write-Host "[1/6] Checking uvx (Python package runner)..." -ForegroundColor Yellow
-    if (-not (Get-Command uvx -ErrorAction SilentlyContinue)) {
-        Write-Host "  Installing uv (includes uvx)..." -ForegroundColor Yellow
+    # ── 1. Ensure uv is available ──────────────────────────────────
+    Write-Host "[1/5] Ensuring uv is available..." -ForegroundColor Yellow
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+        Write-Host "  Installing uv..." -ForegroundColor Yellow
         powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-        $env:PATH = "$env:USERPROFILE\.local\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
+        $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
     }
-    $uvxVer = uvx --version 2>&1
-    Write-Host "  [OK] uvx $uvxVer" -ForegroundColor Green
+    $uvVer = uv --version 2>&1
+    Write-Host "  [OK] uv $uvVer" -ForegroundColor Green
 
-    # ── 2. Ensure Python >= 3.13 is available ───────────────────────
-    Write-Host "[2/6] Checking Python >= 3.13..." -ForegroundColor Yellow
-    $python = $null
-    foreach ($candidate in @("python3.13", "python3", "python")) {
-        $found = Get-Command $candidate -ErrorAction SilentlyContinue
-        if ($found) {
-            try {
-                $ver = & $candidate -c "import sys; print('.'.join(map(str, sys.version_info[:2])))"
-                $parts = $ver -split '\.'
-                $major = [int]$parts[0]
-                $minor = [int]$parts[1]
-                if ($major -gt 3 -or ($major -eq 3 -and $minor -ge 13)) {
-                    $python = $candidate
-                    break
-                }
-                Write-Host "  Found $candidate ($ver) -- too old (need >= 3.13)" -ForegroundColor Yellow
-            } catch { }
-        }
-    }
-
-    if (-not $python) {
-        # Check known install locations before reaching for winget.
-        # Python 3.13 may already be installed but not on PATH (e.g.
-        # fresh winget install whose registry PATH hasn't propagated,
-        # or Python.org installer with "Add to PATH" unchecked).
-        $pyExe = $null
-        $pyDir = $null
-        $knownDirs = @(
-            "$env:LOCALAPPDATA\Programs\Python\Python313",        # winget / python.org per-user
-            "$env:ProgramFiles\Python313",                         # python.org all-users
-            "$env:SystemDrive\Python313"                           # python.org root
-        )
-        foreach ($dir in $knownDirs) {
-            $candidate = "$dir\python.exe"
-            if (Test-Path $candidate) {
-                $pyDir = $dir
-                $pyExe = $candidate
-                Write-Host "  Found Python at $pyDir (not on PATH)" -ForegroundColor Yellow
-                break
-            }
-        }
-
-        if (-not $pyExe) {
-            Write-Host "  Python >= 3.13 not found, installing via winget..." -ForegroundColor Yellow
-            $winget = Get-Command winget -ErrorAction SilentlyContinue
-            if ($winget) {
-                winget install Python.Python.3.13 --accept-package-agreements --accept-source-agreements
-                # winget exits non-zero when the package is already installed
-                # and no upgrade is available — that's fine, check the disk.
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Host "  winget exited with code $LASTEXITCODE (may already be installed)" -ForegroundColor Yellow
-                }
-                # winget installs to %LOCALAPPDATA%\Programs\Python\Python313\
-                $pyDir = "$env:LOCALAPPDATA\Programs\Python\Python313"
-                $pyExe = "$pyDir\python.exe"
-                if (-not (Test-Path $pyExe)) {
-                    # Last resort: refresh PATH and search
-                    $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-                    $cmd = Get-Command python -ErrorAction SilentlyContinue
-                    if ($cmd) {
-                        $pyExe = $cmd.Source
-                        $pyDir = [System.IO.Path]::GetDirectoryName($pyExe)
-                    }
-                }
-                if (-not (Test-Path $pyExe)) {
-                    Write-Host "Error: Python 3.13 not found after installation." -ForegroundColor Red
-                    Write-Host "Install manually from https://python.org/downloads/" -ForegroundColor Yellow
-                    exit 1
-                }
-            } else {
-                Write-Host "Error: winget not available." -ForegroundColor Red
-                Write-Host "Install Python 3.13 manually from https://python.org/downloads/" -ForegroundColor Yellow
-                exit 1
-            }
-        }
-        $pythonPath = [System.IO.Path]::GetFullPath($pyExe)
-        # Ensure the Python directory is on the current session PATH
-        $env:PATH = "$pyDir;$pyDir\Scripts;$env:PATH"
-        Write-Host "  [OK] Python 3.13 ready" -ForegroundColor Green
-    } else {
-        Write-Host "  found" -ForegroundColor Green
-        $pythonPath = [System.IO.Path]::GetFullPath((Get-Command $python).Source)
-    }
-    $pyVer = & "$pythonPath" --version 2>&1
-    Write-Host "  Selected: $pythonPath ($pyVer)" -ForegroundColor Cyan
-
-    # Disable Windows Store app execution aliases that shadow real Python.
-    Write-Host "  Removing Windows Store Python aliases..." -ForegroundColor Yellow
-    foreach ($alias in @("python", "python3")) {
-        $aliasPath = "$env:LOCALAPPDATA\Microsoft\WindowsApps\$alias.exe"
-        if (Test-Path $aliasPath) {
-            try {
-                Remove-Item $aliasPath -Force -ErrorAction Stop
-                Write-Host "    Removed: $aliasPath" -ForegroundColor Green
-            } catch {
-                Write-Host "    Could not remove $aliasPath (admin rights needed, skipped)" -ForegroundColor Yellow
-            }
-        }
-    }
-
-    # ── 3. Ensure npx (Node.js) is available ────────────────────────
-    Write-Host "[3/6] Checking npx (Node.js package runner)..." -ForegroundColor Yellow
+    # ── 2. Ensure npx (Node.js) is available ────────────────────────
+    Write-Host "[2/5] Ensuring npx (Node.js) is available..." -ForegroundColor Yellow
     $haveNpx = $false
     if (Get-Command npx -ErrorAction SilentlyContinue) {
         try {
@@ -241,8 +142,8 @@ try {
     }
     Write-Host ""
 
-    # ── 4. Download and verify slife ────────────────────────────────
-    Write-Host "[4/6] Downloading slife..." -ForegroundColor Yellow
+    # ── 3. Download and verify slife ────────────────────────────────
+    Write-Host "[3/5] Downloading slife..." -ForegroundColor Yellow
 
     # PowerShell 5.1's Invoke-WebRequest can throw IndexOutOfRangeException
     # on GitHub's HTTP response headers.  Set TLS 1.2 and use curl.exe as
@@ -276,8 +177,7 @@ try {
     Expand-Archive -Path $zipFile -DestinationPath $tmpDir -Force
     $extractedDir = Get-ChildItem -Path $tmpDir -Directory | Select-Object -First 1
 
-    # Read version from pyproject.toml (anchor at line start so we only
-    # match the project version, not a dependency version specifier).
+    # Read version from pyproject.toml.
     $version = "unknown"
     $pyprojectPath = Join-Path $extractedDir.FullName "pyproject.toml"
     if (Test-Path $pyprojectPath) {
@@ -287,15 +187,16 @@ try {
         }
     }
 
-    # ── 5. Install slife with uv tool install ────────────────────────
+    # ── 4. Install slife with uv tool install ────────────────────────
     # uv tool install creates an isolated venv, installs slife + credstore
     # (workspace member), and places the executables in ~/.local/bin.
-    # User data (~/.slife/) is never touched by the installer.
-    Write-Host "[5/6] Installing slife v$version..." -ForegroundColor Yellow
+    # Python 3.13 is managed automatically by uv.
+    # User data (~/.slife/) is never touched.
+    Write-Host "[4/5] Installing slife v$version..." -ForegroundColor Yellow
 
     # Clean up old venv artifacts if migrating from a previous install
     # that placed the venv inside ~/.slife/.  User data (config, logs,
-    # DBs, skills) is preserved — we only remove venv internals.
+    # DBs, skills) is preserved.
     if (Test-Path "$env:USERPROFILE\.slife\pyvenv.cfg") {
         Write-Host "  Cleaning up old venv-based installation..." -ForegroundColor Yellow
         foreach ($venvArtifact in @("Scripts", "Lib", "Include", "pyvenv.cfg")) {
@@ -309,7 +210,7 @@ try {
     $toolInstallLog = Join-Path $tmpDir "tool-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & uv tool install --from $extractedDir.FullName --python "$pythonPath" --with pip slife > $toolInstallLog 2>&1
+    & uv tool install --from $extractedDir.FullName --python 3.13 --with pip slife > $toolInstallLog 2>&1
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
@@ -320,8 +221,8 @@ try {
         exit 1
     }
 
-    # ── 6. Clean up previous installation artifacts ──────────────────
-    Write-Host "[6/6] Cleaning up previous installation artifacts..." -ForegroundColor Yellow
+    # ── 5. Clean up previous installation artifacts ──────────────────
+    Write-Host "[5/5] Cleaning up previous installation artifacts..." -ForegroundColor Yellow
 
     $localBin = "$env:USERPROFILE\.local\bin"
 
