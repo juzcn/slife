@@ -200,6 +200,8 @@ try {
     # Save outside $tmpDir so the file survives cleanup — the user may
     # need to retry if preservation fails.
     $preservedReqs = Join-Path $env:TEMP "slife-preserved-requirements.txt"
+    # Clear previous run's entries (Add-Content appends).
+    Set-Content -Path $preservedReqs -Value "" -Encoding utf8
     $slifeLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
     if ($slifeLine -and $slifeLine -match '\((.+?)\)') {
         $oldVenv = $matches[1]
