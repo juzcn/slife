@@ -391,6 +391,83 @@ class CheckWechatTool(Tool):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# check_mcp_servers
+# ═══════════════════════════════════════════════════════════════════════
+
+async def check_mcp_servers() -> list[dict]:
+    """Return MCP server status by calling mcp_list_servers."""
+    results: list[dict] = []
+    try:
+        from slife.tools.registry import get_registry
+        registry = get_registry()
+        if registry is None:
+            return [{"component": "mcp_servers", "level": "warning",
+                     "key": "status", "value": "not_initialized",
+                     "hint": "Tool registry not yet initialized — MCP status unavailable."}]
+
+        # Find the mcp_list_servers proxy tool (registered by slife-mcp).
+        mcp_list_tool = None
+        for t in registry.list_tools():
+            if t.name == "mcp_list_servers" or t.name.endswith("__mcp_list_servers"):
+                mcp_list_tool = t
+                break
+
+        if mcp_list_tool is None:
+            return [{"component": "mcp_servers", "level": "warning",
+                     "key": "status", "value": "tool_missing",
+                     "hint": "mcp_list_servers tool not found — slife-mcp may not be running."}]
+
+        raw = await mcp_list_tool.execute()
+        data = json.loads(raw)
+
+        if not isinstance(data, list) or len(data) == 0:
+            return [{"component": "mcp_servers", "level": "ok",
+                     "key": "status", "value": "none",
+                     "hint": "No external MCP servers configured."}]
+
+        for server in data:
+            name = server.get("name", "?")
+            state = server.get("state", "unknown")
+            tool_count = server.get("tool_count", 0)
+            transport = server.get("transport", "")
+            error_msg = server.get("error", "")
+            enabled = server.get("enabled", True)
+
+            if not enabled:
+                results.append({
+                    "component": "mcp_servers", "level": "ok",
+                    "key": name, "value": "disabled",
+                    "hint": f"MCP server '{name}' is disabled.",
+                })
+            elif state == "running":
+                results.append({
+                    "component": "mcp_servers", "level": "ok",
+                    "key": name, "value": f"connected ({tool_count} tools)",
+                    "hint": f"MCP server '{name}' connected via {transport}, {tool_count} tools available.",
+                })
+            elif state == "stopped":
+                detail = f" — {error_msg}" if error_msg else ""
+                results.append({
+                    "component": "mcp_servers", "level": "warning",
+                    "key": name, "value": f"disconnected{detail}",
+                    "hint": f"MCP server '{name}' is NOT connected.{detail} Use mcp_check_server to diagnose.",
+                })
+            else:
+                results.append({
+                    "component": "mcp_servers", "level": "warning",
+                    "key": name, "value": state,
+                    "hint": f"MCP server '{name}' state={state}.",
+                })
+
+        return results
+    except Exception as e:
+        logger.warning("check_mcp_servers_failed err=%s", e)
+        return [{"component": "mcp_servers", "level": "error",
+                 "key": "check_failed", "value": str(e),
+                 "hint": f"Failed to check MCP servers: {e}"}]
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # system_health orchestrator
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -400,17 +477,20 @@ _CHECK_FUNCTIONS: list[str] = [
     "check_workspace",
     "check_embedding",
     "check_wechat",
+    "check_mcp_servers",
 ]
 
 
-def _run_checks() -> list[dict]:
+async def _run_checks() -> list[dict]:
     """Call every registered check function via dynamic lookup.
 
-    Uses ``getattr`` on the current module so that test patches
-    (``unittest.mock.patch``) work — they replace the module attribute.
-    Failures in individual checks are recorded as error entries
-    so one broken check never blocks the rest of the report.
+    Supports both sync and async check functions.  Uses ``getattr`` on
+    the current module so that test patches (``unittest.mock.patch``)
+    work — they replace the module attribute.  Failures in individual
+    checks are recorded as error entries so one broken check never
+    blocks the rest of the report.
     """
+    import inspect as _inspect
     import sys as _sys
     _mod = _sys.modules[__name__]
 
@@ -418,7 +498,11 @@ def _run_checks() -> list[dict]:
     for func_name in _CHECK_FUNCTIONS:
         try:
             fn = getattr(_mod, func_name)
-            all_entries.extend(fn())
+            if _inspect.iscoroutinefunction(fn):
+                entries = await fn()
+            else:
+                entries = fn()
+            all_entries.extend(entries)
         except Exception as e:
             logger.warning("health_check_failed check=%s err=%s", func_name, e)
             all_entries.append({
@@ -481,7 +565,7 @@ class SystemHealthTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         startup = get_startup_records()
-        dynamic = _run_checks()
+        dynamic = await _run_checks()
         all_entries = startup + dynamic
         groups = _group_by_component(all_entries)
 

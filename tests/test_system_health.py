@@ -407,7 +407,8 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_shells", return_value=[]), \
              patch("slife.tools.system.check_workspace", return_value=[]), \
              patch("slife.tools.system.check_embedding", return_value=[]), \
-             patch("slife.tools.system.check_wechat", return_value=[]):
+             patch("slife.tools.system.check_wechat", return_value=[]), \
+             patch("slife.tools.system.check_mcp_servers", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert "healthy" in parsed
@@ -426,7 +427,8 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_shells", return_value=[]), \
              patch("slife.tools.system.check_workspace", return_value=[]), \
              patch("slife.tools.system.check_embedding", return_value=[]), \
-             patch("slife.tools.system.check_wechat", return_value=[]):
+             patch("slife.tools.system.check_wechat", return_value=[]), \
+             patch("slife.tools.system.check_mcp_servers", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert "startup" in parsed["components"]
@@ -443,7 +445,8 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_shells", return_value=[]), \
              patch("slife.tools.system.check_workspace", return_value=[]), \
              patch("slife.tools.system.check_embedding", return_value=[]), \
-             patch("slife.tools.system.check_wechat", return_value=[]):
+             patch("slife.tools.system.check_wechat", return_value=[]), \
+             patch("slife.tools.system.check_mcp_servers", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert parsed["healthy"] is False
@@ -469,6 +472,8 @@ class TestSystemHealthToolExecute:
             "slife.tools.system.check_embedding", return_value=[],
         ), patch(
             "slife.tools.system.check_wechat", return_value=[],
+        ), patch(
+            "slife.tools.system.check_mcp_servers", return_value=[],
         ):
             result = await tool.execute()
             parsed = json.loads(result)
