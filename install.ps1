@@ -194,23 +194,33 @@ try {
     # User data (~/.slife/) is never touched.
     Write-Host "[4/5] Installing slife v$version..." -ForegroundColor Yellow
 
-    # Detect previously installed embedding packages so we can preserve
+    # Detect previously installed embedding extras so we can preserve
     # them across reinstall.  Without this, "uv tool uninstall" + "uv tool
     # install" silently drops llama-cpp-python / sentence-transformers,
     # which live in optional-dependencies and are not installed by default.
-    $withPackages = @()
+    # We use slife[gguf,transformer] extras syntax (not --with raw packages)
+    # so uv resolves through pyproject.toml's extra-index-url and picks up
+    # pre-built wheels instead of compiling from source.
+    $preservedExtras = @()
     $slifeLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
     if ($slifeLine -and $slifeLine -match '\((.+?)\)') {
         $slifeVenv = $matches[1]
         $sitePkgs = Join-Path $slifeVenv "Lib\site-packages"
         if (Test-Path (Join-Path $sitePkgs "llama_cpp")) {
-            $withPackages += "llama-cpp-python"
-            Write-Host "  Detected: llama-cpp-python (will preserve)" -ForegroundColor DarkGray
+            $preservedExtras += "gguf"
+            Write-Host "  Detected: slife[gguf] (will preserve)" -ForegroundColor DarkGray
         }
         if (Test-Path (Join-Path $sitePkgs "sentence_transformers")) {
-            $withPackages += "sentence-transformers"
-            Write-Host "  Detected: sentence-transformers (will preserve)" -ForegroundColor DarkGray
+            $preservedExtras += "transformer"
+            Write-Host "  Detected: slife[transformer] (will preserve)" -ForegroundColor DarkGray
         }
+    }
+
+    # Build the package spec with preserved extras.
+    if ($preservedExtras.Count -gt 0) {
+        $pkgSpec = "slife[" + ($preservedExtras -join ",") + "]"
+    } else {
+        $pkgSpec = "slife"
     }
 
     # Clean up any previous broken installation first.
@@ -238,15 +248,7 @@ try {
     $toolInstallLog = Join-Path $tmpDir "tool-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-
-    # Build the install command, preserving previously detected extras.
-    $installArgs = @("tool", "install", "--from", $extractedDir.FullName, "--python", "3.13")
-    foreach ($pkg in $withPackages) {
-        $installArgs += "--with"
-        $installArgs += $pkg
-    }
-    $installArgs += "slife"
-    & uv @installArgs > $toolInstallLog 2>&1
+    & uv tool install --from $extractedDir.FullName --python 3.13 $pkgSpec > $toolInstallLog 2>&1
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
@@ -298,11 +300,10 @@ try {
     Write-Host "  credstore set DEEPSEEK_API_KEY       # store your API key"
     Write-Host "  slife                                # launch the TUI"
     Write-Host ""
-    if ($withPackages.Count -gt 0) {
+    if ($preservedExtras.Count -gt 0) {
         Write-Host "Preserved extras:" -ForegroundColor Cyan
-        foreach ($pkg in $withPackages) {
-            Write-Host "  [OK] $pkg (auto-detected from previous install)" -ForegroundColor Green
-        }
+        $extraList = ($preservedExtras | ForEach-Object { "slife[$_]" }) -join ", "
+        Write-Host "  [OK] $extraList (auto-detected from previous install)" -ForegroundColor Green
     }
     Write-Host "Optional extras:" -ForegroundColor Cyan
     Write-Host "  uv tool install --with `"slife[gguf]`" slife    # local GGUF models"
