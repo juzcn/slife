@@ -170,6 +170,12 @@ fi
 # User data (~/.slife/) is never touched.
 echo -e "${YELLOW}[4/5] Installing slife v${VERSION}…${NC}"
 
+# Clean up any previous broken installation first.
+if uv tool list 2>/dev/null | grep -qF "slife"; then
+    echo -e "${YELLOW}  Removing previous slife installation…${NC}"
+    uv tool uninstall slife 2>/dev/null || true
+fi
+
 # Clean up old venv artifacts if migrating from a previous install
 # that placed the venv inside ~/.slife/.  User data is preserved.
 if [ -f "$HOME/.slife/pyvenv.cfg" ]; then

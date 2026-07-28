@@ -194,6 +194,15 @@ try {
     # User data (~/.slife/) is never touched.
     Write-Host "[4/5] Installing slife v$version..." -ForegroundColor Yellow
 
+    # Clean up any previous broken installation first.
+    # uv tool install will skip/error if the tool is already installed
+    # in a corrupted state (missing pyvenv.cfg, etc.).
+    $prevInstall = uv tool list 2>&1 | Select-String "slife"
+    if ($prevInstall) {
+        Write-Host "  Removing previous slife installation..." -ForegroundColor Yellow
+        & uv tool uninstall slife 2>&1 | Out-Null
+    }
+
     # Clean up old venv artifacts if migrating from a previous install
     # that placed the venv inside ~/.slife/.  User data (config, logs,
     # DBs, skills) is preserved.
