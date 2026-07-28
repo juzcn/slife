@@ -269,13 +269,13 @@ def check_embedding() -> list[dict]:
         warnings = {
             "gguf": (f"GGUF file exists ({cfg.get('gguf_path', 'unknown')}) but "
                      "llama-cpp-python is NOT installed. Semantic search (hybrid mode) will NOT work. "
-                     "Install with: pip install llama-cpp-python. Keyword search (grep/fts5/time) still works normally."),
+                     "Install with: uv pip install llama-cpp-python. Keyword search (grep/fts5/time) still works normally."),
             "transformer": (f"Transformer model configured ({cfg.get('model', '?')}) but "
                             "sentence-transformers is NOT installed. Semantic search (hybrid mode) will NOT work. "
-                            "Install with: pip install sentence-transformers. Keyword search (grep/fts5/time) still works normally."),
+                            "Install with: uv pip install sentence-transformers. Keyword search (grep/fts5/time) still works normally."),
             "api": ("API key configured but openai package is NOT installed. "
                     "Semantic search (hybrid mode) will NOT work. "
-                    "Install with: pip install openai. Keyword search (grep/fts5/time) still works normally."),
+                    "Install with: uv pip install openai. Keyword search (grep/fts5/time) still works normally."),
         }
         results.append({"component": "embeddings", "level": "warning", "key": "backend",
                         "value": backend,

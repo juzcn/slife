@@ -144,7 +144,7 @@ class EmbeddingClient:
                 _log_warn(
                     "embeddings_gguf_unavailable — GGUF file found (%s) but "
                     "llama-cpp-python is not installed. Install with: "
-                    "pip install llama-cpp-python. "
+                    "uv pip install llama-cpp-python. "
                     "Semantic search will be unavailable; keyword search still works.",
                     gguf_path,
                 )
@@ -160,7 +160,7 @@ class EmbeddingClient:
                 _log_warn(
                     "embeddings_transformer_unavailable — model=%s configured but "
                     "sentence-transformers is not installed. Install with: "
-                    "pip install sentence-transformers. "
+                    "uv pip install sentence-transformers. "
                     "Semantic search will be unavailable; keyword search still works.",
                     model,
                 )
@@ -175,7 +175,7 @@ class EmbeddingClient:
                 _log_warn(
                     "embeddings_api_unavailable — api_key configured but "
                     "openai package is not installed. Install with: "
-                    "pip install openai. "
+                    "uv pip install openai. "
                     "Semantic search will be unavailable; keyword search still works.",
                 )
         else:
@@ -327,7 +327,7 @@ class EmbeddingClient:
         except ImportError:
             logger.warning(
                 "llama_cpp not installed. Install with: "
-                "pip install llama-cpp-python"
+                "uv pip install llama-cpp-python"
             )
             return None
 
@@ -366,7 +366,7 @@ class EmbeddingClient:
         except ImportError:
             logger.warning(
                 "sentence_transformers not installed. Install with: "
-                "pip install sentence-transformers"
+                "uv pip install sentence-transformers"
             )
             return None
 
@@ -411,7 +411,7 @@ class EmbeddingClient:
             from openai import AsyncOpenAI
         except ImportError:
             logger.warning(
-                "openai not installed. Install with: pip install openai"
+                "openai not installed. Install with: uv pip install openai"
             )
             return None
 

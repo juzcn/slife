@@ -8,7 +8,7 @@ Usage::
 
     from slife.health import record
     record("embeddings", "warning", key="backend", value="gguf",
-           hint="llama-cpp-python not installed. pip install llama-cpp-python")
+           hint="llama-cpp-python not installed. uv pip install llama-cpp-python")
 
     from slife.health import get_report
     report = get_report()  # → list[dict]

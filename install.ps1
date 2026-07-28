@@ -194,6 +194,25 @@ try {
     # User data (~/.slife/) is never touched.
     Write-Host "[4/5] Installing slife v$version..." -ForegroundColor Yellow
 
+    # Detect previously installed embedding packages so we can preserve
+    # them across reinstall.  Without this, "uv tool uninstall" + "uv tool
+    # install" silently drops llama-cpp-python / sentence-transformers,
+    # which live in optional-dependencies and are not installed by default.
+    $withPackages = @()
+    $slifeLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
+    if ($slifeLine -and $slifeLine -match '\((.+?)\)') {
+        $slifeVenv = $matches[1]
+        $sitePkgs = Join-Path $slifeVenv "Lib\site-packages"
+        if (Test-Path (Join-Path $sitePkgs "llama_cpp")) {
+            $withPackages += "llama-cpp-python"
+            Write-Host "  Detected: llama-cpp-python (will preserve)" -ForegroundColor DarkGray
+        }
+        if (Test-Path (Join-Path $sitePkgs "sentence_transformers")) {
+            $withPackages += "sentence-transformers"
+            Write-Host "  Detected: sentence-transformers (will preserve)" -ForegroundColor DarkGray
+        }
+    }
+
     # Clean up any previous broken installation first.
     # uv tool install will skip/error if the tool is already installed
     # in a corrupted state (missing pyvenv.cfg, etc.).
@@ -219,7 +238,15 @@ try {
     $toolInstallLog = Join-Path $tmpDir "tool-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & uv tool install --from $extractedDir.FullName --python 3.13 slife > $toolInstallLog 2>&1
+
+    # Build the install command, preserving previously detected extras.
+    $installArgs = @("tool", "install", "--from", $extractedDir.FullName, "--python", "3.13")
+    foreach ($pkg in $withPackages) {
+        $installArgs += "--with"
+        $installArgs += $pkg
+    }
+    $installArgs += "slife"
+    & uv @installArgs > $toolInstallLog 2>&1
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
@@ -271,6 +298,12 @@ try {
     Write-Host "  credstore set DEEPSEEK_API_KEY       # store your API key"
     Write-Host "  slife                                # launch the TUI"
     Write-Host ""
+    if ($withPackages.Count -gt 0) {
+        Write-Host "Preserved extras:" -ForegroundColor Cyan
+        foreach ($pkg in $withPackages) {
+            Write-Host "  [OK] $pkg (auto-detected from previous install)" -ForegroundColor Green
+        }
+    }
     Write-Host "Optional extras:" -ForegroundColor Cyan
     Write-Host "  uv tool install --with `"slife[gguf]`" slife    # local GGUF models"
     Write-Host "  uv tool install --with `"slife[transformer]`" slife  # HuggingFace embeddings (~2 GB)"

@@ -48,7 +48,7 @@ def _hybrid_fallback_reason() -> str:
             if _embedder._gguf_path:
                 if Path(_embedder._gguf_path).exists():
                     return ("hybrid 降级为 fts5 — llama-cpp-python 未安装。"
-                            "运行: pip install llama-cpp-python")
+                            "运行: uv pip install llama-cpp-python")
                 return ("hybrid 降级为 fts5 — GGUF 文件未找到。"
                         "下载模型后使用 memory_set_embedding 配置路径")
             return "hybrid 降级为 fts5 — 未配置 GGUF 模型路径"

@@ -232,7 +232,7 @@ def make_check_report() -> dict:
             elif not _check_runtime("gguf"):
                 result["hint"] = (
                     f"GGUF 文件存在 ({gguf_path})，但 llama-cpp-python 未安装。"
-                    "运行: pip install llama-cpp-python。"
+                    "运行: uv pip install llama-cpp-python。"
                     "在此之前语义搜索 (hybrid 模式) 不可用；"
                     "关键词搜索 (grep/fts5/time) 仍可正常工作。"
                 )
@@ -244,7 +244,7 @@ def make_check_report() -> dict:
             if not _check_runtime("transformer"):
                 result["hint"] = (
                     f"Transformer 模型已配置 ({model})，但 sentence-transformers 未安装。"
-                    "运行: pip install sentence-transformers。"
+                    "运行: uv pip install sentence-transformers。"
                     "在此之前语义搜索 (hybrid 模式) 不可用；"
                     "关键词搜索 (grep/fts5/time) 仍可正常工作。"
                 )
@@ -256,7 +256,7 @@ def make_check_report() -> dict:
             if not _check_runtime("api"):
                 result["hint"] = (
                     "API key 已配置，但 openai 包未安装。"
-                    "运行: pip install openai。"
+                    "运行: uv pip install openai。"
                     "在此之前语义搜索 (hybrid 模式) 不可用；"
                     "关键词搜索 (grep/fts5/time) 仍可正常工作。"
                 )
