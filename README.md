@@ -18,7 +18,7 @@
 
 ## Install
 
-**Zero prerequisites.**  The install script auto-installs Python 3.13, uvx (via uv), and npx (via Node.js) if needed — then installs slife in an isolated environment.  No git, no C++ compiler required.
+**Zero prerequisites.**  The install script auto-installs uv and npx (via Node.js) if needed — then uses `uv tool install` to install slife in an isolated environment.  Python 3.13 is managed automatically by uv.  No git, no C++ compiler required.
 
 ### Option 1: Install Script (Recommended)
 
@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 | iex"
 ```
 
-The script checks your Python version, installs [uv](https://docs.astral.sh/uv/) if needed, downloads the latest slife, and installs it in an isolated environment.  [Inspect the script](install.sh) before piping if you prefer.
+The script installs [uv](https://docs.astral.sh/uv/) if needed, downloads the latest slife, and uses `uv tool install` to create an isolated environment.  Python 3.13 is managed automatically by uv — no system Python required.  [Inspect the script](install.sh) before piping if you prefer.
 
 ### Option 2: uv tool install (requires git)
 
@@ -442,8 +442,8 @@ The install script handles everything automatically.  Nothing to install beforeh
 
 | Component | Status |
 |-----------|--------|
-| Python ≥ 3.13 | Auto-installed via uv if missing |
-| [uvx](https://docs.astral.sh/uv/) (Python package runner) | Auto-installed via uv if missing |
+| Python 3.13 | Managed automatically by uv — no manual install needed |
+| [uv](https://docs.astral.sh/uv/) | Auto-installed if missing |
 | [npx](https://nodejs.org/) (Node.js package runner) | Auto-installed via winget (Windows) / apt, brew, dnf, pacman (Linux) if missing — **required** for MCP servers |
 | Mosquitto (MQTT broker) | Optional — interactive install prompt. Needed only for A2A multi-agent mesh |
 | `llama-cpp-python` | Optional — `slife[gguf]` for local GGUF embeddings (or `slife[embeddings]` for all) |
@@ -476,6 +476,7 @@ Dev mode is detected automatically — when `pyproject.toml` has `[project] name
 | Aspect | Dev Mode | Production |
 |--------|----------|------------|
 | Config file | `./slife.json5` | `~/.slife/slife.json5` |
+| Skills | `./skills/` (project root) | `~/.slife/skills/` (seeded on first run) |
 | Memory DB | `./slife.db` | `~/.slife/slife.db` |
 | Credential store | System keyring (shared) | System keyring (shared) |
 | Cryptfile | `./credentials.crypt` | `~/.credstore/credentials.crypt` |
@@ -551,7 +552,7 @@ slife/
 │       ├── _backend.py       # System keyring + cryptfile backends
 │       ├── __main__.py       # CLI (set, get, list, inject, etc.)
 │       └── _tty.py           # Cross-platform masked terminal input
-├── skills/                   # Skill definitions (on-demand agent plugins)
+├── skills/                   # Skill definitions (seeded to ~/.slife/skills/ in production)
 ├── tests/                    # Test suite (pytest)
 ├── slife.json5               # Dev config (git-ignored)
 ├── slife.template.json5      # Default config template

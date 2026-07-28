@@ -691,7 +691,7 @@ Slife depends on several external tools at runtime.  The approach is:
 
 | Where | What | How |
 |-------|------|-----|
-| **Install script** (`install.ps1` / `install.sh`) | Python 3.13, uvx (via uv), npx (via Node.js), Mosquitto (optional) | Auto-detects and installs missing dependencies. npx is **required** — exits with error listing affected MCP servers if install fails. Mosquitto is optional with interactive prompt. |
+| **Install script** (`install.ps1` / `install.sh`) | uv, npx (via Node.js), Mosquitto (optional) | Auto-detects and installs missing dependencies. Python 3.13 is managed automatically by uv. npx is **required** — exits with error listing affected MCP servers if install fails. Mosquitto is optional with interactive prompt. |
 | **Runtime startup** (`_check_external_deps` in `__init__.py`) | node, npm, uv | Checks availability, reports via ``system_health`` — no auto-install |
 | **Post-connect hook** (`connection.py`) | readabilipy node_modules | Pre-installs to work around Windows PATHEXT limitation |
 
