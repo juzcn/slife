@@ -208,6 +208,8 @@ try {
         $oldPython = Join-Path $oldVenv "Scripts\python.exe"
         if (Test-Path $oldPython) {
             Write-Host "  Capturing installed packages from previous installation..." -ForegroundColor DarkGray
+            $preservedFull = Join-Path $env:TEMP "slife-preserved-full.txt"
+            Set-Content -Path $preservedFull -Value "" -Encoding utf8
             $freeze = & uv pip freeze --python $oldPython 2>&1
             $count = 0
             foreach ($line in $freeze) {
@@ -221,6 +223,7 @@ try {
                 $name = $name.Trim().ToLower()
                 if ($name -and $name -ne "slife" -and $name -ne "credstore") {
                     Add-Content -Path $preservedReqs -Value $name -Encoding utf8
+                    Add-Content -Path $preservedFull -Value $spec -Encoding utf8
                     $count++
                 }
             }
@@ -315,7 +318,14 @@ try {
                 $preserveOk = $true
             } else {
                 $oldPkgs | Out-File -Encoding utf8 $preservedReqs
-                Write-Host "  Re-adding $extraCount extra packages..." -ForegroundColor Yellow
+                Write-Host "  Re-adding $extraCount extra packages:" -ForegroundColor Yellow
+                if (Test-Path $preservedFull) {
+                    $fullFreeze = Get-Content $preservedFull | ForEach-Object {
+                        $n = ($_ -replace '\s*@.+$', '' -replace '==.+$', '').Trim().ToLower()
+                        if ($n -in $oldPkgs) { "    $_" }
+                    }
+                    if ($fullFreeze) { $fullFreeze | ForEach-Object { Write-Host $_ -ForegroundColor DarkGray } }
+                }
                 $prevEAP2 = $ErrorActionPreference
                 $ErrorActionPreference = "Continue"
                 $pipOutput = & uv pip install --python $newPython @extraIndexArgs -r $preservedReqs 2>&1
