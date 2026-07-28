@@ -194,33 +194,38 @@ try {
     # User data (~/.slife/) is never touched.
     Write-Host "[4/5] Installing slife v$version..." -ForegroundColor Yellow
 
-    # Detect previously installed embedding extras so we can preserve
+    # Detect previously installed optional packages so we can preserve
     # them across reinstall.  Without this, "uv tool uninstall" + "uv tool
     # install" silently drops llama-cpp-python / sentence-transformers,
     # which live in optional-dependencies and are not installed by default.
-    # We use slife[gguf,transformer] extras syntax (not --with raw packages)
-    # so uv resolves through pyproject.toml's extra-index-url and picks up
-    # pre-built wheels instead of compiling from source.
-    $preservedExtras = @()
+    #
+    # We check how each package was installed:
+    #   - direct_url.json present → installed from a specific URL → replay URL
+    #   - no direct_url.json      → installed from an index    → uv pip install <name>
+    $preservedPackages = @()   # @{name="..."; url="..."}  or  @{name="..."}
     $slifeLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
     if ($slifeLine -and $slifeLine -match '\((.+?)\)') {
         $slifeVenv = $matches[1]
         $sitePkgs = Join-Path $slifeVenv "Lib\site-packages"
-        if (Test-Path (Join-Path $sitePkgs "llama_cpp")) {
-            $preservedExtras += "gguf"
-            Write-Host "  Detected: slife[gguf] (will preserve)" -ForegroundColor DarkGray
+        $optionalPkgs = @(
+            @{import="llama_cpp";       name="llama-cpp-python"},
+            @{import="sentence_transformers"; name="sentence-transformers"}
+        )
+        foreach ($pkg in $optionalPkgs) {
+            if (Test-Path (Join-Path $sitePkgs $pkg.import)) {
+                # Check if installed from a direct URL.
+                $distInfo = Get-ChildItem (Join-Path $sitePkgs "$($pkg.import)-*.dist-info") -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+                $urlJson = if ($distInfo) { Join-Path $distInfo.FullName "direct_url.json" } else { $null }
+                if ($urlJson -and (Test-Path $urlJson)) {
+                    $url = (Get-Content $urlJson -Raw | ConvertFrom-Json).url
+                    $preservedPackages += @{name=$pkg.name; url=$url}
+                    Write-Host "  Detected: $($pkg.name) (from URL, will preserve)" -ForegroundColor DarkGray
+                } else {
+                    $preservedPackages += @{name=$pkg.name}
+                    Write-Host "  Detected: $($pkg.name) (will preserve)" -ForegroundColor DarkGray
+                }
+            }
         }
-        if (Test-Path (Join-Path $sitePkgs "sentence_transformers")) {
-            $preservedExtras += "transformer"
-            Write-Host "  Detected: slife[transformer] (will preserve)" -ForegroundColor DarkGray
-        }
-    }
-
-    # Build the package spec with preserved extras.
-    if ($preservedExtras.Count -gt 0) {
-        $pkgSpec = "slife[" + ($preservedExtras -join ",") + "]"
-    } else {
-        $pkgSpec = "slife"
     }
 
     # Clean up any previous broken installation first.
@@ -248,7 +253,7 @@ try {
     $toolInstallLog = Join-Path $tmpDir "tool-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & uv tool install --from $extractedDir.FullName --python 3.13 $pkgSpec > $toolInstallLog 2>&1
+    & uv tool install --from $extractedDir.FullName --python 3.13 slife > $toolInstallLog 2>&1
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
@@ -257,6 +262,28 @@ try {
         Get-Content $toolInstallLog -Tail 20
         Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
         exit 1
+    }
+
+    # Re-add preserved packages into the new tool venv.
+    if ($preservedPackages.Count -gt 0) {
+        $newLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
+        if ($newLine -and $newLine -match '\((.+?)\)') {
+            $newVenv = $matches[1]
+            $newPython = Join-Path $newVenv "Scripts\python.exe"
+            Write-Host "  Re-adding preserved packages..." -ForegroundColor Yellow
+            foreach ($pkg in $preservedPackages) {
+                if ($pkg.url) {
+                    & uv pip install --python $newPython $pkg.url *>> $toolInstallLog
+                } else {
+                    & uv pip install --python $newPython $pkg.name *>> $toolInstallLog
+                }
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "  Warning: failed to re-add $($pkg.name)" -ForegroundColor Yellow
+                } else {
+                    Write-Host "  [OK] $($pkg.name)" -ForegroundColor Green
+                }
+            }
+        }
     }
 
     # ── 5. Clean up previous installation artifacts ──────────────────
@@ -300,10 +327,11 @@ try {
     Write-Host "  credstore set DEEPSEEK_API_KEY       # store your API key"
     Write-Host "  slife                                # launch the TUI"
     Write-Host ""
-    if ($preservedExtras.Count -gt 0) {
-        Write-Host "Preserved extras:" -ForegroundColor Cyan
-        $extraList = ($preservedExtras | ForEach-Object { "slife[$_]" }) -join ", "
-        Write-Host "  [OK] $extraList (auto-detected from previous install)" -ForegroundColor Green
+    if ($preservedPackages.Count -gt 0) {
+        Write-Host "Preserved packages:" -ForegroundColor Cyan
+        foreach ($pkg in $preservedPackages) {
+            Write-Host "  [OK] $($pkg.name) (auto-detected from previous install)" -ForegroundColor Green
+        }
     }
     Write-Host "Optional extras:" -ForegroundColor Cyan
     Write-Host "  uv tool install --with `"slife[gguf]`" slife    # local GGUF models"

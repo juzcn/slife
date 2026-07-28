@@ -170,37 +170,42 @@ fi
 # User data (~/.slife/) is never touched.
 echo -e "${YELLOW}[4/5] Installing slife v${VERSION}…${NC}"
 
-# Detect previously installed embedding extras so we can preserve
+# Detect previously installed optional packages so we can preserve
 # them across reinstall.  Without this, "uv tool uninstall" + "uv tool
 # install" silently drops llama-cpp-python / sentence-transformers,
 # which live in optional-dependencies and are not installed by default.
-# We use slife[gguf,transformer] extras syntax (not --with raw packages)
-# so uv resolves through pyproject.toml's extra-index-url and picks up
-# pre-built wheels instead of compiling from source.
-PRESERVED_EXTRAS=""
+#
+# We check how each package was installed:
+#   - direct_url.json present → installed from a specific URL → replay URL
+#   - no direct_url.json      → installed from an index    → uv pip install <name>
+PRESERVED_PKGS=""      # space-separated: "name" or "name|url"
 SLIFE_LINE=$(uv tool list --show-paths 2>/dev/null | grep "slife v")
 if [ -n "$SLIFE_LINE" ]; then
     SLIFE_VENV=$(echo "$SLIFE_LINE" | sed -n 's/.*(\(.*\)).*/\1/p')
     if [ -n "$SLIFE_VENV" ] && [ -d "$SLIFE_VENV" ]; then
         # Find site-packages (Python version may vary).
         SITE_PKGS=$(echo "$SLIFE_VENV"/lib/python*/site-packages 2>/dev/null | head -1)
-        if [ -d "$SITE_PKGS/llama_cpp" ] 2>/dev/null; then
-            PRESERVED_EXTRAS="${PRESERVED_EXTRAS}gguf"
-            echo -e "  ${GRAY}Detected: slife[gguf] (will preserve)${NC}"
-        fi
-        if [ -d "$SITE_PKGS/sentence_transformers" ] 2>/dev/null; then
-            PRESERVED_EXTRAS="${PRESERVED_EXTRAS},transformer"
-            echo -e "  ${GRAY}Detected: slife[transformer] (will preserve)${NC}"
-        fi
-    fi
-fi
 
-# Build the package spec with preserved extras.
-PKG_SPEC="slife"
-if [ -n "$PRESERVED_EXTRAS" ]; then
-    # Remove leading comma if gguf wasn't detected but transformer was.
-    PRESERVED_EXTRAS="${PRESERVED_EXTRAS#,}"
-    PKG_SPEC="slife[${PRESERVED_EXTRAS}]"
+        _detect_pkg() {
+            _import="$1" _name="$2"
+            if [ -d "$SITE_PKGS/$_import" ] 2>/dev/null; then
+                _url=""
+                _di=$(echo "$SITE_PKGS/${_import}-"*.dist-info 2>/dev/null | head -1)
+                if [ -n "$_di" ] && [ -f "$_di/direct_url.json" ]; then
+                    _url=$(python3 -c "import json; print(json.load(open('$_di/direct_url.json'))['url'])" 2>/dev/null || true)
+                fi
+                if [ -n "$_url" ]; then
+                    PRESERVED_PKGS="$PRESERVED_PKGS ${_name}|${_url}"
+                    echo -e "  ${GRAY}Detected: $_name (from URL, will preserve)${NC}"
+                else
+                    PRESERVED_PKGS="$PRESERVED_PKGS $_name"
+                    echo -e "  ${GRAY}Detected: $_name (will preserve)${NC}"
+                fi
+            fi
+        }
+        _detect_pkg "llama_cpp" "llama-cpp-python"
+        _detect_pkg "sentence_transformers" "sentence-transformers"
+    fi
 fi
 
 # Clean up any previous broken installation first.
@@ -219,13 +224,33 @@ if [ -f "$HOME/.slife/pyvenv.cfg" ]; then
 fi
 
 TOOL_INSTALL_LOG="$TMP_DIR/tool-install.log"
-uv tool install --from "$TMP_DIR/slife-main" --python 3.13 "$PKG_SPEC" > "$TOOL_INSTALL_LOG" 2>&1 || {
+uv tool install --from "$TMP_DIR/slife-main" --python 3.13 slife > "$TOOL_INSTALL_LOG" 2>&1 || {
     echo -e "${RED}Error: slife installation failed.${NC}"
     echo -e "${YELLOW}Last lines of install log:${NC}"
     tail -n 20 "$TOOL_INSTALL_LOG"
     echo -e "${YELLOW}Help: $SLIFE_REPO${NC}"
     exit 1
 }
+
+# Re-add preserved packages into the new tool venv.
+if [ -n "$PRESERVED_PKGS" ]; then
+    NEW_LINE=$(uv tool list --show-paths 2>/dev/null | grep "slife v")
+    NEW_VENV=$(echo "$NEW_LINE" | sed -n 's/.*(\(.*\)).*/\1/p')
+    if [ -n "$NEW_VENV" ] && [ -d "$NEW_VENV" ]; then
+        NEW_PYTHON="$NEW_VENV/bin/python"
+        echo -e "${YELLOW}  Re-adding preserved packages…${NC}"
+        for entry in $PRESERVED_PKGS; do
+            _name="${entry%%|*}"
+            _url="${entry#*|}"
+            if [ "$_url" != "$_name" ]; then
+                uv pip install --python "$NEW_PYTHON" "$_url" >> "$TOOL_INSTALL_LOG" 2>&1 || true
+            else
+                uv pip install --python "$NEW_PYTHON" "$_name" >> "$TOOL_INSTALL_LOG" 2>&1 || true
+            fi
+            echo -e "  ${GREEN}  ✓${NC} $_name"
+        done
+    fi
+fi
 
 # ── 5. Clean up previous installation artifacts ──────────────────────
 echo -e "${YELLOW}[5/5] Cleaning up previous installation artifacts…${NC}"
@@ -258,9 +283,12 @@ echo "  credstore set-password              # set up encrypted backup (first tim
 echo "  credstore set DEEPSEEK_API_KEY       # store your API key"
 echo "  slife                                # launch the TUI"
 echo ""
-if [ -n "$PRESERVED_EXTRAS" ]; then
-    echo -e "${CYAN}Preserved extras:${NC}"
-    echo -e "${GREEN}  ✓${NC} slife[${PRESERVED_EXTRAS#,}] (auto-detected from previous install)"
+if [ -n "$PRESERVED_PKGS" ]; then
+    echo -e "${CYAN}Preserved packages:${NC}"
+    for entry in $PRESERVED_PKGS; do
+        _name="${entry%%|*}"
+        echo -e "${GREEN}  ✓${NC} $_name (auto-detected from previous install)"
+    done
 fi
 echo -e "${CYAN}Optional extras:${NC}"
 echo "  uv tool install --with \"slife[gguf]\" slife    # local GGUF models"
