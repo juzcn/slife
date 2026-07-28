@@ -482,23 +482,16 @@ class TestCliInject:
         monkeypatch.setattr("credstore._shell._setx_delete", lambda k: None)
         monkeypatch.setattr("credstore._shell.add_to_profile", lambda key, shell: True)
 
-    def test_inject_single_bash(self, capsys, mock_backend, in_mem_store):
+    @pytest.mark.parametrize("shell,expected", [
+        ("bash", "export MY_KEY='my-secret'"),
+        ("powershell", "$env:MY_KEY = 'my-secret'"),
+        ("cmd", "set MY_KEY=my-secret"),
+    ])
+    def test_inject_shell_format(self, capsys, mock_backend, in_mem_store, shell, expected):
         in_mem_store["MY_KEY"] = "my-secret"
-        assert main(["inject", "MY_KEY", "--shell", "bash"]) == 0
+        assert main(["inject", "MY_KEY", "--shell", shell]) == 0
         out = capsys.readouterr().out
-        assert "export MY_KEY='my-secret'" in out
-
-    def test_inject_single_powershell(self, capsys, mock_backend, in_mem_store):
-        in_mem_store["MY_KEY"] = "my-secret"
-        assert main(["inject", "MY_KEY", "--shell", "powershell"]) == 0
-        out = capsys.readouterr().out
-        assert "$env:MY_KEY = 'my-secret'" in out
-
-    def test_inject_single_cmd(self, capsys, mock_backend, in_mem_store):
-        in_mem_store["MY_KEY"] = "my-secret"
-        assert main(["inject", "MY_KEY", "--shell", "cmd"]) == 0
-        out = capsys.readouterr().out
-        assert "set MY_KEY=my-secret" in out
+        assert expected in out
 
     def test_inject_not_found(self, mock_backend):
         assert main(["inject", "NONEXISTENT"]) == 1
@@ -536,20 +529,15 @@ class TestCliUninject:
         monkeypatch.setattr("credstore._shell._setx_delete", lambda k: None)
         monkeypatch.setattr("credstore._shell.remove_from_profile", lambda key, shell: False)
 
-    def test_uninject_bash(self, capsys, mock_backend):
-        assert main(["uninject", "MY_KEY", "--shell", "bash"]) == 0
+    @pytest.mark.parametrize("shell,expected", [
+        ("bash", "unset MY_KEY"),
+        ("powershell", "Remove-Item Env:MY_KEY"),
+        ("cmd", "set MY_KEY="),
+    ])
+    def test_uninject_shell_format(self, capsys, mock_backend, shell, expected):
+        assert main(["uninject", "MY_KEY", "--shell", shell]) == 0
         out = capsys.readouterr().out
-        assert "unset MY_KEY" in out
-
-    def test_uninject_powershell(self, capsys, mock_backend):
-        assert main(["uninject", "MY_KEY", "--shell", "powershell"]) == 0
-        out = capsys.readouterr().out
-        assert "Remove-Item Env:MY_KEY" in out
-
-    def test_uninject_cmd(self, capsys, mock_backend):
-        assert main(["uninject", "MY_KEY", "--shell", "cmd"]) == 0
-        out = capsys.readouterr().out
-        assert "set MY_KEY=" in out
+        assert expected in out
 
     def test_uninject_multiple_keys(self, capsys, mock_backend):
         assert main(["uninject", "KEY1", "KEY2", "--shell", "bash"]) == 0
@@ -615,207 +603,51 @@ class TestEnumerateSystemKeyring:
 
 
 # ═══════════════════════════════════════════════════════════════
-# fixtures
+# fixtures — delegate to conftest.py shared infrastructure
 # ═══════════════════════════════════════════════════════════════
 
 
 @pytest.fixture
-def in_mem_store():
-    """In-memory dict for system keyring."""
-    return {}
-
-
-@pytest.fixture
-def in_mem_cryptfile():
-    """In-memory dict for cryptfile."""
-    return {}
-
-
-class _MockSystemKeyring:
-    """Simulates a system keyring backend (no encryption)."""
-
-    def __init__(self, store: dict):
-        self._store = store
-
-    def get_password(self, service, username):
-        return self._store.get(username)
-
-    def set_password(self, service, username, password):
-        self._store[username] = password
-
-    def delete_password(self, service, username):
-        if username not in self._store:
-            raise KeyError(username)
-        self._store.pop(username, None)
-
-
-class _MockCryptfile:
-    """Simulates a keyrings.cryptfile backend."""
-
-    def __init__(self, store: dict):
-        self._store = store
-        self.file_path = "/mock/credentials.crypt"
-        self._keyring_key = None
-
-    @property
-    def keyring_key(self):
-        return self._keyring_key
-
-    @keyring_key.setter
-    def keyring_key(self, value):
-        self._keyring_key = value
-
-    @keyring_key.deleter
-    def keyring_key(self):
-        self._keyring_key = None
-
-    def get_password(self, service, username):
-        if self._keyring_key is None:
-            raise ValueError("keyring_key not set")
-        return self._store.get(username)
-
-    def set_password(self, service, username, password):
-        if self._keyring_key is None:
-            raise ValueError("keyring_key not set")
-        self._store[username] = password
-
-    def delete_password(self, service, username):
-        if self._keyring_key is None:
-            raise ValueError("keyring_key not set")
-        if username not in self._store:
-            raise KeyError(username)
-        self._store.pop(username, None)
-
-
-@pytest.fixture
-def mock_backend(monkeypatch, in_mem_store, in_mem_cryptfile):
+def mock_backend(base_backend, cli_store):
     """Full mock: system keyring + cryptfile both available."""
-    import credstore._backend as backend
-    import credstore._store as sm
-
-    monkeypatch.setattr(backend, "init_backend", lambda **kw: None)
-    monkeypatch.setattr(backend, "has_master_key", lambda: True)
-    monkeypatch.setattr(backend, "get_active_backend_name", lambda: "MockBackend")
-    monkeypatch.setattr(backend, "get_backend_info", lambda: {
-        "available": True, "backend": "MockBackend",
-        "cryptfile_ready": True, "cryptfile_path": "/mock/credentials.crypt",
-    })
-
-    # Mock get_cryptfile_path so tests don't depend on CWD state
-    import credstore._config as cfg
-    monkeypatch.setattr(cfg, "get_cryptfile_path", lambda: "/mock/credentials.crypt")
-
-    # Mock os.path.exists — default to True (cryptfile exists).
-    # Individual tests override when they need first-time behaviour.
-    import os as _os
-    _real_exists = _os.path.exists
-    monkeypatch.setattr(_os.path, "exists", lambda p: True)
-
-    # System keyring mock
-    sk = _MockSystemKeyring(in_mem_store)
-    monkeypatch.setattr(backend, "get_system_keyring", lambda: sk)
-    monkeypatch.setattr(backend, "_system_keyring", sk)
-
-    # Cryptfile mock
-    cf = _MockCryptfile(in_mem_cryptfile)
-    monkeypatch.setattr(backend, "get_cryptfile", lambda: cf)
-    monkeypatch.setattr(backend, "_cryptfile", cf)
-
-    # Store mock
-    monkeypatch.setattr(sm, "init_store", lambda **kw: None)
-    store = sm.CredentialStore()
-    store.get = in_mem_store.get
-    store.set = in_mem_store.__setitem__
-    store.delete = lambda key: in_mem_store.pop(key, None) is not None
-    monkeypatch.setattr(sm, "_store", store)
-    monkeypatch.setattr(sm, "_get_store", lambda: store)
-    monkeypatch.setattr(sm, "get_credential", in_mem_store.get)
-    monkeypatch.setattr(sm, "set_credential", in_mem_store.__setitem__)
-    monkeypatch.setattr(sm, "delete_credential", lambda k: in_mem_store.pop(k, None) is not None)
-    # Also patch the credstore package-level references
-    import credstore
-    monkeypatch.setattr(credstore, "get_credential", in_mem_store.get)
-    monkeypatch.setattr(credstore, "set_credential", in_mem_store.__setitem__)
-    monkeypatch.setattr(credstore, "delete_credential", lambda k: in_mem_store.pop(k, None) is not None)
-    monkeypatch.setattr(sm, "get_backend_name", lambda: "MockBackend")
-    monkeypatch.setattr(sm, "check_backend", lambda: {
-        "available": True, "backend": "MockBackend",
-        "cryptfile_ready": True, "cryptfile_path": "/mock/credentials.crypt",
-    })
-
-    # Mock _read_cryptfile_keys (defined in _store.py, used by both CLI and store)
-    _cf_keys = lambda cf: list(in_mem_cryptfile.keys())
-    monkeypatch.setattr("credstore._store._read_cryptfile_keys", _cf_keys)
-
-    # Mock _enumerate_system_keyring — never touch real Credential Manager
-    monkeypatch.setattr(
-        "credstore.__main__._enumerate_system_keyring",
-        lambda service, with_values=False: [],
-    )
-
-    return cf
+    return base_backend
 
 
 @pytest.fixture
-def mock_backend_locked(monkeypatch, in_mem_store, in_mem_cryptfile):
-    """Mock where cryptfile exists but is LOCKED."""
+def mock_backend_locked(base_backend, cli_store, monkeypatch):
+    """Mock where cryptfile exists but is LOCKED (no master key)."""
     import credstore._backend as backend
     import credstore._store as sm
 
-    monkeypatch.setattr(backend, "init_backend", lambda **kw: None)
     monkeypatch.setattr(backend, "has_master_key", lambda: False)
-    monkeypatch.setattr(backend, "get_system_keyring", lambda: _MockSystemKeyring(in_mem_store))
-    monkeypatch.setattr(backend, "get_active_backend_name", lambda: "MockBackend")
     monkeypatch.setattr(backend, "get_backend_info", lambda: {
         "available": True, "backend": "MockBackend",
         "cryptfile_ready": False, "cryptfile_locked": True,
         "cryptfile_path": "/mock/credentials.crypt",
     })
-    monkeypatch.setattr(sm, "init_store", lambda **kw: None)
-    monkeypatch.setattr(sm, "get_backend_name", lambda: "MockBackend")
     monkeypatch.setattr(sm, "check_backend", lambda: {
         "available": True, "backend": "MockBackend",
         "cryptfile_ready": False, "cryptfile_locked": True,
         "cryptfile_path": "/mock/credentials.crypt",
     })
-    store = sm.CredentialStore()
-    store.get = in_mem_store.get
-    monkeypatch.setattr(sm, "_store", store)
-    monkeypatch.setattr(sm, "_get_store", lambda: store)
-    monkeypatch.setattr(sm, "get_credential", in_mem_store.get)
+    return base_backend
 
 
 @pytest.fixture
-def mock_backend_no_cryptfile(monkeypatch, in_mem_store):
+def mock_backend_no_cryptfile(base_backend, cli_store, monkeypatch):
     """Mock where system keyring is available but cryptfile is not installed."""
     import credstore._backend as backend
     import credstore._store as sm
 
-    monkeypatch.setattr(backend, "init_backend", lambda **kw: None)
-    monkeypatch.setattr(backend, "has_master_key", lambda: True)
-    monkeypatch.setattr(backend, "get_system_keyring", lambda: _MockSystemKeyring(in_mem_store))
-    monkeypatch.setattr(backend, "get_cryptfile", lambda: None)
     monkeypatch.setattr(backend, "_cryptfile", None)
-    monkeypatch.setattr(backend, "get_active_backend_name", lambda: "MockBackend")
+    monkeypatch.setattr(
+        "credstore.__main__._enumerate_system_keyring",
+        lambda service, with_values=False: [("test/k", "val")],
+    )
     monkeypatch.setattr(backend, "get_backend_info", lambda: {
         "available": True, "backend": "MockBackend",
         "cryptfile_ready": False,
     })
-    monkeypatch.setattr(sm, "init_store", lambda **kw: None)
-    store = sm.CredentialStore()
-    store.get = in_mem_store.get
-    store.set = in_mem_store.__setitem__
-    store.delete = lambda key: in_mem_store.pop(key, None) is not None
-    monkeypatch.setattr(sm, "_store", store)
-    monkeypatch.setattr(sm, "_get_store", lambda: store)
-    monkeypatch.setattr(sm, "get_credential", in_mem_store.get)
-    monkeypatch.setattr(sm, "set_credential", in_mem_store.__setitem__)
-    monkeypatch.setattr(sm, "delete_credential", lambda k: in_mem_store.pop(k, None) is not None)
-    import credstore
-    monkeypatch.setattr(credstore, "get_credential", in_mem_store.get)
-    monkeypatch.setattr(credstore, "set_credential", in_mem_store.__setitem__)
-    monkeypatch.setattr(credstore, "delete_credential", lambda k: in_mem_store.pop(k, None) is not None)
-    monkeypatch.setattr(sm, "get_backend_name", lambda: "MockBackend")
     monkeypatch.setattr(sm, "check_backend", lambda: {
         "available": True, "backend": "MockBackend",
         "cryptfile_ready": False,

@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from credstore._config import get_cryptfile_path, load_config
 
 # _config.py conditionally defines is_slife_dev; Pylance can't resolve the
@@ -151,6 +153,7 @@ class TestGetCryptfilePath:
 # ── Fallback is_slife_dev (standalone credstore) ──────────────────────────
 
 
+@pytest.mark.slow
 class TestIsSlifeDevFallback:
     """Tests for the fallback is_slife_dev when slife.paths is unavailable.
 

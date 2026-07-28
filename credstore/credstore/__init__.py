@@ -53,6 +53,12 @@ from credstore._resolver import (
     parse_keyring_uri,
 )
 
+try:
+    from importlib.metadata import version as _version
+    __version__ = _version("credstore")
+except Exception:
+    __version__ = "0.0.0"
+
 __all__ = [
     # Read / write / delete
     "get_credential",
@@ -72,4 +78,3 @@ __all__ = [
     "check_backend",
     "init_store",
 ]
-__version__ = "0.3.6"

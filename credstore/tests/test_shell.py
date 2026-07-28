@@ -4,6 +4,8 @@ import os
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 class TestFormatExport:
     """Tests for format_export() — shell export formatting."""

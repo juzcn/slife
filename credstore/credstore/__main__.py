@@ -38,6 +38,13 @@ from credstore import _backend as backend_mod
 from credstore import _config as config_mod
 from credstore import _store as store_mod
 from credstore._enumerate import enumerate_system_keyring as _enumerate_system_keyring
+from credstore._shell import (
+    format_export,
+    format_unset,
+    persist_key,
+    resolve_shell,
+    unpersist_key,
+)
 from credstore._tty import masked_input
 
 
@@ -157,61 +164,90 @@ def main(argv: list[str] | None = None) -> int:
 # ── Command implementations ──────────────────────────────────────
 
 
+# ── set-password helpers ──────────────────────────────────────────
+
+
+def _read_old_cryptfile_data() -> dict[str, str]:
+    """Unlock existing cryptfile with the user's old password.
+
+    Reads all stored credentials into a dict.  Returns empty dict if
+    the cryptfile exists but has no entries.  Raises ``ValueError`` on
+    wrong password; raises ``RuntimeError`` if the cryptfile backend
+    is not available.
+    """
+    backend_mod.init_backend()
+    cf = backend_mod.get_cryptfile()
+    if cf is None:
+        raise RuntimeError("cryptfile backend not available")
+
+    old_pw = masked_input("Current master password: ")
+    try:
+        with backend_mod.unlocked_cryptfile(old_pw) as cf_ctx:
+            keys = store_mod._read_cryptfile_keys(cf_ctx)
+            data: dict[str, str] = {}
+            for key in keys:
+                try:
+                    value = cf_ctx.get_password(store_mod.DEFAULT_SERVICE, key)
+                except Exception:
+                    pass
+                else:
+                    if value is not None:
+                        data[key] = value
+    except Exception:
+        del old_pw
+        raise ValueError("incorrect password or corrupted file")
+    del old_pw
+    return data
+
+
+def _re_encrypt_old_data(
+    cf_new, old_data: dict[str, str]
+) -> int:
+    """Re-encrypt old credentials into the new cryptfile.
+
+    Returns the number of successfully re-encrypted credentials.
+    Cleans up *old_data* after processing.
+    """
+    synced = 0
+    for key, value in old_data.items():
+        try:
+            cf_new.set_password(store_mod.DEFAULT_SERVICE, key, value)
+            synced += 1
+        except Exception:
+            pass
+    del old_data
+    return synced
+
+
 @requires_tty
 def _cmd_set_password() -> int:
-    """Interactively set or change the cryptfile master password.
-
-    Two cases:
-      - First time (no existing cryptfile): create, sync from system keyring.
-      - Change (existing cryptfile): read all data with old password,
-        re-encrypt everything with new password.
-    """
+    """Interactively set or change the cryptfile master password."""
     print("Set master password for encrypted credential backup.")
     print()
 
-    is_change = False
-    old_data: dict[str, str] = {}  # key → secret
     crypt_path = config_mod.get_cryptfile_path()
+    is_change = os.path.exists(crypt_path)
 
-    if os.path.exists(crypt_path):
-        is_change = True
-
+    # ── Read existing data (change mode only) ──
+    old_data: dict[str, str] = {}
     if is_change:
-        backend_mod.init_backend()
-        cf = backend_mod.get_cryptfile()
-        if cf is None:
-            _err("cryptfile backend not available.")
-            return 1
         print("Changing existing master password.")
-        old_pw = masked_input("Current master password: ")
-
         try:
-            with backend_mod.unlocked_cryptfile(old_pw) as cf:
-                keys = store_mod._read_cryptfile_keys(cf)
-                for key in keys:
-                    try:
-                        value = cf.get_password(store_mod.DEFAULT_SERVICE, key)
-                    except Exception:
-                        pass
-                    else:
-                        if value is not None:
-                            old_data[key] = value
-        except Exception:
-            del old_pw
-            del old_data
-            _err("incorrect password or corrupted file.")
+            old_data = _read_old_cryptfile_data()
+        except RuntimeError as exc:
+            _err(str(exc))
             return 1
-
-        del old_pw
+        except ValueError as exc:
+            del old_data
+            _err(str(exc))
+            return 1
         print(f"  Read {len(old_data)} credential(s) from existing backup.")
         print()
 
-    # ── Set new password ──
+    # ── Prompt for new password ──
     pw1 = masked_input("New master password: ")
     if len(pw1) < 8:
         del pw1
-        if is_change:
-            del old_data
         _err("password must be at least 8 characters.")
         return 1
 
@@ -219,18 +255,15 @@ def _cmd_set_password() -> int:
     if pw1 != pw2:
         del pw2
         del pw1
-        if is_change:
-            del old_data
         _err("passwords do not match.")
         return 1
     del pw2
 
+    # ── Write new cryptfile ──
     backend_mod.reinit_cryptfile(pw1)
-    del pw1  # cryptfile now holds keyring_key internally
+    del pw1
 
     if not backend_mod.has_master_key():
-        if is_change:
-            del old_data
         _err("could not initialize cryptfile backend.")
         return 1
 
@@ -238,16 +271,9 @@ def _cmd_set_password() -> int:
     if cf_new is None:
         _err("cryptfile backend lost after init — aborting.")
         return 1
-    synced = 0
 
-    if is_change:
-        for key, value in old_data.items():
-            try:
-                cf_new.set_password(store_mod.DEFAULT_SERVICE, key, value)
-                synced += 1
-            except Exception:
-                pass
-        del old_data
+    if is_change and old_data:
+        synced = _re_encrypt_old_data(cf_new, old_data)
         print(f"Master password changed. {synced} credential(s) re-encrypted.")
     else:
         print("Master password set.")
@@ -346,27 +372,20 @@ def _cmd_set(key: str) -> int:
 def _cmd_get(key: str, password_mode: bool = False) -> int:
     """Retrieve a credential.
 
-    --password mode: dual-query keyring + cryptfile, output plaintext, fail on mismatch.
-    Default mode:     keyring only, output masked.
+    Default mode: system keyring only, masked output.
+    --password mode: dual-query keyring + cryptfile, plaintext, fail on mismatch.
     """
+    # -- Default mode: keyring only, masked --
     if not password_mode:
-        return _cmd_get_default(key)
-    return _cmd_get_password(key)
+        value = store_mod.get_credential(key)
+        if value is None:
+            _err(f"Not found in system keyring: {key}")
+            return 1
+        print(f"{key}: {store_mod.CredentialStore.mask(value)}")
+        del value
+        return 0
 
-
-def _cmd_get_default(key: str) -> int:
-    """Keyring only, masked output."""
-    value = store_mod.get_credential(key)
-    if value is None:
-        _err(f"Not found in system keyring: {key}")
-        return 1
-    print(f"{key}: {store_mod.CredentialStore.mask(value)}")
-    del value
-    return 0
-
-
-def _cmd_get_password(key: str) -> int:
-    """Dual-query keyring + cryptfile, plaintext, consistency check."""
+    # -- Password mode: dual-query with consistency check --
     master_pw = masked_input("Master password: ")
     if not master_pw.strip():
         _err("master password is required in --password mode.")
@@ -381,26 +400,29 @@ def _cmd_get_password(key: str) -> int:
     except Exception as exc:
         cf_error = str(exc)
 
-    # Evaluate results with exhaustive if/elif/else
+    # Guard clauses — each branch returns early
     if value_kr is None and value_cf is None:
         del master_pw
         _err(f"Not found in either store: {key}")
         return 1
-    elif value_kr is None:
+
+    if value_kr is None:
         del master_pw
         _err(f"{key} — found in cryptfile but missing from system keyring.")
-        print("Run 'credstore reset-keyring' to restore all credentials from backup.", file=sys.stderr)
+        print("Run 'credstore reset-keyring' to restore all credentials from backup.",
+              file=sys.stderr)
         return 1
-    elif value_cf is None:
+
+    if value_cf is None:
         del value_kr
         del master_pw
-        if cf_error:
-            _err(f"{key} — cryptfile read failed: {cf_error}")
-        else:
-            _err(f"{key} — found in system keyring but missing from cryptfile backup.")
+        msg = f"cryptfile read failed: {cf_error}" if cf_error else \
+              f"{key} — found in system keyring but missing from cryptfile backup."
+        _err(msg)
         print("Run 'credstore reset-backup' to sync keyring → cryptfile.", file=sys.stderr)
         return 1
-    elif value_kr != value_cf:
+
+    if value_kr != value_cf:
         del value_cf
         del value_kr
         del master_pw
@@ -409,13 +431,13 @@ def _cmd_get_password(key: str) -> int:
         print("  credstore reset-backup   if keyring is authoritative", file=sys.stderr)
         print("  credstore reset-keyring  if cryptfile is authoritative", file=sys.stderr)
         return 1
-    else:
-        # Match — output plaintext
-        del value_cf
-        del master_pw
-        print(value_kr)
-        del value_kr
-        return 0
+
+    # Match — output plaintext
+    del value_cf
+    del master_pw
+    print(value_kr)
+    del value_kr
+    return 0
 
 
 # ── inject / uninject ──────────────────────────────────────────
@@ -430,8 +452,6 @@ def _cmd_inject(keys: list[str], shell: str) -> int:
       3. Print the export command for immediate eval.
       4. ``del`` the secret immediately.
     """
-    from credstore._shell import format_export, persist_key
-
     for key in keys:
         value = store_mod.get_credential(key)
         if value is None:
@@ -454,8 +474,6 @@ def _cmd_inject(keys: list[str], shell: str) -> int:
 
 def _cmd_uninject(keys: list[str], shell: str) -> int:
     """Remove from system environment + print unset for current shell."""
-    from credstore._shell import format_unset, unpersist_key
-
     for key in keys:
         unpersist_key(key, shell)
         print(format_unset(key, shell))
@@ -465,7 +483,6 @@ def _cmd_uninject(keys: list[str], shell: str) -> int:
 
 def _print_inject_activation(shell: str, key: str) -> None:
     """Tell the user how to activate the key in their current shell."""
-    from credstore._shell import resolve_shell
     fmt = resolve_shell(shell)
     if os.name == "nt":
         if fmt == "powershell":
@@ -633,6 +650,49 @@ def _print_empty_list(
         print("Run 'credstore set <KEY>' to populate both stores.")
 
 
+def _classify_credential_row(
+    key: str,
+    in_ring: bool,
+    in_crypt: bool,
+    cf_ctx,  # unlocked cryptfile or None
+):
+    """Compare a single credential across stores and classify its sync status.
+
+    Returns ``(ring_mark, crypt_mark, status, delta)`` where *delta* is
+    one of ``("synced", "ring_only", "crypt_only", "mismatched")``.
+    Caller updates aggregate counters from *delta*.
+
+    Memory-safe: retrieves at most one value per store, compares,
+    and ``del``-s immediately.
+    """
+    if not (in_ring and in_crypt):
+        # Present in only one store — no comparison needed
+        return ("✔", "✔", "synced", "synced") if in_ring and in_crypt else \
+               ("✔", "—", "keyring only", "ring_only") if in_ring else \
+               ("—", "✔", "cryptfile only", "crypt_only")
+
+    ring_val = store_mod.get_credential(key)
+    crypt_val = (
+        cf_ctx.get_password(store_mod.DEFAULT_SERVICE, key)
+        if cf_ctx is not None
+        else None
+    )
+
+    if ring_val is not None and crypt_val is not None:
+        if ring_val == crypt_val:
+            result = ("✔", "✔", "synced", "synced")
+        else:
+            result = ("✔", "✔", "MISMATCH ⚠", "mismatched")
+        del crypt_val
+    elif ring_val is not None:
+        result = ("✔", "—", "keyring only", "ring_only")
+    else:
+        result = ("—", "✔", "cryptfile only", "crypt_only")
+
+    del ring_val
+    return result
+
+
 def _print_credential_table_safe(
     all_keys: list[str],
     keyring_keys: set[str],
@@ -644,22 +704,17 @@ def _print_credential_table_safe(
     """Print a formatted table of credentials with sync status.
 
     Shows four columns: KEY, SYSTEM KEYRING, CRYPTFILE, ENV, STATUS.
-
-    Memory-safe: retrieves values ONE at a time for comparison
-    and immediately ``del``-s each after use.  Never batch-loads
-    all secrets into memory.
+    Memory-safe: retrieves values ONE at a time for comparison.
     """
     key_width = max(len(k) for k in all_keys) + 2
 
     print()
-    print(f"  {'KEY':<{key_width}} SYSTEM KEYRING   CRYPTFILE        ENV    STATUS")
-    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ──────────────   ────   ──────")
+    header = f"  {'KEY':<{key_width}} SYSTEM KEYRING   CRYPTFILE        ENV    STATUS"
+    sep = f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ──────────────   ────   ──────"
+    print(header)
+    print(sep)
 
-    ring_only = 0
-    crypt_only = 0
-    synced = 0
-    mismatched = 0
-    env_set = 0
+    counts = {"synced": 0, "ring_only": 0, "crypt_only": 0, "mismatched": 0, "env_set": 0}
 
     for key in all_keys:
         in_ring = key in keyring_keys
@@ -667,57 +722,31 @@ def _print_credential_table_safe(
         in_env = key in env_keys
         env_mark = "✔" if in_env else "—"
         if in_env:
-            env_set += 1
+            counts["env_set"] += 1
 
-        if in_ring and in_crypt:
-            # Fetch ONE value from each store, compare, immediately del
-            ring_val = store_mod.get_credential(key)
-            crypt_val = (
-                cf_ctx.get_password(store_mod.DEFAULT_SERVICE, key)
-                if cf_ctx is not None
-                else None
-            )
-
-            if ring_val is not None and crypt_val is not None:
-                if ring_val == crypt_val:
-                    synced += 1
-                    ring_mark, crypt_mark, status = "✔", "✔", "synced"
-                else:
-                    mismatched += 1
-                    ring_mark, crypt_mark, status = "✔", "✔", "MISMATCH ⚠"
-                del crypt_val
-            elif ring_val is not None:
-                ring_only += 1
-                ring_mark, crypt_mark, status = "✔", "—", "keyring only"
-            else:
-                crypt_only += 1
-                ring_mark, crypt_mark, status = "—", "✔", "cryptfile only"
-
-            del ring_val
-        elif in_ring:
-            ring_only += 1
-            ring_mark, crypt_mark, status = "✔", "—", "keyring only"
-        else:
-            crypt_only += 1
-            ring_mark, crypt_mark, status = "—", "✔", "cryptfile only"
+        ring_mark, crypt_mark, status, delta = _classify_credential_row(
+            key, in_ring, in_crypt, cf_ctx,
+        )
+        if delta in counts:
+            counts[delta] += 1
 
         print(f"  {key:<{key_width}} {ring_mark:<13}   {crypt_mark:<14}   {env_mark:<4}   {status}")
 
-    print(f"  {'─' * (key_width - 2):─<{key_width}} ──────────────   ──────────────   ────   ──────")
+    print(sep)
     parts = []
-    if synced:
-        parts.append(f"synced: {synced}")
-    if ring_only:
-        parts.append(f"system only: {ring_only}")
-    if crypt_only:
-        parts.append(f"cryptfile only: {crypt_only}")
-    if mismatched:
-        parts.append(f"mismatched: {mismatched}")
-    if env_set:
-        parts.append(f"env: {env_set}")
+    if counts["synced"]:
+        parts.append(f"synced: {counts['synced']}")
+    if counts["ring_only"]:
+        parts.append(f"system only: {counts['ring_only']}")
+    if counts["crypt_only"]:
+        parts.append(f"cryptfile only: {counts['crypt_only']}")
+    if counts["mismatched"]:
+        parts.append(f"mismatched: {counts['mismatched']}")
+    if counts["env_set"]:
+        parts.append(f"env: {counts['env_set']}")
     print(f"  {len(all_keys)} credential(s) — {', '.join(parts)}")
 
-    _print_list_tips(ring_only, crypt_only, cryptfile_exists)
+    _print_list_tips(counts["ring_only"], counts["crypt_only"], cryptfile_exists)
     print()
 
 

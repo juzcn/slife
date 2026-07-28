@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 class TestMaskedInputDispatcher:
     """Tests for masked_input platform dispatch."""
