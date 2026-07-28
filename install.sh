@@ -178,7 +178,8 @@ echo -e "${YELLOW}[4/5] Installing slife v${VERSION}…${NC}"
 # Capture all user-installed packages from the old venv (including
 # extras and manually pip-installed packages) so we can re-add them
 # after the fresh install.
-PRESERVED_REQS="$TMP_DIR/preserved-requirements.txt"
+# Save outside TMP_DIR so the file survives cleanup.
+PRESERVED_REQS="${TMPDIR:-/tmp}/slife-preserved-requirements.txt"
 :> "$PRESERVED_REQS"
 SLIFE_LINE=$(uv tool list --show-paths 2>/dev/null | grep "slife v")
 if [ -n "$SLIFE_LINE" ]; then
@@ -250,15 +251,28 @@ if [ -s "$PRESERVED_REQS" ]; then
             done < "$PYPROJECT"
         fi
 
-        echo -e "${YELLOW}  Re-adding preserved packages…${NC}"
-        _count=$(wc -l < "$PRESERVED_REQS" 2>/dev/null || echo 0)
-        # shellcheck disable=SC2086
-        if uv pip install --python "$NEW_PYTHON" $EXTRA_INDEX_ARGS -r "$PRESERVED_REQS" >> "$TOOL_INSTALL_LOG" 2>&1; then
+        # Diff old freeze against new venv — only re-add packages not
+        # already in the base install (avoids conflicts with transitive deps).
+        EXTRA_REQS="$TMPDIR/slife-extra-requirements.txt"
+        uv pip freeze --python "$NEW_PYTHON" 2>/dev/null | sed 's/==.*//' | sort > "$TMP_DIR/new-freeze.txt"
+        sort "$PRESERVED_REQS" | comm -23 - "$TMP_DIR/new-freeze.txt" > "$EXTRA_REQS"
+        _extra_count=$(wc -l < "$EXTRA_REQS" 2>/dev/null || echo 0)
+
+        if [ "$_extra_count" -eq 0 ]; then
+            echo -e "  ${GRAY}All packages already present — nothing to re-add${NC}"
             PRESERVE_OK=1
-            echo -e "  ${GREEN}  ✓${NC} $_count packages restored"
         else
-            PRESERVE_OK=0
-            echo -e "  ${YELLOW}  ⚠ failed — run: uv pip install -r $PRESERVED_REQS${NC}"
+            echo -e "${YELLOW}  Re-adding $_extra_count extra packages…${NC}"
+            # shellcheck disable=SC2086
+            if uv pip install --python "$NEW_PYTHON" $EXTRA_INDEX_ARGS -r "$EXTRA_REQS" >> "$TOOL_INSTALL_LOG" 2>&1; then
+                PRESERVE_OK=1
+                echo -e "  ${GREEN}  ✓${NC} $_extra_count packages restored"
+            else
+                PRESERVE_OK=0
+                echo -e "  ${YELLOW}  ⚠ failed — see log or run: uv pip install -r $EXTRA_REQS${NC}"
+                echo -e "  ${GRAY}  Error details:${NC}"
+                tail -15 "$TOOL_INSTALL_LOG" | while IFS= read -r _line; do echo -e "    ${GRAY}$_line${NC}"; done
+            fi
         fi
     fi
 fi
@@ -294,13 +308,13 @@ echo "  credstore set-password              # set up encrypted backup (first tim
 echo "  credstore set DEEPSEEK_API_KEY       # store your API key"
 echo "  slife                                # launch the TUI"
 echo ""
-if [ -s "$PRESERVED_REQS" ] && [ "${PRESERVE_OK:-0}" = "1" ]; then
+if [ "${PRESERVE_OK:-0}" = "1" ] && [ -s "$EXTRA_REQS" ]; then
     echo -e "${CYAN}Preserved packages:${NC}"
-    _count=$(wc -l < "$PRESERVED_REQS" 2>/dev/null || echo 0)
-    echo -e "${GREEN}  ✓${NC} $_count packages restored from previous install"
-elif [ -s "$PRESERVED_REQS" ]; then
+    _count=$(wc -l < "$EXTRA_REQS" 2>/dev/null || echo 0)
+    echo -e "${GREEN}  ✓${NC} $_count extra packages restored from previous install"
+elif [ -s "$EXTRA_REQS" ]; then
     echo -e "${YELLOW}Failed to preserve packages — run manually:${NC}"
-    echo -e "${YELLOW}  uv pip install -r $PRESERVED_REQS${NC}"
+    echo -e "${YELLOW}  uv pip install -r $EXTRA_REQS${NC}"
 fi
 echo -e "${CYAN}Optional extras:${NC}"
 echo "  uv tool install --with \"slife[gguf]\" slife    # local GGUF models"

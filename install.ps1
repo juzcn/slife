@@ -197,7 +197,9 @@ try {
     # Capture all user-installed packages from the old venv so we can
     # re-add them after the fresh install.  "uv tool uninstall" + "uv tool
     # install" silently drops everything beyond core dependencies.
-    $preservedReqs = Join-Path $tmpDir "preserved-requirements.txt"
+    # Save outside $tmpDir so the file survives cleanup — the user may
+    # need to retry if preservation fails.
+    $preservedReqs = Join-Path $env:TEMP "slife-preserved-requirements.txt"
     $slifeLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
     if ($slifeLine -and $slifeLine -match '\((.+?)\)') {
         $oldVenv = $matches[1]
@@ -283,12 +285,29 @@ try {
                 }
             }
 
-            Write-Host "  Re-adding preserved packages..." -ForegroundColor Yellow
-            $prevEAP2 = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            & uv pip install --python $newPython @extraIndexArgs -r $preservedReqs 2>&1 | Out-File -Append -Encoding utf8 $toolInstallLog
-            $preserveOk = ($LASTEXITCODE -eq 0)
-            $ErrorActionPreference = $prevEAP2
+            # Diff old freeze against new venv — only re-add packages that
+            # aren't already in the base install (avoids conflicts with
+            # the 100+ transitive deps that uv tool install already provides).
+            $newFreeze = & uv pip freeze --python $newPython 2>&1 | ForEach-Object { ($_ -split '==')[0].Trim().ToLower() }
+            $oldPkgs = Get-Content $preservedReqs | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -notin $newFreeze }
+            $extraCount = $oldPkgs.Count
+            if ($extraCount -eq 0) {
+                Write-Host "  All packages already present — nothing to re-add" -ForegroundColor DarkGray
+                $preserveOk = $true
+            } else {
+                $oldPkgs | Out-File -Encoding utf8 $preservedReqs
+                Write-Host "  Re-adding $extraCount extra packages..." -ForegroundColor Yellow
+                $prevEAP2 = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                $pipOutput = & uv pip install --python $newPython @extraIndexArgs -r $preservedReqs 2>&1
+                $preserveOk = ($LASTEXITCODE -eq 0)
+                $ErrorActionPreference = $prevEAP2
+                $pipOutput | Out-File -Append -Encoding utf8 $toolInstallLog
+                if (-not $preserveOk) {
+                    Write-Host "  Error details:" -ForegroundColor Red
+                    $pipOutput | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+                }
+            }
         }
     }
 
