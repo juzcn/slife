@@ -7,7 +7,15 @@ from unittest.mock import patch
 
 import pytest
 
-from credstore._config import load_config, get_cryptfile_path, _is_slife_dev
+from credstore._config import get_cryptfile_path, load_config
+
+# _config.py conditionally defines is_slife_dev; Pylance can't resolve the
+# symbol across the try/except.  Use getattr so it works at runtime and
+# the static checker doesn't complain.
+is_slife_dev = getattr(
+    __import__("credstore._config", fromlist=["is_slife_dev"]),
+    "is_slife_dev",
+)
 
 
 class TestLoadConfig:
@@ -68,35 +76,35 @@ class TestLoadConfig:
 
 
 class TestIsSlifeDev:
-    """Tests for _is_slife_dev."""
+    """Tests for is_slife_dev."""
 
     def test_is_slife_project(self):
         import tomllib
         with patch.object(Path, "read_text", return_value='[project]\nname = "slife"\n'), \
              patch.object(tomllib, "loads", return_value={"project": {"name": "slife"}}):
-            assert _is_slife_dev() is True
+            assert is_slife_dev() is True
 
     def test_not_slife_project(self):
         import tomllib
         with patch.object(Path, "read_text", return_value='[project]\nname = "other"\n'), \
              patch.object(tomllib, "loads", return_value={"project": {"name": "other"}}):
-            assert _is_slife_dev() is False
+            assert is_slife_dev() is False
 
     def test_missing_pyproject_returns_false(self):
         with patch.object(Path, "read_text", side_effect=FileNotFoundError):
-            assert _is_slife_dev() is False
+            assert is_slife_dev() is False
 
     def test_malformed_toml_returns_false(self):
         import tomllib
         with patch.object(Path, "read_text", return_value="not valid toml"), \
              patch.object(tomllib, "loads", side_effect=ValueError("bad toml")):
-            assert _is_slife_dev() is False
+            assert is_slife_dev() is False
 
     def test_missing_project_section_returns_false(self):
         import tomllib
         with patch.object(Path, "read_text", return_value='[tool]\nkey = "val"\n'), \
              patch.object(tomllib, "loads", return_value={"tool": {"key": "val"}}):
-            assert _is_slife_dev() is False
+            assert is_slife_dev() is False
 
 
 class TestGetCryptfilePath:
@@ -126,7 +134,7 @@ class TestGetCryptfilePath:
     def test_dev_default(self, monkeypatch):
         monkeypatch.delenv("CREDSTORE_FILE", raising=False)
         with patch("credstore._config.load_config", return_value={}):
-            with patch("credstore._config._is_slife_dev", return_value=True):
+            with patch("credstore._config.is_slife_dev", return_value=True):
                 result = get_cryptfile_path()
                 assert result.endswith("credentials.crypt")
 
@@ -134,19 +142,19 @@ class TestGetCryptfilePath:
         monkeypatch.delenv("CREDSTORE_FILE", raising=False)
         monkeypatch.setenv("USERPROFILE", "C:\\Users\\testuser")
         with patch("credstore._config.load_config", return_value={}):
-            with patch("credstore._config._is_slife_dev", return_value=False):
+            with patch("credstore._config.is_slife_dev", return_value=False):
                 result = get_cryptfile_path()
                 assert ".credstore" in result
                 assert result.endswith("credentials.crypt")
 
 
-# ── Fallback _is_slife_dev (standalone credstore) ──────────────────────────
+# ── Fallback is_slife_dev (standalone credstore) ──────────────────────────
 
 
 class TestIsSlifeDevFallback:
-    """Tests for the fallback _is_slife_dev when slife.paths is unavailable.
+    """Tests for the fallback is_slife_dev when slife.paths is unavailable.
 
-    credstore._config normally imports _is_slife_dev from slife.paths.
+    credstore._config normally imports is_slife_dev from slife.paths.
     These tests force that import to fail so the standalone fallback
     implementation (lines 23-36 of _config.py) is exercised.
     """
@@ -162,7 +170,7 @@ class TestIsSlifeDevFallback:
     def _reload_without_slife(*, block_tomllib=False):
         """Reload credstore._config with slife.paths import blocked.
 
-        Returns the reloaded module so tests can call its _is_slife_dev.
+        Returns the reloaded module so tests can call its is_slife_dev.
         """
         import builtins
         import credstore._config as cfg
@@ -181,15 +189,15 @@ class TestIsSlifeDevFallback:
         return cfg
 
     def test_no_tomllib_returns_false(self):
-        """When tomllib is also unavailable, _is_slife_dev() returns False."""
+        """When tomllib is also unavailable, is_slife_dev() returns False."""
         cfg = self._reload_without_slife(block_tomllib=True)
-        assert cfg._is_slife_dev() is False
+        assert getattr(cfg, "is_slife_dev")() is False
 
     def test_missing_pyproject_returns_false(self):
         """When pyproject.toml does not exist."""
         cfg = self._reload_without_slife()
         with patch.object(Path, "read_text", side_effect=FileNotFoundError):
-            assert cfg._is_slife_dev() is False
+            assert getattr(cfg, "is_slife_dev")() is False
 
     def test_not_slife_project_name(self):
         """When pyproject.toml has a different project name."""
@@ -197,13 +205,13 @@ class TestIsSlifeDevFallback:
         import tomllib
         with patch.object(Path, "read_text", return_value='[project]\nname = "other"\n'), \
              patch.object(tomllib, "loads", return_value={"project": {"name": "other"}}):
-            assert cfg._is_slife_dev() is False
+            assert getattr(cfg, "is_slife_dev")() is False
 
     def test_malformed_toml(self):
         """When pyproject.toml cannot be parsed."""
         cfg = self._reload_without_slife()
         with patch.object(Path, "read_text", return_value="not valid toml"):
-            assert cfg._is_slife_dev() is False
+            assert getattr(cfg, "is_slife_dev")() is False
 
     def test_is_slife_project_via_fallback(self):
         """When pyproject.toml has project.name == 'slife' (via fallback)."""
@@ -211,4 +219,4 @@ class TestIsSlifeDevFallback:
         import tomllib
         with patch.object(Path, "read_text", return_value='[project]\nname = "slife"\n'), \
              patch.object(tomllib, "loads", return_value={"project": {"name": "slife"}}):
-            assert cfg._is_slife_dev() is True
+            assert getattr(cfg, "is_slife_dev")() is True

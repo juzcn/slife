@@ -18,22 +18,28 @@ import logging
 import os
 from pathlib import Path
 
+_tomllib = None
 try:
-    from slife.paths import is_dev as _is_slife_dev
-except ImportError:  # standalone credstore (not installed with slife)
-    try:
-        import tomllib
-    except ImportError:
-        tomllib = None
+    import tomllib as _tomllib
+except ImportError:
+    pass
 
-    def _is_slife_dev() -> bool:
-        if tomllib is None:
-            return False
-        try:
-            data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-            return data.get("project", {}).get("name") == "slife"
-        except Exception:
-            return False
+
+def is_slife_dev() -> bool:
+    """Check whether we're running from the slife source tree.
+
+    Returns True when the CWD contains a ``pyproject.toml`` with
+    ``project.name == "slife"``.
+    """
+    if _tomllib is None:
+        return False
+    try:
+        data = _tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+        return data.get("project", {}).get("name") == "slife"
+    except Exception:
+        return False
+
+__all__ = ["is_slife_dev", "load_config", "get_cryptfile_path"]
 
 logger = logging.getLogger("credstore")
 
@@ -82,6 +88,6 @@ def get_cryptfile_path() -> str:
         return str(Path(cfg_path).expanduser())
 
     # 3. Default
-    if _is_slife_dev():
+    if is_slife_dev():
         return str(Path("credentials.crypt"))
     return str(Path.home() / ".credstore" / "credentials.crypt")
