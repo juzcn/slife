@@ -13,3 +13,8 @@ Configuration
      Use inject_credential to load a keyring secret into the current process;
      use uninject_credential to remove it when no longer needed.
      credstore CLI is interactive-only — LLMs cannot invoke it.
+
+  Slife is installed via `uv tool install` in an isolated venv.
+    — To install extras:  uv tool install --with "slife[gguf]" slife
+    — To repair a broken env:  uv tool install --from <source> slife
+      (user data in ~/.slife/ is never touched)

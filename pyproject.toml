@@ -90,6 +90,9 @@ extra-index-url = [
 [tool.uv.workspace]
 members = ["credstore"]
 
+[tool.uv.sources]
+credstore = { workspace = true }
+
 [tool.pytest.ini_options]
 minversion = "9.1"
 testpaths = ["tests"]
