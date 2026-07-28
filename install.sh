@@ -4,18 +4,10 @@ set -euo pipefail
 # Slife one-click installer for macOS, Linux, and WSL.
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
-#   curl -fsSL https://.../install.sh | bash -s -- --fresh   # clean install
 #
 # No prerequisites — the script installs uv if needed, then uses
 # ``uv tool install`` to install slife in an isolated environment.
 # Python 3.13 is managed automatically by uv.
-
-FRESH=""
-for arg in "$@"; do
-    case "$arg" in
-        --fresh|-fresh) FRESH="1" ;;
-    esac
-done
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -186,41 +178,33 @@ echo -e "${YELLOW}[4/5] Installing slife v${VERSION}…${NC}"
 # We check how each package was installed:
 #   - direct_url.json present → installed from a specific URL → replay URL
 #   - no direct_url.json      → installed from an index    → uv pip install <name>
-#
-# Skip detection when --fresh is passed — the user wants a clean install.
 PRESERVED_PKGS=""      # space-separated: "name" or "name|url"
-if [ "$FRESH" = "1" ]; then
-    echo -e "${YELLOW}  --fresh: clean install — removing user data…${NC}"
-    rm -rf "$HOME/.slife"
-    echo -e "  ${GRAY}--fresh: skipping package preservation${NC}"
-else
-    SLIFE_LINE=$(uv tool list --show-paths 2>/dev/null | grep "slife v")
-    if [ -n "$SLIFE_LINE" ]; then
-        SLIFE_VENV=$(echo "$SLIFE_LINE" | sed -n 's/.*(\(.*\)).*/\1/p')
-        if [ -n "$SLIFE_VENV" ] && [ -d "$SLIFE_VENV" ]; then
-            # Find site-packages (Python version may vary).
-            SITE_PKGS=$(echo "$SLIFE_VENV"/lib/python*/site-packages 2>/dev/null | head -1)
+SLIFE_LINE=$(uv tool list --show-paths 2>/dev/null | grep "slife v")
+if [ -n "$SLIFE_LINE" ]; then
+    SLIFE_VENV=$(echo "$SLIFE_LINE" | sed -n 's/.*(\(.*\)).*/\1/p')
+    if [ -n "$SLIFE_VENV" ] && [ -d "$SLIFE_VENV" ]; then
+        # Find site-packages (Python version may vary).
+        SITE_PKGS=$(echo "$SLIFE_VENV"/lib/python*/site-packages 2>/dev/null | head -1)
 
-            _detect_pkg() {
-                _import="$1" _name="$2"
-                if [ -d "$SITE_PKGS/$_import" ] 2>/dev/null; then
-                    _url=""
-                    _di=$(echo "$SITE_PKGS/${_import}-"*.dist-info 2>/dev/null | head -1)
-                    if [ -n "$_di" ] && [ -f "$_di/direct_url.json" ]; then
-                        _url=$(python3 -c "import json; print(json.load(open('$_di/direct_url.json'))['url'])" 2>/dev/null || true)
-                    fi
-                    if [ -n "$_url" ]; then
-                        PRESERVED_PKGS="$PRESERVED_PKGS ${_name}|${_url}"
-                        echo -e "  ${GRAY}Detected: $_name (from URL, will preserve)${NC}"
-                    else
-                        PRESERVED_PKGS="$PRESERVED_PKGS $_name"
-                        echo -e "  ${GRAY}Detected: $_name (will preserve)${NC}"
-                    fi
+        _detect_pkg() {
+            _import="$1" _name="$2"
+            if [ -d "$SITE_PKGS/$_import" ] 2>/dev/null; then
+                _url=""
+                _di=$(echo "$SITE_PKGS/${_import}-"*.dist-info 2>/dev/null | head -1)
+                if [ -n "$_di" ] && [ -f "$_di/direct_url.json" ]; then
+                    _url=$(python3 -c "import json; print(json.load(open('$_di/direct_url.json'))['url'])" 2>/dev/null || true)
                 fi
-            }
-            _detect_pkg "llama_cpp" "llama-cpp-python"
-            _detect_pkg "sentence_transformers" "sentence-transformers"
-        fi
+                if [ -n "$_url" ]; then
+                    PRESERVED_PKGS="$PRESERVED_PKGS ${_name}|${_url}"
+                    echo -e "  ${GRAY}Detected: $_name (from URL, will preserve)${NC}"
+                else
+                    PRESERVED_PKGS="$PRESERVED_PKGS $_name"
+                    echo -e "  ${GRAY}Detected: $_name (will preserve)${NC}"
+                fi
+            fi
+        }
+        _detect_pkg "llama_cpp" "llama-cpp-python"
+        _detect_pkg "sentence_transformers" "sentence-transformers"
     fi
 fi
 

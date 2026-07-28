@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Slife uninstaller for macOS, Linux, and WSL.
+# Usage:
+#   ./uninstall.sh
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+GRAY='\033[0;90m'
+NC='\033[0m'
+
+echo ""
+echo -e "${CYAN}╔══════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║        Slife Uninstaller            ║${NC}"
+echo -e "${CYAN}╚══════════════════════════════════════╝${NC}"
+echo ""
+
+if uv tool list 2>/dev/null | grep -qF "slife"; then
+    echo -e "${YELLOW}Uninstalling slife (slife + credstore share the same venv)…${NC}"
+    uv tool uninstall slife 2>/dev/null && echo -e "  ${GREEN}✓${NC} slife + credstore removed" || echo -e "  ${RED}✗${NC} uninstall failed"
+else
+    echo -e "${GRAY}slife is not installed.${NC}"
+fi
+
+# ── Remaining data ─────────────────────────────────────────────────────
+echo ""
+DATA_DIR="$HOME/.slife"
+LOCAL_BIN="$HOME/.local/bin"
+
+REMAIN=()
+if [ -d "$DATA_DIR" ]; then
+    SIZE=$(du -sh "$DATA_DIR" 2>/dev/null | cut -f1)
+    REMAIN+=("  ~/.slife/           (${SIZE:-?}) — config, logs, databases, skills")
+fi
+for bin in "$LOCAL_BIN/slife" "$LOCAL_BIN/credstore"; do
+    if [ -f "$bin" ] || [ -L "$bin" ]; then
+        REMAIN+=("  $bin")
+    fi
+done
+
+if [ ${#REMAIN[@]} -gt 0 ]; then
+    echo -e "${YELLOW}Data files NOT removed (delete manually if desired):${NC}"
+    for r in "${REMAIN[@]}"; do
+        echo -e "${GRAY}$r${NC}"
+    done
+else
+    echo -e "${GREEN}No remaining data files.${NC}"
+fi
+
+echo ""
+echo -e "${CYAN}Done.${NC}"

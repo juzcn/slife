@@ -7,22 +7,13 @@
     ``uv tool install`` to install slife in an isolated environment.
     Python 3.13 is managed automatically by uv.
 
-.PARAMETER Fresh
-    Skip detection of previously installed packages — install only the
-    base slife without preserving optional extras like llama-cpp-python
-    or sentence-transformers.
-
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 | iex"
 
-    # Fresh install (no preserved packages):
+    Or download first:
     irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 -OutFile install.ps1
-    .\install.ps1 -Fresh
+    .\install.ps1
 #>
-
-param(
-    [switch]$Fresh
-)
 
 $ErrorActionPreference = "Stop"
 
@@ -211,40 +202,30 @@ try {
     # We check how each package was installed:
     #   - direct_url.json present → installed from a specific URL → replay URL
     #   - no direct_url.json      → installed from an index    → uv pip install <name>
-    #
-    # Skip detection when -Fresh is passed — the user wants a clean install.
-    $preservedPackages = @()
-    if (-not $Fresh) {
-        $slifeLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
-        if ($slifeLine -and $slifeLine -match '\((.+?)\)') {
-            $slifeVenv = $matches[1]
-            $sitePkgs = Join-Path $slifeVenv "Lib\site-packages"
-            $optionalPkgs = @(
-                @{import="llama_cpp";       name="llama-cpp-python"},
-                @{import="sentence_transformers"; name="sentence-transformers"}
-            )
-            foreach ($pkg in $optionalPkgs) {
-                if (Test-Path (Join-Path $sitePkgs $pkg.import)) {
-                    # Check if installed from a direct URL.
-                    $distInfo = Get-ChildItem (Join-Path $sitePkgs "$($pkg.import)-*.dist-info") -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-                    $urlJson = if ($distInfo) { Join-Path $distInfo.FullName "direct_url.json" } else { $null }
-                    if ($urlJson -and (Test-Path $urlJson)) {
-                        $url = (Get-Content $urlJson -Raw | ConvertFrom-Json).url
-                        $preservedPackages += @{name=$pkg.name; url=$url}
-                        Write-Host "  Detected: $($pkg.name) (from URL, will preserve)" -ForegroundColor DarkGray
-                    } else {
-                        $preservedPackages += @{name=$pkg.name}
-                        Write-Host "  Detected: $($pkg.name) (will preserve)" -ForegroundColor DarkGray
-                    }
+    $preservedPackages = @()   # @{name="..."; url="..."}  or  @{name="..."}
+    $slifeLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
+    if ($slifeLine -and $slifeLine -match '\((.+?)\)') {
+        $slifeVenv = $matches[1]
+        $sitePkgs = Join-Path $slifeVenv "Lib\site-packages"
+        $optionalPkgs = @(
+            @{import="llama_cpp";       name="llama-cpp-python"},
+            @{import="sentence_transformers"; name="sentence-transformers"}
+        )
+        foreach ($pkg in $optionalPkgs) {
+            if (Test-Path (Join-Path $sitePkgs $pkg.import)) {
+                # Check if installed from a direct URL.
+                $distInfo = Get-ChildItem (Join-Path $sitePkgs "$($pkg.import)-*.dist-info") -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+                $urlJson = if ($distInfo) { Join-Path $distInfo.FullName "direct_url.json" } else { $null }
+                if ($urlJson -and (Test-Path $urlJson)) {
+                    $url = (Get-Content $urlJson -Raw | ConvertFrom-Json).url
+                    $preservedPackages += @{name=$pkg.name; url=$url}
+                    Write-Host "  Detected: $($pkg.name) (from URL, will preserve)" -ForegroundColor DarkGray
+                } else {
+                    $preservedPackages += @{name=$pkg.name}
+                    Write-Host "  Detected: $($pkg.name) (will preserve)" -ForegroundColor DarkGray
                 }
             }
         }
-    }
-
-    if ($Fresh) {
-        Write-Host "  -Fresh: clean install — removing user data..." -ForegroundColor Yellow
-        Remove-Item -Recurse -Force "$env:USERPROFILE\.slife" -ErrorAction SilentlyContinue
-        Write-Host "  -Fresh: skipping package preservation" -ForegroundColor DarkGray
     }
 
     # Clean up any previous broken installation first.
