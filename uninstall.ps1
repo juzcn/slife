@@ -31,20 +31,23 @@ if ($installed) {
     Write-Host "slife is not installed." -ForegroundColor DarkGray
 }
 
+# ── Clean up wrapper binaries ───────────────────────────────────────────
+$localBin = "$env:USERPROFILE\.local\bin"
+foreach ($bin in @("$localBin\slife.exe", "$localBin\slife.cmd", "$localBin\credstore.exe", "$localBin\credstore.cmd")) {
+    if (Test-Path $bin) {
+        Remove-Item $bin -Force -ErrorAction SilentlyContinue
+        Write-Host "  Removed: $bin" -ForegroundColor DarkGray
+    }
+}
+
 # ── Remaining data ─────────────────────────────────────────────────────
 Write-Host ""
 $dataDir = "$env:USERPROFILE\.slife"
-$localBin = "$env:USERPROFILE\.local\bin"
 
 $remain = @()
 if (Test-Path $dataDir) {
     $size = "{0:F1} MB" -f ((Get-ChildItem $dataDir -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB)
     $remain += "  ~\.slife\           ($size) — config, logs, databases, skills"
-}
-foreach ($bin in @("$localBin\slife.exe", "$localBin\slife.cmd", "$localBin\credstore.exe", "$localBin\credstore.cmd")) {
-    if (Test-Path $bin) {
-        $remain += "  $bin"
-    }
 }
 
 if ($remain.Count -gt 0) {

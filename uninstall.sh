@@ -25,21 +25,24 @@ else
     echo -e "${GRAY}slife is not installed.${NC}"
 fi
 
+# ── Clean up wrapper binaries ───────────────────────────────────────────
+LOCAL_BIN="$HOME/.local/bin"
+for bin in "$LOCAL_BIN/slife" "$LOCAL_BIN/credstore"; do
+    if [ -f "$bin" ] || [ -L "$bin" ]; then
+        rm -f "$bin"
+        echo -e "  ${GRAY}Removed: $bin${NC}"
+    fi
+done
+
 # ── Remaining data ─────────────────────────────────────────────────────
 echo ""
 DATA_DIR="$HOME/.slife"
-LOCAL_BIN="$HOME/.local/bin"
 
 REMAIN=()
 if [ -d "$DATA_DIR" ]; then
     SIZE=$(du -sh "$DATA_DIR" 2>/dev/null | cut -f1)
     REMAIN+=("  ~/.slife/           (${SIZE:-?}) — config, logs, databases, skills")
 fi
-for bin in "$LOCAL_BIN/slife" "$LOCAL_BIN/credstore"; do
-    if [ -f "$bin" ] || [ -L "$bin" ]; then
-        REMAIN+=("  $bin")
-    fi
-done
 
 if [ ${#REMAIN[@]} -gt 0 ]; then
     echo -e "${YELLOW}Data files NOT removed (delete manually if desired):${NC}"
