@@ -210,7 +210,7 @@ try {
     $toolInstallLog = Join-Path $tmpDir "tool-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & uv tool install --from $extractedDir.FullName --python 3.13 --with pip slife > $toolInstallLog 2>&1
+    & uv tool install --from $extractedDir.FullName --python 3.13 slife > $toolInstallLog 2>&1
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {

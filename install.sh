@@ -180,7 +180,7 @@ if [ -f "$HOME/.slife/pyvenv.cfg" ]; then
 fi
 
 TOOL_INSTALL_LOG="$TMP_DIR/tool-install.log"
-uv tool install --from "$TMP_DIR/slife-main" --python 3.13 --with pip slife > "$TOOL_INSTALL_LOG" 2>&1 || {
+uv tool install --from "$TMP_DIR/slife-main" --python 3.13 slife > "$TOOL_INSTALL_LOG" 2>&1 || {
     echo -e "${RED}Error: slife installation failed.${NC}"
     echo -e "${YELLOW}Last lines of install log:${NC}"
     tail -n 20 "$TOOL_INSTALL_LOG"

@@ -81,14 +81,6 @@ def main(config_path: str = "slife.json5"):
     os.environ["SLIFE_SESSION_ID"] = sid
     os.environ["SLIFE_AGENT_ID"] = agent_id
 
-    # Make the venv's bin/Scripts directory available on PATH so that
-    # subprocesses can find pip, uv, and other console_scripts directly
-    # (e.g. "pip install xxx" instead of "python -m pip install xxx").
-    _venv_bin = os.path.dirname(sys.executable)
-    _current_path = os.environ.get("PATH", "")
-    if _venv_bin not in _current_path.split(os.pathsep):
-        os.environ["PATH"] = os.pathsep.join([_venv_bin, _current_path])
-
     # Force UTF-8 encoding for Python subprocesses on Windows.
     # Without this, Python defaults to the system code page (e.g. GBK / cp936)
     # and crashes when printing characters outside that encoding to stdout.
