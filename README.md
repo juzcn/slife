@@ -87,6 +87,13 @@ curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/uninstall.sh | bas
 **Windows PowerShell:**
 
 ```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/uninstall.ps1 | iex"
+```
+
+Or download first:
+
+```powershell
+irm https://raw.githubusercontent.com/juzcn/slife/main/uninstall.ps1 -OutFile uninstall.ps1
 .\uninstall.ps1
 ```
 
