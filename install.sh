@@ -188,9 +188,12 @@ if [ -n "$SLIFE_LINE" ]; then
         OLD_PYTHON="$SLIFE_VENV/bin/python"
         if [ -x "$OLD_PYTHON" ]; then
             echo -e "  ${GRAY}Capturing installed packages from previous installation…${NC}"
-            # Strip versions — only save package names so uv resolves
-            # compatible versions (pinned old versions could conflict).
-            uv pip freeze --python "$OLD_PYTHON" 2>/dev/null | sed 's/==.*//' | grep -vE '^(slife|credstore)$' > "$PRESERVED_REQS" || true
+            # Normalize to bare package names (strip version, URL, and
+            # editable install prefixes).  Skip -e entries.
+            uv pip freeze --python "$OLD_PYTHON" 2>/dev/null \
+                | grep -v '^-e ' \
+                | sed 's/ @ .*//; s/==.*//' \
+                | grep -vE '^(slife|credstore)$' > "$PRESERVED_REQS" || true
             _count=$(wc -l < "$PRESERVED_REQS" 2>/dev/null || echo 0)
             if [ "$_count" -gt 0 ]; then
                 echo -e "  ${GRAY}Detected $_count packages to preserve${NC}"

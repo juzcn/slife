@@ -210,10 +210,13 @@ try {
             $count = 0
             foreach ($line in $freeze) {
                 $spec = $line.Trim()
-                # Strip version pin — only save package names so uv
-                # resolves compatible versions (pinned old versions
-                # could conflict with the new slife install).
-                $name = ($spec -split '==')[0].Trim().ToLower()
+                # Normalize to bare package name:
+                #   name==version     → name
+                #   name @ url        → name
+                #   -e path           → skip (editable install from old temp dir)
+                if ($spec -match '^-e ') { continue }
+                $name = $spec -replace '\s*@.+$', '' -replace '==.+$', ''
+                $name = $name.Trim().ToLower()
                 if ($name -and $name -ne "slife" -and $name -ne "credstore") {
                     Add-Content -Path $preservedReqs -Value $name -Encoding utf8
                     $count++
