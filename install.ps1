@@ -386,11 +386,11 @@ try {
     $credstoreExe = "$installDir\Scripts\credstore.exe"
 
     @"
-@""$slifeExe"" %*
+@""$slifeExe" %*
 "@ | Out-File -FilePath "$localBin\slife.cmd" -Encoding ASCII
 
     @"
-@"$credstoreExe"" %*
+@"$credstoreExe" %*
 "@ | Out-File -FilePath "$localBin\credstore.cmd" -Encoding ASCII
 
     # Ensure ~/.local/bin is persisted in user PATH (Step 1 added it to
