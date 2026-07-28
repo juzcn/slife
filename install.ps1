@@ -194,36 +194,28 @@ try {
     # User data (~/.slife/) is never touched.
     Write-Host "[4/5] Installing slife v$version..." -ForegroundColor Yellow
 
-    # Detect previously installed optional packages so we can preserve
-    # them across reinstall.  Without this, "uv tool uninstall" + "uv tool
-    # install" silently drops llama-cpp-python / sentence-transformers,
-    # which live in optional-dependencies and are not installed by default.
-    #
-    # We check how each package was installed:
-    #   - direct_url.json present → installed from a specific URL → replay URL
-    #   - no direct_url.json      → installed from an index    → uv pip install <name>
-    $preservedPackages = @()   # @{name="..."; url="..."}  or  @{name="..."}
+    # Capture all user-installed packages from the old venv so we can
+    # re-add them after the fresh install.  "uv tool uninstall" + "uv tool
+    # install" silently drops everything beyond core dependencies.
+    $preservedReqs = Join-Path $tmpDir "preserved-requirements.txt"
     $slifeLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
     if ($slifeLine -and $slifeLine -match '\((.+?)\)') {
-        $slifeVenv = $matches[1]
-        $sitePkgs = Join-Path $slifeVenv "Lib\site-packages"
-        $optionalPkgs = @(
-            @{import="llama_cpp";       name="llama-cpp-python"},
-            @{import="sentence_transformers"; name="sentence-transformers"}
-        )
-        foreach ($pkg in $optionalPkgs) {
-            if (Test-Path (Join-Path $sitePkgs $pkg.import)) {
-                # Check if installed from a direct URL.
-                $distInfo = Get-ChildItem (Join-Path $sitePkgs "$($pkg.import)-*.dist-info") -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-                $urlJson = if ($distInfo) { Join-Path $distInfo.FullName "direct_url.json" } else { $null }
-                if ($urlJson -and (Test-Path $urlJson)) {
-                    $url = (Get-Content $urlJson -Raw | ConvertFrom-Json).url
-                    $preservedPackages += @{name=$pkg.name; url=$url}
-                    Write-Host "  Detected: $($pkg.name) (from URL, will preserve)" -ForegroundColor DarkGray
-                } else {
-                    $preservedPackages += @{name=$pkg.name}
-                    Write-Host "  Detected: $($pkg.name) (will preserve)" -ForegroundColor DarkGray
+        $oldVenv = $matches[1]
+        $oldPython = Join-Path $oldVenv "Scripts\python.exe"
+        if (Test-Path $oldPython) {
+            Write-Host "  Capturing installed packages from previous installation..." -ForegroundColor DarkGray
+            $freeze = & uv pip freeze --python $oldPython 2>&1
+            $count = 0
+            foreach ($line in $freeze) {
+                $spec = $line.Trim()
+                $name = ($spec -split '==')[0].Trim().ToLower()
+                if ($name -and $name -ne "slife" -and $name -ne "credstore") {
+                    Add-Content -Path $preservedReqs -Value $spec -Encoding utf8
+                    $count++
                 }
+            }
+            if ($count -gt 0) {
+                Write-Host "  Detected $count packages to preserve" -ForegroundColor DarkGray
             }
         }
     }
@@ -265,14 +257,13 @@ try {
     }
 
     # Re-add preserved packages into the new tool venv.
-    if ($preservedPackages.Count -gt 0) {
+    if ((Test-Path $preservedReqs) -and ((Get-Content $preservedReqs).Count -gt 0)) {
         $newLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
         if ($newLine -and $newLine -match '\((.+?)\)') {
             $newVenv = $matches[1]
             $newPython = Join-Path $newVenv "Scripts\python.exe"
 
-            # Read extra-index-url from the project's pyproject.toml so that
-            # packages like llama-cpp-python can resolve pre-built wheels.
+            # Read extra-index-url from pyproject.toml for pre-built wheels.
             $extraIndexArgs = @()
             $pyprojectPath = Join-Path $extractedDir.FullName "pyproject.toml"
             if (Test-Path $pyprojectPath) {
@@ -292,22 +283,8 @@ try {
             Write-Host "  Re-adding preserved packages..." -ForegroundColor Yellow
             $prevEAP2 = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
-            foreach ($pkg in $preservedPackages) {
-                $pkgOk = $true
-                if ($pkg.url) {
-                    & uv pip install --python $newPython @extraIndexArgs $pkg.url 2>&1 | Out-File -Append -Encoding utf8 $toolInstallLog
-                } else {
-                    & uv pip install --python $newPython @extraIndexArgs $pkg.name 2>&1 | Out-File -Append -Encoding utf8 $toolInstallLog
-                }
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Host "  Warning: failed to re-add $($pkg.name) — run: uv pip install $($pkg.name)" -ForegroundColor Yellow
-                    $pkgOk = $false
-                } else {
-                    Write-Host "  [OK] $($pkg.name)" -ForegroundColor Green
-                }
-                # Track status for final summary.
-                $pkg | Add-Member -NotePropertyName "ok" -NotePropertyValue $pkgOk -Force
-            }
+            & uv pip install --python $newPython @extraIndexArgs -r $preservedReqs 2>&1 | Out-File -Append -Encoding utf8 $toolInstallLog
+            $preserveOk = ($LASTEXITCODE -eq 0)
             $ErrorActionPreference = $prevEAP2
         }
     }
@@ -353,20 +330,13 @@ try {
     Write-Host "  credstore set DEEPSEEK_API_KEY       # store your API key"
     Write-Host "  slife                                # launch the TUI"
     Write-Host ""
-    if ($preservedPackages.Count -gt 0) {
-        $okPkgs = $preservedPackages | Where-Object { $_.ok }
-        $failPkgs = $preservedPackages | Where-Object { -not $_.ok }
-        if ($okPkgs) {
+    if ((Test-Path $preservedReqs) -and ((Get-Content $preservedReqs).Count -gt 0)) {
+        if ($preserveOk) {
             Write-Host "Preserved packages:" -ForegroundColor Cyan
-            foreach ($pkg in $okPkgs) {
-                Write-Host "  [OK] $($pkg.name) (auto-detected from previous install)" -ForegroundColor Green
-            }
-        }
-        if ($failPkgs) {
-            Write-Host "Failed to preserve:" -ForegroundColor Yellow
-            foreach ($pkg in $failPkgs) {
-                Write-Host "  [!!] $($pkg.name) — run: uv pip install $($pkg.name)" -ForegroundColor Yellow
-            }
+            Write-Host "  [OK] $( (Get-Content $preservedReqs).Count ) packages restored from previous install" -ForegroundColor Green
+        } else {
+            Write-Host "Failed to preserve packages — run manually:" -ForegroundColor Yellow
+            Write-Host "  uv pip install -r $preservedReqs" -ForegroundColor Yellow
         }
     }
     Write-Host "Optional extras:" -ForegroundColor Cyan
