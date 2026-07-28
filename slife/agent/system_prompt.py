@@ -5,7 +5,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from slife.paths import get_skills_dir, is_dev
+from slife.paths import get_environment_info, get_skills_dir
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)))
@@ -19,11 +19,13 @@ def build(agent_id: str = "slife", agent_name: str = "") -> str:
         agent_name: Optional human-readable display name for this agent.
     """
     today = date.today()
+    env_info = get_environment_info()
     return _env.get_template("system_prompt.j2").render(
         agent_id=agent_id,
         agent_name=agent_name,
         current_date=today.isoformat(),
         current_weekday=today.strftime("%A"),
         skills_dir=str(get_skills_dir().resolve()),
-        is_dev=is_dev(),
+        is_dev=env_info["mode"] == "development",
+        env_hint=env_info["hint"],
     ).strip()

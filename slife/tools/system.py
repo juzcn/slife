@@ -24,7 +24,7 @@ from pathlib import Path
 from shutil import which
 from typing import ClassVar
 
-from slife.paths import get_data_dir, is_dev
+from slife.paths import get_data_dir, get_environment_info
 from slife.tools.base import Tool
 from slife.health import get_report as get_startup_records
 
@@ -158,15 +158,10 @@ def check_workspace() -> list[dict]:
     }]
 
     # ── Slife's own environment (dev vs production) ────────────────
-    data_dir = get_data_dir()
-    if is_dev():
-        results.append({"component": "workspace", "level": "ok", "key": "environment",
-                        "value": "development",
-                        "hint": "uv managed project (editable workspace)."})
-    else:
-        results.append({"component": "workspace", "level": "ok", "key": "environment",
-                        "value": "production",
-                        "hint": f"uv tool install (isolated venv). User data: {data_dir}"})
+    env_info = get_environment_info()
+    results.append({"component": "workspace", "level": "ok", "key": "environment",
+                    "value": env_info["mode"],
+                    "hint": env_info["hint"]})
 
     # ── User's CWD project detection ───────────────────────────────
     pyproject = Path(cwd) / "pyproject.toml"

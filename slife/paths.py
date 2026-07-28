@@ -52,6 +52,28 @@ def get_db_path(agent_id: str = "slife") -> Path:
     return get_data_dir() / f"{agent_id}.db"
 
 
+def get_environment_info() -> dict:
+    """Return structured environment description.
+
+    Used by the system prompt template and ``check_workspace`` to keep
+    environment descriptions in a single place.
+    """
+    if is_dev():
+        return {
+            "mode": "development",
+            "hint": "uv managed project (editable workspace).",
+        }
+    return {
+        "mode": "production",
+        "hint": (
+            "installed via `uv tool install` in an isolated venv. "
+            "To install slife extras: uv tool install --with "
+            '"slife[gguf]" slife. '
+            "To repair a broken environment: uv tool install slife."
+        ),
+    }
+
+
 def get_skills_dir() -> Path:
     """Directory containing skill subdirectories.
 
