@@ -271,11 +271,13 @@ try {
             $newVenv = $matches[1]
             $newPython = Join-Path $newVenv "Scripts\python.exe"
             Write-Host "  Re-adding preserved packages..." -ForegroundColor Yellow
+            $prevEAP2 = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             foreach ($pkg in $preservedPackages) {
                 if ($pkg.url) {
-                    & uv pip install --python $newPython $pkg.url *>> $toolInstallLog
+                    & uv pip install --python $newPython $pkg.url 2>&1 | Out-File -Append -Encoding utf8 $toolInstallLog
                 } else {
-                    & uv pip install --python $newPython $pkg.name *>> $toolInstallLog
+                    & uv pip install --python $newPython $pkg.name 2>&1 | Out-File -Append -Encoding utf8 $toolInstallLog
                 }
                 if ($LASTEXITCODE -ne 0) {
                     Write-Host "  Warning: failed to re-add $($pkg.name)" -ForegroundColor Yellow
@@ -283,6 +285,7 @@ try {
                     Write-Host "  [OK] $($pkg.name)" -ForegroundColor Green
                 }
             }
+            $ErrorActionPreference = $prevEAP2
         }
     }
 
