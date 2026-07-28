@@ -257,10 +257,12 @@ class AgentLoop:
         Emits thinking and text chunks to the handler in real-time.
         Accumulates tool call deltas, content, and usage.
 
-        When cancelled, stops emitting to the handler but continues
-        consuming the stream to avoid resource leaks.
+        When cancelled, the stream is closed immediately via
+        ``chat_stream(cancel_event=...)`` — the underlying HTTP
+        connection is released and no more chunks are consumed.
 
-        Returns a _StreamResult with the complete response data.
+        Returns a _StreamResult with the response data accumulated
+        up to the point of cancellation.
         """
         content_parts: list[str] = []
         thinking_parts: list[str] = []
@@ -272,6 +274,7 @@ class AgentLoop:
             tools=self._inject_meta_params(
                 self.tool_registry.to_openai_functions()
             ),
+            cancel_event=self._cancel_event,
         ):
             if chunk.thinking:
                 thinking_parts.append(chunk.thinking)

@@ -7,6 +7,7 @@ Import from here instead of calling ``os.environ.get("SLIFE_…")`` directly.
 """
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -52,6 +53,16 @@ def get_db_path(agent_id: str = "slife") -> Path:
     return get_data_dir() / f"{agent_id}.db"
 
 
+def get_venv_python() -> str:
+    """Return the Python executable path for the current venv.
+
+    In production this is the slife tool's isolated venv Python
+    (e.g. ``~/.uv/tools/slife/Scripts/python.exe``).
+    In dev it's whatever ``sys.executable`` points to.
+    """
+    return sys.executable
+
+
 def get_environment_info() -> dict:
     """Return structured environment description.
 
@@ -66,10 +77,12 @@ def get_environment_info() -> dict:
     return {
         "mode": "production",
         "hint": (
-            "installed via `uv tool install` in an isolated venv. "
-            "To install slife extras: uv tool install --with "
-            '"slife[gguf]" slife. '
-            "To repair a broken environment: uv tool install slife."
+            "isolated venv (uv tool install). "
+            "Add packages via: uv pip install --python "
+            + str(get_venv_python()) +
+            " <pkg>. "
+            "⚠️  Do NOT run `uv tool install slife` yourself or kill the "
+            "slife process — both will terminate this agent."
         ),
     }
 

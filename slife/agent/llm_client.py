@@ -3,6 +3,9 @@
 Supports both batch (chat) and real-time streaming (chat_stream) modes.
 """
 
+from __future__ import annotations
+
+import asyncio
 import logging
 import time as _time
 from collections.abc import AsyncIterator
@@ -166,6 +169,7 @@ class LLMClient:
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
+        cancel_event: "asyncio.Event | None" = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a chat completion, yielding chunks as they arrive.
 
@@ -174,6 +178,10 @@ class LLMClient:
           - content: regular text tokens
           - tool_deltas: raw tool-call deltas from the API
           - usage: TokenUsage (in the final chunk)
+
+        When *cancel_event* is set, the stream is immediately closed to
+        release the underlying HTTP connection — no more chunks are
+        yielded and the caller can stop waiting without a resource leak.
 
         Usage:
             async for chunk in client.chat_stream(messages, tools):
@@ -198,48 +206,65 @@ class LLMClient:
 
         stream = await self.client.chat.completions.create(**kwargs)
 
-        async for event in stream:
-            if not event.choices:
-                continue
+        try:
+            async for event in stream:
+                # Honour cancellation immediately — close the stream so
+                # the HTTP connection is released rather than left dangling.
+                if cancel_event is not None and cancel_event.is_set():
+                    logger.debug("stream_cancelled mid-stream")
+                    await stream.close()
+                    return
 
-            delta = event.choices[0].delta
+                if not event.choices:
+                    continue
 
-            # DeepSeek reasoning/thinking content (streaming delta)
-            reasoning = getattr(delta, "reasoning_content", None) or ""
-            if reasoning:
-                yield StreamChunk(thinking=reasoning)
+                delta = event.choices[0].delta
 
-            # Regular text content
-            if delta.content:
-                yield StreamChunk(content=delta.content)
+                # DeepSeek reasoning/thinking content (streaming delta)
+                reasoning = getattr(delta, "reasoning_content", None) or ""
+                if reasoning:
+                    yield StreamChunk(thinking=reasoning)
 
-            # Tool call deltas (may be partial)
-            if delta.tool_calls:
-                raw_deltas = []
-                for tc in delta.tool_calls:
-                    raw_deltas.append({
-                        "index": tc.index,
-                        "id": tc.id,
-                        "function": {
-                            "name": tc.function.name if tc.function else None,
-                            "arguments": (
-                                tc.function.arguments
-                                if tc.function
-                                else ""
-                            ),
-                        },
-                    })
-                yield StreamChunk(tool_deltas=raw_deltas)
+                # Regular text content
+                if delta.content:
+                    yield StreamChunk(content=delta.content)
 
-            # Usage (final chunk with stream_options.include_usage)
-            if hasattr(event, "usage") and event.usage:
-                usage = self._usage_from_response(event.usage)
-                elapsed = (_time.monotonic() - t0) * 1000
-                logger.debug(
-                    "stream_done prompt=%d completion=%d total=%d took_ms=%.0f",
-                    usage.prompt_tokens,
-                    usage.completion_tokens,
-                    usage.total_tokens,
-                    elapsed,
-                )
-                yield StreamChunk(usage=usage)
+                # Tool call deltas (may be partial)
+                if delta.tool_calls:
+                    raw_deltas = []
+                    for tc in delta.tool_calls:
+                        raw_deltas.append({
+                            "index": tc.index,
+                            "id": tc.id,
+                            "function": {
+                                "name": tc.function.name if tc.function else None,
+                                "arguments": (
+                                    tc.function.arguments
+                                    if tc.function
+                                    else ""
+                                ),
+                            },
+                        })
+                    yield StreamChunk(tool_deltas=raw_deltas)
+
+                # Usage (final chunk with stream_options.include_usage)
+                if hasattr(event, "usage") and event.usage:
+                    usage = self._usage_from_response(event.usage)
+                    elapsed = (_time.monotonic() - t0) * 1000
+                    logger.debug(
+                        "stream_done prompt=%d completion=%d total=%d took_ms=%.0f",
+                        usage.prompt_tokens,
+                        usage.completion_tokens,
+                        usage.total_tokens,
+                        elapsed,
+                    )
+                    yield StreamChunk(usage=usage)
+        finally:
+            # Safety net: if the caller breaks out of the async-for early
+            # (e.g. on cancellation), close the stream to free the HTTP
+            # connection.  Double-close is harmless with the OpenAI SDK.
+            if hasattr(stream, "close"):
+                try:
+                    await stream.close()
+                except Exception:
+                    pass

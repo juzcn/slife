@@ -205,7 +205,7 @@ class TestProcessStream:
         loop = AgentLoop(llm, empty_registry)
 
         # Mock chat_stream to return text chunks
-        async def mock_stream(messages, tools):
+        async def mock_stream(messages, tools, **kwargs):
             yield StreamChunk(content="Hello")
             yield StreamChunk(content=" world!")
             yield StreamChunk(usage=TokenUsage(5, 3, 8))
@@ -222,7 +222,7 @@ class TestProcessStream:
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
 
-        async def mock_stream(messages, tools):
+        async def mock_stream(messages, tools, **kwargs):
             yield StreamChunk(thinking="Let me think...")
             yield StreamChunk(content="OK")
             yield StreamChunk(usage=TokenUsage(3, 1, 4))
@@ -241,7 +241,7 @@ class TestProcessStream:
 
         handler = AsyncMock(spec=AgentEventHandler)
 
-        async def mock_stream(messages, tools):
+        async def mock_stream(messages, tools, **kwargs):
             yield StreamChunk(thinking="Hmm")
             yield StreamChunk(content="Answer")
             yield StreamChunk(usage=TokenUsage(2, 1, 3))
@@ -258,7 +258,7 @@ class TestProcessStream:
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
 
-        async def mock_stream(messages, tools):
+        async def mock_stream(messages, tools, **kwargs):
             # First chunk: tool call with id and name
             yield StreamChunk(tool_deltas=[
                 {"index": 0, "id": "call_x", "function": {"name": "echo", "arguments": ""}}
@@ -288,7 +288,7 @@ class TestProcessStream:
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
 
-        async def mock_stream(messages, tools):
+        async def mock_stream(messages, tools, **kwargs):
             yield StreamChunk(content="test")
             yield StreamChunk(usage=TokenUsage(1, 1, 2))
 
@@ -387,7 +387,7 @@ class TestAgentLoopRun:
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
 
-        async def mock_stream(messages, tools):
+        async def mock_stream(messages, tools, **kwargs):
             yield StreamChunk(content="Hello!")
             yield StreamChunk(usage=TokenUsage(5, 3, 8))
 
@@ -403,7 +403,7 @@ class TestAgentLoopRun:
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
 
-        async def mock_stream(messages, tools):
+        async def mock_stream(messages, tools, **kwargs):
             yield StreamChunk(content="OK")
             yield StreamChunk(usage=TokenUsage(1, 1, 2))
 
@@ -422,7 +422,7 @@ class TestAgentLoopRun:
 
         call_count = [0]
 
-        async def mock_stream(messages, tools):
+        async def mock_stream(messages, tools, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
                 # First call: LLM requests tool
@@ -460,7 +460,7 @@ class TestAgentLoopRun:
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry, max_iterations=2)
 
-        async def always_tool_call(messages, tools):
+        async def always_tool_call(messages, tools, **kwargs):
             yield StreamChunk(tool_deltas=[
                 {"index": 0, "id": "c1", "function": {"name": "echo", "arguments": '{"message":"x"}'}}
             ])
@@ -481,7 +481,7 @@ class TestAgentLoopRun:
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
 
-        async def mock_stream(messages, tools):
+        async def mock_stream(messages, tools, **kwargs):
             yield StreamChunk(content="I see an image!")
             yield StreamChunk(usage=TokenUsage(5, 3, 8))
 
@@ -497,7 +497,7 @@ class TestAgentLoopRun:
         loop = AgentLoop(llm, empty_registry)
 
         parts = ["The ", "quick ", "brown ", "fox"]
-        async def mock_stream(messages, tools):
+        async def mock_stream(messages, tools, **kwargs):
             for p in parts:
                 yield StreamChunk(content=p)
             yield StreamChunk(usage=TokenUsage(4, 4, 8))
