@@ -36,6 +36,7 @@ _store: SessionStore | None = None
 _embedder: EmbeddingClient | None = None
 _db_path: Path | None = None
 _init_lock: asyncio.Lock | None = None
+_reindex_task: asyncio.Task | None = None  # type: ignore[valid-type]
 
 
 def _hybrid_fallback_reason() -> str:
@@ -566,7 +567,11 @@ async def memory_set_embedding(
         # Kick off background reindex so existing turns get embeddings
         # without the user having to ask.  Runs in small batches to avoid
         # blocking the event loop for too long.
-        asyncio.create_task(_background_reindex())
+        global _reindex_task
+        if _reindex_task and not _reindex_task.done():
+            _reindex_task.cancel()
+        _reindex_task = asyncio.create_task(_background_reindex())
+        logger.info("background_reindex_started")
         unembedded = await _count_unembedded()
         if unembedded > 0:
             status["reindex"] = f"后台索引已启动，{unembedded} 条待处理"
@@ -614,7 +619,11 @@ async def memory_set_enabled(enabled: bool) -> str:
         if enabled:
             unembedded = await _count_unembedded()
             if unembedded > 0:
-                asyncio.create_task(_background_reindex())
+                global _reindex_task
+                if _reindex_task and not _reindex_task.done():
+                    _reindex_task.cancel()
+                _reindex_task = asyncio.create_task(_background_reindex())
+                logger.info("background_reindex_started")
                 status["reindex"] = f"后台索引已启动，{unembedded} 条待处理"
             status["message"] = "语义搜索已启用。"
         else:
