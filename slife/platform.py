@@ -44,9 +44,10 @@ def get_os_info() -> str:
 def _resolve_skill_script(script_path: str) -> str:
     """Resolve a ``skills/…`` path to the actual install location.
 
-    Skills ship inside the slife package (``slife/skills/``) in production
-    and in the project root in dev mode.  Returns the absolute path if the
-    file exists; otherwise returns the original path unchanged.
+    Skills live in ``<data_dir>/skills/`` — the project root in dev
+    mode, ``~/.slife/skills/`` in production.  Returns the absolute
+    path if the file exists; otherwise returns the original path
+    unchanged.
     """
     from slife.paths import get_skills_dir
 

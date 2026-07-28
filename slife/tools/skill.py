@@ -142,7 +142,8 @@ def _resolve_skills_dir(skills_dir: str = "") -> Path:
 
     Priority:
       1. Explicit path (from config or argument) — used as-is.
-      2. Package-bundled or dev-mode — delegated to ``slife.paths.get_skills_dir()``.
+      2. Delegated to ``slife.paths.get_skills_dir()`` —
+         ``<data_dir>/skills/``.
     """
     from slife.paths import get_skills_dir
 
@@ -170,9 +171,8 @@ class _SkillDirMixin:
 class CheckSkillsDirTool(_SkillDirMixin, Tool):
     """Report the absolute path to the skills directory.
 
-    Skills live in different locations depending on the environment:
-    dev mode uses ``<project>/skills/``, production uses the bundled
-    package directory or ``~/.slife/skills/``.  Call this to resolve
+    Skills live in ``<data_dir>/skills/``: the project root in dev
+    mode, ``~/.slife/skills/`` in production.  Call this to resolve
     relative paths like ``skills/<name>/scripts/…`` to absolute paths.
     """
 
