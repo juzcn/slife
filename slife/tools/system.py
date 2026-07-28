@@ -24,7 +24,7 @@ from pathlib import Path
 from shutil import which
 from typing import ClassVar
 
-from slife.paths import get_data_dir
+from slife.paths import get_data_dir, is_dev
 from slife.tools.base import Tool
 from slife.health import get_report as get_startup_records
 
@@ -157,24 +157,24 @@ def check_workspace() -> list[dict]:
         "value": cwd, "hint": f"Current working directory: {cwd}",
     }]
 
-    pyproject = Path(cwd) / "pyproject.toml"
-    data = None
-    is_slife_project = False
-    try:
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        is_slife_project = data.get("project", {}).get("name") == "slife"
-    except Exception:
-        pass
-
+    # ── Slife's own environment (dev vs production) ────────────────
     data_dir = get_data_dir()
-    if is_slife_project:
+    if is_dev():
         results.append({"component": "workspace", "level": "ok", "key": "environment",
                         "value": "development",
-                        "hint": f"Development mode — data files stay in CWD: {cwd}"})
+                        "hint": "uv managed project (editable workspace)."})
     else:
         results.append({"component": "workspace", "level": "ok", "key": "environment",
                         "value": "production",
-                        "hint": f"Production mode — data files live in ~/.slife/ (data_dir={data_dir})"})
+                        "hint": f"uv tool install (isolated venv). User data: {data_dir}"})
+
+    # ── User's CWD project detection ───────────────────────────────
+    pyproject = Path(cwd) / "pyproject.toml"
+    data = None
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except Exception:
+        pass
 
     uv_lock = Path(cwd) / "uv.lock"
     requirements = Path(cwd) / "requirements.txt"
