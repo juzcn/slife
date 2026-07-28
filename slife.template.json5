@@ -122,8 +122,8 @@
       },
       fetch: {
         command: "uvx",
-        args: ["mcp-server-fetch"],
-        description: "Fetch and convert web pages to markdown.",
+        args: ["--with", "mcp>=1.0,<1.29", "mcp-server-fetch"],
+        description: "Fetch and convert web pages to markdown.  Pins mcp<1.29 for McpError compatibility.",
       },
       "duckduckgo-search": {
         command: "uvx",

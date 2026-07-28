@@ -208,9 +208,12 @@ try {
             $count = 0
             foreach ($line in $freeze) {
                 $spec = $line.Trim()
+                # Strip version pin — only save package names so uv
+                # resolves compatible versions (pinned old versions
+                # could conflict with the new slife install).
                 $name = ($spec -split '==')[0].Trim().ToLower()
                 if ($name -and $name -ne "slife" -and $name -ne "credstore") {
-                    Add-Content -Path $preservedReqs -Value $spec -Encoding utf8
+                    Add-Content -Path $preservedReqs -Value $name -Encoding utf8
                     $count++
                 }
             }
