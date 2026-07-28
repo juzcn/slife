@@ -1,5 +1,8 @@
 """Tests for Slife.health — startup health collector."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 
 from slife.health import record, get_report, clear

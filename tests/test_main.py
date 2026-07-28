@@ -1,5 +1,8 @@
 """Tests for Slife main entry point — mock heavy to avoid Textual init."""
 
+import pytest; pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
+
 import pytest
 from unittest.mock import MagicMock, patch
 

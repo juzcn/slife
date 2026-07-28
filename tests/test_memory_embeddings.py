@@ -1,5 +1,8 @@
 """Tests for slife.plugins.memory.embeddings — EmbeddingClient and helpers."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 from unittest.mock import MagicMock, patch
 
 import pytest

@@ -26,9 +26,11 @@ from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.conversation import Conversation
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
 from slife.agent.inbox import Inbox, ConversationStore
+from slife.agent.plugins import PluginLifecycle
 from slife.a2a.identity import HUMAN
 from slife.tools.factory import create_tools_from_config
 from slife.mcp.client import MCPClient
+from slife.mcp.tool_adapter import create_proxy_tools
 
 logger = logging.getLogger(__name__)
 
@@ -99,20 +101,12 @@ class AgentService:
         )
         self._inbox_task: asyncio.Task | None = None
 
-        # MCP integration state
-        self._mcp_client: MCPClient | None = None
-        self._mcp_process = None
-        self._mcp_port: int = 0
-
-        # Memory integration state
-        self._memory_client: MCPClient | None = None
-        self._memory_process = None
-        self._memory_port: int = 0
-
-        # WeChat integration state
-        self._wechat_client: MCPClient | None = None
-        self._wechat_process = None
-        self._wechat_port: int = 0
+        # ── Plugin lifecycle containers (replace dynamic setattr/getattr) ─
+        self._plugins: dict[str, PluginLifecycle] = {
+            "mcp": PluginLifecycle("mcp", self),
+            "memory": PluginLifecycle("memory", self),
+            "wechat": PluginLifecycle("wechat", self),
+        }
 
         # A2A integration state
         self._a2a_client = None
@@ -132,7 +126,8 @@ class AgentService:
     @property
     def mcp_enabled(self) -> bool:
         """Whether MCP wrapper integration is active."""
-        return self._mcp_client is not None and self._mcp_client.is_connected
+        c = self._plugins["mcp"].client
+        return c is not None and c.is_connected
 
     @property
     def a2a_enabled(self) -> bool:
@@ -199,7 +194,6 @@ class AgentService:
         # Plugin servers mark internal tools with "harness-only" in the
         # description field.  The harness calls these programmatically
         # via call_tool(); the LLM never needs to see them.
-        from slife.mcp.tool_adapter import create_proxy_tools
         tagged = [
             {**t, "server": name}
             for t in plugin_tools
@@ -217,10 +211,15 @@ class AgentService:
         logger.info("plugin_ready name=%s tools=%d",
                      name, len(self.tool_registry.list_tools()))
 
-        # Store for cleanup
-        setattr(self, f"_{name}_client", client)
-        setattr(self, f"_{name}_process", process)
-        setattr(self, f"_{name}_port", process.port)
+        # Store for cleanup — use PluginLifecycle for known plugins, setattr for auto-discovered
+        if name in self._plugins:
+            self._plugins[name].client = client
+            self._plugins[name].process = process
+            self._plugins[name].port = process.port
+        else:
+            setattr(self, f"_{name}_client", client)
+            setattr(self, f"_{name}_process", process)
+            setattr(self, f"_{name}_port", process.port)
         os.environ[f"SLIFE_{name.upper()}_PORT"] = str(process.port)
 
         return True
@@ -266,14 +265,8 @@ class AgentService:
         Shared by :meth:`connect_mcp_http`, :meth:`connect_memory_http`,
         and :meth:`connect_wechat_http`.
         """
-        from slife.mcp.client import MCPClient
-
-        timeout = self.config.tool_timeout
         logger.info("%s_http_connect port=%s", name, port)
-        client = MCPClient(tool_timeout=timeout)
-        await client.connect(f"http://127.0.0.1:{port}/mcp")
-        setattr(self, f"_{name}_client", client)
-        setattr(self, f"_{name}_port", port)
+        await self._plugins[name].connect_http(port)
 
     async def connect_mcp_http(self, port: int) -> None:
         """Connect to an already-running MCP wrapper via Streamable HTTP.
@@ -321,9 +314,9 @@ class AgentService:
             args=mcp_cfg.wrapper_args,
         )
         await self._mcp_process.start()
-        self._mcp_port = self._mcp_process.port
-        os.environ["SLIFE_MCP_PORT"] = str(self._mcp_port)
-        self._mcp_client = await self._mcp_process.create_client()
+        self._plugins["mcp"].port = self._mcp_process.port
+        os.environ["SLIFE_MCP_PORT"] = str(self._plugins["mcp"].port)
+        self._plugins["mcp"].client = await self._mcp_process.create_client()
 
     async def _register_mcp_wrapper_tools(self) -> None:
         """Discover and register wrapper management tools as proxy tools.
@@ -336,10 +329,8 @@ class AgentService:
         not eagerly discover external MCP tools, so they need
         ``mcp_call_tool`` to invoke tools on external servers.
         """
-        from slife.mcp.tool_adapter import create_proxy_tools
-
-        assert self._mcp_client is not None
-        wrapper_tools = await self._mcp_client.list_tools()
+        assert self._plugins["mcp"].client is not None
+        wrapper_tools = await self._plugins["mcp"].client.list_tools()
         logger.debug(
             "mcp_wrapper_tools names=%s",
             [t["name"] for t in wrapper_tools],
@@ -352,7 +343,7 @@ class AgentService:
         ]
 
         proxy_tools = create_proxy_tools(
-            self._mcp_client, tagged,
+            self._plugins["mcp"].client, tagged,
             on_server_added=self._persist_server,
             on_server_removed=self._unpersist_server,
             on_server_disclosure_changed=self._on_server_disclosure_changed,
@@ -372,13 +363,13 @@ class AgentService:
         """
         mcp_cfg = self.config.mcp_config
         assert mcp_cfg is not None
-        assert self._mcp_client is not None
+        assert self._plugins["mcp"].client is not None
         servers = mcp_cfg.servers
         if not servers:
             return
 
         logger.info("mcp_auto_connect servers=%d", len(servers))
-        mcp_client = self._mcp_client  # narrow for closure
+        mcp_client = self._plugins["mcp"].client  # narrow for closure
 
         async def _connect_one(name: str, cfg: dict) -> None:
             try:
@@ -458,7 +449,7 @@ class AgentService:
         """
         mcp_cfg = self.config.mcp_config
         assert mcp_cfg is not None
-        assert self._mcp_client is not None
+        assert self._plugins["mcp"].client is not None
         servers = mcp_cfg.servers
         if not servers:
             return
@@ -489,9 +480,7 @@ class AgentService:
 
     async def _discover_and_register_external_tools(self, server_name: str) -> None:
         """Discover tools from a specific MCP server and register as proxy tools."""
-        from slife.mcp.tool_adapter import create_proxy_tools
-
-        assert self._mcp_client is not None
+        assert self._plugins["mcp"].client is not None
         # Read per-server require_approval from config
         mcp_cfg = self.config.mcp_config
         assert mcp_cfg is not None
@@ -499,7 +488,7 @@ class AgentService:
         require_approval = bool(server_cfg.get("require_approval", False))
 
         try:
-            tools_json = await self._mcp_client.call_tool(
+            tools_json = await self._plugins["mcp"].client.call_tool(
                 "mcp_list_tools", {"server": server_name}
             )
             tools_data = json.loads(tools_json)
@@ -507,7 +496,7 @@ class AgentService:
 
             if external:
                 proxy_tools = create_proxy_tools(
-                    self._mcp_client, external,
+                    self._plugins["mcp"].client, external,
                     require_approval=require_approval,
                     on_server_added=self._persist_server,
                     on_server_removed=self._unpersist_server,
@@ -580,35 +569,9 @@ class AgentService:
 
         Args:
             name: Plugin short name (``"mcp"``, ``"memory"``, ``"wechat"``).
-            has_poll_task: If True, cancel ``self._<name>_poll_task`` first.
+            has_poll_task: If True, cancel the plugin's poll task first.
         """
-        if has_poll_task:
-            poll_task = getattr(self, f"_{name}_poll_task", None)
-            if poll_task:
-                poll_task.cancel()
-                try:
-                    await poll_task
-                except asyncio.CancelledError:
-                    pass
-                setattr(self, f"_{name}_poll_task", None)
-
-        client = getattr(self, f"_{name}_client", None)
-        if client and client.is_connected:
-            try:
-                await client.disconnect()
-            except Exception as e:
-                logger.debug("%s_disconnect_error err=%s", name, e)
-            setattr(self, f"_{name}_client", None)
-
-        process = getattr(self, f"_{name}_process", None)
-        if process:
-            try:
-                await process.stop()
-            except Exception as e:
-                logger.debug("%s_process_stop_error err=%s", name, e)
-            setattr(self, f"_{name}_process", None)
-
-        logger.info("%s_shutdown", name)
+        await self._plugins[name].stop(has_poll_task=has_poll_task)
 
     async def stop_mcp(self) -> None:
         """Shut down the MCP wrapper and clean up."""
@@ -632,6 +595,11 @@ class AgentService:
         Scans for all ``_<name>_process`` attributes — works with
         auto-discovered plugins, not just the three built-ins.
         """
+        # Kill known plugin processes first
+        for plugin in self._plugins.values():
+            plugin.kill()
+
+        # Scan for auto-discovered plugins
         for attr_name in dir(self):
             if not attr_name.endswith("_process") or not attr_name.startswith("_"):
                 continue
@@ -676,12 +644,12 @@ class AgentService:
     @property
     def memory_enabled(self) -> bool:
         """Whether the memory service is connected."""
-        return self._memory_client is not None and self._memory_client.is_connected
+        return self._plugins["memory"].client is not None and self._plugins["memory"].client.is_connected
 
     @property
     def wechat_enabled(self) -> bool:
         """Whether the WeChat plugin is connected."""
-        return self._wechat_client is not None and self._wechat_client.is_connected
+        return self._plugins["wechat"].client is not None and self._plugins["wechat"].client.is_connected
 
     # ── Plugin spawn + register helper ────────────────────────────────
 
@@ -693,50 +661,9 @@ class AgentService:
     ) -> None:
         """Spawn a plugin child process, connect, and register its LLM-visible tools.
 
-        Handles the common pattern: spawn MCPWrapperProcess → set env var →
-        create client → list tools → filter harness-only tools →
-        create_proxy_tools → register.
-
-        Args:
-            name: Plugin short name (``"memory"``, ``"wechat"``).
-            module: Python module path to spawn (e.g. ``slife.plugins.memory.server``).
-            harness_tools: Set of tool names that are harness-only (excluded from LLM).
+        Delegates to ``PluginLifecycle.spawn()`` for the actual work.
         """
-        from slife.mcp.process import MCPWrapperProcess
-        from slife.mcp.tool_adapter import create_proxy_tools
-
-        logger.info("%s_spawn transport=streamable-http", name)
-        process = MCPWrapperProcess(
-            command=sys.executable,
-            args=["-m", module],
-        )
-        await process.start()
-        port = process.port
-        env_key = f"SLIFE_{name.upper()}_PORT"
-        os.environ[env_key] = str(port)
-
-        client = await process.create_client()
-        setattr(self, f"_{name}_process", process)
-        setattr(self, f"_{name}_port", port)
-        setattr(self, f"_{name}_client", client)
-
-        # Discover and register LLM-visible tools
-        plugin_tools = await client.list_tools()
-        logger.debug(
-            "%s_tools names=%s", name,
-            [t["name"] for t in plugin_tools],
-        )
-
-        tagged = [
-            {**t, "server": name}
-            for t in plugin_tools
-            if t["name"] not in harness_tools
-        ]
-
-        proxy_tools = create_proxy_tools(client, tagged)
-        for tool in proxy_tools:
-            self.tool_registry.register(tool)
-        logger.debug("%s_tools_registered count=%d", name, len(proxy_tools))
+        await self._plugins[name].spawn(module, harness_tools)
 
     async def _register_memory_tools(self) -> None:
         """Discover and register memory plugin tools as proxy tools.
@@ -744,10 +671,8 @@ class AgentService:
         Called from the HTTP-connect path when a subagent shares the
         main agent's already-running memory server.
         """
-        from slife.mcp.tool_adapter import create_proxy_tools
-
-        assert self._memory_client is not None
-        memory_tools = await self._memory_client.list_tools()
+        assert self._plugins["memory"].client is not None
+        memory_tools = await self._plugins["memory"].client.list_tools()
         logger.debug(
             "memory_tools names=%s",
             [t["name"] for t in memory_tools],
@@ -760,7 +685,7 @@ class AgentService:
             if t["name"] not in harness_tools
         ]
 
-        proxy_tools = create_proxy_tools(self._memory_client, tagged)
+        proxy_tools = create_proxy_tools(self._plugins["memory"].client, tagged)
         for tool in proxy_tools:
             self.tool_registry.register(tool)
         logger.debug("memory_tools_registered count=%d", len(proxy_tools))
@@ -771,10 +696,8 @@ class AgentService:
         Called from the HTTP-connect path when a subagent shares the
         main agent's already-running wechat server.
         """
-        from slife.mcp.tool_adapter import create_proxy_tools
-
-        assert self._wechat_client is not None
-        wechat_tools = await self._wechat_client.list_tools()
+        assert self._plugins["wechat"].client is not None
+        wechat_tools = await self._plugins["wechat"].client.list_tools()
         logger.debug(
             "wechat_tools names=%s",
             [t["name"] for t in wechat_tools],
@@ -787,7 +710,7 @@ class AgentService:
             if t["name"] not in harness_tools
         ]
 
-        proxy_tools = create_proxy_tools(self._wechat_client, tagged)
+        proxy_tools = create_proxy_tools(self._plugins["wechat"].client, tagged)
         for tool in proxy_tools:
             self.tool_registry.register(tool)
         logger.debug("wechat_tools_registered count=%d", len(proxy_tools))
@@ -841,7 +764,7 @@ class AgentService:
             )
 
             # Auto-restore session at startup (triggers server-side poll loop)
-            wechat_client = self._wechat_client
+            wechat_client = self._plugins["wechat"].client
             assert wechat_client is not None
             try:
                 await wechat_client.call_tool("check_status", {})
@@ -850,7 +773,7 @@ class AgentService:
                 pass
 
             # Start background poll loop — injects WeChat messages into the inbox
-            self._wechat_poll_task = asyncio.create_task(self._wechat_poll_loop())
+            self._plugins["wechat"].poll_task = asyncio.create_task(self._wechat_poll_loop())
 
             logger.info("wechat_init_done tools=%d", len(self.tool_registry.list_tools()))
             from slife.health import record
@@ -886,9 +809,9 @@ class AgentService:
 
         while self.wechat_enabled:
             try:
-                assert self._wechat_client is not None
+                assert self._plugins["wechat"].client is not None
 
-                result = await self._wechat_client.call_tool(
+                result = await self._plugins["wechat"].client.call_tool(
                     "wechat_drain_incoming", {},
                 )
                 data = _json.loads(result)
@@ -902,7 +825,7 @@ class AgentService:
                     if not text.strip():
                         continue
 
-                    wc = self._wechat_client  # local ref for closure
+                    wc = self._plugins["wechat"].client  # local ref for closure
 
                     async def _reply(reply_text: str,
                                      uid=from_id, tok=ctx_token) -> None:
@@ -985,10 +908,10 @@ class AgentService:
                 ceiling=self.config.context_ceiling,
             )
 
-        assert self._memory_client is not None  # guarded by memory_enabled
+        assert self._plugins["memory"].client is not None  # guarded by memory_enabled
         try:
             await asyncio.wait_for(
-                self._memory_client.call_tool(
+                self._plugins["memory"].client.call_tool(
                     "memory_save_turn",
                     {
                         "user_message": user_message,

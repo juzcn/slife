@@ -1,5 +1,8 @@
 """Tests for slife.mcp.oauth — device code flow and token management."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import asyncio
 import json
 import time as _time
@@ -163,7 +166,8 @@ class TestDeviceCodeFlow:
         mock_http = _make_http_mock(device_data, token_data)
 
         with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
-             patch("slife.mcp.oauth._store_tokens") as mock_store:
+             patch("slife.mcp.oauth._store_tokens") as mock_store, \
+             patch("slife.mcp.oauth.asyncio.sleep", AsyncMock()):
             result = await run_device_code_flow(AUTH, "test-server")
 
         assert result.access_token == "gh_token_abc"

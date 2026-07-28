@@ -1,5 +1,8 @@
 """Tests for Slife.config — configuration loading and model definitions."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 # pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 
 import logging

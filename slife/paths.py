@@ -10,7 +10,6 @@ import os
 import sys
 from pathlib import Path
 
-
 def is_dev() -> bool:
     """Check whether we're running from the slife source tree."""
     try:

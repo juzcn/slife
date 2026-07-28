@@ -1,5 +1,8 @@
 """Tests for Slife.subagent.headless — headless JSON-RPC 2.0 mode."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import json
 import sys
 from io import BytesIO

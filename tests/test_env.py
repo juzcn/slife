@@ -1,5 +1,8 @@
 """Tests for Slife.env — environment variable resolution."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import os
 
 import pytest

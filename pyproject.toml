@@ -100,12 +100,11 @@ asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "module"
 addopts = "-v --tb=short --strict-markers --strict-config --no-header --color=yes"
 filterwarnings = [
-    "ignore::DeprecationWarning",
-    "ignore::pytest.PytestDeprecationWarning",
-    "ignore::RuntimeWarning:unittest.mock",
-    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
-    "ignore::RuntimeWarning:_pytest",
-    "ignore::RuntimeWarning:httpcore",
+    # CPython 3.13+: unittest.mock._AsyncMockMixin creates unawaited
+    # coroutine wrappers at class-definition time.  GC may collect them
+    # during any module import — not just unittest.mock.
+    # https://github.com/python/cpython/issues/126242
+    "ignore:coroutine .* was never awaited:RuntimeWarning",
 ]
 markers = [
     "asyncio: mark a test as an async test (auto-applied by asyncio_mode=strict)",
@@ -114,4 +113,19 @@ markers = [
     "integration: test requiring I/O, network, or subprocess",
     "e2e: end-to-end test requiring a full running system",
 ]
+
+[tool.coverage.run]
+source = ["slife"]
+branch = true
+omit = ["tests/*", "credstore/tests/*"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+    "class .*\\bProtocol\\):",
+]
+show_missing = true
+skip_covered = false
 

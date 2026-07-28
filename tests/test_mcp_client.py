@@ -1,5 +1,8 @@
 """Tests for Slife.mcp.client — MCPClient (SSE transport)."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 

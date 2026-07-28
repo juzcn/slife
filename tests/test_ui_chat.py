@@ -1,5 +1,8 @@
 """Tests for Slife.ui.chat — chat view widgets (pure logic tests)."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 from unittest.mock import MagicMock, patch
 

@@ -1,5 +1,8 @@
 """Tests for slife.a2a.broker — probe_broker function."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 

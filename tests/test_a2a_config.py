@@ -1,5 +1,8 @@
 """Tests for Slife.a2a.config — A2AConfig and Slife.a2a.card — AgentCard."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import platform
 
 import pytest

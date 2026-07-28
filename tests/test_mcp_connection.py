@@ -1,5 +1,8 @@
 """Tests for slife_mcp.connection — ConnectionPool, MCPServerConnection, ServerConfig."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -285,11 +288,6 @@ class TestConnectionPoolDeactivateServer:
 
 class TestConnectionPoolCallTool:
     """Tests for call_tool."""
-
-    def test_server_not_found_sync(self):
-        pool = ConnectionPool()
-        result = pool.call_tool("ghost", "tool", {})
-        assert "not found" in str(result) if isinstance(result, str) else True
 
     @pytest.mark.asyncio
     async def test_server_not_found(self):

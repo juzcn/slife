@@ -1,5 +1,8 @@
 """Tests for Slife.ui.tool_display — ToolCallWidget and helper logic."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 # pyright: reportAttributeAccessIssue=false
 
 import pytest

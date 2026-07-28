@@ -1,5 +1,8 @@
 """Tests for slife.tools.env — env var management tools."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import os
 from pathlib import Path
 import pytest

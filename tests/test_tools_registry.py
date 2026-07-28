@@ -1,5 +1,8 @@
 """Tests for Slife.tools.registry — ToolRegistry."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 
 from slife.tools.registry import ToolRegistry, get_registry, set_registry

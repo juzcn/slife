@@ -1,5 +1,8 @@
 """Tests for Slife.tools.factory — auto-discovery tool loading."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 
 from slife.tools.factory import create_tools_from_config

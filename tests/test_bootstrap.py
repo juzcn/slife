@@ -1,5 +1,8 @@
 """Tests for Slife.bootstrap — logging setup and session initialization."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
@@ -52,7 +55,9 @@ class TestSetupLogging:
         assert isinstance(console, logging.StreamHandler)
         assert len(root.handlers) >= 2  # console + file
 
-        # Cleanup
+        # Cleanup — close file handlers to avoid ResourceWarning
+        for h in root.handlers:
+            h.close()
         root.handlers.clear()
 
     def test_dedup_skips_when_handlers_exist(self):
@@ -67,7 +72,9 @@ class TestSetupLogging:
         assert console2 is console1
         assert len(root.handlers) == handler_count
 
-        # Cleanup
+        # Cleanup — close file handlers to avoid ResourceWarning
+        for h in root.handlers:
+            h.close()
         root.handlers.clear()
 
     def test_dedup_returns_none_when_no_stream_handler(self):
@@ -87,7 +94,9 @@ class TestSetupLogging:
             # The handler lookup tries isinstance(h, logging.StreamHandler) on
             # the NullHandler (which is just a Handler, not StreamHandler).
         finally:
-            # Cleanup
+            # Cleanup — close file handlers to avoid ResourceWarning
+            for h in root.handlers:
+                h.close()
             root.handlers.clear()
 
     def test_noisy_loggers_silenced(self):
@@ -102,5 +111,7 @@ class TestSetupLogging:
         assert logging.getLogger("openai._base_client").level == logging.WARNING
         assert logging.getLogger("httpcore.connection").level == logging.WARNING
 
-        # Cleanup
+        # Cleanup — close file handlers to avoid ResourceWarning
+        for h in root.handlers:
+            h.close()
         root.handlers.clear()

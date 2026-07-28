@@ -1,5 +1,8 @@
 """Tests for slife/plugins/memory/embedding_config.py."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import json5
 from pathlib import Path
 from unittest.mock import MagicMock, patch

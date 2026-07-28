@@ -1,8 +1,11 @@
 """Tests for Slife.subagent.process — SubagentManager and SubagentProcess."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, Mock, Mock, patch, PropertyMock
 
 import pytest
 
@@ -21,10 +24,10 @@ from slife.subagent.process import (
 
 def _mock_config(**overrides):
     """Build a minimal mock Config for SubagentProcess / SubagentManager tests."""
-    cfg = MagicMock()
+    cfg = Mock()
     cfg.subagent_config = {"max_subagents": 5, "task_timeout": 120}
     cfg._path = None
-    cfg.to_dict = MagicMock(return_value={
+    cfg.to_dict = Mock(return_value={
         "models": [], "active_model_ref": "", "tools": [],
         "max_iterations": 30, "agent_id": "slife",
         "mcp_config": None, "memory_config": None,
@@ -52,12 +55,12 @@ class TestModuleLevelRefs:
         assert get_manager() is None
 
     def test_set_and_get_manager(self):
-        manager = MagicMock(spec=SubagentManager)
+        manager = Mock(spec=SubagentManager)
         set_manager(manager)
         assert get_manager() is manager
 
     def test_clear_manager(self):
-        manager = MagicMock()
+        manager = Mock()
         set_manager(manager)
         clear_manager()
         assert get_manager() is None
@@ -91,7 +94,7 @@ class TestSubagentProcessProperties:
     def test_pid_from_process(self):
         cfg = _mock_config()
         proc = SubagentProcess("test", cfg)
-        mock_process = MagicMock()
+        mock_process = Mock()
         mock_process.pid = 12345
         proc._process = mock_process
         assert proc.pid == 12345
@@ -109,7 +112,7 @@ class TestSubagentProcessProperties:
         proc._running = True
         assert not proc.is_running
 
-        mock_process = MagicMock()
+        mock_process = Mock()
         mock_process.returncode = None
         proc._process = mock_process
         assert proc.is_running
@@ -118,7 +121,7 @@ class TestSubagentProcessProperties:
         cfg = _mock_config()
         proc = SubagentProcess("test", cfg)
         proc._running = True
-        mock_process = MagicMock()
+        mock_process = Mock()
         mock_process.returncode = 0  # exited
         proc._process = mock_process
         assert not proc.is_running
@@ -163,9 +166,9 @@ class TestSubagentManagerList:
 
     def test_list_only_running(self):
         manager = SubagentManager(_mock_config())
-        mock_proc = MagicMock(spec=SubagentProcess)
+        mock_proc = Mock(spec=SubagentProcess)
         mock_proc.is_running = True
-        mock_proc2 = MagicMock(spec=SubagentProcess)
+        mock_proc2 = Mock(spec=SubagentProcess)
         mock_proc2.is_running = False
         manager._subagents = {"sub-1": mock_proc, "sub-2": mock_proc2}
         assert manager.list() == ["sub-1"]
@@ -176,7 +179,7 @@ class TestSubagentManagerGet:
 
     def test_get_existing(self):
         manager = SubagentManager(_mock_config())
-        mock_proc = MagicMock()
+        mock_proc = Mock()
         manager._subagents = {"sub-1": mock_proc}
         assert manager.get("sub-1") is mock_proc
 
@@ -191,7 +194,7 @@ class TestSubagentManagerStop:
     @pytest.mark.asyncio
     async def test_stop_existing(self):
         manager = SubagentManager(_mock_config())
-        mock_proc = MagicMock()
+        mock_proc = Mock()
         mock_proc.stop = AsyncMock()
         manager._subagents = {"sub-1": mock_proc}
 
@@ -218,8 +221,8 @@ class TestSubagentManagerStopAll:
     @pytest.mark.asyncio
     async def test_stop_all_stops_everything(self):
         manager = SubagentManager(_mock_config())
-        p1 = MagicMock(); p1.stop = AsyncMock()
-        p2 = MagicMock(); p2.stop = AsyncMock()
+        p1 = Mock(); p1.stop = AsyncMock()
+        p2 = Mock(); p2.stop = AsyncMock()
         manager._subagents = {"a": p1, "b": p2}
 
         await manager.stop_all()
@@ -234,7 +237,7 @@ class TestSubagentManagerSendTask:
     @pytest.mark.asyncio
     async def test_send_task_success(self):
         manager = SubagentManager(_mock_config())
-        mock_proc = MagicMock()
+        mock_proc = Mock()
         mock_proc.send_task = AsyncMock(return_value="task result")
         mock_proc.is_running = True
         manager._subagents = {"sub-1": mock_proc}
@@ -246,7 +249,7 @@ class TestSubagentManagerSendTask:
     @pytest.mark.asyncio
     async def test_send_task_custom_timeout(self):
         manager = SubagentManager(_mock_config())
-        mock_proc = MagicMock()
+        mock_proc = Mock()
         mock_proc.send_task = AsyncMock(return_value="ok")
         mock_proc.is_running = True
         manager._subagents = {"sub-1": mock_proc}
@@ -267,7 +270,7 @@ class TestSubagentManagerSendTaskAsync:
     @pytest.mark.asyncio
     async def test_send_task_async_success(self):
         manager = SubagentManager(_mock_config())
-        mock_proc = MagicMock()
+        mock_proc = Mock()
         mock_proc.send_task_async = AsyncMock(return_value="rpc-123")
         mock_proc.is_running = True
         manager._subagents = {"sub-1": mock_proc}
@@ -287,8 +290,8 @@ class TestSubagentManagerGetTaskResult:
 
     def test_result_from_proc(self):
         manager = SubagentManager(_mock_config())
-        mock_proc = MagicMock()
-        mock_proc.get_task_result = MagicMock(return_value="done")
+        mock_proc = Mock()
+        mock_proc.get_task_result = Mock(return_value="done")
         mock_proc.is_running = True
         manager._subagents = {"sub-1": mock_proc}
 

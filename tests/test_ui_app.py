@@ -1,5 +1,8 @@
 """Tests for Slife.ui.app — AgentService, event handler, StatusBar logic."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -29,8 +32,8 @@ class TestAgentService:
         """MCP is not enabled until start_mcp is called."""
         service = AgentService(sample_config)
         assert service.mcp_enabled is False
-        assert service._mcp_client is None
-        assert service._mcp_process is None
+        assert service._plugins["mcp"].client is None
+        assert service._plugins["mcp"].process is None
 
     def test_model_display_name(self, sample_config):
         service = AgentService(sample_config)
@@ -113,7 +116,7 @@ class TestAgentServiceMCP:
              patch.object(service, "_auto_connect_mcp_servers", AsyncMock()):
             await service.start_mcp()
 
-        assert service._mcp_client is None  # mocked, so no real connection
+        assert service._plugins["mcp"].client is None  # mocked, so no real connection
 
     @pytest.mark.asyncio
     async def test_stop_mcp_nothing_running(self, sample_config):
@@ -122,8 +125,8 @@ class TestAgentServiceMCP:
 
         await service.stop_mcp()
 
-        assert service._mcp_client is None
-        assert service._mcp_process is None
+        assert service._plugins["mcp"].client is None
+        assert service._plugins["mcp"].process is None
 
     @pytest.mark.asyncio
     async def test_stop_mcp_with_client(self, sample_config):
@@ -134,15 +137,15 @@ class TestAgentServiceMCP:
         mock_process = AsyncMock()
         mock_process.stop = AsyncMock()
 
-        service._mcp_client = mock_client
-        service._mcp_process = mock_process
+        service._plugins["mcp"].client = mock_client
+        service._plugins["mcp"].process = mock_process
 
         await service.stop_mcp()
 
         mock_client.disconnect.assert_awaited_once()
         mock_process.stop.assert_awaited_once()
-        assert service._mcp_client is None
-        assert service._mcp_process is None
+        assert service._plugins["mcp"].client is None
+        assert service._plugins["mcp"].process is None
 
     @pytest.mark.asyncio
     async def test_stop_mcp_handles_errors(self, sample_config):
@@ -153,14 +156,14 @@ class TestAgentServiceMCP:
         mock_process = AsyncMock()
         mock_process.stop = AsyncMock(side_effect=OSError("fail"))
 
-        service._mcp_client = mock_client
-        service._mcp_process = mock_process
+        service._plugins["mcp"].client = mock_client
+        service._plugins["mcp"].process = mock_process
 
         # Should not raise
         await service.stop_mcp()
 
-        assert service._mcp_client is None
-        assert service._mcp_process is None
+        assert service._plugins["mcp"].client is None
+        assert service._plugins["mcp"].process is None
 
 
 # ── TUIHandler ───────────────────────────────────────────────────────

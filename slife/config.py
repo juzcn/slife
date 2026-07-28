@@ -27,49 +27,33 @@ from slife.a2a.config import A2AConfig
 logger = logging.getLogger(__name__)
 
 
-def _resolve_env_or_credstore(value: str) -> str:
-    """Resolve a ``${VAR}`` reference through os.environ then credstore.
+def _resolve_secret(value: str, *, accept_keyring_uri: bool = False) -> str:
+    """Resolve a secret value through the full resolution chain.
 
-    Returns the resolved value, or the original string if unresolved.
-    """
-    if not (value.startswith("${") and value.endswith("}")):
-        return value
-    var_name = value[2:-1]
-    env_val = os.environ.get(var_name)
-    if env_val:
-        return env_val
-    cred_val = _try_credstore_lookup(var_name)
-    if cred_val:
-        return cred_val
-    return value
-
-
-def _resolve_api_key(value: str) -> str:
-    """Resolve an api_key value through the full chain.
-
-    1. ``keyring:`` URI  → credstore
+    1. ``keyring:`` URI  → credstore (only when *accept_keyring_uri* is True)
     2. ``${VAR}``        → os.environ → credstore
     3. plaintext         → as-is
     """
     # keyring: URI
-    from credstore import is_keyring_uri, resolve_uri
-    if is_keyring_uri(value):
-        return resolve_uri(value)
+    if accept_keyring_uri:
+        from credstore import is_keyring_uri, resolve_uri
+        if is_keyring_uri(value):
+            return resolve_uri(value)
 
     # ${VAR} reference
-    resolved = _resolve_env_or_credstore(value)
-    if resolved != value:
-        return resolved
+    if value.startswith("${") and value.endswith("}"):
+        var_name = value[2:-1]
+        env_val = os.environ.get(var_name)
+        if env_val:
+            return env_val
+        cred_val = _try_credstore_lookup(var_name)
+        if cred_val:
+            return cred_val
 
     return value
 
-
-def _resolve_mcp_env_var(value: str) -> str:
-    """Resolve a ``${VAR}`` reference in MCP server env.
-
-    Same logic as _resolve_api_key but for env var values (no keyring: URI).
-    """
-    return _resolve_env_or_credstore(value)
+# Backward-compatible alias for slife.plugins.mcp.connection
+_resolve_env_or_credstore = _resolve_secret
 
 
 _T = TypeVar("_T")
@@ -173,7 +157,7 @@ class ModelConfig:
             provider=provider,
             api_model=api_model,
             display_name=display_name,
-            api_key=_resolve_api_key(data["api_key"]),
+            api_key=_resolve_secret(data["api_key"], accept_keyring_uri=True),
             base_url=data.get("base_url", "https://api.deepseek.com"),
             api=data.get("api", "openai-completions"),
             supports_vision=supports_vision,
@@ -221,7 +205,7 @@ class MCPConfig:
                 if isinstance(senv, dict):
                     for k, v in senv.items():
                         raw_val = str(v)
-                        resolved = _resolve_mcp_env_var(raw_val)
+                        resolved = _resolve_secret(raw_val)
                         senv[k] = resolved
                         if raw_val != resolved:
                             logger.info(
@@ -240,7 +224,7 @@ class MCPConfig:
                     for auth_key in ("client_id", "client_secret"):
                         if auth_key in auth:
                             raw_val = str(auth[auth_key])
-                            resolved = _resolve_mcp_env_var(raw_val)
+                            resolved = _resolve_secret(raw_val)
                             auth[auth_key] = resolved
                             if raw_val != resolved:
                                 logger.info(

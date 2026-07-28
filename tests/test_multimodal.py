@@ -1,5 +1,8 @@
 """Tests for Slife.agent.multimodal — image encoding."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import base64
 from pathlib import Path
 from unittest.mock import patch

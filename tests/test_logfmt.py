@@ -1,5 +1,8 @@
 """Tests for Slife.logfmt — structured logging, contextvars, timing, stderr."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import asyncio
 import logging
 import sys

@@ -1,5 +1,8 @@
 """Tests for slife.plugins.wechat.config — per-user WeChat config I/O."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import json5
 import logging
 from pathlib import Path

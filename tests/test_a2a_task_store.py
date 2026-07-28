@@ -1,5 +1,8 @@
 """Tests for Slife.a2a.task_store — TaskRecord and TaskStore."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 
 from slife.a2a.task_store import TaskRecord, TaskStore, get_store, clear_store

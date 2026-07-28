@@ -1,8 +1,11 @@
 """Tests for slife.a2a.mqtt — MQTTAdapter, MQTTMessage."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, Mock, Mock, patch, PropertyMock
 
 import pytest
 
@@ -12,8 +15,8 @@ from slife.a2a.mqtt import MQTTAdapter, MQTTMessage
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _make_mock_mqtt():
-    """Return a MagicMock standing in for the paho.mqtt.client module."""
-    return MagicMock()
+    """Return a Mock standing in for the paho.mqtt.client module."""
+    return Mock()
 
 
 # ── MQTTMessage ──────────────────────────────────────────────────────────
@@ -74,7 +77,7 @@ class TestMQTTAdapterConnect:
     @pytest.mark.asyncio
     @patch("slife.a2a.mqtt.mqtt")
     async def test_connect_success(self, mock_mqtt):
-        mock_client = MagicMock()
+        mock_client = Mock()
         mock_mqtt.Client.return_value = mock_client
 
         adapter = MQTTAdapter("agent-01")
@@ -97,7 +100,7 @@ class TestMQTTAdapterConnect:
     @pytest.mark.asyncio
     @patch("slife.a2a.mqtt.mqtt")
     async def test_connect_already_connected(self, mock_mqtt):
-        mock_client = MagicMock()
+        mock_client = Mock()
         mock_mqtt.Client.return_value = mock_client
 
         adapter = MQTTAdapter("agent-01")
@@ -109,7 +112,7 @@ class TestMQTTAdapterConnect:
     @pytest.mark.asyncio
     @patch("slife.a2a.mqtt.mqtt")
     async def test_connect_sets_will(self, mock_mqtt):
-        mock_client = MagicMock()
+        mock_client = Mock()
         mock_mqtt.Client.return_value = mock_client
 
         adapter = MQTTAdapter("agent-01")
@@ -136,7 +139,7 @@ class TestMQTTAdapterDisconnect:
     @pytest.mark.asyncio
     @patch("slife.a2a.mqtt.mqtt")
     async def test_disconnect_success(self, mock_mqtt):
-        mock_client = MagicMock()
+        mock_client = Mock()
         mock_mqtt.Client.return_value = mock_client
 
         adapter = MQTTAdapter("agent-01")
@@ -172,8 +175,8 @@ class TestMQTTAdapterPublish:
     @pytest.mark.asyncio
     @patch("slife.a2a.mqtt.mqtt")
     async def test_publish_success(self, mock_mqtt):
-        mock_client = MagicMock()
-        mock_info = MagicMock()
+        mock_client = Mock()
+        mock_info = Mock()
         mock_info.rc = 0  # MQTT_RC_SUCCESS
         mock_client.publish.return_value = mock_info
 
@@ -193,7 +196,7 @@ class TestMQTTAdapterSubscribe:
     @pytest.mark.asyncio
     @patch("slife.a2a.mqtt.mqtt")
     async def test_subscribe_success(self, mock_mqtt):
-        mock_client = MagicMock()
+        mock_client = Mock()
         adapter = MQTTAdapter("agent-01")
         adapter._client = mock_client
 
@@ -224,7 +227,7 @@ class TestMQTTAdapterMessageRouting:
         adapter._connected = True
         adapter._queues["Slife/+/presence"] = asyncio.Queue(maxsize=10)
 
-        mock_msg = MagicMock()
+        mock_msg = Mock()
         mock_msg.topic = "Slife/agent-02/presence"
         mock_msg.payload = b'{"status":"online"}'
         mock_msg.qos = 1
@@ -243,7 +246,7 @@ class TestMQTTAdapterMessageRouting:
         adapter = MQTTAdapter("agent-01")
         adapter._connected = True
 
-        mock_msg = MagicMock()
+        mock_msg = Mock()
         mock_msg.topic = "other/topic"
         mock_msg.payload = b"data"
         mock_msg.qos = 0
@@ -261,10 +264,10 @@ class TestMQTTAdapterMessageRouting:
 
         # Queue with size 1 already full
         full_queue = asyncio.Queue(maxsize=1)
-        full_queue.put_nowait(MagicMock())
+        full_queue.put_nowait(Mock())
         adapter._queues["Slife/+/presence"] = full_queue
 
-        mock_msg = MagicMock()
+        mock_msg = Mock()
         mock_msg.topic = "Slife/x/presence"
         mock_msg.payload = b"overflow"
         mock_msg.qos = 1

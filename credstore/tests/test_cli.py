@@ -1,5 +1,7 @@
 """Tests for the credstore CLI."""
 
+import pytest; pytestmark = pytest.mark.integration
+
 import sys
 from io import StringIO
 from unittest.mock import MagicMock

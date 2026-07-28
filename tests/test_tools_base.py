@@ -1,5 +1,8 @@
 """Tests for Slife.tools.base — abstract Tool base class."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 
 from slife.tools.base import Tool, make_params, require_params

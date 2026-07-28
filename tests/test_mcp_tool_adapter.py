@@ -1,5 +1,8 @@
 """Tests for Slife.mcp.tool_adapter — MCPProxyTool and create_proxy_tools."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 

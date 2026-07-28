@@ -11,6 +11,17 @@ from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
 
 
+# ── pytest configuration ────────────────────────────────────────────────
+
+
+def pytest_configure(config):
+    """Register markers for VS Code / older pytest compatibility."""
+    config.addinivalue_line("markers", "unit: fast, isolated unit test (no I/O, no subprocess)")
+    config.addinivalue_line("markers", "integration: test requiring I/O, network, or subprocess")
+    config.addinivalue_line("markers", "e2e: end-to-end test requiring a full running system")
+    config.addinivalue_line("markers", "slow: mark a test as slow (excluded from quick runs)")
+
+
 # ── Model config fixtures ─────────────────────────────────────────────
 
 
@@ -185,12 +196,16 @@ def empty_registry():
 
 class _MockChoice:
     """Mock for openai choice object."""
+    __slots__ = ("delta",)
+
     def __init__(self, delta):
         self.delta = delta
 
 
 class _MockStreamEvent:
     """Mock for a streaming API event."""
+    __slots__ = ("choices", "usage")
+
     def __init__(self, delta=None, usage=None):
         self.choices = [_MockChoice(delta)] if delta else []
         self.usage = usage
@@ -198,6 +213,8 @@ class _MockStreamEvent:
 
 class _MockDelta:
     """Mock delta with optional content, reasoning, tool_calls."""
+    __slots__ = ("content", "reasoning_content", "tool_calls")
+
     def __init__(self, content=None, reasoning_content=None, tool_calls=None):
         self.content = content
         self.reasoning_content = reasoning_content
@@ -206,6 +223,8 @@ class _MockDelta:
 
 class _MockToolCallDelta:
     """Mock for a single tool call delta."""
+    __slots__ = ("index", "id", "function")
+
     def __init__(self, index=0, id=None, function=None):
         self.index = index
         self.id = id
@@ -214,6 +233,8 @@ class _MockToolCallDelta:
 
 class _MockFunctionDelta:
     """Mock for function delta in tool call."""
+    __slots__ = ("name", "arguments")
+
     def __init__(self, name=None, arguments=""):
         self.name = name
         self.arguments = arguments
@@ -221,6 +242,8 @@ class _MockFunctionDelta:
 
 class _MockUsage:
     """Mock for API usage response."""
+    __slots__ = ("prompt_tokens", "completion_tokens", "total_tokens")
+
     def __init__(self, prompt_tokens=100, completion_tokens=50, total_tokens=150):
         self.prompt_tokens = prompt_tokens
         self.completion_tokens = completion_tokens

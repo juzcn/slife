@@ -419,7 +419,7 @@ class AddSkillTool(_SkillDirMixin, Tool):
                 zf.extractall(skill_dir)
         elif data[:2].hex() == '1f8b':  # gzip magic
             with tarfile.open(fileobj=bio, mode="r:gz") as tf:
-                tf.extractall(skill_dir)
+                tf.extractall(skill_dir, filter="data")
         else:
             raise ValueError("Unknown archive format (expected .zip or .tar.gz)")
 

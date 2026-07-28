@@ -1,5 +1,8 @@
 """Tests for Slife.agent.inbox — ConversationStore and Inbox."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 

@@ -1,5 +1,8 @@
 """Tests for Slife.tools.shell — shell command execution tool."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch

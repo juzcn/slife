@@ -1,5 +1,8 @@
 """Tests for Slife.platform — platform detection and Python script runner."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import sys
 import pytest
 from unittest.mock import patch

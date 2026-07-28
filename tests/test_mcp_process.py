@@ -1,5 +1,8 @@
 """Tests for Slife.mcp.process — MCP wrapper process lifecycle."""
 
+import pytest; pytestmark = pytest.mark.integration
+
+
 import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -91,7 +94,8 @@ class TestMCPWrapperProcessStart:
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             with patch("slife.mcp.process.logger"):
                 with patch.object(wp, "_read_port_signal", AsyncMock()):
-                    with patch.object(wp, "_log_stderr", AsyncMock()):
+                    with patch.object(wp, "_log_stderr", MagicMock()), \
+                         patch("slife.mcp.process.asyncio.create_task", lambda c: None):
                         await wp.start()
 
                 assert wp._running is True
@@ -107,7 +111,8 @@ class TestMCPWrapperProcessStart:
         with patch("asyncio.create_subprocess_exec") as mock_create:
             mock_create.return_value = mock_proc
             with patch("slife.mcp.process.logger"):
-                with patch.object(wp, "_read_port_signal", AsyncMock()):
+                with patch.object(wp, "_read_port_signal", AsyncMock()), \
+                     patch.object(wp, "_log_stderr", MagicMock()):
                     with patch("slife.mcp.process.get_session_id",
                                return_value="test-sid-1234"):
                         with patch("slife.mcp.process.asyncio.create_task"):

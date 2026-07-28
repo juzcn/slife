@@ -1,5 +1,8 @@
 """Tests for slife/server_utils.py — shared server logging setup."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import logging
 import os
 from pathlib import Path

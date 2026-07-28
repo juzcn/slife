@@ -1,5 +1,8 @@
 """Tests for Slife.agent.service — AgentService lifecycle and message processing."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import asyncio
 import json as _json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,47 +14,14 @@ from slife.agent.llm_client import TokenUsage
 from slife.a2a.identity import HUMAN, WECHAT
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
-
-
-def make_mock_config():
-    """Build a mock Config suitable for AgentService tests."""
-    from slife.config import Config, ModelConfig
-
-    model = ModelConfig(
-        ref="deepseek/deepseek-v4-flash",
-        provider="deepseek",
-        api_model="deepseek-v4-flash",
-        display_name="DeepSeek V4 Flash",
-        api_key="sk-test",
-        base_url="https://api.deepseek.com",
-        api="openai-completions",
-        supports_vision=False,
-        max_tokens=4096,
-        context_window=131072,
-        temperature=0.7,
-        top_p=1.0,
-        thinking_enabled=False,
-        reasoning_effort=None,
-    )
-
-    config = Config(
-        models=[model],
-        active_model_ref="deepseek/deepseek-v4-flash",
-        tools=[{"name": "execute_shell", "timeout": 30}],
-        max_iterations=10,
-    )
-    return config
-
-
 # ── AgentService initialisation ─────────────────────────────────────────────
 
 
 class TestAgentServiceInit:
     """Tests for AgentService.__init__."""
 
-    def test_basic_initialization(self):
-        config = make_mock_config()
+    def test_basic_initialization(self, sample_config):
+        config = sample_config
         service = AgentService(config)
 
         assert service.config is config
@@ -61,16 +31,16 @@ class TestAgentServiceInit:
         assert service.conversation is not None
         assert isinstance(service.session_usage, TokenUsage)
 
-    def test_initial_mcp_state(self):
-        config = make_mock_config()
+    def test_initial_mcp_state(self, sample_config):
+        config = sample_config
         service = AgentService(config)
 
-        assert service._mcp_client is None
-        assert service._mcp_process is None
+        assert service._plugins["mcp"].client is None
+        assert service._plugins["mcp"].process is None
         assert service.mcp_enabled is False
 
-    def test_initial_a2a_state(self):
-        config = make_mock_config()
+    def test_initial_a2a_state(self, sample_config):
+        config = sample_config
         service = AgentService(config)
 
         assert service._a2a_client is None
@@ -80,25 +50,25 @@ class TestAgentServiceInit:
 class TestAgentServiceProperties:
     """Tests for AgentService properties."""
 
-    def test_model_display_name(self):
-        service = AgentService(make_mock_config())
+    def test_model_display_name(self, sample_config):
+        service = AgentService(sample_config)
         assert "DeepSeek" in service.model_display_name
 
-    def test_thinking_enabled(self):
-        config = make_mock_config()
+    def test_thinking_enabled(self, sample_config):
+        config = sample_config
         service = AgentService(config)
         assert service.thinking_enabled is False
 
-    def test_subagent_manager_none_initially(self):
-        service = AgentService(make_mock_config())
+    def test_subagent_manager_none_initially(self, sample_config):
+        service = AgentService(sample_config)
         assert service.subagent_manager is None
 
 
 class TestAgentServiceClear:
     """Tests for AgentService.clear()."""
 
-    def test_clear_resets_usage(self):
-        service = AgentService(make_mock_config())
+    def test_clear_resets_usage(self, sample_config):
+        service = AgentService(sample_config)
         service.session_usage = TokenUsage(
             prompt_tokens=500, completion_tokens=300, total_tokens=800,
         )
@@ -107,8 +77,8 @@ class TestAgentServiceClear:
 
         assert service.session_usage.total_tokens == 0
 
-    def test_clear_preserves_system_prompt(self):
-        service = AgentService(make_mock_config())
+    def test_clear_preserves_system_prompt(self, sample_config):
+        service = AgentService(sample_config)
         initial_count = len(service.conversation.messages)
         # System prompt should be present
         assert initial_count >= 1
@@ -127,8 +97,8 @@ class TestAgentServiceMCPLifecycle:
     """Tests for start_mcp and stop_mcp."""
 
     @pytest.mark.asyncio
-    async def test_start_mcp_always_enabled(self):
-        config = make_mock_config()
+    async def test_start_mcp_always_enabled(self, sample_config):
+        config = sample_config
         config.mcp_config = MagicMock()
 
         service = AgentService(config)
@@ -143,39 +113,39 @@ class TestAgentServiceMCPLifecycle:
             mock_auto.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_stop_mcp_with_client(self):
-        service = AgentService(make_mock_config())
+    async def test_stop_mcp_with_client(self, sample_config):
+        service = AgentService(sample_config)
         mock_client = MagicMock()
         mock_client.disconnect = AsyncMock()
-        service._mcp_client = mock_client
+        service._plugins["mcp"].client = mock_client
 
         await service.stop_mcp()
 
         mock_client.disconnect.assert_called_once()
-        assert service._mcp_client is None
+        assert service._plugins["mcp"].client is None
 
     @pytest.mark.asyncio
-    async def test_stop_mcp_with_process(self):
-        service = AgentService(make_mock_config())
+    async def test_stop_mcp_with_process(self, sample_config):
+        service = AgentService(sample_config)
         mock_process = MagicMock()
         mock_process.stop = AsyncMock()
-        service._mcp_process = mock_process
+        service._plugins["mcp"].process = mock_process
 
         await service.stop_mcp()
 
         mock_process.stop.assert_called_once()
-        assert service._mcp_process is None
+        assert service._plugins["mcp"].process is None
 
     @pytest.mark.asyncio
-    async def test_stop_mcp_handles_errors(self):
-        service = AgentService(make_mock_config())
+    async def test_stop_mcp_handles_errors(self, sample_config):
+        service = AgentService(sample_config)
         mock_client = MagicMock()
         mock_client.disconnect = AsyncMock(side_effect=Exception("boom"))
-        service._mcp_client = mock_client
+        service._plugins["mcp"].client = mock_client
 
         # Should not raise
         await service.stop_mcp()
-        assert service._mcp_client is None
+        assert service._plugins["mcp"].client is None
 
 
 # ── AgentService memory ─────────────────────────────────────────────────────
@@ -184,13 +154,13 @@ class TestAgentServiceMCPLifecycle:
 class TestAgentServiceMemory:
     """Tests for memory-related methods."""
 
-    def test_memory_not_enabled_initially(self):
-        service = AgentService(make_mock_config())
+    def test_memory_not_enabled_initially(self, sample_config):
+        service = AgentService(sample_config)
         assert service.memory_enabled is False
 
     @pytest.mark.asyncio
-    async def test_start_memory_always_runs(self):
-        config = make_mock_config()
+    async def test_start_memory_always_runs(self, sample_config):
+        config = sample_config
         service = AgentService(config)
         with patch.object(service, "_spawn_and_register_plugin", AsyncMock()) as mock_spawn:
             result = await service.start_memory()
@@ -198,20 +168,20 @@ class TestAgentServiceMemory:
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_save_to_memory_disabled_noop(self):
-        service = AgentService(make_mock_config())
+    async def test_save_to_memory_disabled_noop(self, sample_config):
+        service = AgentService(sample_config)
         # Should not raise — memory_enabled is False, so it returns early
         await service.save_to_memory(user_message="test", token_count=100)
 
     @pytest.mark.asyncio
-    async def test_save_to_memory_no_user_message(self):
-        service = AgentService(make_mock_config())
+    async def test_save_to_memory_no_user_message(self, sample_config):
+        service = AgentService(sample_config)
         # Should not raise with no user_message
         await service.save_to_memory()
 
     @pytest.mark.asyncio
-    async def test_stop_memory_noop_when_disabled(self):
-        service = AgentService(make_mock_config())
+    async def test_stop_memory_noop_when_disabled(self, sample_config):
+        service = AgentService(sample_config)
         await service.stop_memory()  # Should not raise
 
 
@@ -222,14 +192,14 @@ class TestAgentServiceA2A:
     """Tests for A2A lifecycle methods."""
 
     @pytest.mark.asyncio
-    async def test_start_a2a_disabled_noop(self):
-        service = AgentService(make_mock_config())
+    async def test_start_a2a_disabled_noop(self, sample_config):
+        service = AgentService(sample_config)
         await service.start_a2a()
         assert service._a2a_client is None
 
     @pytest.mark.asyncio
-    async def test_stop_a2a_noop_when_disabled(self):
-        service = AgentService(make_mock_config())
+    async def test_stop_a2a_noop_when_disabled(self, sample_config):
+        service = AgentService(sample_config)
         await service.stop_a2a()  # Should not raise
 
 
@@ -240,16 +210,16 @@ class TestAgentServiceSubagent:
     """Tests for subagent lifecycle."""
 
     @pytest.mark.asyncio
-    async def test_start_subagent_always_creates_manager(self):
+    async def test_start_subagent_always_creates_manager(self, sample_config):
         """Subagent is always enabled — start_subagent always creates a manager."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
         await service.start_subagent()
         assert service._subagent_manager is not None
         assert service._subagent_manager.count == 0
 
     @pytest.mark.asyncio
-    async def test_stop_subagent_noop_when_disabled(self):
-        service = AgentService(make_mock_config())
+    async def test_stop_subagent_noop_when_disabled(self, sample_config):
+        service = AgentService(sample_config)
         await service.stop_subagent()  # Should not raise
 
 
@@ -260,8 +230,8 @@ class TestAgentServiceCallbacks:
     """Tests for A2A activity callbacks."""
 
     @pytest.mark.asyncio
-    async def test_on_a2a_activity_register_and_fire(self):
-        service = AgentService(make_mock_config())
+    async def test_on_a2a_activity_register_and_fire(self, sample_config):
+        service = AgentService(sample_config)
         cb = AsyncMock()
         service.on_a2a_activity(cb)
 
@@ -270,8 +240,8 @@ class TestAgentServiceCallbacks:
         cb.assert_called_once_with("test_event", data="hello")
 
     @pytest.mark.asyncio
-    async def test_callback_error_is_swallowed(self):
-        service = AgentService(make_mock_config())
+    async def test_callback_error_is_swallowed(self, sample_config):
+        service = AgentService(sample_config)
         bad_cb = AsyncMock(side_effect=Exception("broken"))
         good_cb = AsyncMock()
         service.on_a2a_activity(bad_cb)
@@ -282,8 +252,8 @@ class TestAgentServiceCallbacks:
         good_cb.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_set_inbox_handler_factory_when_no_inbox(self):
-        service = AgentService(make_mock_config())
+    async def test_set_inbox_handler_factory_when_no_inbox(self, sample_config):
+        service = AgentService(sample_config)
         # Should not raise — inbox is None
         service.set_inbox_handler_factory(lambda: None)
 
@@ -295,11 +265,11 @@ class TestAgentServiceProcessMessage:
     """Tests for process_message."""
 
     @pytest.mark.asyncio
-    async def test_process_message_unified_queue(self):
+    async def test_process_message_unified_queue(self, sample_config):
         """Always routes through inbox — handler is attached to the message."""
         from slife.a2a.identity import HUMAN
 
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
 
         # inbox is always created in __init__
         assert service.inbox is not None
@@ -333,39 +303,39 @@ class TestAgentServiceStopMemory:
     """Tests for stop_memory."""
 
     @pytest.mark.asyncio
-    async def test_stop_memory_with_active_client(self):
-        service = AgentService(make_mock_config())
+    async def test_stop_memory_with_active_client(self, sample_config):
+        service = AgentService(sample_config)
         mock_client = MagicMock()
         mock_client.is_connected = True
         mock_client.disconnect = AsyncMock()
-        service._memory_client = mock_client
+        service._plugins["memory"].client = mock_client
 
         await service.stop_memory()
 
         mock_client.disconnect.assert_called_once()
-        assert service._memory_client is None
+        assert service._plugins["memory"].client is None
 
     @pytest.mark.asyncio
-    async def test_stop_memory_with_process(self):
-        service = AgentService(make_mock_config())
+    async def test_stop_memory_with_process(self, sample_config):
+        service = AgentService(sample_config)
         mock_process = MagicMock()
         mock_process.stop = AsyncMock()
-        service._memory_process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
+        service._plugins["memory"].process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
 
         await service.stop_memory()
 
         mock_process.stop.assert_called_once()
-        assert service._memory_process is None
+        assert service._plugins["memory"].process is None
 
     @pytest.mark.asyncio
-    async def test_stop_memory_handles_errors(self):
-        service = AgentService(make_mock_config())
+    async def test_stop_memory_handles_errors(self, sample_config):
+        service = AgentService(sample_config)
         mock_client = MagicMock()
         mock_client.is_connected = True
         # call_tool raises — disconnect should still be attempted
         mock_client.call_tool = AsyncMock(side_effect=Exception("boom"))
         mock_client.disconnect = AsyncMock()
-        service._memory_client = mock_client
+        service._plugins["memory"].client = mock_client
 
         await service.stop_memory()
 
@@ -378,14 +348,14 @@ class TestAgentServiceStopMemory:
 class TestAgentServiceInbox:
     """Tests for the always-active unified inbox."""
 
-    def test_inbox_always_created(self):
+    def test_inbox_always_created(self, sample_config):
         """Inbox is created in __init__ — not conditional on A2A."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
         assert service.inbox is not None
 
-    def test_inbox_has_correct_wiring(self):
+    def test_inbox_has_correct_wiring(self, sample_config):
         """Inbox is wired with agent_loop, conversations, and on_turn_complete."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
         inbox = service.inbox
 
         assert inbox._agent_loop is service.agent_loop
@@ -396,9 +366,9 @@ class TestAgentServiceInbox:
         assert inbox._conversations._convs.get(HUMAN) is service.conversation
 
     @pytest.mark.asyncio
-    async def test_start_inbox_creates_background_task(self):
+    async def test_start_inbox_creates_background_task(self, sample_config):
         """start_inbox launches inbox.run() as a background task."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
 
         # Replace inbox.run with a mock so we don't actually start the loop
         mock_run = AsyncMock()
@@ -409,9 +379,9 @@ class TestAgentServiceInbox:
         assert service._inbox_task is not None
 
     @pytest.mark.asyncio
-    async def test_stop_inbox_cancels_task(self):
+    async def test_stop_inbox_cancels_task(self, sample_config):
         """stop_inbox cancels the background task and waits for it."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
 
         # Create a real cancellable task
         async def _fake_run():
@@ -429,16 +399,16 @@ class TestAgentServiceInbox:
         assert service._inbox_task is None
 
     @pytest.mark.asyncio
-    async def test_stop_inbox_noop_when_not_started(self):
+    async def test_stop_inbox_noop_when_not_started(self, sample_config):
         """stop_inbox is safe when inbox was never started."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
         service._inbox_task = None
         await service.stop_inbox()  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_process_message_routes_through_inbox(self):
+    async def test_process_message_routes_through_inbox(self, sample_config):
         """process_message enqueues via inbox with handler on the message."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
 
         mock_inbox = MagicMock()
         mock_inbox.post = AsyncMock()
@@ -461,22 +431,22 @@ class TestAgentServiceInbox:
 class TestAgentServiceWeChat:
     """Tests for WeChat plugin lifecycle and message processing."""
 
-    def test_wechat_not_enabled_initially(self):
+    def test_wechat_not_enabled_initially(self, sample_config):
         """WeChat client is None until start_wechat is called."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
         assert service.wechat_enabled is False
-        assert service._wechat_client is None
+        assert service._plugins["wechat"].client is None
 
     @pytest.mark.asyncio
-    async def test_stop_wechat_noop_when_disabled(self):
+    async def test_stop_wechat_noop_when_disabled(self, sample_config):
         """stop_wechat is safe when WeChat was never started."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
         await service.stop_wechat()  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_start_wechat_with_mocked_internals(self):
+    async def test_start_wechat_with_mocked_internals(self, sample_config):
         """start_wechat spawns the server, registers tools, and starts polling."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
 
         # WeChat must be enabled in config for start_wechat to proceed
         mock_wechat_cfg = MagicMock()
@@ -487,7 +457,7 @@ class TestAgentServiceWeChat:
         # set — wire up a mock client for the check_status call and poll loop.
         mock_wechat_client = MagicMock()
         mock_wechat_client.call_tool = AsyncMock(return_value="{}")
-        service._wechat_client = mock_wechat_client  # pyright: ignore[reportAttributeAccessIssue]
+        service._plugins["wechat"].client = mock_wechat_client  # pyright: ignore[reportAttributeAccessIssue]
 
         with patch.object(service, "_spawn_and_register_plugin", AsyncMock()) as mock_spawn:
             result = await service.start_wechat()
@@ -496,9 +466,9 @@ class TestAgentServiceWeChat:
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_stop_wechat_cancels_poll_and_disconnects(self):
+    async def test_stop_wechat_cancels_poll_and_disconnects(self, sample_config):
         """stop_wechat stops the poll loop and disconnects the client."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
 
         # Set up a fake poll task
         async def _fake_poll():
@@ -508,32 +478,32 @@ class TestAgentServiceWeChat:
             except asyncio.CancelledError:
                 raise
 
-        service._wechat_poll_task = asyncio.create_task(_fake_poll())
+        service._plugins["wechat"].poll_task = asyncio.create_task(_fake_poll())
 
         mock_client = MagicMock()
         mock_client.is_connected = True
         mock_client.disconnect = AsyncMock()
-        service._wechat_client = mock_client
+        service._plugins["wechat"].client = mock_client
 
         mock_process = MagicMock()
         mock_process.stop = AsyncMock()
-        service._wechat_process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
+        service._plugins["wechat"].process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
 
         await service.stop_wechat()
 
         # Poll task cancelled and cleaned up
-        assert service._wechat_poll_task is None
+        assert service._plugins["wechat"].poll_task is None
         # Client disconnected
         mock_client.disconnect.assert_called_once()
-        assert service._wechat_client is None
+        assert service._plugins["wechat"].client is None
         # Process stopped
         mock_process.stop.assert_called_once()
-        assert service._wechat_process is None
+        assert service._plugins["wechat"].process is None
 
     @pytest.mark.asyncio
-    async def test_wechat_poll_posts_to_inbox(self):
+    async def test_wechat_poll_posts_to_inbox(self, sample_config):
         """The poll loop fetches messages and posts AgentMessages to inbox."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
 
         mock_wc = MagicMock()
         mock_wc.is_connected = True
@@ -555,7 +525,7 @@ class TestAgentServiceWeChat:
             return "{}"
 
         mock_wc.call_tool = mock_call_tool
-        service._wechat_client = mock_wc
+        service._plugins["wechat"].client = mock_wc
 
         mock_inbox = MagicMock()
         mock_inbox.post = AsyncMock()
@@ -572,9 +542,9 @@ class TestAgentServiceWeChat:
         assert msg.on_reply is not None
 
     @pytest.mark.asyncio
-    async def test_wechat_poll_skips_empty_text(self):
+    async def test_wechat_poll_skips_empty_text(self, sample_config):
         """Messages with empty text are not posted to inbox."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
 
         mock_wc = MagicMock()
         mock_wc.is_connected = True
@@ -594,7 +564,7 @@ class TestAgentServiceWeChat:
             return "{}"
 
         mock_wc.call_tool = mock_call_tool
-        service._wechat_client = mock_wc
+        service._plugins["wechat"].client = mock_wc
 
         mock_inbox = MagicMock()
         mock_inbox.post = AsyncMock()
@@ -608,9 +578,9 @@ class TestAgentServiceWeChat:
         assert msg.content == "real"
 
     @pytest.mark.asyncio
-    async def test_wechat_reply_callback_sends_message(self):
+    async def test_wechat_reply_callback_sends_message(self, sample_config):
         """The on_reply callback delivers the response text via send_message."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
 
         mock_wc = MagicMock()
         mock_wc.is_connected = True
@@ -635,7 +605,7 @@ class TestAgentServiceWeChat:
             return "{}"
 
         mock_wc.call_tool = mock_call_tool
-        service._wechat_client = mock_wc
+        service._plugins["wechat"].client = mock_wc
 
         mock_inbox = MagicMock()
         mock_inbox.post = AsyncMock()
@@ -664,9 +634,9 @@ class TestAgentServiceWeChat:
         assert send_args["text"] == "今天北京晴，25°C"
 
     @pytest.mark.asyncio
-    async def test_wechat_typing_sent_on_arrival(self):
+    async def test_wechat_typing_sent_on_arrival(self, sample_config):
         """send_typing(status=1) is called when a message arrives."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
 
         mock_wc = MagicMock()
         mock_wc.is_connected = True
@@ -687,7 +657,7 @@ class TestAgentServiceWeChat:
             return "{}"
 
         mock_wc.call_tool = AsyncMock(side_effect=mock_call_tool)
-        service._wechat_client = mock_wc
+        service._plugins["wechat"].client = mock_wc
 
         mock_inbox = MagicMock()
         mock_inbox.post = AsyncMock()
@@ -704,9 +674,9 @@ class TestAgentServiceWeChat:
         assert msg.on_reply is not None
 
     @pytest.mark.asyncio
-    async def test_wechat_poll_error_handling(self):
+    async def test_wechat_poll_error_handling(self, sample_config):
         """Poll errors are caught and do not crash the loop."""
-        service = AgentService(make_mock_config())
+        service = AgentService(sample_config)
 
         mock_wc = MagicMock()
         mock_wc.is_connected = True
@@ -724,7 +694,7 @@ class TestAgentServiceWeChat:
             return "{}"
 
         mock_wc.call_tool = mock_call_tool
-        service._wechat_client = mock_wc
+        service._plugins["wechat"].client = mock_wc
 
         mock_inbox = MagicMock()
         mock_inbox.post = AsyncMock()

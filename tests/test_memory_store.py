@@ -1,5 +1,8 @@
 """Tests for slife.plugins.memory.store — SessionStore and helpers."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import struct
 from datetime import date, timedelta
 from pathlib import Path

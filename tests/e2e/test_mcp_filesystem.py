@@ -12,6 +12,8 @@ Usage:
     uv run python tests/e2e/test_mcp_filesystem.py [allowed_dir]
 """
 
+import pytest; pytestmark = pytest.mark.e2e
+
 import asyncio
 import sys
 from pathlib import Path

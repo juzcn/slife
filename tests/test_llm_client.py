@@ -1,5 +1,8 @@
 """Tests for Slife.agent.llm_client — LLM client, token usage, and streaming."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 

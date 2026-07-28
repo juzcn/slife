@@ -1,5 +1,8 @@
 """Tests for Slife.tools.a2a — A2A tool definitions and execute logic."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 

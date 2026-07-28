@@ -1,5 +1,8 @@
 """Tests for Slife.tools._config_io — shared config file read/write helpers."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import json5
 from pathlib import Path
 from unittest.mock import patch

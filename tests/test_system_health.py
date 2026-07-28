@@ -1,5 +1,8 @@
 """Tests for Slife.tools.system_health — system health check tool."""
 
+import pytest; pytestmark = pytest.mark.integration
+
+
 import json
 from unittest.mock import MagicMock, patch
 

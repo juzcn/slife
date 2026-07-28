@@ -1,5 +1,8 @@
 """Tests for Slife.tools.skill — skill management with source tracking."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import json
 import json5
 import pytest

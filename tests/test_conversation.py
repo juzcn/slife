@@ -1,5 +1,8 @@
 """Tests for Slife.agent.conversation — conversation history management."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 
 from slife.agent.conversation import Conversation

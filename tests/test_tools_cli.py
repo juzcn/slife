@@ -1,5 +1,8 @@
 """Tests for Slife.tools.cli — CLI tool registration with source tracking."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import json5
 import pytest
 from pathlib import Path

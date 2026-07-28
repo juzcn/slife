@@ -1,5 +1,8 @@
 """Tests for Slife.agent.loop — agent loop, streaming, and tool execution."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 import pytest
 from unittest.mock import AsyncMock, patch
 

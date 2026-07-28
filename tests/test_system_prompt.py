@@ -1,5 +1,8 @@
 """Tests for Slife.agent.system_prompt."""
 
+import pytest; pytestmark = pytest.mark.unit
+
+
 from slife.agent.system_prompt import build
 
 
