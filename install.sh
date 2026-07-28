@@ -238,19 +238,47 @@ if [ -n "$PRESERVED_PKGS" ]; then
     NEW_VENV=$(echo "$NEW_LINE" | sed -n 's/.*(\(.*\)).*/\1/p')
     if [ -n "$NEW_VENV" ] && [ -d "$NEW_VENV" ]; then
         NEW_PYTHON="$NEW_VENV/bin/python"
+
+        # Read extra-index-url from the project's pyproject.toml so that
+        # packages like llama-cpp-python can resolve pre-built wheels.
+        EXTRA_INDEX_ARGS=""
+        PYPROJECT="$TMP_DIR/slife-main/pyproject.toml"
+        if [ -f "$PYPROJECT" ]; then
+            _in_tool_uv=""
+            while IFS= read -r _line; do
+                case "$_line" in
+                    '['tool.uv']') _in_tool_uv=1 ;;
+                    '['*']') [ -n "$_in_tool_uv" ] && break ;;
+                esac
+                if [ -n "$_in_tool_uv" ]; then
+                    _url=$(echo "$_line" | sed -n 's/.*extra-index-url[[:space:]]*=[[:space:]]*\["\([^"]*\)"\].*/\1/p')
+                    if [ -n "$_url" ]; then
+                        _url=$(echo "$_url" | sed "s/^\[//; s/\]$//; s/\"//g; s/,$//; s/^[[:space:]]*//; s/[[:space:]]*$//")
+                        [ -n "$_url" ] && EXTRA_INDEX_ARGS="--extra-index-url $_url"
+                        break
+                    fi
+                fi
+            done < "$PYPROJECT"
+        fi
+
         echo -e "${YELLOW}  Re-adding preserved packages…${NC}"
+        _ok_count=0
+        _fail_count=0
         for entry in $PRESERVED_PKGS; do
             _name="${entry%%|*}"
             _url="${entry#*|}"
+            # shellcheck disable=SC2086
             if [ "$_url" != "$_name" ]; then
-                uv pip install --python "$NEW_PYTHON" "$_url" >> "$TOOL_INSTALL_LOG" 2>&1
+                uv pip install --python "$NEW_PYTHON" $EXTRA_INDEX_ARGS "$_url" >> "$TOOL_INSTALL_LOG" 2>&1
             else
-                uv pip install --python "$NEW_PYTHON" "$_name" >> "$TOOL_INSTALL_LOG" 2>&1
+                uv pip install --python "$NEW_PYTHON" $EXTRA_INDEX_ARGS "$_name" >> "$TOOL_INSTALL_LOG" 2>&1
             fi
             if [ $? -eq 0 ]; then
                 echo -e "  ${GREEN}  ✓${NC} $_name"
+                _ok_count=$((_ok_count + 1))
             else
-                echo -e "  ${YELLOW}  ⚠ failed to re-add $_name (see install log)${NC}"
+                echo -e "  ${YELLOW}  ⚠ failed to re-add $_name — run: uv pip install $_name${NC}"
+                _fail_count=$((_fail_count + 1))
             fi
         done
     fi

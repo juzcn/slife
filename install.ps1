@@ -270,20 +270,43 @@ try {
         if ($newLine -and $newLine -match '\((.+?)\)') {
             $newVenv = $matches[1]
             $newPython = Join-Path $newVenv "Scripts\python.exe"
+
+            # Read extra-index-url from the project's pyproject.toml so that
+            # packages like llama-cpp-python can resolve pre-built wheels.
+            $extraIndexArgs = @()
+            $pyprojectPath = Join-Path $extractedDir.FullName "pyproject.toml"
+            if (Test-Path $pyprojectPath) {
+                $pyprojectContent = Get-Content $pyprojectPath -Raw
+                $inToolUv = $false
+                foreach ($line in ($pyprojectContent -split "`n")) {
+                    if ($line -match '^\[tool\.uv\]') { $inToolUv = $true; continue }
+                    if ($inToolUv -and $line -match '^\[') { break }
+                    if ($inToolUv -and $line -match 'extra-index-url\s*=\s*\[?') {
+                        $url = ($line -split '=\s*')[1] -replace '^\[', '' -replace '\]$', '' -replace '"', '' -replace "'", '' -replace ',$', '' -replace '^\s*\[', '' -replace '\]\s*$', ''
+                        if ($url) { $extraIndexArgs += @("--extra-index-url", $url.Trim()) }
+                        break
+                    }
+                }
+            }
+
             Write-Host "  Re-adding preserved packages..." -ForegroundColor Yellow
             $prevEAP2 = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             foreach ($pkg in $preservedPackages) {
+                $pkgOk = $true
                 if ($pkg.url) {
-                    & uv pip install --python $newPython $pkg.url 2>&1 | Out-File -Append -Encoding utf8 $toolInstallLog
+                    & uv pip install --python $newPython @extraIndexArgs $pkg.url 2>&1 | Out-File -Append -Encoding utf8 $toolInstallLog
                 } else {
-                    & uv pip install --python $newPython $pkg.name 2>&1 | Out-File -Append -Encoding utf8 $toolInstallLog
+                    & uv pip install --python $newPython @extraIndexArgs $pkg.name 2>&1 | Out-File -Append -Encoding utf8 $toolInstallLog
                 }
                 if ($LASTEXITCODE -ne 0) {
-                    Write-Host "  Warning: failed to re-add $($pkg.name)" -ForegroundColor Yellow
+                    Write-Host "  Warning: failed to re-add $($pkg.name) — run: uv pip install $($pkg.name)" -ForegroundColor Yellow
+                    $pkgOk = $false
                 } else {
                     Write-Host "  [OK] $($pkg.name)" -ForegroundColor Green
                 }
+                # Track status for final summary.
+                $pkg | Add-Member -NotePropertyName "ok" -NotePropertyValue $pkgOk -Force
             }
             $ErrorActionPreference = $prevEAP2
         }
@@ -331,9 +354,19 @@ try {
     Write-Host "  slife                                # launch the TUI"
     Write-Host ""
     if ($preservedPackages.Count -gt 0) {
-        Write-Host "Preserved packages:" -ForegroundColor Cyan
-        foreach ($pkg in $preservedPackages) {
-            Write-Host "  [OK] $($pkg.name) (auto-detected from previous install)" -ForegroundColor Green
+        $okPkgs = $preservedPackages | Where-Object { $_.ok }
+        $failPkgs = $preservedPackages | Where-Object { -not $_.ok }
+        if ($okPkgs) {
+            Write-Host "Preserved packages:" -ForegroundColor Cyan
+            foreach ($pkg in $okPkgs) {
+                Write-Host "  [OK] $($pkg.name) (auto-detected from previous install)" -ForegroundColor Green
+            }
+        }
+        if ($failPkgs) {
+            Write-Host "Failed to preserve:" -ForegroundColor Yellow
+            foreach ($pkg in $failPkgs) {
+                Write-Host "  [!!] $($pkg.name) — run: uv pip install $($pkg.name)" -ForegroundColor Yellow
+            }
         }
     }
     Write-Host "Optional extras:" -ForegroundColor Cyan
