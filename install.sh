@@ -243,11 +243,15 @@ if [ -n "$PRESERVED_PKGS" ]; then
             _name="${entry%%|*}"
             _url="${entry#*|}"
             if [ "$_url" != "$_name" ]; then
-                uv pip install --python "$NEW_PYTHON" "$_url" >> "$TOOL_INSTALL_LOG" 2>&1 || true
+                uv pip install --python "$NEW_PYTHON" "$_url" >> "$TOOL_INSTALL_LOG" 2>&1
             else
-                uv pip install --python "$NEW_PYTHON" "$_name" >> "$TOOL_INSTALL_LOG" 2>&1 || true
+                uv pip install --python "$NEW_PYTHON" "$_name" >> "$TOOL_INSTALL_LOG" 2>&1
             fi
-            echo -e "  ${GREEN}  ✓${NC} $_name"
+            if [ $? -eq 0 ]; then
+                echo -e "  ${GREEN}  ✓${NC} $_name"
+            else
+                echo -e "  ${YELLOW}  ⚠ failed to re-add $_name (see install log)${NC}"
+            fi
         done
     fi
 fi
