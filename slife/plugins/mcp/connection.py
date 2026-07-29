@@ -271,16 +271,23 @@ class MCPServerConnection:
         If the server responds with SSE, enters SSE mode — otherwise
         falls back to Streamable HTTP (POST JSON-RPC directly).
         """
+        # Resolve ${VAR} references in URL (e.g. SSE URL with API key)
+        self._resolved_url = _resolve_embedded_refs(self.config.url)
+
+        # Resolve ${VAR} references in headers
         headers: dict[str, str] = {}
         if self.config.headers:
-            headers.update(self.config.headers)
+            headers.update(
+                {k: _resolve_embedded_refs(v) for k, v in self.config.headers.items()}
+            )
 
         self._http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0),
         )
 
         # Detect SSE: send GET with Accept: text/event-stream
-        url = self.config.url.rstrip("/")
+        url = self._resolved_url.rstrip("/")
+        sse_detected = False
         try:
             async with self._http_client.stream(
                 "GET", url,
@@ -314,20 +321,33 @@ class MCPServerConnection:
                         "mcp_sse_connected server=%s msg_url=%s",
                         self.config.name, self._sse_message_url,
                     )
+                    sse_detected = True
                     return
+                else:
+                    # Non-200 or wrong content-type — consume response body
+                    # so the connection can be reused, then fall through to
+                    # streamable HTTP.
+                    logger.debug(
+                        "mcp_sse_not_detected server=%s status=%d content_type=%s",
+                        self.config.name, resp.status_code,
+                        resp.headers.get("content-type", ""),
+                    )
         except Exception:
             if self._sse_task:
                 self._sse_task.cancel()
                 self._sse_task = None
             self._sse_queue = None
             self._sse_mode = False
-            # Re-create client for streamable HTTP (SSE detection consumed
-            # the connection on some servers)
-            await self._http_client.aclose()
-            self._http_client = httpx.AsyncClient(
-                headers=headers,
-                timeout=httpx.Timeout(30.0),
-            )
+        finally:
+            if not sse_detected:
+                # Re-create client for streamable HTTP — the SSE detection
+                # GET consumed the connection, and we need user headers
+                # set on the client for subsequent POST requests.
+                await self._http_client.aclose()
+                self._http_client = httpx.AsyncClient(
+                    headers=headers,
+                    timeout=httpx.Timeout(30.0),
+                )
 
         logger.debug(
             "mcp_streamable_http server=%s url=%s",
@@ -507,9 +527,10 @@ class MCPServerConnection:
         if self._session_id:
             headers["mcp-session-id"] = self._session_id
 
+        url = getattr(self, '_resolved_url', self.config.url)
         try:
             resp = await self._http_client.post(
-                self.config.url, json=request, headers=headers,
+                url, json=request, headers=headers,
             )
             resp.raise_for_status()
         except httpx.HTTPError as e:
@@ -560,9 +581,10 @@ class MCPServerConnection:
             headers: dict[str, str] = {}
             if self._session_id:
                 headers["mcp-session-id"] = self._session_id
+            url = getattr(self, '_resolved_url', self.config.url)
             asyncio.create_task(
                 self._http_client.post(
-                    self.config.url, json=notification, headers=headers,
+                    url, json=notification, headers=headers,
                 )
             )
 
@@ -627,8 +649,9 @@ class MCPServerConnection:
             # Best-effort session termination
             if self._session_id:
                 try:
+                    url = getattr(self, '_resolved_url', self.config.url)
                     await self._http_client.delete(
-                        self.config.url,
+                        url,
                         headers={"mcp-session-id": self._session_id},
                     )
                 except Exception:

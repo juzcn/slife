@@ -474,7 +474,7 @@ wheels = [
 
 [[package]]
 name = "credstore"
-version = "0.3.16"
+version = "0.3.21"
 source = { editable = "credstore" }
 dependencies = [
     { name = "keyring" },
@@ -2562,7 +2562,7 @@ wheels = [
 
 [[package]]
 name = "slife"
-version = "0.3.16"
+version = "0.3.21"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
