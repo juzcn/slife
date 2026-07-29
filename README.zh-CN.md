@@ -187,13 +187,39 @@ active_model: "deepseek/deepseek-v4-pro",
 
 | 扩展 | 启用功能 |
 |------|---------|
-| `slife[gguf]` | 本地 GGUF 嵌入（~30 MB，离线） |
+| `slife[gguf]` | 本地 GGUF 嵌入（离线） |
 | `slife[transformer]` | HuggingFace 变换器嵌入（~2 GB） |
 | `slife[embeddings]` | 以上两者 |
+
+**Linux / macOS** — 从源码编译（这些平台默认有 C 编译器）：
 
 ```bash
 uv tool install "slife[gguf]" --reinstall
 ```
+
+**Windows** — 默认没有 C++ 编译器，需使用预编译 wheel。根据你的环境选择：
+
+| 环境 | Wheel | 说明 |
+|------|-------|------|
+| 无编译器，任意 GPU 或无 GPU | `v0.3.34-vulkan` | 最安全 — 有 GPU 用 Vulkan，否则回退 CPU |
+| NVIDIA GPU + CUDA 12 | `v0.3.34-cu132` | CUDA 12.x |
+| NVIDIA GPU + CUDA 11 | `v0.3.34-cu125` | CUDA 11.x |
+| AMD GPU | `v0.3.34-hip-radeon` | ROCm |
+
+```powershell
+uv tool install "slife[gguf]" --reinstall
+# 然后将你选择的 wheel 安装到 slife 的 venv 中：
+$py = (uv tool list --show-paths 2>$null | Select-String 'slife v' | Out-String) -replace '.*\((.*?)\).*', '$1\Scripts\python.exe'
+uv pip install --python $py "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+```
+
+**首次使用** — 下载 GGUF 模型并启用：
+
+```bash
+curl -LO https://huggingface.co/ChristianAzinn/bge-m3-gguf/resolve/main/bge-m3-Q4_K_M.gguf
+```
+
+然后启动 slife 告诉它：`启用本地嵌入，模型文件 bge-m3-Q4_K_M.gguf`
 
 ## 开发
 

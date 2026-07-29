@@ -187,13 +187,39 @@ Not all tools are in every request. Three categories use lightweight summaries:
 
 | Extra | Enables |
 |-------|---------|
-| `slife[gguf]` | Local GGUF embeddings (~30 MB, offline) |
+| `slife[gguf]` | Local GGUF embeddings (offline) |
 | `slife[transformer]` | HuggingFace transformer embeddings (~2 GB) |
 | `slife[embeddings]` | Both of the above |
+
+**Linux / macOS** — builds from source (C compiler is standard on these platforms):
 
 ```bash
 uv tool install "slife[gguf]" --reinstall
 ```
+
+**Windows** — no C++ compiler by default, so use a pre-built wheel. Pick the one that matches your setup:
+
+| Your setup | Wheel | Notes |
+|------------|-------|-------|
+| No compiler, any GPU or none | `v0.3.34-vulkan` | Safest — uses Vulkan if GPU present, falls back to CPU |
+| NVIDIA GPU + CUDA 12 | `v0.3.34-cu132` | CUDA 12.x |
+| NVIDIA GPU + CUDA 11 | `v0.3.34-cu125` | CUDA 11.x |
+| AMD GPU | `v0.3.34-hip-radeon` | ROCm |
+
+```powershell
+uv tool install "slife[gguf]" --reinstall
+# Then install your chosen wheel into slife's venv:
+$py = (uv tool list --show-paths 2>$null | Select-String 'slife v' | Out-String) -replace '.*\((.*?)\).*', '$1\Scripts\python.exe'
+uv pip install --python $py "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+```
+
+**First use** — download a GGUF model and enable it:
+
+```bash
+curl -LO https://huggingface.co/ChristianAzinn/bge-m3-gguf/resolve/main/bge-m3-Q4_K_M.gguf
+```
+
+Then launch slife and tell it: `enable local embeddings with bge-m3-Q4_K_M.gguf`
 
 ## Development
 

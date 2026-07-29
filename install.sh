@@ -314,7 +314,9 @@ elif [ -s "$EXTRA_REQS" ]; then
     echo -e "${YELLOW}  uv pip install -r $EXTRA_REQS${NC}"
 fi
 echo -e "${CYAN}Optional extras:${NC}"
-echo "  uv tool install --with \"slife[gguf]\" slife    # local GGUF models"
-echo "  uv tool install --with \"slife[transformer]\" slife  # HuggingFace embeddings (~2 GB)"
+echo "  # Local GGUF embeddings (offline, ~30 MB):"
+echo "  uv tool install --with \"slife[gguf]\" slife"
+echo "  # HuggingFace transformer embeddings (~2 GB):"
+echo "  uv tool install --with \"slife[transformer]\" slife"
 echo ""
 echo -e "${CYAN}More info:${NC} $SLIFE_REPO"
