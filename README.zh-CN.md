@@ -207,10 +207,7 @@ uv tool install "slife[gguf]" --reinstall
 | AMD GPU | `v0.3.34-hip-radeon` | ROCm |
 
 ```powershell
-uv tool install "slife[gguf]" --reinstall
-# 然后将你选择的 wheel 安装到 slife 的 venv 中：
-$py = (uv tool list --show-paths 2>$null | Select-String 'slife v' | Out-String) -replace '.*\((.*?)\).*', '$1\Scripts\python.exe'
-uv pip install --python $py "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+uv tool install --with "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl" slife --reinstall
 ```
 
 **首次使用** — 下载 GGUF 模型并启用：

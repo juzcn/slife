@@ -387,13 +387,11 @@ try {
         }
     }
     Write-Box "Optional extras:"
-    Write-Box '  # Local GGUF embeddings (Windows needs pre-built wheel — no C++ compiler):'
-    Write-Box '  uv tool install "slife[gguf]" --reinstall'
-    Write-Box '  $py = (uv tool list --show-paths 2>$null | Select-String ''slife v'' | Out-String) -replace ''.*\((.*?)\).*'', ''$1\Scripts\python.exe'''
-    Write-Box '  uv pip install --python $py "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"'
+    Write-Box "  # Local GGUF embeddings (Windows — pre-built wheel, no compiler needed):"
+    Write-Box '  uv tool install --with "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl" slife --reinstall'
     Write-Box "  # Vulkan works on any GPU (falls back to CPU).  See README for CUDA/ROCm variants."
     Write-Box ""
-    Write-Box '  # HuggingFace transformer embeddings (~2 GB):'
+    Write-Box "  # HuggingFace transformer embeddings (~2 GB):"
     Write-Box '  uv tool install --with "slife[transformer]" slife'
     Write-Host ""
     Write-Box "More info: $slifeRepo"
