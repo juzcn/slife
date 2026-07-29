@@ -3,6 +3,7 @@
 import json
 import logging
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Input, Static
@@ -66,6 +67,71 @@ class StatusBar(Static):
         self.update("  ".join(parts))
 
 
+# ── History-aware Input ────────────────────────────────────────────
+
+
+class HistoryInput(Input):
+    """Single-line input with up/down history navigation (like readline).
+
+    Stores submitted entries in a bounded list.  Up arrow cycles to older
+    entries; down arrow returns to newer entries and eventually restores
+    the in-progress draft.
+    """
+
+    _MAX_HISTORY: int = 256
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._input_history: list[str] = []
+        self._history_idx: int = -1    # -1 = not navigating; 0+ = offset from newest
+        self._saved_draft: str = ""    # what was typed before pressing ↑
+
+    def add_history(self, text: str) -> None:
+        """Record a submitted entry.  Consecutive duplicates are deduplicated."""
+        text = text.strip()
+        if not text:
+            return
+        if self._input_history and self._input_history[-1] == text:
+            return
+        self._input_history.append(text)
+        if len(self._input_history) > self._MAX_HISTORY:
+            self._input_history = self._input_history[-self._MAX_HISTORY:]
+        self._history_idx = -1
+
+    async def _on_key(self, event: events.Key) -> None:
+        """Intercept up/down for history navigation; delegate rest to Input."""
+        if event.key == "up":
+            if not self._input_history:
+                event.stop()
+                return
+            if self._history_idx < len(self._input_history) - 1:
+                if self._history_idx == -1:
+                    self._saved_draft = self.value
+                self._history_idx += 1
+                self.value = self._input_history[-(self._history_idx + 1)]
+                self.cursor_position = len(self.value)
+            event.stop()
+            return
+
+        if event.key == "down":
+            if self._history_idx > 0:
+                self._history_idx -= 1
+                self.value = self._input_history[-(self._history_idx + 1)]
+                self.cursor_position = len(self.value)
+                event.stop()
+                return
+            if self._history_idx == 0:
+                self._history_idx = -1
+                self.value = self._saved_draft
+                self.cursor_position = len(self.value)
+                self._saved_draft = ""
+                event.stop()
+                return
+            # Not navigating — let Input handle down normally
+
+        await super()._on_key(event)
+
+
 # ── Main TUI app ───────────────────────────────────────────────────
 
 
@@ -127,7 +193,7 @@ class SlifeApp(App):
     def compose(self) -> ComposeResult:
         """Minimal layout: chat fills screen, input + status docked at bottom."""
         yield ChatView(id="chat-view")
-        yield Input(
+        yield HistoryInput(
             placeholder="Message Slife…",
             id="user-input",
         )
@@ -325,6 +391,8 @@ class SlifeApp(App):
         if not raw:
             return
 
+        if isinstance(event.input, HistoryInput):
+            event.input.add_history(raw)
         event.input.clear()
 
         chat_view = self.query_one("#chat-view", ChatView)
