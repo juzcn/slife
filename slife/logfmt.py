@@ -266,8 +266,10 @@ _SECRET_PATTERNS: list[re.Pattern] = [
     re.compile(r"(?:api_key|apikey|api-key|secret|token|password)\s*[=:]\s*([^\s]{20,})", re.IGNORECASE),
     # Generic hex-ish tokens (32+ chars) — catches API keys without known prefixes
     re.compile(r"\b[A-Za-z0-9]{32,}\b"),
-    # Base64-like blobs (32+ chars with +/=)
-    re.compile(r"\b[A-Za-z0-9+/=]{32,}\b"),
+    # Base64-like blobs (32+ chars with +/=).  Require at least one
+    # '+' or '=' to avoid matching URL paths, which contain '/' but
+    # almost never contain '+' or '='.
+    re.compile(r"\b(?=[A-Za-z0-9+/=]{0,31}[+=])[A-Za-z0-9+/=]{32,}\b"),
 ]
 
 _MASKED = "<MASKED>"
