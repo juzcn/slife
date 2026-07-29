@@ -42,11 +42,6 @@ def discover_plugins() -> list[tuple[str, str]]:
     """
     import slife.plugins as _pkg
 
-    logger.debug(
-        "plugins_path file=%s __path__=%s",
-        getattr(_pkg, "__file__", None), _pkg.__path__,
-    )
-
     plugins: list[tuple[str, str]] = []
 
     for _, name, is_pkg in pkgutil.iter_modules(
