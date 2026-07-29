@@ -17,16 +17,40 @@
 
 $ErrorActionPreference = "Stop"
 
-$slifeRepo = "https://github.com/juzcn/slife"
+# ── Helpers ──────────────────────────────────────────────────────────
+function Write-Step($msg) { Write-Host $msg -ForegroundColor Yellow }
+function Write-Ok($msg)   { Write-Host "  $([char]0x2713) $msg" -ForegroundColor Green }
+function Write-Dim($msg)  { Write-Host "  $msg" -ForegroundColor DarkGray }
+function Write-Warn($msg) { Write-Host $msg -ForegroundColor Yellow }
+function Write-Err($msg)  { Write-Host $msg -ForegroundColor Red }
+function Write-Box($msg)  { Write-Host $msg -ForegroundColor Cyan }
+
+# Extract bare package name from a pip-freeze line.
+#   name==1.0  → name
+#   name @ url → name
+function Get-PkgName($spec) {
+    ($spec -replace '\s*@.+$', '' -replace '==.+$', '').Trim().ToLower()
+}
+
+# Parse the venv path from "uv tool list --show-paths" output.
+# Returns the path inside parentheses, or $null.
+function Get-SlifeVenv {
+    $line = & uv tool list --show-paths 2>$null | Select-String "slife v"
+    if ($line -and $line -match '\((.+?)\)') { return $matches[1] }
+    return $null
+}
+
+# ── Constants ────────────────────────────────────────────────────────
+$slifeRepo    = "https://github.com/juzcn/slife"
 $slifeTarball = "$slifeRepo/archive/refs/heads/main.zip"
-$tmpDir = Join-Path $env:TEMP "slife-install-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+$tmpDir       = Join-Path $env:TEMP "slife-install-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 New-Item -ItemType Directory -Force $tmpDir | Out-Null
 
 try {
-    Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║        Slife Installer              ║" -ForegroundColor Cyan
-    Write-Host "║  Terminal-based AI agent            ║" -ForegroundColor Cyan
-    Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Box "╔══════════════════════════════════════╗"
+    Write-Box "║        Slife Installer              ║"
+    Write-Box "║  Terminal-based AI agent            ║"
+    Write-Box "╚══════════════════════════════════════╝"
     Write-Host ""
 
     # ── Pre-flight summary ──────────────────────────────────────────
@@ -37,51 +61,50 @@ try {
     Write-Host "Disk space needed : ~500 MB"
     Write-Host ""
 
-    # ── 0. Disk space check (before any download) ────────────────────
+    # ── 0. Disk space check ──────────────────────────────────────────
     $driveLetter = $env:USERPROFILE.Substring(0, 1)
-    $freeBytes = (Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue).Free
+    $freeBytes   = (Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue).Free
     if ($freeBytes -and $freeBytes -lt 1GB) {
         $freeGB = [math]::Round($freeBytes / 1GB, 1)
-        Write-Host "Error: only ~${freeGB} GB free on ${driveLetter}: drive (need >= 1 GB)." -ForegroundColor Red
-        Write-Host "Free up space and try again.  Help: $slifeRepo" -ForegroundColor Yellow
+        Write-Err "Error: only ~${freeGB} GB free on ${driveLetter}: drive (need >= 1 GB)."
+        Write-Warn "Free up space and try again.  Help: $slifeRepo"
         exit 1
     }
 
-    # ── 1. Ensure uv is available ──────────────────────────────────
-    Write-Host "[1/5] Ensuring uv is available..." -ForegroundColor Yellow
+    # ── 1. Ensure uv is available ────────────────────────────────────
+    Write-Step "[1/5] Ensuring uv is available..."
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Write-Host "  Installing uv..." -ForegroundColor Yellow
+        Write-Dim "Installing uv..."
         powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
         $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
     }
-    $uvVer = uv --version 2>&1
-    Write-Host "  [OK] uv $uvVer" -ForegroundColor Green
+    Write-Ok "uv $(uv --version 2>&1)"
 
-    # ── 2. Ensure npx (Node.js) is available ────────────────────────
-    Write-Host "[2/5] Ensuring npx (Node.js) is available..." -ForegroundColor Yellow
+    # ── 2. Ensure npx (Node.js) is available ─────────────────────────
+    Write-Step "[2/5] Ensuring npx (Node.js) is available..."
     $haveNpx = $false
     if (Get-Command npx -ErrorAction SilentlyContinue) {
         try {
             $npxVer = npx --version 2>&1
             if ($LASTEXITCODE -eq 0) {
-                Write-Host "  [OK] npx v$npxVer" -ForegroundColor Green
+                Write-Ok "npx v$npxVer"
                 $haveNpx = $true
             }
         } catch { }
     }
 
     if (-not $haveNpx) {
-        Write-Host "  npx not found, installing Node.js..." -ForegroundColor Yellow
-        $winget = Get-Command winget -ErrorAction SilentlyContinue
-        if ($winget) {
-            Write-Host "  Installing Node.js LTS via winget..." -ForegroundColor Yellow
+        Write-Dim "npx not found, installing Node.js..."
+        if (Get-Command winget -ErrorAction SilentlyContinue) {
+            Write-Dim "Installing Node.js LTS via winget..."
             winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
             if ($LASTEXITCODE -eq 0) {
-                $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+                $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                            [System.Environment]::GetEnvironmentVariable("Path", "User")
                 try {
                     $nv = npx --version 2>&1
                     if ($LASTEXITCODE -eq 0) {
-                        Write-Host "  [OK] npx v$nv installed" -ForegroundColor Green
+                        Write-Ok "npx v$nv installed"
                         $haveNpx = $true
                     }
                 } catch { }
@@ -89,172 +112,165 @@ try {
         }
 
         if (-not $haveNpx) {
-            Write-Host "  ┌─────────────────────────────────────────────────────┐" -ForegroundColor Red
-            Write-Host "  │  WARNING: npx not available.                       │" -ForegroundColor Red
-            Write-Host "  │                                                     │" -ForegroundColor Red
-            Write-Host "  │  These MCP servers require npx and will NOT work:    │" -ForegroundColor Red
-            Write-Host "  │    file-search, serper, tavily-mcp, github,          │" -ForegroundColor Red
-            Write-Host "  │    amap-maps, filesystem                             │" -ForegroundColor Red
-            Write-Host "  │                                                     │" -ForegroundColor Red
-            Write-Host "  │  Install Node.js LTS from https://nodejs.org         │" -ForegroundColor Red
-            Write-Host "  │  then re-run this installer.                         │" -ForegroundColor Red
-            Write-Host "  └─────────────────────────────────────────────────────┘" -ForegroundColor Red
-            Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
+            Write-Err "  ┌─────────────────────────────────────────────────────┐"
+            Write-Err "  │  WARNING: npx not available.                       │"
+            Write-Err "  │                                                     │"
+            Write-Err "  │  These MCP servers require npx and will NOT work:    │"
+            Write-Err "  │    file-search, serper, tavily-mcp, github,          │"
+            Write-Err "  │    amap-maps, filesystem                             │"
+            Write-Err "  │                                                     │"
+            Write-Err "  │  Install Node.js LTS from https://nodejs.org         │"
+            Write-Err "  │  then re-run this installer.                         │"
+            Write-Err "  └─────────────────────────────────────────────────────┘"
+            Write-Warn "Help: $slifeRepo"
             exit 1
         }
     }
 
-    # ── Optional: Mosquitto MQTT broker (for A2A multi-agent mesh) ──
-    Write-Host "[optional] Checking Mosquitto (MQTT broker for multi-agent mesh)..." -ForegroundColor Yellow
+    # ── Optional: Mosquitto MQTT broker ──────────────────────────────
+    Write-Step "[optional] Checking Mosquitto (MQTT broker for multi-agent mesh)..."
     if (Get-Command mosquitto -ErrorAction SilentlyContinue) {
-        Write-Host "  [OK] mosquitto found" -ForegroundColor Green
+        Write-Ok "mosquitto found"
     } else {
-        Write-Host "  Mosquitto not found." -ForegroundColor Yellow
-        Write-Host "  Required for: A2A multi-agent mesh communication" -ForegroundColor DarkGray
-        Write-Host "  Without it:  slife works normally, just without P2P agent features" -ForegroundColor DarkGray
-        try {
-            $choice = Read-Host "  Install Mosquitto? (y/n, default: n)"
-        } catch {
-            $choice = "n"
-        }
+        Write-Warn "  Mosquitto not found."
+        Write-Dim "  Required for: A2A multi-agent mesh communication"
+        Write-Dim "  Without it:  slife works normally, just without P2P agent features"
+        try { $choice = Read-Host "  Install Mosquitto? (y/n, default: n)" } catch { $choice = "n" }
         if ($choice -eq 'y' -or $choice -eq 'Y') {
-            $winget = Get-Command winget -ErrorAction SilentlyContinue
-            if ($winget) {
-                Write-Host "  Installing Mosquitto via winget..." -ForegroundColor Yellow
+            if (Get-Command winget -ErrorAction SilentlyContinue) {
+                Write-Dim "Installing Mosquitto via winget..."
                 winget install EclipseFoundation.Mosquitto --accept-package-agreements --accept-source-agreements
                 if ($LASTEXITCODE -eq 0) {
-                    Write-Host "  [OK] Mosquitto installed" -ForegroundColor Green
-                    Write-Host "  To start Mosquitto:" -ForegroundColor Cyan
-                    Write-Host "    net start mosquitto" -ForegroundColor Cyan
-                    Write-Host "  Or run manually:" -ForegroundColor Cyan
-                    Write-Host "    mosquitto -d -p 1883" -ForegroundColor Cyan
+                    Write-Ok "Mosquitto installed"
+                    Write-Box "  To start Mosquitto:"
+                    Write-Box "    net start mosquitto"
+                    Write-Box "  Or run manually:"
+                    Write-Box "    mosquitto -d -p 1883"
                 } else {
-                    Write-Host "  winget install failed. Install manually:" -ForegroundColor Yellow
-                    Write-Host "    https://mosquitto.org/download/" -ForegroundColor Yellow
+                    Write-Warn "  winget install failed. Install manually:"
+                    Write-Warn "    https://mosquitto.org/download/"
                 }
             } else {
-                Write-Host "  No supported package manager found (winget not available)." -ForegroundColor Yellow
-                Write-Host "  Install manually: https://mosquitto.org/download/" -ForegroundColor Yellow
+                Write-Warn "  No supported package manager found (winget not available)."
+                Write-Warn "  Install manually: https://mosquitto.org/download/"
             }
         } else {
-            Write-Host "  Skipped. Install later with: winget install EclipseFoundation.Mosquitto" -ForegroundColor DarkGray
+            Write-Dim "  Skipped. Install later with: winget install EclipseFoundation.Mosquitto"
         }
     }
     Write-Host ""
 
-    # ── 3. Download and verify slife ────────────────────────────────
-    Write-Host "[3/5] Downloading slife..." -ForegroundColor Yellow
+    # ── 3. Download and verify slife ─────────────────────────────────
+    Write-Step "[3/5] Downloading slife..."
 
     # PowerShell 5.1's Invoke-WebRequest can throw IndexOutOfRangeException
-    # on GitHub's HTTP response headers.  Set TLS 1.2 and use curl.exe as
-    # a fallback (curl is bundled with Windows 10 build 17063+).
+    # on GitHub's HTTP response headers.  Fall back to curl.exe (bundled
+    # with Windows 10 build 17063+) when that happens.
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
     $zipFile = Join-Path $tmpDir "slife.zip"
     try {
         Invoke-WebRequest -Uri $slifeTarball -OutFile $zipFile -ErrorAction Stop
     } catch [System.IndexOutOfRangeException] {
-        Write-Host "  Invoke-WebRequest failed (PowerShell 5.1 bug), trying curl.exe..." -ForegroundColor Yellow
-        $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
-        if ($curl) {
+        Write-Warn "  Invoke-WebRequest failed (PowerShell 5.1 bug), trying curl.exe..."
+        if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
             curl.exe -fsSL -o $zipFile $slifeTarball
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "Error: download failed. Check your network and try again." -ForegroundColor Red
-                Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
+                Write-Err "Error: download failed. Check your network and try again."
+                Write-Warn "Help: $slifeRepo"
                 exit 1
             }
         } else {
-            Write-Host "Error: download failed and curl.exe not found." -ForegroundColor Red
-            Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
+            Write-Err "Error: download failed and curl.exe not found."
+            Write-Warn "Help: $slifeRepo"
             exit 1
         }
     }
 
-    # Print SHA256 so users can verify integrity if desired.
     $zipHash = (Get-FileHash -Algorithm SHA256 $zipFile).Hash
-    Write-Host "  SHA256: $zipHash" -ForegroundColor DarkGray
+    Write-Dim "  SHA256: $zipHash"
 
     Expand-Archive -Path $zipFile -DestinationPath $tmpDir -Force
     $extractedDir = Get-ChildItem -Path $tmpDir -Directory | Select-Object -First 1
 
-    # Read version from pyproject.toml.
-    $version = "unknown"
+    # ── Read pyproject.toml once (version + extra-index-url) ─────────
+    $version       = "unknown"
+    $extraIndexArgs = @()
     $pyprojectPath = Join-Path $extractedDir.FullName "pyproject.toml"
     if (Test-Path $pyprojectPath) {
-        $content = Get-Content $pyprojectPath -Raw
-        if ($content -match '(?m)^version\s*=\s*"([^"]+)"') {
+        $pyprojectContent = Get-Content $pyprojectPath -Raw
+
+        # Version: [project] / version = "x.y.z"
+        if ($pyprojectContent -match '(?m)^version\s*=\s*"([^"]+)"') {
             $version = $matches[1]
+        }
+
+        # Extra index URL: [tool.uv] / extra-index-url = "..." or ["..."]
+        $urlRe = 'extra-index-url\s*=\s*(?:\[\s*)?["'']([^"''\]]+)'
+        $urlMatch = [regex]::Match($pyprojectContent, $urlRe)
+        if ($urlMatch.Success) {
+            $extraIndexArgs = @("--extra-index-url", $urlMatch.Groups[1].Value)
         }
     }
 
     # ── 4. Install slife with uv tool install ────────────────────────
-    # uv tool install creates an isolated venv, installs slife + credstore
-    # (workspace member), and places the executables in ~/.local/bin.
-    # Python 3.13 is managed automatically by uv.
-    # User data (~/.slife/) is never touched.
-    Write-Host "[4/5] Installing slife v$version..." -ForegroundColor Yellow
+    Write-Step "[4/5] Installing slife v$version..."
 
-    # Capture all user-installed packages from the old venv so we can
-    # re-add them after the fresh install.  "uv tool uninstall" + "uv tool
-    # install" silently drops everything beyond core dependencies.
-    # Save outside $tmpDir so the file survives cleanup — the user may
-    # need to retry if preservation fails.
-    $preservedReqs = Join-Path $env:TEMP "slife-preserved-requirements.txt"
-    # Clear previous run's entries (Add-Content appends).
+    # Capture user-installed packages from the old venv so we can re-add
+    # them after the fresh install.  "uv tool uninstall" + "uv tool install"
+    # silently drops everything beyond core dependencies.
+    $preservedReqs  = Join-Path $env:TEMP "slife-preserved-requirements.txt"
+    $preservedFull  = Join-Path $env:TEMP "slife-preserved-full.txt"
     Set-Content -Path $preservedReqs -Value "" -Encoding utf8
-    $slifeLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
-    if ($slifeLine -and $slifeLine -match '\((.+?)\)') {
-        $oldVenv = $matches[1]
+    Set-Content -Path $preservedFull -Value "" -Encoding utf8
+
+    $oldVenv = Get-SlifeVenv
+    if ($oldVenv) {
         $oldPython = Join-Path $oldVenv "Scripts\python.exe"
         if (Test-Path $oldPython) {
-            Write-Host "  Capturing installed packages from previous installation..." -ForegroundColor DarkGray
-            $preservedFull = Join-Path $env:TEMP "slife-preserved-full.txt"
-            Set-Content -Path $preservedFull -Value "" -Encoding utf8
-            $freeze = & uv pip freeze --python $oldPython 2>&1
-            $count = 0
-            foreach ($line in $freeze) {
-                $spec = $line.Trim()
-                # Normalize to bare package name:
-                #   name==version     → name
-                #   name @ url        → name
-                #   -e path           → skip (editable install from old temp dir)
-                if ($spec -match '^-e ') { continue }
-                $name = $spec -replace '\s*@.+$', '' -replace '==.+$', ''
-                $name = $name.Trim().ToLower()
-                if ($name -and $name -ne "slife" -and $name -ne "credstore") {
-                    Add-Content -Path $preservedReqs -Value $name -Encoding utf8
-                    Add-Content -Path $preservedFull -Value $spec -Encoding utf8
-                    $count++
-                }
-            }
-            if ($count -gt 0) {
-                Write-Host "  Detected $count packages to preserve" -ForegroundColor DarkGray
+            Write-Dim "Capturing installed packages from previous installation..."
+
+            # Capture full freeze (with versions), filtering out:
+            #   - editable installs (-e ...)
+            #   - slife / credstore (reinstalled fresh)
+            #   - stderr noise (no == or @ — not a valid freeze line)
+            & uv pip freeze --python $oldPython 2>$null |
+                Where-Object { $_ -notmatch '^-e ' -and $_ -notmatch '^(slife|credstore)\s*[@=]' } |
+                Where-Object { $_ -match '==' -or $_ -match '@' } |
+                Out-File -Encoding utf8 $preservedFull
+
+            # Derive name-only list from the full freeze (no dual-write sync issues).
+            Get-Content $preservedFull |
+                ForEach-Object { Get-PkgName $_ } |
+                Where-Object { $_ } |
+                Out-File -Encoding utf8 $preservedReqs
+
+            $pkgCount = (Get-Content $preservedReqs).Count
+            if ($pkgCount -gt 0) {
+                Write-Dim "Detected $pkgCount packages to preserve"
             }
         }
     }
 
-    # Clean up any previous broken installation first.
-    # uv tool install will skip/error if the tool is already installed
-    # in a corrupted state (missing pyvenv.cfg, etc.).
-    $prevInstall = uv tool list 2>&1 | Select-String "slife"
-    if ($prevInstall) {
-        Write-Host "  Removing previous slife installation..." -ForegroundColor Yellow
-        try { uv tool uninstall slife *>$null } catch {}
+    # Remove previous installation (clean slate for uv tool install).
+    if (uv tool list 2>$null | Select-String "slife") {
+        Write-Dim "Removing previous slife installation..."
+        try { uv tool uninstall slife *>$null } catch { }
     }
 
     # Clean up old venv artifacts if migrating from a previous install
-    # that placed the venv inside ~/.slife/.  User data (config, logs,
-    # DBs, skills) is preserved.
+    # that placed the venv inside ~/.slife/.  User data is preserved.
     if (Test-Path "$env:USERPROFILE\.slife\pyvenv.cfg") {
-        Write-Host "  Cleaning up old venv-based installation..." -ForegroundColor Yellow
-        foreach ($venvArtifact in @("Scripts", "Lib", "Include", "pyvenv.cfg")) {
-            $artifactPath = "$env:USERPROFILE\.slife\$venvArtifact"
+        Write-Dim "Cleaning up old venv-based installation..."
+        foreach ($artifact in @("Scripts", "Lib", "Include", "pyvenv.cfg")) {
+            $artifactPath = "$env:USERPROFILE\.slife\$artifact"
             if (Test-Path $artifactPath) {
                 Remove-Item -Recurse -Force $artifactPath -ErrorAction SilentlyContinue
             }
         }
     }
 
+    # Install.
     $toolInstallLog = Join-Path $tmpDir "tool-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -262,70 +278,50 @@ try {
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
-        Write-Host "Error: slife installation failed." -ForegroundColor Red
-        Write-Host "Last lines of install log:" -ForegroundColor Yellow
+        Write-Err "Error: slife installation failed."
+        Write-Warn "Last lines of install log:"
         Get-Content $toolInstallLog -Tail 20
-        Write-Host "Help: $slifeRepo" -ForegroundColor Yellow
+        Write-Warn "Help: $slifeRepo"
         exit 1
     }
 
-    # Re-add preserved packages into the new tool venv.
+    # ── Re-add preserved packages ────────────────────────────────────
+    $preserveOk = $false
     if ((Test-Path $preservedReqs) -and ((Get-Content $preservedReqs).Count -gt 0)) {
-        $newLine = uv tool list --show-paths 2>&1 | Select-String "slife v"
-        if ($newLine -and $newLine -match '\((.+?)\)') {
-            $newVenv = $matches[1]
+        $newVenv = Get-SlifeVenv
+        if ($newVenv) {
             $newPython = Join-Path $newVenv "Scripts\python.exe"
 
-            # Read extra-index-url from pyproject.toml for pre-built wheels.
-            $extraIndexArgs = @()
-            $pyprojectPath = Join-Path $extractedDir.FullName "pyproject.toml"
-            if (Test-Path $pyprojectPath) {
-                $pyprojectContent = Get-Content $pyprojectPath -Raw
-                $inToolUv = $false
-                $lines = $pyprojectContent -split "`n"
-                for ($i = 0; $i -lt $lines.Count; $i++) {
-                    $line = $lines[$i]
-                    if ($line -match '^\[tool\.uv\]') { $inToolUv = $true; continue }
-                    if ($inToolUv -and $line -match '^\[') { break }
-                    if ($inToolUv -and $line -match 'extra-index-url\s*=\s*\[') {
-                        # Multi-line array: collect lines until ]
-                        $collect = $line -replace '.*=\s*\[', ''
-                        while ($i + 1 -lt $lines.Count -and $collect -notmatch '\]') {
-                            $i++
-                            $collect += $lines[$i]
-                        }
-                        $url = ($collect -replace '"', '' -replace "'", '' -replace '\]', '' -replace ',', '' -replace '\s+', '').Trim()
-                        if ($url) { $extraIndexArgs += @("--extra-index-url", $url) }
-                        break
-                    }
-                    if ($inToolUv -and $line -match 'extra-index-url\s*=\s*"') {
-                        # Single-line value
-                        $url = ($line -split '=\s*"')[1] -replace '"', '' -replace ',$', '' -replace '\s+', ''
-                        if ($url) { $extraIndexArgs += @("--extra-index-url", $url.Trim()) }
-                        break
-                    }
-                }
-            }
+            # Diff: packages in old venv but not in the new base install.
+            $newFreeze = & uv pip freeze --python $newPython 2>$null |
+                ForEach-Object { ($_ -split '==')[0].Trim().ToLower() } |
+                Where-Object { $_ }
+            $oldPkgs = Get-Content $preservedReqs |
+                ForEach-Object { $_.Trim().ToLower() } |
+                Where-Object { $_ -notin $newFreeze }
 
-            # Diff old freeze against new venv — only re-add packages that
-            # aren't already in the base install (avoids conflicts with
-            # the 100+ transitive deps that uv tool install already provides).
-            $newFreeze = & uv pip freeze --python $newPython 2>&1 | ForEach-Object { ($_ -split '==')[0].Trim().ToLower() }
-            $oldPkgs = Get-Content $preservedReqs | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -notin $newFreeze }
             $extraCount = $oldPkgs.Count
             if ($extraCount -eq 0) {
-                Write-Host "  All packages already present — nothing to re-add" -ForegroundColor DarkGray
+                Write-Dim "All packages already present — nothing to re-add"
                 $preserveOk = $true
             } else {
                 $oldPkgs | Out-File -Encoding utf8 $preservedReqs
-                Write-Host "  Re-adding $extraCount extra packages:" -ForegroundColor Yellow
-                if (Test-Path $preservedFull) {
-                    $fullFreeze = Get-Content $preservedFull | ForEach-Object {
-                        $n = ($_ -replace '\s*@.+$', '' -replace '==.+$', '').Trim().ToLower()
-                        if ($n -in $oldPkgs) { "    $_" }
-                    }
-                    if ($fullFreeze) { $fullFreeze | ForEach-Object { Write-Host $_ -ForegroundColor DarkGray } }
+                Write-Warn "  Re-adding $extraCount extra packages:"
+
+                # Show each package with its version (from the full freeze).
+                $specMap = @{}
+                Get-Content $preservedFull | ForEach-Object {
+                    $n = Get-PkgName $_
+                    if ($n -and -not $specMap.ContainsKey($n)) { $specMap[$n] = $_ }
                 }
+                foreach ($pkg in $oldPkgs) {
+                    if ($specMap.ContainsKey($pkg)) {
+                        Write-Dim "    $($specMap[$pkg])"
+                    } else {
+                        Write-Dim "    $pkg"
+                    }
+                }
+
                 $prevEAP2 = $ErrorActionPreference
                 $ErrorActionPreference = "Continue"
                 $pipOutput = & uv pip install --python $newPython @extraIndexArgs -r $preservedReqs 2>&1
@@ -333,68 +329,68 @@ try {
                 $ErrorActionPreference = $prevEAP2
                 $pipOutput | Out-File -Append -Encoding utf8 $toolInstallLog
                 if (-not $preserveOk) {
-                    Write-Host "  Error details:" -ForegroundColor Red
-                    $pipOutput | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+                    Write-Err "  Error details:"
+                    $pipOutput | Select-Object -Last 10 | ForEach-Object { Write-Dim "    $_" }
                 }
             }
         }
     }
 
     # ── 5. Clean up previous installation artifacts ──────────────────
-    Write-Host "[5/5] Cleaning up previous installation artifacts..." -ForegroundColor Yellow
+    Write-Step "[5/5] Cleaning up previous installation artifacts..."
 
-    $localBin = "$env:USERPROFILE\.local\bin"
+    $localBin   = "$env:USERPROFILE\.local\bin"
+    $scriptsDir = "$env:USERPROFILE\.slife\Scripts"
 
     # Remove stale .cmd wrappers from the old install approach.
     foreach ($stale in @("$localBin\slife.cmd", "$localBin\credstore.cmd")) {
         if (Test-Path $stale) {
             Remove-Item $stale -Force
-            Write-Host "  Removed stale wrapper: $stale" -ForegroundColor DarkGray
+            Write-Dim "  Removed stale wrapper: $stale"
         }
     }
 
-    # Ensure ~/.local/bin is on PATH (uv puts tool executables here,
-    # and Step 1 only added it to the current session).
+    # Ensure ~/.local/bin is on PATH and remove stale venv entries.
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -notlike "*$localBin*") {
-        [Environment]::SetEnvironmentVariable("Path", "$localBin;$userPath", "User")
+    $newPath  = ($userPath -split ';' | Where-Object { $_ -and $_ -ne $scriptsDir }) -join ';'
+    if ($newPath -notlike "*$localBin*") {
+        $newPath = "$localBin;$newPath"
+    }
+    if ($newPath -ne $userPath) {
+        [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+        if ($userPath -like "*$scriptsDir*") {
+            Write-Dim "  Removed stale PATH entry: $scriptsDir"
+        }
     }
     $env:PATH = "$localBin;$env:PATH"
 
-    # Clean up old PATH entries that pointed to the venv Scripts directory.
-    $scriptsDir = "$env:USERPROFILE\.slife\Scripts"
-    $cleanedPath = ($userPath -split ';' | Where-Object { $_ -ne $scriptsDir }) -join ';'
-    if ($cleanedPath -ne $userPath) {
-        [Environment]::SetEnvironmentVariable("Path", $cleanedPath, "User")
-        Write-Host "  Removed stale PATH entry: $scriptsDir" -ForegroundColor DarkGray
-    }
+    Write-Ok "slife + credstore commands ready"
 
-    Write-Host "  [OK] slife + credstore commands ready" -ForegroundColor Green
-
+    # ── Done ─────────────────────────────────────────────────────────
     Write-Host ""
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
     Write-Host "  Slife v$version installed successfully!     " -ForegroundColor Green
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Get started:" -ForegroundColor Cyan
-    Write-Host "  credstore set-password              # set up encrypted backup (first time)"
-    Write-Host "  credstore set DEEPSEEK_API_KEY       # store your API key"
-    Write-Host "  slife                                # launch the TUI"
+    Write-Box "Get started:"
+    Write-Box "  credstore set-password              # set up encrypted backup (first time)"
+    Write-Box "  credstore set DEEPSEEK_API_KEY       # store your API key"
+    Write-Box "  slife                                # launch the TUI"
     Write-Host ""
     if ((Test-Path $preservedReqs) -and ((Get-Content $preservedReqs).Count -gt 0)) {
         if ($preserveOk) {
             Write-Host "Preserved packages:" -ForegroundColor Cyan
-            Write-Host "  [OK] $( (Get-Content $preservedReqs).Count ) packages restored from previous install" -ForegroundColor Green
+            Write-Ok "$((Get-Content $preservedReqs).Count) packages restored from previous install"
         } else {
-            Write-Host "Failed to preserve packages — run manually:" -ForegroundColor Yellow
-            Write-Host "  uv pip install -r $preservedReqs" -ForegroundColor Yellow
+            Write-Warn "Failed to preserve packages — run manually:"
+            Write-Warn "  uv pip install -r $preservedReqs"
         }
     }
-    Write-Host "Optional extras:" -ForegroundColor Cyan
-    Write-Host "  uv tool install --with `"slife[gguf]`" slife    # local GGUF models"
-    Write-Host "  uv tool install --with `"slife[transformer]`" slife  # HuggingFace embeddings (~2 GB)"
+    Write-Box "Optional extras:"
+    Write-Box '  uv tool install --with "slife[gguf]" slife    # local GGUF models'
+    Write-Box '  uv tool install --with "slife[transformer]" slife  # HuggingFace embeddings (~2 GB)'
     Write-Host ""
-    Write-Host "More info: $slifeRepo" -ForegroundColor Cyan
+    Write-Box "More info: $slifeRepo"
 
 } finally {
     if (Test-Path $tmpDir) {

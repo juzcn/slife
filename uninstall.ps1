@@ -12,41 +12,62 @@
 
 $ErrorActionPreference = "Continue"
 
+# ── Helpers (same as install.ps1) ────────────────────────────────────
+function Write-Step($msg) { Write-Host $msg -ForegroundColor Yellow }
+function Write-Ok($msg)   { Write-Host "  $([char]0x2713) $msg" -ForegroundColor Green }
+function Write-Fail($msg) { Write-Host "  $([char]0x2717) $msg" -ForegroundColor Red }
+function Write-Dim($msg)  { Write-Host "  $msg" -ForegroundColor DarkGray }
+function Write-Warn($msg) { Write-Host $msg -ForegroundColor Yellow }
+function Write-Box($msg)  { Write-Host $msg -ForegroundColor Cyan }
+
 Write-Host ""
-Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║        Slife Uninstaller            ║" -ForegroundColor Cyan
-Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Box "╔══════════════════════════════════════╗"
+Write-Box "║        Slife Uninstaller            ║"
+Write-Box "╚══════════════════════════════════════╝"
 Write-Host ""
 
-$installed = uv tool list 2>&1 | Select-String "slife"
+# ── 1. Uninstall from uv tool ───────────────────────────────────────
+$installed = uv tool list 2>$null | Select-String "slife"
 if ($installed) {
-    Write-Host "Uninstalling slife (slife + credstore share the same venv)..." -ForegroundColor Yellow
-    uv tool uninstall slife *>$null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  [OK] slife + credstore removed" -ForegroundColor Green
+    Write-Step "Uninstalling slife (slife + credstore share the same venv)..."
+
+    # Capture stderr separately so we can show it on failure.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $uninstallOutput = uv tool uninstall slife 2>&1
+    $ok = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $prevEAP
+
+    if ($ok) {
+        Write-Ok "slife + credstore removed"
     } else {
-        Write-Host "  [!!] uninstall failed" -ForegroundColor Red
+        Write-Fail "uninstall failed"
+        if ($uninstallOutput) {
+            $uninstallOutput | Select-Object -Last 5 | ForEach-Object { Write-Dim "    $_" }
+        }
     }
 } else {
-    Write-Host "slife is not installed." -ForegroundColor DarkGray
+    Write-Dim "slife is not installed."
 }
 
-# ── Clean up wrapper binaries ───────────────────────────────────────────
+# ── 2. Clean up wrapper binaries ─────────────────────────────────────
 $localBin = "$env:USERPROFILE\.local\bin"
-foreach ($bin in @("$localBin\slife.exe", "$localBin\slife.cmd", "$localBin\credstore.exe", "$localBin\credstore.cmd")) {
+foreach ($bin in @("$localBin\slife.exe", "$localBin\slife.cmd",
+                   "$localBin\credstore.exe", "$localBin\credstore.cmd")) {
     if (Test-Path $bin) {
         Remove-Item $bin -Force -ErrorAction SilentlyContinue
-        Write-Host "  Removed: $bin" -ForegroundColor DarkGray
+        Write-Dim "  Removed: $bin"
     }
 }
 
-# ── Remaining data ─────────────────────────────────────────────────────
+# ── 3. Remaining data ────────────────────────────────────────────────
 Write-Host ""
 $dataDir = "$env:USERPROFILE\.slife"
 
 $remain = @()
 if (Test-Path $dataDir) {
-    $size = "{0:F1} MB" -f ((Get-ChildItem $dataDir -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB)
+    $size = "{0:F1} MB" -f ((Get-ChildItem $dataDir -Recurse -ErrorAction SilentlyContinue |
+        Measure-Object Length -Sum).Sum / 1MB)
     $remain += "  ~\.slife\           ($size) — config, logs, databases, skills"
 }
 $credstoreDir = "$env:USERPROFILE\.credstore"
@@ -55,13 +76,13 @@ if (Test-Path $credstoreDir) {
 }
 
 if ($remain.Count -gt 0) {
-    Write-Host "Data files NOT removed (delete manually if desired):" -ForegroundColor Yellow
+    Write-Warn "Data files NOT removed (delete manually if desired):"
     foreach ($r in $remain) {
-        Write-Host $r -ForegroundColor DarkGray
+        Write-Dim $r
     }
 } else {
-    Write-Host "No remaining data files." -ForegroundColor Green
+    Write-Ok "No remaining data files."
 }
 
 Write-Host ""
-Write-Host "Done." -ForegroundColor Cyan
+Write-Box "Done."

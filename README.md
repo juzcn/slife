@@ -1,26 +1,25 @@
 # Slife
 
-**Terminal-based AI agent** — chat with an LLM that can call tools (MCP, native, A2A), read and write files, search the web, execute code, connect to MCP servers, spawn subagents for parallel work, communicate with other Slife instances over MQTT or HTTP Streamable, and remember everything permanently.
+**Terminal-based AI agent** — a function-calling loop with minimum harness. Chat with an LLM that calls tools, remembers everything, and orchestrates other agents over MQTT.
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│  Terminal UI (Textual)                                     │
-│  ─────────────────────────────────────────────────────────  │
-│  Agent Service — LLM + Tools + Loop + MCP + A2A + Inbox   │
-│  ┌──────────┬─────────────┬──────────┬──────────────────┐  │
-│  │ MCP Tool │ A2A + MQTT  │ Subagent │ Built-in Plugins │  │
-│  │  Proxy   │ Mesh        │ Workers  │ ┌────┬────┬────┐ │  │
-│  │          │             │          │ │MCP │Mem │WX  │ │  │
-│  └──────────┴─────────────┴──────────┴─┴────┴────┴────┘─┘  │
+┌─────────────────────────────────────────────────────────────┐
+│  Terminal UI (Textual)                                      │
+│  ────────────────────────────────────────────────────────── │
+│  Agent Loop — LLM + Tools + Stream + Memory + A2A + Inbox  │
+│  ┌───────────┬──────────┬───────────┬─────────────────────┐ │
+│  │ MCP Proxy │ A2A Mesh │ Subagents │ Built-in Plugins    │ │
+│  │ (gateway) │ (MQTT)   │ (workers) │ Memory · MCP · WX   │ │
+│  └───────────┴──────────┴───────────┴─────────────────────┘ │
 │  Permanent Memory — hybrid search (grep + FTS5 + semantic)  │
-└────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## Install
 
-**Zero prerequisites.**  The install script auto-installs uv and npx (via Node.js) if needed — then uses `uv tool install` to install slife in an isolated environment.  Python 3.13 is managed automatically by uv.  No git, no C++ compiler required.
+**Zero prerequisites.** The install script auto-installs uv and Node.js if needed.
 
-### Option 1: Install Script (Recommended)
+### Install script (recommended)
 
 **macOS / Linux / WSL:**
 
@@ -34,207 +33,70 @@ curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 | iex"
 ```
 
-The script installs [uv](https://docs.astral.sh/uv/) if needed, downloads the latest slife, and uses `uv tool install` to create an isolated environment.  Python 3.13 is managed automatically by uv — no system Python required.  [Inspect the script](install.sh) before piping if you prefer.
-
-### Option 2: uv tool install (requires git)
-
-```bash
-uv tool install git+https://github.com/juzcn/slife.git
-```
-
-### Option 3: pipx (requires git)
-
-```bash
-pipx install git+https://github.com/juzcn/slife.git
-```
-
-### Option 4: Try Before Installing
+### Try without installing
 
 ```bash
 uvx --from git+https://github.com/juzcn/slife.git slife
 ```
 
-No install — downloads, caches, and runs slife in a temporary environment.
+### Update
 
-After installation, the `slife` and `credstore` commands are available globally:
-
-| Command | Location |
-|---------|----------|
-| `slife` | `~/.local/bin/slife` |
-| `credstore` | `~/.local/bin/credstore` |
-| Package files | `~/.local/share/uv/tools/slife/` |
-| User data | `~/.slife/` (auto-created on first run) |
-
-### Update / Reinstall
-
-Re-running the install script **preserves optional packages** (llama-cpp-python, sentence-transformers) that were installed in the previous venv — no need to re-add extras manually after an update.
-
-```bash
-# Re-run the install script — preserves extras automatically
-curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
-```
+Re-run the install script — it auto-preserves optional packages (llama-cpp-python, sentence-transformers) from the previous install.
 
 ### Uninstall
 
-Use the uninstall script (or `uv tool uninstall slife` directly — same effect).
-
-**macOS / Linux / WSL:**
-
 ```bash
+# macOS / Linux / WSL
 curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/uninstall.sh | bash
-```
 
-**Windows PowerShell:**
-
-```powershell
+# Windows PowerShell
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/uninstall.ps1 | iex"
 ```
 
-Or download first:
-
-```powershell
-irm https://raw.githubusercontent.com/juzcn/slife/main/uninstall.ps1 -OutFile uninstall.ps1
-.\uninstall.ps1
-```
-
-`uv tool uninstall slife` removes both `slife` and `credstore` (they share the same isolated venv).  User data files are listed after uninstall but **not removed** — delete them manually if desired:
-
-| Path | Contents |
-|------|----------|
-| `~/.slife/` | Config, memory DB, logs, WeChat sessions, skills |
-| `~/.credstore/` | Encrypted credential backup (cryptfile) |
-
-**Full reset** = uninstall + delete data + reinstall:
-
-```bash
-# 1. Uninstall
-curl -fsSL https://.../uninstall.sh | bash
-# 2. Delete user data (optional — the uninstall script reminds you)
-rm -rf ~/.slife ~/.credstore
-# 3. Reinstall
-curl -fsSL https://.../install.sh | bash
-```
-
-### Optional Extras
-
-| Extra | Package | What it enables |
-|-------|---------|-----------------|
-| `gguf` | `llama-cpp-python` | Local GGUF embeddings for semantic memory search (offline, no API cost). Without it, FTS5 keyword search still works. |
-| `transformer` | `sentence-transformers` | HuggingFace transformer embeddings. Heavier (~2 GB). |
-| `embeddings` | all of the above | Convenience meta-extra — installs both gguf + transformer. |
-
-MQTT support (`paho-mqtt`) is now included by default — A2A agent mesh auto-activates when Mosquitto is detected.
-
-```bash
-# GGUF local embeddings (recommended, ~30 MB):
-uv tool install "slife[gguf]" --reinstall
-
-# Or HuggingFace transformer embeddings (~2 GB):
-uv tool install "slife[transformer]" --reinstall
-
-# Or both:
-uv tool install "slife[embeddings]" --reinstall
-```
-
-#### Setting Up Local Embeddings
-
-After installing `slife[gguf]`, download a GGUF model and configure it:
-
-```bash
-# 1. Download a GGUF embedding model (BGE-M3, Q4_K_M quantized, ~300 MiB)
-curl -LO https://huggingface.co/ChristianAzinn/bge-m3-gguf/resolve/main/bge-m3-Q4_K_M.gguf
-
-# 2. Launch slife and tell the agent to enable it:
-slife
-# > enable local embeddings with bge-m3-Q4_K_M.gguf
-```
-
-The agent calls `memory_set_embedding` which writes the config and reloads the embedder — **no restart needed**.  Verify with:
-
-```bash
-slife
-# > check embedding status
-```
-
-**Windows users**: `llama-cpp-python` needs a pre-built wheel (no C++ compiler required).  The Vulkan variant works on any GPU and falls back to CPU.  Use `uv pip install` to install into slife's venv:
-
-```bash
-uv tool install "slife[gguf]" --reinstall
-# Then install the platform wheel into the tool's venv:
-uv pip install --python "$(uv tool list --show-paths | grep 'slife v' | sed -n 's/.*(\(.*\)).*/\1/p')/bin/python" "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
-```
-
-Alternative CUDA wheels: `v0.3.34-cu132`, `v0.3.34-cu125`; AMD: `v0.3.34-hip-radeon`.
-
-#### Setting Up the MQTT Mesh
-
-`paho-mqtt` is included by default.  Run a [Mosquitto](https://mosquitto.org/) broker and launch with an agent identity:
-
-```bash
-# Terminal 1 — start the broker (or use your existing one)
-mosquitto -p 1883
-
-# Terminal 2 — launch slife with an agent identity
-slife --agent my-agent
-```
-
-Configure broker address in `~/.slife/slife.json5` if not using defaults (`localhost:1883`):
-
-```json5
-mqtt: {
-  broker: { host: "my-broker.local", port: 1883 },
-}
-```
+Uninstall removes the binaries. User data (`~/.slife/`, `~/.credstore/`) is listed but **not removed** — delete manually for a full reset.
 
 ## Quick Start
 
-Store your API key and launch:
-
 ```bash
-credstore set-password                # first time only — sets up encrypted backup
-credstore set DEEPSEEK_API_KEY        # masked input, no echo
+credstore set-password              # first time only — encrypted backup
+credstore set DEEPSEEK_API_KEY       # store API key (masked input)
 slife
 ```
 
-The default config (`slife.json5`) ships with pre-configured MCP servers (iflow-mcp for filesystem+shell, file-search for code search, web fetch, DuckDuckGo search).
+The default config ships with pre-configured MCP servers: filesystem + shell, code search, web fetch, search APIs.
 
 ## How It Works
 
-Slife is a **function-calling loop**. You type a message → the LLM decides what tools to call → Slife executes them and returns results → the LLM responds → repeat.
+Slife is a **function-calling loop**: you type → the LLM decides what tools to call → Slife executes them → the LLM responds → repeat.
 
 ```
 You: "Find all TODO comments and create GitHub issues for them"
   → LLM calls search_content("TODO")
   → LLM calls github__create_issue(...) for each one
-  → LLM: "Created 7 issues. All linked in the description above."
+  → LLM: "Created 7 issues. All linked above."
 ```
+
+Every turn is permanently recorded. On restart, recent conversations are restored.
 
 ## Configuration
 
-Slife uses a **two-layer** configuration model with **enforced secret protection**:
+Two-layer model — secrets in OS keyring, config in JSON5:
 
-| Layer | Storage | What goes here |
-|-------|---------|----------------|
-| **Secrets** | OS keyring (credstore) | API keys, tokens, passwords — encrypted at OS level |
-| **Config** | `~/.slife/slife.json5` → `env:` | `${VAR}` references + non-secret values (EDITOR, LANG, etc.) |
-
-**Prefer ``${VAR}`` references.**  ``api_key`` fields should use ``${VAR}``
-references (resolved from the OS keyring at runtime) or ``keyring:`` URIs.
-Use ``config_env_set`` for secrets — write a ``${VAR}`` placeholder
-so the real value stays in the OS keyring.
+| Layer | Storage | Contents |
+|-------|---------|----------|
+| **Secrets** | OS keyring (credstore) | API keys, tokens — encrypted at OS level |
+| **Config** | `~/.slife/slife.json5` → `env:` | `${VAR}` references + non-secret values |
 
 ```json5
-// slife.json5
 env: {
   DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}",   // → resolved from keyring at runtime
-  EDITOR: "code",                             // → plain value, no secret
 }
 
 models: {
   providers: {
     deepseek: {
       base_url: "https://api.deepseek.com",
-      api_key: "${DEEPSEEK_API_KEY}",          // ← ${VAR} syntax throughout
+      api_key: "${DEEPSEEK_API_KEY}",
       models: [{ model: "deepseek-v4-pro", name: "DeepSeek V4 Pro", reasoning: true }],
     },
   },
@@ -242,412 +104,124 @@ models: {
 active_model: "deepseek/deepseek-v4-pro",
 ```
 
-`${ENV_VAR}` and `${ENV_VAR:-default}` syntax works everywhere — values resolve at runtime via shell → keyring → config.
-
-### Tool Timeout
-
-Every tool call has a **60-second deadline** by default (`agent.tool_timeout`).  The LLM can override this per-call by passing `_timeout` (seconds) to any tool:
-
-```json5
-// slife.json5
-agent: {
-  tool_timeout: 60,  // global default (seconds), 0 = disabled
-}
-```
-
-```
-// LLM usage — the LLM decides which tools need more time:
-fetch__fetch(_timeout=180, url="https://slow.site")       // slow web page → 3 minutes
-execute_shell(timeout=120, command="npm install")         // native timeout param (no underscore)
-```
-
-The Loop injects `_timeout` into every tool's schema automatically — no config needed.  Tools with their own `timeout` parameter (like `execute_shell`) use that instead.
-
-See [DESIGN.md § Agent Loop](DESIGN.md#agent-loop) for the full architecture.
-
-## Credential Management
-
-Slife ships with **[credstore](credstore/README.md)** — a standalone cross-platform secret manager backed by the OS keyring with AES-encrypted file backup.  It has its own [full documentation](credstore/README.md).
-
-Quick reference:
-
-```bash
-credstore set-password                # first-time setup
-credstore set DEEPSEEK_API_KEY        # store (masked atomic dual-write)
-credstore inject DEEPSEEK_API_KEY     # persist to registry (Win) or profile (Unix)
-credstore get DEEPSEEK_API_KEY        # retrieve, masked output
-credstore list                        # list all stored keys
-credstore status                      # backend status
-```
-
-| Command | Description |
-|---------|-------------|
-| `set-password` | Init cryptfile, set master key |
-| `set KEY` | Atomic dual-write (cryptfile → keyring, rolls back on failure) |
-| `get KEY` | Retrieve (keyring, masked) |
-| `get KEY -p` | Retrieve (dual-query, plaintext) |
-| `delete KEY` | Remove from both stores |
-| `list` | List all stored keys |
-| `inject KEY` | Persist to system env — registry (Windows) or profile (Unix) |
-| `uninject KEY` | Remove from system env |
-| `reset-keyring` | Restore keyring from cryptfile backup |
-| `reset-backup` | Sync keyring → cryptfile |
-| `status` | Backend status |
-
-See **[credstore/README.md](credstore/README.md)** for disaster recovery, Python API, and advanced usage.
+**Secrets never reach the LLM context.** All tool output is sanitized before reaching the model — API key patterns are auto-masked.
 
 ## Features
 
 ### Tools
 
-All tools are unified as OpenAI function definitions — the LLM sees no difference between a native tool, an MCP tool, or a REST API endpoint.
+All unified as OpenAI function definitions. The LLM sees no difference between native, MCP, or A2A tools.
 
-| Category | Examples | Location |
-|----------|----------|----------|
-| **Native** | `check_os_info`, `check_skills_dir`, `run_python_script`, `system_health`, `list_native_tools` | `slife/tools/*.py` |
-| **MCP / REST** | `run_command`, `read`, `write`, `edit`, `grep`, `search_content`, `fetch` | Via slife-mcp proxy |
-| **Skills** | On-demand plugins with `list_skills` / `use_skill` | `skills/` directory |
-| **CLI** | Auto-discovered external commands, persisted with `cli_add_tool` | Runtime registration |
-| **A2A** | Agent discovery, task routing, lifecycle, broadcast, spawn/stop subagents | `slife/tools/a2a.py` |
+| Category | Description |
+|----------|-------------|
+| **Native** | System info, Python execution, env/config management, skill loading, CLI discovery |
+| **MCP / REST** | Filesystem, shell, code search, web fetch, any MCP server (stdio or HTTP) |
+| **Skills** | On-demand plugins loaded via `list_skills` / `use_skill` |
+| **CLI** | Auto-discovered external commands, persisted across restarts |
+| **A2A** | Agent discovery, task routing, subagents, broadcast (13 tools) |
 
-### Memory
+### Memory — Always On
 
-**Always on** — no config toggle needed.  Every conversation turn is permanently recorded.  Hybrid search (grep + FTS5 + semantic via vec0) lets the LLM recall past work.  Memory runs as a built-in plugin (`slife/plugins/memory/`) — a separate process so crashes never race with writes.
+Every conversation turn is permanently recorded. Hybrid search across four modes:
 
-On restart, recent turns are automatically restored to the chat view — user messages, assistant responses, and tool call results all reappear.  (Transient UI state such as per-tool-call iteration counters is not preserved.)
+| Mode | Best for |
+|------|----------|
+| `grep` | Exact strings — error messages, file paths, code |
+| `fts5` | Topic / keyword search with ranked snippets |
+| `hybrid` | Semantic recall (FTS5 + vec0 vector search, RRF merge) |
+| `time` | Browse by date |
 
-```
-memory_search("ConnectionError")            → exact error trace
-memory_search("MCP config", mode="fts5")    → topic search
-memory_search("that bug fix", mode="hybrid")→ semantic recall
-memory_search(mode="time", since="2026-07") → browse by date
-```
-
-#### Schema
-
-One row = one turn. No sessions, no lifecycle — a continuous, time-ordered log.
-
-| Column | Purpose |
-|--------|---------|
-| `user_message` | What the user said |
-| `messages` | Assistant response as OpenAI JSON array (thinking, tool calls, tool results, final text) |
-| `summary` | 1–2 sentence gist, LLM-written via `memory_summarize` |
-| `tags` | Comma-separated topic tags |
-| `created_at` | ISO 8601 with local timezone (e.g. `2026-07-20T14:39:19+08:00`) |
-| `channel` | Source: `human`, `wechat`, or remote agent id |
-| `who_helped` / `what_model` | Agent identity + model used |
-| `token_count` | Tokens consumed by this turn |
-
-Three indexes back the search modes:
-
-| Index | Engine | Purpose |
-|-------|--------|---------|
-| `diary_fts` | FTS5 (content-sync) | BM25 keyword ranking with snippet highlighting |
-| `diary_semantic` | sqlite-vec `vec0` | Cosine KNN on turn embeddings |
-| `idx_diary_created` | B-tree on `created_at` | Time-range scans |
-
-#### Search Modes
-
-| Mode | Backend | Best for |
-|------|---------|----------|
-| `grep` | `LIKE` + `instr()` | Exact strings — error messages, file paths, code |
-| `fts5` | FTS5 + BM25 | Topic / keyword search with ranked snippets |
-| `hybrid` | FTS5 + vec0 KNN → RRF | Natural-language recall merged with keyword precision |
-| `time` | Range scan on `created_at` | Browse by date — no query needed |
-
-**Hybrid search** uses Reciprocal Rank Fusion (RRF, `k=60`) to merge keyword and
-semantic results into a single ranked list. Items appearing high in both lists
-get boosted; items in only one list still get a reasonable score. If no
-embedding backend is configured, hybrid degrades gracefully to FTS5-only.
-
-**Time parameters** (`since`/`until`) accept ISO 8601 datetimes.
-LLMs sometimes pass relative expressions literally (`"yesterday"`, `"today"`)
-instead of computing ISO dates — the server normalizes these before querying.
-Date-only `until` values are automatically advanced by one day so records on
-that day are not excluded by string comparison against their full `created_at`
-timestamps.
-
-#### Embedding
-
-Three backends, configured at runtime:
-
-| Backend | Dependency | Default model | Dim |
-|---------|-----------|---------------|-----|
-| **GGUF** (local) | `slife[gguf]` | `bge-m3` (Q4_K_M) | 1024 |
-| **Transformer** (local) | `slife[transformer]` | `BAAI/bge-m3` | 1024 |
-| **API** (OpenAI-compatible) | Provider API key | `text-embedding-3-small` | 1536 |
-
-| Tool | Purpose |
-|------|---------|
-| `memory_set_embedding` | Configure backend + model |
-| `memory_set_enabled(enabled)` | Toggle on/off (preserves config + data) |
-| `memory_check_embedding` | Status, reindex progress, unembedded count |
-
-Long turns are **chunked** at paragraph boundaries (~500 tokens, 1-paragraph
-overlap) — every turn contributes to semantic search, no silent skipping.
-`memory_set_embedding` triggers background re-indexing automatically.
-
-Agent isolation via `--agent alice`. Each agent gets its own DB (`<agent_id>.db`) in the data directory. See [DESIGN.md § Permanent Memory](DESIGN.md#permanent-memory-slife-memory) for the full architecture.
+Embedding backends: local GGUF (BGE-M3, ~300 MB, offline), HuggingFace transformers, or OpenAI-compatible API. Keyword search works without any embedding backend.
 
 ### Plugins
 
-Slife has a **plugin system** built on Streamable HTTP transport (MCP protocol, standard
-``mcp`` library).  Each plugin is an independent child process
-running a FastMCP server on a dynamically-assigned port — zero configuration,
-no port conflicts.  If a plugin crashes, Slife continues.  Three built-in
-plugins ship with Slife:
+Three built-in plugins run as independent processes on Streamable HTTP transport:
 
-| Plugin | Role | Connection |
-|--------|------|------------|
-| **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) — 10 management tools | Streamable HTTP (shared by parent + subagents) |
-| **slife-memory** | Diary database with hybrid search (FTS5 + vec0 RRF) | Streamable HTTP (parent only) |
-| **slife-wechat** | Bidirectional WeChat messaging via iLink ClawBot API | Streamable HTTP (shared by parent + subagents) |
+| Plugin | Role |
+|--------|------|
+| **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) |
+| **slife-memory** | Diary database with hybrid search |
+| **slife-wechat** | Bidirectional WeChat via iLink ClawBot |
 
-**Built-in plugins are not standard MCP services** — they are Slife-specific
-child processes using MCP over SSE as their IPC mechanism.  They cannot be
-consumed by arbitrary MCP clients.  slife-memory and slife-wechat connect
-directly to Slife; only slife-mcp acts as a gateway to external servers.
-Subagents share the main agent's plugin servers — memory is parent-only.
-
-**External MCP servers** (filesystem, fetch, search APIs, etc.) are standard
-MCP-compatible programs connected through the slife-mcp gateway.  They are
-configured in `slife.json5` under `mcp.servers`:
-
-```json5
-mcp: {
-  servers: {
-    "my-server": {
-      command: "uv", args: ["run", "python", "-m", "my_server"],
-      env: { API_KEY: "${API_KEY}" },
-      description: "My MCP server.",
-    },
-  },
-}
-```
-
-> **Note:** Automatic plugin discovery and management (hot-loading plugins from
-> directories, plugin marketplace, etc.) is planned for the next development
-> phase.  Currently all three plugins are built-in and loaded at startup;
-> external MCP servers are configured manually in `slife.json5`.
-
-See [DESIGN.md § Plugin Architecture](DESIGN.md#plugin-architecture) for the full plugin contract and configuration reference.
+External MCP servers (filesystem, fetch, search, any OpenAPI spec) are configured in `slife.json5` and auto-connected at startup. Third-party MCP servers need no Slife SDK — any stdio or HTTP MCP server works.
 
 ### A2A — Agent-to-Agent
 
-Two transports, one interface: **MQTT** (remote peers, auto-detects Mosquitto at startup), **HTTP Streamable** (direct agent-to-agent, same protocol as MCP), and **Subagent** (local child processes, always available).  The unified inbox serializes human keyboard, WeChat, MQTT, and subagent messages through a single queue — only one AgentLoop runs at a time.  Subagent results are **actively pushed** to the inbox via `tasks/complete` notification — no polling needed.
+Two transports, one interface:
 
-Configure transport in `slife.json5`:
-```json5
-mqtt: {
-  transport: "mqtt",   // "mqtt" (default) or "http"
-  http_host: "127.0.0.1",
-  http_port: 0,         // 0 = auto-assign
-}
-```
+| Transport | Use case |
+|-----------|----------|
+| **MQTT** | Remote peers over Mosquitto broker |
+| **HTTP Streamable** | Direct agent-to-agent |
+| **Subagent** | Local child processes (always available) |
+
+Unified inbox serializes human, WeChat, MQTT, and subagent messages through a single queue.
 
 ### Progressive Disclosure
 
-Not all tools are in every LLM request.  Three categories use lightweight summaries first:
+Not all tools are in every request. Three categories use lightweight summaries:
 
 | Category | Browse | Load |
 |----------|--------|------|
-| Memory | `memory_search` / `memory_list_recent` | `memory_open` |
+| Memory | `memory_search` | `memory_open` |
 | Skills | `list_skills` | `use_skill` |
-| MCP | `mcp_list_servers` / `mcp_list_tools` | `mcp_set_disclosure("eager")` |
+| MCP | `mcp_list_tools` | `mcp_set_disclosure("eager")` |
 
-## Shortcuts
+## Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
 | `Ctrl+C` (in input) | Quit |
-| `Ctrl+C` (elsewhere) | Copy (terminal-native) |
+| `Ctrl+C` (elsewhere) | Copy |
 | `Esc` | Cancel agent loop |
-| `Ctrl+L` | Focus input field |
+| `Ctrl+L` | Focus input |
 | `Home` / `End` | Scroll to top / bottom |
-| Any key | Auto-focus input + type |
 
-## CLI Flags
+## CLI
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--agent <id>` | `slife` | Agent identity — memory isolation key & A2A mesh identity |
+| Flag | Description |
+|------|-------------|
+| `--agent <id>` | Agent identity — memory isolation key + A2A mesh name (default: `slife`) |
 
-## Requirements
+## Optional Extras
 
-The install script handles everything automatically.  Nothing to install beforehand.
+| Extra | Enables |
+|-------|---------|
+| `slife[gguf]` | Local GGUF embeddings (~30 MB, offline) |
+| `slife[transformer]` | HuggingFace transformer embeddings (~2 GB) |
+| `slife[embeddings]` | Both of the above |
 
-| Component | Status |
-|-----------|--------|
-| Python 3.13 | Managed automatically by uv — no manual install needed |
-| [uv](https://docs.astral.sh/uv/) | Auto-installed if missing |
-| [npx](https://nodejs.org/) (Node.js package runner) | Auto-installed via winget (Windows) / apt, brew, dnf, pacman (Linux) if missing — **required** for MCP servers |
-| Mosquitto (MQTT broker) | Optional — interactive install prompt. Needed only for A2A multi-agent mesh |
-| `llama-cpp-python` | Optional — `slife[gguf]` for local GGUF embeddings (or `slife[embeddings]` for all) |
-| `paho-mqtt` | Included — A2A MQTT mesh (auto-activates when Mosquitto is detected) |
-
-**npx** is required by 6 MCP servers: `file-search`, `serper`, `tavily-mcp`, `github`,
-`amap-maps`, `filesystem`.  The install script auto-installs Node.js when `npx` is
-missing, and exits with a clear error message listing affected servers if installation
-fails.
-
-**Mosquitto** is optional — the install script detects existing installations, offers
-interactive install via your system package manager, and prints start instructions.
-Without it, slife works normally; only the A2A multi-agent mesh is unavailable.
+```bash
+uv tool install "slife[gguf]" --reinstall
+```
 
 ## Development
-
-### Quick Start
 
 ```bash
 git clone https://github.com/juzcn/slife.git
 cd slife
 uv sync --all-extras
+
+uv run credstore set-password        # first time
+uv run credstore set DEEPSEEK_API_KEY
 uv run slife
 ```
 
-### Dev Mode vs Production
-
-Dev mode is detected automatically — when `pyproject.toml` has `[project] name == "slife"`, data files stay in the project directory. Production installs use `~/.slife/`.
-
-| Aspect | Dev Mode | Production |
-|--------|----------|------------|
-| Config file | `./slife.json5` | `~/.slife/slife.json5` |
-| Skills | `./skills/` (project root) | `~/.slife/skills/` (seeded on first run) |
-| Memory DB | `./slife.db` | `~/.slife/slife.db` |
-| Credential store | System keyring (shared) | System keyring (shared) |
-| Cryptfile | `./credentials.crypt` | `~/.credstore/credentials.crypt` |
-| Logs | `./logs/` | `~/.slife/logs/` |
-
-credstore works identically in both modes — secrets are always in the OS keyring, not in the project directory.
-
-### First Run (Dev)
+Dev mode auto-detects: data files stay in the project directory. Production installs use `~/.slife/`.
 
 ```bash
-# 1. Set up credstore (one-time, creates encrypted backup)
-uv run credstore set-password
-
-# 2. Store API keys (masked input, no echo — paste + Enter)
-uv run credstore set DEEPSEEK_API_KEY
-
-# 3. Launch
-uv run slife
-```
-
-The default `slife.template.json5` is copied to `slife.json5` on first run. The template ships with pre-configured MCP servers (iflow-mcp for filesystem+shell, file-search for code search, web fetch, DuckDuckGo search, Serper, Tavily, GitHub, Amap Maps). Edit `slife.json5` to customize providers, models, and MCP servers.
-
-### Configuring API Keys (Dev)
-
-Register secrets before configuring providers:
-
-```bash
-# Store in OS keyring
-uv run credstore set DEEPSEEK_API_KEY
-uv run credstore set GITHUB_TOKEN
-
-# Register in slife.json5 (or let the agent call config_env_set)
-# The ${VAR} syntax resolves from keyring at runtime
-```
-
-Then in `slife.json5`:
-```json5
-env: {
-  DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}",
-  GITHUB_TOKEN: "${GITHUB_TOKEN}",
-}
-models: {
-  providers: {
-    deepseek: {
-      api_key: "${DEEPSEEK_API_KEY}",
-      // ...
-    },
-  },
-}
-```
-
-### Project Structure
-
-```
-slife/
-├── slife/                    # Main application package
-│   ├── agent/                # Agent loop, system prompt, LLM client
-│   ├── tools/                # Tool definitions (auto-discovered)
-│   │   ├── env.py             #   config_env_set/get/remove, credential_check, inject/uninject
-│   │   ├── exec.py            #   run_python_script, install_python_package
-│   │   ├── system.py          #   check_os_info, check_shells, system_health, list_native_tools
-│   │   ├── skill.py           #   check_skills_dir, list_skills, use_skill, add/remove_skill
-│   │   ├── cli.py             #   cli_add_tool, cli_check_installed, cli_list_tools, cli_remove_tool
-│   │   ├── a2a.py             #   A2A protocol (13 tools)
-│   │   └── base.py            #   Tool ABC + make_params + require_params
-│   ├── plugins/              # Built-in plugins (memory, mcp, wechat)
-│   ├── config.py             # Config loading + ${VAR} resolution
-│   ├── paths.py              # Canonical filesystem paths (dev vs prod)
-│   └── tui/                  # Textual terminal UI
-├── credstore/                # Standalone credential manager (bundled, not PyPI)
-│   └── credstore/
-│       ├── _store.py         # CredentialStore + module-level API
-│       ├── _backend.py       # System keyring + cryptfile backends
-│       ├── __main__.py       # CLI (set, get, list, inject, etc.)
-│       └── _tty.py           # Cross-platform masked terminal input
-├── skills/                   # Skill definitions (seeded to ~/.slife/skills/ in production)
-├── tests/                    # Test suite (pytest)
-├── slife.json5               # Dev config (git-ignored)
-├── slife.template.json5      # Default config template
-└── pyproject.toml            # Project metadata + dependencies
-```
-
-### Running Tests
-
-```bash
-# All tests
+# Run tests
 uv run pytest
-
-# Specific test files
-uv run pytest tests/test_env.py -v
-uv run pytest tests/test_config_env.py -v
-
-# credstore tests
-uv run pytest credstore/tests/ -v
 
 # With coverage
 uv run pytest --cov=slife --cov=credstore --cov-report=term-missing
 ```
 
-### Running Individual Tools for Debugging
+## Architecture
 
-You can exercise tool logic directly without the full TUI:
+Slife is a **minimum-harness agent**. The harness only does what the LLM physically cannot: execute tools, maintain conversation state, stream responses, persist memory. Everything else — reasoning, planning, tool selection, error recovery — is the LLM's job.
 
-```python
-import asyncio
-from pathlib import Path
-from slife.tools.credentials import CredentialCheckTool
-
-async def main():
-    tool = CredentialCheckTool(config_path=Path("slife.json5"))
-    result = await tool.execute(key="DEEPSEEK_API_KEY")
-    print(result)
-
-asyncio.run(main())
-```
-
-### Credstore CLI in Dev
-
-```bash
-# All credstore commands work identically in dev mode
-uv run credstore status                # Backend status
-uv run credstore list                  # List stored keys
-uv run credstore get DEEPSEEK_API_KEY  # Retrieve (masked)
-uv run credstore delete SOME_OLD_KEY   # Remove a credential
-```
-
-### Design Docs
-
-See **[DESIGN.md](DESIGN.md)** for full architecture — agent loop, tool system, memory plugin, MCP gateway, A2A mesh, and credential security model. See **[credstore/README.md](credstore/README.md)** for credstore internals and disaster recovery.
-
-## Design
-
-Slife is a **minimum-harness agent**.  The harness only does what the LLM physically cannot: execute tools, maintain conversation state, stream responses, and persist memory.  Everything else — reasoning, planning, tool selection, error recovery — is the LLM's job.
-
-See [DESIGN.md](DESIGN.md) for the full architecture, component-level documentation, and design rationale.
+See **[DESIGN.md](DESIGN.md)** for the full architecture: agent loop, tool system, plugin contract, MCP gateway, memory database, A2A mesh, credential security model, and project structure.
 
 ## License
 
