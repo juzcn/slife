@@ -40,7 +40,7 @@ def create_tools_from_config(
         [{name: "execute_shell", timeout: 60}, {name: "list_skills", enabled: false}]
     """
     registry = ToolRegistry()
-    # Expose the registry so meta-tools (e.g. list_native_tools) can
+    # Expose the registry so meta-tools (e.g. list_tools) can
     # introspect it without creating a circular import.
     set_registry(registry)
 

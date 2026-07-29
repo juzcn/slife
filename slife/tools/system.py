@@ -7,7 +7,7 @@ Tools:
     check_embedding          — embedding backend status
     check_wechat             — WeChat plugin status
     system_health            — orchestrate all checks + startup records
-    list_native_tools        — enumerate native vs MCP-proxied tools
+    list_tools               — enumerate native vs MCP-proxied tools (with category filter)
 """
 
 from __future__ import annotations
@@ -585,7 +585,7 @@ class SystemHealthTool(Tool):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# list_native_tools
+# list_tools
 # ═══════════════════════════════════════════════════════════════════════
 
 _PLUGIN_LABELS: dict[str, str] = {
@@ -617,18 +617,32 @@ def _classify(name: str) -> str:
     return "Other"
 
 
-class ListNativeToolsTool(Tool):
-    """List all built-in tools grouped by category, plus MCP-connected servers."""
+class ListToolsTool(Tool):
+    """List available tools with optional category filtering.
 
-    name: ClassVar[str] = "list_native_tools"
+    """
+
+    name: ClassVar[str] = "list_tools"
     description: ClassVar[str] = (
-        "Return your complete tool inventory: native (built-in) tools grouped "
-        "by category, and external tools from each connected MCP server. "
+        "Return your tool inventory, optionally filtered by category. "
+        "- category='all' (default): native tools grouped by category + MCP-connected servers. "
+        "- category='native': only native (built-in) tools, grouped by category. "
+        "- category='mcp': only tools from MCP-connected servers, grouped by server. "
         "Use when asked what tools you have — more reliable than memory."
     )
-    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "description": "Filter: 'all' (default), 'native' (built-in only), or 'mcp' (external MCP servers only).",
+                "enum": ["all", "native", "mcp"],
+            },
+        },
+        "required": [],
+    }
 
-    async def execute(self, **kwargs) -> str:
+    async def execute(self, category: str = "all", **kwargs) -> str:
         from slife.tools.registry import get_registry
         from slife.mcp.tool_adapter import MCPProxyTool
 
@@ -648,21 +662,26 @@ class ListNativeToolsTool(Tool):
             else:
                 natives.append(t)
 
-        lines: list[str] = [f"## Native Tools ({len(natives)} total)\n"]
-        native_groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
-        for t in sorted(natives, key=lambda t: t.name):
-            category = _classify(t.name)
-            desc = t.description.split(".")[0].strip() + "."
-            native_groups[category].append((t.name, desc))
+        show_native = category in ("all", "native")
+        show_mcp = category in ("all", "mcp")
+        lines: list[str] = []
 
-        for category in sorted(native_groups):
-            items = native_groups[category]
-            lines.append(f"### {category} ({len(items)})")
-            for name, desc in items:
-                lines.append(f"- **`{name}`** — {desc}")
-            lines.append("")
+        if show_native:
+            lines.append(f"## Native Tools ({len(natives)} total)\n")
+            native_groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
+            for t in sorted(natives, key=lambda t: t.name):
+                cat = _classify(t.name)
+                desc = t.description.split(".")[0].strip() + "."
+                native_groups[cat].append((t.name, desc))
 
-        if mcp_proxies:
+            for cat in sorted(native_groups):
+                items = native_groups[cat]
+                lines.append(f"### {cat} ({len(items)})")
+                for name, desc in items:
+                    lines.append(f"- **`{name}`** — {desc}")
+                lines.append("")
+
+        if show_mcp and mcp_proxies:
             lines.append(f"## MCP-Connected Servers ({len(mcp_proxies)} servers)\n")
             for server in sorted(mcp_proxies):
                 tools = mcp_proxies[server]
@@ -671,5 +690,8 @@ class ListNativeToolsTool(Tool):
                 lines.append(f"- **{label}** ({len(tools)} tools): "
                              + ", ".join(f"`{n}`" for n in tool_names))
             lines.append("")
+        elif show_mcp and not mcp_proxies:
+            lines.append("## MCP-Connected Servers\n\nNo MCP servers connected.\n")
 
         return "\n".join(lines)
+

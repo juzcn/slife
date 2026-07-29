@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Module-level reference so meta-tools like list_native_tools can
+# Module-level reference so meta-tools like list_tools can
 # introspect the current registry without a circular dependency.
 _current_registry: "ToolRegistry | None" = None
 
