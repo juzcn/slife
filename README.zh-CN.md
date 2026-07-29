@@ -197,7 +197,9 @@ active_model: "deepseek/deepseek-v4-pro",
 uv tool install "slife[gguf]" --reinstall
 ```
 
-**Windows** — 默认没有 C++ 编译器，需使用预编译 wheel。根据你的环境选择：
+**Windows** — 默认没有 C++ 编译器。将预编译 wheel 直接装入 slife 的 venv（不会重装 slife）：
+
+根据你的环境选择 wheel：
 
 | 环境 | Wheel | 说明 |
 |------|-------|------|
@@ -207,8 +209,7 @@ uv tool install "slife[gguf]" --reinstall
 | AMD GPU | `v0.3.34-hip-radeon` | ROCm |
 
 ```powershell
-$py = (uv tool list --show-paths 2>$null | Select-String 'slife v' | Out-String) -replace '.*\((.*?)\).*', '$1\Scripts\python.exe'
-uv pip install --python $py "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+$py=((uv tool list --show-paths 2>$null|sls 'slife v'|Out-String)-replace'.*\((.*?)\).*','$1\Scripts\python.exe').Trim();uv pip install --python $py "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
 ```
 
 **首次使用** — 下载 GGUF 模型并启用：

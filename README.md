@@ -197,7 +197,9 @@ Not all tools are in every request. Three categories use lightweight summaries:
 uv tool install "slife[gguf]" --reinstall
 ```
 
-**Windows** — no C++ compiler by default, so use a pre-built wheel. Pick the one that matches your setup:
+**Windows** — no C++ compiler by default.  Install the pre-built wheel directly into slife's venv (does NOT reinstall slife):
+
+Pick the wheel that matches your setup:
 
 | Your setup | Wheel | Notes |
 |------------|-------|-------|
@@ -207,8 +209,7 @@ uv tool install "slife[gguf]" --reinstall
 | AMD GPU | `v0.3.34-hip-radeon` | ROCm |
 
 ```powershell
-$py = (uv tool list --show-paths 2>$null | Select-String 'slife v' | Out-String) -replace '.*\((.*?)\).*', '$1\Scripts\python.exe'
-uv pip install --python $py "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+$py=((uv tool list --show-paths 2>$null|sls 'slife v'|Out-String)-replace'.*\((.*?)\).*','$1\Scripts\python.exe').Trim();uv pip install --python $py "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
 ```
 
 **First use** — download a GGUF model and enable it:
