@@ -12,6 +12,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from openai import BadRequestError, ContentFilterFinishReasonError
+
 from slife.a2a.identity import AgentId, AgentMessage
 from slife.agent.conversation import Conversation
 from slife.agent.loop import AgentCancelled, MaxIterationsExceeded
@@ -227,10 +229,14 @@ class Inbox:
                     handler.finalize_current()
                 except Exception:
                     pass
-            # Rollback the failed turn so the conversation isn't
-            # poisoned for the next message (e.g. content-policy
-            # rejections would keep failing on retry otherwise).
-            if conversation is not None:
+            # Only rollback on content-policy / bad-request errors
+            # where the conversation itself is the problem.  Transient
+            # errors (connection, timeout, rate-limit, server errors)
+            # keep the conversation intact so typing "go" continues
+            # with full context.
+            if conversation is not None and isinstance(
+                e, (BadRequestError, ContentFilterFinishReasonError),
+            ):
                 try:
                     conversation.pop_last_turn()
                 except Exception:
