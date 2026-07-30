@@ -68,6 +68,10 @@ class AgentService:
             max_iterations=config.max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             tool_timeout=config.tool_timeout,
+            context_window=config.active_model.context_window,
+            context_floor=config.context_floor,
+            context_ceiling=config.context_ceiling,
+            memory_enabled=not is_subagent,
         )
         self.conversation = Conversation(
             system_prompt=build_system_prompt(
@@ -899,14 +903,10 @@ class AgentService:
                     turn_messages = all_messages[i + 1:]
                     break
 
-        # Trim active context (only for the persistent TUI conversation)
-        if conversation is None:
-            context_window = self.config.active_model.context_window
-            conv.trim_context(
-                context_window=context_window,
-                floor=self.config.context_floor,
-                ceiling=self.config.context_ceiling,
-            )
+        # Context trimming now happens in AgentLoop._maybe_trim_context()
+        # before each LLM call, with a visible _trim_context notification
+        # inserted into the conversation.  Each turn is still saved here
+        # via memory_save_turn, so trimmed turns remain searchable.
 
         assert self._plugins["memory"].client is not None  # guarded by memory_enabled
         try:

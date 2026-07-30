@@ -3,6 +3,7 @@
 Supports multimodal messages (text + images) for vision-capable models.
 """
 
+import json
 import logging
 
 from slife.agent.multimodal import encode_image
@@ -141,7 +142,18 @@ class Conversation:
         if thinking:
             msg["thinking"] = thinking
         if tool_calls:
-            msg["tool_calls"] = tool_calls
+            # Sanitize arguments in every tool call — the LLM may
+            # accidentally pass secrets (e.g. API keys in python_exec
+            # code).  These arguments re-enter the LLM context on the
+            # next turn, so they must be masked.
+            sanitized_calls = []
+            for tc in tool_calls:
+                tc_copy = dict(tc)
+                fn = tc_copy.get("function", {})
+                if "arguments" in fn:
+                    fn["arguments"] = sanitize_secrets(str(fn["arguments"]))
+                sanitized_calls.append(tc_copy)
+            msg["tool_calls"] = sanitized_calls
             tc_names = [
                 tc.get("function", {}).get("name", "?")
                 for tc in tool_calls
@@ -349,3 +361,178 @@ class Conversation:
             )
 
         return removed_total
+
+    # ── Extract turns helpers ─────────────────────────────────────
+
+    @staticmethod
+    def extract_turns(messages: list[dict]) -> list[dict]:
+        """Group a flat message list into per-turn summaries.
+
+        A turn starts with a user message and includes all following
+        assistant and tool messages until the next user message.
+
+        Returns a list of dicts, each with:
+          - ``user_message`` (str) — the user's text
+          - ``messages`` (list[dict]) — all messages in the turn
+          - ``estimated_tokens`` (int) — rough token count
+        """
+        turns: list[dict] = []
+        current_turn: list[dict] = []
+        current_user_msg = ""
+
+        for msg in messages:
+            role = msg.get("role", "")
+            if role == "user" and current_turn:
+                turns.append({
+                    "user_message": current_user_msg,
+                    "messages": list(current_turn),
+                    "estimated_tokens": sum(
+                        len(str(m.get("content", ""))) // 3
+                        for m in current_turn
+                    ),
+                })
+                current_turn = []
+                current_user_msg = ""
+
+            if role == "user" and not current_user_msg:
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    current_user_msg = "".join(
+                        p.get("text", "")
+                        for p in content
+                        if p.get("type") == "text"
+                    )
+                else:
+                    current_user_msg = str(content) if content else ""
+
+            current_turn.append(msg)
+
+        if current_turn:
+            turns.append({
+                "user_message": current_user_msg,
+                "messages": list(current_turn),
+                "estimated_tokens": sum(
+                    len(str(m.get("content", ""))) // 3
+                    for m in current_turn
+                ),
+            })
+
+        return turns
+
+    def extract_oldest_turns(
+        self,
+        target: int,
+    ) -> tuple[list[dict], int]:
+        """Extract and delete oldest complete turns from the conversation.
+
+        Walks forward from after the system prompt, removing complete
+        user→… turns until the estimated token count drops to or below
+        *target*.
+
+        Returns (turns, tokens_freed) where *turns* is the
+        :meth:`extract_turns`-format list and *tokens_freed* is the
+        approximate number of tokens freed.
+        """
+        sys_end = 1 if (
+            self.messages and self.messages[0]["role"] == "system"
+        ) else 0
+        current = self.count_tokens()
+        removed_messages: list[dict] = []
+
+        while current > target and sys_end < len(self.messages):
+            # Find the next user message (start of a turn)
+            turn_start = None
+            for i in range(sys_end, len(self.messages)):
+                if self.messages[i]["role"] == "user":
+                    turn_start = i
+                    break
+
+            if turn_start is None:
+                break  # no complete turns left
+
+            # Find the end of this turn (next user message or end)
+            turn_end = len(self.messages)
+            for i in range(turn_start + 1, len(self.messages)):
+                if self.messages[i]["role"] == "user":
+                    turn_end = i
+                    break
+
+            removed_messages.extend(self.messages[turn_start:turn_end])
+            del self.messages[turn_start:turn_end]
+            current = self.count_tokens()
+
+        if not removed_messages:
+            return [], 0
+
+        turns = Conversation.extract_turns(removed_messages)
+        tokens_freed = sum(
+            len(str(m.get("content", ""))) // 3 for m in removed_messages
+        )
+        return turns, max(tokens_freed, 1)
+
+    def insert_trim_notification(
+        self,
+        tool_call_id: str,
+        turns_removed: int,
+        tokens_freed: int,
+        turns_summary: str,
+        memory_saved: bool = True,
+    ) -> None:
+        """Insert a synthetic ``_trim_context`` tool-call + result pair.
+
+        The pair is inserted right after the system prompt (or at
+        position 0 when there is no system prompt), so the LLM sees the
+        trim as a chronological event before the remaining conversation.
+        """
+        assistant_msg: dict = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "_trim_context",
+                        "arguments": json.dumps(
+                            {
+                                "turns_removed": turns_removed,
+                                "tokens_freed": tokens_freed,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                }
+            ],
+        }
+
+        if memory_saved:
+            result_content = (
+                f"已裁剪 {turns_removed} 个最旧轮次（约 {tokens_freed} tokens），"
+                f"内容已存入记忆库，如需回顾请用 memory_search。\n"
+                f"\n{turns_summary}"
+            )
+        else:
+            result_content = (
+                f"已裁剪 {turns_removed} 个最旧轮次（约 {tokens_freed} tokens），"
+                f"内容已丢弃。\n"
+                f"\n{turns_summary}"
+            )
+
+        tool_msg: dict = {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": result_content,
+        }
+
+        insert_pos = 1 if (
+            self.messages and self.messages[0]["role"] == "system"
+        ) else 0
+        self.messages.insert(insert_pos, tool_msg)
+        self.messages.insert(insert_pos, assistant_msg)
+
+        logger.debug(
+            "conv_insert_trim_notification id=%s turns=%d tokens=%d",
+            tool_call_id,
+            turns_removed,
+            tokens_freed,
+        )

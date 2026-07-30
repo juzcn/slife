@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time as _time
+import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -138,12 +139,20 @@ class AgentLoop:
         max_iterations: int = 30,
         max_tool_result_chars: int = 0,
         tool_timeout: float = 60.0,
+        context_window: int = 0,
+        context_floor: float = 0.2,
+        context_ceiling: float = 0.8,
+        memory_enabled: bool = True,
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
         self.tool_timeout = tool_timeout
+        self.context_window = context_window
+        self.context_floor = context_floor
+        self.context_ceiling = context_ceiling
+        self.memory_enabled = memory_enabled
         self._cancel_event = asyncio.Event()
 
     def cancel(self) -> None:
@@ -214,19 +223,22 @@ class AgentLoop:
     @staticmethod
     def _inject_meta_params(functions: list[dict]) -> list[dict]:
         """Add ``_timeout`` and ``_async`` as optional parameters to every
-        function def that doesn't already have a native equivalent.
+        function definition.
 
         The LLM can pass these on ANY tool call:
-          - ``_timeout`` (number) — override global ``tool_timeout``
-          - ``_async`` (boolean) — run in background, return task_id immediately
+          - ``_timeout`` (number) — override global ``tool_timeout``.
+            For tools with a native ``timeout`` parameter (e.g.
+            ``execute_shell``), ``_timeout`` is mapped to ``timeout``
+            and the tool's internal timeout logic takes over.
+          - ``_async`` (boolean) — run in background, return task_id
+            immediately.
 
-        Both are stripped before dispatch.  Tools with a native ``timeout``
-        parameter (e.g. ``execute_shell``) are skipped for ``_timeout``.
+        Both are stripped before dispatch.
         """
         for func in functions:
             schema = func.get("function", {}).get("parameters", {})
             props = schema.setdefault("properties", {})
-            if "timeout" not in props and "_timeout" not in props:
+            if "_timeout" not in props:
                 props["_timeout"] = {
                     "type": "number",
                     "description": (
@@ -244,6 +256,62 @@ class AgentLoop:
                     ),
                 }
         return functions
+
+    # ── Context trimming ────────────────────────────────────────────
+
+    async def _maybe_trim_context(self, conversation: Conversation) -> None:
+        """Check context size and trim oldest turns when over ceiling.
+
+        When the conversation exceeds ``ceiling * context_window`` tokens,
+        the oldest complete turns are removed and a synthetic
+        ``_trim_context`` tool-call + result pair is inserted so the LLM
+        sees a visible notification.  Trimmed turns were already persisted
+        by :meth:`AgentService.save_to_memory` when each turn completed,
+        so the LLM can retrieve them via ``memory_search``.
+        """
+        if self._cancel_event.is_set():
+            return
+        if not conversation.messages or self.context_window <= 0:
+            return
+
+        ceiling_tokens = int(self.context_window * self.context_ceiling)
+        current = conversation.count_tokens()
+        if current <= ceiling_tokens:
+            return
+
+        target = int(self.context_window * self.context_floor)
+        turns, tokens_freed = conversation.extract_oldest_turns(target)
+        if not turns:
+            return
+
+        # ── Build human-readable summary ──────────────────────────
+        summary_parts = []
+        for idx, turn in enumerate(turns, 1):
+            user_msg = turn.get("user_message", "(无文本)")
+            est = turn.get("estimated_tokens", 0)
+            if len(user_msg) > 80:
+                user_msg = user_msg[:80] + "..."
+            summary_parts.append(
+                f'- 轮次{idx}: "{user_msg}" (约{est} tokens)'
+            )
+
+        turns_summary = "\n".join(summary_parts)
+        if len(turns_summary) > 2000:
+            turns_summary = turns_summary[:2000] + "\n...（摘要过长已截断）"
+
+        tool_call_id = f"_trim_{uuid.uuid4().hex[:8]}"
+        conversation.insert_trim_notification(
+            tool_call_id=tool_call_id,
+            turns_removed=len(turns),
+            tokens_freed=tokens_freed,
+            turns_summary=turns_summary,
+            memory_saved=self.memory_enabled,
+        )
+
+        logger.info(
+            "context_trimmed turns=%d tokens_freed=%d tool_call_id=%s",
+            len(turns), tokens_freed, tool_call_id,
+        )
 
     # ── Stream processing ──────────────────────────────────────────
 
@@ -268,6 +336,11 @@ class AgentLoop:
         thinking_parts: list[str] = []
         tool_accum: dict[int, dict] = {}
         stream_usage = TokenUsage()
+
+        # Trim oldest turns when context exceeds ceiling — the LLM
+        # sees a synthetic _trim_context tool call + result so it
+        # knows what was removed and can retrieve it via memory_search.
+        await self._maybe_trim_context(conversation)
 
         async for chunk in self.llm_client.chat_stream(
             messages=conversation.to_openai_messages(),
@@ -361,8 +434,21 @@ class AgentLoop:
             is_async = actual_args.pop("_async", None)
             inline_timeout = actual_args.pop("_timeout", None)
 
-            # ── Approval gate (serialised via lock) ─────────────────
+            # ── Native timeout mapping ───────────────────────────
+            # Tools with a native ``timeout`` parameter (e.g.
+            # execute_shell) handle their own timeout internally.
+            # Map _timeout → timeout and let the tool drive — no
+            # asyncio.wait_for wrapper.
             tool = self.tool_registry.get(tc.name)
+            has_native_timeout = (
+                "timeout" in getattr(tool, 'parameters', {}).get("properties", {})
+            )
+            if has_native_timeout and inline_timeout is not None:
+                timeout_val = int(float(inline_timeout))
+                if timeout_val > 0:
+                    actual_args["timeout"] = timeout_val
+
+            # ── Approval gate (serialised via lock) ─────────────────
             if getattr(tool, 'requires_approval', False):
                 async with _approval_lock:
                     approved = await handler.on_tool_approval(tc) if handler else True
@@ -393,34 +479,50 @@ class AgentLoop:
                 conversation.add_tool_result(tc.id, result)
                 return
 
-            if inline_timeout is not None:
-                effective_timeout = float(inline_timeout) if float(inline_timeout) > 0 else 0.0
-            else:
-                effective_timeout = self.tool_timeout
-
-            try:
-                coro = self.tool_registry.execute(tc.name, **actual_args)
-                if effective_timeout > 0:
-                    result = await asyncio.wait_for(coro, timeout=effective_timeout)
-                else:
+            if has_native_timeout:
+                # ── Native timeout: tool handles its own deadline ──
+                # _timeout was already mapped to the timeout arg above.
+                # The tool is responsible for enforcing its own timeout.
+                try:
+                    coro = self.tool_registry.execute(tc.name, **actual_args)
                     result = await coro
-            except asyncio.TimeoutError:
-                result = (
-                    f"Error: 工具 '{tc.name}' 执行超时（{effective_timeout}s）。"
-                    f"服务器或网络可能无响应，请检查后重试。"
-                )
-                logger.info(
-                    "tool_timeout name=%s timeout=%ds args=%s",
-                    tc.name, effective_timeout,
-                    self._truncate_args(tc.arguments),
-                )
-            except Exception as e:
-                result = (
-                    f"Error: 工具 '{tc.name}' 执行失败：{type(e).__name__}: {e}。"
-                )
-                logger.info(
-                    "tool_error name=%s err=%s", tc.name, e,
-                )
+                except Exception as e:
+                    result = (
+                        f"Error: 工具 '{tc.name}' 执行失败：{type(e).__name__}: {e}。"
+                    )
+                    logger.info(
+                        "tool_error name=%s err=%s", tc.name, e,
+                    )
+            else:
+                # ── Agent Loop timeout: wrap with asyncio.wait_for ──
+                if inline_timeout is not None:
+                    effective_timeout = float(inline_timeout) if float(inline_timeout) > 0 else 0.0
+                else:
+                    effective_timeout = self.tool_timeout
+
+                try:
+                    coro = self.tool_registry.execute(tc.name, **actual_args)
+                    if effective_timeout > 0:
+                        result = await asyncio.wait_for(coro, timeout=effective_timeout)
+                    else:
+                        result = await coro
+                except asyncio.TimeoutError:
+                    result = (
+                        f"Error: 工具 '{tc.name}' 执行超时（{effective_timeout}s）。"
+                        f"服务器或网络可能无响应，请检查后重试。"
+                    )
+                    logger.info(
+                        "tool_timeout name=%s timeout=%ds args=%s",
+                        tc.name, effective_timeout,
+                        self._truncate_args(tc.arguments),
+                    )
+                except Exception as e:
+                    result = (
+                        f"Error: 工具 '{tc.name}' 执行失败：{type(e).__name__}: {e}。"
+                    )
+                    logger.info(
+                        "tool_error name=%s err=%s", tc.name, e,
+                    )
 
             # Sanitize secrets BEFORE anything else — prevents API keys
             # from reaching the LLM context or TUI display.

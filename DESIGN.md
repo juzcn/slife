@@ -50,7 +50,7 @@ The system prompt contains only project-specific information the LLM cannot know
 ├──────────────────────────────────────────────────────────────────┤
 │  Agent Loop                          │  MCP Client               │
 │  Streaming function-calling          │  Streamable HTTP transport │
-│  Context window trimming             │  Tool proxy + adapter      │
+│  _trim_context harness notification  │  Tool proxy + adapter      │
 ├──────────────────────────────────────┴───────────────────────────┤
 │  Tool Registry — unified function definitions for all categories │
 │  Native · Memory · Skills · MCP Proxy · CLI · A2A                │
@@ -68,11 +68,11 @@ Single function-calling loop. All tools are registered as OpenAI function defini
 
 ```
 User Input → Conversation.add_user_message()
-  → loop: LLM stream → thinking/text chunks → handler callbacks
+  → loop: trim oldest turns if > 80% window (inserts visible _trim_context notification)
+    → LLM stream → thinking/text chunks → handler callbacks
     → tool calls? → ToolRegistry.execute() → sanitize_secrets() → loop
     → no tool calls? → response text → return
     → save turn to diary
-    → trim context if > 80% window
 ```
 
 - **Streaming**: thinking and text tokens emitted in real-time via `AgentEventHandler` callbacks
@@ -88,14 +88,15 @@ Active conversation stays within 20%–80% of the model's context window:
 ```
                 context_window (e.g. 131072 tokens)
 ┌──────────────────────────────────────────────────────────────┐
-│   trimmed (in diary)    │  current context      │  headroom  │
-│   recall via            │  20% ~ 80%            │  20%       │
-│   memory_search         │  working memory       │            │
+│   trimmed (already saved     │  current context      │  headroom  │
+│   in diary — recall via       │  20% ~ 80%            │  20%       │
+│   memory_search)              │  working memory       │            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Save**: after each turn, the turn is saved as a new row. Context is trimmed if > ceiling.
-- **Trim**: oldest complete turns are removed until tokens ≤ floor. Turns are never split.
+- **Save**: after each turn, the turn is saved as a new diary row. No trimming happens here.
+- **Trim**: before each LLM API call, `AgentLoop._maybe_trim_context()` checks token count. If it exceeds `ceiling × context_window`, the oldest complete turns are extracted and deleted. A synthetic `_trim_context` tool-call + result pair is inserted after the system prompt — the LLM sees a visible notification. Trimmed turns were already persisted when they completed, so the notification guides the LLM to use `memory_search` for retrieval.
+- **Subagent trim**: subagents also trim via the same code path, but with `memory_enabled=False`. Trimmed turns from subagents are discarded (ephemeral by design). The notification text reflects this — no mention of `memory_search`.
 - **Tool result ceiling**: single tool results are capped at 20% of the context window.
 - **Restore**: on restart, recent turns are loaded from SQLite and the conversation is rebuilt.
 
@@ -126,7 +127,11 @@ All unified under `Tool` and registered in a single `ToolRegistry`. The LLM sees
 
 ### Timeout Architecture
 
-Single enforcement point at the Agent Loop level. `_timeout` is injected into every tool's JSON Schema (except tools with native `timeout` params). The MCP Client does not apply its own timeout.
+Single enforcement point at the Agent Loop level. `_timeout` is injected into **every** tool's JSON Schema as a universal per-call override.
+
+For tools **without** a native ``timeout`` parameter the Agent Loop wraps execution in ``asyncio.wait_for(timeout=...)``. For tools **with** a native ``timeout`` parameter (e.g. ``execute_shell``), ``_timeout`` is mapped to the native ``timeout`` argument and the tool's own internal timeout logic takes over — no ``asyncio.wait_for`` wrapper, no double-layer nesting.
+
+The MCP Client does not apply its own timeout.
 
 ## Plugin Architecture
 
@@ -262,6 +267,8 @@ Subagent results ──→ Inbox.post() ──→
 
 Messages are processed sequentially — only one AgentLoop runs at a time. Incoming messages never interrupt a running loop.
 
+The queue has no priority or preemption. During long-running tasks (a 20-iteration AgentLoop may take several minutes), external channel messages accumulate and may time out at the transport layer (e.g. WeChat's 5–10s reply window). For time-sensitive channels, configure the channel's own timeout or retry handling accordingly — this is an explicit trade-off of single-threaded, LLM-driven processing.
+
 ### Subagent Transport
 
 Local child-process workers. Always available — no config toggle.
@@ -307,7 +314,15 @@ All user-facing text rendered with `markup=False` to prevent `MarkupError`.
 
 ### Secret Sanitization
 
-`sanitize_secrets()` in `logfmt.py` is applied to **every tool result** at `AgentLoop._execute_tools()` — the single chokepoint between tool execution and LLM context. It masks API key patterns (`sk-*`, `ghp_*`, Bearer tokens, 32+ char hex/base64 tokens) with `<MASKED>` before the result reaches the LLM, TUI, or conversation.
+Sanitization is applied at three chokepoints — all use the same pattern-masking engine:
+
+1. **Inbound** — `Conversation.add_user_message()` on every user/external message before it enters the conversation.
+2. **Tool arguments** — `Conversation.add_assistant_message()` on every `tool_calls[].function.arguments` before storing in history. These arguments re-enter the LLM context on subsequent turns.
+3. **Outbound** — `AgentLoop._execute_tools()` on every tool result before it reaches the LLM, TUI, or conversation.
+
+`sanitize_secrets()` in `logfmt.py` masks API key patterns (`sk-*`, `ghp_*`, Bearer tokens, 32+ char hex/base64 tokens) with `<MASKED>`. Both chokepoints use the same function — no divergence in masking behaviour.
+
+> **Note:** Sanitization is credential-only (pattern masking). Slife does not implement semantic guardrails against instruction hijacking or jailbreak prompts. The built-in shell and python_exec tools are provided for power users; use them only in trusted environments.
 
 ### Design Decisions
 
