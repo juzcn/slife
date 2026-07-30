@@ -219,7 +219,9 @@ if [ -f "$HOME/.slife/pyvenv.cfg" ]; then
 fi
 
 TOOL_INSTALL_LOG="$TMP_DIR/tool-install.log"
-uv tool install --from "$TMP_DIR/slife-main" --python 3.13 slife > "$TOOL_INSTALL_LOG" 2>&1 || {
+# Stream output to the user so they see progress (uv downloads Python, builds
+# packages, etc.) — but also save to a log so we can show details on failure.
+uv tool install --from "$TMP_DIR/slife-main" --python 3.13 slife 2>&1 | tee "$TOOL_INSTALL_LOG" || {
     echo -e "${RED}Error: slife installation failed.${NC}"
     echo -e "${YELLOW}Last lines of install log:${NC}"
     tail -n 20 "$TOOL_INSTALL_LOG"
@@ -294,12 +296,41 @@ export PATH="$HOME/.local/bin:$PATH"
 
 echo -e "${GREEN}  ✓${NC} slife + credstore commands ready"
 
+# Verify the binary is actually reachable and show its location.
+if command -v slife &>/dev/null; then
+    SLIFE_PATH="$(command -v slife)"
+    echo -e "  ${GREEN}  slife${NC} → ${GRAY}$SLIFE_PATH${NC}"
+else
+    echo -e "  ${RED}  ⚠ slife binary not found on PATH${NC}"
+fi
+
 # ── 6. Done ───────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║  Slife v${VERSION} installed successfully! 🎉  ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
+
+# When piped to bash, the exports above only affect the script's subshell —
+# not the user's interactive shell.  Remind them to refresh their PATH.
+NEEDS_SHELL_REFRESH=true
+if command -v slife &>/dev/null; then
+    NEEDS_SHELL_REFRESH=false
+fi
+
+if [ "$NEEDS_SHELL_REFRESH" = true ]; then
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│  IMPORTANT: slife is installed but not on your      │${NC}"
+    echo -e "${YELLOW}│  current PATH (pipe-to-bash runs in a subshell).    │${NC}"
+    echo -e "${YELLOW}│  To use it, run:                                    │${NC}"
+    echo -e "${YELLOW}│                                                     │${NC}"
+    echo -e "${YELLOW}│    source \"\$HOME/.local/bin/env\"                     │${NC}"
+    echo -e "${YELLOW}│                                                     │${NC}"
+    echo -e "${YELLOW}│    Or simply open a new terminal.                   │${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    echo ""
+fi
+
 echo -e "${CYAN}Get started:${NC}"
 echo "  credstore set-password              # set up encrypted backup (first time)"
 echo "  credstore set DEEPSEEK_API_KEY       # store your API key"
