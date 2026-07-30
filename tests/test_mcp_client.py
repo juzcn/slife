@@ -188,7 +188,7 @@ class TestMCPClientConnect:
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
 
-        with patch("slife.mcp.client.streamablehttp_client") as mock_transport:
+        with patch("slife.mcp.client.streamable_http_client") as mock_transport:
             mock_read = MagicMock()
             mock_write = MagicMock()
             mock_info = MagicMock()
@@ -231,7 +231,7 @@ class TestMCPClientConnect:
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
 
-        with patch("slife.mcp.client.streamablehttp_client") as mock_transport:
+        with patch("slife.mcp.client.streamable_http_client") as mock_transport:
             def _make_ctx():
                 mock_read = MagicMock()
                 mock_write = MagicMock()
