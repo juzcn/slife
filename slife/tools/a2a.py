@@ -379,10 +379,12 @@ class A2AGetTaskResultTool(Tool):
         if rec.completed_at is not None:
             elapsed = rec.completed_at - rec.created_at
             lines.append(f"  Duration: {elapsed:.1f}s")
-        if rec.result is not None:
+        if rec.result:
             lines.append(f"  Result:\n{rec.result}")
         elif rec.status == "pending":
             lines.append("  Result: (still pending — use a2a_get_task_result to check)")
+        else:
+            lines.append("  Result: (no result)")
 
         return "\n".join(lines)
 

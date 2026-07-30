@@ -93,7 +93,7 @@ class PluginLifecycle:
     async def connect_http(self, port: int) -> None:
         """Connect to an already-running plugin via HTTP (subagent sharing)."""
         client = MCPClient(tool_timeout=self._service.config.tool_timeout)
-        await client.connect(f"http://127.0.0.1:{port}")
+        await client.connect(f"http://127.0.0.1:{port}/mcp")
         self.client = client
         self.port = port
 

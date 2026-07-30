@@ -250,9 +250,16 @@ class SubagentProcess:
                         params = msg.get("params", {})
                         task_id = params.get("task_id", "")
                         if method == "tasks/complete":
-                            get_store().record_result(
-                                task_id, str(params.get("result", "")),
-                            )
+                            # The result was already stored by the JSON-RPC response
+                            # handler (line 240).  The notification only carries a
+                            # task_id — no result — so calling record_result here
+                            # would overwrite the stored result with an empty string.
+                            # Only update if the notification actually carries a result.
+                            notify_result = params.get("result", "")
+                            if notify_result:
+                                get_store().record_result(
+                                    task_id, str(notify_result),
+                                )
                         elif method == "tasks/progress":
                             logger.debug(
                                 "subagent_progress name=%s task=%s pct=%s",

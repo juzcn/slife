@@ -1,6 +1,6 @@
 """MCP client — connects to MCP servers via Streamable HTTP transport.
 
-Uses ``mcp.client.streamable_http.streamablehttp_client`` for the
+Uses ``mcp.client.streamable_http.streamable_http_client`` for the
 transport layer and ``mcp.ClientSession`` for the MCP protocol,
 managed via ``contextlib.AsyncExitStack`` for correct async-context
 nesting.
@@ -12,7 +12,7 @@ from contextlib import AsyncExitStack
 from typing import Any
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class MCPClient:
             try:
                 self._exit_stack = AsyncExitStack()
                 read_stream, write_stream, _ = await self._exit_stack.enter_async_context(
-                    streamablehttp_client(url),
+                    streamable_http_client(url),
                 )
                 self._session = await self._exit_stack.enter_async_context(
                     ClientSession(read_stream, write_stream),
@@ -98,7 +98,7 @@ class MCPClient:
     async def _cleanup(self) -> None:
         """Close the exit stack, properly exiting all nested contexts.
 
-        The ``streamablehttp_client`` async generator from the MCP library
+        The ``streamable_http_client`` async generator from the MCP library
         uses ``anyio.create_task_group()`` internally.  When the connection
         fails during setup (before ``session.initialize()`` succeeds), the
         TaskGroup's cancel-scope cleanup can raise ``BaseExceptionGroup``
