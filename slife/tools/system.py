@@ -19,7 +19,6 @@ import platform
 import sys
 import time
 import tomllib
-from collections import defaultdict
 from pathlib import Path
 from shutil import which
 from typing import ClassVar
@@ -59,11 +58,8 @@ class CheckOsInfoTool(Tool):
     """Report OS name, version, CPU architecture, and Python environment."""
 
     name = "check_os_info"
-    description = (
-        "Return OS name and version, CPU architecture, Python version, "
-        "and Python executable path as a structured JSON list. "
-        "The first entry contains the OS name for quick shell-syntax decisions."
-    )
+    category: ClassVar[str] = "System"
+    description = "OS name, CPU architecture, Python version and path as JSON."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -134,11 +130,8 @@ class CheckShellsTool(Tool):
     """Check which shells and package managers are on PATH."""
 
     name = "check_shells"
-    description = (
-        "Return which shells (PowerShell, Bash, cmd) and tools (uv) are "
-        "available on PATH, with their executable paths or 'not_found'. "
-        "Use before running commands to pick the right shell and syntax."
-    )
+    category: ClassVar[str] = "System"
+    description = "Available shells (PowerShell, Bash, cmd) and uv on PATH, as JSON."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -220,12 +213,8 @@ class CheckWorkspaceTool(Tool):
     """Report working directory context: path, git, permissions, package manager."""
 
     name = "check_workspace"
-    description = (
-        "Return the working directory path, dev/production mode, "
-        "Python package manager (uv/pip), read/write permissions, "
-        "and git repository status as structured JSON. "
-        "The first entry contains the CWD path."
-    )
+    category: ClassVar[str] = "System"
+    description = "CWD, dev/prod mode, package manager, permissions, git status as JSON."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -289,11 +278,8 @@ class CheckEmbeddingTool(Tool):
     """Check embedding backend for semantic memory search."""
 
     name = "check_embedding"
-    description = (
-        "Return which embedding backend is configured (gguf/transformer/api/none) "
-        "and whether it is actually usable. When unavailable, hybrid memory "
-        "search degrades gracefully — keyword search still works."
-    )
+    category: ClassVar[str] = "System"
+    description = "Embedding backend status (gguf/transformer/api/none) and availability."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -379,11 +365,8 @@ class CheckWechatTool(Tool):
     """Check WeChat plugin status: enabled, logged in, session expiry."""
 
     name = "check_wechat"
-    description = (
-        "Return WeChat plugin state: disabled, not_logged_in, session_expired, "
-        "or logged_in (with session age and remaining time). "
-        "Use before messaging to verify connectivity."
-    )
+    category: ClassVar[str] = "System"
+    description = "WeChat plugin status: disabled, not_logged_in, logged_in, or session_expired."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -553,14 +536,8 @@ class SystemHealthTool(Tool):
     """Run all subsystem checks + startup records → unified health report."""
 
     name = "system_health"
-    description = (
-        "Return a unified health report as JSON: startup records (config, model, "
-        "MCP servers, memory, A2A, subagent), OS/shell/workspace/embedding/WeChat "
-        "status, with an overall healthy flag and summary line. "
-        "Call at conversation start to discover silently-degraded subsystems. "
-        "Individual checks: check_os_info, check_shells, check_workspace, "
-        "check_embedding, check_wechat."
-    )
+    category: ClassVar[str] = "System"
+    description = "Unified health report: startup records + OS/shell/workspace/embedding/WeChat/MCP, with healthy flag and summary."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -583,115 +560,4 @@ class SystemHealthTool(Tool):
         }
         return json.dumps(result, ensure_ascii=False, indent=2)
 
-
-# ═══════════════════════════════════════════════════════════════════════
-# list_tools
-# ═══════════════════════════════════════════════════════════════════════
-
-_PLUGIN_LABELS: dict[str, str] = {
-    "memory": "Memory (built-in plugin)",
-    "wechat": "WeChat (built-in plugin)",
-}
-
-
-def _classify(name: str) -> str:
-    """Map a native tool name to a category label."""
-    if name.startswith("a2a_"):
-        return "Agent Communication (A2A)"
-    if name.startswith("mcp_"):
-        return "MCP Server Management"
-    if name.startswith("cli_"):
-        return "CLI Tools"
-    if name.startswith("config_env"):
-        return "Configuration"
-    if name in ("list_skills", "use_skill", "add_skill", "remove_skill"):
-        return "Skills"
-    if name.startswith("system_") or name.startswith("check_"):
-        return "System"
-    if name.startswith("execute_") or name.startswith("install_") or name.startswith("run_"):
-        return "Code Execution"
-    if name.startswith("list_"):
-        return "Meta"
-    if name.startswith("credential_") or name.startswith("inject_") or name.startswith("uninject_"):
-        return "Credentials"
-    return "Other"
-
-
-class ListToolsTool(Tool):
-    """List available tools with optional category filtering.
-
-    """
-
-    name: ClassVar[str] = "list_tools"
-    description: ClassVar[str] = (
-        "Return your tool inventory, optionally filtered by category. "
-        "- category='all' (default): native tools grouped by category + MCP-connected servers. "
-        "- category='native': only native (built-in) tools, grouped by category. "
-        "- category='mcp': only tools from MCP-connected servers, grouped by server. "
-        "Use when asked what tools you have — more reliable than memory."
-    )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "category": {
-                "type": "string",
-                "description": "Filter: 'all' (default), 'native' (built-in only), or 'mcp' (external MCP servers only).",
-                "enum": ["all", "native", "mcp"],
-            },
-        },
-        "required": [],
-    }
-
-    async def execute(self, category: str = "all", **kwargs) -> str:
-        from slife.tools.registry import get_registry
-        from slife.mcp.tool_adapter import MCPProxyTool
-
-        registry = get_registry()
-        if registry is None:
-            return "Tool registry is not available (called before initialization)."
-
-        all_tools = registry.list_tools()
-        if not all_tools:
-            return "No tools are currently registered."
-
-        natives: list[Tool] = []
-        mcp_proxies: dict[str, list[Tool]] = defaultdict(list)
-        for t in all_tools:
-            if isinstance(t, MCPProxyTool):
-                mcp_proxies[t._server].append(t)
-            else:
-                natives.append(t)
-
-        show_native = category in ("all", "native")
-        show_mcp = category in ("all", "mcp")
-        lines: list[str] = []
-
-        if show_native:
-            lines.append(f"## Native Tools ({len(natives)} total)\n")
-            native_groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
-            for t in sorted(natives, key=lambda t: t.name):
-                cat = _classify(t.name)
-                desc = t.description.split(".")[0].strip() + "."
-                native_groups[cat].append((t.name, desc))
-
-            for cat in sorted(native_groups):
-                items = native_groups[cat]
-                lines.append(f"### {cat} ({len(items)})")
-                for name, desc in items:
-                    lines.append(f"- **`{name}`** — {desc}")
-                lines.append("")
-
-        if show_mcp and mcp_proxies:
-            lines.append(f"## MCP-Connected Servers ({len(mcp_proxies)} servers)\n")
-            for server in sorted(mcp_proxies):
-                tools = mcp_proxies[server]
-                label = _PLUGIN_LABELS.get(server, f"MCP: {server}")
-                tool_names = sorted(t.name for t in tools)
-                lines.append(f"- **{label}** ({len(tools)} tools): "
-                             + ", ".join(f"`{n}`" for n in tool_names))
-            lines.append("")
-        elif show_mcp and not mcp_proxies:
-            lines.append("## MCP-Connected Servers\n\nNo MCP servers connected.\n")
-
-        return "\n".join(lines)
 

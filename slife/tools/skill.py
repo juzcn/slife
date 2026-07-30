@@ -9,8 +9,9 @@ remove_skill:  删除一个 skill 目录及其内容
 import json
 import logging
 from pathlib import Path
+from typing import ClassVar
 
-from slife.tools._config_io import format_source_info, with_fetched_at
+from slife.tools._config_io import _ConfigPathMixin, format_source_info, read_config, with_fetched_at, write_config
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -177,12 +178,8 @@ class CheckSkillsDirTool(_SkillDirMixin, Tool):
     """
 
     name = "check_skills_dir"
-    description = (
-        "Return the absolute path to the skills directory and the list "
-        "of installed skill subdirectories. Use this to resolve relative "
-        "skill script paths (e.g. 'skills/baidu-search/scripts/search.py') "
-        "to actual filesystem paths."
-    )
+    category: ClassVar[str] = "Skills"
+    description = "Absolute path to the skills directory and installed subdirectories."
     parameters = {
         "type": "object",
         "properties": {},
@@ -225,11 +222,7 @@ class ListSkillsTool(_SkillDirMixin, Tool):
     """List all available skills with their names and descriptions."""
 
     name = "list_skills"
-    description = (
-        "List all installed skills with their names and one-line "
-        "descriptions. Skills are discovered from SKILL.md files "
-        "under the skills directory."
-    )
+    description = "List installed skills with names and one-line descriptions."
     parameters = {
         "type": "object",
         "properties": {},
@@ -245,18 +238,11 @@ class UseSkillTool(_SkillDirMixin, Tool):
     """Load a skill's full SKILL.md documentation into context."""
 
     name = "use_skill"
-    description = (
-        "Return the complete SKILL.md content for a named skill, "
-        "including all instructions and documentation. "
-        "Use list_skills first to discover available skill names."
-    )
+    description = "Return the full SKILL.md documentation for a skill."
     parameters = {
         "type": "object",
         "properties": {
-            "skill_name": {
-                "type": "string",
-                "description": "Exact skill name from list_skills output.",
-            },
+            "skill_name": {"type": "string", "description": "Skill name, from list_skills."},
         },
         "required": ["skill_name"],
     }
@@ -282,64 +268,33 @@ class AddSkillTool(_SkillDirMixin, Tool):
     """
 
     name = "add_skill"
-    _subagent_skip = True  # subagent should not modify skills on disk
-    description = (
-        "Write skill files to the skills directory. Accepts either "
-        "individual {path, content} files or a base64-encoded "
-        ".zip/.tar.gz archive. The skill is immediately discoverable "
-        "by list_skills."
-    )
+    _subagent_skip = True
+    description = "Install a skill from files or base64 archive. Immediately discoverable by list_skills."
     parameters = {
         "type": "object",
         "properties": {
-            "name": {
-                "type": "string",
-                "description": "Local directory name. Lowercase kebab-case (e.g. 'browser-use').",
-            },
+            "name": {"type": "string", "description": "Directory name, kebab-case (e.g. 'browser-use')."},
             "files": {
                 "type": "array",
-                "description": "Skill files as [{path, content}]. At minimum include SKILL.md "
-                "with valid YAML frontmatter (name + description).",
+                "description": "[{path, content}]. Must include SKILL.md with YAML frontmatter.",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File path relative to the skill root (e.g. 'SKILL.md', 'scripts/run.py').",
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "File content as a string.",
-                        },
+                        "path": {"type": "string", "description": "Relative path (e.g. 'SKILL.md', 'scripts/run.py')."},
+                        "content": {"type": "string", "description": "File content."},
                     },
                     "required": ["path", "content"],
                 },
             },
-            "archive": {
-                "type": "string",
-                "description": "Base64-encoded .zip or .tar.gz. Decoded and extracted into skills/<name>/.",
-            },
+            "archive": {"type": "string", "description": "Base64-encoded .zip or .tar.gz."},
             "source": {
                 "type": "object",
-                "description": "Where this skill was discovered. Provide so future updates "
-                "or source changes are traceable.",
+                "description": "Provenance for future updates.",
                 "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "URL where the skill was found (repo, marketplace, docs).",
-                    },
-                    "type": {
-                        "type": "string",
-                        "description": "Source type: github, url, marketplace, etc.",
-                    },
-                    "version": {
-                        "type": "string",
-                        "description": "Version string at install time (e.g. 'v1.2.3', '0.5.2').",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Optional note about this source.",
-                    },
+                    "url": {"type": "string", "description": "Discovery URL."},
+                    "type": {"type": "string", "description": "Source type: github, url, marketplace."},
+                    "version": {"type": "string", "description": "Version at install time."},
+                    "description": {"type": "string", "description": "Optional note."},
                 },
             },
         },
@@ -474,18 +429,12 @@ class RemoveSkillTool(_SkillDirMixin, Tool):
     """
 
     name = "remove_skill"
-    _subagent_skip = True  # subagent should not modify skills on disk
-    description = (
-        "Delete a skill directory and all its contents from the "
-        "skills directory."
-    )
+    _subagent_skip = True
+    description = "Delete a skill directory and all its contents."
     parameters = {
         "type": "object",
         "properties": {
-            "skill_name": {
-                "type": "string",
-                "description": "Name of the skill to remove (from list_skills).",
-            },
+            "skill_name": {"type": "string", "description": "Skill name, from list_skills."},
         },
         "required": ["skill_name"],
     }
@@ -523,3 +472,38 @@ class RemoveSkillTool(_SkillDirMixin, Tool):
                     available.append(f"  - {item.name} (no SKILL.md)")
         hint = "\n".join(available) if available else "  (none)"
         return f"Skill '{skill_name}' not found.\n\nAvailable skills/directories:\n{hint}"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# skill_set
+# ═══════════════════════════════════════════════════════════════════════
+
+class SkillSet(_ConfigPathMixin, Tool):
+    name = "skill_set"
+    category: ClassVar[str] = "Skills"
+    _subagent_skip = True
+    description = "Enable or disable a skill. Takes effect after restart."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Skill name, from list_skills."},
+            "enabled": {"type": "boolean", "description": "Enable or disable."},
+        },
+        "required": ["name", "enabled"],
+    }
+
+    async def execute(self, **kwargs) -> str:
+        name: str = kwargs["name"]
+        enabled: bool = kwargs["enabled"]
+        raw = read_config(self._config_path)
+        entries = raw.get("skills", {})
+        if not isinstance(entries, dict) or name not in entries:
+            return f"'{name}' not found in skills."
+        entry = entries[name]
+        if not isinstance(entry, dict):
+            return f"'{name}' in skills is malformed."
+        entry["enabled"] = enabled
+        write_config(self._config_path, raw)
+        state = "enabled" if enabled else "disabled"
+        logger.info("skill_set name=%s enabled=%s", name, enabled)
+        return f"[OK] Skill '{name}' {state}. Restart for the change to take effect."

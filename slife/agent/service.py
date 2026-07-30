@@ -259,6 +259,7 @@ class AgentService:
         # so the UI appears immediately. Tools register as each server
         # connects — no need to block startup on slow/hung servers.
         asyncio.create_task(self._auto_connect_mcp_servers())
+        asyncio.create_task(self._auto_connect_rest_apis())
         logger.info("mcp_init_done tools=%d", len(self.tool_registry.list_tools()))
 
     # ── HTTP-connect helpers (subagents share the main agent's plugins) ──
@@ -289,6 +290,7 @@ class AgentService:
         await self._register_mcp_wrapper_tools()
         if not self.is_subagent:
             await self._auto_connect_mcp_servers()
+            await self._auto_connect_rest_apis()
         logger.info("mcp_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_memory_http(self, port: int) -> None:
@@ -355,6 +357,10 @@ class AgentService:
         for tool in proxy_tools:
             self.tool_registry.register(tool)
         logger.debug("mcp_wrapper_tools_registered count=%d", len(proxy_tools))
+
+        # Let REST API tools call mcp_add_server / mcp_remove_server
+        from slife.tools.rest_api import set_rest_api_mcp_client
+        set_rest_api_mcp_client(self._plugins["mcp"].client)
 
     async def _auto_connect_mcp_servers(self) -> None:
         """Auto-connect to pre-configured MCP servers and discover
@@ -436,6 +442,72 @@ class AgentService:
 
         await asyncio.gather(
             *(_connect_one(name, cfg) for name, cfg in servers.items())
+        )
+
+    async def _auto_connect_rest_apis(self) -> None:
+        """Auto-connect REST APIs from the ``rest_apis`` config section.
+
+        Each entry is connected via ``mcp_add_server`` with
+        anyapi-mcp-server as the backend.  The LLM never sees npx or
+        anyapi-mcp-server — it only sees the generated tools prefixed
+        with the API name.
+        """
+        if not self._plugins["mcp"].client:
+            return
+
+        raw = self.config._read_config("auto_connect_rest_apis", "all")
+        if raw is None:
+            return
+
+        rest_apis = raw.get("rest_apis", {})
+        if not isinstance(rest_apis, dict) or not rest_apis:
+            return
+
+        mcp_client = self._plugins["mcp"].client
+        logger.info("rest_api_auto_connect count=%d", len(rest_apis))
+
+        async def _connect_one(name: str, cfg: dict) -> None:
+            try:
+                spec_url = cfg.get("spec_url", "")
+                base_url = cfg.get("base_url", "")
+                api_key = cfg.get("api_key", "")
+                description = cfg.get("description", "")
+
+                if not spec_url or not base_url:
+                    logger.warning(
+                        "rest_api_skip name=%s reason=missing_spec_or_base", name,
+                    )
+                    return
+
+                mcp_args = [
+                    "-y", "anyapi-mcp-server",
+                    "--name", name,
+                    "--spec", spec_url,
+                    "--base-url", base_url,
+                ]
+                if api_key:
+                    mcp_args.extend([
+                        "--header", f"Authorization: Bearer ${{{api_key}}}",
+                    ])
+
+                result = await mcp_client.call_tool(
+                    "mcp_add_server",
+                    {
+                        "name": name,
+                        "command": "npx",
+                        "args": mcp_args,
+                        "description": description,
+                        "activate": True,
+                    },
+                )
+                logger.debug(
+                    "rest_api_connected name=%s result=%.200s", name, result,
+                )
+            except Exception as e:
+                logger.warning("rest_api_connect_failed name=%s err=%s", name, e)
+
+        await asyncio.gather(
+            *(_connect_one(name, cfg) for name, cfg in rest_apis.items())
         )
 
     async def _discover_existing_mcp_tools(self) -> None:

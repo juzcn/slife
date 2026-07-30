@@ -462,7 +462,7 @@ class AgentLoop:
 
             if is_async:
                 # ── Async: schedule background task ─────────────
-                from slife.tools.async_tasks import schedule as schedule_async
+                from slife.tools.meta import schedule as schedule_async
 
                 coro = self.tool_registry.execute(tc.name, **actual_args)
                 task_id = schedule_async(coro)

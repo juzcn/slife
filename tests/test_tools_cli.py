@@ -21,7 +21,7 @@ class TestCliAddToolMetadata:
         assert CliAddTool.name == "cli_add_tool"
 
     def test_description(self):
-        assert "Persist" in CliAddTool.description
+        assert "Register" in CliAddTool.description
 
     def test_required_params(self):
         required = CliAddTool.parameters.get("required", [])

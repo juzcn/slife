@@ -112,18 +112,39 @@ Active conversation stays within 20%–80% of the model's context window:
 
 The `slife.json5` `tools` array is optional. Use it only to override defaults or disable tools.
 
-### Six Tool Categories
+### Tool Categories
 
-All unified under `Tool` and registered in a single `ToolRegistry`. The LLM sees no difference.
+All tools are unified under `Tool` and registered in a single `ToolRegistry`. The LLM sees no difference between categories — only function names and schemas. Each `Tool` subclass declares a ``category`` class attribute; ``list_tools`` groups output accordingly.
 
-| Category | Location | Description |
-|----------|----------|-------------|
-| **Native** | `slife/tools/*.py` | System info, Python exec, env/config, skills, CLI, A2A |
-| **Memory** | `slife/plugins/memory/` | 7 tools — diary search, open, summarize |
-| **MCP Proxy** | Via slife-mcp gateway | External MCP servers adapted via `MCPProxyTool`, `{server}__` prefix |
-| **Skills** | `skills/` directory | On-demand plugins — `list_skills` / `use_skill` |
-| **CLI** | Runtime discovery | External commands, persisted in config across restarts |
-| **A2A** | `slife/tools/a2a.py` | 13 tools — discovery, task routing, lifecycle, broadcast |
+**Nine native categories** — one ``.py`` file per category in ``slife/tools/``, auto-discovered by ``pkgutil.iter_modules``:
+
+| Category | File | Tools |
+|----------|------|-------|
+| System | `system.py` | `check_os_info`, `check_shells`, `check_workspace`, `check_embedding`, `check_wechat`, `system_health` |
+| Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
+| Skills | `skill.py` | `check_skills_dir`, `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set` |
+| CLI | `cli.py` | `cli_check_installed`, `cli_add_tool`, `cli_remove_tool`, `cli_list_tools`, `cli_set_tool` |
+| REST API | `rest_api.py` | `rest_api_add`, `rest_api_remove`, `rest_api_list`, `rest_api_set` |
+| A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
+| Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
+| Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
+| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
+
+Adding a new tool is a matter of adding a class in the matching category file — no manual registration needed.
+
+**Five managed categories** support dynamic registration with a standard **list / add / remove / set** surface:
+
+| Category | list | add | remove | set |
+|----------|------|-----|--------|-----|
+| **Native** | `list_tools` | — | — | `native_tool_set(name, enabled)` |
+| **MCP** | `mcp_list_servers` | `mcp_add_server` | `mcp_remove_server` | `mcp_set_server(name, enabled)` |
+| **Skill** | `list_skills` | `add_skill` | `remove_skill` | `skill_set(name, enabled)` |
+| **CLI** | `cli_list_tools` | `cli_add_tool` | `cli_remove_tool` | `cli_set_tool(name, enabled)` |
+| **REST API** | `rest_api_list` | `rest_api_add` | `rest_api_remove` | `rest_api_set(name, enabled)` |
+
+All `set` tools use the same signature `(name: str, enabled: bool)`.
+
+In addition, the built-in **Memory** plugin (``slife/plugins/memory/``) provides `memory_search`, `memory_open`, `memory_list_recent`, `memory_summarize`, and more.
 
 ### Timeout Architecture
 

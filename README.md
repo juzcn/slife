@@ -110,15 +110,25 @@ active_model: "deepseek/deepseek-v4-pro",
 
 ### Tools
 
-All unified as OpenAI function definitions. The LLM sees no difference between native, MCP, or A2A tools.
+All unified as OpenAI function definitions. The LLM sees no difference between categories.
 
-| Category | Description |
-|----------|-------------|
-| **Native** | System info, Python execution, env/config management, skill loading, CLI discovery |
-| **MCP / REST** | Filesystem, shell, code search, web fetch, any MCP server (stdio or HTTP) |
-| **Skills** | On-demand plugins loaded via `list_skills` / `use_skill` |
-| **CLI** | Auto-discovered external commands, persisted across restarts |
-| **A2A** | Agent discovery, task routing, subagents, broadcast (13 tools) |
+**Nine native categories** — one `.py` file per category in `slife/tools/`, auto-discovered:
+
+| Category | File | Tools |
+|----------|------|-------|
+| System | `system.py` | `check_os_info`, `check_shells`, `check_workspace`, `check_embedding`, `check_wechat`, `system_health` |
+| Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
+| Skills | `skill.py` | `check_skills_dir`, `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set` |
+| CLI | `cli.py` | `cli_check_installed`, `cli_add_tool`, `cli_remove_tool`, `cli_list_tools`, `cli_set_tool` |
+| REST API | `rest_api.py` | `rest_api_add`, `rest_api_remove`, `rest_api_list`, `rest_api_set` |
+| A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
+| Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
+| Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
+| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
+
+**Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. All `set` tools share `(name: str, enabled: bool)`.
+
+Plus built-in **Memory** plugin (`memory_search`, `memory_open`, …).
 
 ### Memory — Always On
 
@@ -159,13 +169,13 @@ Unified inbox serializes human, WeChat, MQTT, and subagent messages through a si
 
 ### Progressive Disclosure
 
-Not all tools are in every request. Three categories use lightweight summaries:
+Not all tools are in every request. Three categories use lightweight summaries before loading full tool schemas:
 
 | Category | Browse | Load |
 |----------|--------|------|
 | Memory | `memory_search` | `memory_open` |
 | Skills | `list_skills` | `use_skill` |
-| MCP | `mcp_list_tools` | `mcp_set_disclosure("eager")` |
+| MCP | `mcp_list_servers` / `mcp_list_tools` | `mcp_set_disclosure("eager")` |
 
 ## Keyboard Shortcuts
 

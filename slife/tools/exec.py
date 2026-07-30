@@ -24,23 +24,13 @@ class ShellTool(Tool):
     """Execute a shell command via the system shell (cmd on Windows, sh on Unix)."""
 
     name = "execute_shell"
-    description = (
-        "Run a shell command and return stdout and stderr. "
-        "Uses the system shell: cmd.exe on Windows, /bin/sh on Unix. "
-        "Long-running commands should set a timeout; default is 30 seconds. "
-        "For Python scripts prefer run_python_script."
-    )
+    category = "Execution"
+    description = "Run a shell command. Returns stdout + stderr. Default timeout 30s."
     parameters = {
         "type": "object",
         "properties": {
-            "command": {
-                "type": "string",
-                "description": "The shell command to execute, exactly as you would type it in a terminal.",
-            },
-            "timeout": {
-                "type": "integer",
-                "description": "Max seconds to wait for the command to finish. Default 30. Set higher for long tasks.",
-            },
+            "command": {"type": "string", "description": "Shell command to execute."},
+            "timeout": {"type": "integer", "description": "Timeout in seconds. Default 30."},
         },
         "required": ["command"],
     }
@@ -104,22 +94,17 @@ class RunPythonScriptTool(Tool):
     """Run a Python script with arguments, or inline code with -c."""
 
     name = "run_python_script"
+    category = "Execution"
     description = (
-        "Run a Python script file or inline code. "
-        "For a script, pass the path followed by a JSON argument string: "
-        "'path/to/script.py {\"key\": \"value\"}'. "
-        "For inline code, prefix with '-c ': '-c print(1+1)'. "
-        "Returns stdout on success, or stderr with exit code on failure."
+        "Run a Python script or inline code. "
+        "Script: 'path/to/script.py {\"arg\": \"val\"}'. Inline: '-c print(1+1)'."
     )
     parameters = {
         "type": "object",
         "properties": {
             "script": {
                 "type": "string",
-                "description": (
-                    "Script path with optional JSON args, e.g. 'skills/search.py {\"query\":\"hello\"}'. "
-                    "Or inline code with '-c <python code>'."
-                ),
+                "description": "Script path [+ JSON args], or '-c <code>'.",
             },
         },
         "required": ["script"],
@@ -164,18 +149,15 @@ class InstallPythonPackageTool(Tool):
     """Install Python packages into slife's environment via uv pip install."""
 
     name = "install_python_package"
-    description = (
-        "Install one or more PyPI packages into slife's Python environment "
-        "using uv pip install. Use when a script fails with ModuleNotFoundError. "
-        "Supports version pins like 'requests>=2.31'."
-    )
+    category = "Execution"
+    description = "Install PyPI packages via uv pip install. Supports version pins like 'requests>=2.31'."
     parameters = {
         "type": "object",
         "properties": {
             "packages": {
                 "type": "array",
-                "description": "Package names to install, e.g. ['requests'] or ['requests', 'beautifulsoup4']. Each may include version pins.",
                 "items": {"type": "string"},
+                "description": "Package specs, e.g. ['requests', 'beautifulsoup4>=4.12'].",
             },
         },
         "required": ["packages"],

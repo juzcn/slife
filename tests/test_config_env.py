@@ -1,4 +1,4 @@
-"""Tests for slife.tools.env — env var management tools."""
+"""Tests for slife.tools.config — env var management tools."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import pytest
 
-from slife.tools.env import (
+from slife.tools.config import (
     _env_section,
     _PLACEHOLDER_PREFIX,
     ConfigEnvSetTool,
@@ -21,13 +21,13 @@ from slife.tools.env import (
 
 def _mock_config(data: dict, monkeypatch):
     """Mock read_config and write_config for a test."""
-    import slife.tools.env
+    import slife.tools.config
 
     raw = dict(data)
-    monkeypatch.setattr(slife.tools.env, "read_config", lambda path: raw)
+    monkeypatch.setattr(slife.tools.config, "read_config", lambda path: raw)
     written = []
     monkeypatch.setattr(
-        slife.tools.env, "write_config",
+        slife.tools.config, "write_config",
         lambda path, r: written.append(dict(r)),
     )
     return raw, written
@@ -137,13 +137,13 @@ class TestConfigEnvGetTool:
     async def test_get_from_credstore(self, monkeypatch):
         """credential_check handles keyring, not config_env_get."""
         # Import the test target
-        from slife.tools.env import CredentialCheckTool
+        from slife.tools.credentials import CredentialCheckTool
 
         cred = _mock_credstore(monkeypatch)
         cred["DEEPSEEK_API_KEY"] = "sk-secret-key-long"
 
         monkeypatch.setattr(
-            "slife.tools.env.read_config",
+            "slife.tools.config.read_config",
             lambda path: {},
         )
 
@@ -194,13 +194,13 @@ class TestConfigEnvGetTool:
     @pytest.mark.asyncio
     async def test_credential_check_masked_value(self, monkeypatch):
         """credential_check shows masked value from credstore."""
-        from slife.tools.env import CredentialCheckTool
+        from slife.tools.credentials import CredentialCheckTool
 
         cred = _mock_credstore(monkeypatch)
         cred["DEEPSEEK_API_KEY"] = "sk-secret-12345678"
 
         monkeypatch.setattr(
-            "slife.tools.env.read_config",
+            "slife.tools.config.read_config",
             lambda path: {},
         )
 

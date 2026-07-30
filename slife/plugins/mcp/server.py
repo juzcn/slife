@@ -302,74 +302,59 @@ async def mcp_reload(server: str | None = None) -> str:
 
 
 @mcp.tool(
-    name="mcp_enable_server",
+    name="mcp_set_server",
     description=(
-        "Connect to a pre-configured but disabled MCP server. "
-        "Use this to start a server that was added with enabled=false "
-        "or was previously disabled with mcp_disable_server. "
-        "Returns the list of discovered tools on success."
+        "Enable or disable an MCP server. When enabled, connects to the "
+        "server and returns discovered tools. When disabled, disconnects "
+        "and marks it for skip on next startup. "
+        "The server config is preserved either way."
     ),
 )
-async def mcp_enable_server(name: str) -> str:
+async def mcp_set_server(name: str, enabled: bool) -> str:
     conn = _pool.get_server(name)
     if conn is None:
-        # Server not in pool — look it up in config and add
         return error_json(
             f"Server '{name}' not found. Use mcp_add_server to add it first.",
             server=name,
         )
 
-    conn.config.enabled = True
-    try:
-        # If already connected, just return current state
-        if conn.status.value == "connected":
-            tools = conn.list_tools()
-            return ok_json(
-                status="already_connected",
-                server=name,
-                tool_count=len(tools),
-                tools=[t["name"] for t in tools],
-            )
+    if enabled:
+        conn.config.enabled = True
+        try:
+            if conn.status.value == "connected":
+                tools = conn.list_tools()
+                return ok_json(
+                    status="already_connected",
+                    server=name,
+                    tool_count=len(tools),
+                    tools=[t["name"] for t in tools],
+                )
 
-        await conn.connect()
-        if conn.status.value == "connected":
-            tools = conn.list_tools()
-            return ok_json(
-                status="connected",
-                server=name,
-                tool_count=len(tools),
-                tools=[t["name"] for t in tools],
-            )
-        else:
-            return error_json(
-                conn.error or "Unknown error",
-                status=conn.status.value,
-                server=name,
-            )
-    except Exception as e:
-        logger.exception("mcp_enable_failed server=%s", name)
-        return error_json(str(e), server=name)
-
-
-@mcp.tool(
-    name="mcp_disable_server",
-    description=(
-        "Disconnect and disable an MCP server. The server config is preserved "
-        "but it won't auto-connect on next startup. Use mcp_enable_server to "
-        "reconnect it later."
-    ),
-)
-async def mcp_disable_server(name: str) -> str:
-    conn = _pool.get_server(name)
-    if conn is None:
-        return error_json(f"Server '{name}' not found.", server=name)
-
-    conn.config.enabled = False
-    await _pool.remove_server(name)
-    return ok_json(
-        status="disabled",
-        server=name,
-    )
+            await conn.connect()
+            if conn.status.value == "connected":
+                tools = conn.list_tools()
+                return ok_json(
+                    status="connected",
+                    server=name,
+                    tool_count=len(tools),
+                    tools=[t["name"] for t in tools],
+                )
+            else:
+                return error_json(
+                    conn.error or "Unknown error",
+                    status=conn.status.value,
+                    server=name,
+                )
+        except Exception as e:
+            logger.exception("mcp_set_enable_failed server=%s", name)
+            return error_json(str(e), server=name)
+    else:
+        conn.config.enabled = False
+        await _pool.remove_server(name)
+        return ok_json(
+            status="disabled",
+            server=name,
+        )
 
 
 # ── Entry point ──────────────────────────────────────────────────────

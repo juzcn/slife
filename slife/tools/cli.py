@@ -69,20 +69,15 @@ class CliCheckInstalled(_ConfigPathMixin, Tool):
     """
 
     name = "cli_check_installed"
-    description = (
-        "Check whether CLI commands are already registered in slife.json5. "
-        "Returns each command's registration status, its invocation, "
-        "description, install instructions, and source if recorded. "
-        "Use before installing or registering a CLI to avoid duplicates. "
-        "Does NOT run shell commands."
-    )
+    category = "CLI"
+    description = "Check whether CLI commands are registered in slife.json5. Does NOT run shell commands."
     parameters = {
         "type": "object",
         "properties": {
             "commands": {
                 "type": "array",
-                "description": "One or more command names to check (e.g. ['npm', 'git', 'uv']).",
                 "items": {"type": "string"},
+                "description": "Command names, e.g. ['npm', 'git', 'uv'].",
             },
         },
         "required": ["commands"],
@@ -130,54 +125,24 @@ class CliAddTool(_ConfigPathMixin, Tool):
     """
 
     name = "cli_add_tool"
-    _subagent_skip = True  # subagent has no config _path to write to
-    description = (
-        "Persist an external CLI command to slife.json5 with its name, "
-        "invocation, description, and optional install instructions. "
-        "Does not execute the CLI — records it for future discovery."
-    )
+    category = "CLI"
+    _subagent_skip = True
+    description = "Register an external CLI in slife.json5. Does not execute — records for future discovery."
     parameters = {
         "type": "object",
         "properties": {
-            "name": {
-                "type": "string",
-                "description": "Short name for this CLI (e.g. 'yldp', 'gh'). Used as the lookup key.",
-            },
-            "command": {
-                "type": "string",
-                "description": "The shell command to invoke (e.g. 'yldp', 'gh', 'python -m mytool').",
-            },
-            "description": {
-                "type": "string",
-                "description": "What this CLI does, its main subcommands, and common usage patterns. "
-                "Write this based on --help output so the LLM knows how to use it next time.",
-            },
-            "install": {
-                "type": "string",
-                "description": "How to install this CLI if it's not already available "
-                "(e.g. 'npm install -g yldp', 'pip install yldp'). Omit if already installed globally.",
-            },
+            "name": {"type": "string", "description": "Short name (e.g. 'gh', 'yldp')."},
+            "command": {"type": "string", "description": "Shell invocation (e.g. 'gh', 'python -m mytool')."},
+            "description": {"type": "string", "description": "What it does, subcommands, usage. Write from --help output."},
+            "install": {"type": "string", "description": "Install command (e.g. 'npm i -g yldp'). Omit if pre-installed."},
             "source": {
                 "type": "object",
-                "description": "Where this CLI was discovered. Provide so future updates "
-                "or source changes are traceable.",
+                "description": "Provenance for future updates.",
                 "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "URL where the tool was found (repo, docs, package page).",
-                    },
-                    "type": {
-                        "type": "string",
-                        "description": "Source type: npm, pypi, github, url, cargo, apt, etc.",
-                    },
-                    "version": {
-                        "type": "string",
-                        "description": "Version string at install time (e.g. '1.2.3', 'v2.0.1').",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Optional note about this source (e.g. 'official npm package').",
-                    },
+                    "url": {"type": "string", "description": "Discovery URL."},
+                    "type": {"type": "string", "description": "Source type: npm, pypi, github, url, cargo, apt."},
+                    "version": {"type": "string", "description": "Version at install time."},
+                    "description": {"type": "string", "description": "Optional note."},
                 },
             },
         },
@@ -214,18 +179,13 @@ class CliRemoveTool(_ConfigPathMixin, Tool):
     """Remove a registered CLI tool from slife.json5."""
 
     name = "cli_remove_tool"
+    category = "CLI"
     _subagent_skip = True
-    description = (
-        "Delete a CLI command registration from slife.json5. "
-        "Does not uninstall the actual command — only removes slife's record of it."
-    )
+    description = "Remove a CLI registration from slife.json5. Does not uninstall the command."
     parameters = {
         "type": "object",
         "properties": {
-            "name": {
-                "type": "string",
-                "description": "CLI name to remove, from cli_list_tools output.",
-            },
+            "name": {"type": "string", "description": "CLI name, from cli_list_tools."},
         },
         "required": ["name"],
     }
@@ -248,10 +208,8 @@ class CliListToolsTool(_ConfigPathMixin, Tool):
     """List all registered CLI tools."""
 
     name = "cli_list_tools"
-    description = (
-        "List all registered external CLI tools with their "
-        "descriptions, commands, and install instructions."
-    )
+    category = "CLI"
+    description = "List registered CLI tools with descriptions, commands, and install instructions."
     parameters = {
         "type": "object",
         "properties": {},
@@ -261,3 +219,39 @@ class CliListToolsTool(_ConfigPathMixin, Tool):
     async def execute(self, **kwargs) -> str:
         result = get_cli_tools_summary(self._config_path)
         return result
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# cli_set_tool
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class CliSetTool(_ConfigPathMixin, Tool):
+    name = "cli_set_tool"
+    category = "CLI"
+    _subagent_skip = True
+    description = "Enable or disable a registered CLI tool. Takes effect after restart."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "CLI tool name, from cli_list_tools."},
+            "enabled": {"type": "boolean", "description": "Enable or disable."},
+        },
+        "required": ["name", "enabled"],
+    }
+
+    async def execute(self, **kwargs) -> str:
+        name: str = kwargs["name"]
+        enabled: bool = kwargs["enabled"]
+        raw = read_config(self._config_path)
+        entries = raw.get("cli_tools", {})
+        if not isinstance(entries, dict) or name not in entries:
+            return f"'{name}' not found in cli_tools."
+        entry = entries[name]
+        if not isinstance(entry, dict):
+            return f"'{name}' in cli_tools is malformed."
+        entry["enabled"] = enabled
+        write_config(self._config_path, raw)
+        state = "enabled" if enabled else "disabled"
+        logger.info("cli_set_tool name=%s enabled=%s", name, enabled)
+        return f"[OK] CLI tool '{name}' {state}. Restart for the change to take effect."

@@ -1,4 +1,4 @@
-"""Tests for slife.tools.env — credential check tool."""
+"""Tests for slife.tools.credentials — credential check tool."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from slife.tools.env import (
+from slife.tools.credentials import (
     _mask_value,
     _find_json5_refs,
     _simplify_path,
@@ -132,7 +132,7 @@ class TestCredentialCheckTool:
     async def test_execute_found_in_shell(self, monkeypatch):
         """Shell env var is reported as set."""
         monkeypatch.setenv("TEST_API_KEY", "sk-shell-value-12345")
-        with patch("slife.tools.env.read_config", return_value={}):
+        with patch("slife.tools.credentials.read_config", return_value={}):
             with patch("credstore.get_credential", return_value=None) as mock_get:
                 tool = CredentialCheckTool(config_path=Path("test.json5"))
                 result = await tool.execute(key="TEST_API_KEY")
@@ -146,7 +146,7 @@ class TestCredentialCheckTool:
     async def test_execute_found_in_keyring(self, monkeypatch):
         """Keyring is reported as stored when env is not set."""
         monkeypatch.delenv("MY_KEY", raising=False)
-        with patch("slife.tools.env.read_config", return_value={}):
+        with patch("slife.tools.credentials.read_config", return_value={}):
             with patch("credstore.get_credential", return_value="my-secret-key-value") as mock_get:
                 tool = CredentialCheckTool(config_path=Path("test.json5"))
                 result = await tool.execute(key="MY_KEY")
@@ -168,7 +168,7 @@ class TestCredentialCheckTool:
                 },
             },
         }
-        with patch("slife.tools.env.read_config", return_value=config):
+        with patch("slife.tools.credentials.read_config", return_value=config):
             with patch("credstore.get_credential", return_value=None):
                 tool = CredentialCheckTool(config_path=Path("test.json5"))
                 result = await tool.execute(key="GITHUB_TOKEN")
@@ -180,7 +180,7 @@ class TestCredentialCheckTool:
     async def test_execute_not_found_anywhere(self, monkeypatch):
         """Returns not-found status for all sources."""
         monkeypatch.delenv("MISSING_KEY", raising=False)
-        with patch("slife.tools.env.read_config", return_value={}):
+        with patch("slife.tools.credentials.read_config", return_value={}):
             with patch("credstore.get_credential", return_value=None):
                 tool = CredentialCheckTool(config_path=Path("test.json5"))
                 result = await tool.execute(key="MISSING_KEY")
@@ -200,7 +200,7 @@ class TestCredentialCheckTool:
                 },
             },
         }
-        with patch("slife.tools.env.read_config", return_value=config):
+        with patch("slife.tools.credentials.read_config", return_value=config):
             with patch("credstore.get_credential", return_value="sk-deepseek-5678"):
                 tool = CredentialCheckTool(config_path=Path("test.json5"))
                 result = await tool.execute(key="DEEPSEEK_API_KEY")
@@ -224,7 +224,7 @@ class TestCredentialCheckTool:
                 },
             },
         }
-        with patch("slife.tools.env.read_config", return_value=config):
+        with patch("slife.tools.credentials.read_config", return_value=config):
             with patch("credstore.get_credential", return_value="sk-serper-key-abc"):
                 tool = CredentialCheckTool(config_path=Path("test.json5"))
                 result = await tool.execute(key="SERPER_API_KEY")
@@ -236,7 +236,7 @@ class TestCredentialCheckTool:
     async def test_status_format_structure(self, monkeypatch):
         """Verify the output has the expected structure with all three sources."""
         monkeypatch.delenv("ANY_KEY", raising=False)
-        with patch("slife.tools.env.read_config", return_value={}):
+        with patch("slife.tools.credentials.read_config", return_value={}):
             with patch("credstore.get_credential", return_value=None):
                 tool = CredentialCheckTool(config_path=Path("test.json5"))
                 result = await tool.execute(key="ANY_KEY")

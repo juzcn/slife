@@ -158,6 +158,11 @@ class Tool(ABC):
     description: ClassVar[str]
     parameters: ClassVar[dict]
 
+    # Logical category for grouping in list_tools output.
+    # Must be one of: System, Execution, Skills, CLI, REST API,
+    # A2A, Config, Credentials, Meta.
+    category: ClassVar[str] = ""
+
     # Set to True on tools that only work with the MQTT/A2A mesh.
     # The factory skips registration when a2a_config is absent or disabled.
     requires_a2a: ClassVar[bool] = False
