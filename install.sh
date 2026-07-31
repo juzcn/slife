@@ -181,7 +181,7 @@ echo -e "${YELLOW}[4/5] Installing slife v${VERSION}…${NC}"
 # Save outside TMP_DIR so the file survives cleanup.
 PRESERVED_REQS="${TMPDIR:-/tmp}/slife-preserved-requirements.txt"
 :> "$PRESERVED_REQS"
-SLIFE_LINE=$(uv tool list --show-paths 2>/dev/null | grep "slife v")
+SLIFE_LINE=$(uv tool list --show-paths 2>/dev/null | grep "slife v" || true)
 if [ -n "$SLIFE_LINE" ]; then
     SLIFE_VENV=$(echo "$SLIFE_LINE" | sed -n 's/.*(\(.*\)).*/\1/p')
     if [ -n "$SLIFE_VENV" ] && [ -d "$SLIFE_VENV" ]; then
@@ -247,7 +247,7 @@ if [ -s "$PRESERVED_REQS" ]; then
         PYPROJECT="$TMP_DIR/slife-main/pyproject.toml"
         EXTRA_INDEX_ARGS=""
         if [ -f "$PYPROJECT" ]; then
-            _url=$(grep -A2 'extra-index-url' "$PYPROJECT" 2>/dev/null | grep -o 'https\?://[^"]*' | head -1)
+            _url=$(grep -A2 'extra-index-url' "$PYPROJECT" 2>/dev/null | grep -o 'https\?://[^"]*' | head -1 || true)
             [ -n "$_url" ] && EXTRA_INDEX_ARGS="--extra-index-url $_url"
         fi
 
