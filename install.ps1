@@ -274,7 +274,12 @@ try {
     $ErrorActionPreference = $prevEAP
     if ($installed) {
         Write-Dim "Removing previous slife installation..."
-        try { uv tool uninstall slife *>$null } catch { }
+        $uninstallLog = Join-Path $tmpDir "uninstall.log"
+        & uv tool uninstall slife > $uninstallLog 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "  uv tool uninstall reported errors (continuing):"
+            Get-Content $uninstallLog -Tail 5 | ForEach-Object { Write-Dim "    $_" }
+        }
     }
 
     # uv tool uninstall may leave the venv directory behind on Windows
@@ -299,6 +304,19 @@ try {
                 Write-Warn "Or manually delete: $oldToolDir"
                 Write-Warn "Help: $slifeRepo"
                 exit 1
+            }
+        }
+    }
+
+    # Remove stale shims in ~/.local/bin — uv tool install refuses to
+    # overwrite an existing .exe that a previous (failed) install left.
+    $localBin = "$env:USERPROFILE\.local\bin"
+    if (Test-Path $localBin) {
+        foreach ($stale in @("$localBin\slife.exe", "$localBin\slife.cmd",
+                             "$localBin\credstore.exe", "$localBin\credstore.cmd")) {
+            if (Test-Path $stale) {
+                Remove-Item $stale -Force -ErrorAction SilentlyContinue
+                Write-Dim "Removed stale shim: $stale"
             }
         }
     }
@@ -381,19 +399,11 @@ try {
         }
     }
 
-    # ── 5. Clean up previous installation artifacts ──────────────────
-    Write-Step "[5/5] Cleaning up previous installation artifacts..."
+    # ── 5. Finalise PATH ──────────────────────────────────────────────
+    Write-Step "[5/5] Finalising PATH..."
 
     $localBin   = "$env:USERPROFILE\.local\bin"
     $scriptsDir = "$env:USERPROFILE\.slife\Scripts"
-
-    # Remove stale .cmd wrappers from the old install approach.
-    foreach ($stale in @("$localBin\slife.cmd", "$localBin\credstore.cmd")) {
-        if (Test-Path $stale) {
-            Remove-Item $stale -Force
-            Write-Dim "  Removed stale wrapper: $stale"
-        }
-    }
 
     # Ensure ~/.local/bin is on PATH and remove stale venv entries.
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
