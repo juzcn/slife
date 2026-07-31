@@ -22,8 +22,8 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║               Slife Installer                ║${NC}"
-echo -e "${CYAN}║           Terminal-based AI agent            ║${NC}"
+echo -e "${CYAN}║              Slife Installer               ║${NC}"
+echo -e "${CYAN}║          Terminal-based AI agent           ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 
