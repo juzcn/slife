@@ -14,7 +14,6 @@ Reference: ``man 2 add_key``, ``man 2 keyctl``, ``man 7 keyrings``.
 from __future__ import annotations
 
 import ctypes
-import errno
 import logging
 import os
 import platform
@@ -66,6 +65,9 @@ _SYS_KEYCTL: int = {
 KEYCTL_READ       = 11
 KEYCTL_SEARCH     = 4
 KEYCTL_INVALIDATE = 2
+
+# ENOKEY — "Required key not available" (Linux-specific, not in Windows errno)
+_ENOKEY = 126
 
 # special keyring IDs
 KEY_SPEC_PERSISTENT_KEYRING = -11
@@ -196,7 +198,7 @@ class KeyutilsBackend(KeyringBackend):
     def delete_password(self, service: str, username: str) -> None:
         kid = _search(self._desc(service, username))
         if kid < 0:
-            if -kid == errno.ENOKEY:
+            if -kid == _ENOKEY:
                 raise PasswordDeleteError(
                     f"Credential '{service}/{username}' not found in kernel keyring"
                 )
