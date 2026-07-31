@@ -37,14 +37,22 @@ def enumerate_system_keyring(
     if os.name == "nt":
         return _enumerate_windows(service, with_values=with_values)
 
-    # Other platforms: keyring backends don't support enumeration.
-    print(
-        "Credential enumeration is not supported on this platform.\n"
-        "Re-run 'credstore set <KEY>' for each credential to populate\n"
-        "the cryptfile backup.",
-        file=sys.stderr,
-    )
-    return []
+    # Non-Windows: try the current keyring backend (SecretService / macOS
+    # Keychain).  If no system keyring is available (headless Linux, WSL,
+    # no D-Bus session), return empty silently — credstore falls back to
+    # the cryptfile backup for enumeration.
+    try:
+        import keyring
+        kr = keyring.get_keyring()
+    except Exception:
+        return []
+
+    # FailKeyring means no viable backend — headless system.
+    from keyring.backends.fail import Keyring as FailKeyring
+    if isinstance(kr, FailKeyring):
+        return []
+
+    return _enumerate_keyring(kr, service, with_values=with_values)
 
 
 def _enumerate_windows(
@@ -121,3 +129,52 @@ def _enumerate_windows(
     del all_creds
 
     return entries
+
+
+def _enumerate_keyring(
+    kr, service: str, with_values: bool = False
+) -> list[tuple[str, str]]:
+    """Enumerate credentials from a ``keyring`` backend on non-Windows.
+
+    Most keyring backends only expose point-lookup APIs
+    (``get_password``), not batch enumeration.  This function tries
+    backend-specific enumeration where available and returns an empty
+    list otherwise — credstore falls back to the cryptfile.
+    """
+    # ── SecretService (Linux desktop) ──────────────────────────────
+    # Use the backend's D-Bus collection to enumerate items.
+    try:
+        from keyring.backends.SecretService import Keyring as SecretServiceKR
+        if isinstance(kr, SecretServiceKR):
+            collection = kr.get_preferred_collection()
+            items = collection.get_all_items() if collection else []
+            entries: list[tuple[str, str]] = []
+            for item in items:
+                label = item.get_label()
+                if not label or not label.startswith(service):
+                    continue
+                # Extract key from label: "credstore\0<key>" or "service\0<key>"
+                parts = label.split("\0", 1)
+                key = parts[1] if len(parts) == 2 else label
+                if with_values:
+                    secret = item.get_secret()
+                    value = secret.decode("utf-8") if isinstance(secret, bytes) else str(secret)
+                else:
+                    value = ""
+                entries.append((key, value))
+            return entries
+    except Exception:
+        pass
+
+    # ── macOS Keychain ─────────────────────────────────────────────
+    if sys.platform == "darwin":
+        try:
+            from keyring.backends.macOS import Keyring as MacOSKR
+            if isinstance(kr, MacOSKR):
+                return _enumerate_macos_keychain(service, with_values=with_values)
+        except Exception:
+            pass
+
+    # ── Fallback: backend doesn't support enumeration ──────────────
+    # credstore's cryptfile backup provides the full list.
+    return []

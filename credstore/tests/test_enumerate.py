@@ -41,12 +41,18 @@ def _mock_win32cred_module(creds=None, side_effect=None):
 class TestEnumerateSystemKeyring:
     """Tests for enumerate_system_keyring."""
 
-    def test_non_windows_returns_empty(self, capsys):
+    def test_non_windows_no_system_keyring_returns_empty(self, capsys):
+        """On headless Linux / WSL (no desktop keyring), silently return [].
+        credstore falls back to the cryptfile backup for enumeration."""
         with patch.object(os, "name", "posix"):
-            result = enumerate_system_keyring("credstore")
-            assert result == []
-            captured = capsys.readouterr()
-            assert "not supported" in captured.err
+            # Mock keyring to return FailKeyring (headless, no viable backend).
+            with patch("keyring.get_keyring") as mock_get:
+                from keyring.backends.fail import Keyring as FailKeyring
+                mock_get.return_value = FailKeyring()
+                result = enumerate_system_keyring("credstore")
+                assert result == []
+                captured = capsys.readouterr()
+                assert captured.err == ""
 
     def test_windows_delegates(self):
         with patch.object(os, "name", "nt"):
@@ -84,17 +90,18 @@ class TestEnumerateWindows:
     # Import failure
     # ------------------------------------------------------------------
 
-    def test_import_error_returns_empty(self, capsys):
-        """When no win32cred module is available, return []."""
-        # Mock _enumerate_windows to simulate the import error path.
-        # Since win32ctypes is already installed, the real import always
-        # succeeds on Windows.  We test the fallback by calling
-        # enumerate_system_keyring on a mocked non-Windows platform.
+    def test_non_windows_no_keyring_returns_empty_silently(self, capsys):
+        """On non-Windows without a system keyring, silently return [].
+        This covers the old "import error" fallback — credstore now
+        detects missing backends and falls through without a warning."""
         with patch.object(os, "name", "posix"):
-            result = enumerate_system_keyring("credstore")
+            with patch("keyring.get_keyring") as mock_get:
+                from keyring.backends.fail import Keyring as FailKeyring
+                mock_get.return_value = FailKeyring()
+                result = enumerate_system_keyring("credstore")
         assert result == []
         captured = capsys.readouterr()
-        assert "not supported" in captured.err
+        assert captured.err == ""
 
     # ------------------------------------------------------------------
     # CredEnumerate errors
