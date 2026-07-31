@@ -197,7 +197,7 @@ if [ -n "$SLIFE_LINE" ]; then
             sed 's/ @ .*//; s/==.*//' "$PRESERVED_FULL" > "$PRESERVED_REQS"
             _count=$(wc -l < "$PRESERVED_REQS" 2>/dev/null || echo 0)
             if [ "$_count" -gt 0 ]; then
-                echo -e "  ${GRAY}Detected $_count packages to preserve${NC}"
+                echo -e "  ${GRAY}Checking $_count packages from previous installation${NC}"
             fi
         fi
     fi
@@ -249,7 +249,7 @@ if [ -s "$PRESERVED_REQS" ]; then
 
         # Diff old freeze against new venv — only re-add packages not
         # already in the base install (avoids conflicts with transitive deps).
-        EXTRA_REQS="$TMPDIR/slife-extra-requirements.txt"
+        EXTRA_REQS="${TMPDIR:-/tmp}/slife-extra-requirements.txt"
         uv pip freeze --python "$NEW_PYTHON" 2>/dev/null | sed 's/==.*//' | sort > "$TMP_DIR/new-freeze.txt"
         sort "$PRESERVED_REQS" | comm -23 - "$TMP_DIR/new-freeze.txt" > "$EXTRA_REQS"
         _extra_count=$(wc -l < "$EXTRA_REQS" 2>/dev/null || echo 0)
