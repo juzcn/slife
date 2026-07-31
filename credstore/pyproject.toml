@@ -10,8 +10,13 @@ authors = [
 requires-python = ">=3.10"
 dependencies = [
     "keyring>=25.0.0",
+    "keyring-wincred>=0.1.0",
     "keyrings-cryptfile>=1.3.0",
+    "keyutils>=0.6; sys_platform == 'linux'",
 ]
+
+[project.entry-points."keyring.backends"]
+keyutils = "credstore._keyutils_backend"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
