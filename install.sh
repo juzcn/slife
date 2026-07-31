@@ -22,8 +22,8 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║             Slife Installer              ║${NC}"
-echo -e "${CYAN}║         Terminal-based AI agent          ║${NC}"
+echo -e "${CYAN}║               Slife Installer                ║${NC}"
+echo -e "${CYAN}║           Terminal-based AI agent            ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -309,7 +309,11 @@ fi
 # ── 6. Done ───────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  Slife v${VERSION} installed successfully!   ║${NC}"
+	SUCCESS_MSG="Slife v${VERSION} installed successfully!"
+	INNER_WIDTH=46
+	LEFT_PAD=$(( (INNER_WIDTH - ${#SUCCESS_MSG}) / 2 ))
+	RIGHT_PAD=$(( INNER_WIDTH - ${#SUCCESS_MSG} - LEFT_PAD ))
+	printf "${GREEN}║%*s%s%*s║${NC}\n" $LEFT_PAD "" "$SUCCESS_MSG" $RIGHT_PAD ""
 echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 
