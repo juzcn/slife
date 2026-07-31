@@ -31,14 +31,6 @@ logger = logging.getLogger("credstore.keyutils")
 
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
-# add_key(const char *type, const char *description,
-#         const void *payload, size_t plen, key_serial_t keyring_id)
-_libc.add_key.argtypes = [
-    ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p,
-    ctypes.c_size_t, ctypes.c_int32,
-]
-_libc.add_key.restype = ctypes.c_int32
-
 # long syscall(long number, ...)
 _libc.syscall.argtypes = [
     ctypes.c_long, ctypes.c_long, ctypes.c_ulong,
@@ -48,7 +40,18 @@ _libc.syscall.restype = ctypes.c_long
 
 # ── syscall / keyctl constants ──────────────────────────────────────────────
 
-# syscall numbers for keyctl(2)
+# Architecture-specific syscall numbers for add_key(2) and keyctl(2)
+# Both are called via syscall() to avoid glibc wrapper availability issues.
+_SYS_add_key: int = {
+    "x86_64":  248,
+    "aarch64": 217,
+    "armv7l":  309,
+    "i686":    287,
+    "ppc64le": 310,
+    "s390x":   278,
+    "riscv64": 259,
+}.get(platform.machine(), 248)
+
 _SYS_KEYCTL: int = {
     "x86_64":  250,
     "aarch64": 219,
@@ -172,10 +175,11 @@ class KeyutilsBackend(KeyringBackend):
         if old >= 0:
             _libc.syscall(_SYS_KEYCTL, KEYCTL_INVALIDATE, old, 0, 0, 0)
 
-        kid = _libc.add_key(
-            ctypes.c_char_p(KEY_TYPE),
-            ctypes.c_char_p(desc),
-            ctypes.c_char_p(payload),
+        kid = _libc.syscall(
+            _SYS_add_key,
+            ctypes.addressof(ctypes.create_string_buffer(KEY_TYPE)),
+            ctypes.addressof(ctypes.create_string_buffer(desc)),
+            ctypes.addressof(ctypes.create_string_buffer(payload)),
             ctypes.c_size_t(len(payload)),
             ctypes.c_int32(KEY_SPEC_PERSISTENT_KEYRING),
         )
