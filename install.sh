@@ -219,16 +219,12 @@ if [ -f "$HOME/.slife/pyvenv.cfg" ]; then
 fi
 
 TOOL_INSTALL_LOG="$TMP_DIR/tool-install.log"
-# Capture output to a log file first, then display it.  This avoids any
-# pipefail / bash-version edge cases with ``set -o pipefail`` + ``tee``.
-echo -e "  ${GRAY}(output captured to $TOOL_INSTALL_LOG)${NC}"
 set +eo pipefail
 uv tool install --from "$TMP_DIR/slife-main" --python 3.13 slife > "$TOOL_INSTALL_LOG" 2>&1
 INSTALL_EXIT=$?
 set -eo pipefail
-cat "$TOOL_INSTALL_LOG"
 if [ $INSTALL_EXIT -ne 0 ]; then
-    echo -e "${RED}Error: slife installation failed (exit $INSTALL_EXIT).${NC}"
+    echo -e "${RED}Error: slife installation failed.${NC}"
     echo -e "${YELLOW}Last lines of install log:${NC}"
     tail -n 20 "$TOOL_INSTALL_LOG"
     echo -e "${YELLOW}Help: $SLIFE_REPO${NC}"
@@ -237,7 +233,7 @@ fi
 
 # Re-add preserved packages into the new tool venv.
 if [ -s "$PRESERVED_REQS" ]; then
-    NEW_LINE=$(uv tool list --show-paths 2>/dev/null | grep "slife v")
+    NEW_LINE=$(uv tool list --show-paths 2>/dev/null | grep "slife v" || true)
     NEW_VENV=$(echo "$NEW_LINE" | sed -n 's/.*(\(.*\)).*/\1/p')
     if [ -n "$NEW_VENV" ] && [ -d "$NEW_VENV" ]; then
         NEW_PYTHON="$NEW_VENV/bin/python"
