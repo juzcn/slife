@@ -29,7 +29,7 @@ echo ""
 
 # ── Pre-flight summary ──────────────────────────────────────────────
 echo "Install method    : uv tool install (isolated environment)"
-echo "User data         : ${CYAN}$HOME/.slife/${NC}"
+echo -e "User data         : ${CYAN}$HOME/.slife/${NC}"
 echo "Python            : managed by uv (3.13)"
 echo "npx               : auto-install Node.js if needed (required for MCP servers)"
 echo "Disk space needed : ~500 MB"
