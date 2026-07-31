@@ -336,13 +336,15 @@ echo "  credstore set-password              # set up encrypted backup (first tim
 echo "  credstore set DEEPSEEK_API_KEY       # store your API key"
 echo "  slife                                # launch the TUI"
 echo ""
-if [ "${PRESERVE_OK:-0}" = "1" ] && [ -s "$EXTRA_REQS" ]; then
-    echo -e "${CYAN}Preserved packages:${NC}"
-    _count=$(wc -l < "$EXTRA_REQS" 2>/dev/null || echo 0)
-    echo -e "${GREEN}  ✓${NC} $_count extra packages restored from previous install"
-elif [ -s "$EXTRA_REQS" ]; then
-    echo -e "${YELLOW}Failed to preserve packages — run manually:${NC}"
-    echo -e "${YELLOW}  uv pip install -r $EXTRA_REQS${NC}"
+if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
+    if [ "${PRESERVE_OK:-0}" = "1" ]; then
+        echo -e "${CYAN}Preserved packages:${NC}"
+        _count=$(wc -l < "$EXTRA_REQS" 2>/dev/null || echo 0)
+        echo -e "${GREEN}  ✓${NC} $_count extra packages restored from previous install"
+    else
+        echo -e "${YELLOW}Failed to preserve packages — run manually:${NC}"
+        echo -e "${YELLOW}  uv pip install -r $EXTRA_REQS${NC}"
+    fi
 fi
 echo -e "${CYAN}Optional extras:${NC}"
 echo "  # Local GGUF embeddings (offline, ~30 MB):"
