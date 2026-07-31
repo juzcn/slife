@@ -51,8 +51,8 @@ New-Item -ItemType Directory -Force $tmpDir | Out-Null
 
 try {
     Write-Box "╔══════════════════════════════════════╗"
-    Write-Box "║        Slife Installer              ║"
-    Write-Box "║  Terminal-based AI agent            ║"
+    Write-Box "║        Slife Installer             ║"
+    Write-Box "║  Terminal-based AI agent           ║"
     Write-Box "╚══════════════════════════════════════╝"
     Write-Host ""
 
