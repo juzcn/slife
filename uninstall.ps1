@@ -22,7 +22,7 @@ function Write-Box($msg)  { Write-Host $msg -ForegroundColor Cyan }
 
 Write-Host ""
 Write-Box "╔══════════════════════════════════════╗"
-Write-Box "║        Slife Uninstaller            ║"
+Write-Box "║        Slife Uninstaller           ║"
 Write-Box "╚══════════════════════════════════════╝"
 Write-Host ""
 
