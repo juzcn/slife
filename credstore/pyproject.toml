@@ -28,6 +28,7 @@ classifiers = [
 ]
 
 [project.entry-points."keyring.backends"]
+wsl_patch = "credstore._wsl_patch"
 keyutils = "credstore._keyutils_backend"
 
 [project.urls]
