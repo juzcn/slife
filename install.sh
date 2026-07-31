@@ -309,7 +309,7 @@ fi
 # ── 6. Done ───────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  Slife v${VERSION} installed successfully! 🎉  ║${NC}"
+echo -e "${GREEN}║   Slife v${VERSION} installed successfully!   ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 
