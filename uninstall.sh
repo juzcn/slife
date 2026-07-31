@@ -14,7 +14,7 @@ NC='\033[0m'
 
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║            Slife Uninstaller             ║${NC}"
+echo -e "${CYAN}║              Slife Uninstaller               ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 
