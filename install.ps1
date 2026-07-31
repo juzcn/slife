@@ -255,6 +255,18 @@ try {
         }
     }
 
+    # Kill any running slife processes — they hold locks on the venv.
+    $slifeProcs = Get-Process -Name "slife","python" -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Path -like "*slife*" -or $_.Path -like "*uv\tools\slife*" }
+    if ($slifeProcs) {
+        Write-Warn "Stopping running slife processes..."
+        $slifeProcs | ForEach-Object {
+            try { Stop-Process -Id $_.Id -Force -ErrorAction Stop; Write-Dim "  Stopped $($_.ProcessName) (PID $($_.Id))" }
+            catch { Write-Warn "  Could not stop $($_.ProcessName) (PID $($_.Id))" }
+        }
+        Start-Sleep -Seconds 2  # Let file handles release
+    }
+
     # Remove previous installation (clean slate for uv tool install).
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "SilentlyContinue"
@@ -263,6 +275,32 @@ try {
     if ($installed) {
         Write-Dim "Removing previous slife installation..."
         try { uv tool uninstall slife *>$null } catch { }
+    }
+
+    # uv tool uninstall may leave the venv directory behind on Windows
+    # when a process (antivirus, leftover slife, etc.) holds a lock.
+    # Clean it up explicitly — rename out of the way if removal fails
+    # so the subsequent uv tool install has a clean slate.
+    $oldToolDir = "$env:APPDATA\uv\tools\slife"
+    if (Test-Path $oldToolDir) {
+        try {
+            Remove-Item -Recurse -Force $oldToolDir -ErrorAction Stop
+            Write-Dim "Cleaned up old tool venv: $oldToolDir"
+        } catch {
+            # Directory is locked — rename it so the new install can proceed.
+            $backupDir = "$oldToolDir.old.$(Get-Date -Format 'yyyyMMddHHmmss')"
+            Write-Warn "Cannot remove locked directory, renaming to:"
+            Write-Dim "  $backupDir"
+            try {
+                Rename-Item $oldToolDir $backupDir -ErrorAction Stop
+            } catch {
+                Write-Err "Error: could not remove or rename old slife tool directory."
+                Write-Warn "Close any running slife windows and try again."
+                Write-Warn "Or manually delete: $oldToolDir"
+                Write-Warn "Help: $slifeRepo"
+                exit 1
+            }
+        }
     }
 
     # Clean up old venv artifacts if migrating from a previous install
