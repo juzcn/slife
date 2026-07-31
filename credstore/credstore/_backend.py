@@ -108,7 +108,14 @@ def reinit_cryptfile(password: str) -> None:
 
 
 def _init_system():
-    """Initialize the system keyring backend."""
+    """Initialize the system keyring backend.
+
+    Only accepts OS-level keyrings (Windows CredMan, macOS Keychain,
+    Linux SecretService / KDE Wallet).  File-based backends from
+    ``keyrings.cryptfile`` are rejected — they are our own cryptfile,
+    not a system keyring, and probing them triggers an interactive
+    password prompt.
+    """
     import keyring
 
     try:
@@ -122,6 +129,13 @@ def _init_system():
         logger.debug("system keyring: fail backend (no viable backends)")
         return None
 
+    # Reject file-based keyrings — they are the cryptfile, not a system
+    # keyring, and probing them would trigger getpass.getpass().
+    if _is_file_based_keyring(kr):
+        logger.debug("system keyring: rejected file-based backend %s",
+                     type(kr).__name__)
+        return None
+
     try:
         kr.get_password("credstore", "__probe__")
     except Exception as exc:
@@ -131,6 +145,26 @@ def _init_system():
     logger.debug("system keyring: %s", type(kr).__name__)
     keyring.set_keyring(kr)
     return kr
+
+
+def _is_file_based_keyring(kr) -> bool:
+    """Return True if *kr* is a file-based keyring, not an OS keyring.
+
+    File-based backends (from keyrings.cryptfile) store secrets in an
+    encrypted file and are gated behind a password — the same password
+    credstore already manages.  They are not suitable as a separate
+    system keyring.
+    """
+    # Walk the MRO to catch CryptFileKeyring, EncryptedKeyring, and
+    # any other file-based backend.
+    for cls in type(kr).__mro__:
+        module = getattr(cls, '__module__', '')
+        if 'cryptfile' in module.lower():
+            return True
+        if cls.__name__ in ('EncryptedKeyring', 'PlaintextKeyring',
+                           'CryptFileKeyring', 'FileKeyring'):
+            return True
+    return False
 
 
 def _init_cryptfile(password: str | None = None):
