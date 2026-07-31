@@ -274,6 +274,15 @@ _SECRET_PATTERNS: list[re.Pattern] = [
 
 _MASKED = "<MASKED>"
 
+# Query-param / field names whose values are NOT secrets even when they
+# look like one (e.g. 32-char hex QR code tokens).  Values appearing
+# after these keys (in JSON, URL params, or key=value lines) are
+# temporarily protected from masking.
+_NON_SECRET_KEYS = re.compile(
+    r"""(["']?(?:qrcode|qr_code|qr-code|nonce|state|redirect_uri|callback_url)["']?\s*[=:]\s*)(["']?)([^"'\s,}&]+)(\2)""",
+    re.IGNORECASE,
+)
+
 
 def sanitize_secrets(text: str) -> str:
     """Mask API key / token patterns from *text*.
@@ -291,8 +300,27 @@ def sanitize_secrets(text: str) -> str:
     """
     if not text or not isinstance(text, str):
         return text
+
+    # Protect known non-secret values (qrcode, nonce, etc.) from masking
+    protected: dict[str, str] = {}
+    _counter = 0
+
+    def _protect(m: re.Match) -> str:
+        nonlocal _counter
+        key = f"\x00PROTECT{_counter}\x00"
+        protected[key] = m.group(0)
+        _counter += 1
+        return key
+
+    text = _NON_SECRET_KEYS.sub(_protect, text)
+
     for pat in _SECRET_PATTERNS:
         text = pat.sub(_MASKED, text)
+
+    # Restore protected values
+    for placeholder, original in protected.items():
+        text = text.replace(placeholder, original)
+
     return text
 
 
