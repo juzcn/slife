@@ -35,7 +35,10 @@ function Get-PkgName($spec) {
 # Parse the venv path from "uv tool list --show-paths" output.
 # Returns the path inside parentheses, or $null.
 function Get-SlifeVenv {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
     $line = & uv tool list --show-paths 2>$null | Select-String "slife v"
+    $ErrorActionPreference = $prevEAP
     if ($line -and $line -match '\((.+?)\)') { return $matches[1] }
     return $null
 }
@@ -253,7 +256,11 @@ try {
     }
 
     # Remove previous installation (clean slate for uv tool install).
-    if (uv tool list 2>$null | Select-String "slife") {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    $installed = uv tool list 2>$null | Select-String "slife"
+    $ErrorActionPreference = $prevEAP
+    if ($installed) {
         Write-Dim "Removing previous slife installation..."
         try { uv tool uninstall slife *>$null } catch { }
     }
