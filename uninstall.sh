@@ -13,12 +13,10 @@ GRAY='\033[0;90m'
 NC='\033[0m'
 
 echo ""
-echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║             Slife Uninstaller              ║${NC}"
-echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
+echo -e "${CYAN}Slife Uninstaller${NC}"
 echo ""
 
-# ── 1. Uninstall from uv tool ──────────────────────────────────────────
+# 1. Uninstall from uv tool
 if uv tool list 2>/dev/null | grep -qF "slife"; then
     echo -e "${YELLOW}Uninstalling slife (slife + credstore share the same venv)…${NC}"
     if uv tool uninstall slife 2>&1; then
@@ -30,7 +28,7 @@ else
     echo -e "${GRAY}slife is not installed.${NC}"
 fi
 
-# ── 2. Clean up wrapper binaries ──────────────────────────────────────
+# 2. Clean up wrapper binaries
 LOCAL_BIN="$HOME/.local/bin"
 for bin in "$LOCAL_BIN/slife" "$LOCAL_BIN/credstore"; do
     if [ -f "$bin" ] || [ -L "$bin" ]; then
@@ -39,7 +37,7 @@ for bin in "$LOCAL_BIN/slife" "$LOCAL_BIN/credstore"; do
     fi
 done
 
-# ── 3. Remaining data ─────────────────────────────────────────────────
+# 3. Remaining data
 echo ""
 DATA_DIR="$HOME/.slife"
 
