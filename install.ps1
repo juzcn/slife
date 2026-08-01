@@ -579,10 +579,9 @@ try {
     Write-Host "  slife                                # launch the TUI"
     Write-Host ""
     Write-Host "Optional extras:" -ForegroundColor Cyan
-    Write-Host "  # Local GGUF embeddings (offline, ~30 MB) — needs pre-built wheels on Windows:"
+    Write-Host "  # Local GGUF embeddings (offline, ~30 MB):"
     $ggufUrl = if ($extraIndexArgs.Count -gt 0) { " $($extraIndexArgs[0]) $($extraIndexArgs[1])" } else { "" }
     Write-Host "  uv pip install --python `"`$(uv tool dir)\slife\Scripts\python.exe`"$ggufUrl llama-cpp-python"
-    Write-Host "  # With NVIDIA GPU, replace 'cu121' with the CUDA version matching your driver"
     Write-Host "  # HuggingFace transformer embeddings (~2 GB):"
     Write-Host "  uv pip install --python `"`$(uv tool dir)\slife\Scripts\python.exe`" sentence-transformers"
     Write-Host ""
