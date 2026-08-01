@@ -238,8 +238,9 @@ class GenerateQRCodeTool(Tool):
     name: ClassVar[str] = "generate_qrcode"
     category: ClassVar[str] = "Meta"
     description: ClassVar[str] = (
-        "Render a URL or text as a terminal-scannable ASCII QR code. "
-        "Copy the QR into your reply — the user cannot see raw tool output. "
+        "Render text as a terminal-scannable ASCII QR code. "
+        "You MUST copy the QR block into your reply — the user cannot see "
+        "raw tool output, only your message. "
         "Uses Unicode half-block characters (█▀▄). Works offline."
     )
     parameters: ClassVar[dict] = {

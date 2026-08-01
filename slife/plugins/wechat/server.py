@@ -414,8 +414,9 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
 @mcp.tool(
     name="login",
     description=(
-        "Show a WeChat login QR code for the user to scan with their phone. "
-        "Copy the QR into your reply — the user cannot see raw tool output. "
+        "Generate a WeChat login QR code.  You MUST copy every line of "
+        "the tool output (the ASCII QR block) into your reply verbatim — "
+        "the user cannot see tool output, only your message.  "
         "Then poll check_status until login completes (~23h session)."
     ),
 )
@@ -452,10 +453,9 @@ async def wechat_login() -> str:
     qr_ascii = _render_qr_ascii(_qr_content)
 
     return "\n".join([
-        "📱 请使用微信扫描以下二维码登录",
+        "SHOW THIS QR IN YOUR REPLY:",
         qr_ascii,
-        "",
-        "QR expires in ~10 min (auto-refreshes 3×). Call check_status to track login.",
+        "Scan with WeChat. Call check_status to track. ~10min expiry.",
     ])
 
 
