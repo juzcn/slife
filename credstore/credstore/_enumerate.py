@@ -90,7 +90,7 @@ public class CredEnum {
                 Marshal.Copy(cred.CredentialBlob, bytes, 0, cred.CredentialBlobSize);
                 blobStr = Convert.ToBase64String(bytes);
             }
-            results.Add(user + "\x1f" + blobStr);
+            results.Add(user + "|" + blobStr);
         }
         CredFree(buf);
         return "[" + string.Join(",", results.ConvertAll(s => "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"")) + "]";
@@ -156,8 +156,8 @@ def _enumerate_wsl(
     entries: list[tuple[str, str]] = []
     seen: set[str] = set()
     for entry in raw_entries:
-        if "\x1f" in entry:
-            username, b64_blob = entry.split("\x1f", 1)
+        if "|" in entry:
+            username, b64_blob = entry.split("|", 1)
         else:
             username, b64_blob = entry, ""
 
