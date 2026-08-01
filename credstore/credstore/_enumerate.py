@@ -1,8 +1,9 @@
 """Platform-specific credential enumeration.
 
 Reads credential keys from the OS credential store.  On Windows this
-uses ``win32cred.CredEnumerate``; on other platforms enumeration is
-not supported and an empty list is returned.
+uses ``win32cred.CredEnumerate``; on WSL it uses ``powershell.exe``
+with inline C# P/Invoke to ``advapi32.dll CredEnumerateW``.  Other
+platforms return an empty list.
 
 Memory safety: pass ``with_values=False`` (the default) to enumerate
 keys only — secret values are never decoded or stored.  Only set
@@ -12,10 +13,160 @@ to cryptfile backup).
 
 from __future__ import annotations
 
+import base64
 import os
+import subprocess
 import sys
 
 __all__ = ["enumerate_system_keyring"]
+
+
+# ── WSL detection ───────────────────────────────────────────────────
+
+def _is_wsl() -> bool:
+    if os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
+        return True
+    try:
+        with open("/proc/version", "r", encoding="ascii", errors="replace") as f:
+            content = f.read().lower()
+            return "microsoft" in content or "wsl" in content
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    return False
+
+
+# ── PowerShell-based enumeration for WSL ────────────────────────────
+
+_CRED_ENUM_SCRIPT = r'''
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public class CredEnum {
+    public const int CRED_TYPE_GENERIC = 1;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct CREDENTIAL {
+        public int Flags;
+        public int Type;
+        public string TargetName;
+        public string Comment;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public int CredentialBlobSize;
+        public IntPtr CredentialBlob;
+        public int Persist;
+        public int AttributeCount;
+        public IntPtr Attributes;
+        public string TargetAlias;
+        public string UserName;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool CredEnumerate(string filter, int flags, out int count, out IntPtr credentials);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern void CredFree(IntPtr buffer);
+
+    public static string EnumerateCredentials(string serviceSuffix) {
+        int count;
+        IntPtr buf;
+        if (!CredEnumerate(null, 0, out count, out buf)) {
+            return "[]";
+        }
+        var results = new System.Collections.Generic.List<string>();
+        int structSize = Marshal.SizeOf(typeof(CREDENTIAL));
+        for (int i = 0; i < count; i++) {
+            IntPtr ptr = IntPtr.Add(buf, i * structSize);
+            CREDENTIAL cred = (CREDENTIAL)Marshal.PtrToStructure(ptr, typeof(CREDENTIAL));
+            if (cred.Type != CRED_TYPE_GENERIC) continue;
+            string target = cred.TargetName ?? "";
+            string user = cred.UserName ?? "";
+            // Match: service or username@service
+            if (user.Length == 0) continue;
+            if (target != serviceSuffix && !target.EndsWith("@" + serviceSuffix)) continue;
+            string blobStr = "";
+            if (cred.CredentialBlobSize > 0) {
+                byte[] bytes = new byte[cred.CredentialBlobSize];
+                Marshal.Copy(cred.CredentialBlob, bytes, 0, cred.CredentialBlobSize);
+                blobStr = Convert.ToBase64String(bytes);
+            }
+            results.Add(user + "\x1f" + blobStr);
+        }
+        CredFree(buf);
+        return "[" + string.Join(",", results.ConvertAll(s => "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"")) + "]";
+    }
+}
+"@
+
+$svc = [Console]::In.ReadToEnd().Trim()
+$json = [CredEnum]::EnumerateCredentials($svc)
+Write-Output $json
+'''
+
+
+def _enumerate_wsl(
+    service: str, with_values: bool = False
+) -> list[tuple[str, str]]:
+    """Enumerate credstore credentials via PowerShell CredEnumerate on WSL."""
+    import json
+
+    try:
+        script_bytes = _CRED_ENUM_SCRIPT.encode("utf-16-le")
+        encoded_script = base64.b64encode(script_bytes).decode("ascii")
+
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                encoded_script,
+            ],
+            input=service,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        print(f"Cannot enumerate credentials: {exc}", file=sys.stderr)
+        return []
+
+    if result.returncode != 0:
+        return []
+
+    try:
+        raw_entries = json.loads(result.stdout.strip() or "[]")
+    except json.JSONDecodeError:
+        return []
+
+    entries: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for entry in raw_entries:
+        if "\x1f" in entry:
+            username, b64_blob = entry.split("\x1f", 1)
+        else:
+            username, b64_blob = entry, ""
+
+        if username in seen:
+            continue
+        seen.add(username)
+
+        if with_values and b64_blob:
+            try:
+                blob = base64.b64decode(b64_blob)
+                value = blob.decode("utf-16-le")
+            except Exception:
+                continue
+            entries.append((username, value))
+        else:
+            entries.append((username, ""))
+
+    return entries
+
+
+# ── public API ──────────────────────────────────────────────────────
 
 
 def enumerate_system_keyring(
@@ -24,9 +175,10 @@ def enumerate_system_keyring(
     """Enumerate credentials for *service* from the system keyring.
 
     Uses platform-specific APIs.  On Windows, reads from Credential
-    Manager via ``win32cred.CredEnumerate``.  Returns a list of
-    (key, value) tuples when *with_values* is True, otherwise
-    (key, "") tuples.
+    Manager via ``win32cred.CredEnumerate``.  On WSL, uses
+    ``powershell.exe`` with ``advapi32.dll CredEnumerateW``.
+    Returns a list of (key, value) tuples when *with_values* is True,
+    otherwise (key, "") tuples.
 
     IMPORTANT: Pass ``with_values=False`` unless you genuinely need
     the secret values.  Batch-loading all secrets into memory is a
@@ -36,6 +188,9 @@ def enumerate_system_keyring(
     """
     if os.name == "nt":
         return _enumerate_windows(service, with_values=with_values)
+
+    if _is_wsl():
+        return _enumerate_wsl(service, with_values=with_values)
 
     # Other platforms: keyring backends don't support enumeration.
     print(
