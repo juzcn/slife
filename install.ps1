@@ -7,15 +7,12 @@
     ``uv tool install`` to install slife in an isolated environment.
     Python 3.13 is managed automatically by uv.
 
-    Auto-fallback: if GitHub is unreachable the script tries Gitee
-    (gitee.com) automatically — no flags needed.
-
 .EXAMPLE
-    # GitHub (global)
     powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 | iex"
 
-    # Gitee (China mainland)
-    powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/install.ps1 | iex"
+    Or download first:
+    irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 -OutFile install.ps1
+    .\install.ps1
 #>
 
 $ErrorActionPreference = "Stop"
@@ -46,13 +43,8 @@ function Get-SlifeVenv {
 }
 
 # Constants
-$githubRepo    = "https://github.com/juzcn/slife"
-$githubTarball = "$githubRepo/archive/refs/heads/main.zip"
-$giteeRepo     = "https://gitee.com/juzcn/slife"
-$giteeTarball  = "$giteeRepo/repository/archive/main.zip"
-
-# Display repo for help messages (set after download attempt).
-$slifeRepo = $githubRepo
+$slifeRepo    = "https://github.com/juzcn/slife"
+$slifeTarball = "$slifeRepo/archive/refs/heads/main.zip"
 $tmpDir       = Join-Path $env:TEMP "slife-install-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 New-Item -ItemType Directory -Force $tmpDir | Out-Null
 
@@ -167,36 +159,23 @@ try {
     # PowerShell 5.1's Invoke-WebRequest can throw IndexOutOfRangeException
     # on GitHub's HTTP response headers.  Fall back to curl.exe (bundled
     # with Windows 10 build 17063+) when that happens.
-    # If GitHub is unreachable (e.g. China mainland), auto-fallback to Gitee.
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    function Download-File($url, $outFile) {
-        try {
-            Invoke-WebRequest -Uri $url -OutFile $outFile -ErrorAction Stop
-        } catch [System.IndexOutOfRangeException] {
-            Write-Warn "  Invoke-WebRequest failed (PowerShell 5.1 bug), trying curl.exe..."
-            if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-                curl.exe -fsSL -o $outFile $url
-                if ($LASTEXITCODE -ne 0) { throw "curl.exe download failed (exit $LASTEXITCODE)" }
-            } else {
-                throw "curl.exe not found"
-            }
-        }
-    }
-
     $zipFile = Join-Path $tmpDir "slife.zip"
-    $downloadSource = "GitHub"
     try {
-        Download-File $githubTarball $zipFile
-    } catch {
-        Write-Warn "  GitHub unreachable, switching to Gitee mirror..."
-        try {
-            Download-File $giteeTarball $zipFile
-            $downloadSource = "Gitee"
-            $slifeRepo = $giteeRepo
-        } catch {
-            Write-Err "Error: download failed from both GitHub and Gitee. Check your network."
-            Write-Warn "Help: $githubRepo"
+        Invoke-WebRequest -Uri $slifeTarball -OutFile $zipFile -ErrorAction Stop
+    } catch [System.IndexOutOfRangeException] {
+        Write-Warn "  Invoke-WebRequest failed (PowerShell 5.1 bug), trying curl.exe..."
+        if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+            curl.exe -fsSL -o $zipFile $slifeTarball
+            if ($LASTEXITCODE -ne 0) {
+                Write-Err "Error: download failed. Check your network and try again."
+                Write-Warn "Help: $slifeRepo"
+                exit 1
+            }
+        } else {
+            Write-Err "Error: download failed and curl.exe not found."
+            Write-Warn "Help: $slifeRepo"
             exit 1
         }
     }

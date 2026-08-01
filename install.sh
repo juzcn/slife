@@ -4,11 +4,6 @@ set -euo pipefail
 # Slife one-click installer for macOS, Linux, and WSL.
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
-#   curl -fsSL https://gitee.com/juzcn/slife/raw/main/install.sh | bash
-#
-# Auto-fallback: if GitHub is unreachable the script tries Gitee (gitee.com)
-# automatically — no flags needed.  China mainland users can also download
-# directly from Gitee to skip the GitHub probe.
 #
 # No prerequisites — the script installs uv if needed, then uses
 # ``uv tool install`` to install slife in an isolated environment.
@@ -21,10 +16,8 @@ CYAN='\033[0;36m'
 GRAY='\033[0;90m'
 NC='\033[0m' # No Color
 
-GITHUB_REPO="https://github.com/juzcn/slife"
-GITEE_REPO="https://gitee.com/juzcn/slife"
-GITHUB_TARBALL="$GITHUB_REPO/archive/refs/heads/main.tar.gz"
-GITEE_TARBALL="$GITEE_REPO/repository/archive/main.tar.gz"
+SLIFE_REPO="https://github.com/juzcn/slife"
+SLIFE_TARBALL="$SLIFE_REPO/archive/refs/heads/main.tar.gz"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -45,7 +38,7 @@ if command -v df &>/dev/null; then
     if [ "$FREE_KB" -gt 0 ] 2>/dev/null && [ "$FREE_KB" -lt 1048576 ]; then
         FREE_MB=$((FREE_KB / 1024))
         echo -e "${RED}Error: only ~${FREE_MB} MB free on $HOME (need >= 1 GB).${NC}"
-        echo -e "${YELLOW}Free up space and try again.  Help: $GITHUB_REPO${NC}"
+        echo -e "${YELLOW}Free up space and try again.  Help: $SLIFE_REPO${NC}"
         exit 1
     fi
 fi
@@ -144,20 +137,7 @@ fi
 #
 echo ""
 echo -e "${YELLOW}[3/5] Downloading slife…${NC}"
-# Try GitHub first; fall back to Gitee automatically for China mainland.
-DOWNLOAD_SOURCE="GitHub"
-if curl --connect-timeout 10 --progress-bar -fL "$GITHUB_TARBALL" -o "$TMP_DIR/slife.tar.gz" 2>/dev/null; then
-    DOWNLOAD_SOURCE="GitHub"
-else
-    echo -e "  ${YELLOW}GitHub unreachable, switching to Gitee mirror…${NC}"
-    curl --progress-bar -fL "$GITEE_TARBALL" -o "$TMP_DIR/slife.tar.gz"
-    DOWNLOAD_SOURCE="Gitee"
-fi
-if [ "$DOWNLOAD_SOURCE" = "GitHub" ]; then
-    SLIFE_REPO="$GITHUB_REPO"
-else
-    SLIFE_REPO="$GITEE_REPO"
-fi
+curl --progress-bar -fL "$SLIFE_TARBALL" -o "$TMP_DIR/slife.tar.gz"
 
 # Print SHA256 so users can verify integrity if desired.
 echo -e "  SHA256: ${GRAY}$(sha256sum "$TMP_DIR/slife.tar.gz" 2>/dev/null || shasum -a 256 "$TMP_DIR/slife.tar.gz" 2>/dev/null || echo '(sha256sum not available)')${NC}"
