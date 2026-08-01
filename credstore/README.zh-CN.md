@@ -11,7 +11,8 @@
 ```bash
 pip install credstore
 # 或随 Slife 一同安装：
-uv tool install git+https://github.com/juzcn/slife.git
+uv tool install git+https://github.com/juzcn/slife.git      # 海外
+uv tool install git+https://gitee.com/juzcn/slife.git       # 国内
 ```
 
 验证：`credstore status`

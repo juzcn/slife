@@ -26,13 +26,21 @@
 **macOS / Linux / WSL：**
 
 ```bash
+# GitHub（海外）
 curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
+
+# Gitee（国内）
+curl -fsSL https://gitee.com/juzcn/slife/raw/main/install.sh | bash
 ```
 
 **Windows PowerShell：**
 
 ```powershell
+# GitHub（海外）
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 | iex"
+
+# Gitee（国内）
+powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/install.ps1 | iex"
 ```
 
 ### 免安装试用
@@ -50,9 +58,11 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 ```bash
 # macOS / Linux / WSL
 curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/uninstall.sh | bash
+curl -fsSL https://gitee.com/juzcn/slife/raw/main/uninstall.sh | bash   # 国内
 
 # Windows PowerShell
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/uninstall.ps1 | iex"
+powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/uninstall.ps1 | iex"   # 国内
 ```
 
 卸载只移除二进制文件。用户数据（`~/.slife/`、`~/.credstore/`）会列出但**不删除**——如需彻底清除请手动删除。
@@ -227,7 +237,7 @@ curl -LO https://huggingface.co/ChristianAzinn/bge-m3-gguf/resolve/main/bge-m3-Q
 ## 开发
 
 ```bash
-git clone https://github.com/juzcn/slife.git
+git clone https://github.com/juzcn/slife.git        # 或 https://gitee.com/juzcn/slife.git（国内）
 cd slife
 uv sync --all-extras
 
