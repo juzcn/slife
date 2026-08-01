@@ -17,7 +17,6 @@ import ctypes
 import logging
 import os
 import platform
-import sys
 from typing import Optional
 
 from jaraco.classes import properties
@@ -28,9 +27,9 @@ logger = logging.getLogger("credstore.keyutils")
 
 # ── libc bindings ──────────────────────────────────────────────────────────
 
-_libc = None
+_libc: ctypes.CDLL | None = None
 
-if sys.platform == "linux":
+if platform.system() == "Linux":
     try:
         _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
@@ -98,10 +97,11 @@ def _is_wsl() -> bool:
 
 def _check_viable() -> str | None:
     """Verify kernel keyring is usable.  Returns error message or None."""
-    if sys.platform != "linux":
+    if platform.system() != "Linux":
         return "KeyutilsBackend requires Linux"
     if _is_wsl():
         return "WSL detected — prefer keyring-wincred"
+    assert _libc is not None  # guaranteed by platform check above
     # Probe: can we access the persistent keyring?
     result = _libc.syscall(_SYS_KEYCTL, KEYCTL_READ,
                            KEY_SPEC_PERSISTENT_KEYRING, 0, 0, 0)
@@ -115,6 +115,7 @@ def _search(desc: bytes) -> int:
     """Search persistent keyring for a key by description.
     Returns key ID on success, negative errno on failure.
     """
+    assert _libc is not None  # only called on Linux after _check_viable
     type_buf = ctypes.create_string_buffer(KEY_TYPE)
     desc_buf = ctypes.create_string_buffer(desc)
     return _libc.syscall(
@@ -152,6 +153,7 @@ class KeyutilsBackend(KeyringBackend):
     # ── get_password ──────────────────────────────────────────────────
 
     def get_password(self, service: str, username: str) -> Optional[str]:
+        assert _libc is not None  # only called on Linux after _check_viable
         kid = _search(self._desc(service, username))
         if kid < 0:
             return None
@@ -175,6 +177,7 @@ class KeyutilsBackend(KeyringBackend):
     # ── set_password ──────────────────────────────────────────────────
 
     def set_password(self, service: str, username: str, password: str) -> None:
+        assert _libc is not None  # only called on Linux after _check_viable
         desc = self._desc(service, username)
         payload = password.encode("utf-8")
 
@@ -202,6 +205,7 @@ class KeyutilsBackend(KeyringBackend):
     # ── delete_password ───────────────────────────────────────────────
 
     def delete_password(self, service: str, username: str) -> None:
+        assert _libc is not None  # only called on Linux after _check_viable
         kid = _search(self._desc(service, username))
         if kid < 0:
             if -kid == _ENOKEY:
