@@ -331,12 +331,7 @@ SLIFE_PYTHON="$TOOL_DIR/slife/bin/python"
 
 echo -e "${CYAN}Optional extras:${NC}"
 echo "  # Local GGUF embeddings (offline, ~30 MB):"
-if [ -n "${EXTRA_INDEX_ARGS:-}" ]; then
-    echo "  uv pip install --python $SLIFE_PYTHON $EXTRA_INDEX_ARGS \"slife[gguf]\""
-else
-    echo "  uv pip install --python $SLIFE_PYTHON \"slife[gguf]\""
-fi
-echo "  # With NVIDIA GPU, replace 'cpu' with 'cu121' (CUDA 12.1) in the URL above"
+echo "  uv pip install --python $SLIFE_PYTHON \"slife[gguf]\""
 echo "  # HuggingFace transformer embeddings (~2 GB):"
 echo "  uv pip install --python $SLIFE_PYTHON \"slife[transformer]\""
 echo ""
