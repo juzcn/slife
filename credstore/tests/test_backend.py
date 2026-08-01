@@ -74,21 +74,31 @@ class TestGetSystemKeyring:
             assert result is None
 
     def test_init_system_probe_raises_wsl_tolerated(self, monkeypatch):
-        """On WSL, a probe failure is tolerated — backend is still used."""
+        """On WSL, a probe failure is tolerated — WslBackend is still used.
+
+        The WSL path instantiates ``WslBackend`` directly instead of
+        going through ``keyring.get_keyring()``, avoiding irrelevant
+        Linux backends (SecretService, keyrings.alt chainer, etc.) that
+        can trip over encoding errors on WSL.
+        """
         monkeypatch.setattr(backend, "is_wsl", lambda: True)
-        mock_kr = MagicMock()
-        mock_kr.get_password.side_effect = OSError("powershell cold start")
-        mock_fail = MagicMock()
-        mock_fail.Keyring = type("FailKeyring", (), {})
-        mock_backends = MagicMock()
-        mock_backends.fail = mock_fail
+
+        mock_wsl = MagicMock()
+        mock_wsl.get_password.side_effect = OSError("powershell cold start")
+        mock_wsl_mod = MagicMock()
+        mock_wsl_mod.WslBackend = MagicMock(return_value=mock_wsl)
+
         mock_keyring = MagicMock()
-        mock_keyring.backends = mock_backends
-        mock_keyring.get_keyring.return_value = mock_kr
-        with patch.dict("sys.modules", {"keyring": mock_keyring}):
+        with patch.dict("sys.modules", {
+            "keyring": mock_keyring,
+            "credstore._wsl_backend": mock_wsl_mod,
+        }):
             result = backend._init_system()
             # On WSL, probe failure does NOT return None — backend is viable
-            assert result is mock_kr
+            mock_wsl.get_password.assert_called_once_with(
+                "credstore", "__probe__"
+            )
+            assert result is mock_wsl
 
 
 # ── get_cryptfile / has_master_key ────────────────────────────────────

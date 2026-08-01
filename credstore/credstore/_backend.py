@@ -113,14 +113,32 @@ from credstore._platform import is_wsl  # noqa: E402
 def _init_system():
     """Initialize the system keyring backend.
 
-    On WSL, ``credstore._wsl_backend.WslBackend`` (priority 9.5) is
-    auto-discovered via the ``keyring.backends`` entry point.  A
-    transient probe failure (e.g. PowerShell cold-start, encoding
-    hiccup) is tolerated on WSL — it doesn't mean the backend is
-    broken.
+    On WSL we instantiate ``WslBackend`` **directly** — bypassing
+    ``keyring.get_keyring()`` entirely.  The auto-discovery chain may
+    include irrelevant Linux backends (SecretService, keyrings.alt,
+    etc.) that can fail with encoding errors on WSL.  A transient probe
+    failure (e.g. PowerShell cold-start) is logged but tolerated — it
+    doesn't mean the backend is broken.
     """
     import keyring
 
+    # ── WSL: direct backend, no auto-discovery ──────────────────────
+    if is_wsl():
+        from credstore._wsl_backend import WslBackend
+
+        kr = WslBackend()
+        try:
+            kr.get_password("credstore", "__probe__")
+        except Exception as exc:
+            logger.warning(
+                "system keyring probe failed: %s — using WslBackend anyway",
+                exc,
+            )
+        logger.debug("system keyring: WslBackend (direct)")
+        keyring.set_keyring(kr)
+        return kr
+
+    # ── Non-WSL: keyring priority-based auto-discovery ──────────────
     try:
         kr = keyring.get_keyring()
     except Exception as exc:
@@ -135,14 +153,8 @@ def _init_system():
     try:
         kr.get_password("credstore", "__probe__")
     except Exception as exc:
-        if is_wsl():
-            logger.warning(
-                "system keyring probe failed: %s — using %s anyway",
-                exc, type(kr).__name__,
-            )
-        else:
-            logger.debug("system keyring probe failed: %s", exc)
-            return None
+        logger.debug("system keyring probe failed: %s", exc)
+        return None
 
     logger.debug("system keyring: %s", type(kr).__name__)
     keyring.set_keyring(kr)
