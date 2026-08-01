@@ -1,9 +1,10 @@
-"""Meta tools — agent self-management.
+"""Meta tools — agent self-management and utilities.
 
 list_tools      — inventory with category filter
 check_async     — poll background task result
 cancel_async    — cancel a running background task
 clear_context   — reset conversation history
+generate_qrcode — render text as terminal-scannable ASCII QR code
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ def _classify(name: str) -> str:
         return "Execution"
     if name.startswith("credential_") or name.startswith("inject_") or name.startswith("uninject_"):
         return "Credentials"
-    if name in ("list_tools", "check_async", "cancel_async", "clear_context"):
+    if name in ("list_tools", "check_async", "cancel_async", "clear_context", "generate_qrcode"):
         return "Meta"
     return "Other"
 
@@ -227,3 +228,38 @@ class ClearContextTool(Tool):
         remaining = len(conv.messages)
         logger.info("clear_context removed=%d remaining=%d", removed, remaining)
         return f"[OK] Cleared {removed} old message(s); {remaining} remaining (system prompt + current turn)."
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# generate_qrcode
+# ═══════════════════════════════════════════════════════════════════════
+
+class GenerateQRCodeTool(Tool):
+    name: ClassVar[str] = "generate_qrcode"
+    category: ClassVar[str] = "Meta"
+    description: ClassVar[str] = (
+        "Render a URL or text as a terminal-scannable ASCII QR code. "
+        "The output uses Unicode half-block characters (█▀▄) that most "
+        "terminals display correctly.  Works offline — pure Python, no "
+        "external dependencies."
+    )
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "The text or URL to encode as a QR code.",
+            },
+        },
+        "required": ["content"],
+    }
+
+    async def execute(self, content: str = "", **kwargs) -> str:
+        if not content.strip():
+            return "Error: content is required and must be non-empty."
+        try:
+            from slife.qrencode import encode_qr_ascii
+            qr = encode_qr_ascii(content)
+            return f"QR code ({len(content)} chars):\n\n{qr}"
+        except ValueError as e:
+            return f"Error: {e}"
