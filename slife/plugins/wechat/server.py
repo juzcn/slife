@@ -52,7 +52,7 @@ def _render_qr_ascii(content: str) -> str:
     if not content:
         return ""
     try:
-        from slife.plugins.wechat._qrencode import encode_qr_ascii
+        from slife.qrencode import encode_qr_ascii
         return encode_qr_ascii(content)
     except Exception:
         logger.exception("qr_encode_failed")
