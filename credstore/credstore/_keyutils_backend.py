@@ -82,24 +82,14 @@ KEY_TYPE = b"user"
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def _is_wsl() -> bool:
-    """Detect Windows Subsystem for Linux."""
-    if os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
-        return True
-    try:
-        with open("/proc/version", "r", encoding="ascii", errors="replace") as f:
-            content = f.read().lower()
-            return "microsoft" in content or "wsl" in content
-    except (FileNotFoundError, PermissionError, OSError):
-        pass
-    return False
+from credstore._platform import is_wsl
 
 
 def _check_viable() -> str | None:
     """Verify kernel keyring is usable.  Returns error message or None."""
     if platform.system() != "Linux":
         return "KeyutilsBackend requires Linux"
-    if _is_wsl():
+    if is_wsl():
         return "WSL detected — prefer keyring-wincred"
     assert _libc is not None  # guaranteed by platform check above
     # Probe: can we access the persistent keyring?

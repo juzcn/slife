@@ -18,24 +18,12 @@ import os
 import subprocess
 import sys
 
+from credstore._platform import is_wsl
+
 __all__ = ["enumerate_system_keyring"]
 
 
 # ── WSL detection ───────────────────────────────────────────────────
-
-def _is_wsl() -> bool:
-    if os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
-        return True
-    try:
-        with open("/proc/version", "r", encoding="ascii", errors="replace") as f:
-            content = f.read().lower()
-            return "microsoft" in content or "wsl" in content
-    except (FileNotFoundError, PermissionError, OSError):
-        pass
-    return False
-
-
-# ── PowerShell-based enumeration for WSL ────────────────────────────
 
 _CRED_ENUM_SCRIPT = r'''
 Add-Type -TypeDefinition @"
@@ -190,7 +178,7 @@ def enumerate_system_keyring(
     if os.name == "nt":
         return _enumerate_windows(service, with_values=with_values)
 
-    if _is_wsl():
+    if is_wsl():
         return _enumerate_wsl(service, with_values=with_values)
 
     # Other platforms: keyring backends don't support enumeration.

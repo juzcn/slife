@@ -54,18 +54,17 @@ class CredentialStore:
     def list_keys(self) -> list[str]:
         """List credential keys from system keyring — NEVER returns values.
 
-        Returns key names only.  Use ``exists()`` to check individual
-        credentials without pulling secrets into memory.
+        Returns key names only.  Delegates to platform-specific
+        enumeration (win32cred on Windows, PowerShell CredEnumerate
+        on WSL).  Use ``exists()`` to check individual credentials
+        without pulling secrets into memory.
         """
-        sk = _be.get_system_keyring()
-        if sk is None:
-            return []
+        from credstore._enumerate import enumerate_system_keyring
 
-        # Most keyring backends don't support enumeration.
-        # On Windows, enumeration is handled by the CLI layer via
-        # win32cred.CredEnumerate (see __main__._enumerate_windows).
-        # This method provides the safe, value-free interface.
-        return []
+        return [
+            key for key, _value
+            in enumerate_system_keyring(self._service, with_values=False)
+        ]
 
     # ── set ───────────────────────────────────────────────────
 
