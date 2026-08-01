@@ -12,6 +12,8 @@
 │  │ (网关)    │ (MQTT)   │ (工作进程) │ 记忆 · MCP · 微信   │ │
 │  └───────────┴──────────┴───────────┴─────────────────────┘ │
 │  永久记忆 — 混合搜索 (grep + FTS5 + 语义)                   │
+│  Credstore — OS 密钥链 + AES 加密文件备份                  │
+│  Win · Mac · Linux (SecretService / keyutils) · WSL         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -86,6 +88,8 @@ Slife 是一个**函数调用循环**：你输入 → LLM 决定调用哪些工�
 |---|---------|------|
 | **密钥** | OS 密钥链 (credstore) | API Key、Token — OS 级加密 |
 | **配置** | `~/.slife/slife.json5` → `env:` | `${VAR}` 引用 + 非敏感值 |
+
+Credstore 支持 **Windows**（凭据管理器）、**WSL**（PowerShell 桥接到 Windows CredMan）、**macOS**（钥匙串）、**Linux 桌面**（D-Bus SecretService）和**无桌面 Linux**（内核 keyutils）。无需配置——自动选择最佳可用后端。
 
 ```json5
 env: {

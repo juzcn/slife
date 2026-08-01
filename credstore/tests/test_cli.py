@@ -1,6 +1,6 @@
 """Tests for the credstore CLI."""
 
-import pytest; pytestmark = pytest.mark.integration
+import pytest; pytestmark = pytest.mark.unit
 
 import sys
 from io import StringIO

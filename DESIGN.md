@@ -39,27 +39,31 @@ The system prompt contains only project-specific information the LLM cannot know
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  UI (Textual TUI)                                                │
-│  slife/ui/app.py, chat.py, handler.py, tool_display.py           │
-├──────────────────────────────────────────────────────────────────┤
-│  Agent Service                                                   │
-│  slife/agent/service.py — wires client + tools + loop + plugins  │
-│  Manages MCP, Memory, A2A/MQTT, WeChat, and subagent lifecycles  │
-│  Inbox: serializes human + WeChat + MQTT + subagent messages     │
-├──────────────────────────────────────────────────────────────────┤
-│  Agent Loop                          │  MCP Client               │
-│  Streaming function-calling          │  Streamable HTTP transport │
-│  _trim_context harness notification  │  Tool proxy + adapter      │
-├──────────────────────────────────────┴───────────────────────────┤
-│  Tool Registry — unified function definitions for all categories │
-│  Native · Memory · Skills · MCP Proxy · CLI · A2A                │
-├──────────────────────────────────────────────────────────────────┤
-│  Plugins (independent child processes, Streamable HTTP)          │
-│  slife-mcp (gateway)  ·  slife-memory (diary)  ·  slife-wechat  │
-├──────────────────────────────────────────────────────────────────┤
-│  Config (JSON5)  │  Credstore (OS keyring + cryptfile backup)    │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  UI (Textual TUI)                                                    │
+│  slife/ui/app.py, chat.py, handler.py, tool_display.py               │
+├──────────────────────────────────────────────────────────────────────┤
+│  Agent Service                                                       │
+│  slife/agent/service.py — wires client + tools + loop + plugins      │
+│  Manages MCP, Memory, A2A/MQTT, WeChat, and subagent lifecycles      │
+│  Inbox: serializes human + WeChat + MQTT + subagent messages         │
+├──────────────────────────────────────────────────────────────────────┤
+│  Agent Loop                              │  MCP Client               │
+│  Streaming function-calling              │  Streamable HTTP transport │
+│  _trim_context harness notification      │  OAuth support             │
+│  Reasoning (thinking) support            │  Tool proxy + adapter      │
+├──────────────────────────────────────────┴───────────────────────────┤
+│  Tool Registry — unified function definitions for all categories     │
+│  Native · Memory · Skills · MCP Proxy · CLI · REST API · A2A         │
+├──────────────────────────────────────────────────────────────────────┤
+│  Plugins (independent child processes, Streamable HTTP)              │
+│  slife-mcp (gateway)  ·  slife-memory (diary)  ·  slife-wechat      │
+├──────────────────────────────────────────────────────────────────────┤
+│  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
+├──────────────────────────────────────────────────────────────────────┤
+│  Credstore — OS keyring + cryptfile backup                           │
+│  Win · Mac · Linux (SecretService / keyutils) · WSL (PowerShell)     │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Agent Loop
@@ -333,6 +337,38 @@ All user-facing text rendered with `markup=False` to prevent `MarkupError`.
 └──────────────────────────────────────────────┘
 ```
 
+### Backend Matrix
+
+Credstore selects the best available backend automatically via keyring's priority system:
+
+| Platform | Backend | Priority | Mechanism |
+|----------|---------|----------|-----------|
+| **Windows** | WinCredKeyring | 9.0 | Windows Credential Manager via pywin32 |
+| **WSL** | WslBackend | 9.5 | PowerShell bridge → advapi32.dll CredReadW/CredWriteW (C# P/Invoke) |
+| **macOS** | Keychain | 5.0 | macOS Keychain via `security` CLI |
+| **Linux (desktop)** | SecretService | 5.0 | D-Bus Secret Service (GNOME Keyring / KWallet) |
+| **Linux (headless)** | KeyutilsBackend | 1.5 | Linux kernel keyring via `add_key`/`keyctl` syscalls (ctypes) |
+
+`WslBackend` (priority 9.5) beats `WinCredKeyring` (9.0) when both are installed on WSL — it fixes target-format and encoding issues by calling `advapi32.dll` directly via embedded C#. `KeyutilsBackend` (priority 1.5) provides a zero-dependency fallback on headless Linux where no D-Bus session is available.
+
+### Platform Detection
+
+`credstore/_platform.py` provides a single `is_wsl()` function used by both the WSL backend and the enumeration module. Detection checks for the WSL interop file (`/proc/sys/fs/binfmt_misc/WSLInterop`) and falls back to `/proc/version` kernel string inspection.
+
+`slife/platform.py` provides cross-platform utilities: `IS_WINDOWS` flag, `get_os_info()`, `resolve_command()`, `build_python_command()`, `terminate_process()` (graceful → force-kill escalation), and `desktop_notify()` (native notifications on Windows/macOS/Linux).
+
+### Credential Enumeration
+
+`credstore/_enumerate.py` reads credential keys from the OS store without loading secret values:
+
+| Platform | API |
+|----------|-----|
+| **Windows** | `win32cred.CredEnumerate` — pointers to CREDENTIAL structs |
+| **WSL** | `powershell.exe` with inline C# `CredEnumerateW` via `advapi32.dll` |
+| **Other** | Empty list (unsupported — re-run `credstore set` to populate cryptfile) |
+
+`with_values=False` (the default) returns only key names — secret values are never decoded. Set `with_values=True` only for explicit sync operations like `reset-backup`.
+
 ### Secret Sanitization
 
 Sanitization is applied at three chokepoints — all use the same pattern-masking engine:
@@ -365,19 +401,32 @@ slife/
   agent/            # LLM interaction: loop.py, conversation.py, service.py, system_prompt.py
   tools/            # Native tools (auto-discovered): base.py, registry.py, factory.py
   plugins/          # Built-in MCP plugins: mcp/, memory/, wechat/
-  mcp/              # MCP client infra: client.py, tool_adapter.py, process.py
+  mcp/              # MCP client infra: client.py, tool_adapter.py, process.py, oauth.py
   a2a/              # Agent-to-Agent: transport.py, mqtt.py, http.py, client.py, broker.py
-  subagent/         # Local workers: headless.py, process.py
+  subagent/         # Local workers: headless.py, process.py, tools.py
   ui/               # Textual TUI: app.py, chat.py, handler.py, tool_display.py
   config.py         # JSON5 config: models, env, MCP, memory, A2A
   paths.py          # Canonical filesystem paths (dev vs prod)
+  platform.py       # Cross-platform utilities: OS detection, process lifecycle, notifications
   logfmt.py         # Structured logging + secret sanitization
   server_utils.py   # Plugin lifecycle: port binding, signal, FastMCP
+  bootstrap.py      # Logging setup, session init
+  health.py         # System health checks (external deps, config, model)
+  env.py            # Environment variable management
+  os_detect.py      # OS detection for install/upgrade scripts
 
 credstore/
+  __init__.py       # Python API (get/set/delete/exists/list, keyring URI resolution)
   __main__.py       # CLI (10 commands)
   _store.py         # CredentialStore: get/set/delete/reset/list
-  _backend.py       # Dual-write: OS keyring + cryptfile backup
+  _backend.py       # Dual-write: system keyring + cryptfile backup
+  _platform.py      # WSL detection (is_wsl)
+  _wsl_backend.py   # WSL backend: PowerShell bridge → Windows Credential Manager
+  _keyutils_backend.py  # Headless Linux: kernel keyring via ctypes (add_key/keyctl)
+  _enumerate.py     # Platform-specific credential enumeration (Win/WSL)
+  _resolver.py      # keyring: URI resolution
+  _shell.py         # Shell formatting (export/unset for bash/zsh/pwsh/fish)
+  _config.py        # Config file loading (credstore.json5)
   _tty.py           # Masked terminal input
 
 skills/             # On-demand SKILL.md plugins (seeded to ~/.slife/skills/)

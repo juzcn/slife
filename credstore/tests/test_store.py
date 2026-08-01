@@ -108,6 +108,10 @@ class TestCredentialStoreEdgeCases:
         """list_keys() returns empty list when keyring unavailable."""
         store = CredentialStore()
         monkeypatch.setattr(be, "get_system_keyring", lambda: None)
+        monkeypatch.setattr(
+            "credstore._enumerate.enumerate_system_keyring",
+            lambda service, with_values=False: [],
+        )
         assert store.list_keys() == []
 
     def test_set_requires_master_key(self, dual_store, monkeypatch):

@@ -2,9 +2,9 @@
 
 跨平台凭证存储 — 操作系统密钥链 + AES 加密文件备份。
 
-一个独立的密钥管理器，随 [Slife](https://github.com/juzcn/slife) 一同发布，但**不依赖** Slife。仅依赖 `keyring` 和 `keyrings-cryptfile`。
+一个独立的密钥管理器，随 [Slife](https://github.com/juzcn/slife) 一同发布，但**不依赖** Slife。仅依赖 `keyring`、`keyring-wincred` 和 `keyrings-cryptfile`。
 
-支持 **Windows**、**macOS**、**Linux** 和 **WSL**（通过 PowerShell 桥接 Windows 凭据管理器）。
+支持 **Windows**、**macOS**、**Linux**（桌面 + 无桌面）和 **WSL**（通过 PowerShell 桥接 Windows 凭据管理器）。
 
 ## 安装
 
@@ -159,23 +159,60 @@ credstore.get_backend_name()   # → "system keyring + cryptfile (dual-write)"
 
 ## 架构
 
+### 后端矩阵
+
+Credstore 通过 keyring 的优先级系统自动选择最佳可用后端：
+
+| 平台 | 后端 | 优先级 | 机制 |
+|------|------|--------|------|
+| **Windows** | WinCredKeyring | 9.0 | Windows 凭据管理器（pywin32） |
+| **WSL** | WslBackend | 9.5 | PowerShell → advapi32.dll CredReadW/CredWriteW（C# P/Invoke） |
+| **macOS** | Keychain | 5.0 | macOS 钥匙串 |
+| **Linux 桌面** | SecretService | 5.0 | D-Bus Secret Service（GNOME Keyring / KWallet） |
+| **Linux 无桌面** | KeyutilsBackend | 1.5 | 内核 keyring，通过 `add_key`/`keyctl` 系统调用（ctypes，零依赖） |
+
+### 双写流程
+
 ```
 ┌──────────────────────────────────────────────────┐
 │  CLI (__main__.py)                               │
 │  交互式：masked_input()、主密码                   │
-│  双写：cryptfile → 密钥链（原子操作）              │
+│  原子双写：cryptfile → 密钥链                     │
+│  密钥链失败时回滚                                  │
 ├──────────────────────────────────────────────────┤
 │  Python API (__init__.py)                        │
 │  程序化调用：无需交互、仅操作系统密钥链             │
 ├────────────────────┬─────────────────────────────┤
 │  系统密钥链         │  加密文件备份                │
 │  （主存储）         │  （加密）                    │
+│  ────────────────  │  ───────────────────────    │
 │  Win 凭据管理器     │  keyrings.cryptfile         │
 │  WSL（PowerShell） │  AES 加密 INI 文件           │
 │  macOS 钥匙串      │  OS 密码变更不受影响          │
 │  Linux Secret Svc  │                             │
+│  Linux keyutils    │                             │
 └────────────────────┴─────────────────────────────┘
 ```
+
+### WSL 后端
+
+在 WSL 上，没有可用的 Linux 桌面密钥链。`WslBackend` 通过调用 `powershell.exe` 并嵌入 C# 代码 P/Invoke `advapi32.dll`（`CredReadW`、`CredWriteW`、`CredDeleteW`）来桥接 Windows 凭据管理器。优先级 9.5，高于 `WinCredKeyring`（9.0）—— 我们的后端修复了目标格式和编码问题。
+
+### Keyutils 后端
+
+在无桌面 Linux（无 D-Bus 会话）上，`KeyutilsBackend` 将凭据存储在内核的持久化 keyring（`@p`）中。通过 `ctypes` 直接调用 `add_key` 和 `keyctl` 系统调用——标准库外零 Python 依赖。每个凭据是一个 `"user"` 键，描述为 `"credstore:<service>/<key>"`。
+
+### 凭据枚举
+
+`credstore list` 通过平台特定 API 从 OS 凭据存储读取 key：
+
+| 平台 | API |
+|------|-----|
+| **Windows** | `win32cred.CredEnumerate` |
+| **WSL** | `powershell.exe` + 嵌入式 C# `CredEnumerateW` 通过 `advapi32.dll` |
+| **其他** | 不支持——重新运行 `credstore set <KEY>` 以填充 cryptfile |
+
+枚举仅获取 key 名称——永远不会批量加载密钥值。同步比对时逐个取值并立即丢弃。
 
 ## 许可证
 

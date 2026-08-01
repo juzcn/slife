@@ -12,6 +12,8 @@
 │  │ (gateway) │ (MQTT)   │ (workers) │ Memory · MCP · WX   │ │
 │  └───────────┴──────────┴───────────┴─────────────────────┘ │
 │  Permanent Memory — hybrid search (grep + FTS5 + semantic)  │
+│  Credstore — OS keyring + AES cryptfile backup              │
+│  Win · Mac · Linux (SecretService / keyutils) · WSL         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -86,6 +88,8 @@ Two-layer model — secrets in OS keyring, config in JSON5:
 |-------|---------|----------|
 | **Secrets** | OS keyring (credstore) | API keys, tokens — encrypted at OS level |
 | **Config** | `~/.slife/slife.json5` → `env:` | `${VAR}` references + non-secret values |
+
+Credstore supports **Windows** (Credential Manager), **WSL** (PowerShell bridge to Windows CredMan), **macOS** (Keychain), **Linux desktop** (D-Bus SecretService), and **headless Linux** (kernel keyutils). No configuration needed — the best available backend is auto-selected.
 
 ```json5
 env: {

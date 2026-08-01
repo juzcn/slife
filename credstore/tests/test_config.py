@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.unit
 
 from credstore._config import get_cryptfile_path, load_config
 

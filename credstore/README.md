@@ -2,9 +2,9 @@
 
 Cross-platform credential storage — OS keyring with AES-encrypted file backup.
 
-A standalone secret manager that ships with [Slife](https://github.com/juzcn/slife) but has **no dependency on it**. Depends only on `keyring` and `keyrings-cryptfile`.
+A standalone secret manager that ships with [Slife](https://github.com/juzcn/slife) but has **no dependency on it**. Depends only on `keyring`, `keyring-wincred`, and `keyrings-cryptfile`.
 
-Supports **Windows**, **macOS**, **Linux**, and **WSL** (Windows Credential Manager via PowerShell bridge).
+Supports **Windows**, **macOS**, **Linux** (desktop + headless), and **WSL** (Windows Credential Manager via PowerShell bridge).
 
 ## Install
 
@@ -159,23 +159,60 @@ Priority: `CREDSTORE_FILE` env var → `credstore.json5` → `~/.credstore/crede
 
 ## Architecture
 
+### Backend Matrix
+
+Credstore auto-selects the best available backend via keyring's priority system:
+
+| Platform | Backend | Priority | Mechanism |
+|----------|---------|----------|-----------|
+| **Windows** | WinCredKeyring | 9.0 | Windows Credential Manager (pywin32) |
+| **WSL** | WslBackend | 9.5 | PowerShell → advapi32.dll CredReadW/CredWriteW (C# P/Invoke) |
+| **macOS** | Keychain | 5.0 | macOS Keychain |
+| **Linux desktop** | SecretService | 5.0 | D-Bus Secret Service (GNOME Keyring / KWallet) |
+| **Linux headless** | KeyutilsBackend | 1.5 | Kernel keyring via `add_key`/`keyctl` syscalls (ctypes, zero deps) |
+
+### Dual-Write Flow
+
 ```
 ┌──────────────────────────────────────────────────┐
 │  CLI (__main__.py)                               │
 │  Interactive: masked_input(), master password     │
-│  Dual-write: cryptfile → keyring (atomic)        │
+│  Atomic dual-write: cryptfile → keyring           │
+│  Rollback on keyring failure                      │
 ├──────────────────────────────────────────────────┤
 │  Python API (__init__.py)                        │
 │  Programmatic: no prompt, system keyring only     │
 ├────────────────────┬─────────────────────────────┤
 │  System Keyring    │  Cryptfile Backup           │
 │  (primary)         │  (encrypted)                │
+│  ────────────────  │  ───────────────────────    │
 │  Win CredMan       │  keyrings.cryptfile         │
 │  WSL (PowerShell)  │  AES-encrypted INI          │
 │  macOS Keychain    │  Survives OS pw changes     │
 │  Linux Secret Svc  │                             │
+│  Linux keyutils    │                             │
 └────────────────────┴─────────────────────────────┘
 ```
+
+### WSL Backend
+
+On WSL, no Linux desktop keyring is available. `WslBackend` bridges to Windows Credential Manager by calling `powershell.exe` with embedded C# that P/Invokes `advapi32.dll` (`CredReadW`, `CredWriteW`, `CredDeleteW`). Priority 9.5 beats `WinCredKeyring` (9.0) when both are installed — our backend fixes target-format and encoding issues.
+
+### Keyutils Backend
+
+On headless Linux (no D-Bus session), `KeyutilsBackend` stores credentials in the Linux kernel's persistent keyring (`@p`). Calls `add_key` and `keyctl` syscalls directly through `ctypes` — zero Python dependencies beyond stdlib. Each credential is a `"user"` key with description `"credstore:<service>/<key>"`.
+
+### Credential Enumeration
+
+`credstore list` reads keys from the OS credential store using platform-specific APIs:
+
+| Platform | API |
+|----------|-----|
+| **Windows** | `win32cred.CredEnumerate` |
+| **WSL** | `powershell.exe` + inline C# `CredEnumerateW` via `advapi32.dll` |
+| **Other** | Unsupported — re-run `credstore set <KEY>` to populate cryptfile |
+
+Enumeration retrieves key names only — secret values are never batch-loaded. Sync comparison fetches one value at a time and immediately discards it.
 
 ## License
 
