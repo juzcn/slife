@@ -17,13 +17,12 @@
 
 $ErrorActionPreference = "Stop"
 
-# ── Helpers ──────────────────────────────────────────────────────────
+# Helpers
 function Write-Step($msg) { Write-Host $msg -ForegroundColor Yellow }
 function Write-Ok($msg)   { Write-Host "  $([char]0x2713) $msg" -ForegroundColor Green }
 function Write-Dim($msg)  { Write-Host "  $msg" -ForegroundColor DarkGray }
 function Write-Warn($msg) { Write-Host $msg -ForegroundColor Yellow }
 function Write-Err($msg)  { Write-Host $msg -ForegroundColor Red }
-function Write-Box($msg)  { Write-Host $msg -ForegroundColor Cyan }
 
 # Extract bare package name from a pip-freeze line.
 #   name==1.0  → name
@@ -43,20 +42,17 @@ function Get-SlifeVenv {
     return $null
 }
 
-# ── Constants ────────────────────────────────────────────────────────
+# Constants
 $slifeRepo    = "https://github.com/juzcn/slife"
 $slifeTarball = "$slifeRepo/archive/refs/heads/main.zip"
 $tmpDir       = Join-Path $env:TEMP "slife-install-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 New-Item -ItemType Directory -Force $tmpDir | Out-Null
 
 try {
-    Write-Box "╔══════════════════════════════════════╗"
-    Write-Box "║        Slife Installer             ║"
-    Write-Box "║  Terminal-based AI agent           ║"
-    Write-Box "╚══════════════════════════════════════╝"
+    Write-Host "Slife Installer" -ForegroundColor Cyan
     Write-Host ""
 
-    # ── Pre-flight summary ──────────────────────────────────────────
+    # Pre-flight summary
     Write-Host "Install method    : uv tool install (isolated environment)"
     Write-Host "User data         : $env:USERPROFILE\.slife\"
     Write-Host "Python            : managed by uv (3.13)"
@@ -64,7 +60,7 @@ try {
     Write-Host "Disk space needed : ~500 MB"
     Write-Host ""
 
-    # ── 0. Disk space check ──────────────────────────────────────────
+    # 0. Disk space check
     $driveLetter = $env:USERPROFILE.Substring(0, 1)
     $freeBytes   = (Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue).Free
     if ($freeBytes -and $freeBytes -lt 1GB) {
@@ -74,7 +70,7 @@ try {
         exit 1
     }
 
-    # ── 1. Ensure uv is available ────────────────────────────────────
+    # 1. Ensure uv is available
     Write-Step "[1/5] Ensuring uv is available..."
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         Write-Dim "Installing uv..."
@@ -83,7 +79,7 @@ try {
     }
     Write-Ok "uv $(uv --version 2>&1)"
 
-    # ── 2. Ensure npx (Node.js) is available ─────────────────────────
+    # 2. Ensure npx (Node.js) is available
     Write-Step "[2/5] Ensuring npx (Node.js) is available..."
     $haveNpx = $false
     if (Get-Command npx -ErrorAction SilentlyContinue) {
@@ -115,22 +111,16 @@ try {
         }
 
         if (-not $haveNpx) {
-            Write-Err "  ┌─────────────────────────────────────────────────────┐"
-            Write-Err "  │  WARNING: npx not available.                       │"
-            Write-Err "  │                                                     │"
-            Write-Err "  │  These MCP servers require npx and will NOT work:    │"
-            Write-Err "  │    file-search, serper, tavily-mcp, github,          │"
-            Write-Err "  │    amap-maps, filesystem                             │"
-            Write-Err "  │                                                     │"
-            Write-Err "  │  Install Node.js LTS from https://nodejs.org         │"
-            Write-Err "  │  then re-run this installer.                         │"
-            Write-Err "  └─────────────────────────────────────────────────────┘"
+            Write-Err "WARNING: npx not available."
+            Write-Err "  These MCP servers require npx and will NOT work:"
+            Write-Err "    file-search, serper, tavily-mcp, github, amap-maps, filesystem"
+            Write-Err "  Install Node.js LTS from https://nodejs.org then re-run this installer."
             Write-Warn "Help: $slifeRepo"
             exit 1
         }
     }
 
-    # ── Optional: Mosquitto MQTT broker ──────────────────────────────
+    # Optional: Mosquitto MQTT broker
     Write-Step "[optional] Checking Mosquitto (MQTT broker for multi-agent mesh)..."
     if (Get-Command mosquitto -ErrorAction SilentlyContinue) {
         Write-Ok "mosquitto found"
@@ -145,10 +135,10 @@ try {
                 winget install EclipseFoundation.Mosquitto --accept-package-agreements --accept-source-agreements
                 if ($LASTEXITCODE -eq 0) {
                     Write-Ok "Mosquitto installed"
-                    Write-Box "  To start Mosquitto:"
-                    Write-Box "    net start mosquitto"
-                    Write-Box "  Or run manually:"
-                    Write-Box "    mosquitto -d -p 1883"
+                    Write-Host "  To start Mosquitto:" -ForegroundColor Cyan
+                    Write-Host "    net start mosquitto"
+                    Write-Host "  Or run manually:"
+                    Write-Host "    mosquitto -d -p 1883"
                 } else {
                     Write-Warn "  winget install failed. Install manually:"
                     Write-Warn "    https://mosquitto.org/download/"
@@ -163,7 +153,7 @@ try {
     }
     Write-Host ""
 
-    # ── 3. Download and verify slife ─────────────────────────────────
+    # 3. Download and verify slife
     Write-Step "[3/5] Downloading slife..."
 
     # PowerShell 5.1's Invoke-WebRequest can throw IndexOutOfRangeException
@@ -196,7 +186,7 @@ try {
     Expand-Archive -Path $zipFile -DestinationPath $tmpDir -Force
     $extractedDir = Get-ChildItem -Path $tmpDir -Directory | Select-Object -First 1
 
-    # ── Read pyproject.toml once (version + extra-index-url) ─────────
+    # Read pyproject.toml once (version + extra-index-url)
     $version       = "unknown"
     $extraIndexArgs = @()
     $pyprojectPath = Join-Path $extractedDir.FullName "pyproject.toml"
@@ -216,7 +206,7 @@ try {
         }
     }
 
-    # ── 4. Install slife with uv tool install ────────────────────────
+    # 4. Install slife with uv tool install
     Write-Step "[4/5] Installing slife v$version..."
 
     # Capture user-installed packages from the old venv so we can re-add
@@ -348,7 +338,7 @@ try {
         exit 1
     }
 
-    # ── Re-add preserved packages ────────────────────────────────────
+    # Re-add preserved packages
     $preserveOk = $false
     if ((Test-Path $preservedReqs) -and ((Get-Content $preservedReqs).Count -gt 0)) {
         $newVenv = Get-SlifeVenv
@@ -399,7 +389,7 @@ try {
         }
     }
 
-    # ── 5. Finalise PATH ──────────────────────────────────────────────
+    # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."
 
     $localBin   = "$env:USERPROFILE\.local\bin"
@@ -421,35 +411,24 @@ try {
 
     Write-Ok "slife + credstore commands ready"
 
-    # ── Done ─────────────────────────────────────────────────────────
+    # Done
     Write-Host ""
-    Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
-    Write-Host "  Slife v$version installed successfully!     " -ForegroundColor Green
-    Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
-    Write-Host ""
-    Write-Box "Get started:"
-    Write-Box "  credstore set-password              # set up encrypted backup (first time)"
-    Write-Box "  credstore set DEEPSEEK_API_KEY       # store your API key"
-    Write-Box "  slife                                # launch the TUI"
+    Write-Host "Slife v$version installed successfully!" -ForegroundColor Green
     Write-Host ""
     if ((Test-Path $preservedReqs) -and ((Get-Content $preservedReqs).Count -gt 0)) {
         if ($preserveOk) {
-            Write-Host "Preserved packages:" -ForegroundColor Cyan
-            Write-Ok "$((Get-Content $preservedReqs).Count) packages restored from previous install"
+            Write-Host "$((Get-Content $preservedReqs).Count) preserved packages restored" -ForegroundColor Green
         } else {
             Write-Warn "Failed to preserve packages — run manually:"
             Write-Warn "  uv pip install -r $preservedReqs"
         }
     }
-    Write-Box "Optional extras:"
-    Write-Box "  # Local GGUF embeddings (Windows — pre-built wheel, no compiler needed):"
-    Write-Box '  $py=((uv tool list --show-paths 2>$null|sls ''slife v''|Out-String)-replace''.*\((.*?)\).*'',''$1\Scripts\python.exe'').Trim();uv pip install --python $py "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"'
-    Write-Box "  # Vulkan works on any GPU (falls back to CPU).  See README for CUDA/ROCm variants."
-    Write-Box ""
-    Write-Box "  # HuggingFace transformer embeddings (~2 GB):"
-    Write-Box '  uv tool install --with "slife[transformer]" slife'
+    Write-Host "Get started:" -ForegroundColor Cyan
+    Write-Host "  credstore set-password              # set up encrypted backup (first time)"
+    Write-Host "  credstore set DEEPSEEK_API_KEY       # store your API key"
+    Write-Host "  slife                                # launch the TUI"
     Write-Host ""
-    Write-Box "More info: $slifeRepo"
+    Write-Host "More info: $slifeRepo" -ForegroundColor Cyan
 
 } finally {
     if (Test-Path $tmpDir) {
