@@ -41,7 +41,6 @@ _CRED_ENUM_SCRIPT = r'''
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-using System.Text;
 
 public class CredEnum {
     public const int CRED_TYPE_GENERIC = 1;
@@ -50,20 +49,20 @@ public class CredEnum {
     public struct CREDENTIAL {
         public int Flags;
         public int Type;
-        public string TargetName;
-        public string Comment;
-        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public IntPtr TargetName;
+        public IntPtr Comment;
+        public long LastWritten;
         public int CredentialBlobSize;
         public IntPtr CredentialBlob;
         public int Persist;
         public int AttributeCount;
         public IntPtr Attributes;
-        public string TargetAlias;
-        public string UserName;
+        public IntPtr TargetAlias;
+        public IntPtr UserName;
     }
 
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern bool CredEnumerate(string filter, int flags, out int count, out IntPtr credentials);
+    public static extern bool CredEnumerateW(string filter, int flags, out int count, out IntPtr credentials);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     public static extern void CredFree(IntPtr buffer);
@@ -71,18 +70,18 @@ public class CredEnum {
     public static string EnumerateCredentials(string serviceSuffix) {
         int count;
         IntPtr buf;
-        if (!CredEnumerate(null, 0, out count, out buf)) {
+        if (!CredEnumerateW(null, 0, out count, out buf)) {
             return "[]";
         }
         var results = new System.Collections.Generic.List<string>();
-        int structSize = Marshal.SizeOf(typeof(CREDENTIAL));
+        // CredEnumerateW returns an array of POINTERS to CREDENTIAL structs,
+        // not a contiguous array of CREDENTIAL structs.
         for (int i = 0; i < count; i++) {
-            IntPtr ptr = IntPtr.Add(buf, i * structSize);
-            CREDENTIAL cred = (CREDENTIAL)Marshal.PtrToStructure(ptr, typeof(CREDENTIAL));
+            IntPtr credPtr = Marshal.ReadIntPtr(buf, i * IntPtr.Size);
+            CREDENTIAL cred = (CREDENTIAL)Marshal.PtrToStructure(credPtr, typeof(CREDENTIAL));
             if (cred.Type != CRED_TYPE_GENERIC) continue;
-            string target = cred.TargetName ?? "";
-            string user = cred.UserName ?? "";
-            // Match: service or username@service
+            string user = Marshal.PtrToStringUni(cred.UserName) ?? "";
+            string target = Marshal.PtrToStringUni(cred.TargetName) ?? "";
             if (user.Length == 0) continue;
             if (target != serviceSuffix && !target.EndsWith("@" + serviceSuffix)) continue;
             string blobStr = "";
