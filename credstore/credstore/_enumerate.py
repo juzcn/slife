@@ -133,24 +133,13 @@ def _enumerate_wsl(
         return []
 
     if result.returncode != 0:
-        print(
-            f"WSL enum: powershell rc={result.returncode} "
-            f"stderr={result.stderr[:200]!r}",
-            file=sys.stderr,
-        )
         return []
 
     raw_stdout = result.stdout.strip()
-    print(
-        f"WSL enum: rc=0 stdout_len={len(raw_stdout)} "
-        f"stdout={raw_stdout[:300]!r}",
-        file=sys.stderr,
-    )
 
     try:
         raw_entries = json.loads(raw_stdout or "[]")
-    except json.JSONDecodeError as exc:
-        print(f"WSL enum: JSON parse error: {exc}", file=sys.stderr)
+    except json.JSONDecodeError:
         return []
 
     entries: list[tuple[str, str]] = []
