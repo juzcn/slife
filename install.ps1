@@ -213,6 +213,13 @@ try {
 
     # Optional: Mosquitto MQTT broker
     Write-Step "[optional] Checking Mosquitto (MQTT broker for multi-agent mesh)..."
+    # Mosquitto's installer doesn't always add itself to PATH — scan the
+    # default directory as well.
+    $mosqDir = "${env:ProgramFiles}\Mosquitto"
+    if ((Test-Path (Join-Path $mosqDir "mosquitto.exe")) -and
+        -not (Get-Command mosquitto -ErrorAction SilentlyContinue)) {
+        $env:PATH = "$mosqDir;$env:PATH"
+    }
     if (Get-Command mosquitto -ErrorAction SilentlyContinue) {
         Write-Ok "mosquitto found"
     } else {
@@ -224,14 +231,23 @@ try {
             if (Get-Command winget -ErrorAction SilentlyContinue) {
                 Write-Dim "Installing Mosquitto via winget..."
                 winget install EclipseFoundation.Mosquitto --accept-package-agreements --accept-source-agreements
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Ok "Mosquitto installed"
+                # winget returns non-zero when the package is already installed
+                # and no upgrade is available — refresh PATH and re-check.
+                $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                            [System.Environment]::GetEnvironmentVariable("Path", "User")
+                # Also scan the default install directory (not always on PATH)
+                $mosqDir = "${env:ProgramFiles}\Mosquitto"
+                if (Test-Path (Join-Path $mosqDir "mosquitto.exe")) {
+                    $env:PATH = "$mosqDir;$env:PATH"
+                }
+                if (Get-Command mosquitto -ErrorAction SilentlyContinue) {
+                    Write-Ok "Mosquitto ready"
                     Write-Host "  To start Mosquitto:" -ForegroundColor Cyan
                     Write-Host "    net start mosquitto"
                     Write-Host "  Or run manually:"
                     Write-Host "    mosquitto -d -p 1883"
                 } else {
-                    Write-Warn "  winget install failed. Install manually:"
+                    Write-Warn "  Mosquitto not found after install. Install manually:"
                     Write-Warn "    https://mosquitto.org/download/"
                 }
             } else {
