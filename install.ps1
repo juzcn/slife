@@ -423,7 +423,8 @@ try {
     Write-Host ""
     if ((Test-Path $preservedReqs) -and ((Get-Content $preservedReqs).Count -gt 0)) {
         if ($preserveOk) {
-            Write-Host "$((Get-Content $preservedReqs).Count) user-added package(s) restored" -ForegroundColor Green
+            Write-Host "User-added packages restored:" -ForegroundColor Cyan
+            Get-Content $preservedReqs | ForEach-Object { Write-Host "  $([char]0x2713) $_" -ForegroundColor Green }
         } else {
             Write-Warn "Failed to restore user-added packages — run manually:"
             Write-Warn "  uv pip install -r $preservedReqs"

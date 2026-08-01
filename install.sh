@@ -188,7 +188,7 @@ if [ -n "$SLIFE_LINE" ]; then
             sed 's/ @ .*//; s/==.*//' "$PRESERVED_FULL" > "$PRESERVED_REQS"
             _count=$(wc -l < "$PRESERVED_REQS" 2>/dev/null || echo 0)
             if [ "$_count" -gt 0 ]; then
-                echo -e "  ${GRAY}Checking $_count packages from previous installation${NC}"
+                echo -e "  ${GRAY}Captured $_count packages — will diff against fresh install to find user-added ones${NC}"
             fi
         fi
     fi
@@ -324,11 +324,12 @@ echo "  slife                                # launch the TUI"
 echo ""
 if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
     if [ "${PRESERVE_OK:-0}" = "1" ]; then
-        echo -e "${CYAN}Preserved packages:${NC}"
-        _count=$(wc -l < "$EXTRA_REQS" 2>/dev/null || echo 0)
-        echo -e "${GREEN}  ✓${NC} $_count extra packages restored from previous install"
+        echo -e "${CYAN}User-added packages restored:${NC}"
+        while IFS= read -r _pkg; do
+            echo -e "  ${GREEN}✓${NC} $_pkg"
+        done < "$EXTRA_REQS"
     else
-        echo -e "${YELLOW}Failed to preserve packages — run manually:${NC}"
+        echo -e "${YELLOW}Failed to restore user-added packages — run manually:${NC}"
         echo -e "${YELLOW}  uv pip install -r $EXTRA_REQS${NC}"
     fi
 fi
