@@ -49,10 +49,21 @@ try:
             errors="replace",
             timeout=15,
         )
+        # Trace first few calls to diagnose credential lookup issues
+        _run_powershell._call_count = getattr(_run_powershell, "_call_count", 0) + 1
+        if _run_powershell._call_count <= 5:
+            logger.info(
+                "powershell call #%d: rc=%d stdout=%d stderr=%d",
+                _run_powershell._call_count,
+                result.returncode,
+                len(result.stdout or ""),
+                len(result.stderr or ""),
+            )
         return result.returncode, result.stdout.strip(), result.stderr.strip()
 
     _ps._run_powershell = _run_powershell
 
-    logger.debug("keyring-wincred patched: target + encoding")
+    logger.info("keyring-wincred patched: target=%s, encoding=utf-8/replace",
+                 _make_target("credstore", "TEST"))
 except ImportError:
-    pass
+    logger.info("keyring-wincred NOT AVAILABLE — WSL credential bridge disabled")
