@@ -43,20 +43,39 @@ mcp, _log_path, logger = create_plugin_server(
 
 
 def _render_qr_ascii(content: str) -> str:
-    """Render a string as a compact terminal-scannable QR code.
+    """Render a string as a compact terminal-scannable ASCII QR code.
 
-    Uses our pure-Python QR encoder — zero external dependencies.
-    Half-block Unicode characters (█▀▄) combine two QR rows per output row,
-    producing output ~25–57 chars wide depending on URL length.
+    Uses qrcode library with half-block Unicode characters (█▀▄) to combine
+    two QR rows per output row.
     """
     if not content:
         return ""
     try:
-        from slife.qrencode import encode_qr_ascii
-        return encode_qr_ascii(content)
-    except Exception:
-        logger.exception("qr_encode_failed")
-        return ""
+        import qrcode
+        qr = qrcode.QRCode(border=1, box_size=1)
+        qr.add_data(content)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+        size = len(matrix)
+        lines: list[str] = []
+        for y in range(0, size, 2):
+            row_chars: list[str] = []
+            for x in range(size):
+                top = matrix[y][x]
+                bot = matrix[y + 1][x] if y + 1 < size else False
+                if top and bot:
+                    row_chars.append("█")
+                elif top:
+                    row_chars.append("▀")
+                elif bot:
+                    row_chars.append("▄")
+                else:
+                    row_chars.append(" ")
+            lines.append("".join(row_chars))
+        return "\n".join(lines)
+    except ImportError:
+        logger.warning("qrcode_lib_unavailable — install qrcode into slife venv")
+        return content
 
 # ── Global state ─────────────────────────────────────────────────────────
 
