@@ -107,6 +107,19 @@ def reinit_cryptfile(password: str) -> None:
         logger.info("cryptfile reinitialized with new password")
 
 
+def _is_wsl() -> bool:
+    """Detect Windows Subsystem for Linux."""
+    if os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
+        return True
+    try:
+        with open("/proc/version", "r", encoding="ascii", errors="replace") as f:
+            content = f.read().lower()
+            return "microsoft" in content or "wsl" in content
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    return False
+
+
 def _init_system():
     """Initialize the system keyring backend."""
     import keyring
@@ -115,13 +128,32 @@ def _init_system():
         kr = keyring.get_keyring()
     except Exception as exc:
         logger.debug("system keyring get_keyring failed: %s", exc)
-        return None
+        kr = None
 
     from keyring.backends.fail import Keyring as FailKeyring
-    if isinstance(kr, FailKeyring):
-        logger.debug("system keyring: fail backend (no viable backends)")
-        return None
+    if kr is None or isinstance(kr, FailKeyring):
+        # On WSL, keyring-wincred should auto-detect via its entry point.
+        # If automatic discovery didn't pick it up, try explicit import
+        # as a fallback.  This handles edge cases where the entry point
+        # is installed but not registered (e.g. pip quirks, packaging bugs).
+        if _is_wsl():
+            try:
+                from keyring_wincred import WinCredKeyring
+                kr = WinCredKeyring()
+                logger.debug("system keyring: WinCredKeyring (WSL explicit)")
+            except ImportError:
+                logger.debug("keyring-wincred not available on WSL")
+                return None
+            except Exception as exc:
+                logger.debug("WSL WinCredKeyring init failed: %s", exc)
+                return None
+        else:
+            logger.debug("system keyring: fail backend (no viable backends)")
+            return None
 
+    # Lightweight probe: verify the backend can talk to the credential store.
+    # A non-existent credential lookup returns None on success — we only care
+    # that the call doesn't throw.
     try:
         kr.get_password("credstore", "__probe__")
     except Exception as exc:

@@ -69,11 +69,11 @@ def _masked_input_unix() -> str:  # pyright: ignore[reportUnreachable]
         while True:
             ch = sys.stdin.read(1)
             if ch in ("\r", "\n"):
-                sys.stdout.write("\n")
+                sys.stdout.write("\r\n")
                 sys.stdout.flush()
                 break
             if ch == "\x03":
-                sys.stdout.write("\n")
+                sys.stdout.write("\r\n")
                 sys.stdout.flush()
                 raise KeyboardInterrupt()
             if ch in ("\x08", "\x7f"):
