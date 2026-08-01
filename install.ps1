@@ -265,7 +265,7 @@ try {
     if ($installed) {
         Write-Dim "Removing previous slife installation..."
         $uninstallLog = Join-Path $tmpDir "uninstall.log"
-        & uv tool uninstall slife > $uninstallLog 2>&1
+        & uv tool uninstall slife *> $uninstallLog
         if ($LASTEXITCODE -ne 0) {
             Write-Warn "  uv tool uninstall reported errors (continuing):"
             Get-Content $uninstallLog -Tail 5 | ForEach-Object { Write-Dim "    $_" }
@@ -327,7 +327,7 @@ try {
     $toolInstallLog = Join-Path $tmpDir "tool-install.log"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & uv tool install --from $extractedDir.FullName --python 3.13 slife > $toolInstallLog 2>&1
+    & uv tool install --from $extractedDir.FullName --python 3.13 slife *> $toolInstallLog
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
