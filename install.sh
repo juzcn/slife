@@ -144,14 +144,17 @@ echo -e "  SHA256: ${GRAY}$(sha256sum "$TMP_DIR/slife.tar.gz" 2>/dev/null || sha
 
 tar xzf "$TMP_DIR/slife.tar.gz" -C "$TMP_DIR"
 
-# Read version from pyproject.toml.
+# Read version + extra-index-url from pyproject.toml.
 VERSION="unknown"
+EXTRA_INDEX_ARGS=""
 PYPROJECT="$TMP_DIR/slife-main/pyproject.toml"
 if [ -f "$PYPROJECT" ]; then
     EXTRACTED_VERSION=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$PYPROJECT" 2>/dev/null || echo "")
     if [ -n "$EXTRACTED_VERSION" ]; then
         VERSION="$EXTRACTED_VERSION"
     fi
+    _url=$(grep -A2 'extra-index-url' "$PYPROJECT" 2>/dev/null | grep -o 'https\?://[^"]*' | head -1 || true)
+    [ -n "$_url" ] && EXTRA_INDEX_ARGS="--extra-index-url $_url"
 fi
 
 #
@@ -228,15 +231,6 @@ if [ -s "$PRESERVED_REQS" ]; then
     NEW_VENV=$(echo "$NEW_LINE" | sed -n 's/.*(\(.*\)).*/\1/p')
     if [ -n "$NEW_VENV" ] && [ -d "$NEW_VENV" ]; then
         NEW_PYTHON="$NEW_VENV/bin/python"
-
-        # Read extra-index-url from pyproject.toml for pre-built wheels.
-        # Handles both single-line value and multi-line array formats.
-        PYPROJECT="$TMP_DIR/slife-main/pyproject.toml"
-        EXTRA_INDEX_ARGS=""
-        if [ -f "$PYPROJECT" ]; then
-            _url=$(grep -A2 'extra-index-url' "$PYPROJECT" 2>/dev/null | grep -o 'https\?://[^"]*' | head -1 || true)
-            [ -n "$_url" ] && EXTRA_INDEX_ARGS="--extra-index-url $_url"
-        fi
 
         # Diff old freeze against new venv — only re-add packages not
         # already in the base install (avoids conflicts with transitive deps).
@@ -332,15 +326,18 @@ if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
         echo -e "${YELLOW}  uv pip install -r $EXTRA_REQS${NC}"
     fi
 fi
+TOOL_DIR=$(uv tool dir 2>/dev/null || echo "$HOME/.local/share/uv/tools")
+SLIFE_PYTHON="$TOOL_DIR/slife/bin/python"
+
 echo -e "${CYAN}Optional extras:${NC}"
 echo "  # Local GGUF embeddings (offline, ~30 MB):"
 if [ -n "${EXTRA_INDEX_ARGS:-}" ]; then
-    echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" $EXTRA_INDEX_ARGS \"slife[gguf]\""
+    echo "  uv pip install --python $SLIFE_PYTHON $EXTRA_INDEX_ARGS \"slife[gguf]\""
 else
-    echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" \"slife[gguf]\""
+    echo "  uv pip install --python $SLIFE_PYTHON \"slife[gguf]\""
 fi
 echo "  # With NVIDIA GPU, replace 'cpu' with 'cu121' (CUDA 12.1) in the URL above"
 echo "  # HuggingFace transformer embeddings (~2 GB):"
-echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" \"slife[transformer]\""
+echo "  uv pip install --python $SLIFE_PYTHON \"slife[transformer]\""
 echo ""
 echo -e "${CYAN}More info:${NC} $SLIFE_REPO"
