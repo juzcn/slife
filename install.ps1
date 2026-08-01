@@ -92,29 +92,107 @@ try {
         } catch { }
     }
 
+    # If npx is not on PATH, check common Node.js install locations
+    # (winget MSI installs to C:\Program Files\nodejs\).  This also
+    # avoids a re-install collision when Node.js is already present
+    # but simply missing from the current session's PATH.
+    if (-not $haveNpx) {
+        $foundNodeDirs = @()
+        foreach ($candidate in @(
+            "$env:ProgramFiles\nodejs",
+            "${env:ProgramFiles(x86)}\nodejs",
+            "$env:LOCALAPPDATA\fnm\node-versions",
+            "$env:APPDATA\nvm",
+            "$env:USERPROFILE\nvm"
+        )) {
+            if (Test-Path (Join-Path $candidate "npx.cmd")) {
+                $foundNodeDirs += $candidate
+            }
+        }
+
+        # Also check if node.exe is anywhere on PATH (some installs put
+        # node in a directory that's already in PATH but whose refresh
+        # hasn't picked up npx yet).
+        if (-not $foundNodeDirs -and (Get-Command node -ErrorAction SilentlyContinue)) {
+            $nodePath = (Get-Command node).Source
+            $nodeDir  = Split-Path $nodePath -Parent
+            if (Test-Path (Join-Path $nodeDir "npx.cmd")) {
+                $foundNodeDirs += $nodeDir
+                Write-Dim "Found Node.js via 'node' command at $nodeDir"
+            }
+        }
+
+        if ($foundNodeDirs) {
+            $env:PATH = ($foundNodeDirs -join ';') + ';' + $env:PATH
+            try {
+                $npxVer = npx --version 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Ok "npx v$npxVer (already installed)"
+                    $haveNpx = $true
+                }
+            } catch { }
+        }
+    }
+
     if (-not $haveNpx) {
         Write-Dim "npx not found, installing Node.js..."
+        $wingetOk = $false
         if (Get-Command winget -ErrorAction SilentlyContinue) {
             Write-Dim "Installing Node.js LTS via winget..."
             winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
             if ($LASTEXITCODE -eq 0) {
-                $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                            [System.Environment]::GetEnvironmentVariable("Path", "User")
-                try {
-                    $nv = npx --version 2>&1
-                    if ($LASTEXITCODE -eq 0) {
-                        Write-Ok "npx v$nv installed"
-                        $haveNpx = $true
-                    }
-                } catch { }
+                $wingetOk = $true
+            } else {
+                # winget MSI often fails with 1603 when a different Node.js
+                # version is already present.  Re-scan the common install
+                # dirs — the existing install may now be visible.
+                Write-Dim "winget install returned exit code $LASTEXITCODE, checking for existing install..."
+            }
+        }
+
+        # Refresh PATH from registry (winget may have updated it even on "failure")
+        $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                    [System.Environment]::GetEnvironmentVariable("Path", "User")
+
+        # Re-check after attempted install / PATH refresh
+        if ($wingetOk) {
+            try {
+                $nv = npx --version 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Ok "npx v$nv installed"
+                    $haveNpx = $true
+                }
+            } catch { }
+        }
+
+        # Final fallback: scan common dirs one more time
+        if (-not $haveNpx) {
+            foreach ($candidate in @(
+                "$env:ProgramFiles\nodejs",
+                "${env:ProgramFiles(x86)}\nodejs",
+                "$env:LOCALAPPDATA\fnm\node-versions",
+                "$env:APPDATA\nvm",
+                "$env:USERPROFILE\nvm"
+            )) {
+                if (Test-Path (Join-Path $candidate "npx.cmd")) {
+                    $env:PATH = "$candidate;$env:PATH"
+                    try {
+                        $nv = npx --version 2>&1
+                        if ($LASTEXITCODE -eq 0) {
+                            Write-Ok "npx v$nv (found at $candidate)"
+                            $haveNpx = $true
+                            break
+                        }
+                    } catch { }
+                }
             }
         }
 
         if (-not $haveNpx) {
-            Write-Err "WARNING: npx not available."
-            Write-Err "  These MCP servers require npx and will NOT work:"
-            Write-Err "    file-search, serper, tavily-mcp, github, amap-maps, filesystem"
-            Write-Err "  Install Node.js LTS from https://nodejs.org then re-run this installer."
+            Write-Warn "WARNING: npx not available."
+            Write-Warn "  These MCP servers require npx and will NOT work:"
+            Write-Warn "    file-search, serper, tavily-mcp, github, amap-maps, filesystem"
+            Write-Warn "  Install Node.js LTS from https://nodejs.org then re-run this installer."
             Write-Warn "Help: $slifeRepo"
             exit 1
         }
