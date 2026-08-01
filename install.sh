@@ -326,13 +326,10 @@ if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
         echo -e "${YELLOW}  uv pip install -r $EXTRA_REQS${NC}"
     fi
 fi
-TOOL_DIR=$(uv tool dir 2>/dev/null || echo "$HOME/.local/share/uv/tools")
-SLIFE_PYTHON="$TOOL_DIR/slife/bin/python"
-
 echo -e "${CYAN}Optional extras:${NC}"
 echo "  # Local GGUF embeddings (offline, ~30 MB):"
-echo "  uv pip install --python $SLIFE_PYTHON \"slife[gguf]\""
+echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" \"slife[gguf]\""
 echo "  # HuggingFace transformer embeddings (~2 GB):"
-echo "  uv pip install --python $SLIFE_PYTHON \"slife[transformer]\""
+echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" \"slife[transformer]\""
 echo ""
 echo -e "${CYAN}More info:${NC} $SLIFE_REPO"

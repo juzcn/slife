@@ -445,20 +445,13 @@ try {
     Write-Host "  credstore set DEEPSEEK_API_KEY       # store your API key"
     Write-Host "  slife                                # launch the TUI"
     Write-Host ""
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    $toolDir = & uv tool dir 2>$null
-    $ErrorActionPreference = $prevEAP
-    if (-not $toolDir) { $toolDir = "$env:USERPROFILE\.local\share\uv\tools" }
-    $slifePython = "$toolDir\slife\Scripts\python.exe"
-
     Write-Host "Optional extras:" -ForegroundColor Cyan
-    Write-Host "  # Local GGUF embeddings (offline, ~30 MB):"
+    Write-Host "  # Local GGUF embeddings (offline, ~30 MB) — needs pre-built wheels on Windows:"
     $ggufUrl = if ($extraIndexArgs.Count -gt 0) { " $($extraIndexArgs[0]) $($extraIndexArgs[1])" } else { "" }
-    Write-Host "  uv pip install --python $slifePython$ggufUrl ""slife[gguf]"""
+    Write-Host "  uv pip install --python `"`$(uv tool dir)\slife\Scripts\python.exe`"$ggufUrl `"slife[gguf]`""
     Write-Host "  # With NVIDIA GPU, replace 'cpu' with 'cu121' (CUDA 12.1) in the URL above"
     Write-Host "  # HuggingFace transformer embeddings (~2 GB):"
-    Write-Host "  uv pip install --python $slifePython ""slife[transformer]"""
+    Write-Host "  uv pip install --python `"`$(uv tool dir)\slife\Scripts\python.exe`" `"slife[transformer]`""
     Write-Host ""
     Write-Host "More info: $slifeRepo" -ForegroundColor Cyan
 
