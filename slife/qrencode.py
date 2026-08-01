@@ -1,14 +1,16 @@
-"""Minimal QR code encoder — pure Python, zero dependencies.
+"""QR code encoder — pure Python, zero dependencies.
 
-Encodes alphanumeric text into a QR matrix (list of list of bool),
-auto-selecting the smallest version that fits (1–10, M-level ECC).
-Used by the WeChat login tool to render scannable QR codes in the terminal.
+Encodes arbitrary text (UTF-8, byte mode) into a QR matrix, auto-selecting
+the smallest version that fits (1–10, M-level ECC).  Renders compact
+terminal-scannable ASCII art via ``encode_qr_ascii()``.
+
+Usage::
+
+    from slife.qrencode import encode_qr_ascii
+    print(encode_qr_ascii("https://example.com/login?token=abc123"))
 """
 
 from __future__ import annotations
-
-import itertools
-from typing import Sequence
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Galois field GF(256) — primitive polynomial x⁸ + x⁴ + x³ + x² + 1 (0x11D)
@@ -41,23 +43,6 @@ def _gf_mul(a: int, b: int) -> int:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Reed-Solomon error correction
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-def _rs_generator_poly(nsym: int) -> list[int]:
-    """Generate polynomial (x - α⁰)(x - α¹)...(x - α^(nsym-1))."""
-    g = [1]
-    for i in range(nsym):
-        g = [_gf_mul(x, g[j - 1] if j > 0 else 1) ^ g[j] for j in range(len(g) + 1)]
-        g[-1] = _gf_mul(g[-2], _EXP[i]) if len(g) > 1 else _EXP[i]
-    # Actually the standard algorithm:
-    g = [1]
-    for i in range(nsym):
-        g.append(0)
-        for j in range(len(g) - 2, -1, -1):
-            g[j + 1] = g[j] ^ _gf_mul(g[j + 1], _EXP[i])
-            g[j] = _gf_mul(g[j], _EXP[i])
-        # simplified: multiply by (x - α^i)
-    return g
 
 
 def _rs_generator(nsym: int) -> list[int]:
@@ -155,7 +140,7 @@ def _encode_bytes(text: str) -> list[int]:
 
 def _build_codewords(text: str, version: int) -> tuple[list[int], int]:
     """Return (data_codewords, total_data_codewords_needed)."""
-    total, ecc_cw, g1_blocks, g1_data, g2_blocks, g2_data = _VERSION_ECC[version]
+    total, ecc_cw, *_ = _VERSION_ECC[version]
 
     # Encode data bits (byte mode)
     data_bits = _encode_bytes(text)
@@ -331,11 +316,7 @@ def _apply_mask(matrix: list[list[bool | None]], size: int, mask_idx: int) -> li
     for r in range(size):
         row: list[bool] = []
         for c in range(size):
-            v = matrix[r][c]
-            if v is None:
-                v = False  # default light
-            if v is None:  # satisfy type checker
-                v = False
+            v = matrix[r][c] or False  # None → light
             if fn(r, c):
                 v = not v
             row.append(v)
@@ -496,7 +477,7 @@ def encode_qr(text: str) -> list[list[bool]]:
     total_cw, ecc_cw, g1b, g1d, g2b, g2d = _VERSION_ECC[version]
 
     # Encode data
-    data_cw, needed_data = _build_codewords(text, version)
+    data_cw, _ = _build_codewords(text, version)
 
     # Interleave data across blocks
     blocks = []
@@ -522,7 +503,6 @@ def encode_qr(text: str) -> list[list[bool]]:
             all_cw.append(eb[i])
 
     # Pad with remainder codewords to fill capacity
-    remainder_needed = total_cw - len(all_cw)
     pad = [0xEC, 0x11]
     pi = 0
     while len(all_cw) < total_cw:
@@ -553,7 +533,6 @@ def encode_qr(text: str) -> list[list[bool]]:
     _place_data(matrix, size, all_cw)
 
     # Try all 8 masks, pick best
-    best_mask = 0
     best_score = float("inf")
     best_matrix: list[list[bool]] | None = None
 
@@ -566,7 +545,6 @@ def encode_qr(text: str) -> list[list[bool]]:
         score = _mask_score(masked, size)
         if score < best_score:
             best_score = score
-            best_mask = mask
             best_matrix = masked
 
     assert best_matrix is not None
