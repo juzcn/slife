@@ -240,7 +240,7 @@ try {
 
             $pkgCount = (Get-Content $preservedReqs).Count
             if ($pkgCount -gt 0) {
-                Write-Dim "Detected $pkgCount packages to preserve"
+                Write-Dim "Captured $pkgCount packages — will diff against fresh install to find user-added ones"
             }
         }
     }
@@ -360,6 +360,9 @@ try {
             if ($extraCount -eq 0) {
                 Write-Dim "All packages already present — nothing to re-add"
                 $preserveOk = $true
+                # Clear the reqs file — nothing was restored, so the final
+                # summary must not print a misleading count.
+                Set-Content -Path $preservedReqs -Value "" -Encoding utf8
             } else {
                 $oldPkgs | Out-File -Encoding utf8 $preservedReqs
                 Write-Warn "  Re-adding $extraCount extra packages:"
@@ -420,9 +423,9 @@ try {
     Write-Host ""
     if ((Test-Path $preservedReqs) -and ((Get-Content $preservedReqs).Count -gt 0)) {
         if ($preserveOk) {
-            Write-Host "$((Get-Content $preservedReqs).Count) preserved packages restored" -ForegroundColor Green
+            Write-Host "$((Get-Content $preservedReqs).Count) user-added package(s) restored" -ForegroundColor Green
         } else {
-            Write-Warn "Failed to preserve packages — run manually:"
+            Write-Warn "Failed to restore user-added packages — run manually:"
             Write-Warn "  uv pip install -r $preservedReqs"
         }
     }
