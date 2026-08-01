@@ -45,41 +45,18 @@ mcp, _log_path, logger = create_plugin_server(
 def _render_qr_ascii(content: str) -> str:
     """Render a string as a compact terminal-scannable QR code.
 
-    Uses single-width Unicode block characters to stay within the
-    typical TUI chat view width (~80 cols).  A QR v3 with border=1
-    produces ~31 chars wide — easily scannable.
+    Uses our pure-Python QR encoder — zero external dependencies.
+    Half-block Unicode characters (█▀▄) combine two QR rows per output row,
+    producing output ~25–57 chars wide depending on URL length.
     """
     if not content:
         return ""
     try:
-        import qrcode
-        qr = qrcode.QRCode(border=1, box_size=1)
-        qr.add_data(content)
-        qr.make(fit=True)
-        # Use half-block pairs: two QR rows → one output row
-        # ▄ = lower half block (top row dark), ▀ = upper half block (bottom row dark)
-        # █ = full block (both rows dark), ' ' = both rows light
-        matrix = qr.get_matrix()
-        size = len(matrix)
-        lines: list[str] = []
-        for y in range(0, size, 2):
-            row_chars: list[str] = []
-            for x in range(size):
-                top = matrix[y][x] if y < size else False
-                bot = matrix[y + 1][x] if y + 1 < size else False
-                if top and bot:
-                    row_chars.append("█")
-                elif top:
-                    row_chars.append("▀")
-                elif bot:
-                    row_chars.append("▄")
-                else:
-                    row_chars.append(" ")
-            lines.append("".join(row_chars))
-        return "\n".join(lines)
-    except ImportError:
-        logger.debug("qrcode_lib_unavailable — returning raw URL")
-        return content
+        from slife.plugins.wechat._qrencode import encode_qr_ascii
+        return encode_qr_ascii(content)
+    except Exception:
+        logger.exception("qr_encode_failed")
+        return ""
 
 # ── Global state ─────────────────────────────────────────────────────────
 
@@ -477,16 +454,25 @@ async def wechat_login() -> str:
 
     qr_ascii = _render_qr_ascii(_qr_content)
 
+    if qr_ascii:
+        hint = (
+            "Show the ASCII QR above to the user. "
+            "Tell them: '请使用微信扫描以下二维码登录' (scan the QR code with WeChat). "
+            "Then call check_status every few seconds until login completes. "
+            "The QR expires after ~10 minutes and auto-refreshes up to 3 times."
+        )
+    else:
+        hint = (
+            "Show the qrcode_url link to the user — they can open it on "
+            "their phone to scan. DO NOT try to generate a QR yourself; "
+            "just show the URL. Then call check_status to track login."
+        )
+
     return json.dumps({
         "status": "qr_ready",
         "qrcode_url": _qr_content,
         "qr_ascii": qr_ascii,
-        "hint": (
-            "QR code is ready! Show the ASCII QR above to the user. "
-            "Tell them: '请使用微信扫描以下二维码登录' (scan the QR code with WeChat). "
-            "Then call check_status every few seconds until login completes. "
-            "The QR expires after ~10 minutes and auto-refreshes up to 3 times."
-        ),
+        "hint": hint,
     }, ensure_ascii=False, indent=2)
 
 
