@@ -138,14 +138,19 @@ def _init_system():
         # is installed but not registered (e.g. pip quirks, packaging bugs).
         if _is_wsl():
             try:
-                from keyring_wincred import WinCredKeyring
+                from keyring_wincred import WinCredKeyring  # type: ignore[import-not-found]
                 kr = WinCredKeyring()
-                logger.debug("system keyring: WinCredKeyring (WSL explicit)")
+                logger.info("system keyring: WinCredKeyring (WSL explicit)")
+                keyring.set_keyring(kr)
+                return kr
             except ImportError:
-                logger.debug("keyring-wincred not available on WSL")
+                logger.info(
+                    "keyring-wincred not available on WSL — "
+                    "run: pip install keyring-wincred"
+                )
                 return None
             except Exception as exc:
-                logger.debug("WSL WinCredKeyring init failed: %s", exc)
+                logger.warning("WSL WinCredKeyring init failed: %s", exc)
                 return None
         else:
             logger.debug("system keyring: fail backend (no viable backends)")
@@ -157,8 +162,16 @@ def _init_system():
     try:
         kr.get_password("credstore", "__probe__")
     except Exception as exc:
-        logger.debug("system keyring probe failed: %s", exc)
-        return None
+        # On WSL, a transient probe failure (e.g. PowerShell encoding or slow
+        # first start) doesn't mean the backend is broken — treat it as viable.
+        if _is_wsl():
+            logger.warning(
+                "system keyring probe failed: %s — using %s anyway",
+                exc, type(kr).__name__,
+            )
+        else:
+            logger.debug("system keyring probe failed: %s", exc)
+            return None
 
     logger.debug("system keyring: %s", type(kr).__name__)
     keyring.set_keyring(kr)
