@@ -156,7 +156,7 @@ class ToolCallWidget(Static):
     def set_complete(self, result: str, is_error: bool = False) -> None:
         """Indicate the tool has completed with a result."""
         self._status = "error" if is_error else "done"
-        self._result = result[:2000] + "..." if len(result) > 2000 else result
+        self._result = result
         self._result_is_error = is_error
         self.update(self._build_content())
 

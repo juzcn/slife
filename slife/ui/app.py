@@ -262,11 +262,19 @@ class SlifeApp(App):
 
     # ── Actions ──────────────────────────────────────────────────
 
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
         """Quit the app — cancel the agent loop immediately, then
         clean up child processes.  Order matters: inbox/loop must
         stop first so MCP wrapper isn't mid-request during shutdown."""
         import asyncio
+
+        async def _stop_one(name: str, coro) -> None:
+            try:
+                await asyncio.wait_for(coro, timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.warning("shutdown_timeout service=%s", name)
+            except Exception:
+                pass
 
         # Cancel the agent loop RIGHT NOW — don't let it keep firing
         # tool calls into the MCP wrapper while we're trying to stop.
@@ -278,30 +286,18 @@ class SlifeApp(App):
             except Exception:
                 pass
 
-        async def _cleanup():
-            # Stop inbox first — completes any in-flight message.
-            await _stop_one("inbox", self.service.stop_inbox())
-            # Then kill remaining services.
-            stop_coros = {
-                "subagent": self.service.stop_subagent,
-                "a2a": self.service.stop_a2a,
-                "mcp": self.service.stop_mcp,
-                "memory": self.service.stop_memory,
-                "wechat": self.service.stop_wechat,
-            }
-            tasks = [_stop_one(n, f()) for n, f in stop_coros.items()]
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+        # Stop inbox first — completes any in-flight message.
+        await _stop_one("inbox", self.service.stop_inbox())
+        # Then kill remaining services in parallel.
+        await asyncio.gather(
+            _stop_one("subagent", self.service.stop_subagent()),
+            _stop_one("a2a", self.service.stop_a2a()),
+            _stop_one("mcp", self.service.stop_mcp()),
+            _stop_one("memory", self.service.stop_memory()),
+            _stop_one("wechat", self.service.stop_wechat()),
+            return_exceptions=True,
+        )
 
-        async def _stop_one(name: str, coro) -> None:
-            try:
-                await asyncio.wait_for(coro, timeout=3.0)
-            except asyncio.TimeoutError:
-                logger.warning("shutdown_timeout service=%s", name)
-            except Exception:
-                pass
-
-        asyncio.get_running_loop().create_task(_cleanup())
         self.exit()
 
     def action_cancel(self) -> None:

@@ -114,10 +114,12 @@ class MCPWrapperProcess:
             logger.error("wrapper_exec_not_found cmd=%s err=%s", self._command, e)
             self._running = False
             raise
-        except Exception:
-            # Clean up the subprocess transport so GC doesn't trip over
-            # closed pipes on Windows (ValueError: I/O operation on
-            # closed pipe) during event-loop shutdown.
+        except BaseException:
+            # Clean up the subprocess transport on ANY unhandled error
+            # (including asyncio.CancelledError, which inherits from
+            # BaseException, not Exception — so bare ``except Exception``
+            # misses it).  Without this, Ctrl+C during startup leaves
+            # orphaned child processes that crash the event loop.
             await self._cleanup_failed_start()
             raise
 

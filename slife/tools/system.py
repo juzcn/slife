@@ -95,10 +95,14 @@ def check_shells() -> list[dict]:
     if pwsh_path:
         results.append({"component": "shell", "level": "ok", "key": "powershell",
                         "value": pwsh_path, "hint": f"PowerShell available: {pwsh_path}"})
-    else:
+    elif os.name == "nt":
         results.append({"component": "shell", "level": "warning", "key": "powershell",
                         "value": "not_found",
                         "hint": "PowerShell not found on PATH. Some commands may not work."})
+    else:
+        results.append({"component": "shell", "level": "ok", "key": "powershell",
+                        "value": "not_found",
+                        "hint": "PowerShell not installed (non-Windows platform — expected, not an error)."})
 
     bash_path = which("bash")
     if bash_path:

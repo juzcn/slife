@@ -71,12 +71,11 @@ class TestToolCallWidget:
         assert w._result_is_error is True
         w.update.assert_called_once()
 
-    def test_set_complete_truncates_long_result(self):
+    def test_set_complete_stores_full_result(self):
         w = _make_widget()
         long_result = "x" * 3000
         w.set_complete(long_result)
-        assert len(w._result) == 2003  # 2000 + "..."
-        assert w._result.endswith("...")
+        assert len(w._result) == 3000  # full result, no truncation
 
     # ── Build content ────────────────────────────────────────────
 
