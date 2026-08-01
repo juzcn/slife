@@ -334,7 +334,12 @@ if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
 fi
 echo -e "${CYAN}Optional extras:${NC}"
 echo "  # Local GGUF embeddings (offline, ~30 MB):"
-echo "  uv tool install --with \"slife[gguf]\" slife"
+if [ -n "${EXTRA_INDEX_ARGS:-}" ]; then
+    echo "  uv tool install --with \"slife[gguf]\" $EXTRA_INDEX_ARGS slife"
+else
+    echo "  uv tool install --with \"slife[gguf]\" slife"
+fi
+echo "  # With NVIDIA GPU, replace 'cpu' with 'cu121' (CUDA 12.1) in the URL above"
 echo "  # HuggingFace transformer embeddings (~2 GB):"
 echo "  uv tool install --with \"slife[transformer]\" slife"
 echo ""

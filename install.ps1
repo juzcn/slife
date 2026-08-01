@@ -387,7 +387,9 @@ try {
                 $preserveOk = ($LASTEXITCODE -eq 0)
                 $ErrorActionPreference = $prevEAP2
                 $pipOutput | Out-File -Append -Encoding utf8 $toolInstallLog
-                if (-not $preserveOk) {
+                if ($preserveOk) {
+                    Write-Ok "$extraCount packages restored"
+                } else {
                     Write-Err "  Error details:"
                     $pipOutput | Select-Object -Last 10 | ForEach-Object { Write-Dim "    $_" }
                 }
@@ -417,6 +419,14 @@ try {
 
     Write-Ok "slife + credstore commands ready"
 
+    # Verify the binary is actually reachable and show its location.
+    $slifeCmd = Get-Command slife -ErrorAction SilentlyContinue
+    if ($slifeCmd) {
+        Write-Dim "  slife → $($slifeCmd.Source)"
+    } else {
+        Write-Warn "  slife binary not found on PATH — open a new terminal"
+    }
+
     # Done
     Write-Host ""
     Write-Host "Slife v$version installed successfully!" -ForegroundColor Green
@@ -434,6 +444,17 @@ try {
     Write-Host "  credstore set-password              # set up encrypted backup (first time)"
     Write-Host "  credstore set DEEPSEEK_API_KEY       # store your API key"
     Write-Host "  slife                                # launch the TUI"
+    Write-Host ""
+    Write-Host "Optional extras:" -ForegroundColor Cyan
+    Write-Host "  # Local GGUF embeddings (offline, ~30 MB) — needs pre-built wheels on Windows:"
+    if ($extraIndexArgs.Count -gt 0) {
+        Write-Host "  uv tool install --with ""slife[gguf]"" $($extraIndexArgs[0]) $($extraIndexArgs[1]) slife"
+    } else {
+        Write-Host "  uv tool install --with ""slife[gguf]"" slife"
+    }
+    Write-Host "  # With NVIDIA GPU, replace 'cpu' with 'cu121' (CUDA 12.1) in the URL above"
+    Write-Host "  # HuggingFace transformer embeddings (~2 GB):"
+    Write-Host "  uv tool install --with ""slife[transformer]"" slife"
     Write-Host ""
     Write-Host "More info: $slifeRepo" -ForegroundColor Cyan
 
