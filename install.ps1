@@ -354,7 +354,7 @@ try {
     if ($oldVenv) {
         $oldPython = Join-Path $oldVenv "Scripts\python.exe"
         if (Test-Path $oldPython) {
-            Write-Dim "Capturing installed packages from previous installation..."
+            Write-Dim "Found previous installation — will preserve user-added packages..."
 
             # Capture full freeze (with versions), filtering out:
             #   - editable installs (-e ...)
@@ -476,6 +476,7 @@ try {
 
     # Re-add preserved packages
     $preserveOk = $false
+    $hasExtras  = $false
     if ((Test-Path $preservedReqs) -and ((Get-Content $preservedReqs).Count -gt 0)) {
         $newVenv = Get-SlifeVenv
         if ($newVenv) {
@@ -493,10 +494,9 @@ try {
             if ($extraCount -eq 0) {
                 Write-Dim "All packages already present — nothing to re-add"
                 $preserveOk = $true
-                # Clear the reqs file — nothing was restored, so the final
-                # summary must not print a misleading count.
-                Set-Content -Path $preservedReqs -Value "" -Encoding utf8
+                $hasExtras  = $false
             } else {
+                $hasExtras = $true
                 $oldPkgs | Out-File -Encoding utf8 $preservedReqs
                 Write-Warn "  Re-adding $extraCount extra packages:"
 
@@ -564,7 +564,7 @@ try {
     Write-Host ""
     Write-Host "Slife v$version installed successfully!" -ForegroundColor Green
     Write-Host ""
-    if ((Test-Path $preservedReqs) -and ((Get-Content $preservedReqs).Count -gt 0)) {
+    if ($hasExtras) {
         if ($preserveOk) {
             Write-Host "User-added packages restored:" -ForegroundColor Cyan
             Get-Content $preservedReqs | ForEach-Object { Write-Host "  $([char]0x2713) $_" -ForegroundColor Green }
