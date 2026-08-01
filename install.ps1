@@ -180,7 +180,7 @@ try {
         Write-Dim "npx not found, installing Node.js..."
         if (Get-Command winget -ErrorAction SilentlyContinue) {
             Write-Dim "Installing Node.js LTS via winget..."
-            winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+            winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements
             if ($LASTEXITCODE -ne 0) {
                 Write-Dim "winget install returned exit code $LASTEXITCODE (may already be installed)"
             }
@@ -230,7 +230,7 @@ try {
         if ($choice -eq 'y' -or $choice -eq 'Y') {
             if (Get-Command winget -ErrorAction SilentlyContinue) {
                 Write-Dim "Installing Mosquitto via winget..."
-                winget install EclipseFoundation.Mosquitto --accept-package-agreements --accept-source-agreements
+                winget install EclipseFoundation.Mosquitto --source winget --accept-package-agreements --accept-source-agreements
                 # winget returns non-zero when the package is already installed
                 # and no upgrade is available — refresh PATH and re-check.
                 $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
@@ -255,7 +255,7 @@ try {
                 Write-Warn "  Install manually: https://mosquitto.org/download/"
             }
         } else {
-            Write-Dim "  Skipped. Install later with: winget install EclipseFoundation.Mosquitto"
+            Write-Dim "  Skipped. Install later with: winget install EclipseFoundation.Mosquitto --source winget"
         }
     }
     Write-Host ""
