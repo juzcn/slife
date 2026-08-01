@@ -324,10 +324,9 @@ echo "  slife                                # launch the TUI"
 echo ""
 if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
     if [ "${PRESERVE_OK:-0}" = "1" ]; then
-        echo -e "${CYAN}User-added packages restored:${NC}"
-        while IFS= read -r _pkg; do
-            echo -e "  ${GREEN}✓${NC} $_pkg"
-        done < "$EXTRA_REQS"
+        _count=$(wc -l < "$EXTRA_REQS" 2>/dev/null || echo 0)
+        echo -e "${CYAN}Preserved packages:${NC}"
+        echo -e "  ${GREEN}✓${NC} $_count extra packages restored from previous install"
     else
         echo -e "${YELLOW}Failed to restore user-added packages — run manually:${NC}"
         echo -e "${YELLOW}  uv pip install -r $EXTRA_REQS${NC}"
