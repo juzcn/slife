@@ -4,6 +4,8 @@
 
 一个独立的密钥管理器，随 [Slife](https://github.com/juzcn/slife) 一同发布，但**不依赖** Slife。仅依赖 `keyring` 和 `keyrings-cryptfile`。
 
+支持 **Windows**、**macOS**、**Linux** 和 **WSL**（通过 PowerShell 桥接 Windows 凭据管理器）。
+
 ## 安装
 
 ```bash
@@ -169,8 +171,9 @@ credstore.get_backend_name()   # → "system keyring + cryptfile (dual-write)"
 │  系统密钥链         │  加密文件备份                │
 │  （主存储）         │  （加密）                    │
 │  Win 凭据管理器     │  keyrings.cryptfile         │
-│  macOS 钥匙串      │  AES 加密 INI 文件           │
-│  Linux Secret Svc  │  OS 密码变更不受影响          │
+│  WSL（PowerShell） │  AES 加密 INI 文件           │
+│  macOS 钥匙串      │  OS 密码变更不受影响          │
+│  Linux Secret Svc  │                             │
 └────────────────────┴─────────────────────────────┘
 ```
 

@@ -4,6 +4,8 @@ Cross-platform credential storage — OS keyring with AES-encrypted file backup.
 
 A standalone secret manager that ships with [Slife](https://github.com/juzcn/slife) but has **no dependency on it**. Depends only on `keyring` and `keyrings-cryptfile`.
 
+Supports **Windows**, **macOS**, **Linux**, and **WSL** (Windows Credential Manager via PowerShell bridge).
+
 ## Install
 
 ```bash
@@ -169,8 +171,9 @@ Priority: `CREDSTORE_FILE` env var → `credstore.json5` → `~/.credstore/crede
 │  System Keyring    │  Cryptfile Backup           │
 │  (primary)         │  (encrypted)                │
 │  Win CredMan       │  keyrings.cryptfile         │
-│  macOS Keychain    │  AES-encrypted INI          │
-│  Linux Secret Svc  │  Survives OS pw changes     │
+│  WSL (PowerShell)  │  AES-encrypted INI          │
+│  macOS Keychain    │  Survives OS pw changes     │
+│  Linux Secret Svc  │                             │
 └────────────────────┴─────────────────────────────┘
 ```
 
