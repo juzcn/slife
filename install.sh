@@ -21,13 +21,10 @@ SLIFE_TARBALL="$SLIFE_REPO/archive/refs/heads/main.tar.gz"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║              Slife Installer               ║${NC}"
-echo -e "${CYAN}║          Terminal-based AI agent           ║${NC}"
-echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
+echo -e "${CYAN}Slife Installer${NC}"
 echo ""
 
-# ── Pre-flight summary ──────────────────────────────────────────────
+#
 echo "Install method    : uv tool install (isolated environment)"
 echo -e "User data         : ${CYAN}$HOME/.slife/${NC}"
 echo "Python            : managed by uv (3.13)"
@@ -35,7 +32,7 @@ echo "npx               : auto-install Node.js if needed (required for MCP serve
 echo "Disk space needed : ~500 MB"
 echo ""
 
-# ── 0. Disk space check (before any download) ────────────────────────
+#
 if command -v df &>/dev/null; then
     FREE_KB=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}' || echo "0")
     if [ "$FREE_KB" -gt 0 ] 2>/dev/null && [ "$FREE_KB" -lt 1048576 ]; then
@@ -46,7 +43,7 @@ if command -v df &>/dev/null; then
     fi
 fi
 
-# ── 1. Ensure uv is available ──────────────────────────────────────
+#
 echo -e "${YELLOW}[1/5] Ensuring uv is available…${NC}"
 if ! command -v uv &>/dev/null; then
     echo -e "${YELLOW}  Installing uv…${NC}"
@@ -55,7 +52,7 @@ if ! command -v uv &>/dev/null; then
 fi
 echo -e "${GREEN}  ✓${NC} uv $(uv --version 2>&1)"
 
-# ── 2. Ensure npx (Node.js) is available ─────────────────────────────
+#
 echo -e "${YELLOW}[2/5] Ensuring npx (Node.js) is available…${NC}"
 HAVE_NPX=false
 if command -v npx &>/dev/null; then
@@ -84,22 +81,16 @@ if [ "$HAVE_NPX" = false ]; then
         HAVE_NPX=true
     fi
     if [ "$HAVE_NPX" = false ]; then
-        echo -e "${RED}  ┌─────────────────────────────────────────────────────┐${NC}"
-        echo -e "${RED}  │  WARNING: npx not available.                       │${NC}"
-        echo -e "${RED}  │                                                     │${NC}"
-        echo -e "${RED}  │  These MCP servers require npx and will NOT work:    │${NC}"
-        echo -e "${RED}  │    file-search, serper, tavily-mcp, github,          │${NC}"
-        echo -e "${RED}  │    amap-maps, filesystem                             │${NC}"
-        echo -e "${RED}  │                                                     │${NC}"
-        echo -e "${RED}  │  Install Node.js LTS from https://nodejs.org         │${NC}"
-        echo -e "${RED}  │  then re-run this installer.                         │${NC}"
-        echo -e "${RED}  └─────────────────────────────────────────────────────┘${NC}"
+        echo -e "${RED}WARNING: npx not available.${NC}"
+        echo -e "${RED}  These MCP servers require npx and will NOT work:${NC}"
+        echo -e "${RED}    file-search, serper, tavily-mcp, github, amap-maps, filesystem${NC}"
+        echo -e "${RED}  Install Node.js LTS from https://nodejs.org then re-run this installer.${NC}"
         echo -e "${YELLOW}Help: $SLIFE_REPO${NC}"
         exit 1
     fi
 fi
 
-# ── Optional: Mosquitto MQTT broker (for A2A multi-agent mesh) ────────
+#
 echo -e "${YELLOW}[optional] Checking Mosquitto (MQTT broker for multi-agent mesh)…${NC}"
 if command -v mosquitto &>/dev/null; then
     echo -e "${GREEN}  ✓${NC} mosquitto found"
@@ -143,7 +134,7 @@ else
     fi
 fi
 
-# ── 3. Download and verify slife ─────────────────────────────────────
+#
 echo ""
 echo -e "${YELLOW}[3/5] Downloading slife…${NC}"
 curl --progress-bar -fL "$SLIFE_TARBALL" -o "$TMP_DIR/slife.tar.gz"
@@ -163,7 +154,7 @@ if [ -f "$PYPROJECT" ]; then
     fi
 fi
 
-# ── 4. Install slife with uv tool install ────────────────────────────
+#
 # uv tool install creates an isolated venv, installs slife + credstore
 # (workspace member), and places the executables in ~/.local/bin.
 # Python 3.13 is managed automatically by uv.
@@ -278,7 +269,7 @@ if [ -s "$PRESERVED_REQS" ]; then
     fi
 fi
 
-# ── 5. Clean up previous installation artifacts ──────────────────────
+#
 echo -e "${YELLOW}[5/5] Cleaning up previous installation artifacts…${NC}"
 
 # Ensure ~/.local/bin is on PATH (uv puts tool executables here,
@@ -306,15 +297,10 @@ else
     echo -e "  ${RED}  ⚠ slife binary not found on PATH${NC}"
 fi
 
-# ── 6. Done ───────────────────────────────────────────────────────────
+# Done
+
 echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
-	SUCCESS_MSG="Slife v${VERSION} installed successfully!"
-	INNER_WIDTH=46
-	LEFT_PAD=$(( (INNER_WIDTH - ${#SUCCESS_MSG}) / 2 ))
-	RIGHT_PAD=$(( INNER_WIDTH - ${#SUCCESS_MSG} - LEFT_PAD ))
-	printf "${GREEN}║%*s%s%*s║${NC}\n" $LEFT_PAD "" "$SUCCESS_MSG" $RIGHT_PAD ""
-echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
+echo -e "${GREEN}Slife v${VERSION} installed successfully!${NC}"
 echo ""
 
 # When piped to bash, the exports above only affect the script's subshell —
@@ -325,15 +311,9 @@ if command -v slife &>/dev/null; then
 fi
 
 if [ "$NEEDS_SHELL_REFRESH" = true ]; then
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  IMPORTANT: slife is installed but not on your      │${NC}"
-    echo -e "${YELLOW}│  current PATH (pipe-to-bash runs in a subshell).    │${NC}"
-    echo -e "${YELLOW}│  To use it, run:                                    │${NC}"
-    echo -e "${YELLOW}│                                                     │${NC}"
-    echo -e "${YELLOW}│    source \"\$HOME/.local/bin/env\"                     │${NC}"
-    echo -e "${YELLOW}│                                                     │${NC}"
-    echo -e "${YELLOW}│    Or simply open a new terminal.                   │${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    echo -e "${YELLOW}IMPORTANT: slife is installed but not on your current PATH.${NC}"
+    echo -e "${YELLOW}  Run: source "$HOME/.local/bin/env"${NC}"
+    echo -e "${YELLOW}  Or simply open a new terminal.${NC}"
     echo ""
 fi
 
