@@ -448,13 +448,13 @@ try {
     Write-Host "Optional extras:" -ForegroundColor Cyan
     Write-Host "  # Local GGUF embeddings (offline, ~30 MB) — needs pre-built wheels on Windows:"
     if ($extraIndexArgs.Count -gt 0) {
-        Write-Host "  uv tool install --with ""slife[gguf]"" $($extraIndexArgs[0]) $($extraIndexArgs[1]) slife"
+        Write-Host "  uv tool install --reinstall --with ""slife[gguf]"" $($extraIndexArgs[0]) $($extraIndexArgs[1]) slife"
     } else {
-        Write-Host "  uv tool install --with ""slife[gguf]"" slife"
+        Write-Host "  uv tool install --reinstall --with ""slife[gguf]"" slife"
     }
     Write-Host "  # With NVIDIA GPU, replace 'cpu' with 'cu121' (CUDA 12.1) in the URL above"
     Write-Host "  # HuggingFace transformer embeddings (~2 GB):"
-    Write-Host "  uv tool install --with ""slife[transformer]"" slife"
+    Write-Host "  uv tool install --reinstall --with ""slife[transformer]"" slife"
     Write-Host ""
     Write-Host "More info: $slifeRepo" -ForegroundColor Cyan
 
