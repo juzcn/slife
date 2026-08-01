@@ -415,7 +415,7 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
     name="login",
     description=(
         "Show a WeChat login QR code for the user to scan with their phone. "
-        "Display the QR as-is — it's already rendered. "
+        "Copy the QR into your reply — the user cannot see raw tool output. "
         "Then poll check_status until login completes (~23h session)."
     ),
 )
