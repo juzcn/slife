@@ -328,8 +328,8 @@ if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
 fi
 echo -e "${CYAN}Optional extras:${NC}"
 echo "  # Local GGUF embeddings (offline, ~30 MB):"
-echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" \"slife[gguf]\""
+echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" llama-cpp-python"
 echo "  # HuggingFace transformer embeddings (~2 GB):"
-echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" \"slife[transformer]\""
+echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" sentence-transformers"
 echo ""
 echo -e "${CYAN}More info:${NC} $SLIFE_REPO"
