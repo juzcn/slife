@@ -26,14 +26,24 @@
 **macOS / Linux / WSL:**
 
 ```bash
+# GitHub (global)
 curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
+
+# Gitee  (China mainland)
+curl -fsSL https://gitee.com/juzcn/slife/raw/main/install.sh | bash
 ```
 
 **Windows PowerShell:**
 
 ```powershell
+# GitHub (global)
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 | iex"
+
+# Gitee (China mainland)
+powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/install.ps1 | iex"
 ```
+
+> 💡 The script auto-falls back to Gitee if GitHub is unreachable.  China mainland users can also download directly from Gitee to skip the GitHub probe entirely.
 
 ### Try without installing
 
@@ -51,8 +61,14 @@ Re-run the install script — it auto-preserves optional packages (llama-cpp-pyt
 # macOS / Linux / WSL
 curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/uninstall.sh | bash
 
+# Gitee (China mainland)
+curl -fsSL https://gitee.com/juzcn/slife/raw/main/uninstall.sh | bash
+
 # Windows PowerShell
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/uninstall.ps1 | iex"
+
+# Gitee (China mainland)
+powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/uninstall.ps1 | iex"
 ```
 
 Uninstall removes the binaries. User data (`~/.slife/`, `~/.credstore/`) is listed but **not removed** — delete manually for a full reset.
@@ -237,7 +253,7 @@ Then launch slife and tell it: `enable local embeddings with bge-m3-Q4_K_M.gguf`
 ## Development
 
 ```bash
-git clone https://github.com/juzcn/slife.git
+git clone https://github.com/juzcn/slife.git        # or: https://gitee.com/juzcn/slife.git (China mainland)
 cd slife
 uv sync --all-extras
 
