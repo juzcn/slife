@@ -213,14 +213,43 @@ try {
 
     # Optional: Mosquitto MQTT broker
     Write-Step "[optional] Checking Mosquitto (MQTT broker for multi-agent mesh)..."
-    # Mosquitto's installer doesn't always add itself to PATH — scan the
-    # default directory as well.
-    $mosqDir = "${env:ProgramFiles}\Mosquitto"
-    if ((Test-Path (Join-Path $mosqDir "mosquitto.exe")) -and
-        -not (Get-Command mosquitto -ErrorAction SilentlyContinue)) {
-        $env:PATH = "$mosqDir;$env:PATH"
+
+    function Find-MosquittoDir {
+        # 1) Already on PATH
+        if (Get-Command mosquitto -ErrorAction SilentlyContinue) { return "" }
+        # 2) Common install directories
+        foreach ($candidate in @(
+            "${env:ProgramFiles}\Mosquitto",
+            "${env:ProgramFiles(x86)}\Mosquitto"
+        )) {
+            if (Test-Path (Join-Path $candidate "mosquitto.exe")) { return $candidate }
+        }
+        # 3) Registry uninstall entries (handles custom install locations)
+        foreach ($regPath in @(
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )) {
+            try {
+                $entry = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue |
+                    Where-Object { $_.DisplayName -match 'mosquitto' } |
+                    Select-Object -First 1
+                if ($entry) {
+                    foreach ($prop in @('UninstallString', 'DisplayIcon')) {
+                        if ($entry.$prop) {
+                            $dir = Split-Path $entry.$prop.Trim('"') -Parent
+                            if (Test-Path (Join-Path $dir "mosquitto.exe")) { return $dir }
+                        }
+                    }
+                }
+            } catch { }
+        }
+        return $null
     }
-    if (Get-Command mosquitto -ErrorAction SilentlyContinue) {
+
+    $mosqDir = Find-MosquittoDir
+    if ($mosqDir -ne $null) {
+        if ($mosqDir -ne "") { $env:PATH = "$mosqDir;$env:PATH" }
         Write-Ok "mosquitto found"
     } else {
         Write-Warn "  Mosquitto not found."
@@ -232,15 +261,12 @@ try {
                 Write-Dim "Installing Mosquitto via winget..."
                 winget install EclipseFoundation.Mosquitto --source winget --accept-package-agreements --accept-source-agreements
                 # winget returns non-zero when the package is already installed
-                # and no upgrade is available — refresh PATH and re-check.
+                # and no upgrade is available — refresh PATH and re-scan.
                 $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                             [System.Environment]::GetEnvironmentVariable("Path", "User")
-                # Also scan the default install directory (not always on PATH)
-                $mosqDir = "${env:ProgramFiles}\Mosquitto"
-                if (Test-Path (Join-Path $mosqDir "mosquitto.exe")) {
-                    $env:PATH = "$mosqDir;$env:PATH"
-                }
-                if (Get-Command mosquitto -ErrorAction SilentlyContinue) {
+                $mosqDir = Find-MosquittoDir
+                if ($mosqDir -ne $null) {
+                    if ($mosqDir -ne "") { $env:PATH = "$mosqDir;$env:PATH" }
                     Write-Ok "Mosquitto ready"
                     Write-Host "  To start Mosquitto:" -ForegroundColor Cyan
                     Write-Host "    net start mosquitto"
