@@ -446,15 +446,12 @@ try {
     Write-Host "  slife                                # launch the TUI"
     Write-Host ""
     Write-Host "Optional extras:" -ForegroundColor Cyan
-    Write-Host "  # Local GGUF embeddings (offline, ~30 MB) — needs pre-built wheels on Windows:"
-    if ($extraIndexArgs.Count -gt 0) {
-        Write-Host "  uv tool install --reinstall --with ""slife[gguf]"" $($extraIndexArgs[0]) $($extraIndexArgs[1]) slife"
-    } else {
-        Write-Host "  uv tool install --reinstall --with ""slife[gguf]"" slife"
-    }
+    Write-Host "  # Local GGUF embeddings (offline, ~30 MB):"
+    $ggufUrl = if ($extraIndexArgs.Count -gt 0) { " $($extraIndexArgs[0]) $($extraIndexArgs[1])" } else { "" }
+    Write-Host "  uv pip install --python `"`$(uv tool dir)\slife\Scripts\python.exe`"$ggufUrl `"slife[gguf]`""
     Write-Host "  # With NVIDIA GPU, replace 'cpu' with 'cu121' (CUDA 12.1) in the URL above"
     Write-Host "  # HuggingFace transformer embeddings (~2 GB):"
-    Write-Host "  uv tool install --reinstall --with ""slife[transformer]"" slife"
+    Write-Host "  uv pip install --python `"`$(uv tool dir)\slife\Scripts\python.exe`" `"slife[transformer]`""
     Write-Host ""
     Write-Host "More info: $slifeRepo" -ForegroundColor Cyan
 

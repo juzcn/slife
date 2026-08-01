@@ -335,12 +335,12 @@ fi
 echo -e "${CYAN}Optional extras:${NC}"
 echo "  # Local GGUF embeddings (offline, ~30 MB):"
 if [ -n "${EXTRA_INDEX_ARGS:-}" ]; then
-    echo "  uv tool install --reinstall --with \"slife[gguf]\" $EXTRA_INDEX_ARGS slife"
+    echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" $EXTRA_INDEX_ARGS \"slife[gguf]\""
 else
-    echo "  uv tool install --reinstall --with \"slife[gguf]\" slife"
+    echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" \"slife[gguf]\""
 fi
 echo "  # With NVIDIA GPU, replace 'cpu' with 'cu121' (CUDA 12.1) in the URL above"
 echo "  # HuggingFace transformer embeddings (~2 GB):"
-echo "  uv tool install --reinstall --with \"slife[transformer]\" slife"
+echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" \"slife[transformer]\""
 echo ""
 echo -e "${CYAN}More info:${NC} $SLIFE_REPO"
