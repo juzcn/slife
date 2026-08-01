@@ -28,14 +28,20 @@ logger = logging.getLogger("credstore.keyutils")
 
 # ── libc bindings ──────────────────────────────────────────────────────────
 
-_libc = ctypes.CDLL("libc.so.6", use_errno=True)
+_libc = None
 
-# long syscall(long number, ...)
-_libc.syscall.argtypes = [
-    ctypes.c_long, ctypes.c_long, ctypes.c_ulong,
-    ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong,
-]
-_libc.syscall.restype = ctypes.c_long
+if sys.platform == "linux":
+    try:
+        _libc = ctypes.CDLL("libc.so.6", use_errno=True)
+
+        # long syscall(long number, ...)
+        _libc.syscall.argtypes = [
+            ctypes.c_long, ctypes.c_long, ctypes.c_ulong,
+            ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong,
+        ]
+        _libc.syscall.restype = ctypes.c_long
+    except (OSError, FileNotFoundError):
+        _libc = None
 
 # ── syscall / keyctl constants ──────────────────────────────────────────────
 
