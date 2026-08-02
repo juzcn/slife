@@ -83,27 +83,44 @@ User Input → Conversation.add_user_message()
 - **Tool accumulation**: tool call deltas accumulated across streaming chunks, executed as a batch
 - **Tool result images**: `_scan_for_images()` detects ``[image: <path>]`` markers in tool output and fires ``handler.on_image()`` for TUI rendering
 - **Tool timeout**: `asyncio.wait_for()` wraps every tool call (default 60s). The LLM can override per-call via `_timeout`. Timeouts return `"Error: …"` strings — never silent, never crash the loop
-- **Iteration limit**: `max_iterations` (default 30) prevents infinite loops
+- **Iteration limit**: `max_iterations` (default 30) prevents infinite loops. When exceeded, returns `AgentResult(cancelled=True)` with accumulated token usage preserved.
+- **Cancellation**: `Esc` sets a cancel event. The loop stops at the next iteration boundary, returning `AgentResult(cancelled=True, usage=total_usage)` — partial token costs are retained.
 - **Orphan repair**: interrupted tool calls are repaired before the next user message
 
 ### Context Window Management
 
-Active conversation stays within 20%–80% of the model's context window:
+Active conversation stays within `context_floor`–`context_ceiling` of the model's
+context window (default 20%–80%):
 
 ```
-                context_window (e.g. 131072 tokens)
+                context_window
 ┌──────────────────────────────────────────────────────────────┐
 │   trimmed (already saved     │  current context      │  headroom  │
-│   in diary — recall via       │  20% ~ 80%            │  20%       │
+│   in diary — recall via       │  floor ~ ceiling      │  1-ceiling │
 │   memory_search)              │  working memory       │            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 - **Save**: after each turn, the turn is saved as a new diary row. No trimming happens here.
-- **Trim**: before each LLM API call, `AgentLoop._maybe_trim_context()` checks token count. If it exceeds `ceiling × context_window`, the oldest complete turns are extracted and deleted. A synthetic `_trim_context` tool-call + result pair is inserted after the system prompt — the LLM sees a visible notification. Trimmed turns were already persisted when they completed, so the notification guides the LLM to use `memory_search` for retrieval.
+- **Trim**: before each LLM API call, `AgentLoop._maybe_trim_context()` checks token count via `Conversation.count_tokens()` (chars/3 heuristic on live message text). If it exceeds `ceiling × context_window`, the oldest complete turns are removed and a synthetic `_trim_context` tool-call + result pair is inserted after the system prompt — the LLM sees a visible notification. Trimmed turns were already persisted when they completed, so the notification guides the LLM to use `memory_search` for retrieval. Each removal re-counts via `count_tokens()` until the total drops to the floor target.
 - **Subagent trim**: subagents also trim via the same code path, but with `memory_enabled=False`. Trimmed turns from subagents are discarded (ephemeral by design). The notification text reflects this — no mention of `memory_search`.
 - **Tool result ceiling**: single tool results are capped at 20% of the context window.
-- **Restore**: on restart, recent turns are loaded from SQLite and the conversation is rebuilt.
+- **Restore**: on restart, recent turns are loaded directly from SQLite. The budget is `context_floor × context_window`. Each turn's incremental token cost is estimated from message text (`len(content)//3`, the same heuristic as `count_tokens`), and turns are selected newest-first until the budget is exhausted. Always at least one turn is kept. The stored `diary.token_count` is **not** used for budgeting — it can be zero (cancelled/error turns) or cumulative (double-counts when summed).
+
+### Token Counting Model
+
+Three layers, all simple accumulation — no deduplication, no delta tracking:
+
+```
+API call:  result.usage.total_tokens  →  status bar accumulates directly
+Turn:      sum of all API calls       →  diary.token_count (billed cost)
+Session:   sum of all turns           →  status bar total (0 at launch)
+```
+
+- **Per API call**: ``result.usage`` from the streaming LLM response — input + output tokens for that single request. Accumulated directly into the session total in the status bar.
+- **Per turn**: ``total_usage`` in the agent loop accumulates ``result.usage`` across all iterations (tool-call loops). Stored as ``diary.token_count`` at turn end. The dialog displays the turn-cumulative ``total_usage`` on each assistant message — it grows as the turn progresses.
+- **Per session**: ``session_usage.total_tokens`` starts at 0 on launch (not restored from history). Incremented at turn end via ``save_to_memory`` with the turn's final ``token_count``.
+- **Cancelled / max-iteration turns**: ``run()`` returns ``AgentResult(cancelled=True, usage=total_usage)`` — partial token usage from earlier API calls within the turn is preserved, no longer discarded as zero.
 
 ## Tool System
 
@@ -227,7 +244,7 @@ One row = one turn, plus associated image BLOBs:
 | `diary.created_at` | ISO 8601 with timezone |
 | `diary.channel` | Source: `human`, `wechat`, or remote agent id |
 | `diary.who_helped` / `what_model` | Agent identity + model used |
-| `diary.token_count` | Tokens consumed by this turn |
+| `diary.token_count` | Tokens consumed by this turn (sum of all API calls within the turn) |
 | `diary_images.image_id` | UUID (matches cache filename stem) |
 | `diary_images.data` | Raw image binary (BLOB) |
 | `diary_images.mime_type` | `image/png`, `image/jpeg`, … |
@@ -268,9 +285,12 @@ Long turns are chunked at paragraph boundaries (~500 tokens, 1-paragraph overlap
 
 On startup, recent turns are read **directly from SQLite** — no MCP transport,
 no plugin dependency. The UI shows history immediately; plugins start in
-parallel. Images displayed via ``show_image`` are reconstructed from BLOBs in
-``diary_images``, written back to the cache directory, and re-rendered inline.
-This decouples restore from plugin health.
+parallel. Turns are selected within a token budget (`context_floor ×
+context_window`) using incremental cost estimates from message text, not stored
+`token_count` values (which can be zero or cumulative). Images displayed via
+``show_image`` are reconstructed from BLOBs in ``diary_images``, written back
+to the cache directory, and re-rendered inline.  This decouples restore from
+plugin health.
 
 ### Agent Isolation
 
