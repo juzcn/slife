@@ -195,6 +195,7 @@ class AgentLoop:
         self.memory_enabled = memory_enabled
         self.supports_vision = supports_vision
         self._cancel_event = asyncio.Event()
+        self._last_context_tokens: int = 0
 
     def cancel(self) -> None:
         """Signal the agent loop to stop at the next safe point."""
@@ -316,12 +317,18 @@ class AgentLoop:
             return
 
         ceiling_tokens = int(self.context_window * self.context_ceiling)
-        current = conversation.count_tokens()
+
+        # Use the accurate context size from the last turn's final API
+        # call when available; fall back to the chars/3 estimate for the
+        # first turn of a session.
+        current = self._last_context_tokens or conversation.count_tokens()
         if current <= ceiling_tokens:
             return
 
         target = int(self.context_window * self.context_floor)
         turns, tokens_freed = conversation.extract_oldest_turns(target)
+        # After trimming, update the baseline so the next check is accurate.
+        self._last_context_tokens = conversation.count_tokens()
         if not turns:
             return
 
@@ -692,10 +699,13 @@ class AgentLoop:
                             t_total,
                             result.content,
                         )
+                        self._last_context_tokens = total_usage.total_tokens
                         return AgentResult(text=result.content, usage=total_usage)
 
                 raise MaxIterationsExceeded(self.max_iterations)
             except AgentCancelled:
+                self._last_context_tokens = total_usage.total_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except MaxIterationsExceeded:
+                self._last_context_tokens = total_usage.total_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
