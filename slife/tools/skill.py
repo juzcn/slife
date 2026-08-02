@@ -160,7 +160,7 @@ class _SkillDirMixin:
         self.skills_dir = _resolve_skills_dir(skills_dir)
 
     @classmethod
-    def from_config(cls, cfg, config):
+    def from_config(cls, cfg, config):  # pyright: ignore[reportIncompatibleMethodOverride]
         return cls(skills_dir=cfg.get("skills_dir", ""))
 
 
@@ -169,7 +169,7 @@ class _SkillDirMixin:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class CheckSkillsDirTool(_SkillDirMixin, Tool):
+class CheckSkillsDirTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """Report the absolute path to the skills directory.
 
     Skills live in ``<data_dir>/skills/``: the project root in dev
@@ -218,7 +218,7 @@ class CheckSkillsDirTool(_SkillDirMixin, Tool):
         return "\n".join(lines)
 
 
-class ListSkillsTool(_SkillDirMixin, Tool):
+class ListSkillsTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """List all available skills with their names and descriptions."""
 
     name = "list_skills"
@@ -234,7 +234,7 @@ class ListSkillsTool(_SkillDirMixin, Tool):
         return result if result else "No skills available."
 
 
-class UseSkillTool(_SkillDirMixin, Tool):
+class UseSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """Load a skill's full SKILL.md documentation into context."""
 
     name = "use_skill"
@@ -252,7 +252,7 @@ class UseSkillTool(_SkillDirMixin, Tool):
         return _read_skill(self.skills_dir, skill_name)
 
 
-class AddSkillTool(_SkillDirMixin, Tool):
+class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """Install a skill by writing its files to the local skills directory.
 
     The agent is responsible for fetching the skill's files (e.g. via
@@ -422,7 +422,7 @@ class AddSkillTool(_SkillDirMixin, Tool):
         logger.debug("skill_meta_written dir=%s", skill_dir)
 
 
-class RemoveSkillTool(_SkillDirMixin, Tool):
+class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """Remove a skill by deleting its directory and SKILL.md.
 
     Matches by frontmatter 'name' field first, then by directory name.
@@ -478,7 +478,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):
 # skill_set
 # ═══════════════════════════════════════════════════════════════════════
 
-class SkillSet(_ConfigPathMixin, Tool):
+class SkillSet(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     name = "skill_set"
     category: ClassVar[str] = "Skills"
     _subagent_skip = True

@@ -62,7 +62,7 @@ def get_rest_apis_summary(config_path: Path) -> str:
     return "\n".join(lines)
 
 
-class RestApiAddTool(_ConfigPathMixin, Tool):
+class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     name = "rest_api_add"
     _subagent_skip = True
     description = (
@@ -166,7 +166,7 @@ class RestApiAddTool(_ConfigPathMixin, Tool):
         return "\n".join(result_lines)
 
 
-class RestApiRemoveTool(_ConfigPathMixin, Tool):
+class RestApiRemoveTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     name = "rest_api_remove"
     _subagent_skip = True
     description = "Unregister a REST API. Disconnects and removes from config."
@@ -199,7 +199,7 @@ class RestApiRemoveTool(_ConfigPathMixin, Tool):
         return f"[OK] Removed REST API '{name}'."
 
 
-class RestApiListTool(_ConfigPathMixin, Tool):
+class RestApiListTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     name = "rest_api_list"
     description = "List registered REST APIs with specs, base URLs, and auth."
     parameters = {
@@ -208,7 +208,7 @@ class RestApiListTool(_ConfigPathMixin, Tool):
         "required": [],
     }
 
-    async def execute(self) -> str:
+    async def execute(self, **kwargs) -> str:
         return get_rest_apis_summary(self._config_path)
 
 
@@ -217,7 +217,7 @@ class RestApiListTool(_ConfigPathMixin, Tool):
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class RestApiSet(_ConfigPathMixin, Tool):
+class RestApiSet(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "rest_api_set"
     category = "REST API"
     _subagent_skip = True

@@ -7,8 +7,6 @@ Restore loads the most recent N turns by rowid.
 Agent isolation is at the file level — each agent_id has its own .db file.
 """
 
-# pyright: reportOptionalSubscript=false
-
 import json
 import logging
 import struct

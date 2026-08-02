@@ -75,7 +75,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Self
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -195,7 +195,7 @@ class Tool(ABC):
         ...
 
     @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None") -> "Tool":
+    def from_config(cls, cfg: dict, config: "Config | None") -> Self:
         """Create tool instance from config override dict.
 
         The default implementation calls cls() with no arguments.
@@ -204,14 +204,13 @@ class Tool(ABC):
         """
         return cls()
 
-    @classmethod
-    def to_openai_function(cls) -> dict:
+    def to_openai_function(self) -> dict:
         """Convert to OpenAI function definition format."""
         return {
             "type": "function",
             "function": {
-                "name": cls.name,
-                "description": cls.description,
-                "parameters": cls.parameters,
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
             },
         }

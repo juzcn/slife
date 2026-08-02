@@ -130,3 +130,13 @@ exclude_also = [
 show_missing = true
 skip_covered = false
 
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+include = ["slife"]
+exclude = ["**/__pycache__/**", "**/.venv/**", ".venv/**", "tests/**", "credstore/**"]
+reportMissingImports = true
+reportMissingTypeStubs = false
+reportOptionalSubscript = false
+reportInvalidTypeForm = false
+

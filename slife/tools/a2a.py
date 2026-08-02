@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os as _os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from slife.tools.base import Tool, require_params
 
@@ -84,7 +84,7 @@ class A2AListAgentsTool(Tool):
         "Use a2a_list_subagents for local workers. "
         "Use before delegating tasks via a2a_send_task or a2a_send_task_async."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {},
         "required": [],
@@ -123,7 +123,7 @@ class A2AListSubagentsTool(Tool):
         "Use a2a_list_agents for remote MQTT peers. "
         "Use before delegating tasks via a2a_send_task or a2a_send_task_async."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {},
         "required": [],
@@ -173,7 +173,7 @@ class A2ASendTaskTool(Tool):
         "Be specific — the remote agent has no context of your conversation. "
         "For parallel work, use a2a_send_task_async to send without waiting."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "agent_id": {
@@ -235,7 +235,7 @@ class A2ASendTaskAsyncTool(Tool):
         "Works with local subagents and remote MQTT peers. "
         "Use a2a_list_agents and a2a_list_subagents first to discover agents."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "agent_id": {
@@ -316,7 +316,7 @@ class A2AGetTaskResultTool(Tool):
         "To check status, use a2a_subscribe_task. "
         "For a list of all tasks, use a2a_list_tasks."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "agent_id": {
@@ -401,7 +401,7 @@ class A2ACancelTaskTool(Tool):
         "Note: the remote agent may still complete the task — cancellation "
         "is best-effort."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "agent_id": {
@@ -464,7 +464,7 @@ class A2AListTasksTool(Tool):
         "agent, transport, and preview. "
         "Use this to monitor task progress across your agent fleet."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "agent_id": {
@@ -549,7 +549,7 @@ class A2ASubscribeTaskTool(Tool):
         "For pending tasks: returns status — results are pushed to the "
         "chat inbox automatically when the task completes."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "agent_id": {
@@ -625,7 +625,7 @@ class SubagentSpawnTool(Tool):
         "each a different task via a2a_send_task or a2a_send_task_async. "
         "Use a2a_list_subagents to see running workers."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {
@@ -676,7 +676,7 @@ class SubagentStopTool(Tool):
         "Only subagents spawned by this instance can be stopped. "
         "Use a2a_list_subagents to see which agents are local subagents."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "agent_id": {
@@ -732,7 +732,7 @@ class A2AGetAgentCardTool(Tool):
         "the agent is a local subagent or remote MQTT peer. "
         "Use this to check if an agent is idle before sending a task."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "agent_id": {
@@ -798,7 +798,7 @@ class A2ANotifyUserTool(Tool):
         "This is the primary way background agents communicate results to "
         "the user."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "title": {
@@ -841,7 +841,7 @@ class A2ABroadcastTool(Tool):
         "Use this for scatter/gather patterns — send the same question to "
         "everyone and collect answers."
     )
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "task": {

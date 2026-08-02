@@ -85,6 +85,6 @@ class _ConfigPathMixin:
         self._config_path = config_path or get_config_path()
 
     @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None"):
+    def from_config(cls, cfg: dict, config: "Config | None"):  # pyright: ignore[reportIncompatibleMethodOverride]
         path = config._path if config else None
         return cls(config_path=path)

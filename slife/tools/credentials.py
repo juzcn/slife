@@ -54,7 +54,7 @@ def _find_json5_refs(raw: dict, key: str) -> list[str]:
 
 # ═══════════════════════════════════════════════════════════════════════
 
-class CredentialCheckTool(_ConfigPathMixin, Tool):
+class CredentialCheckTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "credential_check"
     category: ClassVar[str] = "Credentials"
     requires_a2a = False

@@ -40,7 +40,7 @@ class MCPProxyTool(Tool):
     # Real values are set per-instance in __init__.
     name = "_mcp_proxy"
     description = "MCP proxy tool (placeholder)"
-    parameters: dict = {"type": "object", "properties": {}}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}}
 
     # Excluded from auto-discovery — instances are created manually by
     # create_proxy_tools() with per-server configuration.

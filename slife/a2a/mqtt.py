@@ -9,7 +9,6 @@ Implements :class:`~slife.a2a.transport.TransportAdapter` so A2A protocol
 code works with any transport (MQTT, HTTP Streamable, …).
 """
 
-# pyright: reportInvalidTypeForm=false
 from __future__ import annotations
 
 import asyncio

@@ -84,7 +84,7 @@ def _toggle_native_enabled(raw: dict, name: str, enabled: bool) -> None:
 
 # ═══════════════════════════════════════════════════════════════════════
 
-class ConfigEnvSetTool(_ConfigPathMixin, Tool):
+class ConfigEnvSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_set"
     category: ClassVar[str] = "Config"
     _subagent_skip = True
@@ -117,7 +117,7 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):
             return f"[OK] {key} placeholder written.\nEdit slife.json5 → env: → {key} with the real value."
 
 
-class ConfigEnvGetTool(_ConfigPathMixin, Tool):
+class ConfigEnvGetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_get"
     category: ClassVar[str] = "Config"
     description = "Look up an env var: shell first, then slife.json5. ${VAR} refs shown as-is. Omit key to list all."
@@ -150,7 +150,7 @@ class ConfigEnvGetTool(_ConfigPathMixin, Tool):
         return "\n".join(lines)
 
 
-class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):
+class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_remove"
     category: ClassVar[str] = "Config"
     _subagent_skip = True
@@ -175,7 +175,7 @@ class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):
         return f"[OK] Removed '{key}' from slife.json5."
 
 
-class NativeToolSet(_ConfigPathMixin, Tool):
+class NativeToolSet(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "native_tool_set"
     category: ClassVar[str] = "Config"
     _subagent_skip = True

@@ -259,7 +259,8 @@ class ShowImageTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, path: str, **kwargs) -> str:
+    async def execute(self, **kwargs) -> str:
+        path: str = kwargs["path"]
         import uuid
         from pathlib import Path
         from slife.paths import get_images_dir

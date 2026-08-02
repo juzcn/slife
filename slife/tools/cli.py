@@ -11,8 +11,15 @@ These tools only manage the registry — they don't execute commands.
 
 import logging
 from pathlib import Path
+from typing import ClassVar
 
-from slife.tools._config_io import _ConfigPathMixin, format_source_info, read_config, with_fetched_at, write_config
+from slife.tools._config_io import (
+    _ConfigPathMixin,
+    format_source_info,
+    read_config,
+    with_fetched_at,
+    write_config,
+)
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -57,7 +64,7 @@ def get_cli_tools_summary(config_path: Path) -> str:
     return "\n".join(lines)
 
 
-class CliCheckInstalled(_ConfigPathMixin, Tool):
+class CliCheckInstalled(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """Check whether CLI commands are registered in slife.json5.
 
     Looks up command names in the cli_tools config section — this tells
@@ -71,7 +78,7 @@ class CliCheckInstalled(_ConfigPathMixin, Tool):
     name = "cli_check_installed"
     category = "CLI"
     description = "Check whether CLI commands are registered in slife.json5. Does NOT run shell commands."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "commands": {
@@ -115,7 +122,7 @@ class CliCheckInstalled(_ConfigPathMixin, Tool):
         return summary + "\n" + "\n".join(lines)
 
 
-class CliAddTool(_ConfigPathMixin, Tool):
+class CliAddTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """Register a CLI tool so the LLM can discover it in future turns.
 
     Does NOT execute the CLI — just records its existence, what it does,
@@ -128,7 +135,7 @@ class CliAddTool(_ConfigPathMixin, Tool):
     category = "CLI"
     _subagent_skip = True
     description = "Register an external CLI in slife.json5. Does not execute — records for future discovery."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Short name (e.g. 'gh', 'yldp')."},
@@ -175,14 +182,14 @@ class CliAddTool(_ConfigPathMixin, Tool):
         return f"[OK] {action} CLI tool '{name}'.\n  {description}"
 
 
-class CliRemoveTool(_ConfigPathMixin, Tool):
+class CliRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """Remove a registered CLI tool from slife.json5."""
 
     name = "cli_remove_tool"
     category = "CLI"
     _subagent_skip = True
     description = "Remove a CLI registration from slife.json5. Does not uninstall the command."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "CLI name, from cli_list_tools."},
@@ -204,13 +211,13 @@ class CliRemoveTool(_ConfigPathMixin, Tool):
         return f"[OK] Removed CLI tool '{name}'."
 
 
-class CliListToolsTool(_ConfigPathMixin, Tool):
+class CliListToolsTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """List all registered CLI tools."""
 
     name = "cli_list_tools"
     category = "CLI"
     description = "List registered CLI tools with descriptions, commands, and install instructions."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {},
         "required": [],
@@ -231,7 +238,8 @@ class CliSetTool(_ConfigPathMixin, Tool):
     category = "CLI"
     _subagent_skip = True
     description = "Enable or disable a registered CLI tool. Takes effect after restart."
-    parameters = {
+
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "CLI tool name, from cli_list_tools."},
