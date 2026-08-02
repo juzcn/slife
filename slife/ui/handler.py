@@ -128,12 +128,12 @@ class TUIHandler:
         self._iteration_needs_new_message = True
 
     async def on_token_usage(self, usage: TokenUsage) -> None:
-        """Update session usage and refresh status bar.
+        """Update per-message token display and refresh status bar.
 
-        *usage* is the per-API-call token cost — each call is a new
-        billed expense, so we simply accumulate it into the session total.
+        *usage* is the turn's cumulative total — the dialog shows the
+        growing total on each assistant message.  Session accumulation
+        happens at turn end (see inbox.py) to avoid double-counting.
         """
-        self._app.service.session_usage.total_tokens += usage.total_tokens
         if self._current_assistant:
             self._current_assistant.set_token_usage(usage)
         self._app._update_status()

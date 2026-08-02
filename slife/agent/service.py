@@ -950,6 +950,10 @@ class AgentService:
                 Defaults to self.conversation (the TUI conversation).
             channel: Source channel — 'human', 'wechat', or remote agent id.
         """
+        # Accumulate turn's billed tokens into the session total.
+        if token_count:
+            self.session_usage.total_tokens += token_count
+
         if not self.memory_enabled:
             return
 

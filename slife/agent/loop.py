@@ -651,7 +651,7 @@ class AgentLoop:
                         # already consumed tokens regardless of outcome.
                         total_usage = total_usage + result.usage
                         if handler:
-                            await handler.on_token_usage(result.usage)
+                            await handler.on_token_usage(total_usage)
 
                         # Check for cancellation after stream
                         if self._cancel_event.is_set():
