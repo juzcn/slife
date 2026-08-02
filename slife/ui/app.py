@@ -139,6 +139,21 @@ class HistoryInput(Input):
 # ── Main TUI app ───────────────────────────────────────────────────
 
 
+def _estimate_turn_tokens(turn: dict) -> int:
+    """Estimate the *incremental* token cost of a single turn.
+
+    Counts the user message plus the stored assistant/tool messages
+    using the same chars/3 heuristic as ``Conversation.count_tokens``.
+    Returns at least 1 so that a zero-content turn still counts.
+    """
+    user = turn.get("user_message", "") or ""
+    messages = turn.get("messages", "[]")
+    if isinstance(messages, str):
+        messages = json.loads(messages)
+    body = json.dumps(messages, ensure_ascii=False) if isinstance(messages, list) else str(messages)
+    return max(len(user) // 3 + len(body) // 3, 1)
+
+
 def _restore_prefix(channel: str | None, _agent_id: str) -> str:
     """Consistent prefix mapping for restored turns.
 
@@ -576,26 +591,24 @@ class SlifeApp(App):
         context_floor = self.service.config.context_floor
         token_budget = int(context_window * context_floor)
 
-        # token_count is the cumulative total from the API (input + output
-        # for the entire conversation up to that turn).  Comparing each
-        # turn's cumulative value directly against the budget avoids
-        # double-counting — the newest kept turn's token_count already
-        # accounts for all older turns that will be loaded alongside it.
+        # Estimate incremental cost per turn from message text (chars/3),
+        # NOT from stored token_count which is cumulative and often 0.
+        # Summing incremental costs matches how count_tokens() works.
         turns: list[dict] = []
+        tokens_selected = 0
         for turn in reversed(all_turns):
-            t = turn.get("token_count", 0) or 0
-            # Always keep at least one turn; otherwise stop at budget
-            if turns and t > token_budget:
+            t = _estimate_turn_tokens(turn)
+            if turns and tokens_selected + t > token_budget:
                 break
             turns.append(turn)
+            tokens_selected += t
         turns.reverse()  # restore oldest-first order
 
         skipped = len(all_turns) - len(turns)
         if skipped > 0:
             logger.debug(
-                "session_restore_trimmed loaded=%d skipped=%d budget=%d max_cumulative=%d",
-                len(turns), skipped, token_budget,
-                turns[-1].get("token_count", 0) if turns else 0,
+                "session_restore_trimmed loaded=%d skipped=%d budget=%d selected=%d",
+                len(turns), skipped, token_budget, tokens_selected,
             )
 
         # ── Phase 1: Reconstruct message list from selected turns ────
@@ -759,11 +772,10 @@ class SlifeApp(App):
             else:
                 self._show_system_message("✅ 已恢复对话，继续吧", color="#3fb950")
 
-        # Update status bar with token estimate from turns
-        total_tokens = sum(t.get("token_count", 0) for t in turns)
-        if total_tokens > 0:
-            self.service.session_usage.total_tokens = total_tokens
-            self._update_status()
+        # Session starts fresh — status bar shows tokens consumed since
+        # launch, not the historical totals stored in restored turns.
+        self.service.session_usage.total_tokens = 0
+        self._update_status()
 
     # ── Agent interaction ─────────────────────────────────────────
 

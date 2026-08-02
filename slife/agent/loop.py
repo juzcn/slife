@@ -42,6 +42,7 @@ class AgentResult:
 
     text: str
     usage: TokenUsage
+    cancelled: bool = False
 
 
 class MaxIterationsExceeded(Exception):
@@ -636,60 +637,65 @@ class AgentLoop:
         logger.info("req_start msg=%.100s imgs=%d", user_input, n_imgs)
 
         with request_scope(user_input[:50]):
-            for i in range(self.max_iterations):
-                # Check for cancellation before each iteration
-                if self._cancel_event.is_set():
-                    logger.info("agent_cancelled iter=%d", i + 1)
-                    raise AgentCancelled()
-
-                with elapsed("iter", logger, iter=i + 1):
-                    result = await self._process_stream(conversation, handler)
-
-                    # Check for cancellation after stream (may have been
-                    # cancelled mid-stream — stop emitting was handled in
-                    # _process_stream, now break out of the loop)
+            try:
+                for i in range(self.max_iterations):
+                    # Check for cancellation before each iteration
                     if self._cancel_event.is_set():
-                        logger.info("agent_cancelled after_stream iter=%d", i + 1)
+                        logger.info("agent_cancelled iter=%d", i + 1)
                         raise AgentCancelled()
 
-                    total_usage = total_usage + result.usage
-                    if handler:
-                        await handler.on_token_usage(total_usage)
+                    with elapsed("iter", logger, iter=i + 1):
+                        result = await self._process_stream(conversation, handler)
 
-                    # Tool calls?
-                    if result.tool_accum:
-                        tool_calls = self._build_tool_calls_from_deltas(
-                            result.tool_accum
-                        )
-                        logger.debug(
-                            "tool_calls=%d names=%s",
-                            len(tool_calls),
-                            [tc.name for tc in tool_calls],
-                        )
+                        # Capture usage even when cancelled — the API call
+                        # already consumed tokens regardless of outcome.
+                        total_usage = total_usage + result.usage
+                        if handler:
+                            await handler.on_token_usage(result.usage)
+
+                        # Check for cancellation after stream
+                        if self._cancel_event.is_set():
+                            logger.info("agent_cancelled after_stream iter=%d", i + 1)
+                            raise AgentCancelled()
+
+                        # Tool calls?
+                        if result.tool_accum:
+                            tool_calls = self._build_tool_calls_from_deltas(
+                                result.tool_accum
+                            )
+                            logger.debug(
+                                "tool_calls=%d names=%s",
+                                len(tool_calls),
+                                [tc.name for tc in tool_calls],
+                            )
+                            conversation.add_assistant_message(
+                                content=result.content or None,
+                                tool_calls=self._serialize_tool_calls(tool_calls),
+                                thinking=result.thinking or None,
+                            )
+                            await self._execute_tools(
+                                tool_calls, conversation, handler, iteration=i + 1
+                            )
+                            continue
+
+                        # No tool calls — final response
                         conversation.add_assistant_message(
-                            content=result.content or None,
-                            tool_calls=self._serialize_tool_calls(tool_calls),
+                            content=result.content or "",
                             thinking=result.thinking or None,
                         )
-                        await self._execute_tools(
-                            tool_calls, conversation, handler, iteration=i + 1
+                        t_total = (_time.monotonic() - t_request) * 1000
+                        logger.info(
+                            "response tok_p=%d tok_c=%d tok_t=%d took_ms=%.0f text=%.200s",
+                            total_usage.prompt_tokens,
+                            total_usage.completion_tokens,
+                            total_usage.total_tokens,
+                            t_total,
+                            result.content,
                         )
-                        continue
+                        return AgentResult(text=result.content, usage=total_usage)
 
-                    # No tool calls — final response
-                    conversation.add_assistant_message(
-                        content=result.content or "",
-                        thinking=result.thinking or None,
-                    )
-                    t_total = (_time.monotonic() - t_request) * 1000
-                    logger.info(
-                        "response tok_p=%d tok_c=%d tok_t=%d took_ms=%.0f text=%.200s",
-                        total_usage.prompt_tokens,
-                        total_usage.completion_tokens,
-                        total_usage.total_tokens,
-                        t_total,
-                        result.content,
-                    )
-                    return AgentResult(text=result.content, usage=total_usage)
-
-        raise MaxIterationsExceeded(self.max_iterations)
+                raise MaxIterationsExceeded(self.max_iterations)
+            except AgentCancelled:
+                return AgentResult(text="", usage=total_usage, cancelled=True)
+            except MaxIterationsExceeded:
+                return AgentResult(text="", usage=total_usage, cancelled=True)

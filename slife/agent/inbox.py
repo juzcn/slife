@@ -16,7 +16,6 @@ from openai import BadRequestError, ContentFilterFinishReasonError
 
 from slife.a2a.identity import AgentId, AgentMessage
 from slife.agent.conversation import Conversation
-from slife.agent.loop import AgentCancelled, MaxIterationsExceeded
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -153,13 +152,24 @@ class Inbox:
             if handler is None:
                 handler = self._conversations.handler_for(msg.source)
 
-            # Run the agent loop
+            # Run the agent loop — cancelled / max-iterations are now
+            # returned as AgentResult(cancelled=True) with accumulated
+            # usage, not raised as exceptions.
             result = await self._agent_loop.run(
                 user_input=msg.content,
                 conversation=conversation,
                 images=msg.images if msg.images else None,
                 handler=handler,
             )
+
+            if result.cancelled:
+                logger.info("inbox_cancelled_or_max_iter source=%s", msg.source)
+                # Finalize the handler so the last assistant message is marked complete
+                if handler is not None:
+                    try:
+                        handler.finalize_current()
+                    except Exception:
+                        pass
 
             # Notify TUI that processing completed
             if is_remote and self._on_activity:
@@ -186,28 +196,6 @@ class Inbox:
                     logger.debug("on_reply_error channel=%s err=%s",
                                  msg.metadata.get("channel", "?"), e)
 
-        except AgentCancelled:
-            logger.info("inbox_cancelled source=%s", msg.source)
-        except MaxIterationsExceeded as e:
-            # Info-level: the TUI shows a red system message via _on_activity
-            # so there's no need to alarm the user with a stderr warning.
-            logger.info("inbox_process_error source=%s err=%s", msg.source, e)
-            # Finalize the handler so the last assistant message is marked complete
-            if handler is not None:
-                try:
-                    handler.finalize_current()
-                except Exception:
-                    pass
-            # Notify TUI so the user sees the iteration-limit message
-            if self._on_activity:
-                try:
-                    await self._on_activity(
-                        "loop_error",
-                        source=msg.source,
-                        error=str(e),
-                    )
-                except Exception:
-                    pass
         except Exception as e:
             logger.warning("inbox_process_error source=%s err=%s", msg.source, e)
             # Finalize the handler so the TUI spinner stops — without
