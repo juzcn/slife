@@ -102,3 +102,29 @@ StatusBar {
     padding: 0 1;
     text-style: none;
 }
+
+/* ── Inline images ────────────────────────────────────────────── */
+
+.chat-image {
+    margin: 1 0 1 0;
+    padding: 0 1;
+    width: 48;
+    max-width: 48;
+    height: auto;
+    max-height: 24;
+}
+
+.chat-image-thumb {
+    margin: 0 0 0 2;
+    padding: 0;
+    width: 28;
+    max-width: 28;
+    height: auto;
+    max-height: 16;
+}
+
+.chat-image-fallback {
+    margin: 0 0 0 2;
+    padding: 0 1;
+    height: 1;
+}

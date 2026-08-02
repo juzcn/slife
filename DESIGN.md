@@ -81,6 +81,7 @@ User Input → Conversation.add_user_message()
 
 - **Streaming**: thinking and text tokens emitted in real-time via `AgentEventHandler` callbacks
 - **Tool accumulation**: tool call deltas accumulated across streaming chunks, executed as a batch
+- **Tool result images**: `_scan_for_images()` detects ``[image: <path>]`` markers in tool output and fires ``handler.on_image()`` for TUI rendering
 - **Tool timeout**: `asyncio.wait_for()` wraps every tool call (default 60s). The LLM can override per-call via `_timeout`. Timeouts return `"Error: …"` strings — never silent, never crash the loop
 - **Iteration limit**: `max_iterations` (default 30) prevents infinite loops
 - **Orphan repair**: interrupted tool calls are repaired before the next user message
@@ -132,7 +133,8 @@ All tools are unified under `Tool` and registered in a single `ToolRegistry`. Th
 | A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
-| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
+| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `show_image` |
+| Display | `meta.py` | `show_image` — display local image files inline in the chat |
 
 Adding a new tool is a matter of adding a class in the matching category file — no manual registration needed.
 
@@ -309,6 +311,7 @@ Local child-process workers. Always available — no config toggle.
 Textual TUI with minimal chrome:
 
 - **ChatView** — scrollable message container
+- **UserMessage** — prefix-styled user text with optional image attachments
 - **AssistantMessage** — streaming text with thinking blocks (collapsible)
 - **ToolCallWidget** — collapsible amber headers with detail
 - **TUIHandler** — bridges `AgentEventHandler` callbacks to Textual widgets
@@ -316,6 +319,34 @@ Textual TUI with minimal chrome:
 - **Auto-restore** — rebuilds last session's UI on startup
 
 All user-facing text rendered with `markup=False` to prevent `MarkupError`.
+
+### Image Display
+
+Slife renders images inline in the chat via ``textual-image`` (HalfcellImage —
+coloured Unicode half-block characters). Full-colour Sixel is auto-detected
+but not used inside scroll views due to known Textual clipping issues.
+
+**User attachment**: prefix a file path with ``@`` in the input field::
+
+    Look at this screenshot @D:\\Downloads\\error.png and tell me what's wrong
+
+The ``@path`` is extracted, validated, displayed as a thumbnail in chat,
+stripped from the text sent to the LLM, and the file paths are passed
+through the images pipeline to ``Conversation.add_user_message()``.
+
+**Agent/tool images**: the ``show_image`` native tool and MCP binary-data
+handler inject ``[image: <path>]`` markers into tool results.  The agent
+loop's ``_scan_for_images()`` detects these markers and calls
+``handler.on_image()``, which mounts an inline image widget in the chat view.
+
+**Vision guard**: ``AgentLoop.supports_vision`` (from model config
+``input: ["text", "image"]``) gates the ``image_url`` encoding path.
+Models without vision support receive a clear error instead of a 400
+API response.
+
+**Safety**: all image paths are validated (file exists, recognised
+extension) before display.  Fallback shows ``🖼 filename (XX KB)``
+when the image library is absent or the file is invalid.
 
 ## Credential & Configuration
 
@@ -404,7 +435,7 @@ slife/
   mcp/              # MCP client infra: client.py, tool_adapter.py, process.py, oauth.py
   a2a/              # Agent-to-Agent: transport.py, mqtt.py, http.py, client.py, broker.py
   subagent/         # Local workers: headless.py, process.py, tools.py
-  ui/               # Textual TUI: app.py, chat.py, handler.py, tool_display.py
+  ui/               # Textual TUI: app.py, chat.py, handler.py, tool_display.py, image_utils.py
   config.py         # JSON5 config: models, env, MCP, memory, A2A
   paths.py          # Canonical filesystem paths (dev vs prod)
   platform.py       # Cross-platform utilities: OS detection, process lifecycle, notifications

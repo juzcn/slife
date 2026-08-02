@@ -2,6 +2,8 @@
 
 import json
 import logging
+import re
+from pathlib import Path
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -14,6 +16,7 @@ from slife.agent.loop import MaxIterationsExceeded
 from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
 from slife.ui.tool_display import ToolCallWidget
+from slife.ui.image_utils import is_image_file
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +156,42 @@ def _restore_prefix(channel: str | None, _agent_id: str) -> str:
         return f"{ch}(a2a)"
     # Backward compat: old turns saved before channel was introduced
     return "You> "
+
+
+# ── Image attachment parsing ──────────────────────────────────────
+
+# Matches @ followed by an image file path (quoted or unquoted).
+# Supports: @path/img.png  @"path/with spaces/img.jpg"  @'path/img.gif'
+_IMAGE_ATTACH_RE = re.compile(
+    r"""@(?:"([^"]+)"|'([^']+)'|(\S+))""",
+)
+
+
+def _parse_images_from_input(raw: str) -> tuple[str, list[str]]:
+    """Extract ``@path`` image directives from user input.
+
+    Returns ``(cleaned_text, [absolute_paths])``.  Paths that don't
+    exist or have non-image extensions are left in the text unchanged.
+    """
+    images: list[str] = []
+    parts: list[str] = []
+    last_end = 0
+
+    for match in _IMAGE_ATTACH_RE.finditer(raw):
+        # Text before this @directive
+        parts.append(raw[last_end:match.start()])
+        file_path = match.group(1) or match.group(2) or match.group(3)
+        p = Path(file_path)
+        if p.exists() and p.is_file() and is_image_file(file_path):
+            images.append(str(p.resolve()))
+        else:
+            # Not a valid image — leave the @directive as-is
+            parts.append(raw[match.start():match.end()])
+        last_end = match.end()
+
+    parts.append(raw[last_end:])
+    cleaned = "".join(parts).strip()
+    return cleaned, images
 
 
 class SlifeApp(App):
@@ -382,6 +421,9 @@ class SlifeApp(App):
         Posts the message to the unified inbox queue — never cancels
         a running agent loop.  If the queue is empty and no loop is
         running, processing starts immediately.
+
+        Image attachments via ``@path/to/img.jpg`` syntax are
+        extracted, validated, and passed to the agent pipeline.
         """
         raw = event.value.strip()
         if not raw:
@@ -391,13 +433,18 @@ class SlifeApp(App):
             event.input.add_history(raw)
         event.input.clear()
 
+        # Extract @path image directives
+        cleaned_text, image_paths = _parse_images_from_input(raw)
+
         chat_view = self.query_one("#chat-view", ChatView)
-        chat_view.add_user_message(raw, prefix="You> ")
+        # Display the original raw text (with @path markers visible)
+        # … but pass cleaned text + image paths to the agent.
+        chat_view.add_user_message(raw, images=image_paths or None, prefix="You> ")
 
         # _process_message just enqueues and returns immediately
         # (handler is attached to the message, inbox streams later).
         self.run_worker(
-            self._process_message(raw, None, chat_view),
+            self._process_message(cleaned_text, image_paths or None, chat_view),
             exclusive=False,
         )
 

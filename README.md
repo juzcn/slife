@@ -144,11 +144,27 @@ All unified as OpenAI function definitions. The LLM sees no difference between c
 | A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
-| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
+| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `show_image` |
+| Display | `meta.py` | `show_image` — display local image files inline in the chat |
 
 **Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. All `set` tools share `(name: str, enabled: bool)`.
 
 Plus built-in **Memory** plugin (`memory_search`, `memory_open`, …).
+
+### Image Display
+
+Inline image rendering in chat via HalfcellImage (coloured Unicode half-block
+characters) with graceful fallback. Users attach images with `@path` syntax;
+the agent can display images with the `show_image` tool:
+
+```
+Check this screenshot @D:\\Downloads\\error.png and tell me what's wrong
+```
+
+MCP tools that produce binary image output (e.g. Playwright screenshots)
+automatically save to temp files and display inline. When the active model
+has `input: ["text"]` (no `"image"`), images are **not** sent to the LLM API
+— they're rendered locally only. A clear error is shown instead of a 400.
 
 ### Memory — Always On
 

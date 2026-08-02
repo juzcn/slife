@@ -227,3 +227,52 @@ class ClearContextTool(Tool):
         remaining = len(conv.messages)
         logger.info("clear_context removed=%d remaining=%d", removed, remaining)
         return f"[OK] Cleared {removed} old message(s); {remaining} remaining (system prompt + current turn)."
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# show_image
+# ═══════════════════════════════════════════════════════════════════════
+
+class ShowImageTool(Tool):
+    """Display a local image file inline in the chat.
+
+    The image appears in the TUI chat view directly — no external viewer.
+    Uses the ``[image: path]`` marker that the agent loop detects and
+    renders via the InlineImage widget.
+    """
+
+    name: ClassVar[str] = "show_image"
+    category: ClassVar[str] = "Display"
+    description: ClassVar[str] = (
+        "在聊天中内联显示本地图片文件。"
+        "参数 path 为图片文件的绝对路径，支持 png/jpg/gif/webp/bmp。"
+    )
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "图片文件的绝对路径，如 D:\\Downloads\\photo.png",
+            },
+        },
+        "required": ["path"],
+    }
+
+    async def execute(self, path: str, **kwargs) -> str:
+        from pathlib import Path
+        from slife.ui.image_utils import is_image_file
+
+        p = Path(path)
+        if not p.exists():
+            return f"Error: 文件不存在 — {path}"
+        if not p.is_file():
+            return f"Error: 不是文件 — {path}"
+        if not is_image_file(path):
+            return f"Error: 不支持的图片格式 — {p.suffix}（支持 png/jpg/gif/webp/bmp）"
+
+        resolved = str(p.resolve())
+        size_kb = p.stat().st_size / 1024
+        return (
+            f"[image: {resolved}]\n"
+            f"图片已显示: {p.name} ({size_kb:.0f} KB)"
+        )

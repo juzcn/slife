@@ -482,7 +482,7 @@ class TestAgentLoopRun:
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake png")
 
         llm = LLMClient(sample_model_config)
-        loop = AgentLoop(llm, empty_registry)
+        loop = AgentLoop(llm, empty_registry, supports_vision=True)
 
         async def mock_stream(messages, tools, **kwargs):
             yield StreamChunk(content="I see an image!")

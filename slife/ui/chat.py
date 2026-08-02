@@ -6,6 +6,7 @@ from textual.events import Key
 from textual.widgets import Static
 
 from slife.agent.llm_client import TokenUsage
+from slife.ui.image_utils import safe_image_widget
 
 
 class ChatView(VerticalScroll):
@@ -35,11 +36,38 @@ class ChatView(VerticalScroll):
         images: list[str] | None = None,
         prefix: str = "> ",
     ) -> "UserMessage":
-        """Add and return a user message widget."""
+        """Add and return a user message widget.
+
+        Image attachments are mounted as sibling widgets below the
+        message text so they render inline in the chat scroll.
+        """
         msg = UserMessage(text, images=images, prefix=prefix)
         self.mount(msg)
+        if images:
+            for img_path in images:
+                self.add_image_to_chat(img_path, thumb=True)
         self.scroll_end(animate=False)
         return msg
+
+    def add_image_to_chat(
+        self, file_path: str, *, thumb: bool = False
+    ):  # returns HalfcellImage or fallback Static
+        """Mount an inline image widget in the chat view.
+
+        Uses ``safe_image_widget`` — never raises, always returns a
+        widget (Image or text fallback).
+
+        Args:
+            file_path: Path to an image file.
+            thumb: Use small thumbnail size when True.
+        """
+        css = "chat-image-thumb" if thumb else "chat-image"
+        widget = safe_image_widget(file_path, css_class=css)
+        self.mount(widget)
+        # Defer scroll so the image widget has time to render its full
+        # height before we compute the scroll position.
+        self.call_after_refresh(self.scroll_end, animate=False)
+        return widget
 
     def add_assistant_message(
         self, name_prefix: str | None = None
@@ -100,15 +128,11 @@ class UserMessage(Static):
         content = Content.from_text(
             f"{prefix}{text}", markup=False,
         ).stylize("bold #d97706", start=0, end=prefix_len)
-        if images:
-            file_list = ", ".join(images)
-            content = (
-                content
-                + Content.from_text(" # 📎 ", markup=False).stylize("dim")
-                + Content.from_text(file_list, markup=False).stylize("dim")
-            )
+        # Image rendering is handled by ChatView.add_user_message()
+        # which mounts InlineImage siblings — no text fallback here.
         super().__init__(content)
         self.add_class("user-message")
+        self._image_paths: list[str] = images or []
 
 
 class AssistantMessage(Static):
@@ -157,6 +181,7 @@ class AssistantMessage(Static):
         self._usage: TokenUsage | None = None
         self._is_thinking_collapsed: bool = False
         self._show_usage: bool = True
+        self._image_paths: list[str] = []  # images to render below text
 
     def append_thinking(self, chunk: str) -> None:
         """Append a chunk of reasoning/thinking content."""
@@ -186,6 +211,15 @@ class AssistantMessage(Static):
             self._is_thinking_collapsed = True
             self._show_usage = False
         self._refresh_display()
+
+    def append_image(self, source: str) -> None:
+        """Record an image to be rendered below the response text.
+
+        The actual widget mounting is handled externally (by
+        TUIHandler / ChatView) — this just tracks the source
+        so session restore can reconstruct the image list.
+        """
+        self._image_paths.append(source)
 
     def on_click(self) -> None:
         """Expand thinking on click (never collapse — avoids destroying text selection).

@@ -129,10 +129,21 @@ active_model: "deepseek/deepseek-v4-pro",
 | 类别 | 描述 |
 |------|------|
 | **原生** | 系统信息、Python 执行、环境/配置管理、技能加载、CLI 发现 |
+| **展示** | `show_image` — 在聊天中内联显示本地图片 |
 | **MCP / REST** | 文件系统、Shell、代码搜索、网页抓取、任意 MCP 服务器（stdio 或 HTTP） |
 | **技能** | 通过 `list_skills` / `use_skill` 按需加载的插件 |
 | **CLI** | 自动发现的外部命令，跨重启持久化 |
 | **A2A** | 智能体发现、任务路由、子智能体、广播（13 个工具） |
+
+### 图片显示
+
+在聊天中内联显示图片（HalfcellImage——彩色半块 Unicode）。用户可通过 `@path` 语法附加图片，Agent 可通过 `show_image` 工具展示图片：
+
+```
+看看这张截图 @D:\Downloads\screenshot.png 有什么问题？
+```
+
+MCP 工具的二进制图片输出（如 Playwright 截图）自动保存为临时文件并显示。当前模型配置为 `input: ["text"]` 时不发送图片到 LLM API，只做本地展示。
 
 ### 记忆 — 始终开启
 

@@ -134,3 +134,10 @@ class TUIHandler:
             self._current_assistant.set_token_usage(usage)
         self._app._update_status()
         self._chat_view.scroll_end(animate=False)
+
+    async def on_image(self, source: str) -> None:
+        """Render an image produced by the agent in the chat view."""
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("handler_on_image path=%s", source)
+        self._chat_view.add_image_to_chat(source)

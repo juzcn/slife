@@ -3,9 +3,11 @@
 import asyncio
 import json
 import logging
+import re
 import time as _time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from slife.agent.llm_client import LLMClient, TokenUsage
@@ -94,6 +96,14 @@ class AgentEventHandler(Protocol):
         """Called with cumulative token usage after each LLM call."""
         ...
 
+    async def on_image(self, source: str) -> None:
+        """Called when an image is produced (e.g. in tool results).
+
+        *source* is a local file path or base64 data URI.
+        Default is a no-op — handlers opt in by implementing this method.
+        """
+        ...
+
     def finalize_current(self) -> None:
         """Mark the current (last incomplete) assistant message as complete.
 
@@ -117,6 +127,34 @@ class _StreamResult:
 
 
 # ── Agent loop ─────────────────────────────────────────────────────
+
+
+# ── Image detection in tool results ────────────────────────────────
+
+# Matches [image: /path/to/file.png] markers from show_image tool and MCP client.
+_IMAGE_MARKER_RE = re.compile(r"\[image:\s*(.+?)\]")
+
+
+def _scan_for_images(text: str) -> list[str]:
+    """Scan tool result text for ``[image: <path>]`` markers.
+
+    Only detects the explicit marker — no heuristic path matching.
+    Tools (``show_image``, MCP binary data handler) are responsible
+    for producing the marker when they have a real image to display.
+
+    Returns deduplicated list of absolute paths.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+
+    for match in _IMAGE_MARKER_RE.finditer(text):
+        path_str = match.group(1).strip()
+        p = Path(path_str)
+        if p.exists() and p.is_file() and path_str not in seen:
+            found.append(str(p.resolve()))
+            seen.add(path_str)
+
+    return found
 
 
 class AgentLoop:
@@ -143,6 +181,7 @@ class AgentLoop:
         context_floor: float = 0.2,
         context_ceiling: float = 0.8,
         memory_enabled: bool = True,
+        supports_vision: bool = False,
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -153,6 +192,7 @@ class AgentLoop:
         self.context_floor = context_floor
         self.context_ceiling = context_ceiling
         self.memory_enabled = memory_enabled
+        self.supports_vision = supports_vision
         self._cancel_event = asyncio.Event()
 
     def cancel(self) -> None:
@@ -534,6 +574,16 @@ class AgentLoop:
                 result = result[:max_chars] + f"\n…（已截断，原文 {len(result)} 字符）"
             is_error = result.startswith("Error")
 
+            # ── Scan for images in tool output ──────────────────
+            # Detect [image: path] markers from MCP binary data
+            # and file paths that exist on disk.
+            if handler:
+                imgs = _scan_for_images(result)
+                if imgs:
+                    logger.info("tool_images_found tool=%s count=%d paths=%s", tc.name, len(imgs), imgs)
+                for img_path in imgs:
+                    await handler.on_image(img_path)
+
             if handler:
                 await handler.on_tool_result(tc.id, result, is_error)
 
@@ -567,11 +617,22 @@ class AgentLoop:
             MaxIterationsExceeded: If the loop exceeds max_iterations.
             AgentCancelled: If cancel() was called during execution.
         """
+        n_imgs = len(images) if images else 0
+        if n_imgs > 0 and not self.supports_vision:
+            msg = (
+                f"⚠ 当前模型不支持图片输入（supports_vision=false），"
+                f"但收到了 {n_imgs} 张图片。"
+                f"请使用支持视觉的模型，或移除 @path 附件。"
+            )
+            logger.warning("vision_unsupported imgs=%d model_vision=%s", n_imgs, self.supports_vision)
+            # Add text-only — don't encode images the model can't handle
+            conversation.add_user_message(user_input, images=None)
+            return AgentResult(text=msg, usage=TokenUsage())
+
         conversation.add_user_message(user_input, images=images)
         total_usage = TokenUsage()
         t_request = _time.monotonic()
 
-        n_imgs = len(images) if images else 0
         logger.info("req_start msg=%.100s imgs=%d", user_input, n_imgs)
 
         with request_scope(user_input[:50]):

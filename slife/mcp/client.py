@@ -8,7 +8,9 @@ nesting.
 
 import asyncio
 import logging
+import tempfile
 from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import Any
 
 from mcp import ClientSession
@@ -21,6 +23,49 @@ _MCP_INIT_TIMEOUT = 10.0
 # so the client may need a few attempts before the socket accepts.
 _CONNECT_RETRY_DELAY = 0.1
 _CONNECT_RETRY_ATTEMPTS = 30  # 3 seconds total
+
+
+# ── Binary → temp file helper ──────────────────────────────────────
+
+# Image file magic bytes for format detection
+_IMAGE_MAGIC: dict[bytes, str] = {
+    b"\x89PNG\r\n\x1a\n": ".png",
+    b"\xff\xd8\xff": ".jpg",
+    b"GIF87a": ".gif",
+    b"GIF89a": ".gif",
+    b"RIFF": ".webp",       # RIFF....WEBP — checked separately below
+    b"BM": ".bmp",
+}
+
+
+def _guess_image_extension(data: bytes) -> str | None:
+    """Detect image format from magic bytes, returning e.g. ``".png"``."""
+    for magic, ext in _IMAGE_MAGIC.items():
+        if data[:len(magic)] == magic:
+            if ext == ".webp" and data[8:12] != b"WEBP":
+                continue
+            return ext
+    return None
+
+
+def _try_save_image_bytes(data: bytes) -> str | None:
+    """Save *data* to a temp file if it looks like an image.
+
+    Returns the absolute path, or ``None`` if the data is not a
+    recognised image format or saving fails.
+    """
+    ext = _guess_image_extension(data)
+    if ext is None:
+        return None
+    try:
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=ext, delete=False, dir=tempfile.gettempdir(),
+        )
+        tmp.write(data)
+        tmp.close()
+        return str(Path(tmp.name).resolve())
+    except Exception:
+        return None
 
 
 class MCPClient:
@@ -198,7 +243,11 @@ class MCPClient:
             if hasattr(block, "text"):
                 parts.append(block.text)  # type: ignore[union-attr]
             elif hasattr(block, "data"):
-                parts.append(f"[binary data: {len(block.data)} bytes]")  # type: ignore[union-attr]
+                img_path = _try_save_image_bytes(block.data)  # type: ignore[union-attr]
+                if img_path is not None:
+                    parts.append(f"[image: {img_path}]")
+                else:
+                    parts.append(f"[binary data: {len(block.data)} bytes]")  # type: ignore[union-attr]
             else:
                 parts.append(str(block))
         return "\n".join(parts)

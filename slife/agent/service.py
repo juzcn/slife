@@ -72,6 +72,7 @@ class AgentService:
             context_floor=config.context_floor,
             context_ceiling=config.context_ceiling,
             memory_enabled=not is_subagent,
+            supports_vision=config.active_model.supports_vision,
         )
         self.conversation = Conversation(
             system_prompt=build_system_prompt(
