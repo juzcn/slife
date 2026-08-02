@@ -98,9 +98,13 @@ def check_external_deps() -> None:
 
     if npm_path:
         try:
-            r = _sp.run(["cmd", "/c", "npm", "version"], capture_output=True, text=True, timeout=10) if _sys.platform == "win32" else _sp.run(["npm", "version"], capture_output=True, text=True, timeout=5)
+            # `npm --version` is a local, lock-free check — unlike `npm version`,
+            # which can block on the npm cache lock while many npx servers are
+            # warming up concurrently, causing spurious timeouts at startup.
+            npm_cmd = ["cmd", "/c", "npm", "--version"] if _sys.platform == "win32" else ["npm", "--version"]
+            r = _sp.run(npm_cmd, capture_output=True, text=True, timeout=5)
             if r.returncode == 0:
-                record("npm", "ok", key="version", value=(r.stdout.strip().splitlines()[0] if r.stdout else "?").split(":")[-1].strip().strip("'").strip('"').rstrip(","),
+                record("npm", "ok", key="version", value=(r.stdout.strip() or "?"),
                         hint="npm found.")
             else:
                 record("npm", "warning", key="exit", value=str(r.returncode),
