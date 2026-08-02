@@ -93,6 +93,9 @@ def safe_image_widget(file_path: str, css_class: str = "chat-image"):
         except Exception:
             logger.debug("sixel_create_failed", exc_info=True)
 
+    # Halfcell (coloured Unicode blocks) works in any true-colour terminal —
+    # VS Code, PyCharm, Warp, Alacritty, etc.  CSS constraints prevent
+    # overflow into docked widgets.
     if _HalfcellImage is not None:
         try:
             return _HalfcellImage(str(path.resolve()), classes=css_class)  # type: ignore[return-value]

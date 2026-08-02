@@ -20,6 +20,19 @@ ChatView {
     scrollbar-color-hover: #484f58;
 }
 
+/* Prevent Halfcell overflow into docked input */
+.chat-image {
+    overflow: hidden;
+    height: auto;
+    max-height: 20;
+}
+
+.chat-image-thumb {
+    overflow: hidden;
+    height: auto;
+    max-height: 12;
+}
+
 /* ── User messages — ">" style ───────────────────────────────── */
 
 .user-message {
