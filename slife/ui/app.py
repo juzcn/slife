@@ -576,22 +576,26 @@ class SlifeApp(App):
         context_floor = self.service.config.context_floor
         token_budget = int(context_window * context_floor)
 
+        # token_count is the cumulative total from the API (input + output
+        # for the entire conversation up to that turn).  Comparing each
+        # turn's cumulative value directly against the budget avoids
+        # double-counting — the newest kept turn's token_count already
+        # accounts for all older turns that will be loaded alongside it.
         turns: list[dict] = []
-        tokens_selected = 0
         for turn in reversed(all_turns):
             t = turn.get("token_count", 0) or 0
             # Always keep at least one turn; otherwise stop at budget
-            if turns and tokens_selected + t > token_budget:
+            if turns and t > token_budget:
                 break
             turns.append(turn)
-            tokens_selected += t
         turns.reverse()  # restore oldest-first order
 
         skipped = len(all_turns) - len(turns)
         if skipped > 0:
             logger.debug(
-                "session_restore_trimmed loaded=%d skipped=%d budget=%d",
+                "session_restore_trimmed loaded=%d skipped=%d budget=%d max_cumulative=%d",
                 len(turns), skipped, token_budget,
+                turns[-1].get("token_count", 0) if turns else 0,
             )
 
         # ── Phase 1: Reconstruct message list from selected turns ────
