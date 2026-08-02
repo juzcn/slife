@@ -153,8 +153,10 @@ Plus built-in **Memory** plugin (`memory_search`, `memory_open`, …).
 
 ### Image Display
 
-Inline image rendering in chat via HalfcellImage (coloured Unicode half-block
-characters) with graceful fallback. Users attach images with `@path` syntax;
+Inline image rendering via ``textual-image`` with a two-tier strategy: **Sixel**
+(full-colour) on whitelisted terminals (Windows Terminal, WezTerm, iTerm2, Kitty),
+**HalfcellImage** (coloured Unicode half-block characters) everywhere else,
+and a text placeholder as final fallback. Users attach images with `@path` syntax;
 the agent can display images with the `show_image` tool:
 
 ```

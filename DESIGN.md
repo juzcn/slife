@@ -322,9 +322,20 @@ All user-facing text rendered with `markup=False` to prevent `MarkupError`.
 
 ### Image Display
 
-Slife renders images inline in the chat via ``textual-image`` (HalfcellImage —
-coloured Unicode half-block characters). Full-colour Sixel is auto-detected
-but not used inside scroll views due to known Textual clipping issues.
+Slife renders images inline in the chat via ``textual-image`` with a
+two-tier detection strategy:
+
+1. **Sixel** — full-colour bitmap protocol, used only on whitelisted terminals
+   where Textual's compositor can render it (Windows Terminal, WezTerm,
+   iTerm2, Kitty).
+2. **HalfcellImage** — coloured Unicode half-block characters, works in any
+   true-colour terminal (VS Code, PyCharm, Warp, Alacritty, etc.).
+3. **Text placeholder** — ``🖼 filename (XX KB)`` when ``textual-image`` is
+   not installed or the image file is invalid.
+
+The detection runs at module-import time (before ``App.run()``) by checking
+environment variables.  CSS ``overflow: hidden`` constraints prevent
+Halfcell rendering from bleeding into docked widgets.
 
 **User attachment**: prefix a file path with ``@`` in the input field::
 
@@ -345,8 +356,9 @@ Models without vision support receive a clear error instead of a 400
 API response.
 
 **Safety**: all image paths are validated (file exists, recognised
-extension) before display.  Fallback shows ``🖼 filename (XX KB)``
-when the image library is absent or the file is invalid.
+extension) before display.  The rendering chain is Sixel → HalfcellImage
+→ text fallback; each step degrades gracefully if the library is absent
+or the terminal doesn't support it.
 
 ## Credential & Configuration
 

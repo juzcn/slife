@@ -137,7 +137,7 @@ active_model: "deepseek/deepseek-v4-pro",
 
 ### 图片显示
 
-在聊天中内联显示图片（HalfcellImage——彩色半块 Unicode）。用户可通过 `@path` 语法附加图片，Agent 可通过 `show_image` 工具展示图片：
+聊天中内联显示图片，采用两级策略：**Sixel**（全彩位图协议）在已验证的终端上使用（Windows Terminal、WezTerm、iTerm2、Kitty），其他终端使用 **HalfcellImage**（彩色 Unicode 半块字符），最终回退到文字占位符。用户可通过 `@path` 语法附加图片，Agent 可通过 `show_image` 工具展示图片：
 
 ```
 看看这张截图 @D:\Downloads\screenshot.png 有什么问题？
