@@ -85,6 +85,7 @@ User Input → Conversation.add_user_message()
 - **Tool timeout**: `asyncio.wait_for()` wraps every tool call (default 60s). The LLM can override per-call via `_timeout`. Timeouts return `"Error: …"` strings — never silent, never crash the loop
 - **Iteration limit**: `max_iterations` (default 30) prevents infinite loops. When exceeded, returns `AgentResult(cancelled=True)` with accumulated token usage preserved.
 - **Cancellation**: `Esc` sets a cancel event. The loop stops at the next iteration boundary, returning `AgentResult(cancelled=True, usage=total_usage)` — partial token costs are retained.
+- **Context tracking**: ``_last_context_tokens`` is updated at the end of every turn (normal, cancelled, or max-iterations) with ``total_usage.total_tokens``. Used for accurate 80% ceiling detection on the next turn.
 - **Orphan repair**: interrupted tool calls are repaired before the next user message
 
 ### Context Window Management
@@ -102,23 +103,26 @@ context window (default 20%–80%):
 ```
 
 - **Save**: after each turn, the turn is saved as a new diary row. No trimming happens here.
-- **Trim**: before each LLM API call, `AgentLoop._maybe_trim_context()` checks token count via `Conversation.count_tokens()` (chars/3 heuristic on live message text). If it exceeds `ceiling × context_window`, the oldest complete turns are removed and a synthetic `_trim_context` tool-call + result pair is inserted after the system prompt — the LLM sees a visible notification. Trimmed turns were already persisted when they completed, so the notification guides the LLM to use `memory_search` for retrieval. Each removal re-counts via `count_tokens()` until the total drops to the floor target.
+- **Detect**: uses ``_last_context_tokens`` — the accurate ``total_tokens`` from the last API call of the previous turn (cached in memory, not stored in DB). Falls back to ``count_tokens()`` for the first turn of a session. No per-call estimation overhead on the hot path.
+- **Trim**: when the ceiling is exceeded, oldest complete turns are removed via ``extract_oldest_turns()`` using ``count_tokens()`` to re-measure after each removal. A synthetic ``_trim_context`` tool-call + result pair is inserted after the system prompt so the LLM sees a visible notification. Trimmed turns were already persisted when they completed, so the notification guides the LLM to use ``memory_search`` for retrieval. After trimming, ``_last_context_tokens`` is updated to the new ``count_tokens()`` value.
 - **Subagent trim**: subagents also trim via the same code path, but with `memory_enabled=False`. Trimmed turns from subagents are discarded (ephemeral by design). The notification text reflects this — no mention of `memory_search`.
 - **Tool result ceiling**: single tool results are capped at 20% of the context window.
 - **Restore**: on restart, recent turns are loaded directly from SQLite. The budget is `context_floor × context_window`. Each turn's incremental token cost is estimated from message text (`len(content)//3`, the same heuristic as `count_tokens`), and turns are selected newest-first until the budget is exhausted. Always at least one turn is kept. The stored `diary.token_count` is **not** used for budgeting — it can be zero (cancelled/error turns) or cumulative (double-counts when summed).
 
 ### Token Counting Model
 
-Three layers, all simple accumulation — no deduplication, no delta tracking:
+Four layers, all simple accumulation — no deduplication, no delta tracking:
 
 ```
-API call:  result.usage.total_tokens  →  status bar accumulates directly
+API call:  result.usage.total_tokens  →  billed cost (per-request)
 Turn:      sum of all API calls       →  diary.token_count (billed cost)
+Context:   last API call's total      →  _last_context_tokens (accurate context size, in memory)
 Session:   sum of all turns           →  status bar total (0 at launch)
 ```
 
 - **Per API call**: ``result.usage`` from the streaming LLM response — input + output tokens for that single request. Accumulated directly into the session total in the status bar.
 - **Per turn**: ``total_usage`` in the agent loop accumulates ``result.usage`` across all iterations (tool-call loops). Stored as ``diary.token_count`` at turn end. The dialog displays the turn-cumulative ``total_usage`` on each assistant message — it grows as the turn progresses.
+- **Context snapshot**: ``_last_context_tokens`` caches the accurate context size from the last API call of each turn. Used for the 80% ceiling check — no estimation overhead. Lives in memory (AgentLoop), not persisted.
 - **Per session**: ``session_usage.total_tokens`` starts at 0 on launch (not restored from history). Incremented at turn end via ``save_to_memory`` with the turn's final ``token_count``.
 - **Cancelled / max-iteration turns**: ``run()`` returns ``AgentResult(cancelled=True, usage=total_usage)`` — partial token usage from earlier API calls within the turn is preserved, no longer discarded as zero.
 
