@@ -327,9 +327,17 @@ two-tier detection strategy:
 
 1. **Sixel** — full-colour bitmap protocol, used only on whitelisted terminals
    where Textual's compositor can render it (Windows Terminal, WezTerm,
-   iTerm2, Kitty).
-2. **HalfcellImage** — coloured Unicode half-block characters, works in any
-   true-colour terminal (VS Code, PyCharm, Warp, Alacritty, etc.).
+   iTerm2, Kitty).  Sixel bypasses the character-cell texture atlas
+   entirely — one atomic DCS escape sequence per image.
+2. **HalfcellImage** — coloured Unicode half-block characters (``▀``),
+   works in any true-colour terminal (VS Code, PyCharm, Warp, Alacritty,
+   etc.).  Each cell is a unique (foreground, background) color pair
+   that maps to an xterm.js texture atlas entry.  CSS dimensions are
+   capped at 32×16 (full) and 20×10 (thumbnail) to keep atlas entries
+   under ~500 — well below the threshold that triggers
+   `xtermjs/xterm.js#4484 <https://github.com/xtermjs/xterm.js/issues/4484>`_
+   (texture atlas cache corruption from large numbers of unique color
+   combinations).
 3. **Text placeholder** — ``🖼 filename (XX KB)`` when ``textual-image`` is
    not installed or the image file is invalid.
 
