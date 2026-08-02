@@ -557,22 +557,44 @@ class SlifeApp(App):
     async def _restore_session(self) -> None:
         """Restore a previous session from turn-based memory.
 
-        Loads all turns for the last session_id, concatenates their
-        messages, and rebuilds the UI.  Each turn is saved individually
-        so there's no trim_count — we load all turns and reconstruct
-        the full conversation from scratch.
+        Loads only the most recent turns that fit within ``context_floor``
+        of the model's context window.  Older turns stay in the memory DB
+        and can be retrieved via ``memory_search`` if needed.
         """
         if not self._recovery_info:
             return
 
         info = self._recovery_info
-        turns: list[dict] = info.get("turns", [])
+        all_turns: list[dict] = info.get("turns", [])
 
-        if not turns:
+        if not all_turns:
             self._recovery_info = None
             return
 
-        # ── Phase 1: Reconstruct full message list from turns ──────
+        # ── Select turns within token budget (newest-first, cap at floor) ──
+        context_window = self.service.config.active_model.context_window
+        context_floor = self.service.config.context_floor
+        token_budget = int(context_window * context_floor)
+
+        turns: list[dict] = []
+        tokens_selected = 0
+        for turn in reversed(all_turns):
+            t = turn.get("token_count", 0) or 0
+            # Always keep at least one turn; otherwise stop at budget
+            if turns and tokens_selected + t > token_budget:
+                break
+            turns.append(turn)
+            tokens_selected += t
+        turns.reverse()  # restore oldest-first order
+
+        skipped = len(all_turns) - len(turns)
+        if skipped > 0:
+            logger.debug(
+                "session_restore_trimmed loaded=%d skipped=%d budget=%d",
+                len(turns), skipped, token_budget,
+            )
+
+        # ── Phase 1: Reconstruct message list from selected turns ────
         try:
             # Get system prompt from current conversation
             sys_msg = self.service.conversation.messages[0] if self.service.conversation.messages else None
@@ -724,7 +746,14 @@ class SlifeApp(App):
                             await _restore_from_blob(img_path, chat_view)
 
             self._recovery_info = None
-            self._show_system_message("✅ 已恢复对话，继续吧", color="#3fb950")
+            if skipped > 0:
+                self._show_system_message(
+                    f"✅ 已恢复最近 {len(turns)} 轮对话"
+                    f"（{skipped} 轮旧记录未加载，可用 memory_search 查找）",
+                    color="#3fb950",
+                )
+            else:
+                self._show_system_message("✅ 已恢复对话，继续吧", color="#3fb950")
 
         # Update status bar with token estimate from turns
         total_tokens = sum(t.get("token_count", 0) for t in turns)

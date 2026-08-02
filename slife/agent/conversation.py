@@ -174,14 +174,21 @@ class Conversation:
     def to_openai_messages(self) -> list[dict]:
         """Return messages for the API call.
 
-        Strips internal fields (thinking) that are not part of the
-        standard OpenAI message format.
+        Converts the internal ``thinking`` field to ``reasoning_content``
+        which is the wire-format field DeepSeek requires when thinking
+        mode is enabled.  The API returns a 400 error if
+        reasoning_content is missing from assistant messages that
+        originally carried it.
         """
         cleaned = []
         for msg in self.messages:
             m = dict(msg)
-            m.pop("thinking", None)  # internal only — not sent to API
-            m.pop("images", None)    # internal attachment tracking
+            # DeepSeek thinking mode: reasoning_content must be preserved
+            # across turns.  Stored internally as 'thinking', renamed here.
+            thinking = m.pop("thinking", None)
+            if thinking:
+                m["reasoning_content"] = thinking
+            m.pop("images", None)  # internal attachment tracking
             cleaned.append(m)
         return cleaned
 
@@ -429,6 +436,10 @@ class Conversation:
         user→… turns until the estimated token count drops to or below
         *target*.
 
+        The **current turn** (the last user message and everything after
+        it) is always preserved — it represents the on-going request that
+        the agent is still processing.
+
         Returns (turns, tokens_freed) where *turns* is the
         :meth:`extract_turns`-format list and *tokens_freed* is the
         approximate number of tokens freed.
@@ -436,29 +447,46 @@ class Conversation:
         sys_end = 1 if (
             self.messages and self.messages[0]["role"] == "system"
         ) else 0
+
+        # Find the last user message — the current turn starts here and
+        # must never be removed.
+        last_user_idx: int | None = None
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i]["role"] == "user":
+                last_user_idx = i
+                break
+
+        if last_user_idx is None:
+            return [], 0
+
         current = self.count_tokens()
         removed_messages: list[dict] = []
 
-        while current > target and sys_end < len(self.messages):
+        while current > target and sys_end < last_user_idx:
             # Find the next user message (start of a turn)
             turn_start = None
-            for i in range(sys_end, len(self.messages)):
+            for i in range(sys_end, last_user_idx):
                 if self.messages[i]["role"] == "user":
                     turn_start = i
                     break
 
             if turn_start is None:
-                break  # no complete turns left
+                break  # no complete old turns left
 
-            # Find the end of this turn (next user message or end)
-            turn_end = len(self.messages)
-            for i in range(turn_start + 1, len(self.messages)):
+            # Find the end of this turn (next user message, or the
+            # current turn boundary)
+            turn_end = last_user_idx
+            for i in range(turn_start + 1, last_user_idx):
                 if self.messages[i]["role"] == "user":
                     turn_end = i
                     break
 
             removed_messages.extend(self.messages[turn_start:turn_end])
             del self.messages[turn_start:turn_end]
+            # Adjust last_user_idx — the slice we just deleted shifted
+            # everything after it down.
+            removed_count = turn_end - turn_start
+            last_user_idx -= removed_count
             current = self.count_tokens()
 
         if not removed_messages:

@@ -339,12 +339,13 @@ class TestAddAssistantThinking:
         assert conv.messages[0]["thinking"] == "Let me think..."
         assert conv.messages[0]["content"] == "answer"
 
-    def test_thinking_stripped_for_api(self):
-        """Thinking field is stripped in to_openai_messages."""
+    def test_thinking_renamed_for_api(self):
+        """Thinking field is renamed to reasoning_content in to_openai_messages."""
         conv = Conversation()
         conv.add_assistant_message("answer", thinking="internal reasoning")
         msgs = conv.to_openai_messages()
         assert "thinking" not in msgs[0]
+        assert msgs[0]["reasoning_content"] == "internal reasoning"
 
     def test_images_stripped_for_api(self):
         """Images field is stripped in to_openai_messages."""
