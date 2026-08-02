@@ -79,3 +79,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS diary_semantic USING vec0(
 
 -- ── 索引 ──────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_diary_created ON diary(created_at);
+
+
+-- ═══════════════════════════════════════════════════════════════
+--  图片 BLOB 存储
+--
+--  图片由 save_to_memory 在保存 turn 时原子写入。
+--  image_id 对应缓存文件名 {uuid}.{ext} 中的 uuid（stem）。
+--  恢复时从 BLOB 重建缓存再渲染——不依赖磁盘文件。
+-- ═══════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS diary_images (
+    image_id  TEXT PRIMARY KEY,
+    data      BLOB NOT NULL,
+    mime_type TEXT NOT NULL DEFAULT 'image/png',
+    file_name TEXT NOT NULL DEFAULT '',
+    file_size INTEGER NOT NULL DEFAULT 0
+);

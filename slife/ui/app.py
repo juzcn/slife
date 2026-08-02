@@ -17,6 +17,7 @@ from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
 from slife.ui.tool_display import ToolCallWidget
 from slife.ui.image_utils import is_image_file
+from slife.agent.loop import _scan_for_images
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +193,47 @@ def _parse_images_from_input(raw: str) -> tuple[str, list[str]]:
     parts.append(raw[last_end:])
     cleaned = "".join(parts).strip()
     return cleaned, images
+
+
+async def _restore_from_blob(cache_path: str, chat_view: "ChatView") -> bool:
+    """Reconstruct an image from the diary_images BLOB table.
+
+    Extracts the ``image_id`` from the cache filename (stem = UUID),
+    reads the BLOB, writes it to the cache dir, and renders in chat.
+    """
+    import aiosqlite
+    import os as _os
+    from slife.paths import get_data_dir
+
+    p = Path(cache_path)
+    image_id = p.stem
+
+    env_db = _os.environ.get("SLIFE_MEMORY_DB")
+    db_path = (
+        Path(env_db) if env_db
+        else get_data_dir() / f"{_os.environ.get('SLIFE_AGENT_ID', 'slife')}.db"
+    )
+    if not db_path.is_file():
+        return False
+
+    try:
+        conn = await aiosqlite.connect(str(db_path))
+        try:
+            cursor = await conn.execute(
+                "SELECT data FROM diary_images WHERE image_id = ?",
+                (image_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return False
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(row[0])
+            chat_view.add_image_to_chat(str(p.resolve()))
+            return True
+        finally:
+            await conn.close()
+    except Exception:
+        return False
 
 
 class SlifeApp(App):
@@ -556,12 +598,17 @@ class SlifeApp(App):
             # Build tool-result lookup
             tool_results: dict[str, str] = {}
             tool_errors: dict[str, bool] = {}
+            tool_images: dict[str, list[str]] = {}  # tcid → [image_paths]
             for msg in all_messages:
                 if msg.get("role") == "tool":
                     tcid = msg.get("tool_call_id", "")
                     if tcid:
-                        tool_results[tcid] = msg.get("content", "") or ""
+                        content = msg.get("content", "") or ""
+                        tool_results[tcid] = content
                         tool_errors[tcid] = msg.get("is_error", False)
+                        imgs = _scan_for_images(content)
+                        if imgs:
+                            tool_images[tcid] = imgs
 
             # Build UI ops
             ui_ops: list[dict] = []
@@ -672,6 +719,9 @@ class SlifeApp(App):
                         )
                         chat_view.mount(widget)
                         widget.set_complete(result, is_error)
+                        # Restore images from BLOB (source of truth)
+                        for img_path in tool_images.get(tcid, []):
+                            await _restore_from_blob(img_path, chat_view)
 
             self._recovery_info = None
             self._show_system_message("✅ 已恢复对话，继续吧", color="#3fb950")

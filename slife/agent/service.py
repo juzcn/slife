@@ -24,7 +24,7 @@ from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.conversation import Conversation
-from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
+from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult, _scan_for_images
 from slife.agent.inbox import Inbox, ConversationStore
 from slife.agent.plugins import PluginLifecycle
 from slife.a2a.identity import HUMAN
@@ -981,6 +981,15 @@ class AgentService:
         # inserted into the conversation.  Each turn is still saved here
         # via memory_save_turn, so trimmed turns remain searchable.
 
+        # Collect image cache paths from tool results for BLOB persistence.
+        image_paths: list[str] = []
+        for msg in turn_messages:
+            if msg.get("role") == "tool":
+                content = msg.get("content", "") or ""
+                for p in _scan_for_images(content):
+                    if p not in image_paths:
+                        image_paths.append(p)
+
         assert self._plugins["memory"].client is not None  # guarded by memory_enabled
         try:
             await asyncio.wait_for(
@@ -993,6 +1002,7 @@ class AgentService:
                         "who_helped": (self.config.a2a_config and self.config.a2a_config.agent_name) or "",
                         "what_model": self.config.active_model.ref,
                         "channel": channel,
+                        "image_paths": image_paths,
                     },
                 ),
                 timeout=10.0,

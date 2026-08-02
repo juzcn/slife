@@ -137,6 +137,7 @@ class Inbox:
 
         conversation = None
         handler = None
+        result = None
         try:
             # Reset cancel state for the new message
             self._agent_loop.reset_cancel()
@@ -175,19 +176,6 @@ class Inbox:
             # Reply via MQTT if this was a remote task
             if msg.reply_to and self._a2a_client:
                 await self._publish_reply(msg.reply_to, msg.correlation_id, result)
-
-            # Persist turn to memory (unified path for all sources).
-            if self._on_turn_complete:
-                try:
-                    await self._on_turn_complete(
-                        user_message=msg.content,
-                        token_count=result.usage.total_tokens
-                        if hasattr(result, "usage") else 0,
-                        conversation=conversation,
-                        channel=str(msg.source),
-                    )
-                except Exception:
-                    logger.warning("on_turn_complete_error", exc_info=True)
 
             # Route reply to originating channel (WeChat, etc.)
             if msg.on_reply is not None:
@@ -272,6 +260,23 @@ class Inbox:
                 except Exception:
                     pass
         finally:
+            # ★ Persist turn unconditionally — even on cancel, error,
+            # or max-iterations.  Preserves everything that was produced
+            # so far so the conversation and images are never lost.
+            if self._on_turn_complete and conversation is not None:
+                try:
+                    token_count = 0
+                    if result is not None and hasattr(result, "usage"):
+                        token_count = result.usage.total_tokens
+                    await self._on_turn_complete(
+                        user_message=msg.content,
+                        token_count=token_count,
+                        conversation=conversation,
+                        channel=str(msg.source),
+                    )
+                except Exception:
+                    logger.warning("on_turn_complete_error", exc_info=True)
+
             # Return to idle
             self._processing = False
             if self._a2a_client:

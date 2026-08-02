@@ -144,7 +144,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between c
 | A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
-| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `show_image` |
+| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 | Display | `meta.py` | `show_image` — display local image files inline in the chat |
 
 **Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. All `set` tools share `(name: str, enabled: bool)`.
@@ -168,9 +168,13 @@ automatically save to temp files and display inline. When the active model
 has `input: ["text"]` (no `"image"`), images are **not** sent to the LLM API
 — they're rendered locally only. A clear error is shown instead of a 400.
 
+Images displayed via ``show_image`` are persisted as BLOBs in the
+``diary_images`` table alongside the turn text. On restart, the session
+restore reconstructs cached image files from BLOBs for re-rendering.
+
 ### Memory — Always On
 
-Every conversation turn is permanently recorded. Hybrid search across four modes:
+Every conversation turn and displayed image is permanently recorded (including BLOBs in ``diary_images``). Saves unconditionally — even on cancel or error. Hybrid search across four modes:
 
 | Mode | Best for |
 |------|----------|

@@ -236,9 +236,10 @@ class ClearContextTool(Tool):
 class ShowImageTool(Tool):
     """Display a local image file inline in the chat.
 
-    The image appears in the TUI chat view directly — no external viewer.
-    Uses the ``[image: path]`` marker that the agent loop detects and
-    renders via the InlineImage widget.
+    Writes the image to a persistent cache directory and returns a
+    ``[image: path]`` marker that triggers TUI rendering.  The actual
+    BLOB persistence happens later in ``save_to_memory``, atomically
+    with the turn text — this tool only handles rendering.
     """
 
     name: ClassVar[str] = "show_image"
@@ -259,7 +260,9 @@ class ShowImageTool(Tool):
     }
 
     async def execute(self, path: str, **kwargs) -> str:
+        import uuid
         from pathlib import Path
+        from slife.paths import get_images_dir
         from slife.ui.image_utils import is_image_file
 
         p = Path(path)
@@ -270,9 +273,14 @@ class ShowImageTool(Tool):
         if not is_image_file(path):
             return f"Error: 不支持的图片格式 — {p.suffix}（支持 png/jpg/gif/webp/bmp）"
 
-        resolved = str(p.resolve())
-        size_kb = p.stat().st_size / 1024
+        raw = p.read_bytes()
+        images_dir = get_images_dir()
+        images_dir.mkdir(parents=True, exist_ok=True)
+        img_id = str(uuid.uuid4())  # dashes break sanitize_secrets hex pattern
+        cache = images_dir / f"{img_id}{p.suffix.lower()}"
+        cache.write_bytes(raw)
+
         return (
-            f"[image: {resolved}]\n"
-            f"图片已显示: {p.name} ({size_kb:.0f} KB)"
+            f"[image: {cache.resolve()}]\n"
+            f"图片已显示: {p.name} ({len(raw) / 1024:.0f} KB)"
         )

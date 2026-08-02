@@ -216,18 +216,28 @@ Every turn is permanently recorded as an independent row. No session concept, no
 
 ### Schema
 
-One row = one turn:
+One row = one turn, plus associated image BLOBs:
 
-| Column | Purpose |
+| Table / Column | Purpose |
 |--------|---------|
-| `user_message` | What the user said |
-| `messages` | Assistant response as OpenAI JSON array (thinking, tool calls, results, text) |
-| `summary` | 1–2 sentence gist (LLM-written via `memory_summarize`) |
-| `tags` | Comma-separated topic tags |
-| `created_at` | ISO 8601 with timezone |
-| `channel` | Source: `human`, `wechat`, or remote agent id |
-| `who_helped` / `what_model` | Agent identity + model used |
-| `token_count` | Tokens consumed by this turn |
+| `diary.user_message` | What the user said |
+| `diary.messages` | Assistant response as OpenAI JSON array (thinking, tool calls, results, text) |
+| `diary.summary` | 1–2 sentence gist (LLM-written via `memory_summarize`) |
+| `diary.tags` | Comma-separated topic tags |
+| `diary.created_at` | ISO 8601 with timezone |
+| `diary.channel` | Source: `human`, `wechat`, or remote agent id |
+| `diary.who_helped` / `what_model` | Agent identity + model used |
+| `diary.token_count` | Tokens consumed by this turn |
+| `diary_images.image_id` | UUID (matches cache filename stem) |
+| `diary_images.data` | Raw image binary (BLOB) |
+| `diary_images.mime_type` | `image/png`, `image/jpeg`, … |
+| `diary_images.file_name` | Original filename + size for reference |
+
+Images are saved atomically by ``memory_save_turn`` — each turn
+gets its text row plus any ``[image: …]`` markers extracted from
+tool results and written as BLOBs.  Turns are saved
+**unconditionally** (even on cancel / error / max-iterations) so
+no conversation content is ever lost.
 
 ### Search
 
@@ -256,7 +266,11 @@ Long turns are chunked at paragraph boundaries (~500 tokens, 1-paragraph overlap
 
 ### Session Restore
 
-On startup, recent turns are read **directly from SQLite** — no MCP transport, no plugin dependency. The UI shows history immediately; plugins start in parallel. This decouples restore from plugin health.
+On startup, recent turns are read **directly from SQLite** — no MCP transport,
+no plugin dependency. The UI shows history immediately; plugins start in
+parallel. Images displayed via ``show_image`` are reconstructed from BLOBs in
+``diary_images``, written back to the cache directory, and re-rendered inline.
+This decouples restore from plugin health.
 
 ### Agent Isolation
 
@@ -353,10 +367,17 @@ The ``@path`` is extracted, validated, displayed as a thumbnail in chat,
 stripped from the text sent to the LLM, and the file paths are passed
 through the images pipeline to ``Conversation.add_user_message()``.
 
-**Agent/tool images**: the ``show_image`` native tool and MCP binary-data
-handler inject ``[image: <path>]`` markers into tool results.  The agent
-loop's ``_scan_for_images()`` detects these markers and calls
-``handler.on_image()``, which mounts an inline image widget in the chat view.
+**Agent/tool images**: the ``show_image`` native tool reads an image file,
+writes it to the cache directory (``logs/images/{uuid}.ext``), and returns a
+``[image: <path>]`` marker.  The agent loop's ``_scan_for_images()`` detects
+the marker and calls ``handler.on_image()``, which mounts an inline image
+widget.  MCP binary-data output follows the same marker path.
+
+**Persistence**: when the turn ends (unconditionally — even on cancel or
+error), ``save_to_memory`` scans tool results for ``[image: …]`` markers,
+reads the corresponding cache files, and writes the raw binary as BLOBs into
+the ``diary_images`` table alongside the turn text.  On session restore,
+images are reconstructed from BLOBs (not cache files) for re-rendering.
 
 **Vision guard**: ``AgentLoop.supports_vision`` (from model config
 ``input: ["text", "image"]``) gates the ``image_url`` encoding path.
