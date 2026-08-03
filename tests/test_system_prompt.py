@@ -31,7 +31,7 @@ class TestBuild:
     def test_starts_with_runtime_context(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert result.startswith("Slife 运行时上下文")
+        assert result.startswith("Slife 环境信息")
 
     def test_has_required_sections(self, cfg):
         from slife.agent.system_prompt import build
@@ -165,8 +165,8 @@ class TestBuild:
         assert "{{" not in result  # no unrendered Jinja2
         assert "Agent:" in result
         assert "模型:" in result
-        assert "工作目录:" in result
-        assert "当前时间:" in result
+        # 工作目录 / 当前时间 are now in the dynamic context_status.j2,
+        # not the static system prompt.
 
     def test_hostname_in_prompt(self, cfg):
         from slife.agent.system_prompt import build

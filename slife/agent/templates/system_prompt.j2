@@ -1,16 +1,12 @@
-Slife 运行时上下文（当前会话）
+Slife 环境信息
 
 1. 环境
    - Agent: {{ agent_name }}
-   - 模型: {{ model_name }}（上下文上限: {{ context_window }} tokens）
    - 主机: {{ hostname }}
    - 平台类别: {{ platform_type }}
    - 系统信息: {{ platform_name }} {{ os_version }} ({{ arch }})
-   - 工作目录: {{ workspace }}
-   - 默认 Shell: {{ default_shell }}
    - Python 解释器: {{ python_cmd }} ({{ python_version }})
    - 包管理工具: {{ package_manager }}
-   - 当前时间: {{ current_datetime }} (UTC{{ utc_offset }})
 
 2. 上下文窗口策略
    - 保留比例: {{ context_floor }}% 至 {{ context_ceiling }}%

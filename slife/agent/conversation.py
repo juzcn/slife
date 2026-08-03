@@ -37,9 +37,25 @@ class Conversation:
 
     def __init__(self, system_prompt: str | None = None):
         self.messages: list[dict] = []
+        self._base_system_prompt: str = system_prompt or ""
         if system_prompt:
             self.messages.append({"role": "system", "content": system_prompt})
             logger.debug("conv_init sys_prompt_len=%d", len(system_prompt))
+
+    def update_context_footer(self, footer: str) -> None:
+        """Replace the system message with base + dynamic context footer.
+
+        The base system prompt (built at startup) stays immutable.
+        The footer is re-rendered before each API call with current
+        CWD, shell, time, and token usage.
+        """
+        if not self._base_system_prompt:
+            return
+        full = self._base_system_prompt + "\n\n" + footer
+        if self.messages and self.messages[0]["role"] == "system":
+            self.messages[0]["content"] = full
+        else:
+            self.messages.insert(0, {"role": "system", "content": full})
 
     def _repair_orphaned_tool_calls(self) -> int:
         """Add synthetic error results for any assistant tool_calls that

@@ -26,22 +26,41 @@ It's a chat window with tools. The LLM is in full control.
 ## Lean System Prompt
 
 The system prompt is a **runtime spec sheet** — a flat list of facts the LLM cannot
-discover from training data or tool schemas.  Rendered from
-``slife/agent/templates/system_prompt.j2`` via Jinja2.  Builder at
-``slife/agent/system_prompt.py`` → ``build(config)``.
+discover from training data or tool schemas.  Split into two parts:
 
-### Template Structure
+- **Static** — ``slife/agent/templates/system_prompt.j2``, rendered once at startup
+  by ``slife/agent/system_prompt.py`` → ``build(config)``.
+- **Dynamic** — ``slife/agent/templates/context_status.j2``, re-rendered before
+  each API call by ``build_context_status()``.  Injected into the system message
+  via ``Conversation.update_context_footer()`` at ``AgentLoop._process_stream()``.
 
-Seven numbered sections, each covering a fact domain the model has no other way
-to discover:
+This split ensures the LLM always sees current model, CWD, shell, time, and token
+usage — critical when the user switches models mid-session.
 
-1. **环境** — agent identity, model, host, platform, CWD, shell, Python, time
+### Static Template (``system_prompt.j2``)
+
+Six numbered sections of platform facts that never change during a session:
+
+1. **环境** — agent identity, host, platform, Python, package manager
 2. **上下文窗口策略** — floor/ceiling percentages, trim behaviour, result cap
 3. **图像与多模态** — `[image:<path>]` marker contract, vision support flag
 4. **凭证解析链** — `${VAR}` syntax, resolution order, active credstore backend
 5. **工具与技能** — MCP tool prefix, skills directory, skill loading via `use_skill`
-6. **多代理通信 (A2A)** — transport, broker host:port, agent name (conditional on config)
-7. **子代理特性** — process model, tool inheritance, no memory persistence
+6. **子代理特性** — process model, tool inheritance, no memory persistence
+7. **数据目录** — data dir, config path, logs, DB, skills, image cache
+8. **多代理通信 (A2A)** — transport, broker host:port (conditional on config)
+
+### Dynamic Template (``context_status.j2``)
+
+Appended to the static system prompt each turn.  Rendered fresh before every API
+call so the LLM sees live values:
+
+- **模型** — display name, context window, input modalities (updates on model switch)
+- **当前时间** — current datetime with UTC offset
+- **工作目录** — ``os.getcwd()``
+- **使用 Shell** — detected shell (powershell / cmd / bash / etc.)
+- **上轮 Token** — last API call's ``total_tokens`` and percentage of context window
+  (hidden on the first turn when no data is available)
 
 ### Design Principles
 
@@ -50,7 +69,7 @@ to discover:
 3. **Not a job description.** No personality, no tone, no "you are a helpful assistant."
 4. **No slash commands.** The user communicates in natural language. The UI is a plain text input — the LLM decides what the user means and which tool to call.
 5. **No tool-call instructions.** The prompt describes *mechanisms* (context trimming, credential sanitization, image markers) — never *how* to use a specific tool.
-6. **Self-contained rendering.** ``build(config)`` computes every platform fact inline. No dependency on ``slife.tools`` — tool modules depend on the agent, not the reverse.
+6. **Static + dynamic split.** ``build(config)`` renders platform constants at startup. ``build_context_status()`` re-renders model, CWD, shell, time, and token usage before every API call. No dependency on ``slife.tools`` — tool modules depend on the agent, not the reverse.
 
 ## Architecture
 
@@ -101,7 +120,7 @@ User Input → Conversation.add_user_message()
 - **Tool timeout**: `asyncio.wait_for()` wraps every tool call (default 60s). The LLM can override per-call via `_timeout`. Timeouts return `"Error: …"` strings — never silent, never crash the loop
 - **Iteration limit**: `max_iterations` (default 30) prevents infinite loops. When exceeded, returns `AgentResult(cancelled=True)` with accumulated token usage preserved.
 - **Cancellation**: `Esc` sets a cancel event. The loop stops at the next iteration boundary, returning `AgentResult(cancelled=True, usage=total_usage)` — partial token costs are retained.
-- **Context tracking**: ``_last_context_tokens`` is updated at the end of every turn (normal, cancelled, or max-iterations) with ``total_usage.total_tokens``. Used for accurate 80% ceiling detection on the next turn.
+- **Context tracking**: ``_last_context_tokens`` is updated at the end of every turn (normal, cancelled, or max-iterations) with ``_last_usage.prompt_tokens`` — the accurate input token count from the last API call of that turn. Used for precise 80% ceiling detection on the next turn.
 - **Orphan repair**: interrupted tool calls are repaired before the next user message
 
 ### Context Window Management
@@ -119,7 +138,7 @@ context window (default 20%–80%):
 ```
 
 - **Save**: after each turn, the turn is saved as a new diary row. No trimming happens here.
-- **Detect**: uses ``_last_context_tokens`` — the accurate ``total_tokens`` from the last API call of the previous turn (cached in memory, not stored in DB). Falls back to ``count_tokens()`` for the first turn of a session. No per-call estimation overhead on the hot path.
+- **Detect**: uses ``_last_context_tokens`` — the accurate ``prompt_tokens`` from the last API call of the previous turn (cached in memory, not stored in DB). Falls back to ``count_tokens()`` for the first turn of a session. No per-call estimation overhead on the hot path.
 - **Trim**: when the ceiling is exceeded, oldest complete turns are removed via ``extract_oldest_turns()`` using ``count_tokens()`` to re-measure after each removal. A synthetic ``_trim_context`` tool-call + result pair is inserted after the system prompt so the LLM sees a visible notification. Trimmed turns were already persisted when they completed, so the notification guides the LLM to use ``memory_search`` for retrieval. After trimming, ``_last_context_tokens`` is updated to the new ``count_tokens()`` value.
 - **Subagent trim**: subagents also trim via the same code path, but with `memory_enabled=False`. Trimmed turns from subagents are discarded (ephemeral by design). The notification text reflects this — no mention of `memory_search`.
 - **Tool result ceiling**: single tool results are capped at 20% of the context window.
@@ -127,18 +146,18 @@ context window (default 20%–80%):
 
 ### Token Counting Model
 
-Four layers, all simple accumulation — no deduplication, no delta tracking:
+Four layers, each with distinct semantics:
 
 ```
-API call:  result.usage.total_tokens  →  billed cost (per-request)
-Turn:      sum of all API calls       →  diary.token_count (billed cost)
-Context:   last API call's total      →  _last_context_tokens (accurate context size, in memory)
+API call:  stream_usage               →  _last_usage (per-request, overwritten each stream)
+Turn:      sum of all API calls       →  diary.token_count (billed cost, cumulative)
+Context:   last API's prompt_tokens   →  _last_context_tokens (accurate input size, in memory)
 Session:   sum of all turns           →  status bar total (0 at launch)
 ```
 
-- **Per API call**: ``result.usage`` from the streaming LLM response — input + output tokens for that single request. Accumulated directly into the session total in the status bar.
-- **Per turn**: ``total_usage`` in the agent loop accumulates ``result.usage`` across all iterations (tool-call loops). Stored as ``diary.token_count`` at turn end. The dialog displays the turn-cumulative ``total_usage`` on each assistant message — it grows as the turn progresses.
-- **Context snapshot**: ``_last_context_tokens`` caches the accurate context size from the last API call of each turn. Used for the 80% ceiling check — no estimation overhead. Lives in memory (AgentLoop), not persisted.
+- **Per API call**: ``stream_usage`` from the streaming LLM response — input + output tokens for that single request. Stored as ``_last_usage`` on ``AgentLoop`` (overwritten each iteration). Displayed in the dynamic context footer as "上轮 Token".
+- **Per turn**: ``total_usage`` in the agent loop accumulates ``result.usage`` across all iterations (tool-call loops). Stored as ``diary.token_count`` at turn end — this is the **billed cost** of the entire turn. The dialog displays ``total_usage`` on each assistant message — it grows as the turn progresses.
+- **Context snapshot**: ``_last_context_tokens`` caches ``_last_usage.prompt_tokens`` — the accurate **input token count** from the last API call of each turn. Used for the 80% ceiling check. Lives in memory (AgentLoop), not persisted. Unlike ``total_usage.total_tokens`` (which double-counts shared conversation history across tool-call iterations), ``prompt_tokens`` reflects the API's own measurement of what was actually in context.
 - **Per session**: ``session_usage.total_tokens`` starts at 0 on launch (not restored from history). Incremented at turn end via ``save_to_memory`` with the turn's final ``token_count``.
 - **Cancelled / max-iteration turns**: ``run()`` returns ``AgentResult(cancelled=True, usage=total_usage)`` — partial token usage from earlier API calls within the turn is preserved, no longer discarded as zero.
 

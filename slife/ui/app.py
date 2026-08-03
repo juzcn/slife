@@ -10,6 +10,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Input, Static
 
+from slife.agent.llm_client import TokenUsage
 from slife.config import Config
 from slife.agent.service import AgentService
 from slife.agent.loop import MaxIterationsExceeded
@@ -775,6 +776,13 @@ class SlifeApp(App):
         # Session starts fresh — status bar shows tokens consumed since
         # launch, not the historical totals stored in restored turns.
         self.service.session_usage.total_tokens = 0
+
+        # Prime the context footer with the restored token estimate so
+        # the first turn shows a meaningful count instead of 0.
+        if tokens_selected > 0:
+            self.service.agent_loop._last_usage = TokenUsage(
+                total_tokens=tokens_selected,
+            )
         self._update_status()
 
     # ── Agent interaction ─────────────────────────────────────────

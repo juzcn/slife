@@ -13,6 +13,7 @@ from typing import Protocol
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.logfmt import sanitize_secrets
 from slife.agent.conversation import Conversation
+from slife.agent.system_prompt import build_context_status
 from slife.tools.registry import ToolRegistry
 from slife.logfmt import request_scope, elapsed
 
@@ -183,6 +184,8 @@ class AgentLoop:
         context_ceiling: float = 0.8,
         memory_enabled: bool = True,
         supports_vision: bool = False,
+        model_name: str = "",
+        input_modalities: str = "",
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -194,8 +197,11 @@ class AgentLoop:
         self.context_ceiling = context_ceiling
         self.memory_enabled = memory_enabled
         self.supports_vision = supports_vision
+        self.model_name = model_name
+        self.input_modalities = input_modalities
         self._cancel_event = asyncio.Event()
         self._last_context_tokens: int = 0
+        self._last_usage = TokenUsage()
 
     def cancel(self) -> None:
         """Signal the agent loop to stop at the next safe point."""
@@ -390,6 +396,17 @@ class AgentLoop:
         # knows what was removed and can retrieve it via memory_search.
         await self._maybe_trim_context(conversation)
 
+        # Inject dynamic context footer (CWD, shell, time, token usage)
+        # so the LLM sees current state before each API call.
+        lu = self._last_usage
+        context_footer = build_context_status(
+            model_name=self.model_name,
+            context_window=self.context_window,
+            input_modalities=self.input_modalities,
+            last_total_tokens=lu.total_tokens,
+        )
+        conversation.update_context_footer(context_footer)
+
         async for chunk in self.llm_client.chat_stream(
             messages=conversation.to_openai_messages(),
             tools=self._inject_meta_params(
@@ -426,6 +443,10 @@ class AgentLoop:
 
             if chunk.usage:
                 stream_usage = chunk.usage
+
+        # Remember last API usage for the next turn's context footer.
+        if stream_usage.total_tokens > 0:
+            self._last_usage = stream_usage
 
         return _StreamResult(
             content="".join(content_parts),
@@ -699,13 +720,13 @@ class AgentLoop:
                             t_total,
                             result.content,
                         )
-                        self._last_context_tokens = total_usage.total_tokens
+                        self._last_context_tokens = self._last_usage.prompt_tokens
                         return AgentResult(text=result.content, usage=total_usage)
 
                 raise MaxIterationsExceeded(self.max_iterations)
             except AgentCancelled:
-                self._last_context_tokens = total_usage.total_tokens
+                self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except MaxIterationsExceeded:
-                self._last_context_tokens = total_usage.total_tokens
+                self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)

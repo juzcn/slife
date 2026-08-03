@@ -48,6 +48,7 @@ def build(config: Config) -> str:
         agent_name=agent_name,
         model_name=model.display_name,
         context_window=f"{model.context_window:,}",
+        input_modalities=", ".join(model.input_modalities),
         hostname=socket.gethostname(),
         platform_type=_platform_type(),
         platform_name=_os_name(),
@@ -81,6 +82,39 @@ def build(config: Config) -> str:
         a2a_transport=(a2a.transport if a2a else "mqtt"),
         a2a_broker_host=(a2a.broker_host if a2a else "localhost"),
         a2a_broker_port=(a2a.broker_port if a2a else 1883),
+    ).strip()
+
+
+def build_context_status(
+    cwd: str = "",
+    shell: str = "",
+    model_name: str = "",
+    context_window: int = 0,
+    input_modalities: str = "",
+    last_total_tokens: int = 0,
+) -> str:
+    """Render the dynamic context status footer.
+
+    Called before each API turn so the LLM sees the latest model, CWD,
+    shell, time, and token usage.  All parameters are optional — callers
+    that don't have token data yet (e.g. first turn) can omit them.
+    """
+    now = datetime.now().astimezone()
+    last_usage_pct = (
+        round(last_total_tokens / context_window * 100, 1)
+        if context_window > 0 and last_total_tokens > 0
+        else 0
+    )
+    return _env.get_template("context_status.j2").render(
+        model_name=model_name or "",
+        context_window=f"{context_window:,}" if context_window else "",
+        input_modalities=input_modalities or "",
+        current_datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
+        utc_offset=now.strftime("%z"),
+        cwd=cwd or os.getcwd(),
+        shell=shell or _current_shell(),
+        last_total_tokens=f"{last_total_tokens:,}" if last_total_tokens else "",
+        last_usage_pct=last_usage_pct,
     ).strip()
 
 

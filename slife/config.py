@@ -119,6 +119,7 @@ class ModelConfig:
     base_url: str = "https://api.deepseek.com"
     api: str = "openai-completions"
     supports_vision: bool = False
+    input_modalities: tuple[str, ...] = ("text",)
     max_tokens: int = 4096
     context_window: int = 131072
     temperature: float = 0.7
@@ -151,6 +152,7 @@ class ModelConfig:
         supports_vision = "image" in model_input if model_input else data.get(
             "supports_vision", False
         )
+        input_modalities = tuple(model_input) if model_input else ("text",)
 
         return cls(
             ref=ref,
@@ -161,6 +163,7 @@ class ModelConfig:
             base_url=data.get("base_url", "https://api.deepseek.com"),
             api=data.get("api", "openai-completions"),
             supports_vision=supports_vision,
+            input_modalities=input_modalities,
             max_tokens=data.get("max_tokens", 4096),
             context_window=data.get("context_window", 131072),
             temperature=data.get("temperature", 0.7),

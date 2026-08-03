@@ -1,0 +1,6 @@
+▸ 当前状态
+   - 模型: {{ model_name }}（上限: {{ context_window }} tokens，输入: {{ input_modalities }}）
+   - 当前时间: {{ current_datetime }} (UTC{{ utc_offset }})
+   - 工作目录: {{ cwd }}
+   - 使用 Shell: {{ shell }}{% if last_total_tokens %}
+   - 上轮 Token: {{ last_total_tokens }} ({{ last_usage_pct }}%){% endif %}
