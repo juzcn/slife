@@ -382,9 +382,9 @@ class AgentService:
         async def _connect_one(name: str, cfg: dict) -> None:
             try:
                 if cfg.get("enabled") is False:
-                    # Load into pool but don't register tools.
-                    # Server stays connected but inactive — tools hidden
-                    # until explicitly enabled via mcp_set_server.
+                    # Load into pool but don't connect or register tools.
+                    # Server stays in pool (disabled) — no connection made.
+                    # Use mcp_set_server to enable and connect later.
                     logger.debug("mcp_server_loading_disabled name=%s", name)
                     result = await mcp_client.call_tool(
                         "mcp_add_server",
@@ -397,6 +397,7 @@ class AgentService:
                             "headers": cfg.get("headers"),
                             "auth": cfg.get("auth"),
                             "activate": False,
+                            "enabled": False,
                         },
                     )
                     logger.debug(

@@ -185,7 +185,11 @@ class CheckWechatTool(Tool):
 # ═══════════════════════════════════════════════════════════════════════
 
 async def check_mcp_servers() -> list[dict]:
-    """Return MCP server status by calling mcp_list_servers."""
+    """Return MCP server status by calling mcp_list_servers.
+
+    Reports per-server: enabled/disabled, connected/disconnected state,
+    disclosure mode (eager/lazy), tool count, transport, and errors.
+    """
     results: list[dict] = []
     try:
         from slife.tools.registry import get_registry
@@ -195,7 +199,6 @@ async def check_mcp_servers() -> list[dict]:
                      "key": "status", "value": "not_initialized",
                      "hint": "Tool registry not yet initialized — MCP status unavailable."}]
 
-        # Find the mcp_list_servers proxy tool (registered by slife-mcp).
         mcp_list_tool = None
         for t in registry.list_tools():
             if t.name == "mcp_list_servers" or t.name.endswith("__mcp_list_servers"):
@@ -222,30 +225,61 @@ async def check_mcp_servers() -> list[dict]:
             transport = server.get("transport", "")
             error_msg = server.get("error", "")
             enabled = server.get("enabled", True)
+            active = server.get("active", True)
 
             if not enabled:
+                # Disabled: intentionally not connected, no tools loaded.
+                disclosure = "eager" if active else "lazy"
                 results.append({
-                    "component": "mcp_servers", "level": "ok",
+                    "component": "mcp_servers", "level": "info",
                     "key": name, "value": "disabled",
-                    "hint": f"MCP server '{name}' is disabled.",
+                    "enabled": False,
+                    "state": "disabled",
+                    "disclosure": disclosure,
+                    "tool_count": 0,
+                    "transport": transport,
+                    "hint": f"MCP server '{name}' is disabled (disclosure={disclosure}, not connected).",
                 })
             elif state == "running":
+                disclosure = "eager" if active else "lazy"
+                tool_note = f"{tool_count} tools loaded" if active else f"{tool_count} tools available (not loaded)"
                 results.append({
                     "component": "mcp_servers", "level": "ok",
-                    "key": name, "value": f"connected ({tool_count} tools)",
-                    "hint": f"MCP server '{name}' connected via {transport}, {tool_count} tools available.",
+                    "key": name, "value": f"connected [{disclosure}] ({tool_note})",
+                    "enabled": True,
+                    "state": "connected",
+                    "disclosure": disclosure,
+                    "tool_count": tool_count,
+                    "transport": transport,
+                    "hint": (
+                        f"MCP server '{name}': connected via {transport}, "
+                        f"disclosure={disclosure}, {tool_note}."
+                    ),
                 })
             elif state == "stopped":
                 detail = f" — {error_msg}" if error_msg else ""
                 results.append({
                     "component": "mcp_servers", "level": "warning",
                     "key": name, "value": f"disconnected{detail}",
-                    "hint": f"MCP server '{name}' is NOT connected.{detail} Use mcp_check_server to diagnose.",
+                    "enabled": True,
+                    "state": "disconnected",
+                    "disclosure": "eager" if active else "lazy",
+                    "tool_count": 0,
+                    "transport": transport,
+                    "hint": (
+                        f"MCP server '{name}' is enabled but NOT connected.{detail} "
+                        f"Use mcp_check_server to diagnose."
+                    ),
                 })
             else:
                 results.append({
                     "component": "mcp_servers", "level": "warning",
                     "key": name, "value": state,
+                    "enabled": enabled,
+                    "state": state,
+                    "disclosure": "unknown",
+                    "tool_count": tool_count,
+                    "transport": transport,
                     "hint": f"MCP server '{name}' state={state}.",
                 })
 
@@ -310,7 +344,10 @@ def _group_by_component(entries: list[dict]) -> dict[str, list[dict]]:
 
 
 def _component_status(entries: list[dict]) -> str:
-    """Worst status across a group: ok < warning < error."""
+    """Worst status across a group: info/ok < warning < error.
+
+    ``info`` is treated as non-problematic (e.g. disabled servers).
+    """
     levels = {e.get("level", "ok") for e in entries}
     if "error" in levels:
         return "error"

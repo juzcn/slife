@@ -1,6 +1,5 @@
 """Textual TUI application for Slife — Claude Code CLI style."""
 
-import json
 import logging
 import re
 from pathlib import Path
@@ -10,25 +9,16 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Input, Static
 
-from slife.agent.llm_client import TokenUsage
 from slife.config import Config
 from slife.agent.service import AgentService
 from slife.agent.loop import MaxIterationsExceeded
 from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
-from slife.ui.tool_display import ToolCallWidget
 from slife.ui.image_utils import is_image_file
-from slife.agent.loop import _scan_for_images
+from slife.ui.restore import restore_session
+from slife.ui.tool_display import ToolCallWidget
 
 logger = logging.getLogger(__name__)
-
-
-def _safe_parse_args(raw: str) -> dict:
-    """Parse a tool-call arguments JSON string, falling back gracefully."""
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return {"_raw": raw}
 
 
 # ── Status bar ─────────────────────────────────────────────────────
@@ -137,44 +127,6 @@ class HistoryInput(Input):
         await super()._on_key(event)
 
 
-# ── Main TUI app ───────────────────────────────────────────────────
-
-
-def _estimate_turn_tokens(turn: dict) -> int:
-    """Estimate the *incremental* token cost of a single turn.
-
-    Counts the user message plus the stored assistant/tool messages
-    using the same chars/3 heuristic as ``Conversation.count_tokens``.
-    Returns at least 1 so that a zero-content turn still counts.
-    """
-    user = turn.get("user_message", "") or ""
-    messages = turn.get("messages", "[]")
-    if isinstance(messages, str):
-        messages = json.loads(messages)
-    body = json.dumps(messages, ensure_ascii=False) if isinstance(messages, list) else str(messages)
-    return max(len(user) // 3 + len(body) // 3, 1)
-
-
-def _restore_prefix(channel: str | None, _agent_id: str) -> str:
-    """Consistent prefix mapping for restored turns.
-
-    Matches the real-time display prefixes used during live operation:
-      - human  → "You> "
-      - wechat → "<agent_id>(Wechat)"
-      - other   → "<remote_agent_id>(a2a)" (external agent id, A2A peer, etc.)
-    """
-    # Normalise None → "" (JSON null values, missing keys)
-    ch = channel or ""
-    if ch == "human":
-        return "You> "
-    if ch == "wechat":
-        return "You(Wechat)> "
-    if ch:
-        return f"{ch}(a2a)"
-    # Backward compat: old turns saved before channel was introduced
-    return "You> "
-
-
 # ── Image attachment parsing ──────────────────────────────────────
 
 # Matches @ followed by an image file path (quoted or unquoted).
@@ -209,47 +161,6 @@ def _parse_images_from_input(raw: str) -> tuple[str, list[str]]:
     parts.append(raw[last_end:])
     cleaned = "".join(parts).strip()
     return cleaned, images
-
-
-async def _restore_from_blob(cache_path: str, chat_view: "ChatView") -> bool:
-    """Reconstruct an image from the diary_images BLOB table.
-
-    Extracts the ``image_id`` from the cache filename (stem = UUID),
-    reads the BLOB, writes it to the cache dir, and renders in chat.
-    """
-    import aiosqlite
-    import os as _os
-    from slife.paths import get_data_dir
-
-    p = Path(cache_path)
-    image_id = p.stem
-
-    env_db = _os.environ.get("SLIFE_MEMORY_DB")
-    db_path = (
-        Path(env_db) if env_db
-        else get_data_dir() / f"{_os.environ.get('SLIFE_AGENT_ID', 'slife')}.db"
-    )
-    if not db_path.is_file():
-        return False
-
-    try:
-        conn = await aiosqlite.connect(str(db_path))
-        try:
-            cursor = await conn.execute(
-                "SELECT data FROM diary_images WHERE image_id = ?",
-                (image_id,),
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                return False
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_bytes(row[0])
-            chat_view.add_image_to_chat(str(p.resolve()))
-            return True
-        finally:
-            await conn.close()
-    except Exception:
-        return False
 
 
 class SlifeApp(App):
@@ -551,7 +462,6 @@ class SlifeApp(App):
 
         elif kind == "task_completed":
             source = kwargs.get("source", "unknown")
-            _result = kwargs.get("result", "")
             chat_view.add_system_message(
                 f"✓ task from {source} completed", color="#3fb950",
             )
@@ -573,217 +483,20 @@ class SlifeApp(App):
     async def _restore_session(self) -> None:
         """Restore a previous session from turn-based memory.
 
-        Loads only the most recent turns that fit within ``context_floor``
-        of the model's context window.  Older turns stay in the memory DB
-        and can be retrieved via ``memory_search`` if needed.
+        Delegates to :func:`slife.ui.restore.restore_session`.
         """
         if not self._recovery_info:
             return
 
-        info = self._recovery_info
-        all_turns: list[dict] = info.get("turns", [])
-
-        if not all_turns:
-            self._recovery_info = None
-            return
-
-        # ── Select turns within token budget (newest-first, cap at floor) ──
-        context_window = self.service.config.active_model.context_window
-        context_floor = self.service.config.context_floor
-        token_budget = int(context_window * context_floor)
-
-        # Estimate incremental cost per turn from message text (chars/3),
-        # NOT from stored token_count which is cumulative and often 0.
-        # Summing incremental costs matches how count_tokens() works.
-        turns: list[dict] = []
-        tokens_selected = 0
-        for turn in reversed(all_turns):
-            t = _estimate_turn_tokens(turn)
-            if turns and tokens_selected + t > token_budget:
-                break
-            turns.append(turn)
-            tokens_selected += t
-        turns.reverse()  # restore oldest-first order
-
-        skipped = len(all_turns) - len(turns)
-        if skipped > 0:
-            logger.debug(
-                "session_restore_trimmed loaded=%d skipped=%d budget=%d selected=%d",
-                len(turns), skipped, token_budget, tokens_selected,
-            )
-
-        # ── Phase 1: Reconstruct message list from selected turns ────
-        try:
-            # Get system prompt from current conversation
-            sys_msg = self.service.conversation.messages[0] if self.service.conversation.messages else None
-
-            all_messages: list[dict] = []
-            if sys_msg and sys_msg.get("role") == "system":
-                all_messages.append(dict(sys_msg))
-
-            for turn in turns:
-                user_msg_text = turn.get("user_message", "")
-                turn_messages_json = turn.get("messages", "[]")
-                turn_msgs: list[dict] = (
-                    json.loads(turn_messages_json)
-                    if isinstance(turn_messages_json, str) else turn_messages_json
-                )
-
-                all_messages.append({
-                    "role": "user",
-                    "content": user_msg_text,
-                })
-                all_messages.extend(turn_msgs)
-
-            # Build tool-result lookup
-            tool_results: dict[str, str] = {}
-            tool_errors: dict[str, bool] = {}
-            tool_images: dict[str, list[str]] = {}  # tcid → [image_paths]
-            for msg in all_messages:
-                if msg.get("role") == "tool":
-                    tcid = msg.get("tool_call_id", "")
-                    if tcid:
-                        content = msg.get("content", "") or ""
-                        tool_results[tcid] = content
-                        tool_errors[tcid] = msg.get("is_error", False)
-                        imgs = _scan_for_images(content)
-                        if imgs:
-                            tool_images[tcid] = imgs
-
-            # Build UI ops
-            ui_ops: list[dict] = []
-
-            assistant_indices = [
-                i for i, m in enumerate(all_messages)
-                if m.get("role") == "assistant"
-            ]
-            last_assistant_idx = assistant_indices[-1] if assistant_indices else -1
-
-            # Build a channel→prefix lookup so every user message gets the
-            # correct prefix per turn (human → "You> ", wechat → "You(Wechat)",
-            # remote agent / a2a → "<agent_id>(a2a)").
-            _channel_by_row: dict[int, str] = {}
-            for i, turn in enumerate(turns):
-                ch = turn.get("channel", "")
-                # Count user messages up to this turn (each turn adds
-                # exactly one user message after the system prompt).
-                _channel_by_row[i] = ch
-
-            turn_idx = -1
-            for idx, msg in enumerate(all_messages):
-                role = msg.get("role", "")
-                if role == "system":
-                    continue
-
-                elif role == "user":
-                    turn_idx += 1
-                    ch = _channel_by_row.get(turn_idx, "")
-                    prefix = _restore_prefix(ch, self._agent_id)
-                    ui_ops.append({
-                        "type": "user",
-                        "content": msg.get("content", "") or "",
-                        "images": msg.get("images"),
-                        "prefix": prefix,
-                    })
-
-                elif role == "assistant":
-                    is_final = (idx == last_assistant_idx)
-                    thinking = msg.get("thinking") or ""
-                    content = msg.get("content") or ""
-                    tcs = msg.get("tool_calls") or []
-
-                    ui_ops.append({
-                        "type": "assistant",
-                        "thinking": thinking,
-                        "content": content,
-                        "tool_calls": [
-                            {
-                                "id": tc.get("id", ""),
-                                "name": tc.get("function", {}).get("name", "?"),
-                                "arguments": _safe_parse_args(
-                                    tc.get("function", {}).get("arguments", "{}")
-                                ),
-                            }
-                            for tc in tcs
-                        ],
-                        "is_final": is_final,
-                        "name_prefix": self._assistant_prefix,
-                    })
-
-                elif role == "tool":
-                    pass
-
-        except Exception as e:
-            self._show_system_message(f"✗ 恢复失败: {e}", color="#f85149")
-            self._recovery_info = None
-            return
-
-        # ── Phase 2: Switch state ──────────────────────────────────
-        # Replace messages on the existing conversation object so the
-        # inbox's ConversationStore (which holds a reference to the same
-        # object via _convs[HUMAN]) sees the restored history.
-        self.service.conversation.messages = all_messages
-
-        # ── Phase 3: Rebuild UI ────────────────────────────────────
-        chat_view = self.query_one("#chat-view", ChatView)
-
-        with self.batch_update():
-            for op in ui_ops:
-                if op["type"] == "user":
-                    chat_view.add_user_message(
-                        op["content"],
-                        images=op.get("images"),
-                        prefix=op["prefix"],
-                    )
-
-                elif op["type"] == "assistant":
-                    am = chat_view.add_assistant_message(
-                        name_prefix=op.get("name_prefix"),
-                    )
-                    thinking = op.get("thinking", "")
-                    if thinking:
-                        am.append_thinking(thinking)
-                    text = op.get("content", "")
-                    if text:
-                        am.append_text(text)
-                    am.finalize(intermediate=not op.get("is_final", False))
-
-                    for tc in op.get("tool_calls", []):
-                        tcid = tc["id"]
-                        result = tool_results.get(tcid, "")
-                        is_error = tool_errors.get(tcid, False)
-                        widget = ToolCallWidget(
-                            tool_name=tc["name"],
-                            tool_args=tc["arguments"],
-                            tool_call_id=tcid,
-                        )
-                        chat_view.mount(widget)
-                        widget.set_complete(result, is_error)
-                        # Restore images from BLOB (source of truth)
-                        for img_path in tool_images.get(tcid, []):
-                            await _restore_from_blob(img_path, chat_view)
-
-            self._recovery_info = None
-            if skipped > 0:
-                self._show_system_message(
-                    f"✅ 已恢复最近 {len(turns)} 轮对话"
-                    f"（{skipped} 轮旧记录未加载，可用 memory_search 查找）",
-                    color="#3fb950",
-                )
-            else:
-                self._show_system_message("✅ 已恢复对话，继续吧", color="#3fb950")
-
-        # Session starts fresh — status bar shows tokens consumed since
-        # launch, not the historical totals stored in restored turns.
-        self.service.session_usage.total_tokens = 0
-
-        # Prime the context footer with the restored token estimate so
-        # the first turn shows a meaningful count instead of 0.
-        if tokens_selected > 0:
-            self.service.agent_loop._last_usage = TokenUsage(
-                total_tokens=tokens_selected,
-            )
-        self._update_status()
+        await restore_session(
+            app=self,
+            recovery_info=self._recovery_info,
+            conversation=self.service.conversation,
+            config=self.service.config,
+            agent_id=self._agent_id,
+            assistant_prefix=self._assistant_prefix,
+        )
+        self._recovery_info = None
 
     # ── Agent interaction ─────────────────────────────────────────
 

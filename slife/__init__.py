@@ -13,44 +13,13 @@ import os
 import sys
 from pathlib import Path
 
-from slife.bootstrap import setup_logging
+from slife.bootstrap import restore_windows_console, seed_skills, setup_logging
 from slife.config import Config, parse_cli_agent
 from slife.logfmt import init_session_id
 from slife.paths import get_config_path, get_data_dir, get_skills_dir
 from slife.ui.app import SlifeApp
 
 logger = logging.getLogger("slife")
-
-
-def _restore_windows_console() -> None:
-    """Restore the Windows console to a sane default mode.
-
-    Textual sets ``ENABLE_VIRTUAL_TERMINAL_INPUT`` (0x0200) on stdin
-    and clears ``ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT |
-    ENABLE_ECHO_INPUT``.  If ``stop_application_mode()`` is skipped
-    the terminal stays in raw mode.  This restores the standard flags.
-    """
-    try:
-        import ctypes
-        STD_INPUT_HANDLE = -10
-        # Standard stdin flags WITHOUT virtual terminal input (0x0200).
-        # Textual enables VT input which passes arrow keys as raw escape
-        # sequences (^[[A).  Restoring these flags brings them back.
-        SANE_MODE = (
-            0x0001   # ENABLE_PROCESSED_INPUT
-            | 0x0002   # ENABLE_LINE_INPUT
-            | 0x0004   # ENABLE_ECHO_INPUT
-            | 0x0008   # ENABLE_WINDOW_INPUT
-            | 0x0010   # ENABLE_MOUSE_INPUT
-            | 0x0020   # ENABLE_INSERT_MODE
-            | 0x0040   # ENABLE_QUICK_EDIT_MODE
-            | 0x0080   # ENABLE_EXTENDED_FLAGS
-        )
-        h = ctypes.windll.kernel32.GetStdHandle(STD_INPUT_HANDLE)
-        if h != -1:
-            ctypes.windll.kernel32.SetConsoleMode(h, SANE_MODE)
-    except Exception:
-        pass
 
 
 def main(config_path: str = "slife.json5"):
@@ -78,13 +47,7 @@ def main(config_path: str = "slife.json5"):
 
     # Seed skills from the installed package to the data directory on
     # first run, so users can edit and add their own skills.
-    _skills_dir = get_skills_dir()
-    if not _skills_dir.exists():
-        _pkg_skills = Path(__file__).resolve().parent / "skills"
-        if _pkg_skills.is_dir():
-            import shutil as _shutil
-            _shutil.copytree(_pkg_skills, _skills_dir)
-            logger.info("skills_seeded from=%s to=%s", _pkg_skills, _skills_dir)
+    seed_skills(get_skills_dir())
 
     # Generate session ID — shared with MCP subprocess via env var
     sid = init_session_id()
@@ -160,7 +123,7 @@ def main(config_path: str = "slife.json5"):
         # anyio task-group interference, etc.), the terminal is left
         # in raw mode (arrow keys showing ^[[A).  This is the safety net.
         if sys.platform == "win32":
-            _restore_windows_console()
+            restore_windows_console()
         # Ensure child processes are cleaned up even on crash.
         app.service.kill_child_processes()
 

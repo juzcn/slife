@@ -65,6 +65,7 @@ async def mcp_add_server(
     headers: dict[str, str] | None = None,
     description: str = "",
     activate: bool = True,
+    enabled: bool = True,
     source: dict | None = None,
     auth: dict | None = None,
 ) -> str:
@@ -83,6 +84,7 @@ async def mcp_add_server(
         headers=headers,
         description=description,
         active=activate,
+        enabled=enabled,
         auth=auth,
     )
 

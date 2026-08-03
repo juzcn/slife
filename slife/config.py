@@ -52,10 +52,6 @@ def _resolve_secret(value: str, *, accept_keyring_uri: bool = False) -> str:
 
     return value
 
-# Backward-compatible alias for slife.plugins.mcp.connection
-_resolve_env_or_credstore = _resolve_secret
-
-
 _T = TypeVar("_T")
 
 def _resolve_env_lenient(value: _T) -> _T:
@@ -629,6 +625,88 @@ class Config:
 
         return False, "API_KEY"
 
+    @staticmethod
+    def _seed_first_run_config(path: Path) -> None:
+        """Copy the bundled template config on first run.
+
+        If the config file does not exist, copies the template from the
+        package directory and checks whether the active model's API key
+        is resolvable.  If the key is missing, prints setup instructions
+        and exits gracefully (SystemExit).
+        """
+        import shutil
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pkg_template = Path(__file__).parent / "slife.template.json5"
+        if not pkg_template.exists():
+            raise FileNotFoundError(
+                f"Config file not found: {path}\n"
+                f"Run: cp slife.template.json5 ~/.slife/slife.json5"
+            )
+
+        shutil.copy(pkg_template, path)
+        logger.info("config_seeded from=%s to=%s", pkg_template, path)
+        print(f"\n  First run — created: {path}")
+
+        raw = json5.loads(path.read_text(encoding="utf-8"))
+        key_ok, key_hint = Config._check_active_provider_key(raw)
+        if key_ok:
+            print("  API key found — starting up.\n")
+        else:
+            print("  Set your API key and you're ready:")
+            print(f"    credstore set {key_hint}")
+            print("    slife\n")
+            raise SystemExit(0)
+
+    @staticmethod
+    def _inject_env_vars(env_section: dict) -> None:
+        """Inject env vars from config into os.environ.
+
+        Resolution order:
+          1. Already set in shell environment → keep
+          2. credstore (keyring) → the canonical source for secrets
+          3. ``${VAR}`` reference → resolve VAR through credstore
+             or os.environ
+          4. Plain config value → inject directly
+        """
+        for key, value in env_section.items():
+            str_value = str(value)
+            # 1. Already set in environment (user's shell) -- keep it
+            if os.environ.get(key):
+                logger.debug("env_from_shell key=%s", key)
+                continue
+            # 2. Try credstore (keyring) — canonical source for secrets
+            cred_value = _try_credstore_lookup(key)
+            if cred_value:
+                os.environ[key] = cred_value
+                logger.info("env_from_credstore key=%s", key)
+                continue
+            # 3. Config value is a ${VAR} reference
+            if str_value.startswith("${") and str_value.endswith("}"):
+                var_name = str_value[2:-1]
+                if var_name != key:
+                    cred_value = _try_credstore_lookup(var_name)
+                    if cred_value:
+                        os.environ[key] = cred_value
+                        logger.info("env_from_credstore key=%s via=%s", key, var_name)
+                        continue
+                env_val = os.environ.get(var_name)
+                if env_val:
+                    os.environ[key] = env_val
+                    logger.info("env_from_shell key=%s via=%s", key, var_name)
+                    continue
+                logger.warning(
+                    "env_unresolved key=%s var=%s — credential not in shell or "
+                    "credstore; child processes (MCP/subagent) will not have it. "
+                    "Run: credstore set %s",
+                    key, var_name, var_name,
+                )
+                continue
+            # 4. Plain config value — inject directly
+            os.environ[key] = str_value
+            logger.info("env_from_config key=%s", key)
+        logger.debug("config_env_vars count=%d", len(env_section))
+
     # ── Main loader ─────────────────────────────────────────────────
 
     @classmethod
@@ -648,30 +726,7 @@ class Config:
         path = Path(path).expanduser()
         logger.debug("config_load path=%s", path)
         if not path.exists():
-            # First run: copy the bundled template config to ~/.slife/.
-            import shutil
-            path.parent.mkdir(parents=True, exist_ok=True)
-            pkg_template = Path(__file__).parent / "slife.template.json5"
-            if pkg_template.exists():
-                shutil.copy(pkg_template, path)
-                logger.info("config_seeded from=%s to=%s", pkg_template, path)
-                print(f"\n  First run — created: {path}")
-                # Check whether the active model's API key is resolvable.
-                raw = json5.loads(path.read_text(encoding="utf-8"))
-                key_ok, key_hint = cls._check_active_provider_key(raw)
-                if key_ok:
-                    print(f"  API key found — starting up.\n")
-                    # fall through to normal config loading below
-                else:
-                    print(f"  Set your API key and you're ready:")
-                    print(f"    credstore set {key_hint}")
-                    print(f"    slife\n")
-                    raise SystemExit(0)
-            else:
-                raise FileNotFoundError(
-                f"Config file not found: {path}\n"
-                f"Run: cp slife.template.json5 ~/.slife/slife.json5"
-            )
+            cls._seed_first_run_config(path)
 
         raw = json5.loads(path.read_text(encoding="utf-8"))
 
@@ -701,47 +756,7 @@ class Config:
         # sub-agents) inherit credentials.  Resolution order:
         #   shell env  >  credstore (keyring)  >  config value  >  config ${VAR}
         env_section = _parse_section(raw, "env", dict, {})
-        for key, value in env_section.items():
-            str_value = str(value)
-            # 1. Already set in environment (user's shell) -- keep it
-            if os.environ.get(key):
-                logger.debug("env_from_shell key=%s", key)
-                continue
-            # 2. Try credstore (keyring) — the canonical source for secrets
-            cred_value = _try_credstore_lookup(key)
-            if cred_value:
-                os.environ[key] = cred_value
-                logger.info("env_from_credstore key=%s", key)
-                continue
-            # 3. Config value is a ${VAR} reference — try to resolve VAR
-            #    through credstore first, then os.environ, then raise.
-            if str_value.startswith("${") and str_value.endswith("}"):
-                var_name = str_value[2:-1]
-                if var_name != key:
-                    # Cross-reference: key=A, value=${B} — resolve B from credstore
-                    cred_value = _try_credstore_lookup(var_name)
-                    if cred_value:
-                        os.environ[key] = cred_value
-                        logger.info("env_from_credstore key=%s via=%s", key, var_name)
-                        continue
-                # Same name or cross-reference not in credstore — try os.environ
-                env_val = os.environ.get(var_name)
-                if env_val:
-                    os.environ[key] = env_val
-                    logger.info("env_from_shell key=%s via=%s", key, var_name)
-                    continue
-                # ${VAR} unresolved — warn and do NOT inject the placeholder
-                logger.warning(
-                    "env_unresolved key=%s var=%s — credential not in shell or "
-                    "credstore; child processes (MCP/subagent) will not have it. "
-                    "Run: credstore set %s",
-                    key, var_name, var_name,
-                )
-                continue
-            # 4. Plain config value — inject directly
-            os.environ[key] = str_value
-            logger.info("env_from_config key=%s", key)
-        logger.debug("config_env_vars count=%d", len(env_section))
+        cls._inject_env_vars(env_section)
 
         # Tools (optional -- auto-discovery handles defaults)
         tools = resolve_env(_parse_section(raw, "tools", list, []))

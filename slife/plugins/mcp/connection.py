@@ -240,17 +240,17 @@ class MCPServerConnection:
 
     async def _connect_stdio(self) -> None:
         """Spawn server as subprocess and set up pipe I/O."""
-        from slife.config import _resolve_env_or_credstore
+        from slife.config import _resolve_secret
 
         exe = resolve_command(self.config.command)
         env = dict(os.environ)
         if self.config.env:
             for key, value in self.config.env.items():
-                env[key] = _resolve_env_or_credstore(value)
+                env[key] = _resolve_secret(value)
 
         # Resolve ${VAR} references in args (e.g. "Authorization: Bearer ${GITHUB_TOKEN}")
         resolved_args = [
-            _resolve_env_or_credstore(arg) if _is_env_ref(arg)
+            _resolve_secret(arg) if _is_env_ref(arg)
             else _resolve_embedded_refs(arg)
             for arg in self.config.args
         ]
@@ -698,7 +698,10 @@ class ConnectionPool:
             await self.remove_server(config.name)
         conn = MCPServerConnection(config=config)
         self._connections[config.name] = conn
-        await conn.connect()
+        if config.enabled:
+            await conn.connect()
+        else:
+            logger.info("mcp_server_disabled name=%s — added to pool, not connecting", config.name)
         return conn
 
     async def remove_server(self, name: str) -> None:
