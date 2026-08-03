@@ -1,0 +1,1367 @@
+{
+  "fetched_at": "2026-08-03 09:49:56",
+  "total_endpoints": 133,
+  "free_endpoint_count": 63,
+  "use_case_groups": {
+    "(uncategorized)": 37,
+    "usecase_audio_to_text": 1,
+    "usecase_code_gen": 6,
+    "usecase_drug_discovery": 1,
+    "usecase_image_to_text": 6,
+    "usecase_rag": 4,
+    "usecase_sdg": 4,
+    "usecase_speech_to_speech": 1,
+    "usecase_text_gen": 12,
+    "usecase_text_to_embedding": 2,
+    "usecase_text_to_speech": 1,
+    "usecase_text_translation": 2
+  },
+  "models": [
+    {
+      "model_id": "bytedance/seed-oss-36b-instruct",
+      "publisher": "bytedance",
+      "display_name": "seed-oss-36b-instruct",
+      "ngc_slug": "seed-oss-36b-instruct",
+      "description": "# Seed-OSS-36B-Instruct\n\n## Description\nSeed-OSS-36B-Instruct is a 36-billion parameter open-source large language model developed by ByteDance's Seed Team. It is designed for powerful long-context, reasoning, agent and general capabilities, and versatile developer-friendly features. The model features flexible control of thinking budget, enhanced reasoning capability, agentic intelligence, and native long context support up to 512K tokens.\n\nThis model is ready for commercial use.\n\n## Third-Part",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/bytedance/seed-oss-36b-instruct",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "deepseek-ai/deepseek-v4-flash",
+      "publisher": "deepseek-ai",
+      "display_name": "deepseek-v4-flash",
+      "ngc_slug": "deepseek-v4-flash",
+      "description": "# DeepSeek-V4-Flash Overview\n\n## Description:  \nDeepSeek-V4-Flash is a Mixture-of-Experts (MoE) language model with 284 billion total parameters and 13 billion activated parameters.  \nDeepSeek-V4-Flash was developed by DeepSeek as a part of DeepSeek-V4 collection.  \n_This model is ready for commercial/non-commercial use._  \n\n## Third-Party Community Consideration:  \nThis model is not owned or developed by NVIDIA. This model has been developed and built to a third-party's requirements for this ap",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 1048576,
+      "model_page": "https://build.nvidia.com/deepseek-ai/deepseek-v4-flash",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "deepseek-ai/deepseek-v4-pro",
+      "publisher": "deepseek-ai",
+      "display_name": "deepseek-v4-pro",
+      "ngc_slug": "deepseek-v4-pro",
+      "description": "# DeepSeek-V4-Pro\n\n## Description\nDeepSeek-V4-Pro is a Mixture-of-Experts (MoE) language model with 1.6 trillion total parameters and 49 billion activated parameters. It features a hybrid attention architecture combining Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA), achieving 27% of single-token inference FLOPs compared to DeepSeek-V3.2 at 1M-token context. Post-training uses a two-stage pipeline: independent domain-expert cultivation (SFT + GRPO) followed by unified ",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 1048576,
+      "model_page": "https://build.nvidia.com/deepseek-ai/deepseek-v4-pro",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "google/diffusiongemma-26b-a4b-it",
+      "publisher": "google",
+      "display_name": "diffusiongemma-26b-a4b-it",
+      "ngc_slug": "diffusiongemma-26b-a4b-it",
+      "description": "# DiffusionGemma 26B A4B IT\n\n## Description:\nDiffusionGemma 26B A4B IT is an open-weights multimodal generative model developed by Google DeepMind that processes text, image, and video inputs to produce text output via discrete diffusion. Built on the Gemma 4 26B A4B Mixture-of-Experts (MoE) architecture with 25.2B total parameters and 3.8B active parameters, the model employs an encoder-decoder design with bidirectional attention that generates tokens in parallel 256-token blocks, enabling high",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/google/diffusiongemma-26b-a4b-it",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "google/gemma-4-31b-it",
+      "publisher": "google",
+      "display_name": "gemma-4-31b-it",
+      "ngc_slug": "gemma-4-31b-it",
+      "description": "# Gemma 4 31B IT\n\n## Description\nGemma 4 31B IT is an open multimodal model built by Google DeepMind that handles text and image inputs, can process video as sequences of frames, and generates text output. It is designed to deliver frontier-level performance for reasoning, agentic workflows, coding, and multimodal understanding on consumer GPUs and workstations, with a 256K-token context window and support for over 140 languages. The model uses a hybrid attention mechanism that interleaves local",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/google/gemma-4-31b-it",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "google/paligemma",
+      "publisher": "google",
+      "display_name": "paligemma",
+      "ngc_slug": "google-paligemma",
+      "description": "# Model Overview\n\n## Description:\n\nThe Google PaLIGemma-3B-mix model is a one-shot visual language understanding solution for image-to-text generation.  This model is ready for commercial use.\n\n## Third-Party Community Consideration\nThis model is not owned or developed by NVIDIA. This model has been developed and built to a third-party’s requirements for this application and use case; see link to Google's [(PaliGemma Model Card](https://ai.google.dev/gemma/docs/paligemma/model-card).\n\n## License",
+      "use_cases": [
+        "usecase_image_to_text"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/google/paligemma",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "meta/esm2-650m",
+      "publisher": "meta",
+      "display_name": "esm2-650m",
+      "ngc_slug": "esm2-650m",
+      "description": "# Model Overview\n\n## Description:\nESM2 is a state of the art language model for protein sequences. It outputs a numerical representation of input protein sequences that is suitable for downstream tasks. In particular, its output is used for protein folding in the ESMFold model. ESM2 comes in various sizes: 650M parameters, 3B parameters, and 15B parameters. ESM2 was developed and trained by [META](https://github.com/facebookresearch/esm). The larger models tend to result in more accurate results",
+      "use_cases": [
+        "usecase_drug_discovery"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/meta/esm2-650m",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "meta/esmfold",
+      "publisher": "meta",
+      "display_name": "esmfold",
+      "ngc_slug": "esmfold",
+      "description": "# Model Overview\n\n## Description:\nESMFold is a protein structure prediction deep learning model developed by Facebook AI Research (FAIR) `lin2023esmfold`. The model was inspired by AlphaFold, but does not require multiple sequence alignment (MSA) as an input, leading to significantly faster inference times for protein structure prediction that is nearly as accurate as alignment-based methods.\n<br>\n\n## Third-Party Community Consideration\nThis model is not owned or developed by NVIDIA. This model ",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/meta/esmfold",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "meta/llama-3.1-70b-instruct",
+      "publisher": "meta",
+      "display_name": "llama-3.1-70b-instruct",
+      "ngc_slug": "llama-3_1-70b-instruct",
+      "description": "## Model Information\n\nThe Meta Llama 3.1 collection of multilingual large language models (LLMs) is a collection of pretrained and instruction tuned generative models in 8B, 70B and 405B sizes (text in/text out). The Llama 3.1 instruction tuned text only models (8B, 70B, 405B) are optimized for multilingual dialogue use cases and outperform many of the available open source and closed chat models on common industry benchmarks.\n\n**Model Developer**: Meta\n\n## Llama 3.1 Systems\n\n**Large language mo",
+      "use_cases": [
+        "usecase_code_gen",
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/meta/llama-3.1-70b-instruct",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "meta/llama-3.1-8b-instruct",
+      "publisher": "meta",
+      "display_name": "llama-3.1-8b-instruct",
+      "ngc_slug": "llama-3_1-8b-instruct",
+      "description": "## Model Information\n\nThe Meta Llama 3.1 collection of multilingual large language models (LLMs) is a collection of pretrained and instruction tuned generative models in 8B, 70B and 405B sizes (text in/text out). The Llama 3.1 instruction tuned text only models (8B, 70B, 405B) are optimized for multilingual dialogue use cases and outperform many of the available open source and closed chat models on common industry benchmarks.\n\n**Model Developer**: Meta\n\n## Llama 3.1 Systems\n\n**Large language mo",
+      "use_cases": [
+        "usecase_code_gen",
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/meta/llama-3.1-8b-instruct",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "meta/llama-3.2-11b-vision-instruct",
+      "publisher": "meta",
+      "display_name": "llama-3.2-11b-vision-instruct",
+      "ngc_slug": "llama-3.2-11b-vision-instruct",
+      "description": "## Model Information\n\nThe Meta Llama 3.2 Vision collection of multimodal large language models (LLMs) is a collection of pre-trained and instruction-tuned image reasoning generative models in 11B and 90B sizes (text \\+ images in / text out). The Llama 3.2 Vision instruction-tuned models are optimized for visual recognition, image reasoning, captioning, and answering general questions about an image. The models outperform many of the available open source and closed multimodal models on common in",
+      "use_cases": [
+        "usecase_image_to_text",
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/meta/llama-3.2-11b-vision-instruct",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "meta/llama-3.2-1b-instruct",
+      "publisher": "meta",
+      "display_name": "llama-3.2-1b-instruct",
+      "ngc_slug": "llama-3.2-1b-instruct",
+      "description": "## Model Information\n\nThe Meta Llama 3.2 collection of multilingual large language models (LLMs) is a collection of pre-trained and instruction-tuned generative models in 1B and 3B sizes (text in/text out). The Llama 3.2 instruction-tuned text only models are optimized for multilingual dialogue use cases, including agentic retrieval and summarization tasks. They outperform many of the available open source and closed chat models on common industry benchmarks. Llama 3.2 models are ready for comme",
+      "use_cases": [
+        "usecase_code_gen",
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/meta/llama-3.2-1b-instruct",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "meta/llama-3.2-3b-instruct",
+      "publisher": "meta",
+      "display_name": "llama-3.2-3b-instruct",
+      "ngc_slug": "llama-3.2-3b-instruct",
+      "description": "## Model Information\n\nThe Meta Llama 3.2 collection of multilingual large language models (LLMs) is a collection of pre-trained and instruction-tuned generative models in 1B and 3B sizes (text in/text out). The Llama 3.2 instruction-tuned text only models are optimized for multilingual dialogue use cases, including agentic retrieval and summarization tasks. They outperform many of the available open source and closed chat models on common industry benchmarks. Llama 3.2 models are ready for comme",
+      "use_cases": [
+        "usecase_code_gen",
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/meta/llama-3.2-3b-instruct",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "meta/llama-3.2-90b-vision-instruct",
+      "publisher": "meta",
+      "display_name": "llama-3.2-90b-vision-instruct",
+      "ngc_slug": "llama-3.2-90b-vision-instruct",
+      "description": "## Model Information\n\nThe Meta Llama 3.2 Vision collection of multimodal large language models (LLMs) is a collection of pre-trained and instruction-tuned image reasoning generative models in 11B and 90B sizes (text \\+ images in / text out). The Llama 3.2 Vision instruction-tuned models are optimized for visual recognition, image reasoning, captioning, and answering general questions about an image. The models outperform many of the available open source and closed multimodal models on common in",
+      "use_cases": [
+        "usecase_image_to_text",
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/meta/llama-3.2-90b-vision-instruct",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "meta/llama-3.3-70b-instruct",
+      "publisher": "meta",
+      "display_name": "llama-3.3-70b-instruct",
+      "ngc_slug": "llama-3_3-70b-instruct",
+      "description": "## Model Information\n\nThe Meta Llama 3.3 multilingual large language model (LLM) is a pretrained and instruction tuned generative model in 70B (text in/text out). The Llama 3.3 instruction-tuned text-only model is optimized for multilingual dialogue use cases and outperform many of the available open source and closed chat models on common industry benchmarks.\n\nModels are accelerated by [TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM), a library for optimizing Large Language Model (LLM) in",
+      "use_cases": [
+        "usecase_code_gen",
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/meta/llama-3.3-70b-instruct",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "meta/llama-guard-4-12b",
+      "publisher": "meta",
+      "display_name": "llama-guard-4-12b",
+      "ngc_slug": "llama-guard-4-12b",
+      "description": "# Llama-Guard-4-12B Overview\n\n## Description:\nLlama-Guard-4-12B is a 12-billion parameter, dense, multimodal safety classifier developed by Meta. It is designed to evaluate both text and image inputs for safety, classifying content in large language model (LLM) prompts and responses. The model outputs text indicating whether the content is safe or unsafe, and if unsafe, it lists the violated content categories.\n\nThis model is ready for commercial/non-commercial use.\n\n## Third-Party Community Con",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/meta/llama-guard-4-12b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "minimaxai/minimax-m3",
+      "publisher": "minimaxai",
+      "display_name": "minimax-m3",
+      "ngc_slug": "minimax-m3",
+      "description": "# MiniMax-M3\n\n## Description\nMiniMax-M3 is a multimodal vision-language model (VLM) built on a Mixture-of-Experts architecture for long-context reasoning, agentic workflows, and creative tasks. The model processes text, image, and video inputs and produces text outputs, with emphasis on long-form video understanding, long-horizon coding, and design and creative workflows.\n\n*This model is ready for non-commercial use.*\n\n## Third-Party Community Consideration:\nThis model is not owned or developed ",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/minimaxai/minimax-m3",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "mistralai/mistral-medium-3.5-128b",
+      "publisher": "mistralai",
+      "display_name": "mistral-medium-3.5-128b",
+      "ngc_slug": "mistral-medium-3.5-128b",
+      "description": "# Mistral Medium 3.5 128B\n\n## Description\nMistral Medium 3.5 is Mistral AI's first flagship merged model. It is a dense 128B model with a 256k context window, handling instruction-following, reasoning, and coding in a single set of weights. Mistral Medium 3.5 replaces its predecessor Mistral Medium 3.1 and Magistral in Le Chat. It also replaces Devstral 2 in our coding agent Vibe. Concretely, expect better performance for instruct, reasoning and coding tasks in a new unified model in comparison ",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 262144,
+      "model_page": "https://build.nvidia.com/mistralai/mistral-medium-3.5-128b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "mistralai/mistral-nemotron",
+      "publisher": "mistralai",
+      "display_name": "mistral-nemotron",
+      "ngc_slug": "mistral-nemotron",
+      "description": "# Mistral-Nemotron Overview\n\n## Description:\n\nMistral-Nemotron is a large language model produced by Mistral and optimised by NVIDIA that generates human-like text and can be used for a variety of natural language processing tasks, such as text generation, language translation, and text summarization. It is also suitable for Agentic workflows due to its tool calling capabilities.\n\nThis model is ready for commercial usage.\n\n## Third-Party Community Consideration <br>  \nThis model is not owned or ",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/mistralai/mistral-nemotron",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "mistralai/mixtral-8x7b-instruct-v0.1",
+      "publisher": "mistralai",
+      "display_name": "mixtral-8x7b-instruct-v0.1",
+      "ngc_slug": "mixtral-8x7b-instruct",
+      "description": "# Model Overview\n\n## Description:\n\nMixtral 8x7B Instruct is a language model that can follow instructions, complete requests, and generate creative text formats. Mixtral 8x7B a high-quality sparse mixture of experts model (SMoE) with open weights.<br>\nThis model has been optimized through supervised fine-tuning and direct preference optimization (DPO) for careful instruction following. On MT-Bench, it reaches a score of 8.30, making it the best open-source model, with a performance comparable to",
+      "use_cases": [
+        "usecase_code_gen",
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/mistralai/mixtral-8x7b-instruct-v0.1",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "moonshotai/kimi-k2.6",
+      "publisher": "moonshotai",
+      "display_name": "kimi-k2.6",
+      "ngc_slug": "kimi-k2.6",
+      "description": "# Kimi-K2.6\n\n## Description\nKimi-K2.6 is an open-source native multimodal agentic model developed by Moonshot AI. Built on a Mixture-of-Experts (MoE) architecture with 1 trillion total parameters (32B active), it delivers long-horizon coding capabilities across Rust, Go, Python, frontend, and DevOps workflows. The model supports agentic task orchestration scaling to 300 sub-agents executing up to 4,000 coordinated steps, and accepts multimodal inputs including text, images, and video via the Moo",
+      "use_cases": [
+        "usecase_image_to_text",
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/moonshotai/kimi-k2.6",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/Studio Voice",
+      "publisher": "nvidia",
+      "display_name": "Studio Voice",
+      "ngc_slug": "studiovoice",
+      "description": "# Model Overview\n\n### Description:\n\nStudio Voice is a speech enhancement model from NVIDIA. Studio Voice enhances input speech recorded with low-quality microphones in noisy or reverberant environments, producing studio-quality speech. \n\nThis model is ready for commercial use.  \n\n\n### License/Terms of Use:\n\nUse of this model is governed by the [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).  \n\n\n### Deployment Geography:\n\nGlobal",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/Studio Voice",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/bevformer",
+      "publisher": "nvidia",
+      "display_name": "bevformer",
+      "ngc_slug": "bevformer",
+      "description": "# BEVFormer Model Overview\n\n## Description\nBEVFormer is a transformer-based model that combines multi-frame camera data into a unified bird's-eye-view (BEV) representation for 3D perception. BEVFormer learns these representations using spatiotemporal transformers. This approach allows the system to exploit both spatial and temporal information by interacting with spatial and temporal spaces through predefined grid-shaped BEV queries.\n\nThis NIM previews an example of deploying [BEVFormer](https:/",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/bevformer",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/cosmos-transfer1-7b",
+      "publisher": "nvidia",
+      "display_name": "cosmos-transfer1-7b",
+      "ngc_slug": "cosmos-transfer1-7b",
+      "description": "# Cosmos-Transfer1-7B Overview\n\n## Description: <br>\nCosmos-Transfer1-7B is a family of highly performant pre-trained world foundation models that are designed to generate videos aligned with the input control conditions. The Cosmos Transfer1 models are a collection of diffusion-based world foundation models that generate dynamic, high quality videos from text and control video inputs. It can serve as the building block for various applications or research that are related to world generation. T",
+      "use_cases": [
+        "usecase_sdg"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/cosmos-transfer1-7b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/cosmos-transfer2.5-2b",
+      "publisher": "nvidia",
+      "display_name": "cosmos-transfer2.5-2b",
+      "ngc_slug": "cosmos-transfer2_5-2b",
+      "description": "# Model Overview\n\n## Description\n**Cosmos-Transfer2.5**: A family of highly performant pre-trained world foundation models purpose-built for generating physics-aware images, videos and world states aligned with the input control conditions.\n\nCosmos-Transfer2.5 diffusion models are a collection of diffusion based world foundation models that generate dynamic, high quality images and videos from text, image, or control video inputs. It can serve as the building block for various applications or re",
+      "use_cases": [
+        "usecase_sdg"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/cosmos-transfer2.5-2b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/cosmos3-nano",
+      "publisher": "nvidia",
+      "display_name": "cosmos3-nano",
+      "ngc_slug": "cosmos3-nano",
+      "description": "# Cosmos3 Nano\n\n[Cosmos](https://github.com/NVIDIA/cosmos) | [Code](https://github.com/NVIDIA/cosmos-framework)\n\n## Model Overview\n\nCosmos3 Nano is an NVIDIA world foundation model for generating physics-aware videos from text prompts or an image prompt. The API exposes the Cosmos3 generator path and returns an MP4 video encoded as a base64 string.\n\nThe hosted Preview API deployment includes safety guardrails and SynthID watermarking for generated video outputs.\n\n**Model Developer**: NVIDIA\n\n## ",
+      "use_cases": [
+        "usecase_sdg"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/cosmos3-nano",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/cosmos3-nano-reasoner",
+      "publisher": "nvidia",
+      "display_name": "cosmos3-nano-reasoner",
+      "ngc_slug": "cosmos3-nano-reasoner",
+      "description": "# Cosmos3-Nano-Reasoner Overview\n\n## Description:\n\nNVIDIA Cosmos3-Nano is an open and customizable model for physical AI and robotics that enables robots and vision AI agents to reason like humans, using prior knowledge, physics understanding and common sense to understand and act in the real world. This model understands space, time, and fundamental physics, and can serve as a planning model to reason what steps an embodied agent might take next. It is part of Cosmos3-Nano, an Omni model capabl",
+      "use_cases": [
+        "usecase_sdg"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/cosmos3-nano-reasoner",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/ising-calibration-1-35b-a3b",
+      "publisher": "nvidia",
+      "display_name": "ising-calibration-1-35b-a3b",
+      "ngc_slug": "ising-calibration-1-35b-a3b",
+      "description": "# Model Overview\n\n### Description:\n`Ising-Calibration-1-35B-A3B` analyzes quantum computing calibration experiment plots and generates structured technical text across six analysis question categories. `Ising-Calibration-1-35B-A3B` was developed by NVIDIA as a quantum calibration vision-language model built on `Qwen3.5-35B-A3B`. This model is ready for commercial/non-commercial use. <br>\n\n### License/Terms of Use:\n**GOVERNING HOSTING TERMS**\nThe Ising-Calibration-1-35B-A3B is governed by the [NV",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/ising-calibration-1-35b-a3b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/ising-calibration-1.5-31b",
+      "publisher": "nvidia",
+      "display_name": "ising-calibration-1.5-31b",
+      "ngc_slug": "ising-calibration-1.5-31b",
+      "description": "# NVIDIA-Ising-Calibration-1.5-31B-BF16 Overview\n\n## Description:  \nNVIDIA-Ising-Calibration-1.5-31B-BF16 is a dense multimodal vision-language model built on Gemma 4 31B. It analyzes quantum computing calibration experiment plots and generates structured technical text across six analysis categories: technical description, experimental conclusion, experimental significance, fit quality assessment, parameter extraction, and experiment success classification.  \nNVIDIA-Ising-Calibration-1.5-31B-BF",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/ising-calibration-1.5-31b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/llama-3.1-nemotron-nano-8b-v1",
+      "publisher": "nvidia",
+      "display_name": "llama-3.1-nemotron-nano-8b-v1",
+      "ngc_slug": "llama-3_1-nemotron-nano-8b-v1",
+      "description": "# Llama-3.1-Nemotron-Nano-8B-v1\n\n\n## Model Overview \n\nLlama-3.1-Nemotron-Nano-8B-v1 is a large language model (LLM) which is a derivative of Meta Llama-3.1-8B-Instruct (AKA the reference model). It is a reasoning model that is post trained for reasoning, human chat preferences, and tasks, such as RAG and tool calling. \n\nLlama-3.1-Nemotron-Nano-8B-v1 is a model which offers a great tradeoff between model accuracy and efficiency. It is created from Llama 3.1 8B Instruct and offers improvements in ",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 131072,
+      "model_page": "https://build.nvidia.com/nvidia/llama-3.1-nemotron-nano-8b-v1",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
+      "publisher": "nvidia",
+      "display_name": "llama-3.1-nemotron-nano-vl-8b-v1",
+      "ngc_slug": "llama-3.1-nemotron-nano-vl-8b-v1",
+      "description": "# Model Overview\n\n## Description:\n Llama Nemotron Nano VL is a leading document intelligence vision language model (VLMs) that enables the ability to query and summarize images from the physical or virtual world. Llama Nemotron Nano VL is deployable in the data center, cloud and at the edge. We find: (1) image-text pairs are not enough, interleaved image-text is essential; (2) unfreezing LLM during interleaved image-text pre-training enables in-context learning; (3)re-blending text-only instruct",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
+      "publisher": "nvidia",
+      "display_name": "llama-3.1-nemotron-safety-guard-8b-v3",
+      "ngc_slug": "llama-3_1-nemotron-safety-guard-8b-v3",
+      "description": "# llama-3.1-nemotron-safety-guard-8b-v3 Overview\n\n## Description\nThe Nemotron safety model, *Llama 3.1 Nemotron Safety Guard* is a multilingual content safety model that moderates human-LLM interaction content and classifies user prompts and LLM responses as safe or unsafe. If the content is unsafe, the model additionally returns a response with a list of categories that the content violates. It supports 23 safety categories and 9 languages including English, Spanish, Mandarin, German, French, H",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/llama-3.3-nemotron-super-49b-v1",
+      "publisher": "nvidia",
+      "display_name": "llama-3.3-nemotron-super-49b-v1",
+      "ngc_slug": "llama-3_3-nemotron-super-49b-v1",
+      "description": "# Llama-3.3-Nemotron-Super-49B-v1\n\n\n## Model Overview \n\nLlama-3.3-Nemotron-Super-49B-v1 is a large language model (LLM) which is a derivative of Meta Llama-3.3-70B-Instruct (AKA the reference model). It is a reasoning model that is post trained for reasoning, human chat preferences, and tasks, such as RAG and tool calling. The model supports a context length of 128K tokens.\n\nLlama-3.3-Nemotron-Super-49B-v1 is a model which offers a great tradeoff between model accuracy and efficiency. Efficiency",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 131072,
+      "model_page": "https://build.nvidia.com/nvidia/llama-3.3-nemotron-super-49b-v1",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+      "publisher": "nvidia",
+      "display_name": "llama-3.3-nemotron-super-49b-v1.5",
+      "ngc_slug": "llama-3_3-nemotron-super-49b-v1_5",
+      "description": "# Llama-3.3-Nemotron-Super-49B-v1.5\n\n<div align=\"center\">\n<img src=\"https://assets.ngc.nvidia.com/products/api-catalog/llama-3_3-nemotron-super-49b-v1_5/accuracy_chart.png\" width=\"100%\" alt=\"Accuracy\"/>\n</div>\n\n\n## Model Overview \n\nLlama-3.3-Nemotron-Super-49B-v1.5 is a significantly upgraded version of Llama-3.3-Nemotron-Super-49B-v1 and is a large language model (LLM) which is a derivative of Meta Llama-3.3-70B-Instruct (AKA the reference model). It is a reasoning model that is post trained fo",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 131072,
+      "model_page": "https://build.nvidia.com/nvidia/llama-3.3-nemotron-super-49b-v1.5",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/magpie-tts-zeroshot",
+      "publisher": "nvidia",
+      "display_name": "magpie-tts-zeroshot",
+      "ngc_slug": "magpie-tts-zeroshot",
+      "description": "Overview\n# Speech Synthesis: Magpie TTS Zeroshot Model Overview\n\n## Description:\nThe Magpie TTS Zeroshot model converts text into audio (speech).\n\nMagpie TTS is a generative model, designed to be used as the first part of a neural text-to-speech system in conjunction with an audio codec model. This model uses the International Phonetic Alphabet (IPA) for inference and training, and it can output a female or a male voice for English-US and European-Spanish. In addition, it uses character-based en",
+      "use_cases": [
+        "usecase_text_to_speech"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/magpie-tts-zeroshot",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/nemotron-3-embed-1b",
+      "publisher": "nvidia",
+      "display_name": "nemotron-3-embed-1b",
+      "ngc_slug": "nemotron-3-embed-1b",
+      "description": "# Model Overview\n\n### Description:\n\n**Nemotron-3-Embed-1B** is a versatile text embedding model developed by NVIDIA and optimized for retrieval and semantic similarity tasks. It provides strong multilingual and cross-lingual retrieval capabilities and is designed to serve as a foundational component in text-based Retrieval-Augmented Generation (RAG) systems.\n\nThe model is available in two versions:\n\n- **Nemotron-3-Embed-1B-BF16:** The reference BF16 model.\n- **Nemotron-3-Embed-1B-NVFP4:** A post",
+      "use_cases": [
+        "usecase_rag",
+        "usecase_text_to_embedding"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/nemotron-3-embed-1b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/nemotron-3-nano-30b-a3b",
+      "publisher": "nvidia",
+      "display_name": "nemotron-3-nano-30b-a3b",
+      "ngc_slug": "nemotron-3-nano-30b-a3b",
+      "description": "![NVIDIA Nemotron 3 Nano Accuracy Chart](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16/blob/main/accuracy_chart.png)\n\n## Model Overview\n\n**Model Developer:** NVIDIA Corporation\n\n**Model Dates:**\n\nSeptember 2025 \\- December 2025\n\n**Data Freshness:**\n\n* The post-training data has a cutoff date of November 28, 2025\\.  \n* The pre-training data has a cutoff date of June 25, 2025\\.\n\n## Description\n\nNemotron-3-Nano-30B-A3B is a large language model (LLM) trained from scratch by NVID",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 1048576,
+      "model_page": "https://build.nvidia.com/nvidia/nemotron-3-nano-30b-a3b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+      "publisher": "nvidia",
+      "display_name": "nemotron-3-nano-omni-30b-a3b-reasoning",
+      "ngc_slug": "nemotron-3-nano-omni-30b-a3b-reasoning",
+      "description": "# Model Overview\n\n### Description:\nNVIDIA Nemotron 3 Nano Omni is a multimodal large language model that unifies video, audio, image, and text understanding to support enterprise-grade Q&A, summarization, transcription, and document intelligence workflows. It extends the Nemotron Nano family with integrated video+speech comprehension, Graphical User Interface (GUI), Optical Character Recognition (OCR), and speech transcription capabilities, enabling end-to-end processing of rich enterprise conte",
+      "use_cases": [
+        "usecase_audio_to_text",
+        "usecase_image_to_text",
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 262144,
+      "model_page": "https://build.nvidia.com/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/nemotron-3-super-120b-a12b",
+      "publisher": "nvidia",
+      "display_name": "nemotron-3-super-120b-a12b",
+      "ngc_slug": "nemotron-3-super-120b-a12b",
+      "description": "# NVIDIA-Nemotron-3-Super-120B-A12B\n\n## Model Summary\n\n| | |\n|:---|:---|\n| **Total Parameters** | 120B (12B active) |\n| **Architecture** | LatentMoE - Mamba-2 + MoE + Attention hybrid with Multi-Token Prediction (MTP) |\n| **Context Length** | Up to 1M tokens |\n| **Minimum GPU Requirement** | 8× H100-80GB |\n| **Supported Languages** | English, French, German, Italian, Japanese, Spanish, Chinese |\n| **Best For** | Agentic workflows, long-context reasoning, high-volume workloads (e.g. IT ticket aut",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 1048576,
+      "model_page": "https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b",
+      "publisher": "nvidia",
+      "display_name": "nemotron-3-ultra-550b-a55b",
+      "ngc_slug": "nemotron-3-ultra-550b-a55b",
+      "description": "# NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4\n\n## Model Summary\n\n| | |\n|:---|:---|\n| **Total Parameters** | 550B (55B active) |\n| **Architecture** | LatentMoE - Mamba-2 + MoE + Attention hybrid with Multi-Token Prediction (MTP) |\n| **Context Length** | Up to 1M tokens |\n| **Minimum GPU Requirement** | 4xGB200, 4xB200, 4x GB300, 4x B300, 8xH100 |\n| **Supported Languages** | English, French, Spanish, Italian, German, Japanese, Korean, Hindi, Korean, Brazilian Portuguese, and Chinese |\n| **Best For** |",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 1048576,
+      "model_page": "https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/nemotron-3.5-content-safety",
+      "publisher": "nvidia",
+      "display_name": "nemotron-3.5-content-safety",
+      "ngc_slug": "nemotron-3.5-content-safety",
+      "description": "# Nemotron 3.5 Content Safety Model\n\n## Model Overview\n\nThe Nemotron 3.5 Content Safety model is a small language model (SLM) that uses Google's Gemma-3-4B-it as the base and is fine-tuned by NVIDIA on multimodal and multilingual content-safety related datasets. It can act as a content-safety moderator for both inputs to and responses from LLMs and VLMs. It can be considered an extension of the popular Nemotron 8B content-safety model, which evaluates the safety of prompts and responses only for",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/nemotron-3.5-content-safety",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/nemotron-mini-4b-instruct",
+      "publisher": "nvidia",
+      "display_name": "nemotron-mini-4b-instruct",
+      "ngc_slug": "nemotron-mini-4b-instruct",
+      "description": "# Model Overview\n\n## Description:\n\n[//]: # ([Provide additional details about the algorithm/model; include supporting image/video and/or reference blog/article, if available.] [This model is ready for commercial/non-commercial use.] OR [This model is for research and development only.] OR [This model is for demonstration purposes and not for production usage.] <br>)\n\nNemotron-Mini-4B Instruct is a model for generating responses for roleplaying, retrieval augmented generation, and function callin",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/nemotron-mini-4b-instruct",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/nemotron-nano-12b-v2-vl",
+      "publisher": "nvidia",
+      "display_name": "nemotron-nano-12b-v2-vl",
+      "ngc_slug": "nemotron-nano-12b-v2-vl",
+      "description": "# Model Overview\n### Description:\nNVIDIA Nemotron Nano 12B v2 VL model enables multi-image reasoning and video understanding, along with strong document intelligence, visual Q&A and summarization capabilities.\n<br>\n\nThis model is ready for commercial use. <br>\n\n### License/Terms of Use\nGoverning Terms: The trial service is governed by the [NVIDIA API Trial Terms of Service](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf). Use of this mode",
+      "use_cases": [
+        "usecase_image_to_text",
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/nemotron-nano-12b-v2-vl",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/nemotron-voicechat",
+      "publisher": "nvidia",
+      "display_name": "nemotron-voicechat",
+      "ngc_slug": "nemotron-voicechat",
+      "description": "# Model Overview\n\n### Description:\n\nNVIDIA Nemotron™ 3 VoiceChat is a 12B end-to-end, realtime full duplex speech-to-speech model for conversational AI that jointly performs streaming speech understanding and speech generation [1]. Unlike traditional cascaded stacks (ASR → LLM → TTS), this model achieves full duplex, real-time, seamless voice interaction in one unified architecture, eliminating the need for multiple models or API handoffs, reducing end-to-end latency.  \nIt sets new benchmarks by",
+      "use_cases": [
+        "usecase_speech_to_speech"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/nemotron-voicechat",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/nv-embed-v1",
+      "publisher": "nvidia",
+      "display_name": "nv-embed-v1",
+      "ngc_slug": "nv-embed-v1",
+      "description": "# Model Overview\n\n### Description\n\nThe NV-Embed Model is a generalist embedding model that excels across 56 tasks, including retrieval, reranking, classification, clustering, and semantic textual similarity tasks. NV-Embed achieves the highest score of 59.36 on 15 retrieval tasks within this benchmark.\n\nNV-Embed features several innovative designs, such as latent vectors for improved pooled embedding output and a two-stage instruction tuning method, enhancing the accuracy of both retrieval and n",
+      "use_cases": [
+        "usecase_rag",
+        "usecase_text_to_embedding"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/nv-embed-v1",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/nv-embedcode-7b-v1",
+      "publisher": "nvidia",
+      "display_name": "nv-embedcode-7b-v1",
+      "ngc_slug": "nv-embedcode-7b-v1",
+      "description": "# Model Overview\n\n## Description:\n\nThe NV-EmbedCode model is a 7B Mistral-based embedding model optimized for code retrieval, supporting text, code, and hybrid queries.\n\nCode retrieval is a critical task in many domains including coding assistance, code explanation, summarization, and documentation search. NV-EmbedCode transforms the input code or textual data into dense vector representations, known as embeddings, enabling effective retrieval and search.\n\nThis model is ready for commercial use.",
+      "use_cases": [
+        "usecase_rag"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/nv-embedcode-7b-v1",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/nvidia-nemotron-nano-9b-v2",
+      "publisher": "nvidia",
+      "display_name": "nvidia-nemotron-nano-9b-v2",
+      "ngc_slug": "nvidia-nemotron-nano-9b-v2",
+      "description": "# NVIDIA-Nemotron-Nano-9B-v2 Overview\n\nNVIDIA-Nemotron-Nano-9B-v2 is a large language model (LLM) trained from scratch by NVIDIA, and designed as a unified model for both reasoning and non-reasoning tasks. It responds to user queries and tasks by first generating a reasoning trace and then concluding with a final response. The model's reasoning capabilities can be controlled via a system prompt. If the user prefers the model to provide its final answer without intermediate reasoning traces, it c",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/nvidia-nemotron-nano-9b-v2",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/rerank-qa-mistral-4b",
+      "publisher": "nvidia",
+      "display_name": "rerank-qa-mistral-4b",
+      "ngc_slug": "rerank-qa-mistral-4b",
+      "description": "## Model Overview\n\n### Description\nThe NVIDIA Retrieval QA Ranking Models is a model optimized for providing a probability score that a given passage contains the information to answer a question. The ranking model is a component in a text retrieval system to improve the overall accuracy. A text retrieval system often uses an embedding model (dense) or lexical search (sparse) index to return relevant text passages given the input. A ranking model can be used to rerank the potential candidate int",
+      "use_cases": [
+        "usecase_rag"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/rerank-qa-mistral-4b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/riva-translate-4b-instruct-v1_1",
+      "publisher": "nvidia",
+      "display_name": "riva-translate-4b-instruct-v1_1",
+      "ngc_slug": "riva-translate-4b-instruct-v1_1",
+      "description": "# Model Overview\n\n\n### Description:\nThe Riva-Translate-4B-Instruct-v1.1 Neural Machine Translation model translates text in 12 languages. The supported languages are: English(en), German(de), European Spanish(es-ES), LATAM Spanish(es-US), France(fr), Brazillian Portugese(pt-BR), Russian(ru), Simplified Chinese(zh-CN), Traditional Chinese(zh-TW), Japanese(ja),Korean(ko), Arabic(ar). It supports both sentence and document level translation. The model delivers a significant performance uplift compa",
+      "use_cases": [
+        "usecase_text_translation"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/riva-translate-4b-instruct-v1_1",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/riva-translate-4b-instruct-v2",
+      "publisher": "nvidia",
+      "display_name": "riva-translate-4b-instruct-v2",
+      "ngc_slug": "riva-translate-4b-instruct-v2",
+      "description": "# Riva-Translate-4B-Instruct-v2\n\n## Description\n\nThe Riva-Translate-4B-Instruct-v2 Neural Machine Translation model translates text in English and 36 non-English languages. The supported languages are: English(en), Czech(cs), Danish(da), German(de), Greek(el), European Spanish(es-ES), LATAM Spanish(es-US), Finnish(fi), French(fr), Hungarian(hu), Italian(it), Lithuanian(lt), Latvian(lv), Dutch(nl), Norwegian(no), Polish(pl), European Portuguese(pt-PT), Brazilian Portuguese(pt-BR), Romanian(ro), R",
+      "use_cases": [
+        "usecase_text_translation"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/riva-translate-4b-instruct-v2",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "nvidia/sparsedrive",
+      "publisher": "nvidia",
+      "display_name": "sparsedrive",
+      "ngc_slug": "sparsedrive",
+      "description": "## SparseDrive Model Overview\n\n## Description   \nSparseDrive is an end-to-end autonomous driving model that performs motion prediction and planning simultaneously, outputting a safe planning trajectory. It first encodes multi-view images into feature maps, then learns sparse scene representation through symmetric sparse perception, and finally performs motion prediction and planning in a parallel manner. \n\nThis NIM previews an end-to-end example of deploying [SparseDrive](https://github.com/swc-",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/sparsedrive",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/streampetr",
+      "publisher": "nvidia",
+      "display_name": "streampetr",
+      "ngc_slug": "streampetr",
+      "description": "# streamPetr Overview\n\n## Description\nstreamPetr is an efficient multi-view 3D object detection model that introduces object-centric temporal modeling for streaming video input. Designed for autonomous driving scenarios, streamPetr propagates long-term historical information through object queries across frames, enabling online frame-by-frame 3D predictions while maintaining minimal storage and computational overhead. By utilizing TensorRT, streamPetr delivers fast, efficient inference tailored ",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/streampetr",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "nvidia/synthetic-video-detector",
+      "publisher": "nvidia",
+      "display_name": "synthetic-video-detector",
+      "ngc_slug": "synthetic-video-detector",
+      "description": "# Model Overview\n\n## Description:\n\nThe NVIDIA Synthetic Video Detection (SVD) model is designed to identify whether a given video is real or synthetic (AI-generated). It is optimized for detection of videos generated by diffusion models, and is intended for use in applications such as content & media creation, video authentication, digital forensics, and media integrity services. It is specifically designed to be robust to typical video compression. The output of the model is a predicted label i",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/nvidia/synthetic-video-detector",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "openai/gpt-oss-120b",
+      "publisher": "openai",
+      "display_name": "gpt-oss-120b",
+      "ngc_slug": "gpt-oss-120b",
+      "description": "# GPT OSS 120B Overview\n\n## Description: <br>\nOpenAI releases the gpt-oss family of open-weight models designed for powerful reasoning, agentic tasks, and versatile developer use cases. The family consists of the:\n- `gpt-oss-120b` — for production, general purpose, high reasoning use-cases that fits into a single H100 GPU (117B parameters with 5.1B active parameters)\n- `gpt-oss-20b` — for lower latency, and local or specialized use-cases (21B parameters with 3.6B active parameters).\n\nThe `gpt-os",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 128000,
+      "model_page": "https://build.nvidia.com/openai/gpt-oss-120b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "openai/gpt-oss-20b",
+      "publisher": "openai",
+      "display_name": "gpt-oss-20b",
+      "ngc_slug": "gpt-oss-20b",
+      "description": "# GPT OSS 20B Overview\n\n## Description: <br>\nOpenAI releases the gpt-oss family of open-weight models designed for powerful reasoning, agentic tasks, and versatile developer use cases. The family consists of the:\n- `gpt-oss-120b` — for production, general purpose, high reasoning use-cases that fits into a single H100 GPU (117B parameters with 5.1B active parameters)\n- `gpt-oss-20b` — for lower latency, and local or specialized use-cases (21B parameters with 3.6B active parameters).\n\nThe `gpt-oss",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 128000,
+      "model_page": "https://build.nvidia.com/openai/gpt-oss-20b",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "poolside/laguna-xs-2.1",
+      "publisher": "poolside",
+      "display_name": "laguna-xs-2.1",
+      "ngc_slug": "laguna-xs-2.1",
+      "description": "# Laguna XS 2.1\n\n## Description\nLaguna XS 2.1 is a Poolside 33B total parameter Mixture-of-Experts text generation model with 3B activated parameters per token, designed for agentic coding and long-horizon software engineering work on local machines.\n\n*This model is ready for commercial or non-commercial use.*\n\n## Third-Party Community Consideration:\nThis model is not owned or developed by NVIDIA. This model has been developed and built to a third-party's requirements for this application and us",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/poolside/laguna-xs-2.1",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "qwen/qwen3-next-80b-a3b-instruct",
+      "publisher": "qwen",
+      "display_name": "qwen3-next-80b-a3b-instruct",
+      "ngc_slug": "qwen3-next-80b-a3b-instruct",
+      "description": "# **Qwen3-Next-80B-A3B-Instruct**\n\n## **Description**\n\nQwen3-Next-80B-A3B-Instruct is a causal language model that is instruction-optimized for chat and agent applications. It features a Mixture-of-Experts (MoE) architecture that achieves an extremely low activation ratio, drastically reducing FLOPs per token while preserving model capacity. The model supports ultra-long contexts and has a Multi-Token Prediction (MTP) mechanism to boost performance and accelerate inference.  \n\n*This model is rea",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 262144,
+      "model_page": "https://build.nvidia.com/qwen/qwen3-next-80b-a3b-instruct",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "sarvamai/sarvam-m",
+      "publisher": "sarvamai",
+      "display_name": "sarvam-m",
+      "ngc_slug": "sarvam-m",
+      "description": "# Sarvam-m  Overview\n\n### Description\n\nSarvam-m generates human-like text for a seamless chatting experience, providing a smooth and accessible multilingual conversation experience, and is intended for general-purpose conversation and text generation tasks.\n\n\nThis model is ready for commercial/non-commercial use.\n\n### Third-Party Community Consideration\n\nThis model is not owned or developed by NVIDIA. This model has been developed and built to a third-party’s requirements for this application an",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 32768,
+      "model_page": "https://build.nvidia.com/sarvamai/sarvam-m",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "stepfun-ai/step-3.5-flash",
+      "publisher": "stepfun-ai",
+      "display_name": "step-3.5-flash",
+      "ngc_slug": "step-3.5-flash",
+      "description": "# Step 3.5 Flash\n\n## Description\nStep 3.5 Flash is a sparse Mixture-of-Experts (MoE) large language model developed by StepFun, engineered to deliver frontier reasoning and agentic capabilities with exceptional efficiency. Built on 196.81B total parameters with only ~11B active per token, it achieves the reasoning depth of top-tier models while maintaining real-time responsiveness with 100-300 tok/s throughput (peaking at 350 tok/s for coding tasks).\n\n*This model is ready for commercial/non-comm",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 262144,
+      "model_page": "https://build.nvidia.com/stepfun-ai/step-3.5-flash",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "stepfun-ai/step-3.7-flash",
+      "publisher": "stepfun-ai",
+      "display_name": "step-3.7-flash",
+      "ngc_slug": "step-3.7-flash",
+      "description": "# Step 3.7 Flash\n\n## Description\nStep-3.7-Flash is a StepFun vision-language model built on Step 3.5 Flash with additional vision capability for native multimodal, agentic, and coding-related use cases. The model is intended to process text and image inputs and produce text outputs, with emphasis on image understanding, fast throughput, and tool-use workflows.\n\n*This model is ready for commercial/non-commercial use.*\n\n## Third-Party Community Consideration:\nThis model is not owned or developed b",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 262144,
+      "model_page": "https://build.nvidia.com/stepfun-ai/step-3.7-flash",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "thinkingmachines/inkling",
+      "publisher": "thinkingmachines",
+      "display_name": "inkling",
+      "ngc_slug": "inkling",
+      "description": "# Inkling\n\n## Description\nInkling is a general-purpose multimodal autoregressive transformer model from Thinking Machines Lab Inc. that accepts text, image, and audio inputs and generates text outputs. The model is intended for English and other languages, multiple coding languages, agentic and tool-use systems, coding assistants, chatbots, retrieval-augmented generation systems, general-purpose conversational use, instruction following, and other natural language or multimodal tasks.\n\n*This mod",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/thinkingmachines/inkling",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    },
+    {
+      "model_id": "upstage/solar-10.7b-instruct",
+      "publisher": "upstage",
+      "display_name": "solar-10.7b-instruct",
+      "ngc_slug": "solar-10_7b-instruct",
+      "description": "# Model Overview\n\n## Description\n\nSOLAR-10.7B, is an advanced large language model (LLM) with 10.7 billion parameters, that demonstrates superior performance in various natural language processing (NLP) tasks. It's compact, yet remarkably powerful, and demonstrates unparalleled state-of-the-art performance in models with parameters under 30B.\n\nIt uses a methodology for scaling LLMs called depth up-scaling (DUS), which encompasses architectural modifications and continued pretraining. In other wo",
+      "use_cases": [
+        "usecase_text_gen"
+      ],
+      "nim_types": [
+        "nim_type_preview"
+      ],
+      "playground": [],
+      "is_free_endpoint": true,
+      "context_length": null,
+      "model_page": "https://build.nvidia.com/upstage/solar-10.7b-instruct",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": false
+    },
+    {
+      "model_id": "z-ai/glm-5.2",
+      "publisher": "z-ai",
+      "display_name": "glm-5.2",
+      "ngc_slug": "glm-5.2",
+      "description": "# GLM-5.2\n\n## Description: <br>\nGLM-5.2 is the latest flagship large language model from Z.ai (zai-org), designed for long-horizon tasks with a solid 1M-token context window. It represents a substantial leap in extended-context capability over its predecessor GLM-5.1, featuring the IndexShare architecture that reuses the same indexer across every four sparse attention layers, reducing per-token FLOPs by 2.9x at 1M context length. GLM-5.2 delivers state-of-the-art performance across reasoning, co",
+      "use_cases": [],
+      "nim_types": [
+        "nim_type_preview",
+        "nim_type_run_anywhere",
+        "nim_type_upgrade_available"
+      ],
+      "playground": [
+        "playgroundtype_chat"
+      ],
+      "is_free_endpoint": true,
+      "context_length": 1000000,
+      "model_page": "https://build.nvidia.com/z-ai/glm-5.2",
+      "api_endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_format": "OpenAI-compatible",
+      "callable_via_api": true
+    }
+  ]
+}

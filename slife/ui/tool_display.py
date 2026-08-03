@@ -182,7 +182,7 @@ class ToolCallWidget(Static):
             return
         _copy_to_clipboard(text)
 
-    async def action_toggle(self, attribute_name: str) -> None:
+    async def action_toggle(self, attribute_name: str = "") -> None:
         """Toggle expand/collapse via keyboard."""
         self.toggle()
 
