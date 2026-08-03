@@ -350,11 +350,111 @@ async def mcp_set_server(name: str, enabled: bool) -> str:
             return error_json(str(e), server=name)
     else:
         conn.config.enabled = False
-        await _pool.remove_server(name)
+        await _pool.disconnect_server(name)
         return ok_json(
             status="disabled",
             server=name,
         )
+
+
+@mcp.tool(
+    name="mcp_update_server",
+    description=(
+        "Update an existing MCP server's configuration. "
+        "Pass only the parameters you want to change; omitted parameters "
+        "keep their current values. "
+        "If the server is currently enabled, it is restarted with the new "
+        "settings and its tool list is refreshed. "
+        "If the server is disabled, only the config is updated — enable it "
+        "with mcp_set_server to apply. "
+        "Use this to change command-line arguments (e.g. add --headless), "
+        "update environment variables, change the URL, etc."
+    ),
+)
+async def mcp_update_server(
+    name: str,
+    command: str = "",
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    url: str = "",
+    headers: dict[str, str] | None = None,
+    description: str = "",
+) -> str:
+    """Update server config and restart.
+
+    Only provided parameters are applied; omitted ones keep current values.
+    After updating config, the server is disconnected and reconnected so
+    the new settings take effect immediately.
+    """
+    conn = _pool.get_server(name)
+    if conn is None:
+        return error_json(
+            f"Server '{name}' not found. Use mcp_add_server to add it first.",
+            server=name,
+        )
+
+    # ── Apply config updates ───────────────────────────────────────
+    changed: list[str] = []
+    if command:
+        conn.config.command = command
+        changed.append("command")
+    if args is not None:
+        conn.config.args = list(args)
+        changed.append("args")
+    if env is not None:
+        conn.config.env = dict(env)
+        changed.append("env")
+    if url:
+        conn.config.url = url
+        changed.append("url")
+    if headers is not None:
+        conn.config.headers = dict(headers)
+        changed.append("headers")
+    if description:
+        conn.config.description = description
+        changed.append("description")
+
+    if not changed:
+        return ok_json(
+            status="unchanged",
+            server=name,
+            note="No config changes provided. Pass at least one of: command, args, env, url, headers, description.",
+        )
+
+    # ── Apply config update ─────────────────────────────────────────
+    try:
+        if not conn.config.enabled:
+            # Server is disabled — config updated but stays disconnected.
+            # Persist happens through the callback.
+            return ok_json(
+                status="disabled",
+                server=name,
+                changed=changed,
+                note="Config updated. Server is disabled — enable it with mcp_set_server to apply.",
+            )
+
+        # Server is enabled — restart with new config
+        await conn.disconnect()
+        await conn.connect()
+
+        if conn.status.value == "connected":
+            tools = conn.list_tools()
+            return ok_json(
+                status="connected",
+                server=name,
+                tool_count=len(tools),
+                tools=[t["name"] for t in tools],
+                changed=changed,
+            )
+        else:
+            return error_json(
+                conn.error or "Unknown error",
+                status=conn.status.value,
+                server=name,
+            )
+    except Exception as e:
+        logger.exception("mcp_update_failed server=%s", name)
+        return error_json(str(e), server=name)
 
 
 # ── Entry point ──────────────────────────────────────────────────────

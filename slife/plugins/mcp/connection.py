@@ -707,6 +707,17 @@ class ConnectionPool:
             return
         await conn.disconnect()
 
+    async def disconnect_server(self, name: str) -> None:
+        """Disconnect a server without removing it from the pool.
+
+        Keeps the server config in the pool (with enabled=False) so it can
+        be re-enabled later without re-adding from config.
+        """
+        conn = self._connections.get(name)
+        if conn is None:
+            return
+        await conn.disconnect()
+
     def get_server(self, name: str) -> MCPServerConnection | None:
         return self._connections.get(name)
 

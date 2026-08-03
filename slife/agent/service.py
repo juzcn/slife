@@ -354,6 +354,7 @@ class AgentService:
             on_server_added=self._persist_server,
             on_server_removed=self._unpersist_server,
             on_server_disclosure_changed=self._on_server_disclosure_changed,
+            on_server_updated=self._on_server_updated,
         )
         for tool in proxy_tools:
             self.tool_registry.register(tool)
@@ -385,7 +386,27 @@ class AgentService:
         async def _connect_one(name: str, cfg: dict) -> None:
             try:
                 if cfg.get("enabled") is False:
-                    logger.debug("mcp_server_skipped name=%s reason=disabled", name)
+                    # Load into pool but don't register tools.
+                    # Server stays connected but inactive — tools hidden
+                    # until explicitly enabled via mcp_set_server.
+                    logger.debug("mcp_server_loading_disabled name=%s", name)
+                    result = await mcp_client.call_tool(
+                        "mcp_add_server",
+                        {
+                            "name": name,
+                            "command": cfg.get("command", ""),
+                            "args": cfg.get("args", []),
+                            "env": cfg.get("env"),
+                            "url": cfg.get("url", ""),
+                            "headers": cfg.get("headers"),
+                            "auth": cfg.get("auth"),
+                            "activate": False,
+                        },
+                    )
+                    logger.debug(
+                        "mcp_server_loaded_disabled name=%s result=%.200s",
+                        name, result,
+                    )
                     return
                 disclosure = cfg.get("disclosure", "eager")
                 activate = disclosure != "lazy"
@@ -577,6 +598,7 @@ class AgentService:
                     require_approval=require_approval,
                     on_server_added=self._persist_server,
                     on_server_removed=self._unpersist_server,
+                    on_server_updated=self._on_server_updated,
                 )
                 for tool in proxy_tools:
                     self.tool_registry.register(tool)
@@ -638,6 +660,26 @@ class AgentService:
             removed = self.tool_registry.unregister_by_prefix(f"{name}__")
             if removed:
                 logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
+
+    async def _on_server_updated(self, name: str, enabled: bool):
+        """Callback: handle mcp_set_server enable/disable toggle.
+
+        - enabled=False → unregister tools, persist enabled=False.
+        - enabled=True  → persist enabled=True, re-discover + register tools.
+        """
+        mcp_cfg = self.config.mcp_config
+        assert mcp_cfg is not None
+
+        if not enabled:
+            # Unregister tools from agent loop
+            removed = self.tool_registry.unregister_by_prefix(f"{name}__")
+            if removed:
+                logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
+            return
+
+        # enabled=True — re-discover and register tools
+        self.tool_registry.unregister_by_prefix(f"{name}__")
+        await self._discover_and_register_external_tools(server_name=name)
 
     # ── Stop helpers ────────────────────────────────────────────────────
 

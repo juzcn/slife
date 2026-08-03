@@ -161,15 +161,15 @@ Adding a new tool is a matter of adding a class in the matching category file �
 
 **Five managed categories** support dynamic registration with a standard **list / add / remove / set** surface:
 
-| Category | list | add | remove | set |
-|----------|------|-----|--------|-----|
-| **Native** | `list_tools` | — | — | `native_tool_set(name, enabled)` |
-| **MCP** | `mcp_list_servers` | `mcp_add_server` | `mcp_remove_server` | `mcp_set_server(name, enabled)` |
-| **Skill** | `list_skills` | `add_skill` | `remove_skill` | `skill_set(name, enabled)` |
-| **CLI** | `cli_list_tools` | `cli_add_tool` | `cli_remove_tool` | `cli_set_tool(name, enabled)` |
-| **REST API** | `rest_api_list` | `rest_api_add` | `rest_api_remove` | `rest_api_set(name, enabled)` |
+| Category | list | add | remove | set | update |
+|----------|------|-----|--------|-----|--------|
+| **Native** | `list_tools` | — | — | `native_tool_set(name, enabled)` | — |
+| **MCP** | `mcp_list_servers` | `mcp_add_server` | `mcp_remove_server` | `mcp_set_server(name, enabled)` | `mcp_update_server(name, args, …)` |
+| **Skill** | `list_skills` | `add_skill` | `remove_skill` | `skill_set(name, enabled)` | — |
+| **CLI** | `cli_list_tools` | `cli_add_tool` | `cli_remove_tool` | `cli_set_tool(name, enabled)` | — |
+| **REST API** | `rest_api_list` | `rest_api_add` | `rest_api_remove` | `rest_api_set(name, enabled)` | — |
 
-All `set` tools use the same signature `(name: str, enabled: bool)`.
+All `set` tools use the same signature `(name: str, enabled: bool)`. `mcp_update_server` is MCP-specific — it takes optional config parameters (`command`, `args`, `env`, `url`, `headers`, `description`) and restarts the server with the new settings (if enabled; if disabled, config is updated but the server stays disconnected).
 
 In addition, the built-in **Memory** plugin (``slife/plugins/memory/``) provides `memory_search`, `memory_open`, `memory_list_recent`, `memory_summarize`, and more.
 
@@ -230,6 +230,21 @@ Both share `MCPServerConnection` — `_request()` dispatches to `_request_stdio(
 Both use the same MCP protocol and `MCPProxyTool` adapter. The distinction is operational.
 
 **Why separate processes:** if a plugin crashes, Slife continues. If Slife crashes, the plugin can save state. No in-process crash can race with writes to disk.
+
+### MCP Server Lifecycle
+
+MCP servers transition through three states managed by `mcp_set_server` and `mcp_update_server`:
+
+```
+disabled ──[mcp_set_server enabled=True]──→ enabled (tools registered)
+enabled  ──[mcp_set_server enabled=False]─→ disabled (tools unregistered)
+disabled ──[mcp_update_server]────────────→ disabled (config updated, stays off)
+enabled  ──[mcp_update_server]────────────→ enabled (restarted with new config)
+```
+
+**Startup behavior:** All configured servers are loaded into the connection pool. Enabled servers register their tools immediately; disabled servers connect but keep tools hidden — they appear in `mcp_list_servers` but the LLM cannot call them until explicitly enabled.
+
+**Persistence:** Both enable/disable and config updates persist to `slife.json5`. Disabled servers write `enabled: false` so they stay off across restarts.
 
 ## Permanent Memory
 

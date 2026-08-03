@@ -147,7 +147,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between c
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 | Display | `meta.py` | `show_image` — display local image files inline in the chat |
 
-**Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. All `set` tools share `(name: str, enabled: bool)`.
+**Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. MCP additionally provides **update** (`mcp_update_server`) for changing server config (args, env vars, URL) in-place without remove+re-add. All `set` tools share `(name: str, enabled: bool)`.
 
 Plus built-in **Memory** plugin (`memory_search`, `memory_open`, …).
 
@@ -217,7 +217,7 @@ Not all tools are in every request. Three categories use lightweight summaries b
 |----------|--------|------|
 | Memory | `memory_search` | `memory_open` |
 | Skills | `list_skills` | `use_skill` |
-| MCP | `mcp_list_servers` / `mcp_list_tools` | `mcp_set_disclosure("eager")` |
+| MCP | `mcp_list_servers` / `mcp_list_tools` | `mcp_set_server(enabled=True)` / `mcp_set_disclosure("eager")` |
 
 ## Keyboard Shortcuts
 
