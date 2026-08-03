@@ -136,7 +136,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between c
 
 | Category | File | Tools |
 |----------|------|-------|
-| System | `system.py` | `check_os_info`, `check_shells`, `check_workspace`, `check_embedding`, `check_wechat`, `system_health` |
+| System | `system.py` | `check_embedding`, `check_wechat`, `system_health`, `check_mcp_servers` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill.py` | `check_skills_dir`, `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set` |
 | CLI | `cli.py` | `cli_check_installed`, `cli_add_tool`, `cli_remove_tool`, `cli_list_tools`, `cli_set_tool` |

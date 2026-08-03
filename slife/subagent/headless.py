@@ -58,10 +58,7 @@ async def _process(task_text: str, rpc_id, service) -> None:
 
     logger.info("task_start id=%s task=%.100s", rpc_id, task_text)
     conv = Conversation(
-        system_prompt=build_system_prompt(
-            agent_id=os.environ.get("SLIFE_AGENT_ID", "slife"),
-            agent_name=os.environ.get("SLIFE_SUBAGENT_NAME", ""),
-        ),
+        system_prompt=build_system_prompt(service.config),
     )
 
     try:

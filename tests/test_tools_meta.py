@@ -53,7 +53,7 @@ class TestClassify:
         assert _classify("check_skills_dir") == "Skills"
 
     def test_system_tools(self):
-        assert _classify("check_os_info") == "System"
+        assert _classify("check_embedding") == "System"
         assert _classify("system_health") == "System"
 
     def test_execution_tools(self):

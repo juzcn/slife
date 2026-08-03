@@ -459,7 +459,7 @@ class TestAgentLoopRun:
 
     @pytest.mark.asyncio
     async def test_run_max_iterations(self, sample_model_config, tool_registry, conversation):
-        """Agent raises MaxIterationsExceeded when too many tool-calling loops."""
+        """Agent returns cancelled result when max iterations exceeded."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry, max_iterations=2)
 
@@ -470,9 +470,9 @@ class TestAgentLoopRun:
             yield StreamChunk(usage=TokenUsage(2, 1, 3))
 
         with patch.object(llm, 'chat_stream', side_effect=always_tool_call):
-            with pytest.raises(MaxIterationsExceeded) as exc_info:
-                await loop.run("test", conversation)
-            assert exc_info.value.iterations == 2
+            result = await loop.run("test", conversation)
+            assert result.cancelled is True
+            assert result.usage.total_tokens > 0
 
     @pytest.mark.asyncio
     async def test_run_with_images(self, sample_model_config, empty_registry, conversation, tmp_path):

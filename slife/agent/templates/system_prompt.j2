@@ -1,17 +1,49 @@
-You are Slife — agent {{ agent_id }}{% if agent_name %}, aka "{{ agent_name }}"{% endif %}. Always reply in the language the user used.
+Slife 运行时上下文（当前会话）
 
-Today's date: {{ current_date }} ({{ current_weekday }})
+1. 环境
+   - Agent: {{ agent_name }}
+   - 模型: {{ model_name }}（上下文上限: {{ context_window }} tokens）
+   - 主机: {{ hostname }}
+   - 平台类别: {{ platform_type }}
+   - 系统信息: {{ platform_name }} {{ os_version }} ({{ arch }})
+   - 工作目录: {{ workspace }}
+   - 默认 Shell: {{ default_shell }}
+   - Python 解释器: {{ python_cmd }} ({{ python_version }})
+   - 包管理工具: {{ package_manager }}
+   - 当前时间: {{ current_datetime }} (UTC{{ utc_offset }})
 
-Configuration
-  Skills directory: {{ skills_dir }}
-    — When a SKILL.md references paths like `skills/<name>/scripts/...`,
-      replace `skills/` with this absolute directory before executing.
-  Config → slife.json5 env:.
+2. 上下文窗口策略
+   - 保留比例: {{ context_floor }}% 至 {{ context_ceiling }}%
+   - 超限行为: 移除最旧轮次，插入 `_trim_context` 系统记录（工具调用 + 结果）。
+   - 已移除轮次已持久化，可通过 `memory_search` 检索。
+   - 单条工具结果上限: {{ tool_result_max_percent }}% 上下文窗口，超出自动截断。
 
-  ⚠️  Tool outputs are auto-sanitized — secrets are replaced with <MASKED>.
-     Use credential_check to verify (values are always masked).
-     Use inject_credential to load a keyring secret into the current process;
-     use uninject_credential to remove it when no longer needed.
-     credstore CLI is interactive-only — LLMs cannot invoke it.
+3. 图像与多模态
+   - 标记: 工具结果中的 `[image:<路径>]` 触发 UI 渲染。
+   - 视觉支持: {{ "已启用" if has_vision else "未启用" }}
 
-  Environment — {{ env_hint }}
+4. 凭证解析链
+   - 语法: `${VAR}` 及 `${VAR:-default}`
+   - 解析顺序: `os.environ` → 凭证后端 (当前活动: {{ credstore_backend }})
+
+5. 工具与技能
+   - MCP 工具前缀: `{{ mcp_tool_prefix }}`（即 `server_name__`）
+   - 技能加载方式: `use_skill`
+
+6. 子代理特性
+   - 进程模型: 独立子进程
+   - 工具集: 与父代理一致
+   - 记忆: 不连接记忆服务器，无永久持久化
+
+7. 数据目录
+   - 数据根目录: {{ data_dir }}
+   - 配置文件: {{ config_path }}
+   - 日志目录: {{ logs_dir }}
+   - 数据库: {{ db_path }}
+   - 技能目录: {{ skills_directory }}
+   - 图片缓存: {{ images_dir }}
+{% if a2a_configured %}
+8. 多代理通信 (A2A)
+   - 传输: {{ a2a_transport }}
+   - Broker: {{ a2a_broker_host }}:{{ a2a_broker_port }}
+{% endif %}

@@ -12,8 +12,9 @@ from slife.platform import (
     resolve_command,
     IS_WINDOWS,
     get_os_info,
+    get_platform_type,
+    detect_current_shell,
 )
-from slife.tools.system import CheckOsInfoTool
 
 
 # ── build_python_command ───────────────────────────────────────────────
@@ -79,21 +80,6 @@ class TestPlatformDetection:
             assert os_name == "Linux"
         else:
             assert os_name == system
-
-
-class TestCheckOsInfoTool:
-    """Tests for the standalone CheckOsInfoTool."""
-
-    @pytest.mark.asyncio
-    async def test_execute_returns_os_name(self):
-        """Tool returns JSON with OS name."""
-        tool = CheckOsInfoTool()
-        result = await tool.execute()
-        import json
-        data = json.loads(result)
-        assert len(data) >= 1
-        assert data[0]["key"] == "system"
-        assert data[0]["value"] in ("Windows", "Linux", "Darwin")
 
 
 class TestRunPythonScriptTool:
@@ -389,3 +375,66 @@ class TestDesktopNotify:
         from slife.platform import desktop_notify
         # Should not raise
         desktop_notify("Test", "Hello")
+
+
+# ── get_platform_type ──────────────────────────────────────────────────
+
+
+class TestGetPlatformType:
+    """Tests for get_platform_type()."""
+
+    def test_native_on_windows(self, monkeypatch):
+        monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        if sys.platform == "win32":
+            assert get_platform_type() == "native"
+
+    def test_headless_with_env_var(self, monkeypatch):
+        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "worker-1")
+        assert get_platform_type() == "headless"
+
+    def test_headless_without_tty(self, monkeypatch):
+        monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        assert get_platform_type() == "headless"
+
+    def test_wsl_detected(self, monkeypatch):
+        monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr(sys, "platform", "linux")
+        with patch("os.path.exists", return_value=True):
+            assert get_platform_type() == "wsl"
+
+    def test_linux_native(self, monkeypatch):
+        monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr("os.path.exists", lambda _: False)
+        assert get_platform_type() == "native"
+
+
+# ── detect_current_shell ────────────────────────────────────────────────
+
+
+class TestDetectCurrentShell:
+    """Tests for detect_current_shell()."""
+
+    def test_windows_powershell(self, monkeypatch):
+        if IS_WINDOWS:
+            monkeypatch.setenv("PSModulePath", r"C:\Modules")
+            assert detect_current_shell() == "powershell"
+
+    def test_windows_cmd_fallback(self, monkeypatch):
+        monkeypatch.setattr("os.name", "nt")
+        monkeypatch.delenv("PSModulePath", raising=False)
+        assert detect_current_shell() == "cmd"
+
+    def test_posix_from_env(self, monkeypatch):
+        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setenv("SHELL", "/bin/zsh")
+        assert detect_current_shell() == "/bin/zsh"
+
+    def test_posix_default(self, monkeypatch):
+        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.delenv("SHELL", raising=False)
+        assert detect_current_shell() == "sh"

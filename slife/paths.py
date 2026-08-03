@@ -62,30 +62,6 @@ def get_venv_python() -> str:
     return sys.executable
 
 
-def get_environment_info() -> dict:
-    """Return structured environment description.
-
-    Used by the system prompt template and ``check_workspace`` to keep
-    environment descriptions in a single place.
-    """
-    if is_dev():
-        return {
-            "mode": "development",
-            "hint": "uv managed project (editable workspace).",
-        }
-    return {
-        "mode": "production",
-        "hint": (
-            "isolated venv (uv tool install). "
-            "Add packages via: uv pip install --python "
-            + str(get_venv_python()) +
-            " <pkg>. "
-            "⚠️  Do NOT run `uv tool install slife` yourself or kill the "
-            "slife process — both will terminate this agent."
-        ),
-    }
-
-
 def get_skills_dir() -> Path:
     """Directory containing skill subdirectories.
 

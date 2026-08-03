@@ -25,16 +25,32 @@ It's a chat window with tools. The LLM is in full control.
 
 ## Lean System Prompt
 
-The system prompt contains only project-specific information the LLM cannot know from training data. Rendered from `slife/agent/templates/system_prompt.j2` via Jinja2.
+The system prompt is a **runtime spec sheet** — a flat list of facts the LLM cannot
+discover from training data or tool schemas.  Rendered from
+``slife/agent/templates/system_prompt.j2`` via Jinja2.  Builder at
+``slife/agent/system_prompt.py`` → ``build(config)``.
+
+### Template Structure
+
+Seven numbered sections, each covering a fact domain the model has no other way
+to discover:
+
+1. **环境** — agent identity, model, host, platform, CWD, shell, Python, time
+2. **上下文窗口策略** — floor/ceiling percentages, trim behaviour, result cap
+3. **图像与多模态** — `[image:<path>]` marker contract, vision support flag
+4. **凭证解析链** — `${VAR}` syntax, resolution order, active credstore backend
+5. **工具与技能** — MCP tool prefix, skills directory, skill loading via `use_skill`
+6. **多代理通信 (A2A)** — transport, broker host:port, agent name (conditional on config)
+7. **子代理特性** — process model, tool inheritance, no memory persistence
 
 ### Design Principles
 
 1. **Project-specific only.** If the LLM can infer it from tool schemas or training data, it doesn't belong in the prompt.
 2. **Tool schemas over prompts.** Usage instructions live in function `description` and `parameters` — the prompt never repeats what a schema already says.
-3. **Don't block on missing values.** When a tool needs an API key the user doesn't have, set a placeholder and move on.
-4. **Minimal is correct.** Every line must carry a fact the model has no other way to discover.
-5. **Not a job description.** No personality, no tone, no "you are a helpful assistant."
-6. **No slash commands.** The user communicates in natural language. The UI is a plain text input — the LLM decides what the user means and which tool to call.
+3. **Not a job description.** No personality, no tone, no "you are a helpful assistant."
+4. **No slash commands.** The user communicates in natural language. The UI is a plain text input — the LLM decides what the user means and which tool to call.
+5. **No tool-call instructions.** The prompt describes *mechanisms* (context trimming, credential sanitization, image markers) — never *how* to use a specific tool.
+6. **Self-contained rendering.** ``build(config)`` computes every platform fact inline. No dependency on ``slife.tools`` — tool modules depend on the agent, not the reverse.
 
 ## Architecture
 
@@ -146,7 +162,7 @@ All tools are unified under `Tool` and registered in a single `ToolRegistry`. Th
 
 | Category | File | Tools |
 |----------|------|-------|
-| System | `system.py` | `check_os_info`, `check_shells`, `check_workspace`, `check_embedding`, `check_wechat`, `system_health` |
+| System | `system.py` | `check_embedding`, `check_wechat`, `system_health`, `check_mcp_servers` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill.py` | `check_skills_dir`, `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set` |
 | CLI | `cli.py` | `cli_check_installed`, `cli_add_tool`, `cli_remove_tool`, `cli_list_tools`, `cli_set_tool` |
@@ -158,6 +174,12 @@ All tools are unified under `Tool` and registered in a single `ToolRegistry`. Th
 | Display | `meta.py` | `show_image` — display local image files inline in the chat |
 
 Adding a new tool is a matter of adding a class in the matching category file — no manual registration needed.
+
+Three former System tools were removed because their output is now in the system prompt or covered by other mechanisms:
+
+- **`check_os_info`** — OS name, architecture, Python path and version are in section 1.
+- **`check_shells`** — current shell is in section 1; executable paths are rarely actionable.
+- **`check_workspace`** — CWD and package manager are in section 1; git status is covered by GitHub MCP; permissions are discoverable via ``execute_shell`` failures.
 
 **Five managed categories** support dynamic registration with a standard **list / add / remove / set** surface:
 
@@ -518,7 +540,7 @@ slife/
   ui/               # Textual TUI: app.py, chat.py, handler.py, tool_display.py, image_utils.py
   config.py         # JSON5 config: models, env, MCP, memory, A2A
   paths.py          # Canonical filesystem paths (dev vs prod)
-  platform.py       # Cross-platform utilities: OS detection, process lifecycle, notifications
+  platform.py       # Cross-platform utilities: OS detection, shell detection, platform type, process lifecycle, notifications
   logfmt.py         # Structured logging + secret sanitization
   server_utils.py   # Plugin lifecycle: port binding, signal, FastMCP
   bootstrap.py      # Logging setup, session init

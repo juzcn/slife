@@ -111,10 +111,11 @@ class TestProcess:
 
         with patch("slife.subagent.headless._write") as mock_write:
             with patch("slife.subagent.headless.elapsed") as mock_elapsed:
-                # elapsed is used as a context manager
-                mock_elapsed.return_value.__enter__ = MagicMock()
-                mock_elapsed.return_value.__exit__ = MagicMock()
-                await _process("What is the answer?", "task-1", mock_service)
+                with patch("slife.agent.system_prompt.build", return_value="Mock system prompt"):
+                    # elapsed is used as a context manager
+                    mock_elapsed.return_value.__enter__ = MagicMock()
+                    mock_elapsed.return_value.__exit__ = MagicMock()
+                    await _process("What is the answer?", "task-1", mock_service)
 
         mock_write.assert_called_once()
         call_args = mock_write.call_args
@@ -131,7 +132,8 @@ class TestProcess:
         )
 
         with patch("slife.subagent.headless._write") as mock_write:
-            await _process("Complex task", "task-2", mock_service)
+            with patch("slife.agent.system_prompt.build", return_value="Mock system prompt"):
+                await _process("Complex task", "task-2", mock_service)
 
         mock_write.assert_called_once()
         call_kwargs = mock_write.call_args[1]
@@ -146,7 +148,8 @@ class TestProcess:
         )
 
         with patch("slife.subagent.headless._write") as mock_write:
-            await _process("Broken task", "task-3", mock_service)
+            with patch("slife.agent.system_prompt.build", return_value="Mock system prompt"):
+                await _process("Broken task", "task-3", mock_service)
 
         mock_write.assert_called_once()
         call_kwargs = mock_write.call_args[1]

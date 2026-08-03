@@ -178,7 +178,7 @@ class TestToOpenAIFunction:
             }
             async def execute(self, **_kwargs): pass
 
-        fn_def = MyTool.to_openai_function()
+        fn_def = MyTool().to_openai_function()
 
         assert fn_def["type"] == "function"
         assert fn_def["function"]["name"] == "my_func"

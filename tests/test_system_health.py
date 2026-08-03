@@ -403,9 +403,6 @@ class TestSystemHealthToolExecute:
     async def test_execute_returns_json(self):
         tool = SystemHealthTool()
         with patch("slife.tools.system.get_startup_records", return_value=[]), \
-             patch("slife.tools.system.check_os_info", return_value=[]), \
-             patch("slife.tools.system.check_shells", return_value=[]), \
-             patch("slife.tools.system.check_workspace", return_value=[]), \
              patch("slife.tools.system.check_embedding", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
              patch("slife.tools.system.check_mcp_servers", return_value=[]):
@@ -423,9 +420,6 @@ class TestSystemHealthToolExecute:
              "value": "done", "hint": "all good"},
         ]
         with patch("slife.tools.system.get_startup_records", return_value=startup_entries), \
-             patch("slife.tools.system.check_os_info", return_value=[]), \
-             patch("slife.tools.system.check_shells", return_value=[]), \
-             patch("slife.tools.system.check_workspace", return_value=[]), \
              patch("slife.tools.system.check_embedding", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
              patch("slife.tools.system.check_mcp_servers", return_value=[]):
@@ -441,9 +435,6 @@ class TestSystemHealthToolExecute:
              "value": "migrated", "hint": "check logs"},
         ]
         with patch("slife.tools.system.get_startup_records", return_value=startup_entries), \
-             patch("slife.tools.system.check_os_info", return_value=[]), \
-             patch("slife.tools.system.check_shells", return_value=[]), \
-             patch("slife.tools.system.check_workspace", return_value=[]), \
              patch("slife.tools.system.check_embedding", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
              patch("slife.tools.system.check_mcp_servers", return_value=[]):
@@ -462,12 +453,6 @@ class TestSystemHealthToolExecute:
         with patch(
             "slife.tools.system.get_startup_records",
             return_value=startup_entries,
-        ), patch(
-            "slife.tools.system.check_os_info", return_value=[],
-        ), patch(
-            "slife.tools.system.check_shells", return_value=[],
-        ), patch(
-            "slife.tools.system.check_workspace", return_value=[],
         ), patch(
             "slife.tools.system.check_embedding", return_value=[],
         ), patch(

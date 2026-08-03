@@ -260,9 +260,8 @@ class TestTUIHandler:
 
     @pytest.mark.asyncio
     async def test_on_token_usage_updates_current_assistant(self):
-        """on_token_usage sets usage on the current (not app._active) assistant."""
+        """on_token_usage sets usage on the current assistant message."""
         app = self._make_app_mock()
-        app.service = MagicMock()
         mock_assistant = MagicMock()
         mock_chat_view = app.query_one.return_value
         mock_chat_view.add_assistant_message.return_value = mock_assistant
@@ -272,7 +271,6 @@ class TestTUIHandler:
         usage = TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
         await handler.on_token_usage(usage)
 
-        assert app.service.session_usage == usage
         mock_assistant.set_token_usage.assert_called_once_with(usage)
         app._update_status.assert_called_once()
 

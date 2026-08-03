@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import shutil
 import signal
 import subprocess as _subprocess
@@ -39,6 +40,32 @@ def get_os_info() -> str:
     if system == "Linux":
         return "Linux"
     return system  # Fallback for other platforms (e.g. "FreeBSD")
+
+
+def get_platform_type() -> str:
+    """Detect the runtime platform category.
+
+    Returns one of: ``"native"``, ``"wsl"``, ``"headless"``.
+    """
+    # headless: subagent or no TTY attached
+    if os.environ.get("SLIFE_SUBAGENT_NAME") or not sys.stdin.isatty():
+        return "headless"
+    # wsl: Linux kernel with WSL interop marker
+    if sys.platform == "linux" and os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
+        return "wsl"
+    return "native"
+
+
+def detect_current_shell() -> str:
+    """Detect the shell that launched slife.
+
+    Returns ``"powershell"``, ``"bash"``, ``"cmd"``, or ``"sh"``.
+    """
+    if os.name != "nt":
+        return os.environ.get("SHELL", "sh")
+    if os.environ.get("PSModulePath"):
+        return "powershell"
+    return "cmd"
 
 
 def _resolve_skill_script(script_path: str) -> str:

@@ -1,228 +1,31 @@
 """System introspection & health check tools.
 
 Tools:
-    check_os_info            — OS name, version, architecture, Python version
-    check_shells             — available shells (PowerShell, Bash, cmd, uv)
-    check_workspace          — CWD, permissions, git, package manager
     check_embedding          — embedding backend status
     check_wechat             — WeChat plugin status
-    system_health            — orchestrate all checks + startup records
+    system_health            — orchestrate checks + startup records
     list_tools               — enumerate native vs MCP-proxied tools (with category filter)
+    check_mcp_servers        — MCP server connection status
+
+OS name, architecture, Python path/version, current shell, CWD,
+environment mode, and package manager are in the system prompt.
+Permissions and git status are covered by execute_shell / GitHub MCP.
+check_os_info, check_shells, and check_workspace have been removed.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
-import platform
 import sys
 import time
-import tomllib
-from pathlib import Path
-from shutil import which
 from typing import ClassVar
 
-from slife.paths import get_data_dir, get_environment_info
+from slife.paths import get_data_dir
 from slife.tools.base import Tool
 from slife.health import get_report as get_startup_records
 
 logger = logging.getLogger(__name__)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# check_os_info
-# ═══════════════════════════════════════════════════════════════════════
-
-def check_os_info() -> list[dict]:
-    """Return detailed OS information as health-check entries."""
-    results: list[dict] = []
-    uname = platform.uname()
-
-    results.append({"component": "os", "level": "ok", "key": "system",
-                    "value": uname.system,
-                    "hint": f"OS: {uname.system} {uname.release} ({uname.version})"})
-    results.append({"component": "os", "level": "ok", "key": "architecture",
-                    "value": uname.machine,
-                    "hint": f"Architecture: {uname.machine} (processor: {uname.processor or 'unknown'})"})
-    results.append({"component": "os", "level": "ok", "key": "python_version",
-                    "value": sys.version.split()[0],
-                    "hint": f"Python {sys.version}"})
-    results.append({"component": "os", "level": "ok", "key": "python_executable",
-                    "value": sys.executable,
-                    "hint": f"Python executable: {sys.executable}"})
-    return results
-
-
-class CheckOsInfoTool(Tool):
-    """Report OS name, version, CPU architecture, and Python environment."""
-
-    name = "check_os_info"
-    category: ClassVar[str] = "System"
-    description = "OS name, CPU architecture, Python version and path as JSON."
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        return json.dumps(check_os_info(), ensure_ascii=False, indent=2)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# check_shells
-# ═══════════════════════════════════════════════════════════════════════
-
-def _detect_current_shell() -> str:
-    """Detect the shell that launched slife (the parent shell)."""
-    if os.name != "nt":
-        return os.environ.get("SHELL", os.environ.get("SHELL", "sh"))
-    # Windows: PowerShell sets PSModulePath; otherwise assume cmd
-    if os.environ.get("PSModulePath"):
-        return "powershell"
-    return "cmd"
-
-
-def check_shells() -> list[dict]:
-    """Return shell availability as health-check entries."""
-    results: list[dict] = []
-
-    # Report the shell slife is running under first — LLM should match
-    # command syntax to this shell, not to shells merely on PATH.
-    current = _detect_current_shell()
-    results.append({"component": "shell", "level": "ok", "key": "current_shell",
-                    "value": current,
-                    "hint": f"slife is running under {current}. Use {current} syntax for shell commands."})
-
-    pwsh_path = which("powershell.exe" if os.name == "nt" else "pwsh") or which("powershell")
-    if pwsh_path:
-        results.append({"component": "shell", "level": "ok", "key": "powershell",
-                        "value": pwsh_path, "hint": f"PowerShell available: {pwsh_path}"})
-    elif os.name == "nt":
-        results.append({"component": "shell", "level": "warning", "key": "powershell",
-                        "value": "not_found",
-                        "hint": "PowerShell not found on PATH. Some commands may not work."})
-    else:
-        results.append({"component": "shell", "level": "ok", "key": "powershell",
-                        "value": "not_found",
-                        "hint": "PowerShell not installed (non-Windows platform — expected, not an error)."})
-
-    bash_path = which("bash")
-    if bash_path:
-        results.append({"component": "shell", "level": "ok", "key": "bash",
-                        "value": bash_path, "hint": f"Bash available: {bash_path}"})
-    else:
-        results.append({"component": "shell", "level": "ok", "key": "bash",
-                        "value": "not_found",
-                        "hint": "Bash not found on PATH. On Windows, install Git Bash or WSL for POSIX shell support."})
-
-    if os.name == "nt":
-        cmd_path = which("cmd.exe") or which("cmd")
-        results.append({"component": "shell", "level": "ok", "key": "cmd",
-                        "value": cmd_path or os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"),
-                        "hint": f"Command Prompt available: {cmd_path or 'COMSPEC'}"})
-
-    uv_path = which("uv") or which("uv.exe")
-    if uv_path:
-        results.append({"component": "shell", "level": "ok", "key": "uv",
-                        "value": uv_path, "hint": f"uv package manager available: {uv_path}"})
-    else:
-        results.append({"component": "shell", "level": "warning", "key": "uv",
-                        "value": "not_found",
-                        "hint": "uv not found on PATH. Install: https://docs.astral.sh/uv/"})
-    return results
-
-
-class CheckShellsTool(Tool):
-    """Check which shells and package managers are on PATH."""
-
-    name = "check_shells"
-    category: ClassVar[str] = "System"
-    description = "Available shells (PowerShell, Bash, cmd) and uv on PATH, as JSON."
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        return json.dumps(check_shells(), ensure_ascii=False, indent=2)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# check_workspace
-# ═══════════════════════════════════════════════════════════════════════
-
-def check_workspace() -> list[dict]:
-    """Return workspace status as health-check entries."""
-    cwd = os.getcwd()
-    results: list[dict] = [{
-        "component": "workspace", "level": "ok", "key": "cwd",
-        "value": cwd, "hint": f"Current working directory: {cwd}",
-    }]
-
-    # ── Slife's own environment (dev vs production) ────────────────
-    env_info = get_environment_info()
-    results.append({"component": "workspace", "level": "ok", "key": "environment",
-                    "value": env_info["mode"],
-                    "hint": env_info["hint"]})
-
-    # ── User's CWD project detection ───────────────────────────────
-    pyproject = Path(cwd) / "pyproject.toml"
-    data = None
-    try:
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-
-    uv_lock = Path(cwd) / "uv.lock"
-    requirements = Path(cwd) / "requirements.txt"
-    setup_py = Path(cwd) / "setup.py"
-    setup_cfg = Path(cwd) / "setup.cfg"
-    has_uv_tool = data and "uv" in data.get("tool", {})
-
-    if uv_lock.exists() or has_uv_tool:
-        extras = [e for e in (["uv.lock"] if uv_lock.exists() else []) + (
-            ["[tool.uv] in pyproject.toml"] if has_uv_tool else [])]
-        results.append({"component": "workspace", "level": "ok", "key": "package_manager",
-                        "value": "uv",
-                        "hint": f"uv project ({', '.join(extras)}). Install: uv sync"})
-    elif requirements.exists() or setup_py.exists() or setup_cfg.exists():
-        extras2 = [e for e in (["requirements.txt"] if requirements.exists() else [])
-                   + (["setup.py"] if setup_py.exists() else [])
-                   + (["setup.cfg"] if setup_cfg.exists() else [])]
-        results.append({"component": "workspace", "level": "ok", "key": "package_manager",
-                        "value": "pip",
-                        "hint": f"pip project ({', '.join(extras2)}). Install: pip install -e ."})
-    elif pyproject.exists():
-        results.append({"component": "workspace", "level": "ok", "key": "package_manager",
-                        "value": "pyproject_only",
-                        "hint": "pyproject.toml exists but no lock file."})
-    else:
-        results.append({"component": "workspace", "level": "ok", "key": "package_manager",
-                        "value": "none",
-                        "hint": "Not a Python project (no pyproject.toml/requirements.txt/setup.py)."})
-
-    results.append({"component": "workspace",
-                    "level": "ok" if os.access(cwd, os.R_OK) else "error",
-                    "key": "readable", "value": "yes" if os.access(cwd, os.R_OK) else "no",
-                    "hint": f"Working directory is {'NOT ' if not os.access(cwd, os.R_OK) else ''}readable: {cwd}"})
-    results.append({"component": "workspace",
-                    "level": "ok" if os.access(cwd, os.W_OK) else "warning",
-                    "key": "writable", "value": "yes" if os.access(cwd, os.W_OK) else "no",
-                    "hint": f"Working directory is {'NOT ' if not os.access(cwd, os.W_OK) else ''}writable: {cwd}"})
-
-    git_dir = os.path.join(cwd, ".git")
-    results.append({"component": "workspace", "level": "ok", "key": "git_repo",
-                    "value": "yes" if os.path.isdir(git_dir) else "no",
-                    "hint": "Working directory is a Git repository." if os.path.isdir(git_dir)
-                    else "Not a Git repository (or .git is a file/submodule)."})
-    return results
-
-
-class CheckWorkspaceTool(Tool):
-    """Report working directory context: path, git, permissions, package manager."""
-
-    name = "check_workspace"
-    category: ClassVar[str] = "System"
-    description = "CWD, dev/prod mode, package manager, permissions, git status as JSON."
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        return json.dumps(check_workspace(), ensure_ascii=False, indent=2)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -459,9 +262,6 @@ async def check_mcp_servers() -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════
 
 _CHECK_FUNCTIONS: list[str] = [
-    "check_os_info",
-    "check_shells",
-    "check_workspace",
     "check_embedding",
     "check_wechat",
     "check_mcp_servers",

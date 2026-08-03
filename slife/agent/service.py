@@ -75,10 +75,7 @@ class AgentService:
             supports_vision=config.active_model.supports_vision,
         )
         self.conversation = Conversation(
-            system_prompt=build_system_prompt(
-                agent_id=self.config.agent_id,
-                agent_name=self.config.a2a_config.agent_name,
-            ),
+            system_prompt=build_system_prompt(self.config),
         )
         # Expose the conversation so tools (e.g. clear_context) can
         # access it without creating a circular import.
@@ -90,10 +87,7 @@ class AgentService:
         # Every input — human keyboard, A2A MQTT, WeChat — flows
         # through the same inbox queue.  Processed serially.
         conversations = ConversationStore(
-            system_prompt=build_system_prompt(
-                agent_id=self.config.agent_id,
-                agent_name=self.config.a2a_config.agent_name,
-            ),
+            system_prompt=build_system_prompt(self.config),
         )
         conversations._convs[HUMAN] = self.conversation
 
