@@ -414,13 +414,29 @@ class Config:
         write_config(self._path, raw)
 
     def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None, url: str = "", headers: dict[str, str] | None = None, require_approval: bool = False, auth: dict | None = None, enabled: bool = True) -> None:
-        """Persist an MCP server to the config file."""
+        """Persist an MCP server to the config file.
+
+        When *name* already exists in the config, the existing entry is
+        used as a base and only explicitly-provided fields are overridden
+        (merge semantics).  When *name* is new, a fresh entry is created.
+        """
         raw = self._read_config("save_mcp", name)
         if raw is None:
             return
 
         servers = raw.setdefault("mcp", {}).setdefault("servers", {})
-        server_entry: dict = {"command": command, "args": args}
+        existing = servers.get(name, {})
+
+        # ── Merge into existing entry (update) or build fresh (add) ──
+        server_entry: dict = dict(existing) if existing else {}
+        if command:
+            server_entry["command"] = command
+        elif not existing:
+            server_entry["command"] = command
+        if args:
+            server_entry["args"] = args
+        elif not existing:
+            server_entry["args"] = args
         if url:
             server_entry["url"] = url
         if headers:
@@ -435,6 +451,9 @@ class Config:
             server_entry["auth"] = dict(auth)
         if not enabled:
             server_entry["enabled"] = False
+        elif enabled and "enabled" in server_entry:
+            # Re-enabling: remove the enabled: false flag
+            server_entry.pop("enabled", None)
         source = with_fetched_at(source)
         if source:
             server_entry["source"] = source

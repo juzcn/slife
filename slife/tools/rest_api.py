@@ -66,7 +66,7 @@ class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
     name = "rest_api_add"
     _subagent_skip = True
     description = (
-        "Register an external REST API from its OpenAPI spec. "
+        "Register or update an external REST API from its OpenAPI spec (upsert — idempotent). "
         "Auto-generates typed tools for every endpoint. "
         "For authenticated APIs pass the credential variable name "
         "(e.g. 'GITHUB_TOKEN') — set via credstore first."
@@ -108,9 +108,7 @@ class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         raw = read_config(self._config_path)
         section = _rest_api_section(raw)
 
-        if name in section:
-            return f"REST API '{name}' is already registered. Use rest_api_remove first."
-
+        is_update = name in section
         entry: dict = {"spec_url": spec_url, "base_url": base_url}
         if api_key:
             entry["api_key"] = api_key
@@ -129,8 +127,9 @@ class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         if api_key:
             mcp_args.extend(["--header", f"Authorization: Bearer ${{{api_key}}}"])
 
+        action = "Updated" if is_update else "Registered"
         result_lines = [
-            f"[OK] Registered REST API '{name}'.",
+            f"[OK] {action} REST API '{name}'.",
             f"  spec: {spec_url}",
             f"  base_url: {base_url}",
         ]

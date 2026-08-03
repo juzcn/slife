@@ -200,17 +200,17 @@ Three former System tools were removed because their output is now in the system
 - **`check_shells`** — current shell is in section 1; executable paths are rarely actionable.
 - **`check_workspace`** — CWD and package manager are in section 1; git status is covered by GitHub MCP; permissions are discoverable via ``execute_shell`` failures.
 
-**Five managed categories** support dynamic registration with a standard **list / add / remove / set** surface:
+**Five managed categories** support dynamic registration with a standard **list / add / remove / set** surface — all `add` tools are idempotent upserts:
 
-| Category | list | add | remove | set | update |
-|----------|------|-----|--------|-----|--------|
-| **Native** | `list_tools` | — | — | `native_tool_set(name, enabled)` | — |
-| **MCP** | `mcp_list_servers` | `mcp_add_server` | `mcp_remove_server` | `mcp_set_server(name, enabled)` | `mcp_update_server(name, args, …)` |
-| **Skill** | `list_skills` | `add_skill` | `remove_skill` | `skill_set(name, enabled)` | — |
-| **CLI** | `cli_list_tools` | `cli_add_tool` | `cli_remove_tool` | `cli_set_tool(name, enabled)` | — |
-| **REST API** | `rest_api_list` | `rest_api_add` | `rest_api_remove` | `rest_api_set(name, enabled)` | — |
+| Category | list | add (upsert) | remove | set |
+|----------|------|-------------|--------|-----|
+| **Native** | `list_tools` | — | — | `native_tool_set(name, enabled)` |
+| **MCP** | `mcp_list_servers` | `mcp_add_server` | `mcp_remove_server` | `mcp_set_server(name, enabled, disclosure)` |
+| **Skill** | `list_skills` | `add_skill` | `remove_skill` | `skill_set(name, enabled)` |
+| **CLI** | `cli_list_tools` | `cli_add_tool` | `cli_remove_tool` | `cli_set_tool(name, enabled)` |
+| **REST API** | `rest_api_list` | `rest_api_add` | `rest_api_remove` | `rest_api_set(name, enabled)` |
 
-All `set` tools use the same signature `(name: str, enabled: bool)`. `mcp_update_server` is MCP-specific — it takes optional config parameters (`command`, `args`, `env`, `url`, `headers`, `description`) and restarts the server with the new settings (if enabled; if disabled, config is updated but the server stays disconnected).
+All `set` tools share `(name: str, enabled: bool)`. `mcp_set_server` additionally accepts `disclosure="lazy"|"eager"` for tool lazy-loading. `mcp_add_server` handles both initial registration and config updates — if called on an existing server with identical config, it returns `already_connected` without restarting.
 
 In addition, the built-in **Memory** plugin (``slife/plugins/memory/``) provides `memory_search`, `memory_open`, `memory_list_recent`, `memory_summarize`, and more.
 
@@ -274,18 +274,20 @@ Both use the same MCP protocol and `MCPProxyTool` adapter. The distinction is op
 
 ### MCP Server Lifecycle
 
-MCP servers transition through three states managed by `mcp_set_server` and `mcp_update_server`:
+MCP servers transition through states managed by `mcp_set_server` and `mcp_add_server`:
 
 ```
-disabled ──[mcp_set_server enabled=True]──→ enabled (tools registered)
-enabled  ──[mcp_set_server enabled=False]─→ disabled (tools unregistered)
-disabled ──[mcp_update_server]────────────→ disabled (config updated, stays off)
-enabled  ──[mcp_update_server]────────────→ enabled (restarted with new config)
+disabled ──[mcp_set_server enabled=True]──────→ enabled (connected, tools registered)
+disabled ──[mcp_set_server disclosure="lazy"]─→ disabled (cannot set disclosure on disabled)
+enabled  ──[mcp_set_server enabled=False]─────→ disabled (disconnected, tools unregistered)
+enabled  ──[mcp_set_server disclosure="lazy"]─→ enabled (connected, tools unloaded)
+lazy     ──[mcp_set_server disclosure="eager"]─→ enabled (tools loaded)
+any      ──[mcp_add_server]───────────────────→ upsert (same config → no-op; different config → restart)
 ```
 
-**Startup behavior:** All configured servers are loaded into the connection pool. Enabled servers register their tools immediately; disabled servers connect but keep tools hidden — they appear in `mcp_list_servers` but the LLM cannot call them until explicitly enabled.
+**Startup behavior:** All configured servers are loaded into the connection pool. Enabled servers connect and register tools immediately. Disabled servers are added to the pool but never connected — they appear in `mcp_list_servers` with `enabled: false` until explicitly enabled via `mcp_set_server`.
 
-**Persistence:** Both enable/disable and config updates persist to `slife.json5`. Disabled servers write `enabled: false` so they stay off across restarts.
+**Persistence:** All state changes persist to `slife.json5`. Disabled servers write `enabled: false` so they stay off across restarts. Disclosure mode is tracked via the `active` flag.
 
 ## Permanent Memory
 
@@ -544,7 +546,7 @@ Sanitization is applied at three chokepoints — all use the same pattern-maskin
 
 ## Config Loading
 
-`Config.from_json5()` (`slife/config.py`) parses in nine phases: Models → Env → Agent → MCP → Memory → A2A → Subagent → Tools → System Health. `${VAR}` and `${VAR:-default}` resolution works recursively through dicts and lists. `_resolve_env_or_credstore()` is the shared lookup chain for `${VAR}` → `os.environ` → credstore.
+`Config.from_json5()` (`slife/config.py`) parses in nine phases: Models → Env → Agent → MCP → Memory → A2A → Subagent → Tools → System Health. `${VAR}` and `${VAR:-default}` resolution works recursively through dicts and lists. `_resolve_secret()` is the shared lookup chain for `${VAR}` → `os.environ` → credstore.
 
 ## Project Structure
 

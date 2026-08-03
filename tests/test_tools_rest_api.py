@@ -199,7 +199,7 @@ class TestRestApiAddTool:
 
     @pytest.mark.asyncio
     async def test_add_duplicate(self, temp_config):
-        """Adding an already-registered API returns error message."""
+        """Adding an already-registered API updates it (upsert)."""
         _write_config(temp_config, {
             "rest_apis": {
                 "github": {"spec_url": "old", "base_url": "old"},
@@ -211,7 +211,7 @@ class TestRestApiAddTool:
             spec_url="new",
             base_url="new",
         )
-        assert "already registered" in result.lower()
+        assert "Updated" in result
 
     @pytest.mark.asyncio
     async def test_add_with_mcp_client(self, temp_config):

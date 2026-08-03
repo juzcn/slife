@@ -269,7 +269,7 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
 
     name = "add_skill"
     _subagent_skip = True
-    description = "Install a skill from files or base64 archive. Immediately discoverable by list_skills."
+    description = "Install or update a skill from files or base64 archive (upsert — idempotent). Immediately discoverable by list_skills."
     parameters = {
         "type": "object",
         "properties": {
@@ -317,20 +317,15 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             return "[FAIL] Provide 'files' or 'archive', not both."
 
         skill_dir = self.skills_dir / name
-
-        if skill_dir.exists():
-            return (
-                f"Skill '{name}' already exists at {skill_dir}.\n"
-                f"Use remove_skill first if you want to replace it."
-            )
+        is_update = skill_dir.exists()
 
         skill_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             if archive_b64:
-                result = self._install_from_archive(name, archive_b64, skill_dir)
+                result = self._install_from_archive(name, archive_b64, skill_dir, is_update)
             else:
-                result = self._install_from_files(name, files, skill_dir)  # type: ignore[arg-type]
+                result = self._install_from_files(name, files, skill_dir, is_update)  # type: ignore[arg-type]
             self._write_meta_json(skill_dir, source)
             return result
         except Exception as e:
@@ -339,7 +334,7 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             logger.exception("skill_install_failed name=%s", name)
             return f"[FAIL] Error installing skill '{name}': {e}"
 
-    def _install_from_files(self, name: str, files: list[dict], skill_dir: Path) -> str:
+    def _install_from_files(self, name: str, files: list[dict], skill_dir: Path, is_update: bool = False) -> str:
         """Write individual files to the skill directory."""
         count = 0
         for f in files:
@@ -350,7 +345,8 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             logger.debug("skill_wrote_file path=%s", f["path"])
 
         has_skill_md = (skill_dir / "SKILL.md").exists()
-        msg = f"[OK] Installed skill '{name}' ({count} files) → {skill_dir}"
+        action = "Updated" if is_update else "Installed"
+        msg = f"[OK] {action} skill '{name}' ({count} files) → {skill_dir}"
         if not has_skill_md:
             msg += (
                 "\n[WARN] No SKILL.md found. list_skills will not discover "
@@ -358,7 +354,7 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             )
         return msg
 
-    def _install_from_archive(self, name: str, archive_b64: str, skill_dir: Path) -> str:
+    def _install_from_archive(self, name: str, archive_b64: str, skill_dir: Path, is_update: bool = False) -> str:
         """Decode and extract a base64-encoded archive into the skill directory."""
         import base64
         import io
@@ -389,7 +385,8 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
                 wrapper.rmdir()
 
         has_skill_md = (skill_dir / "SKILL.md").exists()
-        msg = f"[OK] Installed skill '{name}' from archive → {skill_dir}"
+        action = "Updated" if is_update else "Installed"
+        msg = f"[OK] {action} skill '{name}' from archive → {skill_dir}"
         if not has_skill_md:
             msg += (
                 "\n[WARN] No SKILL.md found. list_skills will not discover "

@@ -18,10 +18,8 @@ _MCP_SERVER = "mcp"           # built-in MCP management server
 _MEMORY_SERVER = "memory"     # built-in memory service
 _WECHAT_SERVER = "wechat"     # built-in WeChat messaging plugin
 _MCP_ADD_SERVER = "mcp_add_server"
-_MCP_SET_DISCLOSURE = "mcp_set_disclosure"
 _MCP_REMOVE_SERVER = "mcp_remove_server"
 _MCP_SET_SERVER = "mcp_set_server"
-_MCP_UPDATE_SERVER = "mcp_update_server"
 _MCP_CALL_TOOL = "mcp_call_tool"
 
 
@@ -60,7 +58,7 @@ class MCPProxyTool(Tool):
             on_server_disclosure_changed: Optional async callback(name, disclosure)
                 invoked when mcp_set_disclosure succeeds, to persist and update tools.
             on_server_updated: Optional async callback(name, enabled, command, args, env, url, headers, description)
-                invoked when mcp_set_server or mcp_update_server succeeds, to persist config
+                invoked when mcp_set_server or mcp_add_server succeeds, to persist config
                 and register/unregister tools.
             require_approval: If True, the agent loop will request user
                 confirmation before executing this tool.
@@ -132,10 +130,8 @@ class MCPProxyTool(Tool):
 
             # Side-effect callbacks for config persistence
             await self._handle_add_server(result, source, **kwargs)
-            await self._handle_set_disclosure(result, **kwargs)
             await self._handle_remove_server(result, **kwargs)
             await self._handle_set_server(result, **kwargs)
-            await self._handle_update_server(result, **kwargs)
         elif self._server == _MEMORY_SERVER:
             # Memory tools — call directly on the memory MCP client.
             # The memory service is standalone (not behind the MCP wrapper),
@@ -195,25 +191,6 @@ class MCPProxyTool(Tool):
                 kwargs.get("name", "?"),
             )
 
-    async def _handle_set_disclosure(self, result: str, **kwargs) -> None:
-        """Persist disclosure changes and trigger eager tool registration."""
-        if self._tool_name != _MCP_SET_DISCLOSURE or not self._on_server_disclosure_changed:
-            return
-        try:
-            parsed = json.loads(result)
-            new_disclosure = parsed.get("disclosure", "")
-            if new_disclosure in ("eager", "lazy"):
-                await self._on_server_disclosure_changed(
-                    name=kwargs.get("name", ""),
-                    disclosure=new_disclosure,
-                )
-        except json.JSONDecodeError:
-            logger.warning(
-                "mcp_disclosure_parse_fail result=%.200s", result[:200],
-            )
-        except Exception:
-            logger.exception("mcp_disclosure_callback_failed")
-
     async def _handle_remove_server(self, result: str, **kwargs) -> None:
         """Persist MCP server removals to config."""
         if self._tool_name != _MCP_REMOVE_SERVER or not self._on_server_removed:
@@ -240,23 +217,26 @@ class MCPProxyTool(Tool):
             )
 
     async def _handle_set_server(self, result: str, **kwargs) -> None:
-        """Handle mcp_set_server side effects: register/unregister tools."""
+        """Handle mcp_set_server side effects: enable/disable + disclosure."""
         if self._tool_name != _MCP_SET_SERVER or not self._on_server_updated:
             return
         try:
             parsed = json.loads(result)
             status = parsed.get("status", "")
             server_name = kwargs.get("name", "")
+            changed = parsed.get("changed", [])
 
-            if status == "disabled":
-                await self._on_server_updated(
-                    name=server_name,
-                    enabled=False,
-                )
+            if "disabled" in changed:
+                await self._on_server_updated(name=server_name, enabled=False)
             elif status in ("connected", "already_connected"):
-                await self._on_server_updated(
+                await self._on_server_updated(name=server_name, enabled=True)
+
+            # Disclosure change via mcp_set_server
+            new_disclosure = parsed.get("disclosure", "")
+            if new_disclosure in ("eager", "lazy") and self._on_server_disclosure_changed:
+                await self._on_server_disclosure_changed(
                     name=server_name,
-                    enabled=True,
+                    disclosure=new_disclosure,
                 )
         except json.JSONDecodeError:
             logger.warning(
@@ -268,42 +248,6 @@ class MCPProxyTool(Tool):
                 "mcp_set_server_callback_failed server=%s",
                 kwargs.get("name", "?"),
             )
-
-    async def _handle_update_server(self, result: str, **kwargs) -> None:
-        """Handle mcp_update_server side effects: persist config via on_server_added."""
-        if self._tool_name != _MCP_UPDATE_SERVER or not self._on_server_added:
-            return
-        try:
-            parsed = json.loads(result)
-            status = parsed.get("status", "")
-
-            # "connected": restarted with new config, tools available.
-            # "disabled": config updated but server is off — persist anyway.
-            if status in ("connected", "disabled"):
-                source = kwargs.pop("source", None)
-                if not isinstance(source, dict):
-                    source = None
-                await self._on_server_added(
-                    name=kwargs.get("name", ""),
-                    command=kwargs.get("command", ""),
-                    args=kwargs.get("args", []),
-                    env=kwargs.get("env"),
-                    description=kwargs.get("description", ""),
-                    source=source,
-                    url=kwargs.get("url", ""),
-                    headers=kwargs.get("headers"),
-                )
-        except json.JSONDecodeError:
-            logger.warning(
-                "mcp_update_server_parse_fail server=%s result=%.200s",
-                kwargs.get("name", "?"), result[:200],
-            )
-        except Exception:
-            logger.exception(
-                "mcp_update_server_callback_failed server=%s",
-                kwargs.get("name", "?"),
-            )
-
 
 def create_proxy_tools(
     mcp_client, tools: list[dict], on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None, on_server_updated=None, require_approval: bool = False,
@@ -321,7 +265,7 @@ def create_proxy_tools(
         on_server_disclosure_changed: Optional async callback(name, disclosure)
             invoked when mcp_set_disclosure succeeds.
         on_server_updated: Optional async callback(name, enabled, ...)
-            invoked when mcp_set_server or mcp_update_server succeeds.
+            invoked when mcp_set_server or mcp_add_server succeeds.
         require_approval: If True, all tools in this batch require user
             approval before execution.
 

@@ -138,7 +138,7 @@ class TestAddSkillToolExecute:
 
     @pytest.mark.asyncio
     async def test_add_skill_already_exists(self, tmp_path):
-        """Cannot overwrite existing skill."""
+        """Overwrites existing skill (upsert)."""
         skills_dir = tmp_path / "skills"
         skill_dir = skills_dir / "existing"
         skill_dir.mkdir(parents=True)
@@ -149,7 +149,7 @@ class TestAddSkillToolExecute:
             name="existing",
             files=[{"path": "SKILL.md", "content": "new"}],
         )
-        assert "already exists" in result
+        assert "Updated" in result
 
     @pytest.mark.asyncio
     async def test_add_skill_missing_files_and_archive(self, tmp_path):

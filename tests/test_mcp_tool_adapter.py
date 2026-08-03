@@ -240,40 +240,44 @@ class TestMCPProxyToolExecute:
         on_remove.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_mcp_set_disclosure_triggers_callback(self):
-        """mcp_set_disclosure triggers disclosure callback."""
-        info = make_tool_info(server="mcp", name="mcp_set_disclosure")
+    async def test_mcp_set_server_disclosure_triggers_callback(self):
+        """mcp_set_server with disclosure=eager triggers disclosure callback."""
+        info = make_tool_info(server="mcp", name="mcp_set_server")
         client = make_mock_mcp_client()
-        client.call_tool.return_value = json.dumps({"disclosure": "lazy"})
+        client.call_tool.return_value = json.dumps({"status": "connected", "disclosure": "eager"})
         on_disc = AsyncMock()
+        on_upd = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_disclosure_changed=on_disc)
-        await tool.execute(name="myserver", disclosure="lazy")
+        tool = MCPProxyTool(client, info, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
+        await tool.execute(name="myserver", disclosure="eager")
 
-        on_disc.assert_called_once_with(name="myserver", disclosure="lazy")
+        on_upd.assert_called_once_with(name="myserver", enabled=True)
+        on_disc.assert_called_once_with(name="myserver", disclosure="eager")
 
     @pytest.mark.asyncio
-    async def test_mcp_set_disclosure_skips_non_eager_lazy(self):
+    async def test_mcp_set_server_disclosure_skips_non_eager_lazy(self):
         """Invalid disclosure value skips callback."""
-        info = make_tool_info(server="mcp", name="mcp_set_disclosure")
+        info = make_tool_info(server="mcp", name="mcp_set_server")
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"disclosure": "invalid"})
         on_disc = AsyncMock()
+        on_upd = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_disclosure_changed=on_disc)
+        tool = MCPProxyTool(client, info, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
         await tool.execute(name="test")
 
         on_disc.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_mcp_set_disclosure_handles_parse_error(self):
+    async def test_mcp_set_server_disclosure_handles_parse_error(self):
         """Gracefully handles parse error on disclosure."""
-        info = make_tool_info(server="mcp", name="mcp_set_disclosure")
+        info = make_tool_info(server="mcp", name="mcp_set_server")
         client = make_mock_mcp_client()
         client.call_tool.return_value = "bad json"
         on_disc = AsyncMock()
+        on_upd = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_disclosure_changed=on_disc)
+        tool = MCPProxyTool(client, info, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
         await tool.execute(name="test")
 
         on_disc.assert_not_called()
@@ -333,14 +337,15 @@ class TestMCPProxyToolExecute:
         assert json.loads(result)["status"] == "connected"
 
     @pytest.mark.asyncio
-    async def test_handle_set_disclosure_callback_exception_swallowed(self):
+    async def test_handle_set_server_disclosure_callback_exception_swallowed(self):
         """Exceptions in on_server_disclosure_changed callback are swallowed."""
-        info = make_tool_info(server="mcp", name="mcp_set_disclosure")
+        info = make_tool_info(server="mcp", name="mcp_set_server")
         client = make_mock_mcp_client()
-        client.call_tool.return_value = json.dumps({"disclosure": "lazy"})
+        client.call_tool.return_value = json.dumps({"status": "connected", "disclosure": "lazy", "changed": []})
         on_disc = AsyncMock(side_effect=RuntimeError("callback error"))
+        on_upd = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_disclosure_changed=on_disc)
+        tool = MCPProxyTool(client, info, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
         # Should not raise
         result = await tool.execute(name="test", disclosure="lazy")
         assert json.loads(result)["disclosure"] == "lazy"
