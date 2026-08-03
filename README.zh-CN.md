@@ -75,6 +75,13 @@ credstore set DEEPSEEK_API_KEY       # 存储 API Key（屏蔽输入）
 slife
 ```
 
+**跨供应商共享密钥：** 如果多个服务使用同一个 API Key，直接复制而无需重新输入：
+
+```bash
+credstore copy DEEPSEEK_API_KEY BAILIAN_API_KEY
+credstore copy DEEPSEEK_API_KEY ANTHROPIC_AUTH_TOKEN
+```
+
 默认配置内置了预配置的 MCP 服务器：文件系统+Shell、代码搜索、网页抓取、搜索引擎。
 
 ## 工作原理
@@ -111,11 +118,34 @@ models: {
     deepseek: {
       base_url: "https://api.deepseek.com",
       api_key: "${DEEPSEEK_API_KEY}",
+      api: "openai-completions",
       models: [{ model: "deepseek-v4-pro", name: "DeepSeek V4 Pro", reasoning: true }],
     },
+    // 百炼 token-plan — Anthropic 协议
+    // bailian: {
+    //   base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+    //   api_key: "${BAILIAN_API_KEY}",
+    //   api: "anthropic-messages",
+    //   models: [{ model: "qwen3.8-max", name: "Qwen3.8 Max", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072 }],
+    // },
   },
 },
 active_model: "deepseek/deepseek-v4-pro",
+```
+
+**三种一等公民 API 后端** — 无转换层，每种原生工作：
+
+| `api` 字段 | 后端 | 供应商 |
+|-----------|------|--------|
+| `openai-completions` | OpenAI / DeepSeek / Ollama | Chat Completions 接口 |
+| `anthropic-messages` | Claude / 百炼 (Qwen) | Messages 接口 |
+| `openai-responses` | OpenAI | 新版 Responses 接口 |
+
+运行时切换模型，无需手动编辑配置：
+```
+list_models                      → 查看所有已配置的模型
+switch_model(ref="bailian/qwen3.8-max")  → 切换当前模型
+add_model(provider="...", model="...", ...)  → 注册新模型
 ```
 
 **密钥绝不会进入 LLM 上下文。** 所有工具输出在到达模型前都会经过脱敏处理——API Key 模式自动替换为 `<MASKED>`。

@@ -39,6 +39,7 @@ credstore set-password    # 创建 ~/.credstore/credentials.crypt
 | `get KEY` | — | 仅密钥链，脱敏输出（`sk-5f…b722`） |
 | `get KEY -p` | 主密码 | 双查询密钥链 + cryptfile，明文输出。不一致时报错 |
 | `delete KEY` | 主密码 | 从两个存储中删除 |
+| `copy SOURCE DEST` | 主密码 | 将凭据复制到新 key（密钥链 + cryptfile） |
 | `list` | 主密码¹ | 三重读取：密钥链 + cryptfile + 环境变量。显示每个 key 的同步状态 |
 | `inject KEY… [--shell]` | — | 持久化到系统环境：注册表（Win）或 shell 配置文件（Unix） |
 | `uninject KEY… [--shell]` | — | 从系统环境中移除 |
@@ -108,6 +109,7 @@ Invoke-Expression (credstore inject DEEPSEEK_API_KEY)  # PowerShell — 立即�
 |------|---------|
 | `get` / `get_credential()` | 调用者必须 `del` 返回值 |
 | `set` | 双写后 `del secret` + `del master_pw` |
+| `copy` | 双写后 `del secret` + `del master_pw`（与 `set` 相同的原子写入模式） |
 | `list` | 逐个取值、比对、立即 `del` |
 | `inject` | 取值 → 持久化 → `del`。TTY 模式：stdout 无密钥内容 |
 | `reset-keyring` | 写入密钥链后逐个 `del` |
