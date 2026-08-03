@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import time as _time
 import uuid
@@ -13,7 +14,7 @@ from typing import Protocol
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.logfmt import sanitize_secrets
 from slife.agent.conversation import Conversation
-from slife.agent.system_prompt import build_context_status
+from slife.agent.system_prompt import build_context_status, _current_shell
 from slife.tools.registry import ToolRegistry
 from slife.logfmt import request_scope, elapsed
 
@@ -202,6 +203,11 @@ class AgentLoop:
         self._cancel_event = asyncio.Event()
         self._last_context_tokens: int = 0
         self._last_usage = TokenUsage()
+        # Track stable fields — only emit in context footer when they change.
+        self._last_cwd: str = ""
+        self._last_shell: str = ""
+        self._last_model_name: str = ""
+        self._last_input_modalities: str = ""
 
     def cancel(self) -> None:
         """Signal the agent loop to stop at the next safe point."""
@@ -396,16 +402,26 @@ class AgentLoop:
         # knows what was removed and can retrieve it via memory_search.
         await self._maybe_trim_context(conversation)
 
-        # Inject dynamic context footer (CWD, shell, time, token usage)
-        # so the LLM sees current state before each API call.
+        # Inject dynamic context footer.  Time + token always shown;
+        # model, CWD, shell only when they changed since last turn.
         lu = self._last_usage
-        context_footer = build_context_status(
-            model_name=self.model_name,
-            context_window=self.context_window,
-            input_modalities=self.input_modalities,
-            last_total_tokens=lu.total_tokens,
-        )
-        conversation.update_context_footer(context_footer)
+        cwd_now = os.getcwd()
+        shell_now = _current_shell()
+        kwargs: dict = {
+            "context_window": self.context_window,
+            "last_total_tokens": lu.total_tokens,
+        }
+        if self.model_name != self._last_model_name:
+            kwargs["model_name"] = self.model_name
+            kwargs["input_modalities"] = self.input_modalities
+            self._last_model_name = self.model_name
+        if cwd_now != self._last_cwd:
+            kwargs["cwd"] = cwd_now
+            self._last_cwd = cwd_now
+        if shell_now != self._last_shell:
+            kwargs["shell"] = shell_now
+            self._last_shell = shell_now
+        conversation.insert_context_status(build_context_status(**kwargs))
 
         async for chunk in self.llm_client.chat_stream(
             messages=conversation.to_openai_messages(),

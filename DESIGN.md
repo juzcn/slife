@@ -26,41 +26,55 @@ It's a chat window with tools. The LLM is in full control.
 ## Lean System Prompt
 
 The system prompt is a **runtime spec sheet** — a flat list of facts the LLM cannot
-discover from training data or tool schemas.  Split into two parts:
+discover from training data or tool schemas.  Two-part design:
 
 - **Static** — ``slife/agent/templates/system_prompt.j2``, rendered once at startup
-  by ``slife/agent/system_prompt.py`` → ``build(config)``.
+  by ``slife/agent/system_prompt.py`` → ``build(config)``.  Never changes —
+  maximal prompt cache hit rate.  Includes model, CWD, and shell as the
+  startup baseline.
 - **Dynamic** — ``slife/agent/templates/context_status.j2``, re-rendered before
-  each API call by ``build_context_status()``.  Injected into the system message
-  via ``Conversation.update_context_footer()`` at ``AgentLoop._process_stream()``.
+  each API call by ``build_context_status()``.  Injected as a synthetic
+  ``_context_status`` harness tool-call + result pair (same pattern as
+  ``_trim_context``) via ``Conversation.insert_context_status()``.
 
-This split ensures the LLM always sees current model, CWD, shell, time, and token
-usage — critical when the user switches models mid-session.
+The harness-tool injection means:
+- **System message never changes** → full prompt cache hit rate.
+- **Status pairs are saved to diary** alongside turn messages → preserved in
+  permanent memory, recoverable on session restore.
+- **Consistent pattern** — ``_context_status`` and ``_trim_context`` are both
+  harness notifications, not in the tool schema, ``_``-prefixed.
 
 ### Static Template (``system_prompt.j2``)
 
-Six numbered sections of platform facts that never change during a session:
+Seven numbered sections of platform facts, plus conditional A2A:
 
-1. **环境** — agent identity, host, platform, Python, package manager
+1. **环境** — agent identity, model, host, platform, CWD, shell, Python, package manager
 2. **上下文窗口策略** — floor/ceiling percentages, trim behaviour, result cap
-3. **图像与多模态** — `[image:<path>]` marker contract, vision support flag
-4. **凭证解析链** — `${VAR}` syntax, resolution order, active credstore backend
-5. **工具与技能** — MCP tool prefix, skills directory, skill loading via `use_skill`
+3. **图像与多模态** — ``[image:<path>]`` marker contract, vision support flag
+4. **凭证解析链** — ``${VAR}`` syntax, resolution order, active credstore backend
+5. **工具与技能** — MCP tool prefix, skills directory, skill loading via ``use_skill``
 6. **子代理特性** — process model, tool inheritance, no memory persistence
 7. **数据目录** — data dir, config path, logs, DB, skills, image cache
 8. **多代理通信 (A2A)** — transport, broker host:port (conditional on config)
 
 ### Dynamic Template (``context_status.j2``)
 
-Appended to the static system prompt each turn.  Rendered fresh before every API
-call so the LLM sees live values:
+Injected before each API call.  Two categories of content:
 
-- **模型** — display name, context window, input modalities (updates on model switch)
+**Always shown** — changes every turn:
 - **当前时间** — current datetime with UTC offset
-- **工作目录** — ``os.getcwd()``
-- **使用 Shell** — detected shell (powershell / cmd / bash / etc.)
-- **上轮 Token** — last API call's ``total_tokens`` and percentage of context window
-  (hidden on the first turn when no data is available)
+- **上轮 Token** — last API call's ``total_tokens`` and percentage of context
+  window (hidden on the first turn)
+
+**Conditional** — only shown when changed since last turn, with distinct
+wording to avoid confusion with the static baseline:
+- **已切换模型** — display name, context window, input modalities
+- **已在新的工作目录** — ``os.getcwd()``
+- **已切换到 Shell** — detected shell
+
+The conditional fields are tracked by ``AgentLoop`` via ``_last_*`` instance
+variables.  On the first turn all three are emitted (since they differ from
+the initial empty state).  On subsequent turns only changes appear.
 
 ### Design Principles
 
@@ -69,7 +83,7 @@ call so the LLM sees live values:
 3. **Not a job description.** No personality, no tone, no "you are a helpful assistant."
 4. **No slash commands.** The user communicates in natural language. The UI is a plain text input — the LLM decides what the user means and which tool to call.
 5. **No tool-call instructions.** The prompt describes *mechanisms* (context trimming, credential sanitization, image markers) — never *how* to use a specific tool.
-6. **Static + dynamic split.** ``build(config)`` renders platform constants at startup. ``build_context_status()`` re-renders model, CWD, shell, time, and token usage before every API call. No dependency on ``slife.tools`` — tool modules depend on the agent, not the reverse.
+6. **Static baseline + change notifications.** ``build(config)`` renders platform constants at startup (including model, CWD, shell). ``build_context_status()`` emits time and token every turn, plus model/CWD/shell only when they change — with "已切换/已在新的" wording to signal a delta, not a duplicate.
 
 ## Architecture
 
@@ -85,8 +99,9 @@ call so the LLM sees live values:
 ├──────────────────────────────────────────────────────────────────────┤
 │  Agent Loop                              │  MCP Client               │
 │  Streaming function-calling              │  Streamable HTTP transport │
-│  _trim_context harness notification      │  OAuth support             │
-│  Reasoning (thinking) support            │  Tool proxy + adapter      │
+│  _context_status + _trim_context         │  OAuth support             │
+│  harness notifications                   │  Tool proxy + adapter      │
+│  Reasoning (thinking) support            │                           │
 ├──────────────────────────────────────────┴───────────────────────────┤
 │  Tool Registry — unified function definitions for all categories     │
 │  Native · Memory · Skills · MCP Proxy · CLI · REST API · A2A         │

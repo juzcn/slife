@@ -86,18 +86,17 @@ def build(config: Config) -> str:
 
 
 def build_context_status(
+    context_window: int = 0,
+    last_total_tokens: int = 0,
+    model_name: str = "",
+    input_modalities: str = "",
     cwd: str = "",
     shell: str = "",
-    model_name: str = "",
-    context_window: int = 0,
-    input_modalities: str = "",
-    last_total_tokens: int = 0,
 ) -> str:
     """Render the dynamic context status footer.
 
-    Called before each API turn so the LLM sees the latest model, CWD,
-    shell, time, and token usage.  All parameters are optional — callers
-    that don't have token data yet (e.g. first turn) can omit them.
+    Time and token are always shown.  Model, CWD, and shell are only
+    passed (and rendered) when they changed since the last turn.
     """
     now = datetime.now().astimezone()
     last_usage_pct = (
@@ -106,15 +105,15 @@ def build_context_status(
         else 0
     )
     return _env.get_template("context_status.j2").render(
-        model_name=model_name or "",
-        context_window=f"{context_window:,}" if context_window else "",
-        input_modalities=input_modalities or "",
         current_datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
         utc_offset=now.strftime("%z"),
-        cwd=cwd or os.getcwd(),
-        shell=shell or _current_shell(),
         last_total_tokens=f"{last_total_tokens:,}" if last_total_tokens else "",
         last_usage_pct=last_usage_pct,
+        model_name=model_name,
+        context_window=f"{context_window:,}" if context_window else "",
+        input_modalities=input_modalities,
+        cwd=cwd,
+        shell=shell,
     ).strip()
 
 

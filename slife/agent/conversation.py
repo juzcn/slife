@@ -5,6 +5,7 @@ Supports multimodal messages (text + images) for vision-capable models.
 
 import json
 import logging
+import uuid
 
 from slife.agent.multimodal import encode_image
 from slife.logfmt import sanitize_secrets
@@ -580,3 +581,65 @@ class Conversation:
             turns_removed,
             tokens_freed,
         )
+
+    def insert_context_status(self, content: str) -> None:
+        """Insert a synthetic ``_context_status`` tool-call + result pair.
+
+        Placed right after the last user message so the LLM sees current
+        time, token usage, and any changed model/CWD/shell at the start
+        of each turn.  Like ``_trim_context``, this is a harness
+        notification — not in the tool schema, ``_`` prefix marks it as
+        internal.
+
+        Old ``_context_status`` pairs are removed first to keep the
+        conversation clean.
+        """
+        self._remove_synthetic_tool("_context_status")
+
+        tool_call_id = f"_ctx_{uuid.uuid4().hex[:8]}"
+        assistant_msg: dict = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "_context_status",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        }
+        tool_msg: dict = {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": content,
+        }
+
+        # Insert right after the last user message.
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i].get("role") == "user":
+                self.messages.insert(i + 1, tool_msg)
+                self.messages.insert(i + 1, assistant_msg)
+                break
+
+        logger.debug("conv_insert_context_status id=%s", tool_call_id)
+
+    def _remove_synthetic_tool(self, name: str) -> None:
+        """Remove all synthetic tool-call + result pairs with *name*."""
+        i = 0
+        while i < len(self.messages):
+            msg = self.messages[i]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    if tc.get("function", {}).get("name") == name:
+                        if i + 1 < len(self.messages):
+                            del self.messages[i:i + 2]
+                        else:
+                            del self.messages[i]
+                        break
+                else:
+                    i += 1
+            else:
+                i += 1
