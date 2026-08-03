@@ -93,6 +93,10 @@ def _build_parser() -> argparse.ArgumentParser:
     del_p = sub.add_parser("delete", help="Delete a credential")
     del_p.add_argument("key", help="Credential key to delete")
 
+    copy_p = sub.add_parser("copy", help="Copy a credential to a new key (keyring + encrypted backup)")
+    copy_p.add_argument("source", help="Source credential key")
+    copy_p.add_argument("dest", help="Destination credential key")
+
     sub.add_parser("list", help="List all stored credential keys")
     sub.add_parser("reset-keyring", help="Restore all credentials from cryptfile backup to system keyring")
     sub.add_parser("reset-backup", help="Sync credentials from system keyring to cryptfile backup")
@@ -121,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # Gate: 'set' / 'reset-backup' require cryptfile to exist
-    if args.command in ("set", "reset-backup"):
+    if args.command in ("set", "copy", "reset-backup"):
         store_mod.init_store()
         if not backend_mod.has_master_key():
             _err("master key not set.")
@@ -140,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_get(args.key, password_mode=args.password)
         elif args.command == "delete":
             return _cmd_delete(args.key)
+        elif args.command == "copy":
+            return _cmd_copy(args.source, args.dest)
         elif args.command == "list":
             return _cmd_list()
         elif args.command == "reset-keyring":
@@ -552,6 +558,58 @@ def _cmd_delete(key: str) -> int:
     else:
         print(f"Not found: {key}")
         return 1
+
+
+@requires_tty
+def _cmd_copy(source: str, dest: str) -> int:
+    """Copy a credential from *source* to *dest* (dual-write).
+
+    Reads the source value from the system keyring, then writes it to
+    *dest* in both system keyring + cryptfile (with master password).
+    """
+    cf = backend_mod.get_cryptfile()
+    if cf is None:
+        _err("cryptfile backend not available.")
+        print("Install: pip install keyrings.cryptfile", file=sys.stderr)
+        return 1
+
+    # 1. Read source
+    secret = store_mod.get_credential(source)
+    if secret is None:
+        _err(f"source credential '{source}' not found in system keyring.")
+        return 1
+
+    print(f"Copying '{source}' → '{dest}'")
+    master_pw = masked_input("Master password (for encrypted backup): ")
+
+    # 2. Write cryptfile first (backup)
+    try:
+        with backend_mod.unlocked_cryptfile(master_pw) as cf:
+            cf.set_password(store_mod.DEFAULT_SERVICE, dest, secret)
+    except ValueError as exc:
+        del secret
+        del master_pw
+        _err(str(exc))
+        return 1
+
+    # 3. Write system keyring (primary)
+    try:
+        store_mod.set_credential(dest, secret)
+    except Exception as exc:
+        try:
+            with backend_mod.unlocked_cryptfile(master_pw) as cf:
+                cf.delete_password(store_mod.DEFAULT_SERVICE, dest)
+        except Exception:
+            pass
+        del secret
+        del master_pw
+        _err(str(exc))
+        return 1
+
+    del secret
+    del master_pw
+    print(f"Copied to: {dest}")
+    return 0
 
 
 @requires_tty
