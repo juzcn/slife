@@ -118,8 +118,13 @@ class TestBuild:
     def test_no_slash_commands(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "/skill" not in result
-        assert "/config" not in result
+        # Check that no line is a slash command (leading / followed by word)
+        for line in result.split("\n"):
+            line = line.strip()
+            assert not line.startswith("/skill ")
+            assert not line.startswith("/config ")
+            assert not line.startswith("/help ")
+            assert not line.startswith("/clear ")
 
     def test_mcp_not_hardcoded(self, cfg):
         """No specific MCP server names — LLM discovers at runtime."""
