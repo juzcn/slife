@@ -1036,3 +1036,79 @@ class TestConfigFromJSON5EdgeCases:
         config = Config.from_json5(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].ref == "p2/solo"
+
+
+# ── CamelCase alias compatibility (OpenClaw format) ──────────────────
+
+
+class TestModelConfigCamelCase:
+    """Tests for OpenClaw camelCase field aliases — snake_case is primary."""
+
+    def test_id_fallback_when_model_absent(self):
+        mc = ModelConfig.from_dict({"id": "claude-3", "api_key": "sk-test"})
+        assert mc.api_model == "claude-3"
+
+    def test_model_takes_priority_over_id(self):
+        mc = ModelConfig.from_dict({"model": "gpt-4o", "id": "claude-3", "api_key": "sk-test"})
+        assert mc.api_model == "gpt-4o"
+
+    def test_context_window_camel(self):
+        mc = ModelConfig.from_dict({"model": "test", "api_key": "key", "contextWindow": 200000})
+        assert mc.context_window == 200000
+
+    def test_context_window_snake_priority(self):
+        mc = ModelConfig.from_dict({"model": "test", "api_key": "key", "context_window": 99999, "contextWindow": 200000})
+        assert mc.context_window == 99999
+
+    def test_max_tokens_camel(self):
+        mc = ModelConfig.from_dict({"model": "test", "api_key": "key", "maxTokens": 8192})
+        assert mc.max_tokens == 8192
+
+    def test_base_url_camel(self):
+        mc = ModelConfig.from_dict({"model": "test", "api_key": "key", "baseUrl": "https://custom.api/v1"})
+        assert mc.base_url == "https://custom.api/v1"
+
+    def test_api_key_camel(self):
+        mc = ModelConfig.from_dict({"model": "test", "apiKey": "sk-camel-key"})
+        assert mc.api_key == "sk-camel-key"
+
+    def test_api_key_snake_priority(self):
+        mc = ModelConfig.from_dict({"model": "test", "api_key": "sk-snake", "apiKey": "sk-camel"})
+        assert mc.api_key == "sk-snake"
+
+    def test_snake_case_still_works(self):
+        mc = ModelConfig.from_dict({
+            "model": "test", "api_key": "sk-snake",
+            "context_window": 99999, "max_tokens": 666,
+            "base_url": "https://snake.api/v1",
+        })
+        assert mc.context_window == 99999
+        assert mc.max_tokens == 666
+        assert mc.base_url == "https://snake.api/v1"
+
+    def test_compat_field(self):
+        mc = ModelConfig.from_dict({
+            "model": "test", "api_key": "key",
+            "compat": {"thinkingFormat": "openai"},
+        })
+        assert mc.compat == {"thinkingFormat": "openai"}
+
+    def test_cost_field(self):
+        mc = ModelConfig.from_dict({
+            "model": "test", "api_key": "key",
+            "cost": {"input": 0.003, "output": 0.015},
+        })
+        assert mc.cost == {"input": 0.003, "output": 0.015}
+
+    def test_non_dict_compat_is_none(self):
+        mc = ModelConfig.from_dict({"model": "test", "api_key": "key", "compat": "not-a-dict"})
+        assert mc.compat is None
+
+    def test_missing_compat_and_cost_are_none(self):
+        mc = ModelConfig.from_dict({"model": "test", "api_key": "key"})
+        assert mc.compat is None
+        assert mc.cost is None
+
+    def test_missing_model_and_id_raises(self):
+        with pytest.raises(ValueError, match="missing"):
+            ModelConfig.from_dict({"api_key": "key"})

@@ -1,0 +1,231 @@
+"""OpenAI Responses API backend.
+
+Takes OpenAI-format messages (slife's internal format) and internally
+adapts them for the OpenAI Responses API.  No public conversion layer.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time as _time
+from collections.abc import AsyncIterator
+
+from openai import AsyncOpenAI
+
+from slife.config import ModelConfig
+from slife.agent.llm_client import TokenUsage, StreamChunk
+
+logger = logging.getLogger(__name__)
+
+
+class OpenAIResponsesBackend:
+    """OpenAI Responses API backend."""
+
+    def __init__(self, model: ModelConfig):
+        self.model_config = model
+        self.client = AsyncOpenAI(
+            api_key=model.api_key,
+            base_url=model.base_url,
+        )
+        logger.debug(
+            "responses_init model=%s provider=%s",
+            model.api_model, model.provider,
+        )
+
+    # ── Internal adaptation (private) ─────────────────────────────────
+
+    @staticmethod
+    def _oa_msgs_to_responses(
+        messages: list[dict],
+    ) -> tuple[str | None, list[dict]]:
+        """Adapt OpenAI-format messages → Responses API ``input`` format.
+
+        Returns (instructions, input_items).
+        """
+        instructions: str | None = None
+        converted: list[dict] = []
+
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if role == "system":
+                s = str(content)
+                instructions = (instructions + "\n\n" + s) if instructions else s
+            elif role == "user":
+                if isinstance(content, list):
+                    blocks: list[dict] = []
+                    for part in content:
+                        if part.get("type") == "image_url":
+                            blocks.append({
+                                "type": "input_image",
+                                "image_url": part.get("image_url", {}).get("url", ""),
+                            })
+                        elif part.get("type") == "text":
+                            blocks.append({"type": "input_text", "text": part.get("text", "")})
+                        else:
+                            blocks.append(part)
+                    converted.append({"role": "user", "content": blocks})
+                else:
+                    converted.append({"role": "user", "content": str(content)})
+            elif role == "assistant":
+                item: dict = {"role": "assistant", "content": content or ""}
+                tool_calls = msg.get("tool_calls", [])
+                if tool_calls:
+                    item["tool_calls"] = [
+                        {
+                            "type": "function_call",
+                            "call_id": tc["id"],
+                            "name": tc.get("function", {}).get("name", ""),
+                            "arguments": tc.get("function", {}).get("arguments", "{}"),
+                        }
+                        for tc in tool_calls
+                    ]
+                converted.append(item)
+            elif role == "tool":
+                converted.append({
+                    "role": "tool",
+                    "call_id": msg.get("tool_call_id", ""),
+                    "content": str(content),
+                })
+        return instructions, converted
+
+    @staticmethod
+    def _oa_tools_to_responses(tools: list[dict]) -> list[dict]:
+        """Adapt OpenAI function defs → Responses API tool format."""
+        result = []
+        for t in tools:
+            fn = t.get("function", {})
+            schema = dict(fn.get("parameters", {}))
+            schema.setdefault("type", "object")
+            schema.setdefault("properties", {})
+            schema.setdefault("required", [])
+            schema["properties"].pop("_timeout", None)
+            schema["properties"].pop("_async", None)
+            result.append({
+                "type": "function",
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "parameters": schema,
+            })
+        return result
+
+    # ── Build kwargs ──────────────────────────────────────────────────
+
+    def _build_kwargs(
+        self, messages: list[dict], tools: list[dict] | None
+    ) -> dict:
+        instructions, input_items = self._oa_msgs_to_responses(messages)
+        kwargs: dict = {
+            "model": self.model_config.api_model,
+            "input": input_items,
+            "max_output_tokens": self.model_config.max_tokens,
+            "temperature": self.model_config.temperature,
+            "top_p": self.model_config.top_p,
+        }
+        if instructions:
+            kwargs["instructions"] = instructions
+        if tools:
+            kwargs["tools"] = self._oa_tools_to_responses(tools)
+        if self.model_config.thinking_enabled:
+            kwargs["reasoning"] = {
+                "effort": self.model_config.reasoning_effort or "medium",
+            }
+        return kwargs
+
+    # ── Chat ──────────────────────────────────────────────────────────
+
+    async def chat(
+        self, messages: list[dict], tools: list[dict] | None = None,
+    ) -> tuple:
+        kwargs = self._build_kwargs(messages, tools)
+        response = await self.client.responses.create(**kwargs)
+
+        text = ""
+        output = getattr(response, "output", [])
+        for item in output:
+            if hasattr(item, "type") and item.type == "message":
+                for block in getattr(item, "content", []):
+                    if hasattr(block, "type") and block.type == "output_text":
+                        text += getattr(block, "text", "")
+
+        usage = TokenUsage()
+        if hasattr(response, "usage") and response.usage:
+            usage = TokenUsage(
+                prompt_tokens=response.usage.input_tokens or 0,
+                completion_tokens=response.usage.output_tokens or 0,
+                total_tokens=response.usage.total_tokens or 0,
+            )
+
+        C = type("Choice", (), {"message": type("Msg", (), {"content": text})()})()
+        R = type("Response", (), {"choices": [C], "usage": getattr(response, "usage", None)})()
+        return R, usage
+
+    # ── Streaming ─────────────────────────────────────────────────────
+
+    async def chat_stream(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        cancel_event: "asyncio.Event | None" = None,
+    ) -> AsyncIterator[StreamChunk]:
+        kwargs = self._build_kwargs(messages, tools)
+        kwargs["stream"] = True
+        t0 = _time.monotonic()
+        usage = TokenUsage()
+
+        logger.debug(
+            "responses_stream_start model=%s msgs=%d tools=%d",
+            self.model_config.api_model, len(messages),
+            len(tools) if tools else 0,
+        )
+
+        stream = await self.client.responses.create(**kwargs)
+        try:
+            async for event in stream:
+                if cancel_event is not None and cancel_event.is_set():
+                    logger.debug("responses_stream_cancelled")
+                    await stream.close()
+                    return
+
+                etype = getattr(event, "type", None)
+
+                if etype == "response.output_text.delta":
+                    yield StreamChunk(content=getattr(event, "delta", ""))
+                elif etype in (
+                    "response.reasoning_text.delta",
+                    "response.reasoning_summary_text.delta",
+                ):
+                    yield StreamChunk(thinking=getattr(event, "delta", ""))
+                elif etype == "response.function_call_arguments.delta":
+                    item_id = getattr(event, "item_id", "")
+                    idx = hash(item_id) % 10000 if item_id else 0
+                    yield StreamChunk(tool_deltas=[{
+                        "index": idx,
+                        "id": item_id or "",
+                        "function": {
+                            "name": "",
+                            "arguments": getattr(event, "delta", ""),
+                        },
+                    }])
+                elif etype in ("response.completed", "response.done"):
+                    resp = getattr(event, "response", None)
+                    if resp and hasattr(resp, "usage") and resp.usage:
+                        usage = TokenUsage(
+                            prompt_tokens=resp.usage.input_tokens or 0,
+                            completion_tokens=resp.usage.output_tokens or 0,
+                            total_tokens=resp.usage.total_tokens or 0,
+                        )
+                        elapsed = (_time.monotonic() - t0) * 1000
+                        logger.debug(
+                            "responses_stream_done prompt=%d completion=%d total=%d took_ms=%.0f",
+                            usage.prompt_tokens, usage.completion_tokens,
+                            usage.total_tokens, elapsed,
+                        )
+                        yield StreamChunk(usage=usage)
+        finally:
+            if hasattr(stream, "close"):
+                try: await stream.close()
+                except Exception: pass

@@ -1,17 +1,18 @@
-"""LLM client wrapper for OpenAI-compatible APIs (DeepSeek & others).
+"""LLM client — thin router dispatching to one of three API backends.
 
-Supports both batch (chat) and real-time streaming (chat_stream) modes.
+Each API is a first-class citizen with its own backend class::
+
+    openai-completions → OpenAIBackend   (OpenAI, DeepSeek, Ollama, …)
+    anthropic-messages → AnthropicBackend (Claude, Bailian/Qwen, …)
+    openai-responses   → OpenAIResponsesBackend (newer OpenAI Responses API)
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time as _time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-
-from openai import AsyncOpenAI
 
 from slife.config import ModelConfig
 
@@ -43,7 +44,7 @@ class TokenUsage:
 
 @dataclass
 class StreamChunk:
-    """A single chunk from a streaming LLM response.
+    """A single chunk from a streaming LLM response — backend-agnostic.
 
     Fields are mutually exclusive in practice — a given chunk
     carries either thinking, content, tool deltas, or usage.
@@ -56,215 +57,49 @@ class StreamChunk:
 
 
 class LLMClient:
-    """Wrapper around AsyncOpenAI, configured from a ModelConfig.
+    """Thin router — delegates to the backend matching ``ModelConfig.api``.
 
-    Supports any OpenAI-compatible provider (DeepSeek, OpenAI, etc.).
-    Handles thinking mode via extra_body for DeepSeek V4 models.
+    Three backends, equal citizens::
+
+        "openai-completions" → OpenAIBackend
+        "anthropic-messages" → AnthropicBackend
+        "openai-responses"   → OpenAIResponsesBackend
     """
 
     def __init__(self, model: ModelConfig):
         self.model_config = model
-        self.client = AsyncOpenAI(
-            api_key=model.api_key,
-            base_url=model.base_url,
-        )
+        api = model.api
+
+        if api == "anthropic-messages":
+            from slife.agent.llm_backends.anthropic import AnthropicBackend
+            self._backend = AnthropicBackend(model)
+        elif api == "openai-responses":
+            from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
+            self._backend = OpenAIResponsesBackend(model)
+        else:
+            from slife.agent.llm_backends.openai import OpenAIBackend
+            self._backend = OpenAIBackend(model)
+
         logger.debug(
-            "llm_init model=%s provider=%s thinking=%s max_tok=%d",
+            "llm_client_init model=%s api=%s backend=%s",
             model.api_model,
-            model.provider,
-            model.thinking_enabled,
-            model.max_tokens,
+            api,
+            type(self._backend).__name__,
         )
-
-    def _is_deepseek(self) -> bool:
-        """Check if the configured provider is DeepSeek.
-
-        Only DeepSeek supports the 'thinking' extra_body parameter.
-        Sending it to other providers (OpenAI, etc.) would be rejected.
-        """
-        provider = self.model_config.provider.lower()
-        base_url = self.model_config.base_url.lower()
-        return "deepseek" in provider or "deepseek" in base_url
-
-    # ── Shared kwargs ──────────────────────────────────────────────
-
-    def _build_kwargs(
-        self, messages: list[dict], tools: list[dict] | None
-    ) -> dict:
-        """Build shared kwargs for both batch and streaming requests."""
-        kwargs: dict = {
-            "model": self.model_config.api_model,
-            "messages": messages,
-            "max_tokens": self.model_config.max_tokens,
-            "temperature": self.model_config.temperature,
-            "top_p": self.model_config.top_p,
-        }
-
-        if tools:
-            kwargs["tools"] = tools
-
-        # DeepSeek-specific thinking mode control
-        if self._is_deepseek():
-            extra_body: dict = {
-                "thinking": {
-                    "type": (
-                        "enabled"
-                        if self.model_config.thinking_enabled
-                        else "disabled"
-                    )
-                }
-            }
-            if (
-                self.model_config.thinking_enabled
-                and self.model_config.reasoning_effort
-            ):
-                extra_body["reasoning_effort"] = (
-                    self.model_config.reasoning_effort
-                )
-            kwargs["extra_body"] = extra_body
-
-        return kwargs
-
-    # ── Usage extraction ──────────────────────────────────────────
-
-    @staticmethod
-    def _usage_from_response(usage_obj) -> TokenUsage:
-        """Extract TokenUsage from an API usage object (may be None)."""
-        if usage_obj:
-            return TokenUsage(
-                prompt_tokens=usage_obj.prompt_tokens or 0,
-                completion_tokens=usage_obj.completion_tokens or 0,
-                total_tokens=usage_obj.total_tokens or 0,
-            )
-        return TokenUsage()
-
-    # ── Batch (non-streaming) ─────────────────────────────────────
 
     async def chat(
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
     ) -> tuple:
-        """Send a chat completion request (batch mode).
+        """Send a chat request (batch mode)."""
+        return await self._backend.chat(messages, tools)
 
-        Args:
-            messages: OpenAI-format message list.
-            tools: Optional function definitions.
-
-        Returns:
-            Tuple of (response, TokenUsage).
-        """
-        kwargs = self._build_kwargs(messages, tools)
-        response = await self.client.chat.completions.create(**kwargs)
-
-        usage = self._usage_from_response(
-            response.usage if hasattr(response, "usage") else None
-        )
-
-        return response, usage
-
-    # ── Streaming ─────────────────────────────────────────────────
-
-    async def chat_stream(
+    def chat_stream(
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
         cancel_event: "asyncio.Event | None" = None,
     ) -> AsyncIterator[StreamChunk]:
-        """Stream a chat completion, yielding chunks as they arrive.
-
-        Yields StreamChunk objects in real-time:
-          - thinking: reasoning/thinking tokens (DeepSeek V4 Pro etc.)
-          - content: regular text tokens
-          - tool_deltas: raw tool-call deltas from the API
-          - usage: TokenUsage (in the final chunk)
-
-        When *cancel_event* is set, the stream is immediately closed to
-        release the underlying HTTP connection — no more chunks are
-        yielded and the caller can stop waiting without a resource leak.
-
-        Usage:
-            async for chunk in client.chat_stream(messages, tools):
-                if chunk.thinking:
-                    await emit_thinking(chunk.thinking)
-                if chunk.content:
-                    await emit_text(chunk.content)
-                if chunk.usage:
-                    total_usage += chunk.usage
-        """
-        kwargs = self._build_kwargs(messages, tools)
-        kwargs["stream"] = True
-        kwargs["stream_options"] = {"include_usage": True}
-
-        t0 = _time.monotonic()
-        logger.debug(
-            "stream_start model=%s msgs=%d tools=%d",
-            self.model_config.api_model,
-            len(messages),
-            len(tools) if tools else 0,
-        )
-
-        stream = await self.client.chat.completions.create(**kwargs)
-
-        try:
-            async for event in stream:
-                # Honour cancellation immediately — close the stream so
-                # the HTTP connection is released rather than left dangling.
-                if cancel_event is not None and cancel_event.is_set():
-                    logger.debug("stream_cancelled mid-stream")
-                    await stream.close()
-                    return
-
-                if not event.choices:
-                    continue
-
-                delta = event.choices[0].delta
-
-                # DeepSeek reasoning/thinking content (streaming delta)
-                reasoning = getattr(delta, "reasoning_content", None) or ""
-                if reasoning:
-                    yield StreamChunk(thinking=reasoning)
-
-                # Regular text content
-                if delta.content:
-                    yield StreamChunk(content=delta.content)
-
-                # Tool call deltas (may be partial)
-                if delta.tool_calls:
-                    raw_deltas = []
-                    for tc in delta.tool_calls:
-                        raw_deltas.append({
-                            "index": tc.index,
-                            "id": tc.id,
-                            "function": {
-                                "name": tc.function.name if tc.function else None,
-                                "arguments": (
-                                    tc.function.arguments
-                                    if tc.function
-                                    else ""
-                                ),
-                            },
-                        })
-                    yield StreamChunk(tool_deltas=raw_deltas)
-
-                # Usage (final chunk with stream_options.include_usage)
-                if hasattr(event, "usage") and event.usage:
-                    usage = self._usage_from_response(event.usage)
-                    elapsed = (_time.monotonic() - t0) * 1000
-                    logger.debug(
-                        "stream_done prompt=%d completion=%d total=%d took_ms=%.0f",
-                        usage.prompt_tokens,
-                        usage.completion_tokens,
-                        usage.total_tokens,
-                        elapsed,
-                    )
-                    yield StreamChunk(usage=usage)
-        finally:
-            # Safety net: if the caller breaks out of the async-for early
-            # (e.g. on cancellation), close the stream to free the HTTP
-            # connection.  Double-close is harmless with the OpenAI SDK.
-            if hasattr(stream, "close"):
-                try:
-                    await stream.close()
-                except Exception:
-                    pass
+        """Stream a chat completion, yielding ``StreamChunk`` objects."""
+        return self._backend.chat_stream(messages, tools, cancel_event)

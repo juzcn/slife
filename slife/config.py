@@ -122,6 +122,9 @@ class ModelConfig:
     top_p: float = 1.0
     thinking_enabled: bool = False
     reasoning_effort: str | None = None
+    compat: dict | None = None          # compat config (e.g. {thinkingFormat: "openai"})
+    cost: dict | None = None            # cost tracking (optional)
+    supports_tool_calls: bool = True    # whether this model supports native tool/function calling
 
     @classmethod
     def from_dict(cls, data: dict) -> "ModelConfig":
@@ -131,8 +134,14 @@ class ModelConfig:
         name: display label (e.g. "DeepSeek V4 Flash")
         reasoning: true ->thinking_enabled
         input: ["text","image"] ->supports_vision
+
+        Accepts both slife.json5 snake_case (primary) and OpenClaw
+        camelCase (compatibility fallback).
         """
-        api_model = data["model"]
+        # Primary: slife.json5 snake_case; fallback: OpenClaw camelCase
+        api_model = data.get("model") or data.get("id")
+        if not api_model:
+            raise ValueError("Model entry missing 'model' or 'id' field")
 
         # model may contain provider prefix: "deepseek/deepseek-v4-flash"
         if "/" in api_model:
@@ -150,22 +159,33 @@ class ModelConfig:
         )
         input_modalities = tuple(model_input) if model_input else ("text",)
 
+        # Resolve api_key: snake_case first, camelCase fallback
+        api_key_raw = data.get("api_key", data.get("apiKey", ""))
+        # Resolve other fields with camelCase fallbacks
+        context_window = data.get("context_window", data.get("contextWindow", 131072))
+        max_tokens = data.get("max_tokens", data.get("maxTokens", 4096))
+        base_url = data.get("base_url", data.get("baseUrl", "https://api.deepseek.com"))
+        compat = data.get("compat") if isinstance(data.get("compat"), dict) else None
+        cost = data.get("cost") if isinstance(data.get("cost"), dict) else None
+
         return cls(
             ref=ref,
             provider=provider,
             api_model=api_model,
             display_name=display_name,
-            api_key=_resolve_secret(data["api_key"], accept_keyring_uri=True),
-            base_url=data.get("base_url", "https://api.deepseek.com"),
+            api_key=_resolve_secret(api_key_raw, accept_keyring_uri=True),
+            base_url=base_url,
             api=data.get("api", "openai-completions"),
             supports_vision=supports_vision,
             input_modalities=input_modalities,
-            max_tokens=data.get("max_tokens", 4096),
-            context_window=data.get("context_window", 131072),
+            max_tokens=max_tokens,
+            context_window=context_window,
             temperature=data.get("temperature", 0.7),
             top_p=data.get("top_p", 1.0),
             thinking_enabled=bool(thinking),
             reasoning_effort=data.get("reasoning_effort"),
+            compat=compat,
+            cost=cost,
         )
 
 
@@ -379,7 +399,7 @@ class Config:
         if isinstance(a2a_cfg, dict):
             a2a_cfg = A2AConfig(**a2a_cfg)
 
-        return cls(
+        return Config(
             models=models,
             active_model_ref=data.get("active_model_ref", ""),
             tools=data.get("tools", []),
@@ -824,7 +844,7 @@ class Config:
             subagent_config["task_timeout"],
         )
 
-        config = cls(
+        config = Config(
             models=all_models,
             active_model_ref=raw.get("active_model", all_models[0].ref),
             tools=tools,

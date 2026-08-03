@@ -46,8 +46,11 @@
   },
 
   // ── Model Provider ─────────────────────────────────────────────
-  // Edit for your API provider.  Default uses DeepSeek — replace
-  // with OpenAI, Gemini, Ollama, or any OpenAI-compatible endpoint.
+  // slife supports three API backends as first-class citizens:
+  //
+  //   api: "openai-completions"  → OpenAI, DeepSeek, Ollama, etc.
+  //   api: "anthropic-messages"  → Claude, Bailian/Qwen, etc.
+  //   api: "openai-responses"    → Newer OpenAI Responses API
   //
   // api_key MUST be a ${VAR} reference — plaintext keys are REJECTED.
   // ${DEEPSEEK_API_KEY} resolves from keyring automatically.
@@ -82,6 +85,17 @@
           },
         ],
       },
+      // Example: Alibaba Cloud Bailian token-plan (Anthropic protocol)
+      // Uncomment and set BAILIAN_API_KEY via:  credstore set BAILIAN_API_KEY
+      // bailian: {
+      //   base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+      //   api_key: "${BAILIAN_API_KEY}",
+      //   api: "anthropic-messages",
+      //   models: [
+      //     { model: "qwen3.8-max", name: "Qwen3.8 Max", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072 },
+      //     { model: "qwen3.8-max-preview", name: "Qwen3.8 Max Preview", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072 },
+      //   ],
+      // },
     },
   },
   active_model: "deepseek/deepseek-v4-flash",
