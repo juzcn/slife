@@ -176,6 +176,56 @@ Session:   sum of all turns           →  status bar total (0 at launch)
 - **Per session**: ``session_usage.total_tokens`` starts at 0 on launch (not restored from history). Incremented at turn end via ``save_to_memory`` with the turn's final ``token_count``.
 - **Cancelled / max-iteration turns**: ``run()`` returns ``AgentResult(cancelled=True, usage=total_usage)`` — partial token usage from earlier API calls within the turn is preserved, no longer discarded as zero.
 
+## LLM API Backends
+
+Three backends, equal citizens — no conversion layer.  Each takes the internal
+OpenAI-format messages (``Conversation`` storage) and handles its API natively:
+
+```
+LLMClient (thin router — ~50 lines)
+  ├── OpenAIBackend         api: "openai-completions"
+  ├── AnthropicBackend      api: "anthropic-messages"
+  └── OpenAIResponsesBackend  api: "openai-responses"
+```
+
+### Design Principles
+
+1. **No fourth format.**  The internal message format is OpenAI Chat Completions
+   format — the format the codebase already uses.  No neutral/intermediate format is
+   invented.
+
+2. **No public conversion.**  The ``LLMClient`` exposes only ``chat()`` and
+   ``chat_stream()``.  Backend-internal adaptation (e.g. OpenAI → Anthropic message
+   format) is a private implementation detail, not a public API.
+
+3. **Provider dispatch is automatic.**  ``ModelConfig.api`` determines which
+   backend is instantiated.  ``LLMClient.__init__`` is a pure router — no
+   ``_is_deepseek()``, no ``_build_kwargs()``, zero API format knowledge.
+
+### Streaming
+
+Every backend produces the same ``StreamChunk`` objects regardless of API.
+The ``AgentLoop`` sees unified chunks with ``thinking``, ``content``,
+``tool_deltas``, and ``usage`` — backend-agnostic.
+
+### Model Management
+
+Four native tools (``slife/tools/models.py``) provide runtime model management
+without editing config files:
+
+| Tool | Description |
+|------|-------------|
+| ``list_models`` | All configured models grouped by provider |
+| ``add_model`` | Add/update a model (creates provider if new) |
+| ``remove_model`` | Remove by ref; auto-switches if it was active |
+| ``switch_model`` | Switch active model by ref |
+
+### Credential Sharing
+
+``credstore copy <source> <dest>`` duplicates a credential under a new key —
+useful when multiple providers share the same API key.  Dual-writes to both
+system keyring and cryptfile backup with the standard atomic pattern.
+
 ## Tool System
 
 ### Tool ABC

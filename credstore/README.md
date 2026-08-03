@@ -38,6 +38,7 @@ Path overridable via `CREDSTORE_FILE` env var or `credstore.json5`.
 | `get KEY` | — | Keyring only, masked output (`sk-5f…b722`) |
 | `get KEY -p` | master | Dual-query keyring + cryptfile, plaintext. Fails on mismatch |
 | `delete KEY` | master | Remove from both stores |
+| `copy SOURCE DEST` | master | Copy a credential to a new key (keyring + cryptfile) |
 | `list` | master¹ | Triple-read: keyring + cryptfile + env. Shows sync status per key |
 | `inject KEY… [--shell]` | — | Persist to system env: registry (Win) or shell profile (Unix) |
 | `uninject KEY… [--shell]` | — | Remove from system env |
@@ -107,6 +108,7 @@ Secrets are immutable Python `str` objects — they cannot be zeroed in place. M
 |-----------|---------|
 | `get` / `get_credential()` | Caller must `del` the returned value |
 | `set` | `del secret` + `del master_pw` after dual-write |
+| `copy` | `del secret` + `del master_pw` after dual-write (same pattern as `set`) |
 | `list` | Values fetched one-at-a-time, compared, `del`ed immediately |
 | `inject` | Value read → persisted → `del`ed. TTY: no secret on stdout |
 | `reset-keyring` | Each value `del`ed after writing to keyring |

@@ -81,6 +81,13 @@ credstore set DEEPSEEK_API_KEY       # store API key (masked input)
 slife
 ```
 
+**Sharing keys across providers:** if multiple services use the same API key, copy it instead of re-entering:
+
+```bash
+credstore copy DEEPSEEK_API_KEY BAILIAN_API_KEY
+credstore copy DEEPSEEK_API_KEY ANTHROPIC_AUTH_TOKEN
+```
+
 The default config ships with pre-configured MCP servers: filesystem + shell, code search, web fetch, search APIs.
 
 ## How It Works
@@ -117,11 +124,34 @@ models: {
     deepseek: {
       base_url: "https://api.deepseek.com",
       api_key: "${DEEPSEEK_API_KEY}",
+      api: "openai-completions",
       models: [{ model: "deepseek-v4-pro", name: "DeepSeek V4 Pro", reasoning: true }],
     },
+    // Bailian token-plan — Anthropic protocol
+    // bailian: {
+    //   base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+    //   api_key: "${BAILIAN_API_KEY}",
+    //   api: "anthropic-messages",
+    //   models: [{ model: "qwen3.8-max", name: "Qwen3.8 Max", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072 }],
+    // },
   },
 },
 active_model: "deepseek/deepseek-v4-pro",
+```
+
+**Three first-class API backends** — no conversion layer, each works natively:
+
+| `api` field | Backend | Providers |
+|-------------|---------|-----------|
+| `openai-completions` | OpenAI / DeepSeek / Ollama | Chat Completions endpoint |
+| `anthropic-messages` | Claude / Bailian (Qwen) | Messages endpoint |
+| `openai-responses` | OpenAI | Newer Responses endpoint |
+
+Switch models at runtime with native tools:
+```
+list_models                    → see all configured models
+switch_model(ref="bailian/qwen3.8-max")  → switch active model
+add_model(provider="...", model="...", ...)  → register a new model
 ```
 
 **Secrets never reach the LLM context.** All tool output is sanitized before reaching the model — API key patterns are auto-masked.
@@ -143,6 +173,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between c
 | REST API | `rest_api.py` | `rest_api_add`, `rest_api_remove`, `rest_api_list`, `rest_api_set` |
 | A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
+| Models | `models.py` | `list_models`, `add_model`, `remove_model`, `switch_model` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 | Display | `meta.py` | `show_image` — display local image files inline in the chat |
