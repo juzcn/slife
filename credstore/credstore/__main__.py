@@ -41,6 +41,7 @@ from credstore._enumerate import enumerate_system_keyring as _enumerate_system_k
 from credstore._shell import (
     format_export,
     format_unset,
+    is_injected,
     persist_key,
     resolve_shell,
     unpersist_key,
@@ -562,11 +563,19 @@ def _cmd_delete(key: str) -> int:
 
 @requires_tty
 def _cmd_copy(source: str, dest: str) -> int:
-    """Copy a credential from *source* to *dest* (dual-write).
+    """Copy a credential from *source* to *dest* (dual-write, idempotent).
 
-    Reads the source value from the system keyring, then writes it to
-    *dest* in both system keyring + cryptfile (with master password).
+    Idempotent: if *dest* already holds the same value as *source*,
+    the operation is a no-op and returns success immediately.
+
+    If *dest* was previously injected into the system environment
+    (``credstore inject``), the new value is re-injected so all three
+    stores stay consistent: keyring == cryptfile == env.
     """
+    if source == dest:
+        _err("source and destination are the same.")
+        return 1
+
     cf = backend_mod.get_cryptfile()
     if cf is None:
         _err("cryptfile backend not available.")
@@ -579,10 +588,19 @@ def _cmd_copy(source: str, dest: str) -> int:
         _err(f"source credential '{source}' not found in system keyring.")
         return 1
 
+    # 2. Idempotency: skip if dest already holds the same value
+    dest_existing = store_mod.get_credential(dest)
+    if dest_existing is not None and dest_existing == secret:
+        del dest_existing
+        del secret
+        print(f"Already synced: '{dest}' matches '{source}'.")
+        return 0
+    del dest_existing
+
     print(f"Copying '{source}' → '{dest}'")
     master_pw = masked_input("Master password (for encrypted backup): ")
 
-    # 2. Write cryptfile first (backup)
+    # 3. Write cryptfile first (backup)
     try:
         with backend_mod.unlocked_cryptfile(master_pw) as cf:
             cf.set_password(store_mod.DEFAULT_SERVICE, dest, secret)
@@ -592,7 +610,7 @@ def _cmd_copy(source: str, dest: str) -> int:
         _err(str(exc))
         return 1
 
-    # 3. Write system keyring (primary)
+    # 4. Write system keyring (primary)
     try:
         store_mod.set_credential(dest, secret)
     except Exception as exc:
@@ -606,9 +624,18 @@ def _cmd_copy(source: str, dest: str) -> int:
         _err(str(exc))
         return 1
 
+    # 5. Re-inject to env if dest was previously injected (keep 3 stores equal)
+    was_injected = is_injected(dest)
+    if was_injected:
+        persist_key(dest, secret)
+
     del secret
     del master_pw
-    print(f"Copied to: {dest}")
+
+    if was_injected:
+        print(f"Copied to: {dest} (re-injected to environment).")
+    else:
+        print(f"Copied to: {dest}")
     return 0
 
 

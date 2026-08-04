@@ -28,6 +28,7 @@ __all__ = [
     "resolve_shell",
     "get_profile_path",
     "is_persisted",
+    "is_injected",
     "add_to_profile",
     "remove_from_profile",
     "persist_key",
@@ -156,6 +157,32 @@ def is_persisted(key: str, shell: str = "auto") -> bool:
         return False
     content = profile.read_text(encoding="utf-8")
     return _find_key_line(content, key) >= 0
+
+
+def is_injected(key: str) -> bool:
+    """Check whether *key* is persisted to the system environment.
+
+    On Windows: reads ``HKCU\\Environment`` registry.
+    On Unix: delegates to ``is_persisted`` (checks shell profile).
+    Returns True if the key's value is set in the persistent environment.
+    """
+    if os.name == "nt":
+        try:
+            import winreg
+            key_handle = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ
+            )
+            try:
+                winreg.QueryValueEx(key_handle, key)
+                return True
+            except FileNotFoundError:
+                return False
+            finally:
+                winreg.CloseKey(key_handle)
+        except OSError:
+            return False
+    else:
+        return is_persisted(key)
 
 
 def add_to_profile(key: str, shell: str = "auto") -> bool:
