@@ -238,27 +238,37 @@ class ClearContextTool(Tool):
 
 
 class ShowImageTool(Tool):
-    """Display a local image file inline in the chat, and — when the
-    active model supports vision — inject its base64 content into the
-    conversation so the LLM can analyse it on the next turn.
+    """Display and inject an image so the LLM can analyse it.
 
-    The image is cached to ``logs/images/`` for TUI rendering and
-    persistent BLOB storage (``diary_images`` table).
+    Sources
+      - **local path** → cached, BLOB'd, served via ngrok media URL.
+      - **remote URL** → downloaded, cached, BLOB'd, then injected
+        as the original URL (already public — no tunnel needed).
+
+    The image BLOB is always written to ``diary_images`` for permanent
+    memory.  Injection uses lightweight HTTPS URLs — base64 is **never**
+    sent to the LLM.
     """
 
     name: ClassVar[str] = "show_image"
     category: ClassVar[str] = "Display"
     description: ClassVar[str] = (
-        "在聊天中内联显示本地图片文件，并将图片内容注入对话使你能够分析。"
-        "参数 path 为图片文件的绝对路径，支持 png/jpg/gif/webp/bmp。"
-        "当你需要查看图片内容、描述图片中的视觉信息时，使用本工具。"
+        "Show an image: local file path or http(s) URL. "
+        "Returns a public URL that any vision tool (NIM VLM, browser, "
+        "OCR) can consume directly — no base64 needed. "
+        "Use this BEFORE calling vision/OCR tools so they have a URL. "
+        "The image is permanently stored and recoverable across sessions."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "图片文件的绝对路径，如 D:\\Downloads\\photo.png",
+                "description": (
+                    "Image path or URL. "
+                    "Local: 'D:\\Downloads\\photo.png'. "
+                    "URL: 'https://example.com/photo.jpg'."
+                ),
             },
         },
         "required": ["path"],
@@ -273,9 +283,45 @@ class ShowImageTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         path: str = kwargs["path"]
+
+        # ── URL input: inject directly, no caching needed ───────
+        if path.startswith(("http://", "https://")):
+            return await self._show_url(path)
+
+        # ── Local file input ────────────────────────────────────
+        return await self._show_local(path)
+
+    async def _show_url(self, url: str) -> str:
+        """Download an image URL, cache it, write BLOB, and inject."""
         import uuid
+        from urllib.parse import urlparse
+
+        import aiohttp
+
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return f"Error: 无效的 URL — {url}"
+
+        # ── Download ───────────────────────────────────────────
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status != 200:
+                        return f"Error: HTTP {resp.status} — {url}"
+                    raw = await resp.read()
+                    content_type = resp.content_type or ""
+        except Exception as e:
+            return f"Error: 下载图片失败 — {e}"
+
+        mime_type = content_type if content_type.startswith("image/") else "image/png"
+        file_name = (parsed.path.rsplit("/", 1)[-1] if parsed.path else "") or "image"
+
+        return await self._ingest(raw, mime_type, file_name)
+
+    async def _show_local(self, path: str) -> str:
+        """Read a local image file, write its BLOB, and inject for the LLM."""
+        import mimetypes
         from pathlib import Path
-        from slife.paths import get_images_dir
         from slife.ui.image_utils import is_image_file
 
         p = Path(path)
@@ -287,21 +333,61 @@ class ShowImageTool(Tool):
             return f"Error: 不支持的图片格式 — {p.suffix}（支持 png/jpg/gif/webp/bmp）"
 
         raw = p.read_bytes()
+
+        if not mimetypes.inited:
+            mimetypes.init()
+        mime_type = mimetypes.guess_type(str(p))[0] or "image/png"
+        if not mime_type.startswith("image/"):
+            mime_type = "image/png"
+
+        return await self._ingest(raw, mime_type, p.name)
+
+    async def _ingest(self, raw: bytes, mime_type: str, file_name: str) -> str:
+        """Common pipeline: cache → BLOB → inject (shared by URL and local)."""
+        import uuid
+        from pathlib import Path
+        from slife.paths import get_images_dir
+
+        # ── Determine extension ────────────────────────────────
+        import mimetypes
+        if not mimetypes.inited:
+            mimetypes.init()
+        ext = mimetypes.guess_extension(mime_type) or ".png"
+
+        # ── Cache to logs/images/ ──────────────────────────────
         images_dir = get_images_dir()
         images_dir.mkdir(parents=True, exist_ok=True)
-        img_id = str(uuid.uuid4())  # dashes break sanitize_secrets hex pattern
-        cache = images_dir / f"{img_id}{p.suffix.lower()}"
+        img_id = str(uuid.uuid4())
+        cache = images_dir / f"{img_id}{ext}"
         cache.write_bytes(raw)
 
-        # ── Stage for LLM analysis (ephemeral, never persisted) ──
+        # ── Write BLOB to SQLite (for media server + permanent memory) ─
+        from slife.agent.multimodal import _write_image_blob as write_blob
+        await write_blob(raw, mime_type, file_name, image_id=img_id)
+
+        # ── Stage for LLM analysis: URL only, no base64 ─────────
         if self._config is not None and self._config.active_model.supports_vision:
             from slife.agent.conversation import get_conversation
-            from slife.agent.multimodal import encode_image
+            from slife.agent.multimodal import image_url_block
             conv = get_conversation()
             if conv is not None:
-                conv.inject_image(encode_image(str(p.resolve())))
+                block = image_url_block(img_id)
+                if block is not None:
+                    conv.inject_image(block)
 
-        return (
-            f"[image: {cache.resolve()}]\n"
-            f"图片已显示: {p.name} ({len(raw) / 1024:.0f} KB)"
-        )
+        # ── Build result: compact, scannable ──────────────────
+        from slife.media.tunnel import media_url_for
+        size_kb = len(raw) / 1024
+        size_str = f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
+        url = media_url_for(img_id)
+        lines = [
+            f"[image: {cache.resolve()}]",
+            f"url: {url}" if url else "url: (tunnel offline — no vision)",
+            f"file: {file_name}  {size_str}  {mime_type}",
+        ]
+        return "\n".join(lines)
+
+
+# Image BLOB write and URL block helpers live in
+# ``slife.agent.multimodal`` — shared by show_image and
+# Conversation.add_user_message.  No base64 ever.

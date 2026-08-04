@@ -706,10 +706,10 @@ class AgentLoop:
             )
             logger.warning("vision_unsupported imgs=%d model_vision=%s", n_imgs, self.supports_vision)
             # Add text-only — don't encode images the model can't handle
-            conversation.add_user_message(user_input, images=None)
+            await conversation.add_user_message(user_input, images=None)
             return AgentResult(text=msg, usage=TokenUsage())
 
-        conversation.add_user_message(user_input, images=images)
+        await conversation.add_user_message(user_input, images=images)
         total_usage = TokenUsage()
         t_request = _time.monotonic()
 

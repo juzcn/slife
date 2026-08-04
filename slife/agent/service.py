@@ -112,6 +112,7 @@ class AgentService:
             "mcp": PluginLifecycle("mcp", self),
             "memory": PluginLifecycle("memory", self),
             "wechat": PluginLifecycle("wechat", self),
+            "media": PluginLifecycle("media", self),
         }
 
         # A2A integration state
@@ -214,6 +215,10 @@ class AgentService:
         # ── WeChat: needs poll loop after registration ──────────────────
         if name == "wechat":
             return await self.start_wechat()
+
+        # ── Media: plain HTTP server, exposed via ngrok tunnel ──────────
+        if name == "media":
+            return await self.start_media()
 
         # ── Generic: spawn python -m <module>, connect, register tools ──
         from slife.mcp.process import MCPWrapperProcess
@@ -743,6 +748,12 @@ class AgentService:
         """Shut down the WeChat plugin and clean up."""
         await self._stop_plugin("wechat", has_poll_task=True)
 
+    async def stop_media(self) -> None:
+        """Stop the ngrok tunnel and media server."""
+        from slife.media.tunnel import stop_tunnel
+        stop_tunnel()
+        await self._stop_plugin("media")
+
     def kill_child_processes(self) -> None:
         """Synchronous best-effort child process cleanup.
 
@@ -902,6 +913,40 @@ class AgentService:
                 hint=f"Memory service failed to start: {e}. "
                      "Turn storage and search are unavailable.",
             )
+            return False
+
+    # ── Media lifecycle ────────────────────────────────────────────────
+
+    async def start_media(self) -> bool:
+        """Start the media server and ngrok tunnel. Returns True on success.
+
+        The media server serves image BLOBs via plain HTTP.  The ngrok
+        tunnel exposes it to the public internet so LLM vision APIs can
+        fetch images by HTTPS URL instead of inline base64.
+        """
+        import os
+
+        from slife.mcp.process import MCPWrapperProcess
+        from slife.media.tunnel import start_tunnel
+
+        logger.info("media_init start")
+        try:
+            process = MCPWrapperProcess(
+                command=sys.executable,
+                args=["-m", "slife.plugins.media.server"],
+            )
+            await process.start()
+
+            self._plugins["media"].process = process
+            self._plugins["media"].port = process.port
+            os.environ["SLIFE_MEDIA_PORT"] = str(process.port)
+
+            public_url = start_tunnel(process.port)
+            # SLIFE_MEDIA_URL is set inside start_tunnel()
+            logger.info("media_init_done port=%s url=%s", process.port, public_url)
+            return True
+        except Exception as e:
+            logger.warning("media_init_failed err=%s — continuing without media URL", e)
             return False
 
     # ── WeChat lifecycle ───────────────────────────────────────────────

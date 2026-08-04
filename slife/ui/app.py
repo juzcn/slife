@@ -303,6 +303,7 @@ class SlifeApp(App):
             _stop_one("mcp", self.service.stop_mcp()),
             _stop_one("memory", self.service.stop_memory()),
             _stop_one("wechat", self.service.stop_wechat()),
+            _stop_one("media", self.service.stop_media()),
             return_exceptions=True,
         )
 

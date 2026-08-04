@@ -27,6 +27,7 @@ dependencies = [
     "paho-mqtt>=2.0.0",
     "requests>=2.31.0",
     "credstore",
+    "pyngrok>=7.0.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

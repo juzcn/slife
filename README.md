@@ -9,7 +9,7 @@
 │  Agent Loop — LLM + Tools + Stream + Memory + A2A + Inbox  │
 │  ┌───────────┬──────────┬───────────┬─────────────────────┐ │
 │  │ MCP Proxy │ A2A Mesh │ Subagents │ Built-in Plugins    │ │
-│  │ (gateway) │ (MQTT)   │ (workers) │ Memory · MCP · WX   │ │
+│  │ (gateway) │ (MQTT)   │ (workers) │ Memory·MCP·WX·Media │ │
 │  └───────────┴──────────┴───────────┴─────────────────────┘ │
 │  Permanent Memory — hybrid search (grep + FTS5 + semantic)  │
 │  Credstore — OS keyring + AES cryptfile backup              │
@@ -176,13 +176,13 @@ All unified as OpenAI function definitions. The LLM sees no difference between c
 | Models | `models.py` | `list_models`, `add_model`, `remove_model`, `switch_model` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
-| Display | `meta.py` | `show_image` — display local image files inline in the chat |
+| Display | `meta.py` | `show_image` — display local or URL images, serve via ngrok for vision |
 
 **Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. All `add` tools are idempotent upserts. `mcp_set_server` additionally supports `disclosure="lazy"|"eager"` for tool lazy-loading.
 
 Plus built-in **Memory** plugin (`memory_search`, `memory_open`, …).
 
-### Image Display
+### Image & Vision
 
 Inline image rendering via ``textual-image`` with a two-tier strategy: **Sixel**
 (full-colour) on whitelisted terminals (Windows Terminal, WezTerm, iTerm2, Kitty),
@@ -194,14 +194,20 @@ the agent can display images with the `show_image` tool:
 Check this screenshot @D:\\Downloads\\error.png and tell me what's wrong
 ```
 
-MCP tools that produce binary image output (e.g. Playwright screenshots)
-automatically save to temp files and display inline. When the active model
-has `input: ["text"]` (no `"image"`), images are **not** sent to the LLM API
-— they're rendered locally only. A clear error is shown instead of a 400.
+``show_image`` supports both **local files** and **remote URLs**.
+In either case the image is cached and written as a BLOB to the ``diary_images``
+SQLite table — the single source of truth for image data in permanent memory.
 
-Images displayed via ``show_image`` are persisted as BLOBs in the
-``diary_images`` table alongside the turn text. On restart, the session
-restore reconstructs cached image files from BLOBs for re-rendering.
+**URL injection (no base64).** Images are served to vision-capable LLMs via a
+dedicated **media server** — a lightweight plain-HTTP plugin that reads BLOBs
+from SQLite and returns raw image bytes. An **ngrok tunnel** exposes the media
+server to the public internet, so LLM APIs (OpenAI, Anthropic, NVIDIA NIM)
+fetch images as lightweight ``https://`` URLs instead of inline base64 data URIs.
+When the tunnel is not active, image injection is silently skipped — no base64
+ever enters the LLM context.
+
+The ``show_image`` tool returns the public URL directly, so any vision-capable
+tool (e.g. NVIDIA NIM VLM, browser screenshot tools) can consume it:
 
 ### Memory — Always On
 
@@ -218,13 +224,14 @@ Embedding backends: local GGUF (BGE-M3, ~300 MB, offline), HuggingFace transform
 
 ### Plugins
 
-Three built-in plugins run as independent processes on Streamable HTTP transport:
+**Four built-in plugins** run as independent processes on Streamable HTTP or plain HTTP transport:
 
-| Plugin | Role |
-|--------|------|
-| **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) |
-| **slife-memory** | Diary database with hybrid search |
-| **slife-wechat** | Bidirectional WeChat via iLink ClawBot |
+| Plugin | Transport | Role |
+|--------|-----------|------|
+| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio + HTTP) |
+| **slife-memory** | Streamable HTTP | Diary database with hybrid search |
+| **slife-wechat** | Streamable HTTP | Bidirectional WeChat via iLink ClawBot |
+| **slife-media** | Plain HTTP | Serves image BLOBs via ngrok tunnel for vision APIs |
 
 External MCP servers (filesystem, fetch, search, any OpenAPI spec) are configured in `slife.json5` and auto-connected at startup. Third-party MCP servers need no Slife SDK — any stdio or HTTP MCP server works.
 

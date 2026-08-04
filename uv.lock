@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -2085,6 +2085,18 @@ crypto = [
 ]
 
 [[package]]
+name = "pyngrok"
+version = "8.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8d/ae/6664934258773db4666e65730c43b4b06730f78d49861a9a04ebcf4742ff/pyngrok-8.1.2.tar.gz", hash = "sha256:3b5383ec7dc4646ac0d046435eb58c6cd1cbc9acad70e6dee012b05dc25b070a", size = 45078, upload-time = "2026-04-29T15:16:53.969Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/5c/7733776a6a9704bffee19d203f9be80f25f78a5011a9863971be60fe2763/pyngrok-8.1.2-py3-none-any.whl", hash = "sha256:849e9f55706288b00eb28f4ae8ea16b05e52c609f80ef4a88ca23b385f2f9178", size = 25935, upload-time = "2026-04-29T15:16:52.088Z" },
+]
+
+[[package]]
 name = "pyperclip"
 version = "1.11.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2612,6 +2624,7 @@ dependencies = [
     { name = "openai" },
     { name = "paho-mqtt" },
     { name = "pillow" },
+    { name = "pyngrok" },
     { name = "qrcode" },
     { name = "requests" },
     { name = "sqlite-vec" },
@@ -2655,6 +2668,7 @@ requires-dist = [
     { name = "openai", specifier = ">=1.0.0" },
     { name = "paho-mqtt", specifier = ">=2.0.0" },
     { name = "pillow", specifier = ">=11.0" },
+    { name = "pyngrok", specifier = ">=7.0.0" },
     { name = "qrcode", specifier = ">=8.0" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "sentence-transformers", marker = "extra == 'transformer'" },

@@ -7,7 +7,7 @@ import json
 import logging
 import uuid
 
-from slife.agent.multimodal import encode_image
+from slife.agent.multimodal import prepare_image_url
 from slife.logfmt import sanitize_secrets
 
 logger = logging.getLogger(__name__)
@@ -122,14 +122,16 @@ class Conversation:
             i -= 1
         return repaired
 
-    def add_user_message(
+    async def add_user_message(
         self, content: str, images: list[str] | None = None
     ) -> None:
         """Add a user message, optionally with attached images.
 
-        If images are provided, the content is sent as a multimodal array
-        of content blocks (text + image_url parts). Otherwise, a plain
-        text content string is used.
+        If images are provided, each is prepared via
+        :func:`~slife.agent.multimodal.prepare_image_url` — written as a
+        SQLite BLOB and injected as a lightweight HTTPS URL served by the
+        media server.  Images are skipped silently when the ngrok tunnel
+        is not active (no base64 fallback).
 
         User input is sanitized to mask any API keys / tokens before the
         message enters the LLM context or persistent storage.
@@ -148,7 +150,9 @@ class Conversation:
         if images:
             parts: list[dict] = [{"type": "text", "text": content}]
             for img_path in images:
-                parts.append(encode_image(img_path))
+                block = await prepare_image_url(img_path)
+                if block is not None:
+                    parts.append(block)
             self.messages.append({"role": "user", "content": parts})
             logger.debug("conv_user text=%.80s imgs=%d", content, len(images))
         else:

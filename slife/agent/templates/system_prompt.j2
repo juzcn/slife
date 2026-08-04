@@ -18,8 +18,10 @@ Slife 环境信息
    - 单条工具结果上限: {{ tool_result_max_percent }}% 上下文窗口，超出自动截断。
 
 3. 图像与多模态
-   - 标记: 工具结果中的 `[image:<路径>]` 触发 UI 渲染。
    - 视觉支持: {{ "已启用" if has_vision else "未启用" }}
+   - `show_image` 返回的 `url:` 字段是公开可访问的 HTTPS URL，
+     可直接传给任何视觉工具。不要用 base64。
+   - `[image:<路径>]` 是 UI 渲染标记，不要作为视觉 API 输入。
 
 4. 凭证解析链
    - 语法: `${VAR}` 及 `${VAR:-default}`
