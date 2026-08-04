@@ -414,10 +414,17 @@ On startup, recent turns are read **directly from SQLite** — no MCP transport,
 no plugin dependency. The UI shows history immediately; plugins start in
 parallel. Turns are selected within a token budget (`context_floor ×
 context_window`) using incremental cost estimates from message text, not stored
-`token_count` values (which can be zero or cumulative). Images displayed via
-``show_image`` are reconstructed from BLOBs in ``diary_images``, written back
-to the cache directory, and re-rendered inline.  This decouples restore from
-plugin health.
+`token_count` values (which can be zero or cumulative). This decouples restore
+from plugin health.
+
+Image echo follows one rule: **the ``diary_images`` BLOB table is the single
+source of truth — cache files in ``logs/images/`` are ephemeral display
+artifacts** (Textual needs a real file to render).  Each stored
+``[image: <path>]`` marker is resolved without trusting the disk: BLOB (by
+filename stem) → written back to the images dir and rendered; no BLOB but the
+marker file still exists (legacy turns) → rendered in place; neither → text
+placeholder.  Restored images mount one-at-a-time on staggered timers after
+their tool-call widgets (HalfcellImage needs its own compositor cycle).
 
 ### Agent Isolation
 

@@ -12,8 +12,44 @@ from slife.agent.loop import (
     AgentResult,
     MaxIterationsExceeded,
     AgentEventHandler,
+    extract_image_markers,
+    _scan_for_images,
 )
 from slife.agent.llm_client import LLMClient, TokenUsage, StreamChunk
+
+
+# ── Image marker extraction ───────────────────────────────────────────
+
+
+class TestImageMarkers:
+    """Tests for extract_image_markers / _scan_for_images."""
+
+    def test_extract_single_marker(self):
+        text = "[image: D:\\cache\\abc123.png] done"
+        assert extract_image_markers(text) == ["D:\\cache\\abc123.png"]
+
+    def test_extract_multiple_markers(self):
+        text = "[image: /tmp/a.png] mid [image: /tmp/b.jpg]"
+        assert extract_image_markers(text) == ["/tmp/a.png", "/tmp/b.jpg"]
+
+    def test_extract_deduplicates(self):
+        text = "[image: /tmp/a.png] [image: /tmp/a.png]"
+        assert extract_image_markers(text) == ["/tmp/a.png"]
+
+    def test_extract_does_not_require_existence(self):
+        # Restore must not depend on the ephemeral cache dir.
+        text = "[image: /nonexistent/no-such-file.png]"
+        assert extract_image_markers(text) == ["/nonexistent/no-such-file.png"]
+
+    def test_extract_no_markers(self):
+        assert extract_image_markers("no markers here") == []
+
+    def test_scan_filters_missing_files(self, tmp_path):
+        img = tmp_path / "real.png"
+        img.write_bytes(b"\x89PNG fake")
+        text = f"[image: {img}] [image: {tmp_path / 'gone.png'}]"
+        result = _scan_for_images(text)
+        assert result == [str(img.resolve())]
 
 
 # ── ToolCallInfo ──────────────────────────────────────────────────────

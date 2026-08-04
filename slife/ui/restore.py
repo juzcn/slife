@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from slife.agent.llm_client import TokenUsage
-from slife.agent.loop import _scan_for_images
+from slife.agent.loop import extract_image_markers
 from slife.ui.chat import ChatView
 from slife.ui.tool_display import ToolCallWidget
 
@@ -69,68 +69,168 @@ def restore_prefix(channel: str | None, _agent_id: str) -> str:
 
 
 # ── Image BLOB restore ────────────────────────────────────────────────
+#
+# Design contract (see DESIGN.md "Session Restore"): image cache files
+# are ephemeral — on restart images are reconstructed from the
+# diary_images BLOB table, never from the cache directory.  The
+# resolution chain per ``[image: <path>]`` marker is:
+#
+#   1. BLOB by image_id (= marker filename stem) → write back to the
+#      canonical images dir → render;
+#   2. no BLOB, but the marker path exists on disk (legacy markers
+#      that predate BLOB storage) → render the original file;
+#   3. neither → text placeholder — never silently drop the image.
+
+# MIME → extension map for BLOBs whose file_name carries no suffix.
+_MIME_EXT: dict[str, str] = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+}
 
 
-async def restore_from_blob(
-    cache_path: str,
-    chat_view: "ChatView",
-    *,
-    after_widget: "ToolCallWidget | None" = None,
-) -> str | None:
-    """Reconstruct an image from the diary_images BLOB table.
+async def _load_blobs(
+    image_ids: list[str], db_path: Path | None = None,
+) -> dict[str, tuple[bytes, str, str]]:
+    """Batch-read BLOBs for *image_ids* — one connection, one query.
 
-    Extracts the ``image_id`` from the cache filename (stem = UUID),
-    reads the BLOB, writes it to the cache dir.  Returns the resolved
-    output path so the caller can mount the widget at the correct
-    position in the chat.
-
-    When *after_widget* is given, the image widget is mounted directly
-    after it rather than appended to the end of the chat.
+    Returns ``{image_id: (data, mime_type, file_name)}``.  Any DB
+    failure yields an empty dict so callers degrade to the disk /
+    placeholder fallbacks instead of aborting the restore.
     """
     import aiosqlite
-    from slife.paths import get_images_dir
 
-    p = Path(cache_path)
-    image_id = p.stem
+    if not image_ids:
+        return {}
 
-    db_path = _resolve_db_path()
-    if not db_path or not db_path.is_file():
-        return None
+    resolved = db_path or _resolve_db_path()
+    if not resolved or not resolved.is_file():
+        return {}
 
     try:
-        conn = await aiosqlite.connect(str(db_path))
+        conn = await aiosqlite.connect(str(resolved))
         try:
+            placeholders = ",".join("?" for _ in image_ids)
             cursor = await conn.execute(
-                "SELECT data FROM diary_images WHERE image_id = ?",
-                (image_id,),
+                f"SELECT image_id, data, mime_type, file_name "
+                f"FROM diary_images WHERE image_id IN ({placeholders})",
+                image_ids,
             )
-            row = await cursor.fetchone()
-            if row is None:
-                logger.debug("blob_restore_missing image_id=%s", image_id)
-                return None
-            # Always write restored images to the canonical cache
-            # directory, not the original marker path (which may be
-            # from an old format or an arbitrary filesystem location).
-            images_dir = get_images_dir()
-            images_dir.mkdir(parents=True, exist_ok=True)
-            output_path = images_dir / f"{image_id}{p.suffix}"
-            output_path.write_bytes(row[0])
-
-            from slife.ui.image_utils import safe_image_widget
-            widget = safe_image_widget(str(output_path.resolve()), css_class="chat-image")
-            if after_widget is not None:
-                chat_view.mount(widget, after=after_widget)
-            else:
-                chat_view.mount(widget)
-            chat_view.call_after_refresh(chat_view.scroll_end, animate=False)
-
-            logger.debug("blob_restore_ok image_id=%s size=%d path=%s", image_id, len(row[0]), output_path)
-            return str(output_path.resolve())
+            rows = await cursor.fetchall()
+            return {
+                row[0]: (row[1], row[2] or "", row[3] or "")
+                for row in rows
+            }
         finally:
             await conn.close()
     except Exception as e:
-        logger.debug("blob_restore_error image_id=%s err=%s", image_id, e)
-        return None
+        logger.debug("blob_restore_error stage=read err=%s", e)
+        return {}
+
+
+def _blob_extension(file_name: str, mime_type: str, marker_suffix: str) -> str:
+    """Pick an output extension for a restored BLOB.
+
+    Preference: original file_name suffix → mime_type map → the marker
+    path's suffix → ``.png``.
+    """
+    name_ext = Path(file_name).suffix.lower() if file_name else ""
+    if name_ext:
+        return name_ext
+    if mime_type in _MIME_EXT:
+        return _MIME_EXT[mime_type]
+    return marker_suffix or ".png"
+
+
+async def resolve_pending_images(
+    pending: list[tuple[str, "ChatView", "ToolCallWidget"]],
+    db_path: Path | None = None,
+) -> list[tuple[str | None, str, "ChatView", "ToolCallWidget"]]:
+    """Resolve pending image markers to renderable file paths.
+
+    Runs the resolution chain (BLOB → original file → ``None``
+    placeholder) for every ``(marker_path, chat_view, after_widget)``
+    spec with a single DB round-trip.  BLOBs are written back to the
+    canonical images dir once per unique image_id.
+
+    Returns one ``(resolved_path_or_None, marker_path, chat_view,
+    after_widget)`` entry per input spec, in input order.
+    """
+    from slife.paths import get_images_dir
+
+    if not pending:
+        return []
+
+    # Unique image ids for the batch query; unique marker paths so a
+    # marker repeated across turns is resolved (and written) once.
+    image_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for marker, _cv, _aw in pending:
+        iid = Path(marker).stem
+        if iid and iid not in seen_ids:
+            image_ids.append(iid)
+            seen_ids.add(iid)
+
+    blobs = await _load_blobs(image_ids, db_path)
+
+    resolved_by_marker: dict[str, str | None] = {}
+    written_by_id: dict[str, str] = {}
+    for marker, _cv, _aw in pending:
+        if marker in resolved_by_marker:
+            continue
+
+        p = Path(marker)
+        image_id = p.stem
+        blob = blobs.get(image_id)
+
+        if blob is not None:
+            data, mime_type, file_name = blob
+            if image_id in written_by_id:
+                resolved_by_marker[marker] = written_by_id[image_id]
+                continue
+            try:
+                # Always write restored images to the canonical cache
+                # directory, not the original marker path (which may be
+                # from an old format or an arbitrary filesystem location).
+                images_dir = get_images_dir()
+                images_dir.mkdir(parents=True, exist_ok=True)
+                ext = _blob_extension(file_name, mime_type, p.suffix.lower())
+                output_path = images_dir / f"{image_id}{ext}"
+                output_path.write_bytes(data)
+                out = str(output_path.resolve())
+                written_by_id[image_id] = out
+                resolved_by_marker[marker] = out
+                logger.debug(
+                    "blob_restore_ok image_id=%s size=%d path=%s",
+                    image_id, len(data), output_path,
+                )
+            except Exception as e:
+                logger.debug(
+                    "blob_restore_error image_id=%s err=%s", image_id, e,
+                )
+                resolved_by_marker[marker] = None
+            continue
+
+        # No BLOB — fall back to the marker path itself when the file
+        # still exists (legacy markers predating BLOB storage).
+        if p.exists() and p.is_file():
+            logger.debug(
+                "blob_restore_missing image_id=%s fallback=original", image_id,
+            )
+            resolved_by_marker[marker] = str(p.resolve())
+        else:
+            logger.debug(
+                "blob_restore_missing image_id=%s fallback=placeholder", image_id,
+            )
+            resolved_by_marker[marker] = None
+
+    return [
+        (resolved_by_marker[marker], marker, cv, aw)
+        for marker, cv, aw in pending
+    ]
 
 
 def _resolve_db_path() -> Path | None:
@@ -158,22 +258,49 @@ def _safe_parse_args(raw: str) -> dict:
 # ── Chained image restore ─────────────────────────────────────────────
 
 
-def _schedule_image_restore(
-    app: "SlifeApp",
-    pending: list[tuple[str, "ChatView", "ToolCallWidget"]],
+def _mount_resolved_image(
+    resolved_path: str | None,
+    marker_path: str,
+    chat_view: "ChatView",
+    after_widget: "ToolCallWidget | None",
 ) -> None:
-    """Schedule image restores with staggered timers so each
+    """Mount one restored image (or its placeholder) in the chat view.
+
+    ``resolved_path=None`` mounts the broken-file placeholder from
+    ``safe_image_widget`` using the marker path, so an image that has
+    no BLOB and no file still shows as ``⚠ <filename>`` instead of
+    silently disappearing.
+    """
+    from slife.ui.image_utils import safe_image_widget
+
+    widget = safe_image_widget(
+        resolved_path or marker_path, css_class="chat-image",
+    )
+    if after_widget is not None:
+        chat_view.mount(widget, after=after_widget)
+    else:
+        chat_view.mount(widget)
+    chat_view.call_after_refresh(chat_view.scroll_end, animate=False)
+    logger.debug(
+        "image_mount widget=%s resolved=%s",
+        type(widget).__name__, bool(resolved_path),
+    )
+
+
+def _schedule_image_mounts(
+    app: "SlifeApp",
+    resolved: list[tuple[str | None, str, "ChatView", "ToolCallWidget"]],
+) -> None:
+    """Schedule image widget mounts with staggered timers so each
     HalfcellImage gets its own compositor cycle.
 
-    Does NOT block — timers fire after the app is fully running."""
-    import asyncio as _aio
-
-    for i, (img_path, cv, after_widget) in enumerate(pending):
+    All DB I/O already happened in the resolve phase — timers only
+    mount pre-resolved widgets.  Does NOT block."""
+    for i, (path, marker, cv, after_widget) in enumerate(resolved):
         app.set_timer(
             0.5 + i * 0.2,
-            lambda p=img_path, c=cv, a=after_widget: _aio.ensure_future(
-                restore_from_blob(p, c, after_widget=a)
-            ),
+            lambda p=path, m=marker, c=cv, a=after_widget:
+                _mount_resolved_image(p, m, c, a),
         )
 
 
@@ -261,7 +388,11 @@ async def restore_session(
                     content = msg.get("content", "") or ""
                     tool_results[tcid] = content
                     tool_errors[tcid] = msg.get("is_error", False)
-                    imgs = _scan_for_images(content)
+                    # Extract markers WITHOUT an existence check — the
+                    # cache files are ephemeral; the BLOB table is the
+                    # source of truth (resolve_pending_images handles
+                    # the BLOB → file → placeholder chain).
+                    imgs = extract_image_markers(content)
                     if imgs:
                         tool_images[tcid] = imgs
 
@@ -367,10 +498,12 @@ async def restore_session(
                     for img_path in tool_images.get(tcid, []):
                         _pending_images.append((img_path, chat_view, widget))
 
-    # Phase 3b: Schedule image restores with staggered timers.
-    # Does not block — timers fire after the app is running.
+    # Phase 3b: Resolve images from the BLOB table (single DB
+    # round-trip), then schedule staggered widget mounts.  Does not
+    # block — timers fire after the app is running.
     if _pending_images:
-        _schedule_image_restore(app, _pending_images)
+        resolved_images = await resolve_pending_images(_pending_images)
+        _schedule_image_mounts(app, resolved_images)
 
     # ── Post-restore setup ────────────────────────────────────────────
     if skipped > 0:

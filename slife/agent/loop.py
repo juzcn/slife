@@ -138,24 +138,48 @@ class _StreamResult:
 _IMAGE_MARKER_RE = re.compile(r"\[image:\s*(.+?)\]")
 
 
-def _scan_for_images(text: str) -> list[str]:
-    """Scan tool result text for ``[image: <path>]`` markers.
+def extract_image_markers(text: str) -> list[str]:
+    """Extract ``[image: <path>]`` markers from text — no existence check.
 
-    Only detects the explicit marker — no heuristic path matching.
-    Tools (``show_image``, MCP binary data handler) are responsible
-    for producing the marker when they have a real image to display.
+    Pure marker extraction + dedup.  Callers decide whether file
+    existence matters: the live agent loop filters down to files that
+    exist on disk (:func:`_scan_for_images`), while session restore
+    resolves markers against the BLOB store first and must not depend
+    on the (ephemeral) cache directory — see ``slife.ui.restore``.
 
-    Returns deduplicated list of absolute paths.
+    Returns deduplicated marker paths in order of appearance.
     """
     found: list[str] = []
     seen: set[str] = set()
 
     for match in _IMAGE_MARKER_RE.finditer(text):
         path_str = match.group(1).strip()
-        p = Path(path_str)
-        if p.exists() and p.is_file() and path_str not in seen:
-            found.append(str(p.resolve()))
+        if path_str and path_str not in seen:
+            found.append(path_str)
             seen.add(path_str)
+
+    return found
+
+
+def _scan_for_images(text: str) -> list[str]:
+    """Scan tool result text for ``[image: <path>]`` markers pointing at real files.
+
+    Only detects the explicit marker — no heuristic path matching.
+    Tools (``show_image``, MCP binary data handler) are responsible
+    for producing the marker when they have a real image to display.
+
+    Returns deduplicated list of absolute paths that exist on disk.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+
+    for path_str in extract_image_markers(text):
+        p = Path(path_str)
+        if p.exists() and p.is_file():
+            resolved = str(p.resolve())
+            if resolved not in seen:
+                found.append(resolved)
+                seen.add(resolved)
 
     return found
 

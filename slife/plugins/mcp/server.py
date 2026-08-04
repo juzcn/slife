@@ -31,6 +31,23 @@ _pool = ConnectionPool()
 # ═══════════════════════════════════════════════════════════════════════
 
 
+# ── Config comparison for idempotency ──────────────────────────────
+
+def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
+    """Compare two ServerConfigs for equality (ignoring description)."""
+    return (
+        a.name == b.name
+        and a.command == b.command
+        and a.args == b.args
+        and a.env == b.env
+        and a.url == b.url
+        and a.headers == b.headers
+        and a.enabled == b.enabled
+        and a.active == b.active
+        and a.auth == b.auth
+    )
+
+
 @mcp.tool(
     name="mcp_add_server",
     description=(
@@ -53,25 +70,6 @@ _pool = ConnectionPool()
         "registry — helps track where tools came from for future maintenance."
     ),
 )
-
-
-# ── Config comparison for idempotency ──────────────────────────────
-
-def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
-    """Compare two ServerConfigs for equality (ignoring description)."""
-    return (
-        a.name == b.name
-        and a.command == b.command
-        and a.args == b.args
-        and a.env == b.env
-        and a.url == b.url
-        and a.headers == b.headers
-        and a.enabled == b.enabled
-        and a.active == b.active
-        and a.auth == b.auth
-    )
-
-
 async def mcp_add_server(
     name: str,
     command: str = "",
