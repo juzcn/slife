@@ -750,6 +750,9 @@ class AgentService:
 
     async def stop_media(self) -> None:
         """Stop the ngrok tunnel and media server."""
+        media = self._plugins["media"]
+        if media.tunnel_task is not None and not media.tunnel_task.done():
+            media.tunnel_task.cancel()
         from slife.media.tunnel import stop_tunnel
         stop_tunnel()
         await self._stop_plugin("media")
@@ -941,11 +944,14 @@ class AgentService:
             self._plugins["media"].port = process.port
             os.environ["SLIFE_MEDIA_PORT"] = str(process.port)
 
-            # Tunnel handshake is slow (~3-5s) — run in thread
-            # so it never blocks plugin startup or the TUI.
+            # Tunnel handshake (~3-5s) — fire-and-forget so startup is instant.
+            # Failure is logged but never blocks; prepare_image skips injection
+            # until SLIFE_MEDIA_URL is set.
             loop = asyncio.get_running_loop()
-            public_url = await loop.run_in_executor(None, start_tunnel, process.port)
-            logger.info("media_init_done port=%s url=%s", process.port, public_url)
+            self._plugins["media"].tunnel_task = loop.run_in_executor(
+                None, start_tunnel, process.port,
+            )
+            logger.info("media_init_done port=%s", process.port)
             return True
         except Exception as e:
             logger.warning("media_init_failed err=%s — continuing without media URL", e)
