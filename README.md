@@ -176,7 +176,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between c
 | Models | `models.py` | `list_models`, `add_model`, `remove_model`, `switch_model` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
-| Display | `meta.py` | `show_image` — display local or URL images, serve via ngrok for vision |
+| Display | `meta.py` | `prepare_image` — load & prepare images, serve via ngrok for vision |
 
 **Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. All `add` tools are idempotent upserts. `mcp_set_server` additionally supports `disclosure="lazy"|"eager"` for tool lazy-loading.
 
@@ -188,13 +188,13 @@ Inline image rendering via ``textual-image`` with a two-tier strategy: **Sixel**
 (full-colour) on whitelisted terminals (Windows Terminal, WezTerm, iTerm2, Kitty),
 **HalfcellImage** (coloured Unicode half-block characters) everywhere else,
 and a text placeholder as final fallback. Users attach images with `@path` syntax;
-the agent can display images with the `show_image` tool:
+the agent can display images with the `prepare_image` tool:
 
 ```
 Check this screenshot @D:\\Downloads\\error.png and tell me what's wrong
 ```
 
-``show_image`` supports both **local files** and **remote URLs**.
+``prepare_image`` supports both **local files** and **remote URLs**.
 In either case the image is cached and written as a BLOB to the ``diary_images``
 SQLite table — the single source of truth for image data in permanent memory.
 
@@ -206,7 +206,7 @@ fetch images as lightweight ``https://`` URLs instead of inline base64 data URIs
 When the tunnel is not active, image injection is silently skipped — no base64
 ever enters the LLM context.
 
-The ``show_image`` tool returns the public URL directly, so any vision-capable
+The ``prepare_image`` tool returns the public URL directly, so any vision-capable
 tool (e.g. NVIDIA NIM VLM, browser screenshot tools) can consume it:
 
 ### Memory — Always On

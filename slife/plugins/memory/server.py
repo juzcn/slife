@@ -144,7 +144,7 @@ async def memory_save_turn(
             token_count=token_count, who_helped=who_helped, what_model=what_model,
             channel=channel, embedder=_embedder,
         )
-        # Save image BLOBs from cache files produced by show_image.
+        # Save image BLOBs from cache files produced by prepare_image.
         # These are written after save_turn's commit (separate transaction)
         # — if the image loop fails the turn still has [image: path] markers.
         if image_paths:

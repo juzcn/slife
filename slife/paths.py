@@ -74,7 +74,7 @@ def get_skills_dir() -> Path:
 def get_images_dir() -> Path:
     """Directory for cached image files.
 
-    Images are written here by ``show_image`` for immediate TUI rendering
+    Images are written here by ``prepare_image`` for immediate TUI rendering
     and reconstructed from the BLOB table during session restore.  Lives
     under ``logs/`` so it is git-ignored and treated as ephemeral runtime
     output alongside session logs.

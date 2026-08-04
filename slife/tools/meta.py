@@ -233,29 +233,28 @@ class ClearContextTool(Tool):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# show_image
+# prepare_image
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class ShowImageTool(Tool):
-    """Display and inject an image so the LLM can analyse it.
+class PrepareImageTool(Tool):
+    """Validate, cache, and convert an image to a public HTTPS URL.
 
     Sources
       - **local path** → cached, BLOB'd, served via ngrok media URL.
-      - **remote URL** → downloaded, cached, BLOB'd, then injected
-        as the original URL (already public — no tunnel needed).
+      - **remote URL** → downloaded, cached, BLOB'd, then returned
+        as-is (already public — no tunnel needed).
 
     The image BLOB is always written to ``diary_images`` for permanent
     memory.  Injection uses lightweight HTTPS URLs — base64 is **never**
     sent to the LLM.
     """
 
-    name: ClassVar[str] = "show_image"
+    name: ClassVar[str] = "prepare_image"
     category: ClassVar[str] = "Display"
     description: ClassVar[str] = (
-        "Show an image: local file path or http(s) URL. "
-        "Returns a public URL that any vision tool (NIM VLM, browser, "
-        "OCR) can consume directly — no base64 needed. "
+        "Load and prepare an image for vision analysis: local path or http(s) URL. "
+        "Returns a public HTTPS URL that any vision tool can consume. "
         "Use this BEFORE calling vision/OCR tools so they have a URL. "
         "The image is permanently stored and recoverable across sessions."
     )
@@ -389,5 +388,5 @@ class ShowImageTool(Tool):
 
 
 # Image BLOB write and URL block helpers live in
-# ``slife.agent.multimodal`` — shared by show_image and
+# ``slife.agent.multimodal`` — shared by prepare_image and
 # Conversation.add_user_message.  No base64 ever.

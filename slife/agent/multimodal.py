@@ -64,7 +64,7 @@ async def prepare_image_url(path: str | Path) -> dict[str, Any] | None:
 def image_url_block(image_id: str) -> dict[str, Any] | None:
     """Build a URL content block for an image already in the BLOB table.
 
-    Callers that have already written the BLOB (e.g. ``show_image``
+    Callers that have already written the BLOB (e.g. ``prepare_image``
     via :func:`_ingest`) use this to avoid a duplicate write.
     """
     from slife.media.tunnel import media_url_for
