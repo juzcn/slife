@@ -107,7 +107,11 @@ async def _ensure_store() -> SessionStore:
             _embedder = EmbeddingClient.from_config()
         _store = SessionStore(_db_path)
         with elapsed("store_setup", logger, level=logging.INFO, db=str(_db_path)):
-            await _store.setup(embedding_dim=_embedder.dimension)
+            model_id = f"{_embedder.backend}:{_embedder._model}" if _embedder.available else ""
+            await _store.setup(
+                embedding_dim=_embedder.dimension,
+                embedding_model=model_id,
+            )
         if _embedder.available:
             logger.info(
                 "embeddings_ready backend=%s model=%s dim=%d",
@@ -264,15 +268,22 @@ async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
     }
 
 
-async def _background_reindex() -> None:
+async def _background_reindex(reset: bool = False) -> None:
     """Run _reindex_impl in small batches until complete.
 
-    Spawned as a background task by memory_set_embedding.
-    Each batch is small (5 turns) so it doesn't block the event loop.
+    Called by ``_reinit_store_after_model_change`` after the vec0 table
+    has been migrated (or confirmed unchanged).  Each batch is small
+    (5 turns) so it doesn't block the event loop.
     """
     import asyncio as _asyncio
 
     batches = 0
+    if reset:
+        try:
+            cleared = await _reindex_impl(reset=True, batch_limit=0)
+            logger.info("background_reindex_reset cleared=%d", cleared.get("total", 0))
+        except Exception as e:
+            logger.warning("background_reindex_reset_error err=%s", e)
     try:
         while True:
             result = await _reindex_impl(reset=False, batch_limit=5)
@@ -283,6 +294,57 @@ async def _background_reindex() -> None:
             await _asyncio.sleep(0.5)
     except Exception as e:
         logger.warning("background_reindex_aborted err=%s", e)
+
+
+async def _reinit_store_after_model_change() -> None:
+    """Close + re-setup the store so migration runs, then reindex.
+
+    Must be called after ``reload_embedder()`` when the embedding model
+    changed.  Runs as a background task — ``memory_set_embedding``
+    returns immediately while this runs asynchronously.
+
+    Sets ``_store = None`` first so concurrent ``_ensure_store`` calls
+    see an uninitialized store and create a new one (protected by its
+    own lock).  After migration, the background reindex populates the
+    vec0 table with new-model vectors.
+    """
+    global _store
+    if _embedder is None:
+        return
+
+    # Null out the global so concurrent _ensure_store calls know to
+    # reinitialize.  The old connection is closed below.
+    old_store = _store
+    _store = None
+
+    if old_store is not None:
+        try:
+            await old_store.close()
+        except Exception as e:
+            logger.debug("store_close_error err=%s", e)
+        del old_store
+
+    model_id = (
+        f"{_embedder.backend}:{_embedder._model}"
+        if _embedder.available else ""
+    )
+    logger.info(
+        "store_reinit_start db=%s model=%s dim=%d",
+        _db_path, model_id, _embedder.dimension,
+    )
+
+    new_store = SessionStore(_db_path)  # type: ignore[arg-type]
+    from slife.logfmt import elapsed
+    with elapsed("store_reinit", logger, level=logging.INFO, db=str(_db_path)):
+        await new_store.setup(
+            embedding_dim=_embedder.dimension,
+            embedding_model=model_id,
+        )
+    _store = new_store
+    logger.info("store_reinited model=%s dim=%d", model_id, _embedder.dimension)
+
+    # Background reindex will populate the (possibly migrated) vec0 table.
+    await _background_reindex(reset=False)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -595,17 +657,20 @@ async def memory_set_embedding(
         if gguf_path:
             status["gguf_path"] = gguf_path
 
-        # Kick off background reindex so existing turns get embeddings
-        # without the user having to ask.  Runs in small batches to avoid
-        # blocking the event loop for too long.
+        # Fire store reinit + reindex as a background task so
+        # memory_set_embedding returns immediately.  The task closes
+        # the old store connection, re-runs setup (triggering vec0 table
+        # migration if the model dimension or identity changed), then
+        # reindexes all turns with the new model.
         global _reindex_task
         if _reindex_task and not _reindex_task.done():
             _reindex_task.cancel()
-        _reindex_task = asyncio.create_task(_background_reindex())
-        logger.info("background_reindex_started")
-        unembedded = await _count_unembedded()
-        if unembedded > 0:
-            status["reindex"] = f"后台索引已启动，{unembedded} 条待处理"
+        _reindex_task = asyncio.create_task(_reinit_store_after_model_change())
+        logger.info("background_reinit_and_reindex_started")
+        status["hint"] = (
+            "后台正在迁移向量表并重建索引，关键词搜索正常可用，"
+            "语义搜索将在索引完成后恢复。"
+        )
 
         return json.dumps(status, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -648,14 +713,6 @@ async def memory_set_enabled(enabled: bool) -> str:
         status = await reload_embedder()
 
         if enabled:
-            unembedded = await _count_unembedded()
-            if unembedded > 0:
-                global _reindex_task
-                if _reindex_task and not _reindex_task.done():
-                    _reindex_task.cancel()
-                _reindex_task = asyncio.create_task(_background_reindex())
-                logger.info("background_reindex_started")
-                status["reindex"] = f"后台索引已启动，{unembedded} 条待处理"
             status["message"] = "语义搜索已启用。"
         else:
             embedded_count = await _count_all_embedded()

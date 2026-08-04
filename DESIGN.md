@@ -225,6 +225,10 @@ without editing config files:
 ``credstore copy <source> <dest>`` duplicates a credential under a new key —
 useful when multiple providers share the same API key.  Dual-writes to both
 system keyring and cryptfile backup with the standard atomic pattern.
+**Idempotent** — if *dest* already holds the same value as *source*, the
+operation is a no-op (no password prompt).  If *dest* was previously injected
+into the system environment, the new value is automatically re-injected so all
+three stores stay consistent: keyring == cryptfile == env.
 
 ## Tool System
 
@@ -406,7 +410,17 @@ Three backends, configurable at runtime (no restart):
 | Transformer (local) | `slife[transformer]` | BAAI/bge-m3 | 1024 |
 | API (OpenAI-compatible) | Provider key | text-embedding-3-small | 1536 |
 
-Long turns are chunked at paragraph boundaries (~500 tokens, 1-paragraph overlap). `memory_set_embedding` triggers background re-indexing.
+Long turns are chunked at paragraph boundaries (~500 tokens, 1-paragraph
+overlap).  ``memory_set_embedding`` triggers background re-indexing.
+
+**Model migration.** When the embedding model changes (dimension or identity),
+the vec0 virtual table is automatically dropped and recreated with the
+correct dimension during store setup.  A ``diary_meta`` table records the
+current model identity so same-dimension switches (e.g. ada-002 → 3-small,
+both 1536) are also detected and migrated.  A background task then reindexes
+all existing turns — ``memory_set_embedding`` returns immediately so the
+user is not blocked.  During reindex, hybrid search degrades gracefully to
+FTS5-only; keyword search is unaffected.
 
 ### Session Restore
 

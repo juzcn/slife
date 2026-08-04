@@ -42,8 +42,13 @@ class SessionStore:
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
-    async def setup(self, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> None:
+    async def setup(
+        self,
+        embedding_dim: int = DEFAULT_EMBEDDING_DIM,
+        embedding_model: str = "",
+    ) -> None:
         self._embedding_dim = embedding_dim
+        self._embedding_model = embedding_model
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(str(self._db_path))
         self._conn.row_factory = aiosqlite.Row
@@ -51,7 +56,10 @@ class SessionStore:
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._load_vec_extension()
         await self._run_schema()
-        logger.info("store_ready path=%s wal=on vec_dim=%d", self._db_path, self._embedding_dim)
+        logger.info(
+            "store_ready path=%s wal=on vec_dim=%d model=%s",
+            self._db_path, self._embedding_dim, embedding_model or "none",
+        )
 
     async def _load_vec_extension(self) -> None:
         import sqlite_vec
@@ -79,7 +87,117 @@ class SessionStore:
             except Exception as e:
                 logger.debug("schema_stmt_error err=%s stmt=%.80s", e, stmt)
         await self._conn.commit()
+
+        # Detect and fix embedding dimension mismatch after model change.
+        # CREATE TABLE IF NOT EXISTS won't alter a vec0 table whose
+        # dimension no longer matches.  We drop it so the next statement
+        # recreates with the correct dimension — old embeddings are
+        # invalid anyway (different model → different vector space).
+        await self._maybe_migrate_vec_dimension()
         logger.debug("schema_ready")
+
+    async def _maybe_migrate_vec_dimension(self) -> None:
+        """Drop and recreate ``diary_semantic`` if the embedding config changed.
+
+        Two triggers:
+        1.  **Dimension mismatch** — the vec0 ``float[N]`` column doesn't
+            match the current model's output dimension.  Inserting wrong-sized
+            vectors would fail silently.
+        2.  **Model identity change** — same dimension, different model
+            (e.g. ``text-embedding-ada-002`` → ``text-embedding-3-small``,
+            both 1536).  Vectors live in different spaces and hybrid search
+            would mix incompatible scores.
+
+        When either triggers, the old ``diary_semantic`` table is dropped.
+        A background reindex will repopulate it with the new model's vectors.
+        The new model identity is recorded in ``diary_meta`` so future
+        same-dimension switches are also detected.
+        """
+        import re
+
+        assert self._conn is not None
+
+        # ── Check stored model identity ──────────────────────────
+        cursor = await self._conn.execute(
+            "SELECT value FROM diary_meta WHERE key = 'embedding_model'",
+        )
+        row = await cursor.fetchone()
+        stored_model: str = row[0] if (row and isinstance(row[0], str)) else ""
+        model_identity = self._embedding_model or ""
+
+        # ── Check current vec0 dimension ─────────────────────────
+        cursor = await self._conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='diary_semantic'",
+        )
+        row = await cursor.fetchone()
+        create_sql = row[0] if (row and row[0] and isinstance(row[0], str)) else ""
+        existing_dim = 0
+        if create_sql:
+            match = re.search(r"float\[(\d+)\]", create_sql)
+            if match:
+                existing_dim = int(match.group(1))
+
+        dim_changed = existing_dim and existing_dim != self._embedding_dim
+        model_changed = (
+            model_identity
+            and stored_model
+            and stored_model != model_identity
+        )
+        table_missing = not create_sql
+
+        if not dim_changed and not model_changed and not table_missing:
+            # Record model identity if not yet stored (first run / upgrade).
+            if model_identity and not stored_model:
+                await self._conn.execute(
+                    "INSERT OR REPLACE INTO diary_meta (key, value) "
+                    "VALUES ('embedding_model', ?)",
+                    (model_identity,),
+                )
+                await self._conn.commit()
+            return
+
+        reason = (
+            f"dim {existing_dim}→{self._embedding_dim}"
+            if dim_changed
+            else f"model {stored_model}→{model_identity}"
+            if model_changed
+            else "table missing"
+        )
+        logger.info(
+            "vec_migrate reason=%s — dropping diary_semantic", reason,
+        )
+        await self._conn.execute("DROP TABLE IF EXISTS diary_semantic")
+        await self._conn.commit()
+
+        # Recreate with the correct dimension.
+        schema_path = Path(__file__).parent / "schema.sql"
+        schema_sql = schema_path.read_text(encoding="utf-8")
+        schema_sql = schema_sql.replace(
+            "float[1536]", f"float[{self._embedding_dim}]",
+        )
+        for stmt in _split_sql(schema_sql):
+            stmt = stmt.strip()
+            if not stmt or "diary_semantic" not in stmt:
+                continue
+            try:
+                await self._conn.execute(stmt)
+            except Exception as e:
+                logger.debug(
+                    "vec_recreate_error err=%s stmt=%.80s", e, stmt,
+                )
+        await self._conn.commit()
+
+        # Persist the new model identity.
+        if model_identity:
+            await self._conn.execute(
+                "INSERT OR REPLACE INTO diary_meta (key, value) "
+                "VALUES ('embedding_model', ?)",
+                (model_identity,),
+            )
+            await self._conn.commit()
+
+        logger.info("vec_migrated reason=%s", reason)
 
     async def close(self) -> None:
         if self._conn:

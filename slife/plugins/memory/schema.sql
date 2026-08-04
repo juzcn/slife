@@ -77,6 +77,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS diary_semantic USING vec0(
 );
 
 
+-- ── 元数据 ────────────────────────────────────────────────────
+-- Tracks which embedding model produced the diary_semantic vectors.
+-- When the model changes (even same-dimension, e.g. ada-002 → 3-small),
+-- old vectors are dropped because they live in a different vector space.
+CREATE TABLE IF NOT EXISTS diary_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- ── 索引 ──────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_diary_created ON diary(created_at);
 
