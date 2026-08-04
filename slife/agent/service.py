@@ -34,6 +34,11 @@ from slife.mcp.tool_adapter import create_proxy_tools
 
 logger = logging.getLogger(__name__)
 
+# Module-level callbacks invoked when the active model is switched at
+# runtime (e.g. by the switch_model tool).  Each callback receives the
+# new model ref string (e.g. "deepseek/deepseek-v4-flash").
+_on_model_switched: list[Callable[[str], None]] = []
+
 
 class AgentService:
     """Wires together LLM client, tools, conversation, and agent loop.
@@ -114,6 +119,10 @@ class AgentService:
         self._subagent_manager = None
         self._on_a2a_callbacks: list = []  # callbacks for TUI notification
 
+        # Register for runtime model-switch notifications so the
+        # LLM client and agent loop stay in sync with the active model.
+        _on_model_switched.append(self.reload_active_model)
+
     @property
     def model_display_name(self) -> str:
         """Human-readable name of the active model."""
@@ -123,6 +132,39 @@ class AgentService:
     def thinking_enabled(self) -> bool:
         """Whether thinking/reasoning mode is active."""
         return self.config.active_model.thinking_enabled
+
+    def reload_active_model(self, new_ref: str) -> None:
+        """Reload runtime state after the active model is switched.
+
+        Rebuilds the LLM client, updates the agent loop's model-specific
+        settings, and refreshes the conversation system prompt so the
+        next turn uses the new model.
+        """
+        old_ref = self.config.active_model_ref
+        self.config.active_model_ref = new_ref
+        model = self.config.active_model
+
+        logger.info(
+            "model_reloaded from=%s to=%s display=%s",
+            old_ref, new_ref, model.display_name,
+        )
+
+        # Rebuild LLM client with the new model config
+        self.llm_client = LLMClient(model)
+
+        # Update agent loop with new model's capabilities
+        self.agent_loop.llm_client = self.llm_client
+        self.agent_loop.supports_vision = model.supports_vision
+        self.agent_loop.model_name = model.display_name
+        self.agent_loop.input_modalities = ", ".join(model.input_modalities)
+        self.agent_loop.context_window = model.context_window
+
+        # Rebuild system prompt with updated model info
+        self.conversation.update_context_footer("")
+        new_system = build_system_prompt(self.config)
+        if self.conversation.messages and self.conversation.messages[0]["role"] == "system":
+            self.conversation.messages[0]["content"] = new_system
+            self.conversation._base_system_prompt = new_system
 
     @property
     def mcp_enabled(self) -> bool:

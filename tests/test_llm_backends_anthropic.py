@@ -271,12 +271,29 @@ class TestAnthropicBuildKwargs:
         assert kw["tools"][0]["name"] == "echo"
         assert kw["tools"][0]["input_schema"] == {"type": "object"}
 
-    def test_thinking_enabled(self, anthropic_thinking_cfg):
+    def test_thinking_enabled_skipped_for_openai_compat(self, anthropic_thinking_cfg):
+        """When compat.thinkingFormat is 'openai', thinking param is NOT sent."""
         backend = AnthropicBackend(anthropic_thinking_cfg)
+        kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
+        assert "thinking" not in kw
+
+    def test_thinking_enabled_standard_anthropic(self):
+        """Standard Anthropic model with thinking sends thinking param."""
+        cfg = ModelConfig(
+            ref="anthropic/claude-sonnet",
+            provider="anthropic",
+            api_model="claude-sonnet-4-20250514",
+            display_name="Claude Sonnet 4",
+            api_key="sk-ant-test",
+            api="anthropic-messages",
+            max_tokens=8192,
+            thinking_enabled=True,
+        )
+        backend = AnthropicBackend(cfg)
         kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
         assert "thinking" in kw
         assert kw["thinking"]["type"] == "enabled"
-        assert kw["thinking"]["budget_tokens"] == 65536  # max_tokens // 2
+        assert kw["thinking"]["budget_tokens"] == 4096  # max_tokens // 2
 
     def test_thinking_disabled(self, anthropic_cfg):
         backend = AnthropicBackend(anthropic_cfg)

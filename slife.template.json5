@@ -85,17 +85,17 @@
           },
         ],
       },
-      // Example: Alibaba Cloud Bailian token-plan (Anthropic protocol)
-      // Uncomment and set BAILIAN_API_KEY via:  credstore set BAILIAN_API_KEY
-      // bailian: {
-      //   base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
-      //   api_key: "${BAILIAN_API_KEY}",
-      //   api: "anthropic-messages",
-      //   models: [
-      //     { model: "qwen3.8-max", name: "Qwen3.8 Max", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072 },
-      //     { model: "qwen3.8-max-preview", name: "Qwen3.8 Max Preview", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072 },
-      //   ],
-      // },
+      // Alibaba Cloud Bailian token-plan (Anthropic protocol)
+      // Set BAILIAN_API_KEY via:  credstore set BAILIAN_API_KEY
+      bailian: {
+        base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+        api_key: "${QWEN_TOKEN_PLAN_API_KEY}",
+        api: "anthropic-messages",
+        models: [
+          { model: "qwen3.8-max", name: "Qwen3.8 Max", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072, compat: {thinkingFormat: "openai"} },
+          { model: "qwen3.8-max-preview", name: "Qwen3.8 Max Preview", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072, compat: {thinkingFormat: "openai"} },
+        ],
+      },
     },
   },
   active_model: "deepseek/deepseek-v4-flash",

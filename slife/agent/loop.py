@@ -424,7 +424,9 @@ class AgentLoop:
         conversation.insert_context_status(build_context_status(**kwargs))
 
         async for chunk in self.llm_client.chat_stream(
-            messages=conversation.to_openai_messages(),
+            messages=conversation.to_openai_messages(
+                thinking_enabled=self.llm_client.model_config.thinking_enabled,
+            ),
             tools=self._inject_meta_params(
                 self.tool_registry.to_openai_functions()
             ),

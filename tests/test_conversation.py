@@ -356,6 +356,70 @@ class TestAddAssistantThinking:
         assert "images" not in msgs[0]
 
 
+class TestThinkingEnabledRoundtrip:
+    """Tests for reasoning_content roundtrip when thinking_enabled=True."""
+
+    def test_empty_reasoning_for_messages_without_thinking(self):
+        """Assistant msgs without thinking get reasoning_content="" when thinking on."""
+        conv = Conversation()
+        conv.add_assistant_message("answer")
+        msgs = conv.to_openai_messages(thinking_enabled=True)
+        assert msgs[0]["reasoning_content"] == ""
+
+    def test_thinking_still_renamed_when_present(self):
+        """Messages with thinking still get the real reasoning_content."""
+        conv = Conversation()
+        conv.add_assistant_message("answer", thinking="real reasoning")
+        msgs = conv.to_openai_messages(thinking_enabled=True)
+        assert msgs[0]["reasoning_content"] == "real reasoning"
+
+    def test_disabled_mode_no_empty_reasoning(self):
+        """When thinking_enabled=False, messages without thinking get no field."""
+        conv = Conversation()
+        conv.add_assistant_message("answer")
+        msgs = conv.to_openai_messages(thinking_enabled=False)
+        assert "reasoning_content" not in msgs[0]
+
+    def test_synthetic_trim_context_gets_empty_reasoning(self):
+        """_trim_context harness messages get empty reasoning_content."""
+        conv = Conversation(system_prompt="test")
+        conv.add_user_message("hello")
+        conv.add_assistant_message("reply")
+        conv.messages.insert(1, {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "_trim_abc", "type": "function",
+                            "function": {"name": "_trim_context", "arguments": "{}"}}],
+        })
+        msgs = conv.to_openai_messages(thinking_enabled=True)
+        trim_msg = msgs[1]
+        assert trim_msg["reasoning_content"] == ""
+
+    def test_synthetic_context_status_gets_empty_reasoning(self):
+        """_context_status harness messages get empty reasoning_content."""
+        conv = Conversation(system_prompt="test")
+        conv.add_user_message("hello")
+        conv.messages.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "_ctx_abc12345", "type": "function",
+                            "function": {"name": "_context_status", "arguments": "{}"}}],
+        })
+        msgs = conv.to_openai_messages(thinking_enabled=True)
+        ctx_msg = msgs[-1]
+        assert ctx_msg["reasoning_content"] == ""
+
+    def test_user_and_system_roles_unaffected(self):
+        """Only assistant messages get reasoning_content; user/system are untouched."""
+        conv = Conversation(system_prompt="Be helpful.")
+        conv.add_user_message("hi")
+        conv.add_assistant_message("hey", thinking="thinking...")
+        msgs = conv.to_openai_messages(thinking_enabled=True)
+        assert "reasoning_content" not in msgs[0]  # system
+        assert "reasoning_content" not in msgs[1]  # user
+        assert msgs[2]["reasoning_content"] == "thinking..."  # assistant
+
+
 # ── count_tokens ─────────────────────────────────────────────────────
 
 

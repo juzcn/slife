@@ -138,10 +138,15 @@ class AnthropicBackend:
         if self.model_config.top_p:
             kwargs["top_p"] = self.model_config.top_p
         if self.model_config.thinking_enabled:
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": max(self.model_config.max_tokens // 2, 1024),
-            }
+            compat = self.model_config.compat or {}
+            # Bailian / qwen models with thinkingFormat "openai" always
+            # think — no explicit Anthropic thinking param is needed (and
+            # sending one may cause errors).
+            if compat.get("thinkingFormat") != "openai":
+                kwargs["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": max(self.model_config.max_tokens // 2, 1024),
+                }
         return kwargs
 
     # ── Chat ──────────────────────────────────────────────────────────

@@ -10,11 +10,16 @@ active_model: key.  These tools follow the same pattern as CLI tools
 and REST API tools (read_config → mutate → write_config).
 """
 
+from __future__ import annotations
+
 import logging
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from slife.tools._config_io import _ConfigPathMixin, read_config, write_config
 from slife.tools.base import Tool
+
+if TYPE_CHECKING:
+    from slife.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -329,7 +334,12 @@ def _find_first_ref(providers: dict) -> str | None:
 
 
 class SwitchModelTool(_ConfigPathMixin, Tool):
-    """Switch the active model."""
+    """Switch the active model.
+
+    Updates the config file AND the in-memory Config object so the
+    AgentService, LLM client, and TUI status bar all reflect the new
+    model without a restart.
+    """
 
     name: ClassVar[str] = "switch_model"
     category: ClassVar[str] = "Config"
@@ -348,6 +358,14 @@ class SwitchModelTool(_ConfigPathMixin, Tool):
         },
         "required": ["ref"],
     }
+
+    def __init__(self, config_path=None, config=None):
+        super().__init__(config_path=config_path)
+        self._config: Config | None = config
+
+    @classmethod
+    def from_config(cls, cfg: dict, config: "Config | None"):
+        return cls(config_path=config._path if config else None, config=config)
 
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
@@ -384,4 +402,20 @@ class SwitchModelTool(_ConfigPathMixin, Tool):
         raw[_ACTIVE_KEY] = ref
         write_config(self._config_path, raw)
         logger.info("model_switched from=%s to=%s", old, ref)
+
+        # ── Update in-memory config + notify runtime ──────────────
+        if self._config is not None:
+            self._config.active_model_ref = ref
+        # Fire module-level callbacks so AgentService rebuilds the
+        # LLM client and the TUI refreshes the status bar.
+        try:
+            from slife.agent.service import _on_model_switched
+            for cb in _on_model_switched:
+                try:
+                    cb(ref)
+                except Exception:
+                    logger.debug("model_switch_callback_error", exc_info=True)
+        except ImportError:
+            pass
+
         return f"[OK] Switched active model from `{old}` to `{ref}` ({display})."

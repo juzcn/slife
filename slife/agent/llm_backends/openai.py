@@ -56,24 +56,15 @@ class OpenAIBackend:
         }
         if tools:
             kwargs["tools"] = tools
-        if self._is_deepseek():
-            extra_body: dict = {
-                "thinking": {
-                    "type": (
-                        "enabled"
-                        if self.model_config.thinking_enabled
-                        else "disabled"
-                    )
-                }
-            }
-            if (
-                self.model_config.thinking_enabled
-                and self.model_config.reasoning_effort
-            ):
-                extra_body["reasoning_effort"] = (
-                    self.model_config.reasoning_effort
-                )
+        if self.model_config.thinking_enabled:
+            extra_body: dict = {"thinking": {"type": "enabled"}}
+            if self.model_config.reasoning_effort:
+                extra_body["reasoning_effort"] = self.model_config.reasoning_effort
             kwargs["extra_body"] = extra_body
+        elif self._is_deepseek():
+            # DeepSeek requires an explicit "disabled" when thinking is
+            # off; most other providers simply omit the thinking field.
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         return kwargs
 
     # ── Usage ─────────────────────────────────────────────────────────

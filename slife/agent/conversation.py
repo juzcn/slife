@@ -39,9 +39,20 @@ class Conversation:
     def __init__(self, system_prompt: str | None = None):
         self.messages: list[dict] = []
         self._base_system_prompt: str = system_prompt or ""
+        self._pending_images: list[dict] = []  # ephemeral image blocks for LLM
         if system_prompt:
             self.messages.append({"role": "system", "content": system_prompt})
             logger.debug("conv_init sys_prompt_len=%d", len(system_prompt))
+
+    def inject_image(self, image_block: dict) -> None:
+        """Stage an image for the next API call only — never persisted.
+
+        The image block is appended as a synthetic user message in
+        :meth:`to_openai_messages` and cleared immediately after, so
+        it reaches the LLM but never enters the stored conversation
+        or the memory database.
+        """
+        self._pending_images.append(image_block)
 
     def update_context_footer(self, footer: str) -> None:
         """Replace the system message with base + dynamic context footer.
@@ -188,25 +199,49 @@ class Conversation:
             "content": content,
         })
 
-    def to_openai_messages(self) -> list[dict]:
+    def to_openai_messages(
+        self, thinking_enabled: bool = False,
+    ) -> list[dict]:
         """Return messages for the API call.
 
         Converts the internal ``thinking`` field to ``reasoning_content``
-        which is the wire-format field DeepSeek requires when thinking
-        mode is enabled.  The API returns a 400 error if
-        reasoning_content is missing from assistant messages that
-        originally carried it.
+        which is the wire-format field DeepSeek / Qwen require when
+        thinking mode is enabled.  The API returns a 400 error if
+        reasoning_content is missing from *any* assistant message in the
+        conversation — including synthetic harness messages that never
+        carried reasoning.
         """
         cleaned = []
         for msg in self.messages:
             m = dict(msg)
-            # DeepSeek thinking mode: reasoning_content must be preserved
-            # across turns.  Stored internally as 'thinking', renamed here.
+            # Thinking mode: reasoning_content must be preserved across
+            # turns.  Stored internally as 'thinking', renamed here.
             thinking = m.pop("thinking", None)
             if thinking:
                 m["reasoning_content"] = thinking
+            elif thinking_enabled and m.get("role") == "assistant":
+                # DeepSeek/Qwen require reasoning_content on EVERY
+                # assistant message when thinking is on, even synthetic
+                # harness messages (_context_status, _trim_context) that
+                # never carried reasoning.
+                m["reasoning_content"] = ""
             m.pop("images", None)  # internal attachment tracking
             cleaned.append(m)
+
+        # ── Ephemeral image injection ─────────────────────────────
+        # check_image tools stage images here; they are appended once
+        # and cleared — never persisted to the message list or DB.
+        if self._pending_images:
+            for img in self._pending_images:
+                cleaned.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "[系统] 已加载图片"},
+                        img,
+                    ],
+                })
+            self._pending_images.clear()
+
         return cleaned
 
     def pop_last_turn(self) -> int:

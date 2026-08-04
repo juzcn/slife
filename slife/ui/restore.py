@@ -71,20 +71,31 @@ def restore_prefix(channel: str | None, _agent_id: str) -> str:
 # ── Image BLOB restore ────────────────────────────────────────────────
 
 
-async def restore_from_blob(cache_path: str, chat_view: "ChatView") -> bool:
+async def restore_from_blob(
+    cache_path: str,
+    chat_view: "ChatView",
+    *,
+    after_widget: "ToolCallWidget | None" = None,
+) -> str | None:
     """Reconstruct an image from the diary_images BLOB table.
 
     Extracts the ``image_id`` from the cache filename (stem = UUID),
-    reads the BLOB, writes it to the cache dir, and renders in chat.
+    reads the BLOB, writes it to the cache dir.  Returns the resolved
+    output path so the caller can mount the widget at the correct
+    position in the chat.
+
+    When *after_widget* is given, the image widget is mounted directly
+    after it rather than appended to the end of the chat.
     """
     import aiosqlite
+    from slife.paths import get_images_dir
 
     p = Path(cache_path)
     image_id = p.stem
 
     db_path = _resolve_db_path()
     if not db_path or not db_path.is_file():
-        return False
+        return None
 
     try:
         conn = await aiosqlite.connect(str(db_path))
@@ -95,15 +106,31 @@ async def restore_from_blob(cache_path: str, chat_view: "ChatView") -> bool:
             )
             row = await cursor.fetchone()
             if row is None:
-                return False
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_bytes(row[0])
-            chat_view.add_image_to_chat(str(p.resolve()))
-            return True
+                logger.debug("blob_restore_missing image_id=%s", image_id)
+                return None
+            # Always write restored images to the canonical cache
+            # directory, not the original marker path (which may be
+            # from an old format or an arbitrary filesystem location).
+            images_dir = get_images_dir()
+            images_dir.mkdir(parents=True, exist_ok=True)
+            output_path = images_dir / f"{image_id}{p.suffix}"
+            output_path.write_bytes(row[0])
+
+            from slife.ui.image_utils import safe_image_widget
+            widget = safe_image_widget(str(output_path.resolve()), css_class="chat-image")
+            if after_widget is not None:
+                chat_view.mount(widget, after=after_widget)
+            else:
+                chat_view.mount(widget)
+            chat_view.call_after_refresh(chat_view.scroll_end, animate=False)
+
+            logger.debug("blob_restore_ok image_id=%s size=%d path=%s", image_id, len(row[0]), output_path)
+            return str(output_path.resolve())
         finally:
             await conn.close()
-    except Exception:
-        return False
+    except Exception as e:
+        logger.debug("blob_restore_error image_id=%s err=%s", image_id, e)
+        return None
 
 
 def _resolve_db_path() -> Path | None:
@@ -126,6 +153,28 @@ def _safe_parse_args(raw: str) -> dict:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return {"_raw": raw}
+
+
+# ── Chained image restore ─────────────────────────────────────────────
+
+
+def _schedule_image_restore(
+    app: "SlifeApp",
+    pending: list[tuple[str, "ChatView", "ToolCallWidget"]],
+) -> None:
+    """Schedule image restores with staggered timers so each
+    HalfcellImage gets its own compositor cycle.
+
+    Does NOT block — timers fire after the app is fully running."""
+    import asyncio as _aio
+
+    for i, (img_path, cv, after_widget) in enumerate(pending):
+        app.set_timer(
+            0.5 + i * 0.2,
+            lambda p=img_path, c=cv, a=after_widget: _aio.ensure_future(
+                restore_from_blob(p, c, after_widget=a)
+            ),
+        )
 
 
 # ── Main restore orchestrator ─────────────────────────────────────────
@@ -278,6 +327,12 @@ async def restore_session(
     # ── Phase 3: Rebuild UI ───────────────────────────────────────────
     chat_view = app.query_one("#chat-view", ChatView)
 
+    # Collect image paths to render one-at-a-time after the batch.
+    # HalfcellImage needs its own refresh cycle — mounting multiple
+    # instances inside a single batch_update causes only the last
+    # one to render (textual-image known issue).
+    _pending_images: list[tuple[str, "ChatView", "ToolCallWidget"]] = []
+
     with app.batch_update():
         for op in ui_ops:
             if op["type"] == "user":
@@ -310,7 +365,12 @@ async def restore_session(
                     chat_view.mount(widget)
                     widget.set_complete(result, is_error)
                     for img_path in tool_images.get(tcid, []):
-                        await restore_from_blob(img_path, chat_view)
+                        _pending_images.append((img_path, chat_view, widget))
+
+    # Phase 3b: Schedule image restores with staggered timers.
+    # Does not block — timers fire after the app is running.
+    if _pending_images:
+        _schedule_image_restore(app, _pending_images)
 
     # ── Post-restore setup ────────────────────────────────────────────
     if skipped > 0:

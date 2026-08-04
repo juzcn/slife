@@ -104,6 +104,19 @@ class TestBuildKwargs:
         assert kw["extra_body"]["thinking"]["type"] == "enabled"
         assert "reasoning_effort" not in kw["extra_body"]
 
+    def test_thinking_enabled_non_deepseek(self):
+        """Non-DeepSeek provider with thinking_enabled also gets extra_body."""
+        mc = ModelConfig(
+            ref="ollama/qwen", provider="ollama", api_model="qwen",
+            display_name="Qwen", api_key="key",
+            thinking_enabled=True, reasoning_effort=None,
+        )
+        backend = OpenAIBackend(mc)
+        kw = backend._build_kwargs([], None)
+        assert "extra_body" in kw
+        assert kw["extra_body"]["thinking"]["type"] == "enabled"
+        assert "reasoning_effort" not in kw["extra_body"]
+
 
 # ── chat (non-streaming) ────────────────────────────────────────────────
 

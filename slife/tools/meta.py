@@ -12,7 +12,10 @@ import asyncio
 import logging
 import uuid
 from collections import defaultdict
-from typing import ClassVar
+from typing import ClassVar, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from slife.config import Config
 
 from slife.tools.base import Tool
 
@@ -233,20 +236,22 @@ class ClearContextTool(Tool):
 # show_image
 # ═══════════════════════════════════════════════════════════════════════
 
-class ShowImageTool(Tool):
-    """Display a local image file inline in the chat.
 
-    Writes the image to a persistent cache directory and returns a
-    ``[image: path]`` marker that triggers TUI rendering.  The actual
-    BLOB persistence happens later in ``save_to_memory``, atomically
-    with the turn text — this tool only handles rendering.
+class ShowImageTool(Tool):
+    """Display a local image file inline in the chat, and — when the
+    active model supports vision — inject its base64 content into the
+    conversation so the LLM can analyse it on the next turn.
+
+    The image is cached to ``logs/images/`` for TUI rendering and
+    persistent BLOB storage (``diary_images`` table).
     """
 
     name: ClassVar[str] = "show_image"
     category: ClassVar[str] = "Display"
     description: ClassVar[str] = (
-        "在聊天中内联显示本地图片文件。"
+        "在聊天中内联显示本地图片文件，并将图片内容注入对话使你能够分析。"
         "参数 path 为图片文件的绝对路径，支持 png/jpg/gif/webp/bmp。"
+        "当你需要查看图片内容、描述图片中的视觉信息时，使用本工具。"
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -258,6 +263,13 @@ class ShowImageTool(Tool):
         },
         "required": ["path"],
     }
+
+    def __init__(self, config=None):
+        self._config = config
+
+    @classmethod
+    def from_config(cls, cfg: dict, config: "Config | None"):
+        return cls(config=config)
 
     async def execute(self, **kwargs) -> str:
         path: str = kwargs["path"]
@@ -280,6 +292,14 @@ class ShowImageTool(Tool):
         img_id = str(uuid.uuid4())  # dashes break sanitize_secrets hex pattern
         cache = images_dir / f"{img_id}{p.suffix.lower()}"
         cache.write_bytes(raw)
+
+        # ── Stage for LLM analysis (ephemeral, never persisted) ──
+        if self._config is not None and self._config.active_model.supports_vision:
+            from slife.agent.conversation import get_conversation
+            from slife.agent.multimodal import encode_image
+            conv = get_conversation()
+            if conv is not None:
+                conv.inject_image(encode_image(str(p.resolve())))
 
         return (
             f"[image: {cache.resolve()}]\n"
