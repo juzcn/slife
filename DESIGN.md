@@ -116,6 +116,57 @@ the initial empty state).  On subsequent turns only changes appear.
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
+## Harness Tools
+
+Harness tools are executed by the system — the LLM **cannot see or call** them,
+but some deliver their results back as synthetic messages in the conversation.
+They fall into two categories:
+
+### Synthetic Conversation Messages
+
+Injected directly by ``Conversation`` as fake ``assistant(tool_calls=…)`` +
+``tool(result)`` pairs.  They are **not** in the tool schema, and the ``_``
+prefix signals "internal / not for you to call".  The LLM sees the result.
+
+| Tool | Injected | Trigger | What the LLM sees |
+|------|----------|---------|-------------------|
+| ``_trim_context`` | After system prompt | Context > 80% ceiling | "已裁剪 N 个最旧轮次 (~X tokens)，内容已存入记忆库，如需回顾请用 memory\_search。" |
+| ``_context_status`` | After last user message | Before every API call | Current time, last-turn token usage, model / CWD / shell change notifications |
+
+### Plugin Harness Tools
+
+Real MCP tools that are **filtered from the LLM-visible tool list** at
+registration time.  The harness (``AgentService``) calls them programmatically
+— the LLM never knows they exist, and never sees their results.
+
+**slife-memory** (filter: ``memory_save_turn``, ``memory_get_recent_turns``):
+
+| Tool | Called by | Purpose |
+|------|-----------|---------|
+| ``memory_save_turn`` | ``AgentService.save_to_memory()`` | Persist a completed turn as a new diary row (unconditional — even on cancel / error) |
+| ``memory_get_recent_turns`` | ``AgentService.sync_recent_turns()`` | Load recent turns for UI restore on startup |
+| ``memory_reindex`` | ``memory_set_embedding`` (internal) | Rebuild all embeddings after model change |
+
+**slife-wechat** (filter: ``wechat_drain_incoming``, ``wechat_dispatch_reply``):
+
+| Tool | Called by | Purpose |
+|------|-----------|---------|
+| ``wechat_drain_incoming`` | ``AgentService._poll_wechat()`` | Pull queued incoming messages from WeChat |
+| ``wechat_dispatch_reply`` | ``AgentService._dispatch_wechat_reply()`` | Send the agent's final response back to the WeChat user |
+
+### Filtering Mechanism
+
+``AgentService._spawn_plugin()`` accepts a ``harness_tools`` set.  After the
+plugin starts, all its tools are fetched via ``list_tools()``, then:
+
+```python
+# Only register tools the LLM IS allowed to see
+llm_visible = [t for t in plugin_tools if t["name"] not in harness_tools]
+```
+
+The ``_``-prefix convention is used for synthetic messages; plugin harness
+tools use explicit allowlist filtering instead.
+
 ## Agent Loop
 
 Single function-calling loop. All tools are registered as OpenAI function definitions in one `ToolRegistry`. The LLM decides what to call and when.
