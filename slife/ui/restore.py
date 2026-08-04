@@ -455,7 +455,7 @@ async def restore_session(
     # ── Phase 2: Replace conversation messages ────────────────────────
     conversation.messages = all_messages
 
-    # Prime the context time range so _context_status shows the LLM
+    # Prime the context time range so _sys_note shows the LLM
     # what time window its current context covers.  The start date is
     # advanced by the agent loop after each trim.
     if turns:

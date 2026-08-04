@@ -57,7 +57,7 @@ class TestBuild:
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "20% 至 80%" in result  # defaults
-        assert "_trim_context" in result
+        assert "_sys_trim" in result
         assert "memory_search" in result
 
     def test_vision_disabled(self, cfg):

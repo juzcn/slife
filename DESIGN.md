@@ -134,8 +134,8 @@ prefix signals "internal / not for you to call".  The LLM sees the result.
 
 | Tool | Injected | Trigger | What the LLM sees |
 |------|----------|---------|-------------------|
-| ``_trim_context`` | After system prompt | Context > 80% ceiling | "已裁剪 N 个最旧轮次 (~X tokens)，内容已存入记忆库，如需回顾请用 memory\_search。" |
-| ``_context_status`` | After last user message | Before every API call | Current time, last-turn token usage, model / CWD / shell change notifications |
+| ``_sys_trim`` | After system prompt | Context > 80% ceiling | "已裁剪 N 个最旧轮次 (~X tokens)，内容已存入记忆库，如需回顾请用 memory\_search。" |
+| ``_sys_note`` | After last user message | Before every API call | Current time, last-turn token usage, context time range, model / CWD / shell change notifications |
 
 ### Plugin Harness Tools
 

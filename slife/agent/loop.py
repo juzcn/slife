@@ -344,7 +344,7 @@ class AgentLoop:
 
         When the conversation exceeds ``ceiling * context_window`` tokens,
         the oldest complete turns are removed and a synthetic
-        ``_trim_context`` tool-call + result pair is inserted so the LLM
+        ``_sys_trim`` tool-call + result pair is inserted so the LLM
         sees a visible notification.  Trimmed turns were already persisted
         by :meth:`AgentService.save_to_memory` when each turn completed,
         so the LLM can retrieve them via ``memory_search``.
@@ -394,7 +394,7 @@ class AgentLoop:
             memory_saved=self.memory_enabled,
         )
 
-        # Advance the context time range so _context_status reflects
+        # Advance the context time range so _sys_note reflects
         # the new earliest turn still in context.
         for _ in turns:
             if self._context_turn_dates:

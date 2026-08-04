@@ -13,7 +13,7 @@ Slife 环境信息
 
 2. 上下文窗口策略
    - 保留比例: {{ context_floor }}% 至 {{ context_ceiling }}%
-   - 超限行为: 移除最旧轮次，插入 `_trim_context` 系统记录（工具调用 + 结果）。
+   - 超限行为: 移除最旧轮次，插入 `_sys_trim` 系统记录（工具调用 + 结果）。
    - 已移除轮次已持久化，可通过 `memory_search` 检索。
    - 单条工具结果上限: {{ tool_result_max_percent }}% 上下文窗口，超出自动截断。
 

@@ -222,7 +222,7 @@ class Conversation:
             elif thinking_enabled and m.get("role") == "assistant":
                 # DeepSeek/Qwen require reasoning_content on EVERY
                 # assistant message when thinking is on, even synthetic
-                # harness messages (_context_status, _trim_context) that
+                # harness messages (_sys_note, _sys_trim) that
                 # never carried reasoning.
                 m["reasoning_content"] = ""
             m.pop("images", None)  # internal attachment tracking
@@ -558,7 +558,7 @@ class Conversation:
         turns_summary: str,
         memory_saved: bool = True,
     ) -> None:
-        """Insert a synthetic ``_trim_context`` tool-call + result pair.
+        """Insert a synthetic ``_sys_trim`` tool-call + result pair.
 
         The pair is inserted right after the system prompt (or at
         position 0 when there is no system prompt), so the LLM sees the
@@ -572,7 +572,7 @@ class Conversation:
                     "id": tool_call_id,
                     "type": "function",
                     "function": {
-                        "name": "_trim_context",
+                        "name": "_sys_trim",
                         "arguments": json.dumps(
                             {
                                 "turns_removed": turns_removed,
@@ -618,18 +618,18 @@ class Conversation:
         )
 
     def insert_context_status(self, content: str) -> None:
-        """Insert a synthetic ``_context_status`` tool-call + result pair.
+        """Insert a synthetic ``_sys_note`` tool-call + result pair.
 
         Placed right after the last user message so the LLM sees current
         time, token usage, and any changed model/CWD/shell at the start
-        of each turn.  Like ``_trim_context``, this is a harness
+        of each turn.  Like ``_sys_trim``, this is a harness
         notification — not in the tool schema, ``_`` prefix marks it as
         internal.
 
-        Old ``_context_status`` pairs are removed first to keep the
+        Old ``_sys_note`` pairs are removed first to keep the
         conversation clean.
         """
-        self._remove_synthetic_tool("_context_status")
+        self._remove_synthetic_tool("_sys_note")
 
         tool_call_id = f"_ctx_{uuid.uuid4().hex[:8]}"
         assistant_msg: dict = {
@@ -640,7 +640,7 @@ class Conversation:
                     "id": tool_call_id,
                     "type": "function",
                     "function": {
-                        "name": "_context_status",
+                        "name": "_sys_note",
                         "arguments": "{}",
                     },
                 }
