@@ -59,22 +59,26 @@ Seven numbered sections of platform facts, plus conditional A2A:
 
 ### Dynamic Template (``context_status.j2``)
 
-Injected before each API call.  Two categories of content:
+Injected before each API call.  Three always-shown lines, plus optional
+change notifications:
 
-**Always shown** — changes every turn:
-- **当前时间** — current datetime with UTC offset
+**Always shown:**
+- **当前时间** — current datetime with UTC offset (``%Y-%m-%d %H:%M:%S``)
+- **上下文覆盖** — earliest turn date in context through now.  Set by session
+  restore and advanced after each ``_trim_context`` so the LLM always knows
+  what time window its working memory covers.
 - **上轮 Token** — last API call's ``total_tokens`` and percentage of context
-  window (hidden on the first turn)
+  window.  On the very first turn this is the restore estimate from
+  ``tokens_selected``; afterwards it's the real API measurement.
 
-**Conditional** — only shown when changed since last turn, with distinct
-wording to avoid confusion with the static baseline:
+**Conditional** — only shown when changed since the last turn:
 - **已切换模型** — display name, context window, input modalities
 - **已在新的工作目录** — ``os.getcwd()``
 - **已切换到 Shell** — detected shell
 
-The conditional fields are tracked by ``AgentLoop`` via ``_last_*`` instance
-variables.  On the first turn all three are emitted (since they differ from
-the initial empty state).  On subsequent turns only changes appear.
+Change detection is tracked by ``AgentLoop`` via ``_last_*`` instance
+variables.  On the first turn all three are emitted (they differ from the
+initial empty state); on subsequent turns only actual changes appear.
 
 ### Design Principles
 
@@ -145,7 +149,6 @@ registration time.  The harness (``AgentService``) calls them programmatically
 |------|-----------|---------|
 | ``memory_save_turn`` | ``AgentService.save_to_memory()`` | Persist a completed turn as a new diary row (unconditional — even on cancel / error) |
 | ``memory_get_recent_turns`` | ``AgentService.sync_recent_turns()`` | Load recent turns for UI restore on startup |
-| ``memory_reindex`` | ``memory_set_embedding`` (internal) | Rebuild all embeddings after model change |
 
 **slife-wechat** (filter: ``wechat_drain_incoming``, ``wechat_dispatch_reply``):
 

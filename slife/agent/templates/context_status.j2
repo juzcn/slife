@@ -1,5 +1,8 @@
 ▸ 当前状态
    - 当前时间: {{ current_datetime }} (UTC{{ utc_offset }})
+{%- if context_time_start %}
+   - 上下文覆盖: {{ context_time_start }} ~ 现在
+{%- endif %}
 {%- if model_name %}
    - 已切换模型: {{ model_name }}（上限: {{ context_window }} tokens，输入: {{ input_modalities }}）
 {%- endif %}
@@ -9,6 +12,4 @@
 {%- if shell %}
    - 已切换到 Shell: {{ shell }}
 {%- endif %}
-{%- if last_total_tokens %}
    - 上轮 Token: {{ last_total_tokens }} ({{ last_usage_pct }}%)
-{%- endif %}

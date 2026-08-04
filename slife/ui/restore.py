@@ -455,6 +455,18 @@ async def restore_session(
     # ── Phase 2: Replace conversation messages ────────────────────────
     conversation.messages = all_messages
 
+    # Prime the context time range so _context_status shows the LLM
+    # what time window its current context covers.  The start date is
+    # advanced by the agent loop after each trim.
+    if turns:
+        dates = [
+            t.get("created_at", "")[:19].replace("T", " ")
+            for t in turns if t.get("created_at")
+        ]
+        if dates:
+            app.service.agent_loop._context_time_start = dates[0]
+            app.service.agent_loop._context_turn_dates = dates[1:]  # reserve for trim
+
     # ── Phase 3: Rebuild UI ───────────────────────────────────────────
     chat_view = app.query_one("#chat-view", ChatView)
 
@@ -485,6 +497,11 @@ async def restore_session(
                 am.finalize(intermediate=not op.get("is_final", False))
 
                 for tc in op.get("tool_calls", []):
+                    # Skip harness notifications (_trim_context, _context_status).
+                    # They are system-injected, not LLM actions — showing them
+                    # as tool widgets confuses the human user.
+                    if tc.get("name", "").startswith("_"):
+                        continue
                     tcid = tc["id"]
                     result = tool_results.get(tcid, "")
                     is_error = tool_errors.get(tcid, False)

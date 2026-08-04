@@ -232,6 +232,8 @@ class AgentLoop:
         self._last_shell: str = ""
         self._last_model_name: str = ""
         self._last_input_modalities: str = ""
+        self._context_time_start: str = ""  # earliest turn date in context; set by restore, advanced by trim
+        self._context_turn_dates: list[str] = []  # dates of restored turns, oldest-first; consumed by trim
 
     def cancel(self) -> None:
         """Signal the agent loop to stop at the next safe point."""
@@ -392,9 +394,14 @@ class AgentLoop:
             memory_saved=self.memory_enabled,
         )
 
+        # Advance the context time range so _context_status reflects
+        # the new earliest turn still in context.
+        for _ in turns:
+            if self._context_turn_dates:
+                self._context_time_start = self._context_turn_dates.pop(0)
         logger.info(
-            "context_trimmed turns=%d tokens_freed=%d tool_call_id=%s",
-            len(turns), tokens_freed, tool_call_id,
+            "context_trimmed turns=%d tokens_freed=%d tool_call_id=%s time_start=%s",
+            len(turns), tokens_freed, tool_call_id, self._context_time_start,
         )
 
     # ── Stream processing ──────────────────────────────────────────
@@ -445,6 +452,8 @@ class AgentLoop:
         if shell_now != self._last_shell:
             kwargs["shell"] = shell_now
             self._last_shell = shell_now
+        if self._context_time_start:
+            kwargs["context_time_start"] = self._context_time_start
         conversation.insert_context_status(build_context_status(**kwargs))
 
         async for chunk in self.llm_client.chat_stream(

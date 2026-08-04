@@ -92,11 +92,15 @@ def build_context_status(
     input_modalities: str = "",
     cwd: str = "",
     shell: str = "",
+    context_time_start: str = "",
 ) -> str:
     """Render the dynamic context status footer.
 
-    Time and token are always shown.  Model, CWD, and shell are only
+    Time and token are always shown.  Model, CWD, shell are only
     passed (and rendered) when they changed since the last turn.
+    *context_time_start* is passed every turn — it shows what time
+    window the current context covers, and is updated after restore
+    and after each trim.
     """
     now = datetime.now().astimezone()
     last_usage_pct = (
@@ -107,13 +111,14 @@ def build_context_status(
     return _env.get_template("context_status.j2").render(
         current_datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
         utc_offset=now.strftime("%z"),
-        last_total_tokens=f"{last_total_tokens:,}" if last_total_tokens else "",
+        last_total_tokens=f"{last_total_tokens:,}",
         last_usage_pct=last_usage_pct,
         model_name=model_name,
         context_window=f"{context_window:,}" if context_window else "",
         input_modalities=input_modalities,
         cwd=cwd,
         shell=shell,
+        context_time_start=context_time_start,
     ).strip()
 
 

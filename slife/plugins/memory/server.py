@@ -209,7 +209,7 @@ async def _count_all_embedded() -> int:
 
 
 async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
-    """Core reindex logic — shared by memory_reindex and _background_reindex.
+    """Core reindex logic — shared by background reindex tasks.
 
     Returns a dict with total, indexed, remaining, complete.
     """
@@ -679,20 +679,6 @@ async def memory_set_embedding(
 
 
 @mcp.tool(
-    name="memory_reindex",
-    description="harness-only — background re-embed of turns missing embeddings.",
-)
-async def memory_reindex(reset: bool = False, batch_limit: int = 10) -> str:
-    """Harness-level tool: re-embed turns (not visible to LLM)."""
-    try:
-        result = await _reindex_impl(reset=reset, batch_limit=batch_limit)
-        return json.dumps(result)
-    except Exception as e:
-        logger.exception("reindex_failed")
-        return json.dumps({"complete": False, "error": str(e)})
-
-
-@mcp.tool(
     name="memory_set_enabled",
     description=(
         "Enable or disable semantic (hybrid) search. "
@@ -713,7 +699,14 @@ async def memory_set_enabled(enabled: bool) -> str:
         status = await reload_embedder()
 
         if enabled:
+            global _reindex_task
+            if _reindex_task and not _reindex_task.done():
+                _reindex_task.cancel()
+            _reindex_task = asyncio.create_task(_background_reindex())
+            unembedded = await _count_unembedded()
             status["message"] = "语义搜索已启用。"
+            if unembedded > 0:
+                status["reindex"] = f"后台索引已启动，{unembedded} 条待处理"
         else:
             embedded_count = await _count_all_embedded()
             status["message"] = "语义搜索已禁用。关键词搜索仍可用。"

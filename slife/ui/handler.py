@@ -91,7 +91,13 @@ class TUIHandler:
     async def on_tool_call(
         self, tool_call: ToolCallInfo, iteration: int = 0, max_iterations: int = 30
     ) -> None:
-        """Mount a tool call widget in the chat view."""
+        """Mount a tool call widget in the chat view.
+
+        Harness tools (``_``-prefixed) are skipped — they are synthetic
+        notifications injected by the system, not visible LLM actions.
+        """
+        if tool_call.name.startswith("_"):
+            return
         widget = ToolCallWidget(
             tool_name=tool_call.name,
             tool_args=tool_call.arguments,
