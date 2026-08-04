@@ -941,8 +941,10 @@ class AgentService:
             self._plugins["media"].port = process.port
             os.environ["SLIFE_MEDIA_PORT"] = str(process.port)
 
-            public_url = start_tunnel(process.port)
-            # SLIFE_MEDIA_URL is set inside start_tunnel()
+            # Tunnel handshake is slow (~3-5s) — run in thread
+            # so it never blocks plugin startup or the TUI.
+            loop = asyncio.get_running_loop()
+            public_url = await loop.run_in_executor(None, start_tunnel, process.port)
             logger.info("media_init_done port=%s url=%s", process.port, public_url)
             return True
         except Exception as e:
