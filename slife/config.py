@@ -144,10 +144,19 @@ class ModelConfig:
             raise ValueError("Model entry missing 'model' or 'id' field")
 
         # model may contain provider prefix: "deepseek/deepseek-v4-flash"
-        if "/" in api_model:
+        # When the model ID contains a slash, it could be either
+        #   "provider/model" (e.g. "deepseek/deepseek-v4-flash")
+        #   or "org/model" from a third-party catalog (e.g. "deepseek-ai/deepseek-v4-flash").
+        # The explicit "provider" field from the provider block always wins.
+        explicit_provider = data.get("provider")
+        if explicit_provider:
+            # Provider is known — keep the full model ID as local_id.
+            provider = explicit_provider
+            local_id = api_model
+        elif "/" in api_model:
             provider, local_id = api_model.split("/", 1)
         else:
-            provider = data.get("provider", "unknown")
+            provider = "unknown"
             local_id = api_model
 
         ref = f"{provider}/{local_id}"

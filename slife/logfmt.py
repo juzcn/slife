@@ -274,6 +274,17 @@ _SECRET_PATTERNS: list[re.Pattern] = [
 
 _MASKED = "<MASKED>"
 
+# data: URIs — base64-encoded images/files that are NOT secrets.
+# They look like: data:image/png;base64,iVBORw0KGgo...
+# The base64 payload triggers the generic hex / base64 patterns below,
+# but a data URI is never a secret — it's embedded content.
+_DATA_URI = re.compile(r"data:[^;\s,]+;base64,[A-Za-z0-9+/=]+", re.IGNORECASE)
+
+# Base64-like strings that are extremely long (500+ chars).  Real API
+# keys and tokens are rarely longer than ~200 chars.  Image/audio
+# base64 payloads are thousands of characters — protect them.
+_LONG_BASE64 = re.compile(r"\b[A-Za-z0-9+/=]{500,}\b")
+
 # Query-param / field names whose values are NOT secrets even when they
 # look like one (e.g. 32-char hex QR code tokens).  Values appearing
 # after these keys (in JSON, URL params, or key=value lines) are
@@ -301,7 +312,9 @@ def sanitize_secrets(text: str) -> str:
     if not text or not isinstance(text, str):
         return text
 
-    # Protect known non-secret values (qrcode, nonce, etc.) from masking
+    # Protect known non-secret values from masking.
+    # Order: data URIs & long base64 first (large, unambiguous),
+    # then named non-secret keys (qrcode, nonce, etc.).
     protected: dict[str, str] = {}
     _counter = 0
 
@@ -312,6 +325,11 @@ def sanitize_secrets(text: str) -> str:
         _counter += 1
         return key
 
+    # data: URIs — embedded images/files, never secrets
+    text = _DATA_URI.sub(_protect, text)
+    # Very long base64 strings (500+ chars) — image/audio payloads
+    text = _LONG_BASE64.sub(_protect, text)
+    # Named non-secret keys
     text = _NON_SECRET_KEYS.sub(_protect, text)
 
     for pat in _SECRET_PATTERNS:
