@@ -36,7 +36,7 @@ class TestEnsureMimetypes:
 
 
 class TestPrepareImageUrl:
-    """Tests for prepare_image_url — generates signed sharing URLs."""
+    """Tests for prepare_image_url — generates sharing URLs via in-memory registry."""
 
     def test_file_not_found_returns_none(self, tmp_path):
         result = prepare_image_url(tmp_path / "nonexistent.png")
@@ -50,20 +50,20 @@ class TestPrepareImageUrl:
         img = tmp_path / "photo.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake png")
 
-        with patch("slife.agent.multimodal.sign_path", return_value="token123"), \
-             patch("slife.agent.multimodal.share_url_for", return_value="https://test.ngrok.io/share/token123/photo.png"):
+        with patch("slife.agent.multimodal.register_file", return_value="a1b2c3d4e5f6g7h8"), \
+             patch("slife.agent.multimodal.share_url_for", return_value="https://test.ngrok.io/share/a1b2c3d4e5f6g7h8"):
             result = prepare_image_url(img)
 
         assert result is not None
         assert result["type"] == "image_url"
         url = result["image_url"]["url"]
-        assert url == "https://test.ngrok.io/share/token123/photo.png"
+        assert url == "https://test.ngrok.io/share/a1b2c3d4e5f6g7h8"
 
     def test_tunnel_offline_returns_none(self, tmp_path):
         img = tmp_path / "photo.jpg"
         img.write_bytes(b"\xff\xd8\xff")
 
-        with patch("slife.agent.multimodal.sign_path", return_value="tok"), \
+        with patch("slife.agent.multimodal.register_file", return_value="abc"), \
              patch("slife.agent.multimodal.share_url_for", return_value=None):
             result = prepare_image_url(img)
 
@@ -74,8 +74,8 @@ class TestPrepareImageUrl:
         img = tmp_path / "data.bin"
         img.write_bytes(b"binary")
 
-        with patch("slife.agent.multimodal.sign_path", return_value="t"), \
-             patch("slife.agent.multimodal.share_url_for", return_value="https://x/share/t/bin"):
+        with patch("slife.agent.multimodal.register_file", return_value="abc"), \
+             patch("slife.agent.multimodal.share_url_for", return_value="https://x/share/abc"):
             with patch("mimetypes.guess_type", return_value=("application/octet-stream", None)):
                 result = prepare_image_url(img)
 
@@ -86,8 +86,8 @@ class TestPrepareImageUrl:
         img = tmp_path / "photo.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
 
-        with patch("slife.agent.multimodal.sign_path", return_value="t"), \
-             patch("slife.agent.multimodal.share_url_for", return_value="https://x/share/t/p.png"):
+        with patch("slife.agent.multimodal.register_file", return_value="xyz"), \
+             patch("slife.agent.multimodal.share_url_for", return_value="https://x/share/xyz"):
             result = prepare_image_url(str(img))
 
         assert result is not None

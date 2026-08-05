@@ -31,15 +31,15 @@ _ngrok_module: Any = None  # cached import
 # ── Public API ───────────────────────────────────────────────────────
 
 
-def share_url_for(token: str, filename: str) -> str | None:
+def share_url_for(file_id: str) -> str | None:
     """Build a public URL for a shared local file.
 
-    Returns ``{public_url}/share/{token}/{filename}`` when the tunnel
+    Returns ``{public_url}/share/{file_id}`` when the tunnel
     is active, or ``None`` when no tunnel is running.
     """
     if _public_url is None:
         return None
-    return f"{_public_url}/share/{token}/{filename}"
+    return f"{_public_url}/share/{file_id}"
 
 
 def is_active() -> bool:

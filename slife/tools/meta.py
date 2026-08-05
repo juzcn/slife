@@ -502,15 +502,15 @@ class SaveToMemoryTool(Tool):
         self, filepath: Path, title: str, tags: list[str], source: str,
     ) -> str:
         """Build result string + update index. Common to all source types."""
-        from slife.sharing.token import sign_path
+        from slife.sharing.token import register_file
         from slife.sharing.tunnel import share_url_for
 
         # Index
         _add_index_entry(title, filepath.name, tags, source)
 
         # Sharing URL
-        token = sign_path(str(filepath.resolve()))
-        url = share_url_for(token, filepath.name)
+        file_id = register_file(str(filepath.resolve()))
+        url = share_url_for(file_id)
 
         lines = [
             f"Saved: {filepath}",

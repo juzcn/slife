@@ -207,7 +207,7 @@ database.  LLM APIs fetch files as lightweight ``https://`` URLs instead of
 inline base64 data URIs.  When the tunnel is not active, image injection is
 silently skipped — no base64 ever enters the LLM context.
 
-The ``share_file`` tool turns any local file path into a public URL, preferred
+The ``expose_file`` tool turns any local file path into a public URL, preferred
 for passing images/files to multimodal LLMs.
 
 ### Memory — Always On

@@ -12,7 +12,7 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
-from slife.sharing.token import sign_path
+from slife.sharing.token import register_file
 from slife.sharing.tunnel import share_url_for
 
 logger = logging.getLogger(__name__)
@@ -39,8 +39,8 @@ def prepare_image_url(path: str | Path) -> dict[str, Any] | None:
     if not mime_type.startswith("image/"):
         mime_type = "image/png"
 
-    token = sign_path(str(p.resolve()))
-    url = share_url_for(token, p.name)
+    file_id = register_file(str(p.resolve()))
+    url = share_url_for(file_id)
     if url is None:
         logger.debug("prepare_image_no_tunnel path=%s", p)
         return None

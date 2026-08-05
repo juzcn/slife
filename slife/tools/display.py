@@ -114,3 +114,6 @@ class ShowImageTool(Tool):
             f"[image: {resolved}]\n"
             f"{resolved}"
         )
+
+
+

@@ -19,25 +19,24 @@ from pathlib import Path
 from aiohttp import web
 
 from slife.server_utils import bind_free_port, signal_port, setup_server_logging
-from slife.sharing.token import verify_token
+from slife.sharing.token import lookup_file
 
 _log_path = setup_server_logging("_sharing")
 logger = logging.getLogger("slife_sharing")
 
 
 async def handle_share(request: web.Request) -> web.StreamResponse:
-    """Serve a local file by signed token.
+    """Serve a local file by random file ID.
 
-    The token proves the URL was issued by this server.  The file path
-    is embedded in the token — no database lookup needed.  Returns 403
-    if the token is invalid, 404 if the file no longer exists.
+    The file ID is a session-scoped random string looked up in the
+    in-memory registry.  Returns 403 if the ID is unknown, 404 if the
+    file no longer exists.
     """
-    token = request.match_info["token"]
-    _filename = request.match_info["filename"]  # cosmetic — path is in token
+    file_id = request.match_info["file_id"]
 
-    file_path_str = verify_token(token)
+    file_path_str = lookup_file(file_id)
     if file_path_str is None:
-        raise web.HTTPForbidden(text="Invalid or tampered share link")
+        raise web.HTTPForbidden(text="Unknown share link or session expired")
 
     file_path = Path(file_path_str)
     if not file_path.is_file():
@@ -77,7 +76,7 @@ def main() -> None:
     logger.info("sharing_start log=%s pid=%s", _log_path, os.getpid())
 
     app = web.Application()
-    app.router.add_get("/share/{token}/{filename}", handle_share)
+    app.router.add_get("/share/{file_id}", handle_share)
 
     sock, port = bind_free_port()
     signal_port(port)
