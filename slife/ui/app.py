@@ -280,7 +280,7 @@ class SlifeApp(App):
             try:
                 await asyncio.wait_for(coro, timeout=3.0)
             except asyncio.TimeoutError:
-                logger.warning("shutdown_timeout service=%s", name)
+                logger.debug("shutdown_timeout service=%s", name)
             except Exception:
                 pass
 

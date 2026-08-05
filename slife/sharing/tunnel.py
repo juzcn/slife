@@ -76,7 +76,7 @@ def start_tunnel(port: int) -> str:
     global _tunnel, _public_url, _ngrok_module
 
     if _public_url is not None:
-        logger.warning("tunnel_already_running url=%s", _public_url)
+        logger.debug("tunnel_already_running url=%s", _public_url)
         return _public_url
 
     token = _get_auth_token()
@@ -150,12 +150,14 @@ def stop_tunnel() -> None:
             _ngrok_module.disconnect(_public_url)
             logger.info("tunnel_disconnected url=%s", _public_url)
         except Exception as e:
-            logger.warning("tunnel_disconnect_error err=%s", e)
+            # Expected during force-shutdown — ngrok may already be dead
+            logger.debug("tunnel_disconnect_error err=%s", e)
         try:
             _ngrok_module.kill()
             logger.info("ngrok_process_killed")
         except Exception as e:
-            logger.warning("ngrok_kill_error err=%s", e)
+            # Expected during force-shutdown — process may already be gone
+            logger.debug("ngrok_kill_error err=%s", e)
 
     _tunnel = None
     _public_url = None

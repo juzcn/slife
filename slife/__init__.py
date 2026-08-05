@@ -116,6 +116,10 @@ def main(config_path: str = "slife.json5"):
     app = SlifeApp(config)
     try:
         app.run()
+    except KeyboardInterrupt:
+        # Ctrl+C pressed during startup or outside the TUI — exit quietly.
+        # The TUI's own ctrl+c binding handles the normal case via action_quit.
+        pass
     finally:
         # Restore console mode on Windows — Textual's driver sets
         # ENABLE_VIRTUAL_TERMINAL_INPUT and clears line-editing flags.
