@@ -14,6 +14,7 @@ and store it via::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -26,6 +27,15 @@ logger = logging.getLogger(__name__)
 _tunnel: Any = None  # pyngrok.NgrokTunnel (no public type stubs)
 _public_url: str | None = None
 _ngrok_module: Any = None  # cached import
+
+# ── Monitor state ────────────────────────────────────────────────────
+
+_monitor_task: asyncio.Task | None = None
+_monitor_retries: int = 0
+_MONITOR_MAX_RETRIES: int = 10
+_MONITOR_BASE_DELAY: float = 5.0  # seconds
+_MONITOR_INTERVAL: float = 15.0  # seconds
+_NGROK_API: str = "http://127.0.0.1:4040/api/tunnels"
 
 
 # ── Public API ───────────────────────────────────────────────────────
@@ -153,6 +163,9 @@ def stop_tunnel() -> None:
     next slife session starts with a clean ngrok state.  Without this,
     the orphaned ngrok process may hold stale session data, causing
     "failed to reconnect session" errors on the next startup.
+
+    Does NOT touch the health monitor — callers that want a full
+    shutdown should call :func:`stop_monitor` first.
     """
     global _tunnel, _public_url, _ngrok_module
 
@@ -177,6 +190,109 @@ def stop_tunnel() -> None:
     _public_url = None
     _ngrok_module = None
     os.environ.pop("SLIFE_MEMFILES_URL", None)
+
+
+# ── Health monitor ────────────────────────────────────────────────────
+
+
+def _check_tunnel_alive() -> bool:
+    """Check whether the ngrok tunnel is alive by querying its local API.
+
+    ngrok exposes a JSON API at ``127.0.0.1:4040`` while running.
+    If the API returns a non-empty tunnel list the session is healthy.
+    """
+    import json as _json
+    import urllib.request as _ur
+
+    try:
+        req = _ur.Request(_NGROK_API)
+        with _ur.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read())
+            tunnels = data.get("tunnels", [])
+            return len(tunnels) > 0
+    except Exception:
+        return False
+
+
+async def _check_tunnel_alive_async() -> bool:
+    """Async wrapper — runs :func:`_check_tunnel_alive` in a thread."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _check_tunnel_alive)
+
+
+async def _run_tunnel_monitor(port: int) -> None:
+    """Background task: monitor tunnel health and restart on failure.
+
+    Every ``_MONITOR_INTERVAL`` seconds, queries the ngrok local API
+    to verify the session is still alive.  When the session dies (e.g.
+    heartbeat timeout from China → ngrok cloud), tears down the old
+    tunnel and restarts it with exponential backoff.
+    """
+    global _monitor_retries
+
+    # Wait for the initial tunnel handshake to finish.
+    await asyncio.sleep(2.0)
+
+    while True:
+        await asyncio.sleep(_MONITOR_INTERVAL)
+
+        # Tunnel never started (e.g. missing auth token) — nothing to do.
+        if _public_url is None:
+            continue
+
+        if await _check_tunnel_alive_async():
+            _monitor_retries = 0  # reset backoff on success
+            continue
+
+        # ── Tunnel is dead — restart ──────────────────────────────
+        logger.warning(
+            "tunnel_health_check_failed — restarting (attempt %d/%d)",
+            _monitor_retries + 1, _MONITOR_MAX_RETRIES,
+        )
+
+        stop_tunnel()
+        _monitor_retries += 1
+
+        if _monitor_retries > _MONITOR_MAX_RETRIES:
+            logger.error(
+                "tunnel_max_retries_exceeded — giving up after %d attempts. "
+                "Memfiles sharing will be unavailable this session.",
+                _MONITOR_MAX_RETRIES,
+            )
+            os.environ.pop("SLIFE_MEMFILES_URL", None)
+            return
+
+        # Exponential backoff: 5s → 10s → 20s → … → 120s cap
+        delay = min(_MONITOR_BASE_DELAY * (2 ** (_monitor_retries - 1)), 120.0)
+        logger.debug("tunnel_restart_backoff delay=%.1fs", delay)
+        await asyncio.sleep(delay)
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, start_tunnel, port)
+            logger.info("tunnel_restarted port=%s url=%s", port, _public_url)
+        except Exception as e:
+            logger.error("tunnel_restart_failed port=%s err=%s", port, e)
+
+
+def start_monitor(port: int) -> None:
+    """Spawn a background monitor that watches the tunnel and restarts it.
+
+    Safe to call multiple times — cancels any existing monitor first.
+    """
+    global _monitor_task
+    if _monitor_task is not None and not _monitor_task.done():
+        _monitor_task.cancel()
+    _monitor_task = asyncio.ensure_future(_run_tunnel_monitor(port))
+    logger.debug("tunnel_monitor_started port=%s", port)
+
+
+def stop_monitor() -> None:
+    """Cancel the tunnel health monitor (called during shutdown)."""
+    global _monitor_task
+    if _monitor_task is not None and not _monitor_task.done():
+        _monitor_task.cancel()
+        _monitor_task = None
 
 
 # ── Internal ─────────────────────────────────────────────────────────

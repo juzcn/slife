@@ -754,7 +754,8 @@ class AgentService:
         fs = self._plugins["memfiles"]
         if fs.tunnel_task is not None and not fs.tunnel_task.done():
             fs.tunnel_task.cancel()
-        from slife.memfiles.tunnel import stop_tunnel
+        from slife.memfiles.tunnel import stop_monitor, stop_tunnel
+        stop_monitor()
         stop_tunnel()
         await self._stop_plugin("memfiles")
 
@@ -959,6 +960,10 @@ class AgentService:
             self._plugins["memfiles"].tunnel_task = loop.run_in_executor(
                 None, start_tunnel, process.port,
             )
+            # Background health monitor — watches the tunnel and auto-restarts
+            # on heartbeat timeout (common from China → ngrok cloud).
+            from slife.memfiles.tunnel import start_monitor
+            start_monitor(process.port)
             logger.info("memfiles_init_done port=%s", process.port)
             return True
         except Exception as e:
