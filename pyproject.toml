@@ -60,6 +60,7 @@ packages = ["slife"]
 "skills" = "slife/skills"
 "credstore/credstore" = "credstore"
 "slife.template.json5" = "slife/slife.template.json5"
+"ngrok.template.yml" = "slife/ngrok.template.yml"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -71,6 +72,7 @@ include = [
     "/LICENSE",
     "/pyproject.toml",
     "/slife.template.json5",
+    "/ngrok.template.yml",
 ]
 
 [build-system]

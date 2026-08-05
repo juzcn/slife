@@ -1,0 +1,3 @@
+version: '3'
+heartbeat_interval: 15s
+heartbeat_tolerance: 60s

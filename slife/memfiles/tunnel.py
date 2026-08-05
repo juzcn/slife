@@ -323,42 +323,61 @@ def stop_monitor() -> None:
 
 
 def _ensure_ngrok_config() -> None:
-    """Write a minimal ngrok config file at the default location if missing.
+    """Seed the ngrok config file from the project template on first run.
 
     pyngrok starts the ngrok agent with its OS-default config path
-    (e.g. ``%LOCALAPPDATA%\\ngrok\\ngrok.yml`` on Windows).  We write
-    heartbeat settings so the tunnel is more resilient on high-latency
-    connections (China → ngrok cloud).  Existing config files are
-    left untouched.
+    (e.g. ``%LOCALAPPDATA%\\ngrok\\ngrok.yml`` on Windows).  If that
+    file does not exist, we copy ``ngrok.template.yml`` from the
+    project root (dev) or package directory (production).
 
-    This runs before every ``start_tunnel()`` call so the config is
-    always in place — no install-script step needed.
+    Existing config files are left untouched — this is a one-time seed,
+    not an overwrite.
     """
     try:
         from pyngrok.conf import PyngrokConfig
         default_conf = PyngrokConfig()
-        config_path = default_conf.config_path
+        config_path = Path(default_conf.config_path)
     except Exception:
-        return  # can't determine path, skip
-
-    if config_path is None:
         return
 
-    config_path = Path(config_path)
     if config_path.exists():
-        return  # already exists — don't overwrite user's config
+        return  # already seeded — don't overwrite
+
+    # Find the template: project root (dev) or package dir (production)
+    template = _find_template("ngrok.template.yml")
+    if template is None:
+        logger.debug("ngrok_template_not_found — skipping config seed")
+        return
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        "version: '3'\n"
-        "heartbeat_interval: 15s\n"
-        "heartbeat_tolerance: 60s\n",
-        encoding="utf-8",
-    )
-    logger.info(
-        "ngrok_config_seeded path=%s heartbeat_interval=15s heartbeat_tolerance=60s",
-        config_path,
-    )
+    config_path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+    logger.info("ngrok_config_seeded path=%s template=%s", config_path, template)
+
+
+def _find_template(filename: str) -> Path | None:
+    """Locate a template file.
+
+    Checks (in order):
+      1. Project root — dev mode (``pyproject.toml`` present).
+      2. Package directory — production install.
+    """
+    # Dev mode: template lives next to pyproject.toml
+    cwd = Path.cwd()
+    candidate = cwd / filename
+    if candidate.is_file():
+        return candidate
+
+    # Production: template is installed alongside the slife package
+    try:
+        import slife
+        pkg_dir = Path(slife.__file__).parent.parent  # slife/ → repo root
+        candidate = pkg_dir / filename
+        if candidate.is_file():
+            return candidate
+    except Exception:
+        pass
+
+    return None
 
 
 def _import_ngrok() -> Any:
