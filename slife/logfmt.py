@@ -294,6 +294,10 @@ _NON_SECRET_KEYS = re.compile(
     re.IGNORECASE,
 )
 
+# Sharing URLs — /share/<file_id> tokens in expose_file output.
+# HMAC-signed file IDs look like long base64 strings but are NOT secrets.
+_SHARE_URL = re.compile(r"(https?://[^\s]+/share/)([A-Za-z0-9_-]{22,})")
+
 
 def sanitize_secrets(text: str) -> str:
     """Mask API key / token patterns from *text*.
@@ -329,6 +333,8 @@ def sanitize_secrets(text: str) -> str:
     text = _DATA_URI.sub(_protect, text)
     # Very long base64 strings (500+ chars) — image/audio payloads
     text = _LONG_BASE64.sub(_protect, text)
+    # Sharing URLs — /share/<file_id> HMAC tokens are not secrets
+    text = _SHARE_URL.sub(_protect, text)
     # Named non-secret keys
     text = _NON_SECRET_KEYS.sub(_protect, text)
 
