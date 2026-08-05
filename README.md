@@ -162,21 +162,21 @@ add_model(provider="...", model="...", ...)  → register a new model
 
 All unified as OpenAI function definitions. The LLM sees no difference between categories.
 
-**Nine native categories** — one `.py` file per category in `slife/tools/`, auto-discovered:
+**Ten native categories** — one `.py` file per category in `slife/tools/`, auto-discovered:
 
 | Category | File | Tools |
 |----------|------|-------|
-| System | `system.py` | `check_embedding`, `check_wechat`, `system_health`, `check_mcp_servers` |
+| System | `system.py` | `check_embedding`, `check_wechat`, `system_health` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill.py` | `check_skills_dir`, `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set` |
 | CLI | `cli.py` | `cli_check_installed`, `cli_add_tool`, `cli_remove_tool`, `cli_list_tools`, `cli_set_tool` |
 | REST API | `rest_api.py` | `rest_api_add`, `rest_api_remove`, `rest_api_list`, `rest_api_set` |
 | A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
-| Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `config.py` | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
+| Config | `config.py` | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free`, `config_env_set/get/remove`, `native_tool_set` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
-| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
-| Display | `display.py` | `show_image` — display images in the terminal, with clickable file links |
+| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `save_to_memory` |
+| Display | `display.py` | `show_image` — display images in the terminal with clickable file links |
+| Sharing | `sharing.py` | `expose_file` — local path → public HTTPS URL; `include_image` — url/base64 passthrough for multimodal LLMs |
 
 **Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. All `add` tools are idempotent upserts. `mcp_set_server` additionally supports `disclosure="lazy"|"eager"` for tool lazy-loading.
 
@@ -201,14 +201,17 @@ clickable ``file:///`` link to open in the OS viewer.
 
 **URL injection (no base64).** Files and images are served to vision-capable
 LLMs via a dedicated **sharing** layer — a lightweight plain-HTTP server with
-an **ngrok tunnel**.  Local files are shared via signed HMAC tokens that carry
-the file path; the server streams them directly from disk — no BLOBs, no
-database.  LLM APIs fetch files as lightweight ``https://`` URLs instead of
-inline base64 data URIs.  When the tunnel is not active, image injection is
-silently skipped — no base64 ever enters the LLM context.
+an **ngrok tunnel**.  Local files are registered with random 22-char IDs in a
+session-scoped in-memory dict; the server streams them directly from disk — no
+BLOBs, no database, no crypto.  LLM APIs fetch files as lightweight ``https://``
+URLs instead of inline base64 data URIs.  When the tunnel is not active, sharing
+is silently skipped — no base64 ever enters the LLM context.
 
-The ``expose_file`` tool turns any local file path into a public URL, preferred
-for passing images/files to multimodal LLMs.
+**Two-step image workflow:**
+  1. ``expose_file(path="D:\\photo.png")`` → ``https://xxx.ngrok.app/share/a1b2c3d4e5f6g7h8``
+  2. ``include_image(url="https://...")`` or ``analyze_image`` → multimodal LLM sees the image
+
+The ``@path`` syntax in chat input automatically handles both steps.
 
 ### Memory — Always On
 
@@ -233,7 +236,7 @@ Embedding backends: local GGUF (BGE-M3, ~300 MB, offline), HuggingFace transform
 | **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio + HTTP) |
 | **slife-memory** | Streamable HTTP | Diary database with hybrid search |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat via iLink ClawBot |
-| **slife-media** | Plain HTTP | Serves image BLOBs via ngrok tunnel for vision APIs |
+| **slife-sharing** | Plain HTTP | Serves local files via ngrok tunnel for vision APIs |
 
 External MCP servers (filesystem, fetch, search, any OpenAPI spec) are configured in `slife.json5` and auto-connected at startup. Third-party MCP servers need no Slife SDK — any stdio or HTTP MCP server works.
 

@@ -50,7 +50,7 @@ Seven numbered sections of platform facts, plus conditional A2A:
 
 1. **环境** — agent identity, model, host, platform, CWD, shell, Python, package manager
 2. **上下文窗口策略** — floor/ceiling percentages, trim behaviour, result cap
-3. **图像与多模态** — ``[image:<path>]`` marker contract, vision support flag
+3. **图像与多模态** — ``[image:<path>]`` marker contract, vision support flag, ``expose_file`` / ``include_image`` sharing tools
 4. **凭证解析链** — ``${VAR}`` syntax, resolution order, active credstore backend
 5. **工具与技能** — MCP tool prefix, skills directory, skill loading via ``use_skill``
 6. **子代理特性** — process model, tool inheritance, no memory persistence
@@ -300,20 +300,21 @@ The `slife.json5` `tools` array is optional. Use it only to override defaults or
 
 All tools are unified under `Tool` and registered in a single `ToolRegistry`. The LLM sees no difference between categories — only function names and schemas. Each `Tool` subclass declares a ``category`` class attribute; ``list_tools`` groups output accordingly.
 
-**Nine native categories** — one ``.py`` file per category in ``slife/tools/``, auto-discovered by ``pkgutil.iter_modules``:
+**Ten native categories** — one ``.py`` file per category in ``slife/tools/``, auto-discovered by ``pkgutil.iter_modules``:
 
 | Category | File | Tools |
 |----------|------|-------|
-| System | `system.py` | `check_embedding`, `check_wechat`, `system_health`, `check_mcp_servers` |
+| System | `system.py` | `check_embedding`, `check_wechat`, `system_health` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill.py` | `check_skills_dir`, `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set` |
 | CLI | `cli.py` | `cli_check_installed`, `cli_add_tool`, `cli_remove_tool`, `cli_list_tools`, `cli_set_tool` |
 | REST API | `rest_api.py` | `rest_api_add`, `rest_api_remove`, `rest_api_list`, `rest_api_set` |
 | A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
-| Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
+| Config | `config.py` | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free`, `config_env_set/get/remove`, `native_tool_set` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
-| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `show_image` |
-| Display | `meta.py` | `show_image` — display local image files inline in the chat |
+| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `save_to_memory` |
+| Display | `display.py` | `show_image` — display local/remote images inline in the chat |
+| Sharing | `sharing.py` | `expose_file` — local path → public HTTPS URL; `include_image` — url/base64 passthrough for multimodal LLMs |
 
 Adding a new tool is a matter of adding a class in the matching category file — no manual registration needed.
 
@@ -684,7 +685,8 @@ Sanitization is applied at three chokepoints — all use the same pattern-maskin
 slife/
   agent/            # LLM interaction: loop.py, conversation.py, service.py, system_prompt.py
   tools/            # Native tools (auto-discovered): base.py, registry.py, factory.py
-  plugins/          # Built-in MCP plugins: mcp/, memory/, wechat/
+  sharing/          # File sharing infra: token.py (in-memory registry), tunnel.py (ngrok)
+  plugins/          # Built-in MCP plugins: mcp/, memory/, wechat/, sharing/
   mcp/              # MCP client infra: client.py, tool_adapter.py, process.py, oauth.py
   a2a/              # Agent-to-Agent: transport.py, mqtt.py, http.py, client.py, broker.py
   subagent/         # Local workers: headless.py, process.py, tools.py
