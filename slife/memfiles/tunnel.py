@@ -327,7 +327,7 @@ def _ensure_ngrok_config() -> None:
 
     pyngrok starts the ngrok agent with its OS-default config path
     (e.g. ``%LOCALAPPDATA%\\ngrok\\ngrok.yml`` on Windows).  If that
-    file does not exist, we copy ``ngrok.template.yml`` from the
+    file does not exist, we copy ``ngrok.yml`` from the
     project root (dev) or package directory (production).
 
     Existing config files are left untouched — this is a one-time seed,
@@ -344,7 +344,7 @@ def _ensure_ngrok_config() -> None:
         return  # already seeded — don't overwrite
 
     # Find the template: project root (dev) or package dir (production)
-    template = _find_template("ngrok.template.yml")
+    template = _find_template("ngrok.yml")
     if template is None:
         logger.debug("ngrok_template_not_found — skipping config seed")
         return
