@@ -251,7 +251,28 @@ async def restore_session(
             i for i, m in enumerate(all_messages)
             if m.get("role") == "assistant"
         ]
-        last_assistant_idx = assistant_indices[-1] if assistant_indices else -1
+        # Walk backwards to find the last real (non-harness) assistant
+        # message.  Harness messages (_sys_note, _sys_trim) have
+        # content=None, no thinking, and their only tool calls are the
+        # two well-known harness tools.
+        _HARNESS = frozenset({"_sys_note", "_sys_trim"})
+        last_assistant_idx = -1
+        for i in reversed(assistant_indices):
+            m = all_messages[i]
+            tcs = m.get("tool_calls") or []
+            tc_names = {
+                tc.get("function", {}).get("name", "")
+                for tc in tcs
+            }
+            if m.get("content") not in (None, ""):
+                last_assistant_idx = i
+                break
+            if m.get("thinking"):
+                last_assistant_idx = i
+                break
+            if not tcs or not tc_names <= _HARNESS:
+                last_assistant_idx = i
+                break
 
         _channel_by_row: dict[int, str] = {}
         for i, turn in enumerate(turns):
