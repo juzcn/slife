@@ -172,8 +172,8 @@ All unified as OpenAI function definitions. The LLM sees no difference between c
 | CLI | `cli.py` | `cli_check_installed`, `cli_add_tool`, `cli_remove_tool`, `cli_list_tools`, `cli_set_tool` |
 | REST API | `rest_api.py` | `rest_api_add`, `rest_api_remove`, `rest_api_list`, `rest_api_set` |
 | A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
-| Config | `config.py` | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
-| Env | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
+| Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
+| Models | `config.py` | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `save_to_memory` |
 | Display | `display.py` | `show_image` — display images in the terminal with clickable file links |
