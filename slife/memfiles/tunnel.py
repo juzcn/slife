@@ -113,6 +113,9 @@ def start_tunnel(port: int) -> str:
     _ngrok_module = _import_ngrok()
     _ngrok_module.set_auth_token(token)
 
+    # ── Ensure ngrok config file exists with recommended settings ──
+    _ensure_ngrok_config()
+
     # Build pyngrok config tuned for China network conditions:
     #   - region=jp:  lowest-latency node from China
     #   - startup_timeout=30:  generous startup window
@@ -317,6 +320,45 @@ def stop_monitor() -> None:
 
 
 # ── Internal ─────────────────────────────────────────────────────────
+
+
+def _ensure_ngrok_config() -> None:
+    """Write a minimal ngrok config file at the default location if missing.
+
+    pyngrok starts the ngrok agent with its OS-default config path
+    (e.g. ``%LOCALAPPDATA%\\ngrok\\ngrok.yml`` on Windows).  We write
+    heartbeat settings so the tunnel is more resilient on high-latency
+    connections (China → ngrok cloud).  Existing config files are
+    left untouched.
+
+    This runs before every ``start_tunnel()`` call so the config is
+    always in place — no install-script step needed.
+    """
+    try:
+        from pyngrok.conf import PyngrokConfig
+        default_conf = PyngrokConfig()
+        config_path = default_conf.config_path
+    except Exception:
+        return  # can't determine path, skip
+
+    if config_path is None:
+        return
+
+    config_path = Path(config_path)
+    if config_path.exists():
+        return  # already exists — don't overwrite user's config
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "version: '3'\n"
+        "heartbeat_interval: 15s\n"
+        "heartbeat_tolerance: 60s\n",
+        encoding="utf-8",
+    )
+    logger.info(
+        "ngrok_config_seeded path=%s heartbeat_interval=15s heartbeat_tolerance=60s",
+        config_path,
+    )
 
 
 def _import_ngrok() -> Any:
