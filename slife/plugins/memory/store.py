@@ -263,37 +263,6 @@ class SessionStore:
 
         return rowid
 
-    async def save_image(
-        self, image_id: str, data: bytes,
-        mime_type: str = "image/png",
-        file_name: str = "", file_size: int = 0,
-    ) -> None:
-        """Insert or replace an image BLOB.
-
-        Called from within the same transaction as :meth:`save_turn`
-        so the turn text and its images are committed atomically.
-        """
-        assert self._conn is not None
-        await self._conn.execute(
-            """INSERT OR REPLACE INTO diary_images
-               (image_id, data, mime_type, file_name, file_size)
-               VALUES (?, ?, ?, ?, ?)""",
-            (image_id, data, mime_type, file_name, file_size),
-        )
-        await self._conn.commit()
-        logger.debug("image_saved id=%s size=%d", image_id, file_size)
-
-    async def get_image(self, image_id: str) -> dict | None:
-        """Return an image row by image_id, or None."""
-        assert self._conn is not None
-        cursor = await self._conn.execute(
-            "SELECT image_id, data, mime_type, file_name, file_size "
-            "FROM diary_images WHERE image_id = ?",
-            (image_id,),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
-
     async def get_turn(self, rowid: int) -> dict | None:
         """Return a single turn by rowid."""
         assert self._conn is not None

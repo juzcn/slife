@@ -37,10 +37,11 @@ class TestBuild:
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "1. 环境" in result
-        assert "2. 上下文窗口策略" in result
-        assert "3. 图像与多模态" in result
-        assert "4. 凭证解析链" in result
-        assert "5. 工具与技能" in result
+        assert "2. 会话历史" in result
+        assert "3. 永久记忆" in result
+        assert "4. 图像与多模态" in result
+        assert "5. 凭证解析链" in result
+        assert "6. 工具与技能" in result
 
     def test_agent_name_displayed(self, cfg):
         from slife.agent.system_prompt import build
@@ -148,8 +149,8 @@ class TestBuild:
         cfg.a2a_config.broker_host = "mqtt.example.com"
         cfg.a2a_config.broker_port = 1883
         result = build(cfg)
-        assert "7. 数据目录" in result
-        assert "8. 多代理通信 (A2A)" in result
+        assert "8. 数据目录" in result
+        assert "9. 多代理通信 (A2A)" in result
         assert "mqtt.example.com:1883" in result
 
     def test_a2a_section_hidden_when_disabled(self, cfg):

@@ -178,6 +178,7 @@ class CheckSkillsDirTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompa
     """
 
     name = "check_skills_dir"
+    category = "Skills"
     category: ClassVar[str] = "Skills"
     description = "Absolute path to the skills directory and installed subdirectories."
     parameters = {
@@ -222,6 +223,7 @@ class ListSkillsTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibl
     """List all available skills with their names and descriptions."""
 
     name = "list_skills"
+    category = "Skills"
     description = "List installed skills with names and one-line descriptions."
     parameters = {
         "type": "object",
@@ -238,6 +240,7 @@ class UseSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
     """Load a skill's full SKILL.md documentation into context."""
 
     name = "use_skill"
+    category = "Skills"
     description = "Return the full SKILL.md documentation for a skill."
     parameters = {
         "type": "object",
@@ -268,6 +271,7 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
     """
 
     name = "add_skill"
+    category = "Skills"
     _subagent_skip = True
     description = "Install or update a skill from files or base64 archive (upsert — idempotent). Immediately discoverable by list_skills."
     parameters = {
@@ -426,6 +430,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
     """
 
     name = "remove_skill"
+    category = "Skills"
     _subagent_skip = True
     description = "Delete a skill directory and all its contents."
     parameters = {
@@ -477,6 +482,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
 
 class SkillSet(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     name = "skill_set"
+    category = "Skills"
     category: ClassVar[str] = "Skills"
     _subagent_skip = True
     description = "Enable or disable a skill. Takes effect after restart."

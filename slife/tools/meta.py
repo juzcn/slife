@@ -234,159 +234,290 @@ class ClearContextTool(Tool):
 
 # ═══════════════════════════════════════════════════════════════════════
 # prepare_image
-# ═══════════════════════════════════════════════════════════════════════
 
 
-class PrepareImageTool(Tool):
-    """Validate, cache, and convert an image to a public HTTPS URL.
+import json
+import logging
+import re
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import ClassVar
 
-    Sources
-      - **local path** → cached, BLOB'd, served via ngrok media URL.
-      - **remote URL** → downloaded, cached, BLOB'd, then returned
-        as-is (already public — no tunnel needed).
+from slife.paths import get_memory_dir
+from slife.tools.base import Tool
 
-    The image BLOB is always written to ``diary_images`` for permanent
-    memory.  Injection uses lightweight HTTPS URLs — base64 is **never**
-    sent to the LLM.
+logger = logging.getLogger(__name__)
+
+# ── Filename helpers ──────────────────────────────────────────────────
+
+
+def _slugify(text: str) -> str:
+    """Turn arbitrary text into a safe filename slug.
+
+    ``"Project Notes 2026!"`` → ``"project-notes-2026"``
+    """
+    # Lowercase, replace non-alphanum with hyphens
+    slug = re.sub(r"[^\w\s-]", "", text.lower())
+    slug = re.sub(r"[-\s]+", "-", slug)
+    return slug.strip("-")[:120]  # reasonable max length
+
+
+def _unique_path(directory: Path, stem: str, suffix: str) -> Path:
+    """Return a unique file path: ``directory / stem{suffix}``, adding _N if needed."""
+    candidate = directory / f"{stem}{suffix}"
+    if not candidate.exists():
+        return candidate
+    n = 1
+    while True:
+        candidate = directory / f"{stem}_{n}{suffix}"
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def _extract_title(content: str) -> str | None:
+    """Extract a title from the first ``# Heading`` line in markdown content."""
+    match = re.match(r"^#\s+(.+)", content.strip(), re.MULTILINE)
+    return match.group(1).strip() if match else None
+
+
+# ── Index helpers ─────────────────────────────────────────────────────
+
+_INDEX_PATH: Path | None = None
+
+
+def _index_file() -> Path:
+    global _INDEX_PATH
+    if _INDEX_PATH is None:
+        _INDEX_PATH = get_memory_dir() / "index.json"
+    return _INDEX_PATH
+
+
+def _load_index() -> list[dict]:
+    idx = _index_file()
+    if idx.exists():
+        try:
+            return json.loads(idx.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def _save_index(entries: list[dict]) -> None:
+    idx = _index_file()
+    idx.parent.mkdir(parents=True, exist_ok=True)
+    idx.write_text(json.dumps(entries, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _add_index_entry(
+    title: str, filename: str, tags: list[str], source: str,
+) -> None:
+    entries = _load_index()
+    entries.append({
+        "title": title,
+        "filename": filename,
+        "tags": tags or [],
+        "source": source,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    })
+    _save_index(entries)
+
+
+# ── Tool ──────────────────────────────────────────────────────────────
+
+
+class SaveToMemoryTool(Tool):
+    """Save content, a URL, or a local file to persistent memory.
+
+    Files are stored as plain files in the ``memory/`` folder, always
+    accessible via both local path and sharing URL.  The LLM can read
+    them directly via their path, and the user can open them via URL.
     """
 
-    name: ClassVar[str] = "prepare_image"
-    category: ClassVar[str] = "Display"
+    name: ClassVar[str] = "save_to_memory"
+    category: ClassVar[str] = "Meta"
     description: ClassVar[str] = (
-        "Load and prepare an image for vision analysis: local path or http(s) URL. "
-        "Returns a public HTTPS URL that any vision tool can consume. "
-        "Use this BEFORE calling vision/OCR tools so they have a URL. "
-        "The image is permanently stored and recoverable across sessions."
+        "Save content to persistent memory. Provide ONE of: content (markdown "
+        "text), url (to download), or path (to a local file). The file is "
+        "stored in the memory/ folder and accessible via both local path and "
+        "a public sharing URL. Use when the user says 'remember this', "
+        "'save this', or 'keep this file'."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "path": {
+            "content": {
                 "type": "string",
                 "description": (
-                    "Image path or URL. "
-                    "Local: 'D:\\Downloads\\photo.png'. "
-                    "URL: 'https://example.com/photo.jpg'."
+                    "Markdown content to save as a .md file. "
+                    "Use for conversation summaries, notes, or any text."
                 ),
             },
+            "url": {
+                "type": "string",
+                "description": "URL to download and save. The page or file at the URL is stored.",
+            },
+            "path": {
+                "type": "string",
+                "description": "Local file path to copy into memory. The file is copied, not moved.",
+            },
+            "title": {
+                "type": "string",
+                "description": (
+                    "Optional title — used as the filename. Auto-generated "
+                    "from the first markdown heading, URL path, or original "
+                    "filename if omitted."
+                ),
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional tags for categorisation.",
+            },
         },
-        "required": ["path"],
+        "required": [],
     }
 
-    def __init__(self, config=None):
-        self._config = config
-
-    @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None"):
-        return cls(config=config)
-
     async def execute(self, **kwargs) -> str:
-        path: str = kwargs["path"]
+        content: str = kwargs.get("content", "")
+        url: str = kwargs.get("url", "")
+        path: str = kwargs.get("path", "")
+        title: str = kwargs.get("title", "")
+        tags: list[str] = kwargs.get("tags", [])
 
-        # ── URL input: inject directly, no caching needed ───────
-        if path.startswith(("http://", "https://")):
-            return await self._show_url(path)
+        # ── Exactly one source required ──────────────────────────
+        sources = [k for k in ("content", "url", "path") if kwargs.get(k)]
+        if len(sources) == 0:
+            return "Error: provide one of: content, url, or path."
+        if len(sources) > 1:
+            return f"Error: provide only one source, got: {', '.join(sources)}."
 
-        # ── Local file input ────────────────────────────────────
-        return await self._show_local(path)
+        source = sources[0]
 
-    async def _show_url(self, url: str) -> str:
-        """Download an image URL, cache it, write BLOB, and inject."""
-        import uuid
-        from urllib.parse import urlparse
+        # ── Prepare memory directory ─────────────────────────────
+        mem_dir = get_memory_dir()
+        mem_dir.mkdir(parents=True, exist_ok=True)
 
+        # ── Dispatch by source type ──────────────────────────────
+        if source == "content":
+            return await self._save_content(content, title, tags, mem_dir)
+        elif source == "url":
+            return await self._save_url(url, title, tags, mem_dir)
+        else:
+            return await self._save_path(path, title, tags, mem_dir)
+
+    # ── Content → .md file ───────────────────────────────────────
+
+    async def _save_content(
+        self, content: str, title: str, tags: list[str], mem_dir: Path,
+    ) -> str:
+        if not content.strip():
+            return "Error: content is empty."
+
+        # Determine title
+        display_title = title or _extract_title(content) or "untitled"
+        stem = _slugify(display_title) or "untitled"
+        suffix = ".md"
+
+        filepath = _unique_path(mem_dir, stem, suffix)
+        filepath.write_text(content.strip(), encoding="utf-8")
+
+        return self._build_result(filepath, display_title, tags, "content")
+
+    # ── URL → downloaded file ────────────────────────────────────
+
+    async def _save_url(
+        self, url: str, title: str, tags: list[str], mem_dir: Path,
+    ) -> str:
         import aiohttp
+        from urllib.parse import urlparse
 
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.netloc:
-            return f"Error: 无效的 URL — {url}"
+            return f"Error: invalid URL — {url}"
 
-        # ── Download ───────────────────────────────────────────
+        # Fetch
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
                     if resp.status != 200:
                         return f"Error: HTTP {resp.status} — {url}"
                     raw = await resp.read()
                     content_type = resp.content_type or ""
         except Exception as e:
-            return f"Error: 下载图片失败 — {e}"
+            return f"Error: download failed — {e}"
 
-        mime_type = content_type if content_type.startswith("image/") else "image/png"
-        file_name = (parsed.path.rsplit("/", 1)[-1] if parsed.path else "") or "image"
+        # Determine filename
+        url_name = parsed.path.rsplit("/", 1)[-1] if parsed.path else ""
+        if title:
+            stem = _slugify(title)
+            display_title = title
+        elif url_name:
+            stem = _slugify(url_name.rsplit(".", 1)[0]) if "." in url_name else _slugify(url_name)
+            display_title = url_name
+        else:
+            stem = "untitled"
+            display_title = "untitled"
 
-        return await self._ingest(raw, mime_type, file_name)
+        # Determine extension
+        if url_name and "." in url_name:
+            ext = "." + url_name.rsplit(".", 1)[-1].split("?")[0]
+            # Sanitise: keep only safe chars
+            ext = re.sub(r"[^\w.]", "", ext)[:10]
+            if not ext.startswith("."):
+                ext = ""
+        else:
+            ext = ""
 
-    async def _show_local(self, path: str) -> str:
-        """Read a local image file, write its BLOB, and inject for the LLM."""
-        import mimetypes
-        from pathlib import Path
-        from slife.ui.image_utils import is_image_file
+        filepath = _unique_path(mem_dir, stem, ext or "")
+        filepath.write_bytes(raw)
 
-        p = Path(path)
-        if not p.exists():
-            return f"Error: 文件不存在 — {path}"
-        if not p.is_file():
-            return f"Error: 不是文件 — {path}"
-        if not is_image_file(path):
-            return f"Error: 不支持的图片格式 — {p.suffix}（支持 png/jpg/gif/webp/bmp）"
+        return self._build_result(filepath, display_title, tags, "url")
 
-        raw = p.read_bytes()
+    # ── Local file → copy ────────────────────────────────────────
 
-        if not mimetypes.inited:
-            mimetypes.init()
-        mime_type = mimetypes.guess_type(str(p))[0] or "image/png"
-        if not mime_type.startswith("image/"):
-            mime_type = "image/png"
+    async def _save_path(
+        self, path: str, title: str, tags: list[str], mem_dir: Path,
+    ) -> str:
+        src = Path(path)
+        if not src.exists():
+            return f"Error: file not found — {path}"
+        if not src.is_file():
+            return f"Error: not a file — {path}"
 
-        return await self._ingest(raw, mime_type, p.name)
+        stem = _slugify(title) if title else src.stem
+        display_title = title or src.name
 
-    async def _ingest(self, raw: bytes, mime_type: str, file_name: str) -> str:
-        """Common pipeline: cache → BLOB → inject (shared by URL and local)."""
-        import uuid
-        from pathlib import Path
-        from slife.paths import get_images_dir
+        filepath = _unique_path(mem_dir, stem, src.suffix)
+        shutil.copy2(src, filepath)
 
-        # ── Determine extension ────────────────────────────────
-        import mimetypes
-        if not mimetypes.inited:
-            mimetypes.init()
-        ext = mimetypes.guess_extension(mime_type) or ".png"
+        return self._build_result(filepath, display_title, tags, "path")
 
-        # ── Cache to logs/images/ ──────────────────────────────
-        images_dir = get_images_dir()
-        images_dir.mkdir(parents=True, exist_ok=True)
-        img_id = str(uuid.uuid4())
-        cache = images_dir / f"{img_id}{ext}"
-        cache.write_bytes(raw)
+    # ── Shared result builder ────────────────────────────────────
 
-        # ── Write BLOB to SQLite (for media server + permanent memory) ─
-        from slife.agent.multimodal import _write_image_blob as write_blob
-        await write_blob(raw, mime_type, file_name, image_id=img_id)
+    def _build_result(
+        self, filepath: Path, title: str, tags: list[str], source: str,
+    ) -> str:
+        """Build result string + update index. Common to all source types."""
+        from slife.sharing.token import sign_path
+        from slife.sharing.tunnel import share_url_for
 
-        # ── Stage for LLM analysis: URL only, no base64 ─────────
-        if self._config is not None and self._config.active_model.supports_vision:
-            from slife.agent.conversation import get_conversation
-            from slife.agent.multimodal import image_url_block
-            conv = get_conversation()
-            if conv is not None:
-                block = image_url_block(img_id)
-                if block is not None:
-                    conv.inject_image(block)
+        # Index
+        _add_index_entry(title, filepath.name, tags, source)
 
-        # ── Build result: compact, scannable ──────────────────
-        from slife.media.tunnel import media_url_for
-        size_kb = len(raw) / 1024
-        size_str = f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
-        url = media_url_for(img_id)
+        # Sharing URL
+        token = sign_path(str(filepath.resolve()))
+        url = share_url_for(token, filepath.name)
+
         lines = [
-            f"[image: {cache.resolve()}]",
-            f"url: {url}" if url else "url: (tunnel offline — no vision)",
-            f"file: {file_name}  {size_str}  {mime_type}",
+            f"Saved: {filepath}",
         ]
+        if url:
+            lines.append(f"URL: {url}")
+        else:
+            lines.append("URL: (sharing offline — file accessible locally)")
+
         return "\n".join(lines)
-
-
-# Image BLOB write and URL block helpers live in
-# ``slife.agent.multimodal`` — shared by prepare_image and
-# Conversation.add_user_message.  No base64 ever.

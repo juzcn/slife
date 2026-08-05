@@ -135,7 +135,6 @@ async def memory_save_turn(
     who_helped: str = "",
     what_model: str = "",
     channel: str = "",
-    image_paths: list[str] | None = None,
 ) -> str:
     store = await _ensure_store()
     try:
@@ -144,28 +143,6 @@ async def memory_save_turn(
             token_count=token_count, who_helped=who_helped, what_model=what_model,
             channel=channel, embedder=_embedder,
         )
-        # Save image BLOBs from cache files produced by prepare_image.
-        # These are written after save_turn's commit (separate transaction)
-        # — if the image loop fails the turn still has [image: path] markers.
-        if image_paths:
-            for img_path in image_paths:
-                p = Path(img_path)
-                if p.exists() and p.is_file():
-                    try:
-                        raw = p.read_bytes()
-                        ext = p.suffix.lower()
-                        mime_map = {
-                            ".png": "image/png", ".jpg": "image/jpeg",
-                            ".jpeg": "image/jpeg", ".gif": "image/gif",
-                            ".webp": "image/webp", ".bmp": "image/bmp",
-                        }
-                        await store.save_image(
-                            image_id=p.stem, data=raw,
-                            mime_type=mime_map.get(ext, "image/png"),
-                            file_name=p.name, file_size=len(raw),
-                        )
-                    except Exception as e:
-                        logger.debug("image_blob_save_error path=%s err=%s", img_path, e)
         return json.dumps({"rowid": rowid, "status": "saved"}, ensure_ascii=False)
     except Exception as e:
         logger.exception("save_turn_failed")

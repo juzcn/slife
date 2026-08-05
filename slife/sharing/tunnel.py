@@ -1,6 +1,6 @@
 """Ngrok tunnel lifecycle management.
 
-Starts an ngrok HTTP tunnel to a local port so the media server is
+Starts an ngrok HTTP tunnel to a local port so the sharing service is
 reachable from the public internet.  LLM APIs (OpenAI, Anthropic, etc.)
 can then fetch images via HTTPS URLs instead of inline base64 data URIs.
 
@@ -30,16 +30,15 @@ _ngrok_module: Any = None  # cached import
 # ── Public API ───────────────────────────────────────────────────────
 
 
-def media_url_for(image_id: str) -> str | None:
-    """Build a public media URL for an image BLOB.
+def share_url_for(token: str, filename: str) -> str | None:
+    """Build a public URL for a shared local file.
 
-    Returns ``{public_url}/media/{image_id}`` when the tunnel is
-    active, or ``None`` when no tunnel is running (callers should
-    fall back to base64 data URIs).
+    Returns ``{public_url}/share/{token}/{filename}`` when the tunnel
+    is active, or ``None`` when no tunnel is running.
     """
     if _public_url is None:
         return None
-    return f"{_public_url}/media/{image_id}"
+    return f"{_public_url}/share/{token}/{filename}"
 
 
 def is_active() -> bool:
@@ -76,7 +75,7 @@ def start_tunnel(port: int) -> str:
     _ngrok_module.set_auth_token(token)
     _tunnel = _ngrok_module.connect(port, "http")
     _public_url = str(_tunnel.public_url).rstrip("/")
-    os.environ["SLIFE_MEDIA_URL"] = _public_url
+    os.environ["SLIFE_SHARING_URL"] = _public_url
 
     logger.info("tunnel_started port=%s url=%s", port, _public_url)
     return _public_url
@@ -99,7 +98,7 @@ def stop_tunnel() -> None:
     _tunnel = None
     _public_url = None
     _ngrok_module = None
-    os.environ.pop("SLIFE_MEDIA_URL", None)
+    os.environ.pop("SLIFE_SHARING_URL", None)
 
 
 # ── Internal ─────────────────────────────────────────────────────────

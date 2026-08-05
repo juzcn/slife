@@ -39,20 +39,9 @@ class Conversation:
     def __init__(self, system_prompt: str | None = None):
         self.messages: list[dict] = []
         self._base_system_prompt: str = system_prompt or ""
-        self._pending_images: list[dict] = []  # ephemeral image blocks for LLM
         if system_prompt:
             self.messages.append({"role": "system", "content": system_prompt})
             logger.debug("conv_init sys_prompt_len=%d", len(system_prompt))
-
-    def inject_image(self, image_block: dict) -> None:
-        """Stage an image for the next API call only — never persisted.
-
-        The image block is appended as a synthetic user message in
-        :meth:`to_openai_messages` and cleared immediately after, so
-        it reaches the LLM but never enters the stored conversation
-        or the memory database.
-        """
-        self._pending_images.append(image_block)
 
     def update_context_footer(self, footer: str) -> None:
         """Replace the system message with base + dynamic context footer.
@@ -122,16 +111,14 @@ class Conversation:
             i -= 1
         return repaired
 
-    async def add_user_message(
+    def add_user_message(
         self, content: str, images: list[str] | None = None
     ) -> None:
         """Add a user message, optionally with attached images.
 
-        If images are provided, each is prepared via
-        :func:`~slife.agent.multimodal.prepare_image_url` — written as a
-        SQLite BLOB and injected as a lightweight HTTPS URL served by the
-        media server.  Images are skipped silently when the ngrok tunnel
-        is not active (no base64 fallback).
+        If images are provided, each is shared via a signed URL served
+        by the sharing server.  Images are skipped silently when the
+        ngrok tunnel is not active (no base64 fallback).
 
         User input is sanitized to mask any API keys / tokens before the
         message enters the LLM context or persistent storage.
@@ -150,7 +137,7 @@ class Conversation:
         if images:
             parts: list[dict] = [{"type": "text", "text": content}]
             for img_path in images:
-                block = await prepare_image_url(img_path)
+                block = prepare_image_url(img_path)
                 if block is not None:
                     parts.append(block)
             self.messages.append({"role": "user", "content": parts})
@@ -231,20 +218,6 @@ class Conversation:
                 m["reasoning_content"] = ""
             m.pop("images", None)  # internal attachment tracking
             cleaned.append(m)
-
-        # ── Ephemeral image injection ─────────────────────────────
-        # check_image tools stage images here; they are appended once
-        # and cleared — never persisted to the message list or DB.
-        if self._pending_images:
-            for img in self._pending_images:
-                cleaned.append({
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "[系统] 已加载图片"},
-                        img,
-                    ],
-                })
-            self._pending_images.clear()
 
         return cleaned
 

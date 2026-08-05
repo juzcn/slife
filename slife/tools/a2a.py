@@ -75,6 +75,7 @@ class A2AListAgentsTool(Tool):
     """List remote agents on the MQTT P2P mesh — remote-only, not local subagents."""
 
     name = "a2a_list_agents"
+    category = "A2A"
     requires_a2a = True
     _subagent_skip = True  # subagents have no MQTT transport
     description = (
@@ -116,6 +117,7 @@ class A2AListSubagentsTool(Tool):
     """List local subagents spawned by this instance."""
 
     name = "a2a_list_subagents"
+    category = "A2A"
     _subagent_skip = True  # subagents have no SubagentManager
     description = (
         "List locally-spawned subagent workers (stdin/stdout IPC). "
@@ -164,6 +166,7 @@ class A2ASendTaskTool(Tool):
     """Send a task to any agent and wait for the result (synchronous)."""
 
     name = "a2a_send_task"
+    category = "A2A"
     _subagent_skip = True  # subagents have no transport (MQTT or SubagentManager)
     description = (
         "Send a task to any agent and wait for the result. "
@@ -225,6 +228,7 @@ class A2ASendTaskAsyncTool(Tool):
     """Send a task without waiting — fire-and-forget."""
 
     name = "a2a_send_task_async"
+    category = "A2A"
     _subagent_skip = True  # subagents have no transport (MQTT or SubagentManager)
     description = (
         "Send a task to an agent without waiting for the result. "
@@ -307,6 +311,7 @@ class A2AGetTaskResultTool(Tool):
     """
 
     name = "a2a_get_task_result"
+    category = "A2A"
     _subagent_skip = True  # subagents can't send tasks, so results are always empty
     description = (
         "Check the status and result of a task once (non-blocking). "
@@ -393,6 +398,7 @@ class A2ACancelTaskTool(Tool):
     """Cancel a pending or in-flight task."""
 
     name = "a2a_cancel_task"
+    category = "A2A"
     _subagent_skip = True  # subagents have no transport (MQTT or SubagentManager)
     description = (
         "Cancel a pending task (synchronous or asynchronous). "
@@ -455,6 +461,7 @@ class A2AListTasksTool(Tool):
     """List tasks with optional status and agent filters — A2A tasks/list."""
 
     name = "a2a_list_tasks"
+    category = "A2A"
     _subagent_skip = True  # subagents can't send tasks, so listings are always empty
     description = (
         "List tasks across all agents, with optional filters. "
@@ -539,6 +546,7 @@ class A2ASubscribeTaskTool(Tool):
     """Subscribe to task completion — wait for a task to finish."""
 
     name = "a2a_subscribe_task"
+    category = "A2A"
     _subagent_skip = True  # subagents have no transport to subscribe through
     description = (
         "Check the status of an async task (non-blocking). "
@@ -618,6 +626,7 @@ class SubagentSpawnTool(Tool):
     _subagent_skip = True  # subagents must not spawn more subagents
 
     name = "a2a_spawn_subagent"
+    category = "A2A"
     description = (
         "Spawn a new local subagent — a copy of the current agent running "
         "in its own process with the same LLM config and tools. "
@@ -671,6 +680,7 @@ class SubagentStopTool(Tool):
     _subagent_skip = True  # subagents must not manage sibling subagents
 
     name = "a2a_stop_subagent"
+    category = "A2A"
     description = (
         "Stop a locally-managed subagent process. "
         "Only subagents spawned by this instance can be stopped. "
@@ -725,6 +735,7 @@ class A2AGetAgentCardTool(Tool):
     """Get the detailed card of a specific agent."""
 
     name = "a2a_agent_card"
+    category = "A2A"
     _subagent_skip = True  # subagents have no transport to look up agents
     description = (
         "Get the detailed Agent Card for a specific agent. "
@@ -790,6 +801,7 @@ class A2ANotifyUserTool(Tool):
     """Push a desktop notification to the human operator."""
 
     name = "a2a_notify_user"
+    category = "A2A"
     description = (
         "Send a desktop notification to the human user. "
         "Use this when a subagent or remote agent needs to alert the human "
@@ -832,6 +844,7 @@ class A2ABroadcastTool(Tool):
     """Broadcast a task to all known agents."""
 
     name = "a2a_broadcast"
+    category = "A2A"
     _subagent_skip = True  # subagents have no transport to broadcast
     description = (
         "Broadcast a task to all known agents (local subagents AND remote "

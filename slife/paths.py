@@ -80,3 +80,12 @@ def get_images_dir() -> Path:
     output alongside session logs.
     """
     return get_data_dir() / "logs" / "images"
+
+
+def get_memory_dir() -> Path:
+    """Directory for user-saved memory files.
+
+    Files saved via ``save_to_memory`` land here — plain files browsable
+    by the user and accessible via both local path and sharing URL.
+    """
+    return get_data_dir() / "memory"

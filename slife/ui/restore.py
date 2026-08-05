@@ -68,180 +68,29 @@ def restore_prefix(channel: str | None, _agent_id: str) -> str:
     return "You> "
 
 
-# ── Image BLOB restore ────────────────────────────────────────────────
+# ── Image restore (file-exists only — no BLOBs) ──────────────────────
 #
-# Design contract (see DESIGN.md "Session Restore"): image cache files
-# are ephemeral — on restart images are reconstructed from the
-# diary_images BLOB table, never from the cache directory.  The
-# resolution chain per ``[image: <path>]`` marker is:
-#
-#   1. BLOB by image_id (= marker filename stem) → write back to the
-#      canonical images dir → render;
-#   2. no BLOB, but the marker path exists on disk (legacy markers
-#      that predate BLOB storage) → render the original file;
-#   3. neither → text placeholder — never silently drop the image.
-
-# MIME → extension map for BLOBs whose file_name carries no suffix.
-_MIME_EXT: dict[str, str] = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/gif": ".gif",
-    "image/webp": ".webp",
-    "image/bmp": ".bmp",
-    "image/tiff": ".tiff",
-}
-
-
-async def _load_blobs(
-    image_ids: list[str], db_path: Path | None = None,
-) -> dict[str, tuple[bytes, str, str]]:
-    """Batch-read BLOBs for *image_ids* — one connection, one query.
-
-    Returns ``{image_id: (data, mime_type, file_name)}``.  Any DB
-    failure yields an empty dict so callers degrade to the disk /
-    placeholder fallbacks instead of aborting the restore.
-    """
-    import aiosqlite
-
-    if not image_ids:
-        return {}
-
-    resolved = db_path or _resolve_db_path()
-    if not resolved or not resolved.is_file():
-        return {}
-
-    try:
-        conn = await aiosqlite.connect(str(resolved))
-        try:
-            placeholders = ",".join("?" for _ in image_ids)
-            cursor = await conn.execute(
-                f"SELECT image_id, data, mime_type, file_name "
-                f"FROM diary_images WHERE image_id IN ({placeholders})",
-                image_ids,
-            )
-            rows = await cursor.fetchall()
-            return {
-                row[0]: (row[1], row[2] or "", row[3] or "")
-                for row in rows
-            }
-        finally:
-            await conn.close()
-    except Exception as e:
-        logger.debug("blob_restore_error stage=read err=%s", e)
-        return {}
-
-
-def _blob_extension(file_name: str, mime_type: str, marker_suffix: str) -> str:
-    """Pick an output extension for a restored BLOB.
-
-    Preference: original file_name suffix → mime_type map → the marker
-    path's suffix → ``.png``.
-    """
-    name_ext = Path(file_name).suffix.lower() if file_name else ""
-    if name_ext:
-        return name_ext
-    if mime_type in _MIME_EXT:
-        return _MIME_EXT[mime_type]
-    return marker_suffix or ".png"
+# Image markers (``[image: <path>]``) point at files on disk.  On
+# session restore the file either still exists → render, or it doesn't
+# → text placeholder.  No BLOB table, no DB round-trip.
 
 
 async def resolve_pending_images(
     pending: list[tuple[str, "ChatView", "ToolCallWidget"]],
-    db_path: Path | None = None,
 ) -> list[tuple[str | None, str, "ChatView", "ToolCallWidget"]]:
-    """Resolve pending image markers to renderable file paths.
-
-    Runs the resolution chain (BLOB → original file → ``None``
-    placeholder) for every ``(marker_path, chat_view, after_widget)``
-    spec with a single DB round-trip.  BLOBs are written back to the
-    canonical images dir once per unique image_id.
-
-    Returns one ``(resolved_path_or_None, marker_path, chat_view,
-    after_widget)`` entry per input spec, in input order.
-    """
-    from slife.paths import get_images_dir
-
+    """Resolve image markers — file exists → path, otherwise → None."""
     if not pending:
         return []
 
-    # Unique image ids for the batch query; unique marker paths so a
-    # marker repeated across turns is resolved (and written) once.
-    image_ids: list[str] = []
-    seen_ids: set[str] = set()
-    for marker, _cv, _aw in pending:
-        iid = Path(marker).stem
-        if iid and iid not in seen_ids:
-            image_ids.append(iid)
-            seen_ids.add(iid)
-
-    blobs = await _load_blobs(image_ids, db_path)
-
-    resolved_by_marker: dict[str, str | None] = {}
-    written_by_id: dict[str, str] = {}
-    for marker, _cv, _aw in pending:
-        if marker in resolved_by_marker:
-            continue
-
+    result: list[tuple[str | None, str, "ChatView", "ToolCallWidget"]] = []
+    for marker, cv, aw in pending:
         p = Path(marker)
-        image_id = p.stem
-        blob = blobs.get(image_id)
-
-        if blob is not None:
-            data, mime_type, file_name = blob
-            if image_id in written_by_id:
-                resolved_by_marker[marker] = written_by_id[image_id]
-                continue
-            try:
-                # Always write restored images to the canonical cache
-                # directory, not the original marker path (which may be
-                # from an old format or an arbitrary filesystem location).
-                images_dir = get_images_dir()
-                images_dir.mkdir(parents=True, exist_ok=True)
-                ext = _blob_extension(file_name, mime_type, p.suffix.lower())
-                output_path = images_dir / f"{image_id}{ext}"
-                output_path.write_bytes(data)
-                out = str(output_path.resolve())
-                written_by_id[image_id] = out
-                resolved_by_marker[marker] = out
-                logger.debug(
-                    "blob_restore_ok image_id=%s size=%d path=%s",
-                    image_id, len(data), output_path,
-                )
-            except Exception as e:
-                logger.debug(
-                    "blob_restore_error image_id=%s err=%s", image_id, e,
-                )
-                resolved_by_marker[marker] = None
-            continue
-
-        # No BLOB — fall back to the marker path itself when the file
-        # still exists (legacy markers predating BLOB storage).
         if p.exists() and p.is_file():
-            logger.debug(
-                "blob_restore_missing image_id=%s fallback=original", image_id,
-            )
-            resolved_by_marker[marker] = str(p.resolve())
+            result.append((str(p.resolve()), marker, cv, aw))
         else:
-            logger.debug(
-                "blob_restore_missing image_id=%s fallback=placeholder", image_id,
-            )
-            resolved_by_marker[marker] = None
-
-    return [
-        (resolved_by_marker[marker], marker, cv, aw)
-        for marker, cv, aw in pending
-    ]
-
-
-def _resolve_db_path() -> Path | None:
-    """Resolve the memory DB path from env or the data directory."""
-    import os as _os
-    from slife.paths import get_data_dir
-
-    env_db = _os.environ.get("SLIFE_MEMORY_DB")
-    if env_db:
-        return Path(env_db)
-    return get_data_dir() / f"{_os.environ.get('SLIFE_AGENT_ID', 'slife')}.db"
+            logger.debug("image_restore_missing marker=%s", marker)
+            result.append((None, marker, cv, aw))
+    return result
 
 
 # ── Safe arg parse ────────────────────────────────────────────────────

@@ -38,7 +38,7 @@ class PluginLifecycle:
         self.process = None     # MCPWrapperProcess
         self.port: int = 0
         self.poll_task: asyncio.Task | None = None
-        self.tunnel_task: "asyncio.Future | None" = None  # media plugin: ngrok connect
+        self.tunnel_task: "asyncio.Future | None" = None  # sharing plugin: ngrok connect
 
     # ── spawn ────────────────────────────────────────────────────────────
 

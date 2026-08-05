@@ -173,10 +173,10 @@ All unified as OpenAI function definitions. The LLM sees no difference between c
 | REST API | `rest_api.py` | `rest_api_add`, `rest_api_remove`, `rest_api_list`, `rest_api_set` |
 | A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `models.py` | `list_models`, `add_model`, `remove_model`, `switch_model` |
+| Models | `config.py` | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
-| Display | `meta.py` | `prepare_image` — load & prepare images, serve via ngrok for vision |
+| Display | `display.py` | `show_image` — display images in the terminal, with clickable file links |
 
 **Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. All `add` tools are idempotent upserts. `mcp_set_server` additionally supports `disclosure="lazy"|"eager"` for tool lazy-loading.
 
@@ -188,30 +188,32 @@ Inline image rendering via ``textual-image`` with a two-tier strategy: **Sixel**
 (full-colour) on whitelisted terminals (Windows Terminal, WezTerm, iTerm2, Kitty),
 **HalfcellImage** (coloured Unicode half-block characters) everywhere else,
 and a text placeholder as final fallback. Users attach images with `@path` syntax;
-the agent can display images with the `prepare_image` tool:
+the agent can display images with the `show_image` tool:
 
 ```
 Check this screenshot @D:\\Downloads\\error.png and tell me what's wrong
 ```
 
-``prepare_image`` supports both **local files** and **remote URLs**.
-In either case the image is cached and written as a BLOB to the ``diary_images``
-SQLite table — the single source of truth for image data in permanent memory.
+``show_image`` supports both **local files** and **remote URLs**.
+Images are cached to ``logs/images/`` for display.  The tool returns
+an inline ``[image: <path>]`` marker for terminal rendering plus a
+clickable ``file:///`` link to open in the OS viewer.
 
-**URL injection (no base64).** Images are served to vision-capable LLMs via a
-dedicated **media server** — a lightweight plain-HTTP plugin that reads BLOBs
-from SQLite and returns raw image bytes. An **ngrok tunnel** exposes the media
-server to the public internet, so LLM APIs (OpenAI, Anthropic, NVIDIA NIM)
-fetch images as lightweight ``https://`` URLs instead of inline base64 data URIs.
-When the tunnel is not active, image injection is silently skipped — no base64
-ever enters the LLM context.
+**URL injection (no base64).** Files and images are served to vision-capable
+LLMs via a dedicated **sharing** layer — a lightweight plain-HTTP server with
+an **ngrok tunnel**.  Local files are shared via signed HMAC tokens that carry
+the file path; the server streams them directly from disk — no BLOBs, no
+database.  LLM APIs fetch files as lightweight ``https://`` URLs instead of
+inline base64 data URIs.  When the tunnel is not active, image injection is
+silently skipped — no base64 ever enters the LLM context.
 
-The ``prepare_image`` tool returns the public URL directly, so any vision-capable
-tool (e.g. NVIDIA NIM VLM, browser screenshot tools) can consume it:
+The ``share_file`` tool turns any local file path into a public URL, preferred
+for passing images/files to multimodal LLMs.
 
 ### Memory — Always On
 
-Every conversation turn and displayed image is permanently recorded (including BLOBs in ``diary_images``). Saves unconditionally — even on cancel or error. Hybrid search across four modes:
+Every conversation turn is permanently recorded. Saves unconditionally — even
+on cancel or error. Hybrid search across four modes:
 
 | Mode | Best for |
 |------|----------|

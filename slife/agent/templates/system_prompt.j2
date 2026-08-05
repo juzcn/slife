@@ -11,32 +11,40 @@ Slife 环境信息
    - Python 解释器: {{ python_cmd }} ({{ python_version }})
    - 包管理工具: {{ package_manager }}
 
-2. 上下文窗口策略
-   - 保留比例: {{ context_floor }}% 至 {{ context_ceiling }}%
-   - 超限行为: 自动移除最旧轮次，以 `_sys_trim` 标记。
-   - 已移除轮次已持久化，可通过 `memory_search` 检索。
+2. 会话历史
+   - 每轮对话自动持久化到 SQLite。
+   - 上下文超限时最旧轮次被移除，但已持久化内容可通过 `memory_search` 全文/向量检索。
+   - 保留比例: {{ context_floor }}% 至 {{ context_ceiling }}%，超出以 `_sys_trim` 标记。
    - 单条工具结果上限: {{ tool_result_max_percent }}% 上下文窗口，超出自动截断。
 
-3. 图像与多模态
+3. 永久记忆
+   - 会话历史: 自动存入 SQLite，跨会话保留，通过 `memory_search` 检索。
+   - 文件柜: `save_to_memory` 将内容/URL/文件保存到 `memory/` 文件夹。
+     保存后的文件既是本地普通文件，也可通过共享 URL 公开访问。
+     用户说"记住这个""保存下来"时使用此工具。
+   - `memory/` 路径: {{ data_dir }}\memory
+
+4. 图像与多模态
    - 视觉支持: {{ "已启用" if has_vision else "未启用" }}
-   - `prepare_image` 返回的 `url:` 字段是公开可访问的 HTTPS URL，
-     可直接传给任何视觉工具。不要用 base64。
+   - `show_image` 在终端显示图片，返回可点击的 `file:///` 链接。
+   - `share_file` 将本地文件路径转为公开 HTTPS URL，多模态 LLM
+     可通过 URL 直接读取文件。给视觉模型传本地图片/文件时优先使用。
    - `[image:<路径>]` 是 UI 渲染标记，不要作为视觉 API 输入。
 
-4. 凭证解析链
+5. 凭证解析链
    - 语法: `${VAR}` 及 `${VAR:-default}`
    - 解析顺序: `os.environ` → 凭证后端 (当前活动: {{ credstore_backend }})
 
-5. 工具与技能
+6. 工具与技能
    - MCP 工具前缀: `{{ mcp_tool_prefix }}`（即 `server_name__`）
    - 技能加载方式: `use_skill`
 
-6. 子代理特性
+7. 子代理特性
    - 进程模型: 独立子进程
    - 工具集: 与父代理一致
    - 记忆: 不连接记忆服务器，无永久持久化
 
-7. 数据目录
+8. 数据目录
    - 数据根目录: {{ data_dir }}
    - 配置文件: {{ config_path }}
    - 日志目录: {{ logs_dir }}
@@ -44,7 +52,7 @@ Slife 环境信息
    - 技能目录: {{ skills_directory }}
    - 图片缓存: {{ images_dir }}
 {% if a2a_configured %}
-8. 多代理通信 (A2A)
+9. 多代理通信 (A2A)
    - 传输: {{ a2a_transport }}
    - Broker: {{ a2a_broker_host }}:{{ a2a_broker_port }}
 {% endif %}

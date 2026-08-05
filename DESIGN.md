@@ -418,7 +418,7 @@ Every turn is permanently recorded as an independent row. No session concept, no
 
 ### Schema
 
-One row = one turn, plus associated image BLOBs:
+One row = one turn:
 
 | Table / Column | Purpose |
 |--------|---------|
@@ -430,14 +430,8 @@ One row = one turn, plus associated image BLOBs:
 | `diary.channel` | Source: `human`, `wechat`, or remote agent id |
 | `diary.who_helped` / `what_model` | Agent identity + model used |
 | `diary.token_count` | Tokens consumed by this turn (sum of all API calls within the turn) |
-| `diary_images.image_id` | UUID (matches cache filename stem) |
-| `diary_images.data` | Raw image binary (BLOB) |
-| `diary_images.mime_type` | `image/png`, `image/jpeg`, … |
-| `diary_images.file_name` | Original filename + size for reference |
 
-Images are saved atomically by ``memory_save_turn`` — each turn
-gets its text row plus any ``[image: …]`` markers extracted from
-tool results and written as BLOBs.  Turns are saved
+Images are displayed inline via `[image: <path>]` markers.  Turns are saved
 **unconditionally** (even on cancel / error / max-iterations) so
 no conversation content is ever lost.
 
@@ -485,14 +479,10 @@ context_window`) using incremental cost estimates from message text, not stored
 `token_count` values (which can be zero or cumulative). This decouples restore
 from plugin health.
 
-Image echo follows one rule: **the ``diary_images`` BLOB table is the single
-source of truth — cache files in ``logs/images/`` are ephemeral display
-artifacts** (Textual needs a real file to render).  Each stored
-``[image: <path>]`` marker is resolved without trusting the disk: BLOB (by
-filename stem) → written back to the images dir and rendered; no BLOB but the
-marker file still exists (legacy turns) → rendered in place; neither → text
-placeholder.  Restored images mount one-at-a-time on staggered timers after
-their tool-call widgets (HalfcellImage needs its own compositor cycle).
+Image echo: ``[image: <path>]`` markers point at files on disk; on session
+restore, if the file still exists → rendered, otherwise → text placeholder.
+Restored images mount one-at-a-time on staggered timers after their
+tool-call widgets (HalfcellImage needs its own compositor cycle).
 
 ### Agent Isolation
 
@@ -595,11 +585,11 @@ writes it to the cache directory (``logs/images/{uuid}.ext``), and returns a
 the marker and calls ``handler.on_image()``, which mounts an inline image
 widget.  MCP binary-data output follows the same marker path.
 
-**Persistence**: when the turn ends (unconditionally — even on cancel or
-error), ``save_to_memory`` scans tool results for ``[image: …]`` markers,
-reads the corresponding cache files, and writes the raw binary as BLOBs into
-the ``diary_images`` table alongside the turn text.  On session restore,
-images are reconstructed from BLOBs (not cache files) for re-rendering.
+**Persistence**: turns are saved unconditionally (even on cancel or error)
+to SQLite via ``memory_save_turn``.  Images in tool results use the
+``[image: <path>]`` marker — the file itself is the image; no separate
+BLOB storage.  On session restore, images that still exist on disk are
+re-rendered from their original paths.
 
 **Vision guard**: ``AgentLoop.supports_vision`` (from model config
 ``input: ["text", "image"]``) gates the ``image_url`` encoding path.

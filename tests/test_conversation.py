@@ -47,11 +47,16 @@ class TestAddUserMessage:
         assert conv.messages[0]["content"] == "Hello!"
 
     def test_text_with_images(self):
-        """Text with images creates multimodal content array."""
+        """Non-existent images are silently skipped."""
         conv = Conversation()
-        with pytest.raises(FileNotFoundError):
-            # Will fail on encode_image since images don't exist
-            conv.add_user_message("Describe", images=["/fake/img.png"])
+        conv.add_user_message("Describe", images=["/fake/img.png"])
+        # Image that doesn't exist → prepare_image_url returns None → skipped
+        assert conv.messages[0]["role"] == "user"
+        # Images path gone → multimodal parts list with only text
+        parts = conv.messages[0]["content"]
+        assert isinstance(parts, list)
+        assert len(parts) == 1
+        assert parts[0] == {"type": "text", "text": "Describe"}
 
     def test_image_paths_not_provided(self):
         """images=None is treated as no images."""

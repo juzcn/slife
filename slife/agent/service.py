@@ -24,7 +24,7 @@ from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.conversation import Conversation
-from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult, _scan_for_images
+from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
 from slife.agent.inbox import Inbox, ConversationStore
 from slife.agent.plugins import PluginLifecycle
 from slife.a2a.identity import HUMAN
@@ -112,7 +112,7 @@ class AgentService:
             "mcp": PluginLifecycle("mcp", self),
             "memory": PluginLifecycle("memory", self),
             "wechat": PluginLifecycle("wechat", self),
-            "media": PluginLifecycle("media", self),
+            "sharing": PluginLifecycle("sharing", self),
         }
 
         # A2A integration state
@@ -216,9 +216,9 @@ class AgentService:
         if name == "wechat":
             return await self.start_wechat()
 
-        # ── Media: plain HTTP server, exposed via ngrok tunnel ──────────
-        if name == "media":
-            return await self.start_media()
+        # ── Sharing: plain HTTP server, exposed via ngrok tunnel ──────
+        if name == "sharing":
+            return await self.start_sharing()
 
         # ── Generic: spawn python -m <module>, connect, register tools ──
         from slife.mcp.process import MCPWrapperProcess
@@ -748,14 +748,14 @@ class AgentService:
         """Shut down the WeChat plugin and clean up."""
         await self._stop_plugin("wechat", has_poll_task=True)
 
-    async def stop_media(self) -> None:
-        """Stop the ngrok tunnel and media server."""
-        media = self._plugins["media"]
-        if media.tunnel_task is not None and not media.tunnel_task.done():
-            media.tunnel_task.cancel()
-        from slife.media.tunnel import stop_tunnel
+    async def stop_sharing(self) -> None:
+        """Stop the ngrok tunnel and sharing server."""
+        fs = self._plugins["sharing"]
+        if fs.tunnel_task is not None and not fs.tunnel_task.done():
+            fs.tunnel_task.cancel()
+        from slife.sharing.tunnel import stop_tunnel
         stop_tunnel()
-        await self._stop_plugin("media")
+        await self._stop_plugin("sharing")
 
     def kill_child_processes(self) -> None:
         """Synchronous best-effort child process cleanup.
@@ -918,43 +918,43 @@ class AgentService:
             )
             return False
 
-    # ── Media lifecycle ────────────────────────────────────────────────
+    # ── Sharing lifecycle ──────────────────────────────────────────────
 
-    async def start_media(self) -> bool:
-        """Start the media server and ngrok tunnel. Returns True on success.
+    async def start_sharing(self) -> bool:
+        """Start the sharing server and ngrok tunnel. Returns True on success.
 
-        The media server serves image BLOBs via plain HTTP.  The ngrok
+        The sharing server serves image BLOBs via plain HTTP.  The ngrok
         tunnel exposes it to the public internet so LLM vision APIs can
         fetch images by HTTPS URL instead of inline base64.
         """
         import os
 
         from slife.mcp.process import MCPWrapperProcess
-        from slife.media.tunnel import start_tunnel
+        from slife.sharing.tunnel import start_tunnel
 
-        logger.info("media_init start")
+        logger.info("sharing_init start")
         try:
             process = MCPWrapperProcess(
                 command=sys.executable,
-                args=["-m", "slife.plugins.media.server"],
+                args=["-m", "slife.plugins.sharing.server"],
             )
             await process.start()
 
-            self._plugins["media"].process = process
-            self._plugins["media"].port = process.port
-            os.environ["SLIFE_MEDIA_PORT"] = str(process.port)
+            self._plugins["sharing"].process = process
+            self._plugins["sharing"].port = process.port
+            os.environ["SLIFE_SHARING_PORT"] = str(process.port)
 
             # Tunnel handshake (~3-5s) — fire-and-forget so startup is instant.
             # Failure is logged but never blocks; prepare_image skips injection
-            # until SLIFE_MEDIA_URL is set.
+            # until SLIFE_SHARING_URL is set.
             loop = asyncio.get_running_loop()
-            self._plugins["media"].tunnel_task = loop.run_in_executor(
+            self._plugins["sharing"].tunnel_task = loop.run_in_executor(
                 None, start_tunnel, process.port,
             )
-            logger.info("media_init_done port=%s", process.port)
+            logger.info("sharing_init_done port=%s", process.port)
             return True
         except Exception as e:
-            logger.warning("media_init_failed err=%s — continuing without media URL", e)
+            logger.warning("sharing_init_failed err=%s — continuing without sharing URL", e)
             return False
 
     # ── WeChat lifecycle ───────────────────────────────────────────────
@@ -1119,15 +1119,6 @@ class AgentService:
         # inserted into the conversation.  Each turn is still saved here
         # via memory_save_turn, so trimmed turns remain searchable.
 
-        # Collect image cache paths from tool results for BLOB persistence.
-        image_paths: list[str] = []
-        for msg in turn_messages:
-            if msg.get("role") == "tool":
-                content = msg.get("content", "") or ""
-                for p in _scan_for_images(content):
-                    if p not in image_paths:
-                        image_paths.append(p)
-
         assert self._plugins["memory"].client is not None  # guarded by memory_enabled
         try:
             await asyncio.wait_for(
@@ -1140,7 +1131,6 @@ class AgentService:
                         "who_helped": (self.config.a2a_config and self.config.a2a_config.agent_name) or "",
                         "what_model": self.config.active_model.ref,
                         "channel": channel,
-                        "image_paths": image_paths,
                     },
                 ),
                 timeout=10.0,
