@@ -289,6 +289,24 @@ if [ -s "$PRESERVED_REQS" ]; then
 fi
 
 #
+echo -e "${YELLOW}[4b] Syncing ngrok config…${NC}"
+NGROK_YML_SRC="$EXTRACTED_DIR/ngrok.yml"
+if [ -f "$NGROK_YML_SRC" ]; then
+    if [ "$(uname -s)" = "Darwin" ]; then
+        NGROK_CONF_DIR="$HOME/Library/Application Support/ngrok"
+    elif [ -n "$XDG_CONFIG_HOME" ]; then
+        NGROK_CONF_DIR="$XDG_CONFIG_HOME/ngrok"
+    else
+        NGROK_CONF_DIR="$HOME/.config/ngrok"
+    fi
+    mkdir -p "$NGROK_CONF_DIR"
+    cp "$NGROK_YML_SRC" "$NGROK_CONF_DIR/ngrok.yml"
+    echo -e "${GREEN}  ✓${NC} ngrok config synced to $NGROK_CONF_DIR/ngrok.yml"
+else
+    echo -e "${GRAY}  ngrok.yml not found in package — skipping (will sync at first launch)${NC}"
+fi
+
+#
 echo -e "${YELLOW}[5/5] Cleaning up previous installation artifacts…${NC}"
 
 # Ensure ~/.local/bin is on PATH (uv puts tool executables here,

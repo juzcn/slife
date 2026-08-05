@@ -323,15 +323,17 @@ def stop_monitor() -> None:
 
 
 def _ensure_ngrok_config() -> None:
-    """Seed the ngrok config file from the project template on first run.
+    """Sync the shipped ngrok config to the OS-default location.
 
     pyngrok starts the ngrok agent with its OS-default config path
-    (e.g. ``%LOCALAPPDATA%\\ngrok\\ngrok.yml`` on Windows).  If that
-    file does not exist, we copy ``ngrok.yml`` from the
-    project root (dev) or package directory (production).
+    (e.g. ``%LOCALAPPDATA%\\ngrok\\ngrok.yml`` on Windows).  We
+    copy ``ngrok.yml`` from the project root (dev) or package
+    directory (production) to that location on every startup —
+    the shipped file is the canonical config, and upgrades may
+    bring new settings.
 
-    Existing config files are left untouched — this is a one-time seed,
-    not an overwrite.
+    Unlike ``slife.json5``, ngrok.yml is not a user-editable config —
+    it is slife's ngrok agent configuration.
     """
     try:
         from pyngrok.conf import PyngrokConfig
@@ -340,18 +342,20 @@ def _ensure_ngrok_config() -> None:
     except Exception:
         return
 
-    if config_path.exists():
-        return  # already seeded — don't overwrite
-
-    # Find the template: project root (dev) or package dir (production)
-    template = _find_template("ngrok.yml")
-    if template is None:
-        logger.debug("ngrok_template_not_found — skipping config seed")
+    source = _find_template("ngrok.yml")
+    if source is None:
+        logger.debug("ngrok_shipped_config_not_found — skipping sync")
         return
 
+    shipped = source.read_text(encoding="utf-8")
+    current = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+
+    if shipped == current:
+        return  # already up to date
+
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
-    logger.info("ngrok_config_seeded path=%s template=%s", config_path, template)
+    config_path.write_text(shipped, encoding="utf-8")
+    logger.info("ngrok_config_synced path=%s", config_path)
 
 
 def _find_template(filename: str) -> Path | None:

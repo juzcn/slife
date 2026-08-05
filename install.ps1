@@ -570,6 +570,18 @@ try {
         }
     }
 
+    # ── ngrok config ────────────────────────────────────────────────
+    Write-Step "[4b] Syncing ngrok config…"
+    $ngrokYmlSource = Join-Path $extractedDir.FullName "ngrok.yml"
+    if (Test-Path $ngrokYmlSource) {
+        $ngrokConfigDir = "$env:LOCALAPPDATA\ngrok"
+        New-Item -ItemType Directory -Force $ngrokConfigDir | Out-Null
+        Copy-Item -Path $ngrokYmlSource -Destination "$ngrokConfigDir\ngrok.yml" -Force
+        Write-Ok "ngrok config synced to $ngrokConfigDir\ngrok.yml"
+    } else {
+        Write-Dim "ngrok.yml not found in package — skipping (will sync at first launch)"
+    }
+
     # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."
 
