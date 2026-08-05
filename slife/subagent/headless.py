@@ -121,7 +121,7 @@ async def run_headless() -> None:
         "config_loaded model=%s tools=%d memory=%s mcp=%s a2a=%s",
         config.active_model.ref,
         len(config.tools),
-        "on" if config.memory_config else "off",
+        "on" if config.memdb_config else "off",
         "on" if config.mcp_config else "off",
         "on" if config.a2a_config else "off",
     )
@@ -212,7 +212,7 @@ async def run_headless() -> None:
             service.session_usage.total_tokens,
         )
         await service.stop_mcp()
-        await service.stop_memory()
+        await service.stop_memdb()
         await service.stop_wechat()
         shutdown_server_logging()
 

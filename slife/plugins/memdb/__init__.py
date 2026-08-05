@@ -1,4 +1,4 @@
-"""slife.plugins.memory — Diary memory built-in plugin.
+"""slife.plugins.memdb — Diary memory built-in plugin.
 
 A FastMCP server that:
   - Records every conversation like a diary (one row = one turn)

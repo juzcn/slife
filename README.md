@@ -9,7 +9,7 @@
 │  Agent Loop — LLM + Tools + Stream + Memory + A2A + Inbox  │
 │  ┌───────────┬──────────┬───────────┬─────────────────────┐ │
 │  │ MCP Proxy │ A2A Mesh │ Subagents │ Built-in Plugins    │ │
-│  │ (gateway) │ (MQTT)   │ (workers) │ Memory·MCP·WX·Media │ │
+│  │ (gateway) │ (MQTT)   │ (workers) │ MemDB·MCP·WX·MemFiles │ │
 │  └───────────┴──────────┴───────────┴─────────────────────┘ │
 │  Permanent Memory — hybrid search (grep + FTS5 + semantic)  │
 │  Credstore — OS keyring + AES cryptfile backup              │
@@ -81,7 +81,7 @@ credstore set DEEPSEEK_API_KEY       # store API key (masked input)
 slife
 ```
 
-**Sharing keys across providers:** if multiple services use the same API key, copy it instead of re-entering:
+**MemFiles keys across providers:** if multiple services use the same API key, copy it instead of re-entering:
 
 ```bash
 credstore copy DEEPSEEK_API_KEY BAILIAN_API_KEY
@@ -175,13 +175,13 @@ All unified as OpenAI function definitions. The LLM sees no difference between c
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `config.py` | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
-| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `save_to_memory` |
+| MemFiles | `memfiles.py` | `expose_file`, `include_image`, `save_content_or_files` |
 | Display | `display.py` | `show_image` — display images in the terminal with clickable file links |
-| Sharing | `sharing.py` | `expose_file` — local path → public HTTPS URL; `include_image` — url/base64 passthrough for multimodal LLMs |
+| MemFiles | `memfiles.py` | `expose_file` — local path → public HTTPS URL; `include_image` — url/base64 passthrough for multimodal LLMs |
 
 **Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. All `add` tools are idempotent upserts. `mcp_set_server` additionally supports `disclosure="lazy"|"eager"` for tool lazy-loading.
 
-Plus built-in **Memory** plugin (`memory_search`, `memory_open`, …).
+Plus built-in **MemDB** plugin (`memory_search`, `memory_open`, …).
 
 ### Image & Vision
 
@@ -201,11 +201,11 @@ an inline ``[image: <path>]`` marker for terminal rendering plus a
 clickable ``file:///`` link to open in the OS viewer.
 
 **URL injection (no base64).** Files and images are served to vision-capable
-LLMs via a dedicated **sharing** layer — a lightweight plain-HTTP server with
+LLMs via a dedicated **memfiles** layer — a lightweight plain-HTTP server with
 an **ngrok tunnel**.  Local files are registered with random 22-char IDs in a
 session-scoped in-memory dict; the server streams them directly from disk — no
 BLOBs, no database, no crypto.  LLM APIs fetch files as lightweight ``https://``
-URLs instead of inline base64 data URIs.  When the tunnel is not active, sharing
+URLs instead of inline base64 data URIs.  When the tunnel is not active, memfiles
 is silently skipped — no base64 ever enters the LLM context.
 
 **Two-step image workflow:**
@@ -214,7 +214,7 @@ is silently skipped — no base64 ever enters the LLM context.
 
 The ``@path`` syntax in chat input automatically handles both steps.
 
-### Memory — Always On
+### MemDB — Always On
 
 Every conversation turn is permanently recorded. Saves unconditionally — even
 on cancel or error. Hybrid search across four modes:
@@ -235,9 +235,9 @@ Embedding backends: local GGUF (BGE-M3, ~300 MB, offline), HuggingFace transform
 | Plugin | Transport | Role |
 |--------|-----------|------|
 | **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio + HTTP) |
-| **slife-memory** | Streamable HTTP | Diary database with hybrid search |
+| **slife-memdb** | Streamable HTTP | Diary database with hybrid search |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat via iLink ClawBot |
-| **slife-sharing** | Plain HTTP | Serves local files via ngrok tunnel for vision APIs |
+| **slife-memfiles** | Plain HTTP | Serves local files via ngrok tunnel for vision APIs |
 
 External MCP servers (filesystem, fetch, search, any OpenAPI spec) are configured in `slife.json5` and auto-connected at startup. Third-party MCP servers need no Slife SDK — any stdio or HTTP MCP server works.
 
@@ -259,7 +259,7 @@ Not all tools are in every request. Three categories use lightweight summaries b
 
 | Category | Browse | Load |
 |----------|--------|------|
-| Memory | `memory_search` | `memory_open` |
+| MemDB | `memory_search` | `memory_open` |
 | Skills | `list_skills` | `use_skill` |
 | MCP | `mcp_list_servers` / `mcp_list_tools` | `mcp_set_server(enabled=True)` / `mcp_set_server(disclosure="eager")` |
 

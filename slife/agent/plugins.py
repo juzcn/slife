@@ -1,6 +1,6 @@
 """Plugin lifecycle management — typed container replacing getattr/setattr dynamism.
 
-Each plugin (mcp, memory, wechat) gets one ``PluginLifecycle`` instance that
+Each plugin (mcp, memdb, wechat) gets one ``PluginLifecycle`` instance that
 holds its client, process, port, and optional poll-task.  This replaces the
 ``_{name}_client`` / ``_{name}_process`` / ``_{name}_port`` / ``_{name}_poll_task``
 dynamic-attribute pattern that was scattered across AgentService.
@@ -38,7 +38,7 @@ class PluginLifecycle:
         self.process = None     # MCPWrapperProcess
         self.port: int = 0
         self.poll_task: asyncio.Task | None = None
-        self.tunnel_task: "asyncio.Future | None" = None  # sharing plugin: ngrok connect
+        self.tunnel_task: "asyncio.Future | None" = None  # memfiles plugin: ngrok connect
 
     # ── spawn ────────────────────────────────────────────────────────────
 
@@ -89,10 +89,10 @@ class PluginLifecycle:
             self._service.tool_registry.register(tool)
         logger.debug("%s_tools_registered count=%d", self.name, len(proxy_tools))
 
-    # ── connect via HTTP (subagent sharing) ──────────────────────────────
+    # ── connect via HTTP (subagent memfiles) ──────────────────────────────
 
     async def connect_http(self, port: int) -> None:
-        """Connect to an already-running plugin via HTTP (subagent sharing)."""
+        """Connect to an already-running plugin via HTTP (subagent memfiles)."""
         client = MCPClient(tool_timeout=self._service.config.tool_timeout)
         await client.connect(f"http://127.0.0.1:{port}/mcp")
         self.client = client

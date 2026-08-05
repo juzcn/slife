@@ -1,12 +1,12 @@
-"""slife-memory server — FastMCP server for turn-based permanent memory.
+"""slife-memdb server — FastMCP server for turn-based permanent memory.
 
 Each turn (user message + assistant response) is an independent,
 immutable row.  No sessions, no lifecycle — just turns.
 Restore loads the most recent N turns by rowid.
 
 Usage:
-    uv run python -m slife.plugins.memory.server       # auto-assigned port (Streamable HTTP)
-    uv run python -m slife.plugins.memory.server --port 9877   # fixed port
+    uv run python -m slife.plugins.memdb.server       # auto-assigned port (Streamable HTTP)
+    uv run python -m slife.plugins.memdb.server --port 9877   # fixed port
 """
 
 import asyncio
@@ -16,15 +16,15 @@ import os
 from pathlib import Path
 
 from slife.paths import get_data_dir
-from slife.plugins.memory.store import SessionStore
-from slife.plugins.memory.embeddings import EmbeddingClient
-from slife.plugins.memory.search import merge_hybrid
+from slife.plugins.memdb.store import SessionStore
+from slife.plugins.memdb.embeddings import EmbeddingClient
+from slife.plugins.memdb.search import merge_hybrid
 from slife.server_utils import create_plugin_server
 
 mcp, _log_path, logger = create_plugin_server(
-    "slife-memory",
+    "slife-memdb",
     instructions=(
-        "slife-memory — turn-based long-term knowledge. "
+        "slife-memdb — turn-based long-term knowledge. "
         "Every turn (user question + your response) is one row. "
         "LLM-visible tools: memory_list_recent, memory_search (grep/fts5/hybrid/time), "
         "memory_open, memory_summarize, memory_check/set/remove_embedding. "
@@ -72,7 +72,7 @@ def _get_db_path() -> Path:
     production environments each get their own location.
     """
     agent_id = os.environ.get("SLIFE_AGENT_ID", "slife")
-    env_path = os.environ.get("SLIFE_MEMORY_DB")
+    env_path = os.environ.get("SLIFE_MEMDB_DB")
     if env_path:
         return Path(env_path)
     data_dir = get_data_dir()
@@ -99,7 +99,7 @@ async def _ensure_store() -> SessionStore:
             return _store
 
         assert _db_path is not None
-        logger.info("memory_lazy_init db=%s", _db_path)
+        logger.info("memdb_lazy_init db=%s", _db_path)
 
         from slife.logfmt import elapsed
 
@@ -196,7 +196,7 @@ async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
         # (e.g. llama-cpp-python not installed yet), keep retrying.
         # If embedding was never configured, exit cleanly — the task
         # will be restarted by memory_set_embedding when needed.
-        from slife.plugins.memory.embedding_config import read_embedding_config
+        from slife.plugins.memdb.embedding_config import read_embedding_config
         cfg = read_embedding_config()
         if cfg and cfg.get("enabled", True):
             return {"complete": False, "reason": "embedder unavailable, will retry"}
@@ -210,7 +210,7 @@ async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
     if total == 0:
         return {"total": 0, "indexed": 0, "remaining": 0, "complete": True}
 
-    from slife.plugins.memory.store import _chunk_text, _turn_text_for_embedding
+    from slife.plugins.memdb.store import _chunk_text, _turn_text_for_embedding
 
     turns = await store.get_unembedded_turns(limit=batch_limit)
     indexed = 0
@@ -550,7 +550,7 @@ async def memory_summarize(
     ),
 )
 async def memory_check_embedding() -> str:
-    from slife.plugins.memory.embedding_config import make_check_report
+    from slife.plugins.memdb.embedding_config import make_check_report
     try:
         report = make_check_report()
         unembedded = await _count_unembedded()
@@ -595,7 +595,7 @@ async def memory_set_embedding(
         device: Device override for transformer backend
             (``"cpu"`` / ``"cuda"``). Auto-detect when empty.
     """
-    from slife.plugins.memory.embedding_config import (
+    from slife.plugins.memdb.embedding_config import (
         write_embedding_config, validate_gguf_path,
         get_first_provider_api_key, reload_embedder,
     )
@@ -665,7 +665,7 @@ async def memory_set_embedding(
     ),
 )
 async def memory_set_enabled(enabled: bool) -> str:
-    from slife.plugins.memory.embedding_config import set_embedding_enabled, reload_embedder
+    from slife.plugins.memdb.embedding_config import set_embedding_enabled, reload_embedder
     try:
         ok = set_embedding_enabled(enabled)
         if not ok:
@@ -699,7 +699,7 @@ async def memory_set_enabled(enabled: bool) -> str:
 
 
 def main():
-    """Run the slife-memory server on Streamable HTTP transport.
+    """Run the slife-memdb server on Streamable HTTP transport.
 
     Store and embedder are lazily initialised on the first tool call
     INSIDE FastMCP's event loop — this avoids the aiosqlite connection
@@ -711,7 +711,7 @@ def main():
 
     global _db_path
 
-    parser = argparse.ArgumentParser(description="slife-memory server")
+    parser = argparse.ArgumentParser(description="slife-memdb server")
     parser.add_argument("--db", default=None)
     parser.add_argument("--port", type=int, default=0)
     args = parser.parse_args()
@@ -719,13 +719,13 @@ def main():
     _db_path = Path(args.db).expanduser() if args.db else _get_db_path()
 
     logger.info(
-        "memory_start log=%s pid=%s db=%s", _log_path, os.getpid(), _db_path,
+        "memdb_start log=%s pid=%s db=%s", _log_path, os.getpid(), _db_path,
     )
 
     try:
         run_plugin_server(mcp, port=args.port)
     finally:
-        logger.info("memory_stop")
+        logger.info("memdb_stop")
         shutdown_server_logging()
 
 

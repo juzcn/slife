@@ -1,4 +1,4 @@
-"""Tests for slife.plugins.memory.store — SessionStore and helpers."""
+"""Tests for slife.plugins.memdb.store — SessionStore and helpers."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from slife.plugins.memory.store import (
+from slife.plugins.memdb.store import (
     SessionStore,
     _normalize_time_param,
     _now,
@@ -166,7 +166,7 @@ class TestSessionStoreSetup:
 
     @pytest.mark.asyncio
     @patch("pathlib.Path.mkdir")
-    @patch("slife.plugins.memory.store.aiosqlite.connect")
+    @patch("slife.plugins.memdb.store.aiosqlite.connect")
     async def test_setup_initializes_db(self, mock_connect, mock_mkdir):
         mock_conn = AsyncMock()
         mock_conn.execute = AsyncMock()
@@ -189,7 +189,7 @@ class TestSessionStoreSetup:
 
     @pytest.mark.asyncio
     @patch("pathlib.Path.mkdir")
-    @patch("slife.plugins.memory.store.aiosqlite.connect")
+    @patch("slife.plugins.memdb.store.aiosqlite.connect")
     async def test_setup_is_idempotent(self, mock_connect, mock_mkdir):
         """Calling setup() twice on the same DB file should not fail."""
         mock_conn = AsyncMock()

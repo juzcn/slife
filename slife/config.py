@@ -277,18 +277,18 @@ class MCPConfig:
 
 
 @dataclass
-class MemoryConfig:
-    """Configuration for the slife-memory service.
+class MemdbConfig:
+    """Configuration for the slife-memdb service.
 
-    Always enabled -- slife-memory is a built-in plugin.
+    Always enabled -- slife-memdb is a built-in plugin.
     """
 
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
 
     @classmethod
-    def from_dict(cls, data: dict) -> "MemoryConfig":
-        """Parse memory config section from JSON5 config."""
+    def from_dict(cls, data: dict) -> "MemdbConfig":
+        """Parse memdb config section from JSON5 config."""
         if not isinstance(data, dict):
             return cls()
         emb = data.get("embedding", {})
@@ -338,7 +338,7 @@ class Config:
     agent_id: str = "slife"
     tool_timeout: float = 60.0  # seconds, 0 to disable — applies to ALL tools
     mcp_config: MCPConfig | None = None
-    memory_config: MemoryConfig | None = None
+    memdb_config: MemdbConfig | None = None
     wechat_config: WechatConfig | None = None
     a2a_config: A2AConfig | None = None
     subagent_config: dict | None = None
@@ -347,8 +347,8 @@ class Config:
     def __post_init__(self):
         if self.mcp_config is None:
             self.mcp_config = MCPConfig()
-        if self.memory_config is None:
-            self.memory_config = MemoryConfig()
+        if self.memdb_config is None:
+            self.memdb_config = MemdbConfig()
         if self.wechat_config is None:
             self.wechat_config = WechatConfig()
         if self.a2a_config is None:
@@ -378,7 +378,7 @@ class Config:
             "tool_result_ceiling": self.tool_result_ceiling,
             "agent_id": self.agent_id,
             "mcp_config": asdict(self.mcp_config) if self.mcp_config else None,
-            "memory_config": asdict(self.memory_config) if self.memory_config else None,
+            "memdb_config": asdict(self.memdb_config) if self.memdb_config else None,
             "wechat_config": asdict(self.wechat_config) if self.wechat_config else None,
             "a2a_config": asdict(self.a2a_config) if self.a2a_config else None,
             "subagent_config": self.subagent_config,
@@ -396,9 +396,9 @@ class Config:
         if isinstance(mcp_cfg, dict):
             mcp_cfg = MCPConfig(**mcp_cfg)
 
-        mem_cfg = data.get("memory_config")
+        mem_cfg = data.get("memdb_config")
         if isinstance(mem_cfg, dict):
-            mem_cfg = MemoryConfig(**mem_cfg)
+            mem_cfg = MemdbConfig(**mem_cfg)
 
         wc_cfg = data.get("wechat_config")
         if isinstance(wc_cfg, dict):
@@ -420,7 +420,7 @@ class Config:
             tool_result_ceiling=data.get("tool_result_ceiling", 0.2),
             agent_id=data.get("agent_id", "slife"),
             mcp_config=mcp_cfg,
-            memory_config=mem_cfg,
+            memdb_config=mem_cfg,
             wechat_config=wc_cfg,
             a2a_config=a2a_cfg,
             subagent_config=data.get("subagent_config"),
@@ -821,10 +821,10 @@ class Config:
 
         # Memory -- built-in plugin, always enabled.  DB files live in
         # ~/.slife/<agent_id>.db — no configuration needed.
-        memory_config = MemoryConfig.from_dict(raw.get("memory", {}))
+        memdb_config = MemdbConfig.from_dict(raw.get("memdb", {}))
         logger.debug(
-            "memory_config embed=%s",
-            memory_config.embedding_model,
+            "memdb_config embed=%s",
+            memdb_config.embedding_model,
         )
 
         # WeChat -- optional plugin, enabled via wechat.enabled
@@ -865,7 +865,7 @@ class Config:
             tool_result_ceiling=tool_result_ceiling,
             agent_id=agent_id,
             mcp_config=mcp_config,
-            memory_config=memory_config,
+            memdb_config=memdb_config,
             wechat_config=wechat_config,
             a2a_config=a2a_config,
             subagent_config=subagent_config,

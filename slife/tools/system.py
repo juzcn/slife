@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 def check_embedding() -> list[dict]:
     """Return embedding backend status as health-check entries."""
     results: list[dict] = []
-    from slife.plugins.memory.embeddings import EmbeddingClient
-    from slife.plugins.memory.embedding_config import read_embedding_config
+    from slife.plugins.memdb.embeddings import EmbeddingClient
+    from slife.plugins.memdb.embedding_config import read_embedding_config
 
     client = EmbeddingClient.from_config(quiet=True)
     cfg = read_embedding_config()

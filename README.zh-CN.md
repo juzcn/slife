@@ -195,7 +195,7 @@ MCP 工具的二进制图片输出（如 Playwright 截图）自动保存为临�
 | 插件 | 角色 |
 |------|------|
 | **slife-mcp** | 外部 MCP 服务器网关（stdio + HTTP） |
-| **slife-memory** | 日记数据库 + 混合搜索 |
+| **slife-memdb** | 日记数据库 + 混合搜索 |
 | **slife-wechat** | 通过 iLink ClawBot 收发微信 |
 
 外部 MCP 服务器在 `slife.json5` 中配置，启动时自动连接。第三方 MCP 服务器无需 Slife SDK——任何 stdio 或 HTTP MCP 服务器均可接入。

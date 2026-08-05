@@ -1,6 +1,6 @@
 """Ngrok tunnel lifecycle management.
 
-Starts an ngrok HTTP tunnel to a local port so the sharing service is
+Starts an ngrok HTTP tunnel to a local port so the memfiles service is
 reachable from the public internet.  LLM APIs (OpenAI, Anthropic, etc.)
 can then fetch images via HTTPS URLs instead of inline base64 data URIs.
 
@@ -31,20 +31,34 @@ _ngrok_module: Any = None  # cached import
 # ── Public API ───────────────────────────────────────────────────────
 
 
+def _get_public_url() -> str | None:
+    """Return the public tunnel URL from module state or env var fallback.
+
+    Subagents inherit ``SLIFE_MEMFILES_URL`` from the main agent's env
+    but have their own copy of this module — the module-level ``_public_url``
+    is ``None``.  The env var fallback lets subagents build share URLs
+    through the main agent's tunnel.
+    """
+    if _public_url is not None:
+        return _public_url
+    return os.environ.get("SLIFE_MEMFILES_URL")
+
+
 def share_url_for(file_id: str) -> str | None:
     """Build a public URL for a shared local file.
 
     Returns ``{public_url}/share/{file_id}`` when the tunnel
     is active, or ``None`` when no tunnel is running.
     """
-    if _public_url is None:
+    url = _get_public_url()
+    if url is None:
         return None
-    return f"{_public_url}/share/{file_id}"
+    return f"{url}/share/{file_id}"
 
 
 def is_active() -> bool:
     """Return True if the ngrok tunnel is currently running."""
-    return _public_url is not None
+    return _get_public_url() is not None
 
 
 # ── Lifecycle ────────────────────────────────────────────────────────
@@ -110,7 +124,7 @@ def start_tunnel(port: int) -> str:
                 port, "http", pyngrok_config=pyngrok_config,
             )
             _public_url = str(_tunnel.public_url).rstrip("/")
-            os.environ["SLIFE_SHARING_URL"] = _public_url
+            os.environ["SLIFE_MEMFILES_URL"] = _public_url
             logger.info(
                 "tunnel_started port=%s url=%s attempt=%d region=%s",
                 port, _public_url, attempt, _DEFAULT_REGION,
@@ -162,7 +176,7 @@ def stop_tunnel() -> None:
     _tunnel = None
     _public_url = None
     _ngrok_module = None
-    os.environ.pop("SLIFE_SHARING_URL", None)
+    os.environ.pop("SLIFE_MEMFILES_URL", None)
 
 
 # ── Internal ─────────────────────────────────────────────────────────

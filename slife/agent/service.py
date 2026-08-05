@@ -76,7 +76,7 @@ class AgentService:
             context_window=config.active_model.context_window,
             context_floor=config.context_floor,
             context_ceiling=config.context_ceiling,
-            memory_enabled=not is_subagent,
+            memdb_enabled=not is_subagent,
             supports_vision=config.active_model.supports_vision,
             model_name=config.active_model.display_name,
             input_modalities=", ".join(config.active_model.input_modalities),
@@ -110,9 +110,9 @@ class AgentService:
         # ── Plugin lifecycle containers (replace dynamic setattr/getattr) ─
         self._plugins: dict[str, PluginLifecycle] = {
             "mcp": PluginLifecycle("mcp", self),
-            "memory": PluginLifecycle("memory", self),
+            "memdb": PluginLifecycle("memdb", self),
             "wechat": PluginLifecycle("wechat", self),
-            "sharing": PluginLifecycle("sharing", self),
+            "memfiles": PluginLifecycle("memfiles", self),
         }
 
         # A2A integration state
@@ -195,7 +195,7 @@ class AgentService:
     ) -> bool:
         """Spawn a plugin child process, connect, and register its tools.
 
-        Single entry point for ALL plugins — built-in (mcp, memory,
+        Single entry point for ALL plugins — built-in (mcp, memdb,
         wechat) and third-party.  The plugin's ``server.py`` must expose
         a ``main()`` that calls ``run_plugin_server(mcp)``.
 
@@ -216,9 +216,9 @@ class AgentService:
         if name == "wechat":
             return await self.start_wechat()
 
-        # ── Sharing: plain HTTP server, exposed via ngrok tunnel ──────
-        if name == "sharing":
-            return await self.start_sharing()
+        # ── Memfiles: plain HTTP server, exposed via ngrok tunnel ──────
+        if name == "memfiles":
+            return await self.start_memfiles()
 
         # ── Generic: spawn python -m <module>, connect, register tools ──
         from slife.mcp.process import MCPWrapperProcess
@@ -311,7 +311,7 @@ class AgentService:
     async def _connect_plugin_http(self, name: str, port: int) -> None:
         """Connect to an already-running plugin via Streamable HTTP.
 
-        Shared by :meth:`connect_mcp_http`, :meth:`connect_memory_http`,
+        Shared by :meth:`connect_mcp_http`, :meth:`connect_memdb_http`,
         and :meth:`connect_wechat_http`.
         """
         logger.info("%s_http_connect port=%s", name, port)
@@ -337,11 +337,11 @@ class AgentService:
             await self._auto_connect_rest_apis()
         logger.info("mcp_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
-    async def connect_memory_http(self, port: int) -> None:
-        """Connect to an already-running memory server via Streamable HTTP."""
-        await self._connect_plugin_http("memory", port)
-        await self._register_memory_tools()
-        logger.info("memory_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
+    async def connect_memdb_http(self, port: int) -> None:
+        """Connect to an already-running memdb server via Streamable HTTP."""
+        await self._connect_plugin_http("memdb", port)
+        await self._register_memdb_tools()
+        logger.info("memdb_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_wechat_http(self, port: int) -> None:
         """Connect to an already-running wechat server via Streamable HTTP."""
@@ -731,7 +731,7 @@ class AgentService:
         """Disconnect client and stop process for plugin *name*.
 
         Args:
-            name: Plugin short name (``"mcp"``, ``"memory"``, ``"wechat"``).
+            name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``).
             has_poll_task: If True, cancel the plugin's poll task first.
         """
         await self._plugins[name].stop(has_poll_task=has_poll_task)
@@ -740,22 +740,22 @@ class AgentService:
         """Shut down the MCP wrapper and clean up."""
         await self._stop_plugin("mcp")
 
-    async def stop_memory(self) -> None:
-        """Disconnect and shut down the memory service. No diary to close."""
-        await self._stop_plugin("memory")
+    async def stop_memdb(self) -> None:
+        """Disconnect and shut down the memdb service."""
+        await self._stop_plugin("memdb")
 
     async def stop_wechat(self) -> None:
         """Shut down the WeChat plugin and clean up."""
         await self._stop_plugin("wechat", has_poll_task=True)
 
-    async def stop_sharing(self) -> None:
-        """Stop the ngrok tunnel and sharing server."""
-        fs = self._plugins["sharing"]
+    async def stop_memfiles(self) -> None:
+        """Stop the ngrok tunnel and memfiles server."""
+        fs = self._plugins["memfiles"]
         if fs.tunnel_task is not None and not fs.tunnel_task.done():
             fs.tunnel_task.cancel()
-        from slife.sharing.tunnel import stop_tunnel
+        from slife.memfiles.tunnel import stop_tunnel
         stop_tunnel()
-        await self._stop_plugin("sharing")
+        await self._stop_plugin("memfiles")
 
     def kill_child_processes(self) -> None:
         """Synchronous best-effort child process cleanup.
@@ -814,9 +814,9 @@ class AgentService:
     # ── Memory lifecycle ──────────────────────────────────────────────
 
     @property
-    def memory_enabled(self) -> bool:
-        """Whether the memory service is connected."""
-        return self._plugins["memory"].client is not None and self._plugins["memory"].client.is_connected
+    def memdb_enabled(self) -> bool:
+        """Whether the memdb service is connected."""
+        return self._plugins["memdb"].client is not None and self._plugins["memdb"].client.is_connected
 
     @property
     def wechat_enabled(self) -> bool:
@@ -837,30 +837,30 @@ class AgentService:
         """
         await self._plugins[name].spawn(module, harness_tools)
 
-    async def _register_memory_tools(self) -> None:
-        """Discover and register memory plugin tools as proxy tools.
+    async def _register_memdb_tools(self) -> None:
+        """Discover and register memdb plugin tools as proxy tools.
 
         Called from the HTTP-connect path when a subagent shares the
-        main agent's already-running memory server.
+        main agent's already-running memdb server.
         """
-        assert self._plugins["memory"].client is not None
-        memory_tools = await self._plugins["memory"].client.list_tools()
+        assert self._plugins["memdb"].client is not None
+        memdb_tools = await self._plugins["memdb"].client.list_tools()
         logger.debug(
-            "memory_tools names=%s",
-            [t["name"] for t in memory_tools],
+            "memdb_tools names=%s",
+            [t["name"] for t in memdb_tools],
         )
 
         harness_tools = {"memory_save_turn", "memory_get_recent_turns"}
         tagged = [
-            {**t, "server": "memory"}
-            for t in memory_tools
+            {**t, "server": "memdb"}
+            for t in memdb_tools
             if t["name"] not in harness_tools
         ]
 
-        proxy_tools = create_proxy_tools(self._plugins["memory"].client, tagged)
+        proxy_tools = create_proxy_tools(self._plugins["memdb"].client, tagged)
         for tool in proxy_tools:
             self.tool_registry.register(tool)
-        logger.debug("memory_tools_registered count=%d", len(proxy_tools))
+        logger.debug("memdb_tools_registered count=%d", len(proxy_tools))
 
     async def _register_wechat_tools(self) -> None:
         """Discover and register wechat plugin tools as proxy tools.
@@ -887,81 +887,81 @@ class AgentService:
             self.tool_registry.register(tool)
         logger.debug("wechat_tools_registered count=%d", len(proxy_tools))
 
-    async def start_memory(self) -> bool:
-        """Connect to slife-memory and register tools. Returns True on success."""
-        mem_cfg = self.config.memory_config
+    async def start_memdb(self) -> bool:
+        """Connect to slife-memdb and register tools. Returns True on success."""
+        mem_cfg = self.config.memdb_config
         assert mem_cfg is not None  # guaranteed by Config.__post_init__
 
-        logger.info("memory_init start")
+        logger.info("memdb_init start")
         try:
             await self._spawn_and_register_plugin(
-                "memory",
-                "slife.plugins.memory.server",
+                "memdb",
+                "slife.plugins.memdb.server",
                 harness_tools={"memory_save_turn", "memory_get_recent_turns"},
             )
-            logger.info("memory_init_done tools=%d", len(self.tool_registry.list_tools()))
+            logger.info("memdb_init_done tools=%d", len(self.tool_registry.list_tools()))
             from slife.health import record
             record(
-                "memory_service", "ok",
+                "memdb_service", "ok",
                 key="status", value="connected",
-                hint="Memory service started and tools registered.",
+                hint="memdb service started and tools registered.",
             )
             return True
         except Exception as e:
-            logger.warning("memory_init_failed err=%s — continuing without memory", e)
+            logger.warning("memdb_init_failed err=%s — continuing without memdb", e)
             from slife.health import record
             record(
-                "memory_service", "error",
+                "memdb_service", "error",
                 key="status", value="failed",
-                hint=f"Memory service failed to start: {e}. "
+                hint=f"memdb service failed to start: {e}. "
                      "Turn storage and search are unavailable.",
             )
             return False
 
     # ── Sharing lifecycle ──────────────────────────────────────────────
 
-    async def start_sharing(self) -> bool:
-        """Start the sharing server and ngrok tunnel. Returns True on success.
+    async def start_memfiles(self) -> bool:
+        """Start the memfiles server and ngrok tunnel. Returns True on success.
 
-        The sharing server serves image BLOBs via plain HTTP.  The ngrok
+        The memfiles server serves image BLOBs via plain HTTP.  The ngrok
         tunnel exposes it to the public internet so LLM vision APIs can
         fetch images by HTTPS URL instead of inline base64.
         """
         import os
 
         from slife.mcp.process import MCPWrapperProcess
-        from slife.sharing.tunnel import start_tunnel
+        from slife.memfiles.tunnel import start_tunnel
 
-        logger.info("sharing_init start")
+        logger.info("memfiles_init start")
         try:
-            # Generate a per-session HMAC secret so the sharing server
+            # Generate a per-session HMAC secret so the memfiles server
             # (a subprocess) can verify signed file tokens without any
             # shared in-memory state.
             import secrets
-            if "SLIFE_SHARING_SECRET" not in os.environ:
-                os.environ["SLIFE_SHARING_SECRET"] = secrets.token_urlsafe(32)
+            if "SLIFE_MEMFILES_SECRET" not in os.environ:
+                os.environ["SLIFE_MEMFILES_SECRET"] = secrets.token_urlsafe(32)
 
             process = MCPWrapperProcess(
                 command=sys.executable,
-                args=["-m", "slife.plugins.sharing.server"],
+                args=["-m", "slife.plugins.memfiles.server"],
             )
             await process.start()
 
-            self._plugins["sharing"].process = process
-            self._plugins["sharing"].port = process.port
-            os.environ["SLIFE_SHARING_PORT"] = str(process.port)
+            self._plugins["memfiles"].process = process
+            self._plugins["memfiles"].port = process.port
+            os.environ["SLIFE_MEMFILES_PORT"] = str(process.port)
 
             # Tunnel handshake (~3-5s) — fire-and-forget so startup is instant.
             # Failure is logged but never blocks; prepare_image skips injection
-            # until SLIFE_SHARING_URL is set.
+            # until SLIFE_MEMFILES_URL is set.
             loop = asyncio.get_running_loop()
-            self._plugins["sharing"].tunnel_task = loop.run_in_executor(
+            self._plugins["memfiles"].tunnel_task = loop.run_in_executor(
                 None, start_tunnel, process.port,
             )
-            logger.info("sharing_init_done port=%s", process.port)
+            logger.info("memfiles_init_done port=%s", process.port)
             return True
         except Exception as e:
-            logger.warning("sharing_init_failed err=%s — continuing without sharing URL", e)
+            logger.warning("memfiles_init_failed err=%s — continuing without memfiles URL", e)
             return False
 
     # ── WeChat lifecycle ───────────────────────────────────────────────
@@ -1095,7 +1095,7 @@ class AgentService:
         if token_count:
             self.session_usage.total_tokens += token_count
 
-        if not self.memory_enabled:
+        if not self.memdb_enabled:
             return
 
         conv = conversation if conversation is not None else self.conversation
@@ -1126,10 +1126,10 @@ class AgentService:
         # inserted into the conversation.  Each turn is still saved here
         # via memory_save_turn, so trimmed turns remain searchable.
 
-        assert self._plugins["memory"].client is not None  # guarded by memory_enabled
+        assert self._plugins["memdb"].client is not None  # guarded by memdb_enabled
         try:
             await asyncio.wait_for(
-                self._plugins["memory"].client.call_tool(
+                self._plugins["memdb"].client.call_tool(
                     "memory_save_turn",
                     {
                         "user_message": user_message,
@@ -1143,7 +1143,7 @@ class AgentService:
                 timeout=10.0,
             )
         except Exception as e:
-            logger.warning("memory_save_error err=%s", e)
+            logger.warning("memdb_save_error err=%s", e)
 
     async def get_recent_turns(self, limit: int = 50) -> list[dict]:
         """Load recent turns for restore. Returns [] if no turns.
@@ -1153,7 +1153,7 @@ class AgentService:
         whether the memory plugin has been started.
         """
         try:
-            from slife.plugins.memory.store import SessionStore
+            from slife.plugins.memdb.store import SessionStore
             db_path = self._get_memory_db_path()
             if db_path and db_path.is_file():
                 store = SessionStore(db_path)
@@ -1171,7 +1171,7 @@ class AgentService:
         import os
         from slife.paths import get_data_dir
 
-        env_path = os.environ.get("SLIFE_MEMORY_DB")
+        env_path = os.environ.get("SLIFE_MEMDB_DB")
         if env_path:
             return Path(env_path)
         agent_id = os.environ.get("SLIFE_AGENT_ID", "slife")

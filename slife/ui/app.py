@@ -211,7 +211,7 @@ class SlifeApp(App):
         """Initialize status bar and start all plugins via auto-discovery.
 
         Plugins are discovered by scanning ``slife.plugins.*`` — the
-        same mechanism as native tools.  Built-in plugins (memory, mcp,
+        same mechanism as native tools.  Built-in plugins (memdb, mcp,
         wechat) get their post-connect hooks; third-party plugins are
         started with the generic :meth:`AgentService.start_plugin_server`.
         """
@@ -301,9 +301,9 @@ class SlifeApp(App):
             _stop_one("subagent", self.service.stop_subagent()),
             _stop_one("a2a", self.service.stop_a2a()),
             _stop_one("mcp", self.service.stop_mcp()),
-            _stop_one("memory", self.service.stop_memory()),
+            _stop_one("memdb", self.service.stop_memdb()),
             _stop_one("wechat", self.service.stop_wechat()),
-            _stop_one("sharing", self.service.stop_sharing()),
+            _stop_one("memfiles", self.service.stop_memfiles()),
             return_exceptions=True,
         )
 

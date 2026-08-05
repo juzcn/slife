@@ -50,7 +50,7 @@ Seven numbered sections of platform facts, plus conditional A2A:
 
 1. **环境** — agent identity, model, host, platform, CWD, shell, Python, package manager
 2. **上下文窗口策略** — floor/ceiling percentages, trim behaviour, result cap
-3. **图像与多模态** — ``[image:<path>]`` marker contract, vision support flag, ``expose_file`` / ``include_image`` sharing tools
+3. **图像与多模态** — ``[image:<path>]`` marker contract, vision support flag, ``expose_file`` / ``include_image`` memfiles tools
 4. **凭证解析链** — ``${VAR}`` syntax, resolution order, active credstore backend
 5. **工具与技能** — MCP tool prefix, skills directory, skill loading via ``use_skill``
 6. **子代理特性** — process model, tool inheritance, no memory persistence
@@ -98,7 +98,7 @@ initial empty state); on subsequent turns only actual changes appear.
 ├──────────────────────────────────────────────────────────────────────┤
 │  Agent Service                                                       │
 │  slife/agent/service.py — wires client + tools + loop + plugins      │
-│  Manages MCP, Memory, A2A/MQTT, WeChat, and subagent lifecycles      │
+│  Manages MCP, MemDB, A2A/MQTT, WeChat, and subagent lifecycles      │
 │  Inbox: serializes human + WeChat + MQTT + subagent messages         │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Agent Loop                              │  MCP Client               │
@@ -108,10 +108,10 @@ initial empty state); on subsequent turns only actual changes appear.
 │  Reasoning (thinking) support            │                           │
 ├──────────────────────────────────────────┴───────────────────────────┤
 │  Tool Registry — unified function definitions for all categories     │
-│  Native · Memory · Skills · MCP Proxy · CLI · REST API · A2A         │
+│  Native · MemDB · Skills · MCP Proxy · CLI · REST API · A2A         │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins (independent child processes, Streamable HTTP)              │
-│  slife-mcp (gateway)  ·  slife-memory (diary)  ·  slife-wechat      │
+│  slife-mcp (gateway)  ·  slife-memdb (diary)  ·  slife-wechat      │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
@@ -143,7 +143,7 @@ Real MCP tools that are **filtered from the LLM-visible tool list** at
 registration time.  The harness (``AgentService``) calls them programmatically
 — the LLM never knows they exist, and never sees their results.
 
-**slife-memory** (filter: ``memory_save_turn``, ``memory_get_recent_turns``):
+**slife-memdb** (harness filter: ``memory_save_turn``, ``memory_get_recent_turns``):
 
 | Tool | Called by | Purpose |
 |------|-----------|---------|
@@ -313,9 +313,9 @@ All tools are unified under `Tool` and registered in a single `ToolRegistry`. Th
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `config.py` | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
-| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `save_to_memory` |
+| MemFiles | `memfiles.py` | `expose_file`, `include_image`, `save_content_or_files` |
 | Display | `display.py` | `show_image` — display local/remote images inline in the chat |
-| Sharing | `sharing.py` | `expose_file` — local path → public HTTPS URL; `include_image` — url/base64 passthrough for multimodal LLMs |
+| MemFiles | `memfiles.py` | `expose_file` — local path → public HTTPS URL; `include_image` — url/base64 passthrough for multimodal LLMs |
 
 Adding a new tool is a matter of adding a class in the matching category file — no manual registration needed.
 
@@ -337,7 +337,7 @@ Three former System tools were removed because their output is now in the system
 
 All `set` tools share `(name: str, enabled: bool)`. `mcp_set_server` additionally accepts `disclosure="lazy"|"eager"` for tool lazy-loading. `mcp_add_server` handles both initial registration and config updates — if called on an existing server with identical config, it returns `already_connected` without restarting.
 
-In addition, the built-in **Memory** plugin (``slife/plugins/memory/``) provides `memory_search`, `memory_open`, `memory_list_recent`, `memory_summarize`, and more.
+In addition, the built-in **MemDB** plugin (``slife/plugins/memdb/``) provides `memory_search`, `memory_open`, `memory_list_recent`, `memory_summarize`, and more.
 
 ### Timeout Architecture
 
@@ -371,7 +371,7 @@ Every plugin follows the same path in `slife/agent/service.py`:
 3. `list_tools()` → discover tool schemas
 4. `MCPProxyTool(mcp_client, tool_info)` → registered in ToolRegistry
 
-Subagents share the main agent's plugin servers via environment variables (`SLIFE_MCP_PORT`, `SLIFE_MEMORY_PORT`, `SLIFE_WECHAT_PORT`).
+Subagents share the main agent's plugin servers via environment variables (`SLIFE_MCP_PORT`, `SLIFE_MEMDB_PORT`, `SLIFE_WECHAT_PORT`).
 
 ### slife-mcp — External MCP Gateway
 
@@ -416,7 +416,7 @@ any      ──[mcp_add_server]────────────────�
 
 ## Permanent Memory
 
-Every turn is permanently recorded as an independent row. No session concept, no lifecycle — a continuous, time-ordered log. Runs as a built-in MCP plugin (`slife/plugins/memory/`).
+Every turn is permanently recorded as an independent row. No session concept, no lifecycle — a continuous, time-ordered log. Runs as a built-in MCP plugin (`slife/plugins/memdb/`).
 
 ### Schema
 
@@ -530,7 +530,7 @@ Local child-process workers. Always available — no config toggle.
 
 - **headless.py**: Slife without TUI, JSON-RPC 2.0 over stdin/stdout
 - **SubagentManager**: spawn/stop/list lifecycle, `max_subagents` limit
-- **Memory isolation**: subagents don't connect to memory server (avoids deadlock)
+- **Memory isolation**: subagents don't connect to memdb server (avoids deadlock)
 - **Ephemeral**: subagents exist only while the parent runs. No persisted registry.
 - **Nested prevention**: `SLIFE_SUBAGENT_NAME` env var blocks recursive spawning
 
@@ -678,7 +678,7 @@ Sanitization is applied at three chokepoints — all use the same pattern-maskin
 
 ## Config Loading
 
-`Config.from_json5()` (`slife/config.py`) parses in nine phases: Models → Env → Agent → MCP → Memory → A2A → Subagent → Tools → System Health. `${VAR}` and `${VAR:-default}` resolution works recursively through dicts and lists. `_resolve_secret()` is the shared lookup chain for `${VAR}` → `os.environ` → credstore.
+`Config.from_json5()` (`slife/config.py`) parses in nine phases: Models → Env → Agent → MCP → MemDB → A2A → Subagent → Tools → System Health. `${VAR}` and `${VAR:-default}` resolution works recursively through dicts and lists. `_resolve_secret()` is the shared lookup chain for `${VAR}` → `os.environ` → credstore.
 
 ## Project Structure
 
@@ -686,13 +686,13 @@ Sanitization is applied at three chokepoints — all use the same pattern-maskin
 slife/
   agent/            # LLM interaction: loop.py, conversation.py, service.py, system_prompt.py
   tools/            # Native tools (auto-discovered): base.py, registry.py, factory.py
-  sharing/          # File sharing infra: token.py (in-memory registry), tunnel.py (ngrok)
-  plugins/          # Built-in MCP plugins: mcp/, memory/, wechat/, sharing/
+  memfiles/          # File serving: token.py (in-memory registry), tunnel.py (ngrok)
+  plugins/          # Built-in MCP plugins: mcp/, memdb/, wechat/, memfiles/
   mcp/              # MCP client infra: client.py, tool_adapter.py, process.py, oauth.py
   a2a/              # Agent-to-Agent: transport.py, mqtt.py, http.py, client.py, broker.py
   subagent/         # Local workers: headless.py, process.py, tools.py
   ui/               # Textual TUI: app.py, chat.py, handler.py, tool_display.py, image_utils.py
-  config.py         # JSON5 config: models, env, MCP, memory, A2A
+  config.py         # JSON5 config: models, env, MCP, memdb, A2A
   paths.py          # Canonical filesystem paths (dev vs prod)
   platform.py       # Cross-platform utilities: OS detection, shell detection, platform type, process lifecycle, notifications
   logfmt.py         # Structured logging + secret sanitization

@@ -1,8 +1,8 @@
-"""Sharing — ngrok tunnel + HMAC-signed file tokens.
+"""Memfiles — ngrok tunnel + HMAC-signed file tokens.
 
 Provides the infrastructure to expose local files via publicly-accessible
 HTTPS URLs through an ngrok tunnel.  File paths are signed with HMAC-SHA256
-and encoded in the URL token — the sharing server (subprocess) verifies
+and encoded in the URL token — the memfiles server (subprocess) verifies
 the signature to extract the path.  No shared state, no database, no BLOBs.
 
 ``share_url_for(file_id)`` builds a public share URL.

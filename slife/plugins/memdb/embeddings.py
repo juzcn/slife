@@ -222,8 +222,8 @@ class EmbeddingClient:
             return cls(api_key="", quiet=quiet)
 
         # Parse embedding config
-        memory_cfg = raw.get("memory", {})
-        emb_cfg = memory_cfg.get("embedding", {}) if isinstance(memory_cfg, dict) else {}
+        memdb_cfg = raw.get("memdb", {})
+        emb_cfg = memdb_cfg.get("embedding", {}) if isinstance(memdb_cfg, dict) else {}
         if not isinstance(emb_cfg, dict):
             emb_cfg = {}
 

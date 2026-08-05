@@ -241,7 +241,7 @@ def create_plugin_server(name: str, instructions: str) -> tuple:
     """
     from fastmcp import FastMCP
 
-    # "slife-memory" → suffix="_memory", logger_name="slife_memory"
+    # "slife-memdb" → suffix="_memdb", logger_name="slife_memdb"
     service_suffix = "_" + name.split("-", 1)[-1] if "-" in name else "_" + name
     logger_name = name.replace("-", "_")
 

@@ -1,11 +1,11 @@
-"""Tests for slife_memory.search — merge_hybrid RRF algorithm."""
+"""Tests for slife_memdb.search — merge_hybrid RRF algorithm."""
 
 import pytest; pytestmark = pytest.mark.unit
 
 
 import pytest
 
-from slife.plugins.memory.search import merge_hybrid, RRF_K
+from slife.plugins.memdb.search import merge_hybrid, RRF_K
 
 
 # ── merge_hybrid ─────────────────────────────────────────────────────────────

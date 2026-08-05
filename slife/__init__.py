@@ -79,7 +79,7 @@ def main(config_path: str = "slife.json5"):
         key="path", value=config_path,
         hint=f"Config loaded: {len(config.models)} models, "
              f"{len(config.mcp_config.servers) if config.mcp_config else 0} MCP servers, "
-             f"memory={'enabled' if config.memory_config else 'disabled'}.",
+             f"memory={'enabled' if config.memdb_config else 'disabled'}.",
     )
 
     # Check external tooling availability (best-effort, reports via health system)

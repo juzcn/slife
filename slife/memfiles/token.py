@@ -1,11 +1,11 @@
-"""HMAC-signed file tokens for sharing URLs.
+"""HMAC-signed file tokens for memfiles URLs.
 
 Each exposed file gets a signed token that carries the file path.
-The sharing server (subprocess) verifies the HMAC to extract the path —
+The memfiles server (subprocess) verifies the HMAC to extract the path —
 no shared state, no database, no IPC needed.  The token is the authority.
 
 The secret is generated per-session and passed to the subprocess via the
-``SLIFE_SHARING_SECRET`` environment variable.
+``SLIFE_MEMFILES_SECRET`` environment variable.
 
 Token format (binary, before base64url encoding)::
 
@@ -14,7 +14,7 @@ Token format (binary, before base64url encoding)::
 The 32-byte HMAC prevents path forgery; the dot separator delimits the
 variable-length path from the fixed-length signature.
 
-When the secret is not set (e.g. tests, or sharing not yet started),
+When the secret is not set (e.g. tests, or memfiles not yet started),
 ``register_file`` falls back to a random 22-char token — not verifiable
 by any server, but harmless.  ``lookup_file`` returns ``None`` in that
 case since it cannot verify anything.
@@ -34,14 +34,14 @@ logger = logging.getLogger(__name__)
 
 # ── In-process fallback for when the secret is not set ────────────────
 # Used only as a graceful degradation path (e.g. unit tests that mock
-# share_url_for).  The sharing server subprocess always has the secret
+# share_url_for).  The memfiles server subprocess always has the secret
 # set and never touches this dict.
 _fallback_files: dict[str, str] = {}
 
 
 def _get_secret() -> bytes | None:
-    """Return the sharing secret, or ``None`` when not set."""
-    raw = os.environ.get("SLIFE_SHARING_SECRET")
+    """Return the memfiles secret, or ``None`` when not set."""
+    raw = os.environ.get("SLIFE_MEMFILES_SECRET")
     if not raw:
         return None
     return raw.encode("utf-8")
@@ -50,17 +50,17 @@ def _get_secret() -> bytes | None:
 def register_file(file_path: str) -> str:
     """Sign *file_path* and return a URL-safe token.
 
-    When ``SLIFE_SHARING_SECRET`` is set (normal operation), the token is
+    When ``SLIFE_MEMFILES_SECRET`` is set (normal operation), the token is
     ``base64url(path_bytes + "." + hmac-sha256)``, carrying its own
-    authority — verifiable by the sharing server subprocess.
+    authority — verifiable by the memfiles server subprocess.
 
-    When the secret is **not** set (tests, sharing not started), falls
+    When the secret is **not** set (tests, memfiles not started), falls
     back to a random 22-char token stored in an in-process dict.  Such
-    tokens cannot be verified by the sharing server, but the fallback
+    tokens cannot be verified by the memfiles server, but the fallback
     prevents crashes in code paths that call ``register_file`` before
-    the sharing infrastructure is ready.
+    the memfiles infrastructure is ready.
 
-    The file is **not** copied — the sharing server reads it from disk.
+    The file is **not** copied — the memfiles server reads it from disk.
     """
     secret = _get_secret()
     if secret is None:
@@ -80,7 +80,7 @@ def register_file(file_path: str) -> str:
 def lookup_file(token: str) -> str | None:
     """Verify *token* and return the file path, or ``None`` if invalid.
 
-    The sharing server calls this on every ``GET /share/{file_id}``
+    The memfiles server calls this on every ``GET /share/{file_id}``
     request.  Because the token carries the HMAC, no process-shared
     state is required.
     """

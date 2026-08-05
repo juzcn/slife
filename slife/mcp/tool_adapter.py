@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # ── Built-in server / tool name constants ─────────────────────────────
 
 _MCP_SERVER = "mcp"           # built-in MCP management server
-_MEMORY_SERVER = "memory"     # built-in memory service
+_MEMDB_SERVER = "memdb"       # built-in memdb service
 _WECHAT_SERVER = "wechat"     # built-in WeChat messaging plugin
 _MCP_ADD_SERVER = "mcp_add_server"
 _MCP_REMOVE_SERVER = "mcp_remove_server"
@@ -113,8 +113,8 @@ class MCPProxyTool(Tool):
         Three paths:
           - Wrapper tools (built-in MCP management): call directly, with
             config persistence callbacks.
-          - Memory tools (built-in memory service): call directly on the
-            standalone memory MCP client — no routing layer needed.
+          - MemDB tools (built-in memdb service): call directly on the
+            standalone memdb MCP client — no routing layer needed.
           - External MCP server tools: route via mcp_call_tool on the
             slife-mcp wrapper.
         """
@@ -132,9 +132,9 @@ class MCPProxyTool(Tool):
             await self._handle_add_server(result, source, **kwargs)
             await self._handle_remove_server(result, **kwargs)
             await self._handle_set_server(result, **kwargs)
-        elif self._server == _MEMORY_SERVER:
-            # Memory tools — call directly on the memory MCP client.
-            # The memory service is standalone (not behind the MCP wrapper),
+        elif self._server == _MEMDB_SERVER:
+            # MemDB tools — call directly on the memdb MCP client.
+            # The memdb service is standalone (not behind the MCP wrapper),
             # so there's no mcp_call_tool routing layer.
             result = await self._mcp_client.call_tool(self._tool_name, kwargs)
         elif self._server == _WECHAT_SERVER:

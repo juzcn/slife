@@ -52,11 +52,11 @@ class TestMCPProxyToolConstruction:
         assert tool.name == "filesystem__read_file"
 
     def test_description_prefixed_with_server(self):
-        info = make_tool_info(server="memory", name="save", description="Save data")
+        info = make_tool_info(server="memdb", name="save", description="Save data")
         client = make_mock_mcp_client()
         tool = MCPProxyTool(client, info)
 
-        assert tool.description == "[memory] Save data"
+        assert tool.description == "[memdb] Save data"
 
     def test_empty_description(self):
         info = make_tool_info(server="x", name="y", description="")
@@ -313,7 +313,7 @@ class TestMCPProxyToolExecute:
     @pytest.mark.asyncio
     async def test_memory_server_calls_directly(self):
         """Memory server tools call the MCP client directly (no routing layer)."""
-        info = make_tool_info(server="memory", name="memory_search", description="Search")
+        info = make_tool_info(server="memdb", name="memory_search", description="Search")
         client = make_mock_mcp_client()
         client.call_tool.return_value = "search results"
 

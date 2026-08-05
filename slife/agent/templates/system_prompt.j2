@@ -19,10 +19,10 @@ Slife 环境信息
 
 3. 永久记忆
    - 会话历史: 自动存入 SQLite，跨会话保留，通过 `memory_search` 检索。
-   - 文件柜: `save_to_memory` 将内容/URL/文件保存到 `memory/` 文件夹。
+   - 文件柜: `save_content_or_files` 将内容/URL/文件保存到 `{{ agent_name }}.files/` 文件夹。
      保存后的文件既是本地普通文件，也可通过共享 URL 公开访问。
      用户说"记住这个""保存下来"时使用此工具。
-   - `memory/` 路径: {{ data_dir }}\memory
+   - `{{ agent_name }}.files/` 路径: {{ data_dir }}\{{ agent_name }}.files
 
 4. 图像与多模态
    - 视觉支持: {{ "已启用" if has_vision else "未启用" }}

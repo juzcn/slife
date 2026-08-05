@@ -48,10 +48,10 @@ class TestPluginLifecycleInit:
     def test_different_names(self, mock_service):
         """Each plugin gets its own name."""
         mcp = PluginLifecycle("mcp", mock_service)
-        memory = PluginLifecycle("memory", mock_service)
+        memdb = PluginLifecycle("memdb", mock_service)
         assert mcp.name == "mcp"
-        assert memory.name == "memory"
-        assert mcp is not memory
+        assert memdb.name == "memdb"
+        assert mcp is not memdb
 
 
 # ── spawn ─────────────────────────────────────────────────────────────────

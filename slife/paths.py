@@ -82,10 +82,14 @@ def get_images_dir() -> Path:
     return get_data_dir() / "logs" / "images"
 
 
-def get_memory_dir() -> Path:
-    """Directory for user-saved memory files.
+def get_memfiles_dir(agent_id: str = "slife") -> Path:
+    """Directory for user-saved files — one per agent.
 
-    Files saved via ``save_to_memory`` land here — plain files browsable
+    Files saved via ``save_content_or_files`` land here — plain files browsable
     by the user and accessible via both local path and sharing URL.
+
+    Uses ``SLIFE_AGENT_ID`` from the environment when available (mirrors
+    :func:`get_db_path`), falling back to ``"slife"``.
     """
-    return get_data_dir() / "memory"
+    agent = os.environ.get("SLIFE_AGENT_ID", agent_id)
+    return get_data_dir() / f"{agent}.files"

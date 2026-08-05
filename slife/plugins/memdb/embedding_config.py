@@ -1,7 +1,7 @@
 """Embedding configuration helpers — read, write, validate, reload.
 
 Used by the memory_set_embedding / memory_check_embedding /
-memory_disable_embedding MCP tools to manage the ``memory.embedding``
+memory_disable_embedding MCP tools to manage the ``memdb.embedding``
 section of ``slife.json5`` at runtime.
 """
 
@@ -30,9 +30,9 @@ def _write_raw(raw: dict) -> None:
 
 
 def read_embedding_config() -> dict | None:
-    """Return the current *memory.embedding* section, or None if absent."""
+    """Return the current *memdb.embedding* section, or None if absent."""
     raw = _read_raw()
-    mem = raw.get("memory", {})
+    mem = raw.get("memdb", {})
     if not isinstance(mem, dict):
         return None
     emb = mem.get("embedding")
@@ -42,19 +42,19 @@ def read_embedding_config() -> dict | None:
 
 
 def write_embedding_config(cfg: dict) -> None:
-    """Write (overwrite) the *memory.embedding* section with *cfg*."""
+    """Write (overwrite) the *memdb.embedding* section with *cfg*."""
     raw = _read_raw()
-    if not isinstance(raw.get("memory"), dict):
-        raw["memory"] = {}
-    raw["memory"]["embedding"] = cfg
+    if not isinstance(raw.get("memdb"), dict):
+        raw["memdb"] = {}
+    raw["memdb"]["embedding"] = cfg
     _write_raw(raw)
     logger.info("embedding_config_written keys=%s", list(cfg.keys()))
 
 
 def remove_embedding_config() -> None:
-    """Remove the *memory.embedding* section entirely."""
+    """Remove the *memdb.embedding* section entirely."""
     raw = _read_raw()
-    mem = raw.get("memory", {})
+    mem = raw.get("memdb", {})
     if isinstance(mem, dict):
         mem.pop("embedding", None)
     _write_raw(raw)
@@ -115,7 +115,7 @@ def _get_embedder_module():
     """Lazy-import the server module to access the global _embedder."""
     global _embedder_module
     if _embedder_module is None:
-        import slife.plugins.memory.server as _embedder_module
+        import slife.plugins.memdb.server as _embedder_module
     return _embedder_module
 
 
@@ -124,7 +124,7 @@ async def reload_embedder() -> dict:
 
     Returns a status dict suitable for returning from a tool.
     """
-    from slife.plugins.memory.embeddings import EmbeddingClient  # local import
+    from slife.plugins.memdb.embeddings import EmbeddingClient  # local import
 
     mod = _get_embedder_module()
     mod._embedder = EmbeddingClient.from_config()
@@ -189,7 +189,7 @@ def make_check_report() -> dict:
     gguf_path = cfg.get("gguf_path")
 
     # Check actual availability
-    from slife.plugins.memory.embeddings import EmbeddingClient, _check_runtime
+    from slife.plugins.memdb.embeddings import EmbeddingClient, _check_runtime
     client = EmbeddingClient.from_config(quiet=True)
 
     result: dict = {

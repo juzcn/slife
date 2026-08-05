@@ -156,21 +156,21 @@ class TestAgentServiceMemory:
 
     def test_memory_not_enabled_initially(self, sample_config):
         service = AgentService(sample_config)
-        assert service.memory_enabled is False
+        assert service.memdb_enabled is False
 
     @pytest.mark.asyncio
-    async def test_start_memory_always_runs(self, sample_config):
+    async def test_start_memdb_always_runs(self, sample_config):
         config = sample_config
         service = AgentService(config)
         with patch.object(service, "_spawn_and_register_plugin", AsyncMock()) as mock_spawn:
-            result = await service.start_memory()
+            result = await service.start_memdb()
             mock_spawn.assert_called_once()
             assert result is True
 
     @pytest.mark.asyncio
     async def test_save_to_memory_disabled_noop(self, sample_config):
         service = AgentService(sample_config)
-        # Should not raise — memory_enabled is False, so it returns early
+        # Should not raise — memdb_enabled is False, so it returns early
         await service.save_to_memory(user_message="test", token_count=100)
 
     @pytest.mark.asyncio
@@ -180,9 +180,9 @@ class TestAgentServiceMemory:
         await service.save_to_memory()
 
     @pytest.mark.asyncio
-    async def test_stop_memory_noop_when_disabled(self, sample_config):
+    async def test_stop_memdb_noop_when_disabled(self, sample_config):
         service = AgentService(sample_config)
-        await service.stop_memory()  # Should not raise
+        await service.stop_memdb()  # Should not raise
 
 
 # ── AgentService A2A ────────────────────────────────────────────────────────
@@ -296,48 +296,48 @@ class TestAgentServiceProcessMessage:
         assert result.text == ""
 
 
-# ── AgentService stop_memory ────────────────────────────────────────────────
+# ── AgentService stop_memdb ────────────────────────────────────────────────
 
 
 class TestAgentServiceStopMemory:
-    """Tests for stop_memory."""
+    """Tests for stop_memdb."""
 
     @pytest.mark.asyncio
-    async def test_stop_memory_with_active_client(self, sample_config):
+    async def test_stop_memdb_with_active_client(self, sample_config):
         service = AgentService(sample_config)
         mock_client = MagicMock()
         mock_client.is_connected = True
         mock_client.disconnect = AsyncMock()
-        service._plugins["memory"].client = mock_client
+        service._plugins["memdb"].client = mock_client
 
-        await service.stop_memory()
+        await service.stop_memdb()
 
         mock_client.disconnect.assert_called_once()
-        assert service._plugins["memory"].client is None
+        assert service._plugins["memdb"].client is None
 
     @pytest.mark.asyncio
-    async def test_stop_memory_with_process(self, sample_config):
+    async def test_stop_memdb_with_process(self, sample_config):
         service = AgentService(sample_config)
         mock_process = MagicMock()
         mock_process.stop = AsyncMock()
-        service._plugins["memory"].process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
+        service._plugins["memdb"].process = mock_process  # pyright: ignore[reportAttributeAccessIssue]
 
-        await service.stop_memory()
+        await service.stop_memdb()
 
         mock_process.stop.assert_called_once()
-        assert service._plugins["memory"].process is None
+        assert service._plugins["memdb"].process is None
 
     @pytest.mark.asyncio
-    async def test_stop_memory_handles_errors(self, sample_config):
+    async def test_stop_memdb_handles_errors(self, sample_config):
         service = AgentService(sample_config)
         mock_client = MagicMock()
         mock_client.is_connected = True
         # call_tool raises — disconnect should still be attempted
         mock_client.call_tool = AsyncMock(side_effect=Exception("boom"))
         mock_client.disconnect = AsyncMock()
-        service._plugins["memory"].client = mock_client
+        service._plugins["memdb"].client = mock_client
 
-        await service.stop_memory()
+        await service.stop_memdb()
 
         mock_client.disconnect.assert_called_once()
 

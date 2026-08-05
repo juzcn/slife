@@ -207,7 +207,7 @@ class AgentLoop:
         context_window: int = 0,
         context_floor: float = 0.2,
         context_ceiling: float = 0.8,
-        memory_enabled: bool = True,
+        memdb_enabled: bool = True,
         supports_vision: bool = False,
         model_name: str = "",
         input_modalities: str = "",
@@ -220,7 +220,7 @@ class AgentLoop:
         self.context_window = context_window
         self.context_floor = context_floor
         self.context_ceiling = context_ceiling
-        self.memory_enabled = memory_enabled
+        self.memdb_enabled = memdb_enabled
         self.supports_vision = supports_vision
         self.model_name = model_name
         self.input_modalities = input_modalities
@@ -346,7 +346,7 @@ class AgentLoop:
         the oldest complete turns are removed and a synthetic
         ``_sys_trim`` tool-call + result pair is inserted so the LLM
         sees a visible notification.  Trimmed turns were already persisted
-        by :meth:`AgentService.save_to_memory` when each turn completed,
+        by :meth:`AgentService.save_to_memory` when each turn is completed,
         so the LLM can retrieve them via ``memory_search``.
         """
         if self._cancel_event.is_set():
@@ -391,7 +391,7 @@ class AgentLoop:
             turns_removed=len(turns),
             tokens_freed=tokens_freed,
             turns_summary=turns_summary,
-            memory_saved=self.memory_enabled,
+            memory_saved=self.memdb_enabled,
         )
 
         # Advance the context time range so _sys_note reflects

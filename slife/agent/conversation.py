@@ -117,7 +117,7 @@ class Conversation:
         """Add a user message, optionally with attached images.
 
         If images are provided, each is shared via a signed URL served
-        by the sharing server.  Images are skipped silently when the
+        by the memfiles server.  Images are skipped silently when the
         ngrok tunnel is not active (no base64 fallback).
 
         User input is sanitized to mask any API keys / tokens before the

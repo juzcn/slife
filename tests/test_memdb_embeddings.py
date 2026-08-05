@@ -1,4 +1,4 @@
-"""Tests for slife.plugins.memory.embeddings — EmbeddingClient and helpers."""
+"""Tests for slife.plugins.memdb.embeddings — EmbeddingClient and helpers."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from slife.plugins.memory.embeddings import (
+from slife.plugins.memdb.embeddings import (
     EmbeddingClient,
     _guess_dim,
 )
@@ -53,8 +53,8 @@ class TestEmbeddingClientInit:
 
     def test_gguf_backend(self):
         with (
-            patch("slife.plugins.memory.embeddings.Path.exists", return_value=True),
-            patch("slife.plugins.memory.embeddings._check_runtime", return_value=True),
+            patch("slife.plugins.memdb.embeddings.Path.exists", return_value=True),
+            patch("slife.plugins.memdb.embeddings._check_runtime", return_value=True),
         ):
             client = EmbeddingClient(
                 model="bge-m3",
@@ -65,7 +65,7 @@ class TestEmbeddingClientInit:
             assert client.dimension == 1024
 
     def test_gguf_path_not_exists_falls_back(self):
-        with patch("slife.plugins.memory.embeddings.Path.exists", return_value=False):
+        with patch("slife.plugins.memdb.embeddings.Path.exists", return_value=False):
             client = EmbeddingClient(
                 model="bge-m3",
                 gguf_path="/nonexistent/model.gguf",
@@ -86,8 +86,8 @@ class TestEmbeddingClientInit:
     def test_gguf_runtime_check_fails(self):
         """available=False when GGUF file exists but llama-cpp isn't installed."""
         with (
-            patch("slife.plugins.memory.embeddings.Path.exists", return_value=True),
-            patch("slife.plugins.memory.embeddings._check_runtime", return_value=False),
+            patch("slife.plugins.memdb.embeddings.Path.exists", return_value=True),
+            patch("slife.plugins.memdb.embeddings._check_runtime", return_value=False),
         ):
             client = EmbeddingClient(
                 model="bge-m3",
@@ -98,7 +98,7 @@ class TestEmbeddingClientInit:
 
     def test_api_runtime_check_fails(self):
         """available=False when api_key is set but openai isn't installed."""
-        with patch("slife.plugins.memory.embeddings._check_runtime", return_value=False):
+        with patch("slife.plugins.memdb.embeddings._check_runtime", return_value=False):
             client = EmbeddingClient(
                 model="text-embedding-3-small",
                 api_key="sk-test-key",
@@ -122,7 +122,7 @@ class TestEmbeddingClientFromConfig:
         mock_read_text.return_value = '{}'
 
         mock_config = {
-            "memory": {
+            "memdb": {
                 "embedding": {
                     "model": "bge-m3",
                     "gguf_path": "/tmp/model.gguf",
@@ -132,7 +132,7 @@ class TestEmbeddingClientFromConfig:
 
         with (
             patch("json5.loads", return_value=mock_config),
-            patch("slife.plugins.memory.embeddings._check_runtime", return_value=True),
+            patch("slife.plugins.memdb.embeddings._check_runtime", return_value=True),
         ):
             client = EmbeddingClient.from_config("/fake/config.json5")
             assert client.backend == "gguf"
@@ -145,7 +145,7 @@ class TestEmbeddingClientFromConfig:
         mock_read_text.return_value = '{}'
 
         mock_config = {
-            "memory": {
+            "memdb": {
                 "embedding": {
                     "model": "text-embedding-3-small",
                 },
@@ -165,7 +165,7 @@ class TestEmbeddingClientFromConfig:
             assert client.backend == "api"
             assert client.available is True
 
-    @patch("slife.plugins.memory.embeddings.Path.exists")
+    @patch("slife.plugins.memdb.embeddings.Path.exists")
     def test_missing_config_returns_disabled(self, mock_exists):
         mock_exists.return_value = False
 
@@ -173,7 +173,7 @@ class TestEmbeddingClientFromConfig:
         assert client.available is False
 
     def test_json5_not_installed(self):
-        with patch("slife.plugins.memory.embeddings.json5", create=True, side_effect=ImportError):
+        with patch("slife.plugins.memdb.embeddings.json5", create=True, side_effect=ImportError):
             # This simulates json5 not being available
             pass
 

@@ -82,7 +82,7 @@ class SubagentProcess:
         env["SLIFE_CONFIG"] = self._config_json
         # Subagents share the main agent's MCP tools but don't need
         # their own memory or wechat connections.
-        env.pop("SLIFE_MEMORY_PORT", None)
+        env.pop("SLIFE_MEMDB_PORT", None)
         env.pop("SLIFE_WECHAT_PORT", None)
         self._process = await asyncio.create_subprocess_exec(
             *cmd, stdin=asyncio.subprocess.PIPE,

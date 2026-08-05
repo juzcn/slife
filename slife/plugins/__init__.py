@@ -10,7 +10,7 @@ Third-party plugin
   discovered and started automatically on next launch.
 
 Built-in plugins
-  ``memory``, ``mcp``, and ``wechat`` are discovered the same way.
+  ``memdb``, ``mcp``, and ``wechat`` are discovered the same way.
   They each have a small amount of harness-side post‑connect logic
   (memory restore, MCP auto‑connect, WeChat poll loop) that is
   triggered by plugin name rather than by special registration.
@@ -32,7 +32,7 @@ def discover_plugins() -> list[tuple[str, str]]:
 
     Returns a list of ``(name, module_path)`` tuples::
 
-        [("memory", "slife.plugins.memory.server"),
+        [("memdb", "slife.plugins.memdb.server"),
          ("mcp",    "slife.plugins.mcp.server"),
          ("wechat", "slife.plugins.wechat.server"),
          …]

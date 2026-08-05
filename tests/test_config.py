@@ -687,26 +687,26 @@ class TestConfigMCPSaveRemove:
         assert "config_no_path" in caplog.text
 
 
-# ── MemoryConfig ──────────────────────────────────────────────────────
+# ── MemdbConfig ──────────────────────────────────────────────────────
 
 
-class TestMemoryConfigFromDict:
-    """Tests for MemoryConfig.from_dict."""
+class TestMemdbConfigFromDict:
+    """Tests for MemdbConfig.from_dict."""
 
     def test_non_dict_returns_default(self):
-        from slife.config import MemoryConfig
-        result = MemoryConfig.from_dict("not a dict")
+        from slife.config import MemdbConfig
+        result = MemdbConfig.from_dict("not a dict")
         assert result.embedding_model == "text-embedding-3-small"
 
     def test_non_dict_embedding(self):
-        from slife.config import MemoryConfig
-        result = MemoryConfig.from_dict({"embedding": "not a dict"})
+        from slife.config import MemdbConfig
+        result = MemdbConfig.from_dict({"embedding": "not a dict"})
         assert result.embedding_model == "text-embedding-3-small"
         assert result.embedding_dim == 1536
 
     def test_custom_values(self):
-        from slife.config import MemoryConfig
-        result = MemoryConfig.from_dict({
+        from slife.config import MemdbConfig
+        result = MemdbConfig.from_dict({
             "embedding": {"model": "custom-model", "dim": 768},
         })
         assert result.embedding_model == "custom-model"

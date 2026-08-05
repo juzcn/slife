@@ -1,4 +1,4 @@
-"""Tests for slife/plugins/memory/embedding_config.py."""
+"""Tests for slife/plugins/memdb/embedding_config.py."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from slife.plugins.memory.embedding_config import (
+from slife.plugins.memdb.embedding_config import (
     read_embedding_config,
     write_embedding_config,
     remove_embedding_config,
@@ -43,32 +43,32 @@ def mock_config_file():
 
 
 class TestReadEmbeddingConfig:
-    def test_no_memory_section(self, mock_config_file):
+    def test_no_memdb_section(self, mock_config_file):
         mock_config_file["content"] = '{"tools": []}'
         assert read_embedding_config() is None
 
-    def test_memory_not_dict(self, mock_config_file):
-        mock_config_file["content"] = '{"memory": "string"}'
+    def test_memdb_not_dict(self, mock_config_file):
+        mock_config_file["content"] = '{"memdb": "string"}'
         assert read_embedding_config() is None
 
     def test_no_embedding_key(self, mock_config_file):
-        mock_config_file["content"] = '{"memory": {"db_path": "/tmp"}}'
+        mock_config_file["content"] = '{"memdb": {"db_path": "/tmp"}}'
         assert read_embedding_config() is None
 
     def test_embedding_not_dict(self, mock_config_file):
-        mock_config_file["content"] = '{"memory": {"embedding": null}}'
+        mock_config_file["content"] = '{"memdb": {"embedding": null}}'
         assert read_embedding_config() is None
 
     def test_valid_embedding(self, mock_config_file):
         mock_config_file["content"] = json5.dumps({
-            "memory": {"embedding": {"model": "bge-m3", "dim": 1024}}
+            "memdb": {"embedding": {"model": "bge-m3", "dim": 1024}}
         })
         result = read_embedding_config()
         assert result == {"model": "bge-m3", "dim": 1024}
 
     def test_returns_copy_not_reference(self, mock_config_file):
         mock_config_file["content"] = json5.dumps({
-            "memory": {"embedding": {"model": "test"}}
+            "memdb": {"embedding": {"model": "test"}}
         })
         result = read_embedding_config()
         assert result is not None
@@ -90,32 +90,32 @@ class TestReadEmbeddingConfig:
 
 
 class TestWriteEmbeddingConfig:
-    def test_creates_memory_section_if_missing(self, mock_config_file):
+    def test_creates_memdb_section_if_missing(self, mock_config_file):
         mock_config_file["content"] = '{"tools": []}'
         write_embedding_config({"model": "bge-m3"})
 
         raw = json5.loads(mock_config_file["content"])
-        assert "memory" in raw
-        assert raw["memory"]["embedding"] == {"model": "bge-m3"}
+        assert "memdb" in raw
+        assert raw["memdb"]["embedding"] == {"model": "bge-m3"}
 
     def test_overwrites_existing_embedding(self, mock_config_file):
         mock_config_file["content"] = json5.dumps({
-            "memory": {"embedding": {"model": "old", "dim": 768}}
+            "memdb": {"embedding": {"model": "old", "dim": 768}}
         })
         write_embedding_config({"model": "new", "dim": 1024})
 
         raw = json5.loads(mock_config_file["content"])
-        assert raw["memory"]["embedding"] == {"model": "new", "dim": 1024}
+        assert raw["memdb"]["embedding"] == {"model": "new", "dim": 1024}
 
-    def test_preserves_other_memory_keys(self, mock_config_file):
+    def test_preserves_other_memdb_keys(self, mock_config_file):
         mock_config_file["content"] = json5.dumps({
-            "memory": {"db_path": "/tmp/db", "embedding": {}}
+            "memdb": {"db_path": "/tmp/db", "embedding": {}}
         })
         write_embedding_config({"model": "bge-m3"})
 
         raw = json5.loads(mock_config_file["content"])
-        assert raw["memory"]["db_path"] == "/tmp/db"
-        assert raw["memory"]["embedding"] == {"model": "bge-m3"}
+        assert raw["memdb"]["db_path"] == "/tmp/db"
+        assert raw["memdb"]["embedding"] == {"model": "bge-m3"}
 
 
 # ── remove_embedding_config ───────────────────────────────────────────
@@ -124,29 +124,29 @@ class TestWriteEmbeddingConfig:
 class TestRemoveEmbeddingConfig:
     def test_removes_embedding_key(self, mock_config_file):
         mock_config_file["content"] = json5.dumps({
-            "memory": {"db_path": "/tmp", "embedding": {"model": "x"}}
+            "memdb": {"db_path": "/tmp", "embedding": {"model": "x"}}
         })
         remove_embedding_config()
 
         raw = json5.loads(mock_config_file["content"])
-        assert "embedding" not in raw["memory"]
-        assert raw["memory"]["db_path"] == "/tmp"
+        assert "embedding" not in raw["memdb"]
+        assert raw["memdb"]["db_path"] == "/tmp"
 
     def test_noop_when_no_embedding(self, mock_config_file):
-        original = '{"memory": {"db_path": "/tmp"}}'
+        original = '{"memdb": {"db_path": "/tmp"}}'
         mock_config_file["content"] = original
         remove_embedding_config()
         assert mock_config_file["content"] != original  # reformatted
         raw = json5.loads(mock_config_file["content"])
-        assert "embedding" not in raw.get("memory", {})
+        assert "embedding" not in raw.get("memdb", {})
 
-    def test_noop_when_memory_not_dict(self, mock_config_file):
-        original = '{"memory": "string"}'
+    def test_noop_when_memdb_not_dict(self, mock_config_file):
+        original = '{"memdb": "string"}'
         mock_config_file["content"] = original
         remove_embedding_config()
-        # memory wasn't a dict, so nothing changes except formatting
+        # memdb wasn't a dict, so nothing changes except formatting
         raw = json5.loads(mock_config_file["content"])
-        assert raw["memory"] == "string"
+        assert raw["memdb"] == "string"
 
 
 # ── get_first_provider_api_key ────────────────────────────────────────
@@ -262,7 +262,7 @@ class TestMakeCheckReport:
         p.write_text("dummy")
 
         mock_config_file["content"] = json5.dumps({
-            "memory": {"embedding": {"gguf_path": str(p), "model": "bge-m3", "dim": 1024}}
+            "memdb": {"embedding": {"gguf_path": str(p), "model": "bge-m3", "dim": 1024}}
         })
         report = make_check_report()
         assert report["configured"] is True
@@ -271,7 +271,7 @@ class TestMakeCheckReport:
 
     def test_gguf_config_with_missing_file(self, mock_config_file):
         mock_config_file["content"] = json5.dumps({
-            "memory": {"embedding": {"gguf_path": "/nonexistent/model.gguf", "model": "bge-m3"}}
+            "memdb": {"embedding": {"gguf_path": "/nonexistent/model.gguf", "model": "bge-m3"}}
         })
         report = make_check_report()
         assert report["backend"] == "gguf"
@@ -281,7 +281,7 @@ class TestMakeCheckReport:
 
     def test_api_config_missing_key(self, mock_config_file):
         mock_config_file["content"] = json5.dumps({
-            "memory": {"embedding": {"model": "text-embedding-3-small", "dim": 1536}}
+            "memdb": {"embedding": {"model": "text-embedding-3-small", "dim": 1536}}
         })
         report = make_check_report()
         assert report["configured"] is True

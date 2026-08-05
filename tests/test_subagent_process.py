@@ -30,7 +30,7 @@ def _mock_config(**overrides):
     cfg.to_dict = Mock(return_value={
         "models": [], "active_model_ref": "", "tools": [],
         "max_iterations": 30, "agent_id": "slife",
-        "mcp_config": None, "memory_config": None,
+        "mcp_config": None, "memdb_config": None,
         "wechat_config": None, "a2a_config": None,
         "subagent_config": {"max_subagents": 5, "task_timeout": 120},
     })

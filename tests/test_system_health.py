@@ -168,13 +168,13 @@ class TestCheckEmbeddingConfig:
 
     def test_no_config_returns_warning(self):
         # These are imported inside check_embedding via:
-        #   from slife.plugins.memory.embedding_config import read_embedding_config
-        #   from slife.plugins.memory.embeddings import EmbeddingClient
+        #   from slife.plugins.memdb.embedding_config import read_embedding_config
+        #   from slife.plugins.memdb.embeddings import EmbeddingClient
         with patch(
-            "slife.plugins.memory.embedding_config.read_embedding_config",
+            "slife.plugins.memdb.embedding_config.read_embedding_config",
             return_value=None,
         ):
-            with patch("slife.plugins.memory.embeddings.EmbeddingClient"):
+            with patch("slife.plugins.memdb.embeddings.EmbeddingClient"):
                 result = check_embedding()
                 assert len(result) == 1
                 assert result[0]["component"] == "embeddings"
@@ -190,11 +190,11 @@ class TestCheckEmbeddingConfig:
         cfg = {"gguf_path": "/tmp/model.gguf", "model": "bge-small"}
 
         with patch(
-            "slife.plugins.memory.embeddings.EmbeddingClient"
+            "slife.plugins.memdb.embeddings.EmbeddingClient"
         ) as MockClient:
             MockClient.from_config.return_value = mock_client
             with patch(
-                "slife.plugins.memory.embedding_config.read_embedding_config",
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
                 return_value=cfg,
             ):
                 result = check_embedding()
@@ -211,11 +211,11 @@ class TestCheckEmbeddingConfig:
         cfg = {"model": "text-embedding-3-small"}
 
         with patch(
-            "slife.plugins.memory.embeddings.EmbeddingClient"
+            "slife.plugins.memdb.embeddings.EmbeddingClient"
         ) as MockClient:
             MockClient.from_config.return_value = mock_client
             with patch(
-                "slife.plugins.memory.embedding_config.read_embedding_config",
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
                 return_value=cfg,
             ):
                 result = check_embedding()
@@ -231,11 +231,11 @@ class TestCheckEmbeddingConfig:
         cfg = {"gguf_path": "/tmp/model.gguf", "model": "bge-small"}
 
         with patch(
-            "slife.plugins.memory.embeddings.EmbeddingClient"
+            "slife.plugins.memdb.embeddings.EmbeddingClient"
         ) as MockClient:
             MockClient.from_config.return_value = mock_client
             with patch(
-                "slife.plugins.memory.embedding_config.read_embedding_config",
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
                 return_value=cfg,
             ):
                 result = check_embedding()
@@ -251,11 +251,11 @@ class TestCheckEmbeddingConfig:
         cfg = {"model": "text-embedding-3-small"}
 
         with patch(
-            "slife.plugins.memory.embeddings.EmbeddingClient"
+            "slife.plugins.memdb.embeddings.EmbeddingClient"
         ) as MockClient:
             MockClient.from_config.return_value = mock_client
             with patch(
-                "slife.plugins.memory.embedding_config.read_embedding_config",
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
                 return_value=cfg,
             ):
                 result = check_embedding()
@@ -270,11 +270,11 @@ class TestCheckEmbeddingConfig:
         mock_client.available = False
 
         with patch(
-            "slife.plugins.memory.embeddings.EmbeddingClient"
+            "slife.plugins.memdb.embeddings.EmbeddingClient"
         ) as MockClient:
             MockClient.from_config.return_value = mock_client
             with patch(
-                "slife.plugins.memory.embedding_config.read_embedding_config",
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
                 return_value={"model": "x"},
             ):
                 result = check_embedding()

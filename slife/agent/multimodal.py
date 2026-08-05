@@ -1,7 +1,7 @@
 """Multimodal utilities — image URL generation for vision APIs.
 
 User-attached images (via ``@path`` syntax) are shared as lightweight
-HTTPS URLs through the sharing server.  No BLOBs, no base64 — the file
+HTTPS URLs through the memfiles server.  No BLOBs, no base64 — the file
 is served directly from disk via a signed token.
 """
 
@@ -12,8 +12,8 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
-from slife.sharing.token import register_file
-from slife.sharing.tunnel import share_url_for
+from slife.memfiles.token import register_file
+from slife.memfiles.tunnel import share_url_for
 
 logger = logging.getLogger(__name__)
 

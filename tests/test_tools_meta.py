@@ -155,7 +155,7 @@ class TestListToolsTool:
         # MCPProxyTool so isinstance checks pass.
         mock_tool = MagicMock(spec=MCPProxyTool)
         mock_tool.name = "memory__search"
-        mock_tool._server = "memory"
+        mock_tool._server = "memdb"
         mock_tool.description = "Search memory."
         mock_tool.category = "Memory"
         mock_tool.parameters = {"type": "object", "properties": {}}
@@ -169,7 +169,7 @@ class TestListToolsTool:
         try:
             _mod._current_registry = registry
             result = await tool.execute(category="mcp")
-            assert "memory" in result.lower() or "memory__search" in result
+            assert "memdb" in result.lower() or "memory__search" in result
         finally:
             _mod._current_registry = original
 
