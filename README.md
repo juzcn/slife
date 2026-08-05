@@ -19,7 +19,7 @@
 
 ## Install
 
-**Zero prerequisites.** The install script auto-installs uv and Node.js if needed.
+**Zero prerequisites.** The install script auto-installs uv, Node.js, and bun if needed.
 
 ### Install script (recommended)
 

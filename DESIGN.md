@@ -379,7 +379,7 @@ The unified gateway for all external MCP server connections. Dual transport:
 
 | Transport | Mechanism | When |
 |-----------|-----------|------|
-| **stdio** | Spawn subprocess, JSON-RPC over pipes | Local MCP servers (npx/uvx) |
+| **stdio** | Spawn subprocess, JSON-RPC over pipes | Local MCP servers (npx/uvx/bunx) |
 | **http** | POST JSON-RPC via `httpx.AsyncClient` | Remote MCP endpoints |
 
 Both share `MCPServerConnection` — `_request()` dispatches to `_request_stdio()` or `_request_http()` based on `ServerConfig.transport`.
@@ -698,7 +698,7 @@ slife/
   logfmt.py         # Structured logging + secret sanitization
   server_utils.py   # Plugin lifecycle: port binding, signal, FastMCP
   bootstrap.py      # Logging setup, session init
-  health.py         # System health checks (external deps, config, model)
+  health.py         # System health checks (external deps: node, bun, uv, config, model)
   env.py            # Environment variable management
   os_detect.py      # OS detection for install/upgrade scripts
 
