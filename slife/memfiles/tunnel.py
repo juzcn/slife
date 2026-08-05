@@ -227,24 +227,45 @@ async def _run_tunnel_monitor(port: int) -> None:
     to verify the session is still alive.  When the session dies (e.g.
     heartbeat timeout from China → ngrok cloud), tears down the old
     tunnel and restarts it with exponential backoff.
+
+    Also handles the case where the initial ``start_tunnel`` in the
+    executor failed — the first time ``_public_url is None`` is
+    detected, the monitor attempts to start the tunnel itself.
     """
     global _monitor_retries
 
-    # Wait for the initial tunnel handshake to finish.
+    # Wait for the initial executor handshake to finish.
     await asyncio.sleep(2.0)
 
     while True:
         await asyncio.sleep(_MONITOR_INTERVAL)
 
-        # Tunnel never started (e.g. missing auth token) — nothing to do.
+        # ── Tunnel never started — try once ────────────────────
         if _public_url is None:
+            if _monitor_retries > 0:
+                # Already tried and failed — wait for user to fix config.
+                continue
+            logger.info("tunnel_not_started — attempting initial start port=%s", port)
+            loop = asyncio.get_running_loop()
+            try:
+                await loop.run_in_executor(None, start_tunnel, port)
+                logger.info("tunnel_initial_start_ok port=%s url=%s", port, _public_url)
+                _monitor_retries = 0
+            except Exception as e:
+                _monitor_retries += 1
+                logger.warning(
+                    "tunnel_initial_start_failed port=%s err=%s — "
+                    "memfiles sharing offline until restart or config fix",
+                    port, e,
+                )
             continue
 
+        # ── Tunnel is alive — nothing to do ────────────────────
         if await _check_tunnel_alive_async():
             _monitor_retries = 0  # reset backoff on success
             continue
 
-        # ── Tunnel is dead — restart ──────────────────────────────
+        # ── Tunnel is dead — restart ──────────────────────────
         logger.warning(
             "tunnel_health_check_failed — restarting (attempt %d/%d)",
             _monitor_retries + 1, _MONITOR_MAX_RETRIES,

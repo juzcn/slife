@@ -953,15 +953,24 @@ class AgentService:
             self._plugins["memfiles"].port = process.port
             os.environ["SLIFE_MEMFILES_PORT"] = str(process.port)
 
-            # Tunnel handshake (~3-5s) — fire-and-forget so startup is instant.
-            # Failure is logged but never blocks; prepare_image skips injection
-            # until SLIFE_MEMFILES_URL is set.
+            # Tunnel handshake (~3-5s) — run in executor so startup isn't blocked.
+            # Wrapped in _start_tunnel_safe so executor exceptions are logged
+            # (asyncio.Future exceptions are silently dropped otherwise).
+            def _start_tunnel_safe(port: int) -> None:
+                try:
+                    start_tunnel(port)
+                except Exception as e:
+                    logger.warning(
+                        "tunnel_init_failed port=%s err=%s — memfiles sharing offline",
+                        port, e,
+                    )
+
             loop = asyncio.get_running_loop()
             self._plugins["memfiles"].tunnel_task = loop.run_in_executor(
-                None, start_tunnel, process.port,
+                None, _start_tunnel_safe, process.port,
             )
-            # Background health monitor — watches the tunnel and auto-restarts
-            # on heartbeat timeout (common from China → ngrok cloud).
+            # Background health monitor — handles both initial start retry
+            # and runtime restart on heartbeat timeout.
             from slife.memfiles.tunnel import start_monitor
             start_monitor(process.port)
             logger.info("memfiles_init_done port=%s", process.port)
