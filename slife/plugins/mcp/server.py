@@ -345,11 +345,14 @@ async def mcp_set_server(
 
 def main():
     """Run the slife-mcp wrapper server on Streamable HTTP transport."""
-    from slife.server_utils import run_plugin_server
+    from slife.server_utils import run_plugin_server, shutdown_server_logging
 
     logger.info("mcp_start log=%s pid=%s", _log_path, os.getpid())
-    run_plugin_server(mcp)
-    logger.info("mcp_stop")
+    try:
+        run_plugin_server(mcp)
+    finally:
+        logger.info("mcp_stop")
+        shutdown_server_logging()
 
 
 if __name__ == "__main__":

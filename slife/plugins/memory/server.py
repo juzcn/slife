@@ -707,7 +707,7 @@ def main():
     """
     import argparse
 
-    from slife.server_utils import run_plugin_server
+    from slife.server_utils import run_plugin_server, shutdown_server_logging
 
     global _db_path
 
@@ -722,9 +722,11 @@ def main():
         "memory_start log=%s pid=%s db=%s", _log_path, os.getpid(), _db_path,
     )
 
-    run_plugin_server(mcp, port=args.port)
-
-    logger.info("memory_stop")
+    try:
+        run_plugin_server(mcp, port=args.port)
+    finally:
+        logger.info("memory_stop")
+        shutdown_server_logging()
 
 
 if __name__ == "__main__":

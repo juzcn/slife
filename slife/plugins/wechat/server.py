@@ -763,12 +763,15 @@ def main():
     inside FastMCP's own event loop — this avoids the aiohttp session
     being bound to a temporary loop that gets closed.
     """
-    from slife.server_utils import run_plugin_server
+    from slife.server_utils import run_plugin_server, shutdown_server_logging
 
     logger.info("wechat_start agent_id=%s log=%s pid=%s",
                 _agent_id, _log_path, os.getpid())
-    run_plugin_server(mcp)
-    logger.info("wechat_stop agent_id=%s", _agent_id)
+    try:
+        run_plugin_server(mcp)
+    finally:
+        logger.info("wechat_stop agent_id=%s", _agent_id)
+        shutdown_server_logging()
 
 
 if __name__ == "__main__":

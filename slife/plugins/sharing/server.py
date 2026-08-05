@@ -18,7 +18,9 @@ from pathlib import Path
 
 from aiohttp import web
 
-from slife.server_utils import bind_free_port, signal_port, setup_server_logging
+from slife.server_utils import (
+    bind_free_port, signal_port, setup_server_logging, shutdown_server_logging,
+)
 from slife.sharing.token import lookup_file
 
 _log_path = setup_server_logging("_sharing")
@@ -48,7 +50,8 @@ async def handle_share(request: web.Request) -> web.StreamResponse:
     mime_type, _ = mimetypes.guess_type(str(file_path))
     content_type = mime_type or "application/octet-stream"
 
-    logger.debug("share_served path=%s mime=%s", file_path, content_type)
+    logger.info("share_served path=%s mime=%s size=%s", file_path, content_type, file_path.stat().st_size)
+    logger.debug("share_streaming path=%s mime=%s", file_path, content_type)
 
     response = web.StreamResponse(
         status=200,
@@ -82,7 +85,11 @@ def main() -> None:
     signal_port(port)
     logger.info("sharing_ready port=%s", port)
 
-    web.run_app(app, sock=sock, handle_signals=True, print=lambda _: None)
+    try:
+        web.run_app(app, sock=sock, handle_signals=True, print=lambda _: None)
+    finally:
+        logger.info("sharing_shutdown port=%s", port)
+        shutdown_server_logging()
 
 
 if __name__ == "__main__":

@@ -64,6 +64,7 @@ Shared utilities
 ═══════════════════════════════════════════════════════════════════════
 """
 
+import atexit
 import json
 import logging
 import os
@@ -135,6 +136,12 @@ def setup_server_logging(
     # Silence FastMCP-internal loggers (in addition to the standard set)
     silence_noisy_loggers(extra=_FASTMCP_NOISE)
 
+    # Safety net — close log handlers on normal process exit (atexit does
+    # NOT fire on Windows TerminateProcess, but it catches sys.exit and
+    # unhandled exceptions).  shutdown_server_logging is idempotent so it
+    # is safe if a finally block also calls it.
+    atexit.register(shutdown_server_logging)
+
     return log_path
 
 
@@ -143,7 +150,8 @@ def shutdown_server_logging(extra_logger_names: tuple[str, ...] = ()) -> None:
 
     Call this before process exit to ensure the log file can be rotated
     or inspected by the parent process.  Idempotent — safe to call even
-    if ``setup_server_logging`` was never called.
+    if ``setup_server_logging`` was never called, or to call multiple times
+    (e.g. from both a finally block and an atexit handler).
     """
     _root = logging.getLogger()
     for handler in list(_root.handlers):
@@ -271,24 +279,27 @@ def run_plugin_server(
     This call blocks until the server shuts down.  Set up any module-level
     global state (e.g. ``_db_path``) BEFORE calling.
     """
-    if port:
-        logger.info("plugin_ready transport=streamable-http port=%s", port)
-        mcp_server.run(
-            transport="streamable-http", host=host, port=port,
-            show_banner=show_banner,
-            json_response=True,
-            uvicorn_config={"log_config": None},
-        )
-    else:
-        sock, port = bind_free_port()
-        logger.info("plugin_ready transport=streamable-http port=%s", port)
-        signal_port(port)
-        mcp_server.run(
-            transport="streamable-http", host=host, port=port, sockets=[sock],
-            show_banner=show_banner,
-            json_response=True,
-            uvicorn_config={"log_config": None},
-        )
+    try:
+        if port:
+            logger.info("plugin_ready transport=streamable-http port=%s", port)
+            mcp_server.run(
+                transport="streamable-http", host=host, port=port,
+                show_banner=show_banner,
+                json_response=True,
+                uvicorn_config={"log_config": None},
+            )
+        else:
+            sock, port = bind_free_port()
+            logger.info("plugin_ready transport=streamable-http port=%s", port)
+            signal_port(port)
+            mcp_server.run(
+                transport="streamable-http", host=host, port=port, sockets=[sock],
+                show_banner=show_banner,
+                json_response=True,
+                uvicorn_config={"log_config": None},
+            )
+    finally:
+        logger.info("plugin_shutdown port=%s", port)
 
 
 # ── JSON response helpers (re-exported from logfmt) ────────────────────
