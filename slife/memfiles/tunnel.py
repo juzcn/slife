@@ -339,9 +339,12 @@ def _ensure_ngrok_config() -> None:
     try:
         from pyngrok.conf import PyngrokConfig  # pyright: ignore[reportMissingImports]
         default_conf = PyngrokConfig()
-        config_path = Path(default_conf.config_path)  # pyright: ignore[reportUnknownMemberType]
+        raw = default_conf.config_path  # pyright: ignore[reportUnknownMemberType]
     except Exception:
         return
+    if not raw:
+        return
+    config_path = Path(raw)
 
     source = _find_template("ngrok.yml")
     if source is None:
