@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ _ngrok_module: Any = None  # cached import
 
 # ── Monitor state ────────────────────────────────────────────────────
 
-_monitor_task: asyncio.Task | None = None
+_monitor_task: "asyncio.Task[None] | None" = None
 _monitor_retries: int = 0
 _MONITOR_MAX_RETRIES: int = 10
 _MONITOR_BASE_DELAY: float = 5.0  # seconds
@@ -336,9 +337,9 @@ def _ensure_ngrok_config() -> None:
     it is slife's ngrok agent configuration.
     """
     try:
-        from pyngrok.conf import PyngrokConfig
+        from pyngrok.conf import PyngrokConfig  # pyright: ignore[reportMissingImports]
         default_conf = PyngrokConfig()
-        config_path = Path(default_conf.config_path)
+        config_path = Path(default_conf.config_path)  # pyright: ignore[reportUnknownMemberType]
     except Exception:
         return
 
