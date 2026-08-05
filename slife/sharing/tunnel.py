@@ -133,7 +133,13 @@ def start_tunnel(port: int) -> str:
 
 
 def stop_tunnel() -> None:
-    """Stop the ngrok tunnel and clear the public URL."""
+    """Stop the ngrok tunnel and kill the ngrok process.
+
+    Kills the ngrok process (not just disconnects the tunnel) so the
+    next slife session starts with a clean ngrok state.  Without this,
+    the orphaned ngrok process may hold stale session data, causing
+    "failed to reconnect session" errors on the next startup.
+    """
     global _tunnel, _public_url, _ngrok_module
 
     if _public_url is None:
@@ -142,9 +148,14 @@ def stop_tunnel() -> None:
     if _ngrok_module is not None:
         try:
             _ngrok_module.disconnect(_public_url)
-            logger.info("tunnel_stopped url=%s", _public_url)
-        except Exception as e:  # noqa: BLE001 — best-effort cleanup, never re-raise
-            logger.warning("tunnel_stop_error err=%s", e)
+            logger.info("tunnel_disconnected url=%s", _public_url)
+        except Exception as e:
+            logger.warning("tunnel_disconnect_error err=%s", e)
+        try:
+            _ngrok_module.kill()
+            logger.info("ngrok_process_killed")
+        except Exception as e:
+            logger.warning("ngrok_kill_error err=%s", e)
 
     _tunnel = None
     _public_url = None
