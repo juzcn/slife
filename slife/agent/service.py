@@ -323,18 +323,19 @@ class AgentService:
         Used by subagents to share the main agent's plugin servers
         instead of spawning their own.
 
-        Subagents only register the MCP wrapper management tools
-        (mcp_list_tools, mcp_call_tool, …).  They do NOT eagerly
-        discover tools from all external servers — that avoids
-        sending N concurrent requests through a single SSE session.
-        Subagents can discover per-server tools on demand via
-        ``mcp_list_tools``.
+        Both main agents and subagents eagerly discover external MCP
+        tools and register them as direct tools (e.g.
+        ``tavily-mcp__tavily_search``).  Subagents use
+        :meth:`_discover_existing_mcp_tools` which only lists tools
+        from already-connected servers — it never spawns new processes.
         """
         await self._connect_plugin_http("mcp", port)
         await self._register_mcp_wrapper_tools()
         if not self.is_subagent:
             await self._auto_connect_mcp_servers()
             await self._auto_connect_rest_apis()
+        else:
+            await self._discover_existing_mcp_tools()
         logger.info("mcp_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_memdb_http(self, port: int) -> None:
