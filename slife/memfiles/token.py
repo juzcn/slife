@@ -1,114 +1,173 @@
-"""HMAC-signed file tokens for memfiles URLs.
+"""Short random hex tokens with a file-backed registry.
 
-Each exposed file gets a signed token that carries the file path.
-The memfiles server (subprocess) verifies the HMAC to extract the path —
-no shared state, no database, no IPC needed.  The token is the authority.
+Each exposed file gets a short random hex token (30 chars, ``secrets.token_hex(15)``).
+Deliberately below 32 chars to avoid the generic ``[A-Za-z0-9]{32,}``
+secret-sanitization pattern in ``logfmt.py``.
 
-The secret is generated per-session and passed to the subprocess via the
-``SLIFE_MEMFILES_SECRET`` environment variable.
+The token→path mapping is stored in a JSON file so the memfiles server
+subprocess can resolve tokens without any shared-memory or IPC.
 
-Token format (binary, before base64url encoding)::
+The registry file path is passed to the subprocess via the
+``SLIFE_MEMFILES_REGISTRY`` environment variable — set once at spawn,
+never changes.
 
-    file_path_utf8 + "." + hmac_sha256(file_path_utf8, secret)
-
-The 32-byte HMAC prevents path forgery; the dot separator delimits the
-variable-length path from the fixed-length signature.
-
-When the secret is not set (e.g. tests, or memfiles not yet started),
-``register_file`` falls back to a random 22-char token — not verifiable
-by any server, but harmless.  ``lookup_file`` returns ``None`` in that
-case since it cannot verify anything.
+When the registry is not set (e.g. tests, or memfiles not yet started),
+``register_file`` falls back to an in-process dict.
 """
 
 from __future__ import annotations
 
-import base64
-import binascii
-import hashlib
-import hmac
+import json
 import logging
 import os
 import secrets
+import tempfile
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# ── In-process fallback for when the secret is not set ────────────────
-# Used only as a graceful degradation path (e.g. unit tests that mock
-# share_url_for).  The memfiles server subprocess always has the secret
-# set and never touches this dict.
-_fallback_files: dict[str, str] = {}
+# ── Module state ──────────────────────────────────────────────────────
+
+_registry_path: Path | None = None
+_registry_cache: dict[str, str] | None = None
+
+# In-process fallback when the registry file hasn't been created yet
+# (e.g. unit tests that mock share_url_for).
+_fallback: dict[str, str] = {}
 
 
-def _get_secret() -> bytes | None:
-    """Return the memfiles secret, or ``None`` when not set."""
-    raw = os.environ.get("SLIFE_MEMFILES_SECRET")
-    if not raw:
-        return None
-    return raw.encode("utf-8")
+# ── Registry file I/O ─────────────────────────────────────────────────
+
+
+def _get_registry_path() -> Path | None:
+    """Return the registry file path from the environment, or create one."""
+    global _registry_path
+    if _registry_path is not None:
+        return _registry_path
+    env = os.environ.get("SLIFE_MEMFILES_REGISTRY")
+    if env:
+        _registry_path = Path(env)
+        return _registry_path
+    return None
+
+
+def _read_registry() -> dict[str, str]:
+    """Read the registry file, returning the in-memory copy if fresh."""
+    global _registry_cache
+    path = _get_registry_path()
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        _registry_cache = data
+        return data
+    except (OSError, json.JSONDecodeError):
+        return _registry_cache or {}
+
+
+def _write_registry(data: dict[str, str]) -> None:
+    """Atomically write the registry file."""
+    path = _get_registry_path()
+    if path is None:
+        return
+    payload = json.dumps(data, ensure_ascii=False)
+    # Atomic: write to temp file then rename
+    fd, tmp = tempfile.mkstemp(
+        suffix=".json", prefix=".memfiles_registry.",
+        dir=path.parent,
+    )
+    try:
+        os.write(fd, payload.encode("utf-8"))
+    finally:
+        os.close(fd)
+    Path(tmp).replace(path)
+    _registry_cache = data
+
+
+# ── Public API ────────────────────────────────────────────────────────
+
+
+def init_registry() -> str:
+    """Create a new registry file and return its path.
+
+    Called by the main process before spawning the memfiles server
+    subprocess.  The path is placed in ``SLIFE_MEMFILES_REGISTRY``
+    so the subprocess inherits it.
+    """
+    fd, tmp = tempfile.mkstemp(
+        suffix=".json", prefix="memfiles_registry_",
+    )
+    os.close(fd)
+    path = Path(tmp)
+    path.write_text("{}", encoding="utf-8")
+    os.environ["SLIFE_MEMFILES_REGISTRY"] = str(path)
+    global _registry_path, _registry_cache
+    _registry_path = path
+    _registry_cache = {}
+    logger.debug("registry_init path=%s", path)
+    return str(path)
+
+
+def cleanup_registry() -> None:
+    """Remove the registry file (called at shutdown)."""
+    global _registry_path, _registry_cache
+    path = _get_registry_path()
+    if path is not None and path.exists():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    _registry_path = None
+    _registry_cache = None
+    os.environ.pop("SLIFE_MEMFILES_REGISTRY", None)
 
 
 def register_file(file_path: str) -> str:
-    """Sign *file_path* and return a URL-safe token.
+    """Generate a short hex token for *file_path* and persist it.
 
-    When ``SLIFE_MEMFILES_SECRET`` is set (normal operation), the token is
-    ``base64url(path_bytes + "." + hmac-sha256)``, carrying its own
-    authority — verifiable by the memfiles server subprocess.
+    Returns a 30-character hex token.  Deliberately below 32 chars to
+    avoid matching the generic ``[A-Za-z0-9]{32,}`` secret-sanitization
+    pattern.  Uses hex (not base64url) so no underscores break the
+    Textual/Rich markdown URL detection.
 
-    When the secret is **not** set (tests, memfiles not started), falls
-    back to a random 22-char token stored in an in-process dict.  Such
-    tokens cannot be verified by the memfiles server, but the fallback
-    prevents crashes in code paths that call ``register_file`` before
-    the memfiles infrastructure is ready.
-
-    The file is **not** copied — the memfiles server reads it from disk.
+    Reuses an existing token if *file_path* was already registered.
     """
-    secret = _get_secret()
-    if secret is None:
-        token = secrets.token_urlsafe(16)  # 128 bits → 22 chars
-        _fallback_files[token] = file_path
-        logger.debug("register_fallback token=%s path=%s", token, file_path)
-        return token
+    path = _get_registry_path()
+    if path is None:
+        # Fallback: in-process dict (tests, pre-init calls)
+        for tok, fp in _fallback.items():
+            if fp == file_path:
+                return tok
+        tok = secrets.token_hex(15)  # 120 bits → 30 chars  (< 32 avoids sanitization)
+        _fallback[tok] = file_path
+        logger.debug("register_fallback token=%s path=%s", tok, file_path)
+        return tok
 
-    path_bytes = file_path.encode("utf-8")
-    sig = hmac.new(secret, path_bytes, hashlib.sha256).digest()
-    signed = path_bytes + b"." + sig
-    # urlsafe_b64encode produces padding with "="; strip it so the token
-    # looks cleaner in URLs.  lookup_file() pads back before decoding.
-    return base64.urlsafe_b64encode(signed).rstrip(b"=").decode("ascii")
+    registry = _read_registry()
+
+    # Build reverse index once for O(1) duplicate check
+    path_to_token: dict[str, str] = {}
+    for tok, fp in registry.items():
+        path_to_token.setdefault(fp, tok)
+
+    if file_path in path_to_token:
+        return path_to_token[file_path]
+
+    tok = secrets.token_hex(15)  # 120 bits → 30 chars  (< 32 avoids sanitization)
+    registry[tok] = file_path
+    _write_registry(registry)
+    logger.debug("register_file token=%s path=%s", tok, file_path)
+    return tok
 
 
 def lookup_file(token: str) -> str | None:
-    """Verify *token* and return the file path, or ``None`` if invalid.
+    """Return the file path for *token*, or ``None`` if unknown.
 
-    The memfiles server calls this on every ``GET /share/{file_id}``
-    request.  Because the token carries the HMAC, no process-shared
-    state is required.
+    The memfiles server calls this on ``GET /share/{file_id}``.
     """
-    secret = _get_secret()
+    path = _get_registry_path()
+    if path is None:
+        return _fallback.get(token)
 
-    # Fallback path: no secret set → check in-process dict (tests only)
-    if secret is None:
-        return _fallback_files.get(token)
-
-    # Restore padding stripped by register_file()
-    padded = token + "=" * (-len(token) % 4)
-    try:
-        data = base64.urlsafe_b64decode(padded)
-    except (ValueError, binascii.Error):
-        return None
-
-    # Binary format:  path_bytes + "." + sig(32 bytes sha256)
-    # Minimum length: 1-byte path + 1 dot + 32 sig = 34
-    if len(data) < 34:
-        return None
-    if data[-33:-32] != b".":
-        return None
-
-    path_bytes = data[:-33]
-    sig = data[-32:]
-
-    expected_sig = hmac.new(secret, path_bytes, hashlib.sha256).digest()
-    if not hmac.compare_digest(sig, expected_sig):
-        return None
-
-    return path_bytes.decode("utf-8")
+    registry = _read_registry()
+    return registry.get(token)

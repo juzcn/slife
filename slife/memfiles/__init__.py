@@ -1,11 +1,11 @@
-"""Memfiles — ngrok tunnel + HMAC-signed file tokens.
+"""Memfiles — ngrok tunnel + file-backed token registry.
 
 Provides the infrastructure to expose local files via publicly-accessible
-HTTPS URLs through an ngrok tunnel.  File paths are signed with HMAC-SHA256
-and encoded in the URL token — the memfiles server (subprocess) verifies
-the signature to extract the path.  No shared state, no database, no BLOBs.
+HTTPS URLs through an ngrok tunnel.  File tokens are short random strings
+stored in a JSON registry file — the memfiles server subprocess reads
+the registry to resolve tokens to file paths.  No HMAC, no shared state.
 
-``share_url_for(file_id)`` builds a public share URL.
-``register_file(file_path)`` signs a path and returns a URL-safe token.
-``lookup_file(token)`` verifies the HMAC and returns the file path (or ``None``).
+``register_file(file_path)`` returns a short URL-safe token.
+``lookup_file(token)`` returns the file path (or ``None``).
+``share_url_for(file_id)`` builds a public share URL via the tunnel.
 """

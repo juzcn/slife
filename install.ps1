@@ -1,9 +1,9 @@
-<#
+﻿<#
 .SYNOPSIS
     Slife one-click installer for Windows PowerShell.
 
 .DESCRIPTION
-    No prerequisites — the script installs uv if needed, then uses
+    No prerequisites �?the script installs uv if needed, then uses
     ``uv tool install`` to install slife in an isolated environment.
     Python 3.13 is managed automatically by uv.
 
@@ -25,8 +25,8 @@ function Write-Warn($msg) { Write-Host $msg -ForegroundColor Yellow }
 function Write-Err($msg)  { Write-Host $msg -ForegroundColor Red }
 
 # Extract bare package name from a pip-freeze line.
-#   name==1.0  → name
-#   name @ url → name
+#   name==1.0  �?name
+#   name @ url �?name
 function Get-PkgName($spec) {
     ($spec -replace '\s*@.+$', '' -replace '==.+$', '').Trim().ToLower()
 }
@@ -98,7 +98,7 @@ try {
             if ($ver -match '^\d+\.') { return $ver }
         } catch { }
 
-        # 2) npm works — npx is always alongside it; if npm runs,
+        # 2) npm works �?npx is always alongside it; if npm runs,
         #    npx.cmd is in the same directory and will also work
         try {
             $out = npm --version 2>&1 | ForEach-Object { "$_" }
@@ -145,7 +145,7 @@ try {
                     return $ver
                 }
             } catch { }
-            # npx.cmd may be broken — try the underlying npm.cmd instead
+            # npx.cmd may be broken �?try the underlying npm.cmd instead
             try {
                 $npmExe = Join-Path $d "npm.cmd"
                 $out = & $npmExe --version 2>&1 | ForEach-Object { "$_" }
@@ -176,7 +176,7 @@ try {
         if ($ver) { $haveNpx = $true }
     }
 
-    # 3) Not found — try winget install
+    # 3) Not found �?try winget install
     if (-not $haveNpx) {
         Write-Dim "npx not found, installing Node.js..."
         if (Get-Command winget -ErrorAction SilentlyContinue) {
@@ -213,7 +213,7 @@ try {
     }
 
     # ── bun / bunx (required by nvidia-nim MCP server) ──
-    Write-Step "[2b] Ensuring bun (JavaScript runtime) is available…"
+    Write-Step "[2b] Ensuring bun (JavaScript runtime) is available�?
 
     function Test-BunAvailable {
         try {
@@ -232,7 +232,7 @@ try {
     }
 
     if (-not $haveBun) {
-        Write-Dim "bun not found, installing…"
+        Write-Dim "bun not found, installing�?
         if (Get-Command powershell -ErrorAction SilentlyContinue) {
             powershell -ExecutionPolicy ByPass -c "irm bun.sh/install.ps1 | iex"
             $env:PATH = "$env:USERPROFILE\.bun\bin;$env:PATH"
@@ -301,7 +301,7 @@ try {
                 Write-Dim "Installing Mosquitto via winget..."
                 winget install EclipseFoundation.Mosquitto --source winget --accept-package-agreements --accept-source-agreements
                 # winget returns non-zero when the package is already installed
-                # and no upgrade is available — refresh PATH and re-scan.
+                # and no upgrade is available �?refresh PATH and re-scan.
                 $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                             [System.Environment]::GetEnvironmentVariable("Path", "User")
                 $mosqDir = Find-MosquittoDir
@@ -394,12 +394,12 @@ try {
     if ($oldVenv) {
         $oldPython = Join-Path $oldVenv "Scripts\python.exe"
         if (Test-Path $oldPython) {
-            Write-Dim "Found previous installation — will preserve user-added packages..."
+            Write-Dim "Found previous installation �?will preserve user-added packages..."
 
             # Capture full freeze (with versions), filtering out:
             #   - editable installs (-e ...)
             #   - slife / credstore (reinstalled fresh)
-            #   - stderr noise (no == or @ — not a valid freeze line)
+            #   - stderr noise (no == or @ �?not a valid freeze line)
             & uv pip freeze --python $oldPython 2>$null |
                 Where-Object { $_ -notmatch '^-e ' -and $_ -notmatch '^(slife|credstore)\s*[@=]' } |
                 Where-Object { $_ -match '==' -or $_ -match '@' } |
@@ -413,12 +413,12 @@ try {
 
             $pkgCount = (Get-Content $preservedReqs).Count
             if ($pkgCount -gt 0) {
-                Write-Dim "Captured $pkgCount packages — will diff against fresh install to find user-added ones"
+                Write-Dim "Captured $pkgCount packages �?will diff against fresh install to find user-added ones"
             }
         }
     }
 
-    # Kill any running slife processes — they hold locks on the venv.
+    # Kill any running slife processes �?they hold locks on the venv.
     $slifeProcs = Get-Process -Name "slife","python" -ErrorAction SilentlyContinue |
                   Where-Object { $_.Path -like "*slife*" -or $_.Path -like "*uv\tools\slife*" }
     if ($slifeProcs) {
@@ -450,7 +450,7 @@ try {
 
     # uv tool uninstall may leave the venv directory behind on Windows
     # when a process (antivirus, leftover slife, etc.) holds a lock.
-    # Clean it up explicitly — rename out of the way if removal fails
+    # Clean it up explicitly �?rename out of the way if removal fails
     # so the subsequent uv tool install has a clean slate.
     $oldToolDir = "$env:APPDATA\uv\tools\slife"
     if (Test-Path $oldToolDir) {
@@ -458,7 +458,7 @@ try {
             Remove-Item -Recurse -Force $oldToolDir -ErrorAction Stop
             Write-Dim "Cleaned up old tool venv: $oldToolDir"
         } catch {
-            # Directory is locked — rename it so the new install can proceed.
+            # Directory is locked �?rename it so the new install can proceed.
             $backupDir = "$oldToolDir.old.$(Get-Date -Format 'yyyyMMddHHmmss')"
             Write-Warn "Cannot remove locked directory, renaming to:"
             Write-Dim "  $backupDir"
@@ -474,7 +474,7 @@ try {
         }
     }
 
-    # Remove stale shims in ~/.local/bin — uv tool install refuses to
+    # Remove stale shims in ~/.local/bin �?uv tool install refuses to
     # overwrite an existing .exe that a previous (failed) install left.
     $localBin = "$env:USERPROFILE\.local\bin"
     if (Test-Path $localBin) {
@@ -532,7 +532,7 @@ try {
 
             $extraCount = $oldPkgs.Count
             if ($extraCount -eq 0) {
-                Write-Dim "All packages already present — nothing to re-add"
+                Write-Dim "All packages already present �?nothing to re-add"
                 $preserveOk = $true
                 $hasExtras  = $false
             } else {
@@ -569,20 +569,6 @@ try {
             }
         }
     }
-
-    # ── ngrok config ────────────────────────────────────────────────
-    Write-Step "[4b] Syncing ngrok config…"
-    $ngrokYmlSource = Join-Path $extractedDir.FullName "ngrok.yml"
-    if (Test-Path $ngrokYmlSource) {
-        $ngrokConfigDir = "$env:LOCALAPPDATA\ngrok"
-        New-Item -ItemType Directory -Force $ngrokConfigDir | Out-Null
-        Copy-Item -Path $ngrokYmlSource -Destination "$ngrokConfigDir\ngrok.yml" -Force
-        Write-Ok "ngrok config synced to $ngrokConfigDir\ngrok.yml"
-    } else {
-        Write-Dim "ngrok.yml not found in package — skipping (will sync at first launch)"
-    }
-
-    # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."
 
     $localBin   = "$env:USERPROFILE\.local\bin"
@@ -607,9 +593,9 @@ try {
     # Verify the binary is actually reachable and show its location.
     $slifeCmd = Get-Command slife -ErrorAction SilentlyContinue
     if ($slifeCmd) {
-        Write-Dim "  slife → $($slifeCmd.Source)"
+        Write-Dim "  slife �?$($slifeCmd.Source)"
     } else {
-        Write-Warn "  slife binary not found on PATH — open a new terminal"
+        Write-Warn "  slife binary not found on PATH �?open a new terminal"
     }
 
     # Done
@@ -621,7 +607,7 @@ try {
             Write-Host "User-added packages restored:" -ForegroundColor Cyan
             Get-Content $preservedReqs | ForEach-Object { Write-Host "  $([char]0x2713) $_" -ForegroundColor Green }
         } else {
-            Write-Warn "Failed to restore user-added packages — run manually:"
+            Write-Warn "Failed to restore user-added packages �?run manually:"
             Write-Warn "  uv pip install -r $preservedReqs"
         }
     }

@@ -94,9 +94,10 @@ def _add_index_entry(
 class ExposeFileTool(Tool):
     """Expose a local file as a public HTTPS URL.
 
-    Signs the file path with HMAC and returns a publicly-accessible URL
-    served through the ngrok tunnel.  The URL is primarily intended so
-    multimodal LLMs can fetch local images/files without base64 encoding.
+    Registers the file with a short hex token in the file-backed registry
+    and returns a publicly-accessible URL served through the ngrok tunnel.
+    The URL is primarily intended so multimodal LLMs can fetch local
+    images/files without base64 encoding.
 
     Requires the memfiles tunnel to be active.  Returns an error if the
     tunnel is offline or the file does not exist.
@@ -371,7 +372,6 @@ class SaveToMemfilesTool(Tool):
                     if resp.status != 200:
                         return f"Error: HTTP {resp.status} — {url}"
                     raw = await resp.read()
-                    content_type = resp.content_type or ""
         except Exception as e:
             return f"Error: download failed — {e}"
 

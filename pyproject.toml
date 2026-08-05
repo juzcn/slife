@@ -27,7 +27,7 @@ dependencies = [
     "paho-mqtt>=2.0.0",
     "requests>=2.31.0",
     "credstore",
-    "pyngrok>=7.0.0",
+    "ngrok",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -60,7 +60,7 @@ packages = ["slife"]
 "skills" = "slife/skills"
 "credstore/credstore" = "credstore"
 "slife.template.json5" = "slife/slife.template.json5"
-"ngrok.yml" = "slife/ngrok.yml"
+
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -72,7 +72,7 @@ include = [
     "/LICENSE",
     "/pyproject.toml",
     "/slife.template.json5",
-    "/ngrok.yml",
+
 ]
 
 [build-system]

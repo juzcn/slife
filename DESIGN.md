@@ -192,7 +192,7 @@ No base class, no import hook, no SDK.
 | **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio + HTTP). Manages connection lifecycle — spawn, health-check, route tool calls. |
 | **slife-memdb** | Streamable HTTP | Diary database. Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Poll loop for incoming messages, dispatch for replies. |
-| **slife-memfiles** | Plain HTTP | Serves local files via ngrok tunnel for LLM vision APIs. Session-scoped in-memory file registry with HMAC-signed file IDs. |
+| **slife-memfiles** | Plain HTTP | Serves local files via ngrok tunnel for LLM vision APIs. File-backed JSON token registry shared with the server subprocess. |
 
 ### slife-mcp — External MCP Gateway
 
@@ -330,14 +330,14 @@ Check this screenshot @D:\Downloads\error.png and tell me what's wrong
 
 A lightweight plain-HTTP server (`slife/plugins/memfiles/server.py`) streams local files to LLM vision APIs via an ngrok tunnel:
 
-1. `expose_file(path)` → registers file with random 22-char ID → returns `https://xxx.ngrok-free.app/share/<id>`
+1. `expose_file(path)` → registers file with a short hex token → returns `https://xxx.ngrok-free.dev/share/<token>`
 2. `include_image(url=...)` → passes URL to multimodal LLM
 
-No BLOBs, no database, no base64 in context. Session-scoped in-memory registry with HMAC-signed file IDs. When the tunnel is down, memfiles is silently skipped.
+No BLOBs, no database, no base64 in context. Token→path mappings stored in a JSON registry file shared with the server subprocess — no HMAC, no IPC.
 
 ### Ngrok Tunnel
 
-Started at session init, exposed via ngrok for public HTTPS access. Health monitor (`slife/memfiles/tunnel.py`) checks the ngrok local API every 15s; on heartbeat timeout restarts the tunnel with exponential backoff (5s → 120s cap, max 10 retries).
+Started at session init via the official ngrok Python SDK (embedded agent — no external binary). `NgrokTunnel` (`slife/memfiles/tunnel.py`) manages the lifecycle with a background monitor that retries failed initial starts.
 
 ## UI
 
@@ -435,11 +435,7 @@ Missing deps are reported as warnings — Slife still starts, affected MCP serve
 
 ## Ngrok Tunnel Monitoring
 
-The memfiles ngrok tunnel has a background health monitor (`slife/memfiles/tunnel.py`):
-
-- Queries ngrok local API (`127.0.0.1:4040`) every 15s
-- On failure: tears down old tunnel, restarts with exponential backoff (5s → 120s cap, max 10 retries)
-- Mitigates heartbeat-timeout disconnections common from China to ngrok cloud
+The memfiles ngrok tunnel uses the official ngrok Python SDK (embedded Rust agent, no external binary). The background monitor (`NgrokTunnel._run_monitor`) polls every 15s — if the executor failed to start the tunnel (e.g. transient TLS error), the monitor retries once. Since the agent is embedded, it cannot silently crash; no continuous health-ping is needed.
 
 ## Project Structure
 
@@ -473,8 +469,8 @@ slife/
     meta.py            #   list_tools
     _config_io.py      #   JSON5 read/write helpers
   memfiles/            # File serving infra
-    token.py           #   In-memory file registry (HMAC-signed IDs)
-    tunnel.py          #   Ngrok tunnel lifecycle + health monitor
+    token.py           #   File-backed JSON token registry
+    tunnel.py          #   Ngrok tunnel lifecycle (official SDK, embedded agent)
   plugins/             # Built-in MCP plugins
     mcp/               #   External MCP gateway (connection pool, stdio/http)
     memdb/             #   Diary database (store, search, embeddings, schema)

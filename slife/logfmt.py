@@ -250,103 +250,69 @@ def resolve_log_dir() -> Path:
 
 # ── Secret sanitization for stderr / log output ──────────────────────
 
-# Patterns that look like API keys or bearer tokens in free-form text.
-# These are deliberately conservative — they only match well-known
-# prefixes and high-entropy strings that are almost certainly secrets.
+# Credential patterns — well-known prefixes + key=value pairs.
+# No generic heuristics; secrets belong in the credential store.
 _SECRET_PATTERNS: list[re.Pattern] = [
-    # OpenAI / Anthropic / common API keys
-    re.compile(r"\bsk-(?:ant|agent|proj|svcacct|admin|org)?[A-Za-z0-9_-]{20,}\b"),
-    # GitHub personal access tokens
+    # ── Well-known AI / cloud provider prefixes ─────────────────────
+    # OpenAI / Anthropic / DeepSeek / Azure
+    re.compile(r"\bsk-(?:ant|agent|proj|svcacct|admin|or|org)?[A-Za-z0-9_-]{20,}\b"),
+    # Groq
+    re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b"),
+    # HuggingFace
+    re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
+    # Replicate
+    re.compile(r"\br8_[A-Za-z0-9]{20,}\b"),
+    # Perplexity
+    re.compile(r"\bpplx-[A-Za-z0-9]{20,}\b"),
+    # xAI / Grok
+    re.compile(r"\bxai-[A-Za-z0-9]{20,}\b"),
+    # Google AI / Gemini (AIzaSy...)
+    re.compile(r"\bAIza[A-Za-z0-9_-]{30,}\b"),
+    # Fireworks AI
+    re.compile(r"\bfw_[A-Za-z0-9]{20,}\b"),
+    # NVIDIA
+    re.compile(r"\bnvapi-[A-Za-z0-9_-]{20,}\b"),
+    # Baidu Qianfan (bce-v3/ALTAK-...)
+    re.compile(r"\bbce-v3/ALTAK-[A-Za-z0-9/_-]{20,}\b"),
+    # ── Generic service tokens ──────────────────────────────────────
+    # GitHub
     re.compile(r"\bgh[psu]_[A-Za-z0-9]{20,}\b"),
-    # Google OAuth access tokens
+    # Google OAuth
     re.compile(r"\bya29\.[A-Za-z0-9._-]{20,}\b"),
-    # Generic bearer tokens in Authorization headers
+    # PyPI
+    re.compile(r"\bpypi-[A-Za-z0-9._-]{20,}\b"),
+    # ── Header / key=value patterns ─────────────────────────────────
+    # Authorization: Bearer <token>
     re.compile(r"(?:Authorization|Bearer)\s+([A-Za-z0-9+/=._-]{20,})", re.IGNORECASE),
-    # key=value patterns with secret-looking values
-    re.compile(r"(?:api_key|apikey|api-key|secret|token|password)\s*[=:]\s*([^\s]{20,})", re.IGNORECASE),
-    # Generic hex-ish tokens (32+ chars) — catches API keys without known prefixes
-    re.compile(r"\b[A-Za-z0-9]{32,}\b"),
-    # Base64-like blobs (32+ chars with +/=).  Require at least one
-    # '+' or '=' to avoid matching URL paths, which contain '/' but
-    # almost never contain '+' or '='.
-    re.compile(r"\b(?=[A-Za-z0-9+/=]{0,31}[+=])[A-Za-z0-9+/=]{32,}\b"),
+    # key=value pairs: API_KEY=<value>, token=<value>, etc.
+    re.compile(r"(?:api[_-]?key|apikey|secret|token|password|auth[_-]?token)\s*[=:]\s*([^\s]{20,})", re.IGNORECASE),
 ]
 
 _MASKED = "<MASKED>"
 
-# data: URIs — base64-encoded images/files that are NOT secrets.
-# They look like: data:image/png;base64,iVBORw0KGgo...
-# The base64 payload triggers the generic hex / base64 patterns below,
-# but a data URI is never a secret — it's embedded content.
-_DATA_URI = re.compile(r"data:[^;\s,]+;base64,[A-Za-z0-9+/=]+", re.IGNORECASE)
-
-# Base64-like strings that are extremely long (500+ chars).  Real API
-# keys and tokens are rarely longer than ~200 chars.  Image/audio
-# base64 payloads are thousands of characters — protect them.
-_LONG_BASE64 = re.compile(r"\b[A-Za-z0-9+/=]{500,}\b")
-
-# Query-param / field names whose values are NOT secrets even when they
-# look like one (e.g. 32-char hex QR code tokens).  Values appearing
-# after these keys (in JSON, URL params, or key=value lines) are
-# temporarily protected from masking.
-_NON_SECRET_KEYS = re.compile(
-    r"""(["']?(?:qrcode|qr_code|qr-code|nonce|state|redirect_uri|callback_url)["']?\s*[=:]\s*)(["']?)([^"'\s,}&]+)(\2)""",
-    re.IGNORECASE,
-)
-
-# Sharing URLs — /share/<file_id> tokens in expose_file output.
-# HMAC-signed file IDs look like long base64 strings but are NOT secrets.
-_SHARE_URL = re.compile(r"(https?://[^\s]+/share/)([A-Za-z0-9_-]{22,})")
-
 
 def sanitize_secrets(text: str) -> str:
-    """Mask API key / token patterns from *text*.
+    """Mask credentials from *text*.
 
-    Used for log output and tool-result sanitisation before the text
-    reaches the LLM context.  Replaces matched secret substrings with
-    ``<MASKED>``.  Idempotent — safe to call on already-masked text.
+    Catches well-known API key prefixes (``sk-``, ``ghp_``, ``ya29.``,
+    ``pypi-``), ``Authorization: Bearer`` tokens, and key=value pairs
+    with credential-like names (``api_key``, ``secret``, ``token``,
+    ``password``, ``auth_token``).
+
+    No generic hex/blob heuristics — secrets belong in the credential store.
 
     >>> sanitize_secrets("Authorization: Bearer sk-ant-api03-abc123...")
     'Authorization: <MASKED>'
-    >>> sanitize_secrets("DEEPSEEK_API_KEY=sk-abcdef1234567890abcdef1234567890ab")
+    >>> sanitize_secrets("DEEPSEEK_API_KEY=sk-abc123...")
     '<MASKED>'
-    >>> sanitize_secrets("normal log message")
-    'normal log message'
     """
     if not text or not isinstance(text, str):
         return text
 
-    # Protect known non-secret values from masking.
-    # Order: data URIs & long base64 first (large, unambiguous),
-    # then named non-secret keys (qrcode, nonce, etc.).
-    protected: dict[str, str] = {}
-    _counter = 0
-
-    def _protect(m: re.Match) -> str:
-        nonlocal _counter
-        key = f"\x00PROTECT{_counter}\x00"
-        protected[key] = m.group(0)
-        _counter += 1
-        return key
-
-    # data: URIs — embedded images/files, never secrets
-    text = _DATA_URI.sub(_protect, text)
-    # Very long base64 strings (500+ chars) — image/audio payloads
-    text = _LONG_BASE64.sub(_protect, text)
-    # Sharing URLs — /share/<file_id> HMAC tokens are not secrets
-    text = _SHARE_URL.sub(_protect, text)
-    # Named non-secret keys
-    text = _NON_SECRET_KEYS.sub(_protect, text)
-
     for pat in _SECRET_PATTERNS:
         text = pat.sub(_MASKED, text)
 
-    # Restore protected values
-    for placeholder, original in protected.items():
-        text = text.replace(placeholder, original)
-
     return text
-
 
 def ok_json(**extra: object) -> str:
     """Render ``{"status": "ok", ...}`` — the standard success envelope.

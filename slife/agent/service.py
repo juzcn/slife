@@ -755,8 +755,10 @@ class AgentService:
         if fs.tunnel_task is not None and not fs.tunnel_task.done():
             fs.tunnel_task.cancel()
         from slife.memfiles.tunnel import stop_monitor, stop_tunnel
+        from slife.memfiles.token import cleanup_registry
         stop_monitor()
         stop_tunnel()
+        cleanup_registry()
         await self._stop_plugin("memfiles")
 
     def kill_child_processes(self) -> None:
@@ -936,12 +938,12 @@ class AgentService:
 
         logger.info("memfiles_init start")
         try:
-            # Generate a per-session HMAC secret so the memfiles server
-            # (a subprocess) can verify signed file tokens without any
-            # shared in-memory state.
-            import secrets
-            if "SLIFE_MEMFILES_SECRET" not in os.environ:
-                os.environ["SLIFE_MEMFILES_SECRET"] = secrets.token_urlsafe(32)
+            # Create the token→path registry file that the memfiles
+            # server subprocess uses to resolve share tokens.
+            # init_registry() creates the file and sets the
+            # SLIFE_MEMFILES_REGISTRY env var for the subprocess.
+            from slife.memfiles.token import init_registry
+            init_registry()
 
             process = MCPWrapperProcess(
                 command=sys.executable,

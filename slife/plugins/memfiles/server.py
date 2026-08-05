@@ -58,6 +58,9 @@ async def handle_share(request: web.Request) -> web.StreamResponse:
         headers={
             "Content-Type": content_type,
             "Content-Disposition": f'inline; filename="{file_path.name}"',
+            # Suppress the ngrok free-tier interstitial browser-warning page.
+            # Without this, ngrok-free.dev returns HTML instead of the file.
+            "ngrok-skip-browser-warning": "true",
         },
     )
     await response.prepare(request)
