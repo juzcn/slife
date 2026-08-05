@@ -934,6 +934,13 @@ class AgentService:
 
         logger.info("sharing_init start")
         try:
+            # Generate a per-session HMAC secret so the sharing server
+            # (a subprocess) can verify signed file tokens without any
+            # shared in-memory state.
+            import secrets
+            if "SLIFE_SHARING_SECRET" not in os.environ:
+                os.environ["SLIFE_SHARING_SECRET"] = secrets.token_urlsafe(32)
+
             process = MCPWrapperProcess(
                 command=sys.executable,
                 args=["-m", "slife.plugins.sharing.server"],

@@ -1,11 +1,11 @@
-"""Sharing — ngrok tunnel + in-memory file registry.
+"""Sharing — ngrok tunnel + HMAC-signed file tokens.
 
 Provides the infrastructure to expose local files via publicly-accessible
-HTTPS URLs through an ngrok tunnel.  Files are registered with random IDs
-in a session-scoped dict and served directly from disk — no database,
-no crypto, no BLOBs.
+HTTPS URLs through an ngrok tunnel.  File paths are signed with HMAC-SHA256
+and encoded in the URL token — the sharing server (subprocess) verifies
+the signature to extract the path.  No shared state, no database, no BLOBs.
 
 ``share_url_for(file_id)`` builds a public share URL.
-``register_file(file_path)`` stores a path and returns a random file ID.
-``lookup_file(file_id)`` resolves an ID back to a path.
+``register_file(file_path)`` signs a path and returns a URL-safe token.
+``lookup_file(token)`` verifies the HMAC and returns the file path (or ``None``).
 """
