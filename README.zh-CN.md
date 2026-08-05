@@ -1,45 +1,33 @@
 # Slife
 
-**终端 AI 智能体** — 基于函数调用循环的最小化框架。与 LLM 对话，它能调用工具、永久记忆、通过 MQTT 协调其他智能体。
+**终端 AI 智能体** — 基于函数调用循环的最小化框架。与 LLM 对话，它能调用工具、永久记忆、协调其他智能体。
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  终端 UI (Textual)                                          │
-│  ────────────────────────────────────────────────────────── │
-│  Agent Loop — LLM + 工具 + 流式 + 记忆 + A2A + 收件箱      │
-│  ┌───────────┬──────────┬───────────┬─────────────────────┐ │
-│  │ MCP 代理  │ A2A 网格 │ 子智能体   │ 内置插件            │ │
-│  │ (网关)    │ (MQTT)   │ (工作进程) │ 记忆 · MCP · 微信   │ │
-│  └───────────┴──────────┴───────────┴─────────────────────┘ │
-│  永久记忆 — 混合搜索 (grep + FTS5 + 语义)                   │
-│  Credstore — OS 密钥链 + AES 加密文件备份                  │
-│  Win · Mac · Linux (SecretService / keyutils) · WSL         │
-└─────────────────────────────────────────────────────────────┘
+你: "找出所有 TODO 注释并为每个创建 GitHub Issue"
+  → LLM 调用 search_content("TODO")
+  → LLM 为每条调用 github__create_issue(...)
+  → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
 ## 安装
 
 **零前提。** 安装脚本会自动安装 uv、Node.js 和 bun（如需要）。
 
-### 安装脚本（推荐）
-
-**macOS / Linux / WSL：**
+### macOS / Linux / WSL
 
 ```bash
-# GitHub（海外）
+# 海外
 curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
-
-# Gitee（国内）
+# 国内
 curl -fsSL https://gitee.com/juzcn/slife/raw/main/install.sh | bash
 ```
 
-**Windows PowerShell：**
+### Windows PowerShell
 
 ```powershell
-# GitHub（海外）
+# 海外
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 | iex"
-
-# Gitee（国内）
+# 国内
 powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/install.ps1 | iex"
 ```
 
@@ -65,48 +53,30 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/uninstall.ps1 | iex"   # 国内
 ```
 
-卸载只移除二进制文件。用户数据（`~/.slife/`、`~/.credstore/`）会列出但**不删除**——如需彻底清除请手动删除。
+用户数据（`~/.slife/`、`~/.credstore/`）**不会删除**——如需彻底清除请手动删除。
 
 ## 快速开始
 
 ```bash
-credstore set-password              # 首次使用——设置加密备份
+credstore set-password              # 首次使用——加密备份
 credstore set DEEPSEEK_API_KEY       # 存储 API Key（屏蔽输入）
 slife
 ```
 
-**跨供应商共享密钥：** 如果多个服务使用同一个 API Key，直接复制而无需重新输入：
+跨供应商共享密钥：
 
 ```bash
 credstore copy DEEPSEEK_API_KEY BAILIAN_API_KEY
-credstore copy DEEPSEEK_API_KEY ANTHROPIC_AUTH_TOKEN
 ```
-
-默认配置内置了预配置的 MCP 服务器：文件系统+Shell、代码搜索、网页抓取、搜索引擎。
-
-## 工作原理
-
-Slife 是一个**函数调用循环**：你输入 → LLM 决定调用哪些工具 → Slife 执行 → LLM 响应 → 循环。
-
-```
-你: "找出所有 TODO 注释并为每个创建 GitHub Issue"
-  → LLM 调用 search_content("TODO")
-  → LLM 为每条调用 github__create_issue(...)
-  → LLM: "已创建 7 个 Issue，链接见上文。"
-```
-
-每一轮对话都永久记录。重启后自动恢复最近的对话。
 
 ## 配置
 
-双层模型——密钥存 OS 密钥链，配置存 JSON5：
+密钥存 OS 密钥链，配置存 JSON5：
 
 | 层 | 存储位置 | 内容 |
 |---|---------|------|
-| **密钥** | OS 密钥链 (credstore) | API Key、Token — OS 级加密 |
-| **配置** | `~/.slife/slife.json5` → `env:` | `${VAR}` 引用 + 非敏感值 |
-
-Credstore 支持 **Windows**（凭据管理器）、**WSL**（PowerShell 桥接到 Windows CredMan）、**macOS**（钥匙串）、**Linux 桌面**（D-Bus SecretService）和**无桌面 Linux**（内核 keyutils）。无需配置——自动选择最佳可用后端。
+| **密钥** | OS 密钥链 (credstore) | API Key — OS 级加密 |
+| **配置** | `~/.slife/slife.json5` | `${VAR}` 引用 + 非敏感值 |
 
 ```json5
 env: {
@@ -121,59 +91,45 @@ models: {
       api: "openai-completions",
       models: [{ model: "deepseek-v4-pro", name: "DeepSeek V4 Pro", reasoning: true }],
     },
-    // 百炼 token-plan — Anthropic 协议
-    // bailian: {
-    //   base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
-    //   api_key: "${BAILIAN_API_KEY}",
-    //   api: "anthropic-messages",
-    //   models: [{ model: "qwen3.8-max", name: "Qwen3.8 Max", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072 }],
-    // },
   },
 },
 active_model: "deepseek/deepseek-v4-pro",
 ```
 
-**三种一等公民 API 后端** — 无转换层，每种原生工作：
+**三种一等公民 API 后端：**
 
 | `api` 字段 | 后端 | 供应商 |
 |-----------|------|--------|
-| `openai-completions` | OpenAI / DeepSeek / Ollama | Chat Completions 接口 |
-| `anthropic-messages` | Claude / 百炼 (Qwen) | Messages 接口 |
-| `openai-responses` | OpenAI | 新版 Responses 接口 |
+| `openai-completions` | OpenAI / DeepSeek / Ollama | Chat Completions |
+| `anthropic-messages` | Claude / 百炼 (Qwen) | Messages |
+| `openai-responses` | OpenAI | Responses |
 
-运行时切换模型，无需手动编辑配置：
-```
-list_models                      → 查看所有已配置的模型
-switch_model(ref="bailian/qwen3.8-max")  → 切换当前模型
-add_model(provider="...", model="...", ...)  → 注册新模型
-```
+运行时切换：`list_models` → `switch_model(ref="bailian/qwen3.8-max")`。
 
-**密钥绝不会进入 LLM 上下文。** 所有工具输出在到达模型前都会经过脱敏处理——API Key 模式自动替换为 `<MASKED>`。
+**密钥绝不会进入 LLM 上下文。** 所有工具输出经过脱敏——API Key 模式自动替换为 `<MASKED>`。
 
 ## 功能
 
 ### 工具
 
-统一为 OpenAI 函数定义。LLM 看不出原生工具、MCP 工具和 A2A 工具的区别。
+统一为 OpenAI 函数定义。LLM 看不出原生工具和 MCP 工具的区别。
 
-| 类别 | 描述 |
+**12 个原生类别** — 从 `slife/tools/` 自动发现：
+
+| 类别 | 工具 |
 |------|------|
-| **原生** | 系统信息、Python 执行、环境/配置管理、技能加载、CLI 发现 |
-| **展示** | `show_image` — 在聊天中内联显示本地图片 |
-| **MCP / REST** | 文件系统、Shell、代码搜索、网页抓取、任意 MCP 服务器（stdio 或 HTTP） |
-| **技能** | 通过 `list_skills` / `use_skill` 按需加载的插件 |
-| **CLI** | 自动发现的外部命令，跨重启持久化 |
-| **A2A** | 智能体发现、任务路由、子智能体、广播（13 个工具） |
+| System | `system_health`, `check_embedding`, `check_wechat` |
+| Execution | `execute_shell`, `run_python_script`, `install_python_package` |
+| Skills | `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set` |
+| CLI | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool` |
+| Models | `list_models`, `add_model`, `remove_model`, `switch_model` |
+| A2A | 13 个工具 — 智能体发现、任务路由、子智能体生命周期、广播 |
+| MemFiles | `save_content_or_files`, `expose_file`, `include_image` |
+| Display | `show_image` |
 
-### 图片显示
+**五类托管工具**（MCP / Skills / CLI / REST API / Native）支持 `list` / `add` / `remove` / `set`——所有 `add` 工具是幂等的 upsert。
 
-聊天中内联显示图片，采用两级策略：**Sixel**（全彩位图协议）在已验证的终端上使用（Windows Terminal、WezTerm、iTerm2、Kitty），其他终端使用 **HalfcellImage**（彩色 Unicode 半块字符），最终回退到文字占位符。用户可通过 `@path` 语法附加图片，Agent 可通过 `show_image` 工具展示图片：
-
-```
-看看这张截图 @D:\Downloads\screenshot.png 有什么问题？
-```
-
-MCP 工具的二进制图片输出（如 Playwright 截图）自动保存为临时文件并显示。当前模型配置为 `input: ["text"]` 时不发送图片到 LLM API，只做本地展示。
+加上内置 **MemDB** 工具：`memory_search`、`memory_open`、`memory_summarize`、`memory_count`、`memory_list_recent` 等。
 
 ### 记忆 — 始终开启
 
@@ -183,44 +139,37 @@ MCP 工具的二进制图片输出（如 Playwright 截图）自动保存为临�
 |------|---------|
 | `grep` | 精确字符串 — 错误信息、文件路径、代码 |
 | `fts5` | 主题/关键词搜索，带排序摘要 |
-| `hybrid` | 语义召回（FTS5 + vec0 向量搜索，RRF 融合） |
+| `hybrid` | 语义召回（FTS5 + 向量 → RRF 融合） |
 | `time` | 按日期浏览 |
 
-嵌入后端：本地 GGUF（BGE-M3，~300 MB，离线）、HuggingFace transformers 或 OpenAI 兼容 API。无嵌入后端时关键词搜索照常工作。
+嵌入后端：本地 GGUF（BGE-M3，离线）、HuggingFace transformers 或 OpenAI 兼容 API。无嵌入后端时关键词搜索照常工作。
+
+### 图片与视觉
+
+用 `@path` 语法附加图片，终端内联显示：
+
+```
+看看这张截图 @D:\Downloads\error.png
+```
+
+两级渲染：**Sixel**（全彩，Windows Terminal / WezTerm / iTerm2 / Kitty）→ **HalfcellImage**（彩色 Unicode 半块字符，所有真彩终端）。支持视觉的模型通过 memfiles 隧道以 HTTPS URL 接收图片——上下文中无 base64。
 
 ### 插件
 
-三个内置插件作为独立进程运行在 Streamable HTTP 传输上：
+四个内置插件，独立进程运行：
 
 | 插件 | 角色 |
 |------|------|
 | **slife-mcp** | 外部 MCP 服务器网关（stdio + HTTP） |
 | **slife-memdb** | 日记数据库 + 混合搜索 |
-| **slife-wechat** | 通过 iLink ClawBot 收发微信 |
+| **slife-wechat** | 双向微信消息 |
+| **slife-memfiles** | 文件服务器 + ngrok 隧道（视觉 API） |
 
-外部 MCP 服务器在 `slife.json5` 中配置，启动时自动连接。第三方 MCP 服务器无需 Slife SDK——任何 stdio 或 HTTP MCP 服务器均可接入。
+外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置。任何 stdio 或 HTTP MCP 服务器均可接入——无需 Slife SDK。
 
 ### A2A — 智能体间通信
 
-三种传输，统一接口：
-
-| 传输 | 适用场景 |
-|------|---------|
-| **MQTT** | 通过 Mosquitto broker 连接远程智能体 |
-| **HTTP Streamable** | 智能体直连 |
-| **子智能体** | 本地子进程（始终可用） |
-
-统一收件箱将人类、微信、MQTT 和子智能体消息序列化到单个队列中。
-
-### 渐进式披露
-
-并非所有工具都在每次请求中呈现。三类采用轻量摘要：
-
-| 类别 | 浏览 | 加载 |
-|------|------|------|
-| 记忆 | `memory_search` | `memory_open` |
-| 技能 | `list_skills` | `use_skill` |
-| MCP | `mcp_list_tools` | `mcp_set_disclosure("eager")` |
+三种传输，统一接口：**MQTT**（通过 Mosquitto broker 连接远程智能体）、**HTTP Streamable**（直连）、**子智能体**（本地子进程，始终可用）。所有消息通过单一收件箱队列。
 
 ## 键盘快捷键
 
@@ -236,72 +185,44 @@ MCP 工具的二进制图片输出（如 Playwright 截图）自动保存为临�
 
 | 参数 | 说明 |
 |------|------|
-| `--agent <id>` | 智能体标识 — 记忆隔离键 + A2A 网格名称（默认：`slife`） |
+| `--agent <id>` | 智能体标识 — 记忆隔离 + A2A 网格名称（默认：`slife`） |
 
 ## 可选扩展
 
 | 扩展 | 启用功能 |
 |------|---------|
-| `slife[gguf]` | 本地 GGUF 嵌入（离线） |
-| `slife[transformer]` | HuggingFace 变换器嵌入（~2 GB） |
-| `slife[embeddings]` | 以上两者 |
+| `llama-cpp-python` | 本地 GGUF 嵌入（离线，~300 MB） |
+| `sentence-transformers` | HuggingFace 变换器嵌入（~2 GB） |
 
-**Linux / macOS** — 从源码编译（这些平台默认有 C 编译器）：
+**Linux / macOS** — 从源码编译：
 
 ```bash
 uv tool install "slife[gguf]" --reinstall
 ```
 
-**Windows** — 默认没有 C++ 编译器。将预编译 wheel 直接装入 slife 的 venv（不会重装 slife）：
-
-根据你的环境选择 wheel：
-
-| 环境 | Wheel | 说明 |
-|------|-------|------|
-| 无编译器，任意 GPU 或无 GPU | `v0.3.34-vulkan` | 最安全 — 有 GPU 用 Vulkan，否则回退 CPU |
-| NVIDIA GPU + CUDA 12 | `v0.3.34-cu132` | CUDA 12.x |
-| NVIDIA GPU + CUDA 11 | `v0.3.34-cu125` | CUDA 11.x |
-| AMD GPU | `v0.3.34-hip-radeon` | ROCm |
-
-```powershell
-$py=((uv tool list --show-paths 2>$null|sls 'slife v'|Out-String)-replace'.*\((.*?)\).*','$1\Scripts\python.exe').Trim();uv pip install --python $py "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
-```
-
-**首次使用** — 下载 GGUF 模型并启用：
-
-```bash
-curl -LO https://huggingface.co/ChristianAzinn/bge-m3-gguf/resolve/main/bge-m3-Q4_K_M.gguf
-```
-
-然后启动 slife 告诉它：`启用本地嵌入，模型文件 bge-m3-Q4_K_M.gguf`
+**Windows** — 预编译 wheel（无需 C++ 编译器）。详见[安装文档](https://github.com/juzcn/slife#optional-extras)。
 
 ## 开发
 
 ```bash
-git clone https://github.com/juzcn/slife.git        # 或 https://gitee.com/juzcn/slife.git（国内）
+git clone https://github.com/juzcn/slife.git
 cd slife
 uv sync --all-extras
 
-uv run credstore set-password        # 首次使用
+uv run credstore set-password
 uv run credstore set DEEPSEEK_API_KEY
 uv run slife
+
+# 测试
+uv run pytest
+uv run pytest --cov=slife --cov=credstore --cov-report=term-missing
 ```
 
 开发模式自动检测：数据文件保留在项目目录中。生产安装使用 `~/.slife/`。
 
-```bash
-# 运行测试
-uv run pytest
-
-# 含覆盖率
-uv run pytest --cov=slife --cov=credstore --cov-report=term-missing
-```
-
 ## 架构
 
-Slife 是一个**最小化框架的智能体**。框架只做 LLM 物理上无法做到的事：执行工具、维护对话状态、流式响应、持久化记忆。其余一切——推理、规划、工具选择、错误恢复——由 LLM 负责。
-
-详见 **[DESIGN.md](DESIGN.md)**：Agent Loop、工具系统、插件契约、MCP 网关、记忆数据库、A2A 网格、凭证安全模型和项目结构。
+详见 **[DESIGN.md](DESIGN.md)** — 设计哲学、Agent Loop、工具系统、插件契约、MCP 网关、记忆数据库、A2A 网格、凭证安全模型和完整项目结构。
 
 ## 许可证
 

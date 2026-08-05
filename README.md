@@ -1,49 +1,35 @@
 # Slife
 
-**Terminal-based AI agent** — a function-calling loop with minimum harness. Chat with an LLM that calls tools, remembers everything, and orchestrates other agents over MQTT.
+**Terminal-based AI agent** — a function-calling loop with minimum harness. Chat with an LLM that calls tools, remembers everything, and orchestrates other agents.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Terminal UI (Textual)                                      │
-│  ────────────────────────────────────────────────────────── │
-│  Agent Loop — LLM + Tools + Stream + Memory + A2A + Inbox  │
-│  ┌───────────┬──────────┬───────────┬─────────────────────┐ │
-│  │ MCP Proxy │ A2A Mesh │ Subagents │ Built-in Plugins    │ │
-│  │ (gateway) │ (MQTT)   │ (workers) │ MemDB·MCP·WX·MemFiles │ │
-│  └───────────┴──────────┴───────────┴─────────────────────┘ │
-│  Permanent Memory — hybrid search (grep + FTS5 + semantic)  │
-│  Credstore — OS keyring + AES cryptfile backup              │
-│  Win · Mac · Linux (SecretService / keyutils) · WSL         │
-└─────────────────────────────────────────────────────────────┘
+You: "Find all TODO comments and create GitHub issues"
+  → LLM calls search_content("TODO")
+  → LLM calls github__create_issue(...) for each one
+  → LLM: "Created 7 issues. All linked above."
 ```
 
 ## Install
 
 **Zero prerequisites.** The install script auto-installs uv, Node.js, and bun if needed.
 
-### Install script (recommended)
-
-**macOS / Linux / WSL:**
+### macOS / Linux / WSL
 
 ```bash
-# GitHub (global)
+# Global
 curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh | bash
-
-# Gitee  (China mainland)
+# China mainland
 curl -fsSL https://gitee.com/juzcn/slife/raw/main/install.sh | bash
 ```
 
-**Windows PowerShell:**
+### Windows PowerShell
 
 ```powershell
-# GitHub (global)
+# Global
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/install.ps1 | iex"
-
-# Gitee (China mainland)
+# China mainland
 powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/install.ps1 | iex"
 ```
-
-> 💡 The script auto-falls back to Gitee if GitHub is unreachable.  China mainland users can also download directly from Gitee to skip the GitHub probe entirely.
 
 ### Try without installing
 
@@ -53,66 +39,46 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 
 ### Update
 
-Re-run the install script — it auto-preserves optional packages (llama-cpp-python, sentence-transformers) from the previous install.
+Re-run the install script — it auto-preserves optional packages (llama-cpp-python, sentence-transformers).
 
 ### Uninstall
 
 ```bash
 # macOS / Linux / WSL
 curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/uninstall.sh | bash
-
-# Gitee (China mainland)
+# China mainland
 curl -fsSL https://gitee.com/juzcn/slife/raw/main/uninstall.sh | bash
 
 # Windows PowerShell
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/juzcn/slife/main/uninstall.ps1 | iex"
-
-# Gitee (China mainland)
+# China mainland
 powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/raw/main/uninstall.ps1 | iex"
 ```
 
-Uninstall removes the binaries. User data (`~/.slife/`, `~/.credstore/`) is listed but **not removed** — delete manually for a full reset.
+User data (`~/.slife/`, `~/.credstore/`) is **not removed** — delete manually for a full reset.
 
 ## Quick Start
 
 ```bash
-credstore set-password              # first time only — encrypted backup
+credstore set-password              # first time — encrypted backup
 credstore set DEEPSEEK_API_KEY       # store API key (masked input)
 slife
 ```
 
-**MemFiles keys across providers:** if multiple services use the same API key, copy it instead of re-entering:
+To share the same API key across multiple providers:
 
 ```bash
 credstore copy DEEPSEEK_API_KEY BAILIAN_API_KEY
-credstore copy DEEPSEEK_API_KEY ANTHROPIC_AUTH_TOKEN
 ```
-
-The default config ships with pre-configured MCP servers: filesystem + shell, code search, web fetch, search APIs.
-
-## How It Works
-
-Slife is a **function-calling loop**: you type → the LLM decides what tools to call → Slife executes them → the LLM responds → repeat.
-
-```
-You: "Find all TODO comments and create GitHub issues for them"
-  → LLM calls search_content("TODO")
-  → LLM calls github__create_issue(...) for each one
-  → LLM: "Created 7 issues. All linked above."
-```
-
-Every turn is permanently recorded. On restart, recent conversations are restored.
 
 ## Configuration
 
-Two-layer model — secrets in OS keyring, config in JSON5:
+Secrets in OS keyring, config in JSON5:
 
 | Layer | Storage | Contents |
 |-------|---------|----------|
-| **Secrets** | OS keyring (credstore) | API keys, tokens — encrypted at OS level |
-| **Config** | `~/.slife/slife.json5` → `env:` | `${VAR}` references + non-secret values |
-
-Credstore supports **Windows** (Credential Manager), **WSL** (PowerShell bridge to Windows CredMan), **macOS** (Keychain), **Linux desktop** (D-Bus SecretService), and **headless Linux** (kernel keyutils). No configuration needed — the best available backend is auto-selected.
+| **Secrets** | OS keyring (credstore) | API keys — encrypted at OS level |
+| **Config** | `~/.slife/slife.json5` | `${VAR}` references + non-secret values |
 
 ```json5
 env: {
@@ -127,141 +93,85 @@ models: {
       api: "openai-completions",
       models: [{ model: "deepseek-v4-pro", name: "DeepSeek V4 Pro", reasoning: true }],
     },
-    // Bailian token-plan — Anthropic protocol
-    // bailian: {
-    //   base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
-    //   api_key: "${BAILIAN_API_KEY}",
-    //   api: "anthropic-messages",
-    //   models: [{ model: "qwen3.8-max", name: "Qwen3.8 Max", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072 }],
-    // },
   },
 },
 active_model: "deepseek/deepseek-v4-pro",
 ```
 
-**Three first-class API backends** — no conversion layer, each works natively:
+**Three first-class API backends:**
 
 | `api` field | Backend | Providers |
 |-------------|---------|-----------|
-| `openai-completions` | OpenAI / DeepSeek / Ollama | Chat Completions endpoint |
-| `anthropic-messages` | Claude / Bailian (Qwen) | Messages endpoint |
-| `openai-responses` | OpenAI | Newer Responses endpoint |
+| `openai-completions` | OpenAI / DeepSeek / Ollama | Chat Completions |
+| `anthropic-messages` | Claude / Bailian (Qwen) | Messages |
+| `openai-responses` | OpenAI | Responses |
 
-Switch models at runtime with native tools:
-```
-list_models                    → see all configured models
-switch_model(ref="bailian/qwen3.8-max")  → switch active model
-add_model(provider="...", model="...", ...)  → register a new model
-```
+Switch at runtime: `list_models` → `switch_model(ref="bailian/qwen3.8-max")`.
 
-**Secrets never reach the LLM context.** All tool output is sanitized before reaching the model — API key patterns are auto-masked.
+**Secrets never reach the LLM.** All tool output is sanitized — API key patterns auto-masked.
 
 ## Features
 
 ### Tools
 
-All unified as OpenAI function definitions. The LLM sees no difference between categories.
+All unified as OpenAI function definitions. The LLM sees no difference between native and MCP tools.
 
-**Ten native categories** — one `.py` file per category in `slife/tools/`, auto-discovered:
+**12 native categories** — auto-discovered from `slife/tools/`:
 
-| Category | File | Tools |
-|----------|------|-------|
-| System | `system.py` | `check_embedding`, `check_wechat`, `system_health` |
-| Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
-| Skills | `skill.py` | `check_skills_dir`, `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set` |
-| CLI | `cli.py` | `cli_check_installed`, `cli_add_tool`, `cli_remove_tool`, `cli_list_tools`, `cli_set_tool` |
-| REST API | `rest_api.py` | `rest_api_add`, `rest_api_remove`, `rest_api_list`, `rest_api_set` |
-| A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
-| Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `config.py` | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
-| Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
-| MemFiles | `memfiles.py` | `expose_file`, `include_image`, `save_content_or_files` |
-| Display | `display.py` | `show_image` — display images in the terminal with clickable file links |
-| MemFiles | `memfiles.py` | `expose_file` — local path → public HTTPS URL; `include_image` — url/base64 passthrough for multimodal LLMs |
+| Category | Tools |
+|----------|-------|
+| System | `system_health`, `check_embedding`, `check_wechat` |
+| Execution | `execute_shell`, `run_python_script`, `install_python_package` |
+| Skills | `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set` |
+| CLI | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool` |
+| Models | `list_models`, `add_model`, `remove_model`, `switch_model` |
+| A2A | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
+| MemFiles | `save_content_or_files`, `expose_file`, `include_image` |
+| Display | `show_image` |
 
-**Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. All `add` tools are idempotent upserts. `mcp_set_server` additionally supports `disclosure="lazy"|"eager"` for tool lazy-loading.
+**Five managed categories** (MCP / Skills / CLI / REST API / Native) support `list` / `add` / `remove` / `set` — all `add` tools are idempotent upserts.
 
-Plus built-in **MemDB** plugin (`memory_search`, `memory_open`, …).
+Plus built-in **MemDB** tools: `memory_search`, `memory_open`, `memory_summarize`, `memory_count`, `memory_list_recent`, `memory_save_turn`, etc.
 
-### Image & Vision
+### Memory — Always On
 
-Inline image rendering via ``textual-image`` with a two-tier strategy: **Sixel**
-(full-colour) on whitelisted terminals (Windows Terminal, WezTerm, iTerm2, Kitty),
-**HalfcellImage** (coloured Unicode half-block characters) everywhere else,
-and a text placeholder as final fallback. Users attach images with `@path` syntax;
-the agent can display images with the `show_image` tool:
-
-```
-Check this screenshot @D:\\Downloads\\error.png and tell me what's wrong
-```
-
-``show_image`` supports both **local files** and **remote URLs**.
-Images are cached to ``logs/images/`` for display.  The tool returns
-an inline ``[image: <path>]`` marker for terminal rendering plus a
-clickable ``file:///`` link to open in the OS viewer.
-
-**URL injection (no base64).** Files and images are served to vision-capable
-LLMs via a dedicated **memfiles** layer — a lightweight plain-HTTP server with
-an **ngrok tunnel**.  Local files are registered with random 22-char IDs in a
-session-scoped in-memory dict; the server streams them directly from disk — no
-BLOBs, no database, no crypto.  LLM APIs fetch files as lightweight ``https://``
-URLs instead of inline base64 data URIs.  When the tunnel is not active, memfiles
-is silently skipped — no base64 ever enters the LLM context.
-
-**Two-step image workflow:**
-  1. ``expose_file(path="D:\\photo.png")`` → ``https://xxx.ngrok.app/share/a1b2c3d4e5f6g7h8``
-  2. ``include_image(url="https://...")`` or ``analyze_image`` → multimodal LLM sees the image
-
-The ``@path`` syntax in chat input automatically handles both steps.
-
-### MemDB — Always On
-
-Every conversation turn is permanently recorded. Saves unconditionally — even
-on cancel or error. Hybrid search across four modes:
+Every conversation turn permanently recorded. Hybrid search across four modes:
 
 | Mode | Best for |
 |------|----------|
 | `grep` | Exact strings — error messages, file paths, code |
 | `fts5` | Topic / keyword search with ranked snippets |
-| `hybrid` | Semantic recall (FTS5 + vec0 vector search, RRF merge) |
+| `hybrid` | Semantic recall (FTS5 + vector → RRF merge) |
 | `time` | Browse by date |
 
-Embedding backends: local GGUF (BGE-M3, ~300 MB, offline), HuggingFace transformers, or OpenAI-compatible API. Keyword search works without any embedding backend.
+Embedding backends: local GGUF (BGE-M3, offline), HuggingFace transformers, or OpenAI-compatible API. Keyword search works without any embedding backend.
+
+### Image & Vision
+
+Attach images with `@path` syntax, display inline in the terminal:
+
+```
+Check this screenshot @D:\Downloads\error.png
+```
+
+Two-tier rendering: **Sixel** (full-colour on Windows Terminal / WezTerm / iTerm2 / Kitty) → **HalfcellImage** (coloured Unicode half-blocks on all true-colour terminals). Vision-capable models receive images via HTTPS URLs through the memfiles tunnel — no base64 in context.
 
 ### Plugins
 
-**Four built-in plugins** run as independent processes on Streamable HTTP or plain HTTP transport:
+Four built-in plugins as independent processes:
 
-| Plugin | Transport | Role |
-|--------|-----------|------|
-| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio + HTTP) |
-| **slife-memdb** | Streamable HTTP | Diary database with hybrid search |
-| **slife-wechat** | Streamable HTTP | Bidirectional WeChat via iLink ClawBot |
-| **slife-memfiles** | Plain HTTP | Serves local files via ngrok tunnel for vision APIs |
+| Plugin | Role |
+|--------|------|
+| **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) |
+| **slife-memdb** | Diary database with hybrid search |
+| **slife-wechat** | Bidirectional WeChat messaging |
+| **slife-memfiles** | File server + ngrok tunnel for vision APIs |
 
-External MCP servers (filesystem, fetch, search, any OpenAPI spec) are configured in `slife.json5` and auto-connected at startup. Third-party MCP servers need no Slife SDK — any stdio or HTTP MCP server works.
+External MCP servers configured in `slife.json5` → `mcp.servers`. Any stdio or HTTP MCP server works — no Slife SDK required.
 
 ### A2A — Agent-to-Agent
 
-Two transports, one interface:
-
-| Transport | Use case |
-|-----------|----------|
-| **MQTT** | Remote peers over Mosquitto broker |
-| **HTTP Streamable** | Direct agent-to-agent |
-| **Subagent** | Local child processes (always available) |
-
-Unified inbox serializes human, WeChat, MQTT, and subagent messages through a single queue.
-
-### Progressive Disclosure
-
-Not all tools are in every request. Three categories use lightweight summaries before loading full tool schemas:
-
-| Category | Browse | Load |
-|----------|--------|------|
-| MemDB | `memory_search` | `memory_open` |
-| Skills | `list_skills` | `use_skill` |
-| MCP | `mcp_list_servers` / `mcp_list_tools` | `mcp_set_server(enabled=True)` / `mcp_set_server(disclosure="eager")` |
+Three transports, unified interface: **MQTT** (remote peers over Mosquitto), **HTTP Streamable** (direct agent-to-agent), **Subagent** (local child processes, always available). All messages flow through a single inbox queue.
 
 ## Keyboard Shortcuts
 
@@ -277,72 +187,44 @@ Not all tools are in every request. Three categories use lightweight summaries b
 
 | Flag | Description |
 |------|-------------|
-| `--agent <id>` | Agent identity — memory isolation key + A2A mesh name (default: `slife`) |
+| `--agent <id>` | Agent identity — memory isolation + A2A mesh name (default: `slife`) |
 
 ## Optional Extras
 
 | Extra | Enables |
 |-------|---------|
-| `slife[gguf]` | Local GGUF embeddings (offline) |
-| `slife[transformer]` | HuggingFace transformer embeddings (~2 GB) |
-| `slife[embeddings]` | Both of the above |
+| `llama-cpp-python` | Local GGUF embeddings (offline, ~300 MB) |
+| `sentence-transformers` | HuggingFace transformer embeddings (~2 GB) |
 
-**Linux / macOS** — builds from source (C compiler is standard on these platforms):
+**Linux / macOS** — builds from source:
 
 ```bash
 uv tool install "slife[gguf]" --reinstall
 ```
 
-**Windows** — no C++ compiler by default.  Install the pre-built wheel directly into slife's venv (does NOT reinstall slife):
-
-Pick the wheel that matches your setup:
-
-| Your setup | Wheel | Notes |
-|------------|-------|-------|
-| No compiler, any GPU or none | `v0.3.34-vulkan` | Safest — uses Vulkan if GPU present, falls back to CPU |
-| NVIDIA GPU + CUDA 12 | `v0.3.34-cu132` | CUDA 12.x |
-| NVIDIA GPU + CUDA 11 | `v0.3.34-cu125` | CUDA 11.x |
-| AMD GPU | `v0.3.34-hip-radeon` | ROCm |
-
-```powershell
-$py=((uv tool list --show-paths 2>$null|sls 'slife v'|Out-String)-replace'.*\((.*?)\).*','$1\Scripts\python.exe').Trim();uv pip install --python $py "llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
-```
-
-**First use** — download a GGUF model and enable it:
-
-```bash
-curl -LO https://huggingface.co/ChristianAzinn/bge-m3-gguf/resolve/main/bge-m3-Q4_K_M.gguf
-```
-
-Then launch slife and tell it: `enable local embeddings with bge-m3-Q4_K_M.gguf`
+**Windows** — pre-built wheels (no C++ compiler needed). See [install docs](https://github.com/juzcn/slife#optional-extras) for wheel selection and first-use instructions.
 
 ## Development
 
 ```bash
-git clone https://github.com/juzcn/slife.git        # or: https://gitee.com/juzcn/slife.git (China mainland)
+git clone https://github.com/juzcn/slife.git
 cd slife
 uv sync --all-extras
 
-uv run credstore set-password        # first time
+uv run credstore set-password
 uv run credstore set DEEPSEEK_API_KEY
 uv run slife
+
+# Tests
+uv run pytest
+uv run pytest --cov=slife --cov=credstore --cov-report=term-missing
 ```
 
 Dev mode auto-detects: data files stay in the project directory. Production installs use `~/.slife/`.
 
-```bash
-# Run tests
-uv run pytest
-
-# With coverage
-uv run pytest --cov=slife --cov=credstore --cov-report=term-missing
-```
-
 ## Architecture
 
-Slife is a **minimum-harness agent**. The harness only does what the LLM physically cannot: execute tools, maintain conversation state, stream responses, persist memory. Everything else — reasoning, planning, tool selection, error recovery — is the LLM's job.
-
-See **[DESIGN.md](DESIGN.md)** for the full architecture: agent loop, tool system, plugin contract, MCP gateway, memory database, A2A mesh, credential security model, and project structure.
+See **[DESIGN.md](DESIGN.md)** — philosophy, agent loop, tool system, plugin contract, MCP gateway, memory database, A2A mesh, credential security model, and full project structure.
 
 ## License
 
