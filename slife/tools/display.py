@@ -92,7 +92,7 @@ class ShowImageTool(Tool):
         resolved = str(cache.resolve())
         return (
             f"[image: {resolved}]\n"
-            f"file:///{resolved.replace(chr(92), '/')}"
+            f"{url}"
         )
 
     def _show_local(self, path: str) -> str:
@@ -112,5 +112,5 @@ class ShowImageTool(Tool):
         resolved = str(p.resolve())
         return (
             f"[image: {resolved}]\n"
-            f"file:///{resolved.replace(chr(92), '/')}"
+            f"{resolved}"
         )

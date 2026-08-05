@@ -1,5 +1,9 @@
 """Chat view widgets for the Slife TUI — Claude Code CLI style."""
 
+import re
+
+from rich.style import Style as RichStyle
+from rich.text import Text as RichText
 from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.events import Key
@@ -7,6 +11,44 @@ from textual.widgets import Static
 
 from slife.agent.llm_client import TokenUsage
 from slife.ui.image_utils import safe_image_widget
+
+# ── Clickable link detection ──────────────────────────────────────────
+# Detects URIs and absolute paths in assistant output so links are
+# actually clickable in the TUI (Content.from_text does NOT auto-link).
+
+# Standard URI schemes: https://, http://, file:///, ws://, wss://
+_URI_RE = re.compile(
+    r"(?<!\w)((?:https?|file|ws|wss)://[^\s<>\[\]{}|\\^`\"']+)"
+)
+
+# Windows absolute paths ending in a common image / document extension.
+# Link target becomes file:/// with forward slashes.
+_WIN_PATH_RE = re.compile(
+    r"(?<!\w)([A-Za-z]:\\(?:[^\s<>\[\]]+\\)*[^\s<>\[\]]+"
+    r"\.(?:png|jpg|jpeg|gif|webp|bmp|svg|tiff|tif))",
+    re.IGNORECASE,
+)
+
+
+def _linkify(plain: str) -> Content:
+    """Return *plain* as Content with clickable links for detected URIs / paths."""
+    if not plain:
+        return Content("")
+    rt = RichText(plain)
+
+    # URIs → clickable (the URI itself is the link target)
+    rt.highlight_regex(
+        _URI_RE,
+        style=lambda m: RichStyle(link=m),
+    )
+
+    # Windows paths → clickable via file:/// link
+    def _file_link(m: str) -> RichStyle:
+        return RichStyle(link="file:///" + m.replace("\\", "/"))
+
+    rt.highlight_regex(_WIN_PATH_RE, style=_file_link)
+
+    return Content.from_rich_text(rt)
 
 
 class ChatView(VerticalScroll):
@@ -260,13 +302,25 @@ class AssistantMessage(Static):
         return content
 
     def _build_response_text(self) -> Content:
-        """Build response text with optional name prefix styling."""
+        """Build response text with optional name prefix styling.
+
+        URLs and absolute file paths are auto-detected and rendered as
+        clickable links (via Rich :class:`~rich.text.Text` highlight).
+        """
         if self._name_prefix:
-            prefix_len = len(self._name_prefix)
-            return Content.from_text(
-                f"{self._name_prefix}{self._buffer}", markup=False,
-            ).stylize("bold #d97706", start=0, end=prefix_len)
-        return Content.from_text(self._buffer, markup=False)
+            full = f"{self._name_prefix}{self._buffer}"
+            rt = RichText(full)
+            rt.highlight_regex(
+                _URI_RE,
+                style=lambda m: RichStyle(link=m),
+            )
+            rt.highlight_regex(
+                _WIN_PATH_RE,
+                style=lambda m: RichStyle(link="file:///" + m.replace("\\", "/")),
+            )
+            rt.stylize("bold #d97706", 0, len(self._name_prefix))
+            return Content.from_rich_text(rt)
+        return _linkify(self._buffer)
 
     def _build_usage_line(self) -> Content:
         """Token usage footer line."""
