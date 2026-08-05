@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -48,15 +49,29 @@ def is_active() -> bool:
 
 # ── Lifecycle ────────────────────────────────────────────────────────
 
+# ngrok region — "jp" (Japan) gives the lowest latency from China while
+# still providing a stable public endpoint.  "ap" is a broader fallback.
+# The default "us" region is often unreachable from behind the GFW.
+_DEFAULT_REGION = "jp"
+
+# Number of retries with 2s backoff when tunnel creation fails because
+# the ngrok session is still stabilising.
+_MAX_RETRIES = 3
+_RETRY_DELAY = 2.0  # seconds
+
 
 def start_tunnel(port: int) -> str:
     """Start an ngrok HTTP tunnel to *port*.
 
     Reads the auth token from the OS credential store
-    (``NGROK_AUTHTOKEN``).  Returns the public URL.
+    (``NGROK_AUTHTOKEN``).  Configures ngrok for the Asia-Pacific
+    region and retries up to 3 times with backoff for unstable
+    network conditions (e.g. China → global ngrok servers).
+
+    Returns the public URL.
 
     Raises ``RuntimeError`` if the token is missing or ngrok fails
-    to start.
+    to start after all retries.
     """
     global _tunnel, _public_url, _ngrok_module
 
@@ -73,12 +88,48 @@ def start_tunnel(port: int) -> str:
 
     _ngrok_module = _import_ngrok()
     _ngrok_module.set_auth_token(token)
-    _tunnel = _ngrok_module.connect(port, "http")
-    _public_url = str(_tunnel.public_url).rstrip("/")
-    os.environ["SLIFE_SHARING_URL"] = _public_url
 
-    logger.info("tunnel_started port=%s url=%s", port, _public_url)
-    return _public_url
+    # Build pyngrok config tuned for China network conditions:
+    #   - region=jp:  lowest-latency node from China
+    #   - startup_timeout=30:  generous startup window
+    #   - request_timeout=10:  longer than default 4s for high-latency paths
+    try:
+        from pyngrok.conf import PyngrokConfig  # pyright: ignore[reportMissingImports]
+        pyngrok_config = PyngrokConfig(
+            region=_DEFAULT_REGION,
+            startup_timeout=30,
+            request_timeout=10,
+        )
+    except ImportError:
+        pyngrok_config = None
+
+    last_error: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            _tunnel = _ngrok_module.connect(
+                port, "http", pyngrok_config=pyngrok_config,
+            )
+            _public_url = str(_tunnel.public_url).rstrip("/")
+            os.environ["SLIFE_SHARING_URL"] = _public_url
+            logger.info(
+                "tunnel_started port=%s url=%s attempt=%d region=%s",
+                port, _public_url, attempt, _DEFAULT_REGION,
+            )
+            return _public_url
+        except Exception as e:
+            last_error = e
+            if attempt < _MAX_RETRIES:
+                delay = _RETRY_DELAY * attempt
+                logger.warning(
+                    "tunnel_retry attempt=%d/%d delay=%.1fs err=%s",
+                    attempt, _MAX_RETRIES, delay, e,
+                )
+                time.sleep(delay)
+
+    raise RuntimeError(
+        f"Failed to start ngrok tunnel after {_MAX_RETRIES} attempts: "
+        f"{last_error}"
+    )
 
 
 def stop_tunnel() -> None:
