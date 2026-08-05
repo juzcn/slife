@@ -250,6 +250,15 @@ async def restore_session(
         assistant_indices = [
             i for i, m in enumerate(all_messages)
             if m.get("role") == "assistant"
+            and not (
+                m.get("content") in (None, "")
+                and not m.get("thinking")
+                and (m.get("tool_calls") or [])
+                and all(
+                    tc.get("function", {}).get("name", "").startswith("_")
+                    for tc in (m.get("tool_calls") or [])
+                )
+            )
         ]
         last_assistant_idx = assistant_indices[-1] if assistant_indices else -1
 
@@ -273,6 +282,20 @@ async def restore_session(
                     "prefix": prefix,
                 })
             elif role == "assistant":
+                # Harness messages (_sys_note, _sys_trim) exist so the
+                # LLM sees system status in context.  They are never
+                # visible in the live TUI — skip their widgets here.
+                tcs = msg.get("tool_calls") or []
+                if (
+                    msg.get("content") in (None, "")
+                    and not msg.get("thinking")
+                    and tcs
+                    and all(
+                        tc.get("function", {}).get("name", "").startswith("_")
+                        for tc in tcs
+                    )
+                ):
+                    continue
                 is_final = (idx == last_assistant_idx)
                 thinking = msg.get("thinking") or ""
                 content = msg.get("content") or ""
