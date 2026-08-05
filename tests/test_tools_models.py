@@ -6,7 +6,7 @@ import json5
 import pytest
 from pathlib import Path
 
-from slife.tools.config import (
+from slife.tools.models import (
     ListModelsTool, AddModelTool, RemoveModelTool, SwitchModelTool,
 )
 
