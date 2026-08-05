@@ -29,6 +29,7 @@ echo "Install method    : uv tool install (isolated environment)"
 echo -e "User data         : ${CYAN}$HOME/.slife/${NC}"
 echo "Python            : managed by uv (3.13)"
 echo "npx               : auto-install Node.js if needed (required for MCP servers)"
+echo "bun               : auto-install bun if needed (required for nvidia-nim MCP)"
 echo "Disk space needed : ~500 MB"
 echo ""
 
@@ -87,6 +88,30 @@ if [ "$HAVE_NPX" = false ]; then
         echo -e "${RED}  Install Node.js LTS from https://nodejs.org then re-run this installer.${NC}"
         echo -e "${YELLOW}Help: $SLIFE_REPO${NC}"
         exit 1
+    fi
+fi
+
+#
+echo -e "${YELLOW}[2b] Ensuring bun (JavaScript runtime) is available…${NC}"
+HAVE_BUN=false
+if command -v bun &>/dev/null; then
+    echo -e "${GREEN}  ✓${NC} bun v$(bun --version 2>&1)"
+    HAVE_BUN=true
+fi
+
+if [ "$HAVE_BUN" = false ]; then
+    echo -e "${YELLOW}  bun not found, installing…${NC}"
+    curl -fsSL https://bun.sh/install | bash
+    export PATH="$HOME/.bun/bin:$PATH"
+    if command -v bun &>/dev/null; then
+        echo -e "${GREEN}  ✓${NC} bun v$(bun --version 2>&1)"
+        HAVE_BUN=true
+    fi
+    if [ "$HAVE_BUN" = false ]; then
+        echo -e "${RED}WARNING: bun not available.${NC}"
+        echo -e "${RED}  The nvidia-nim MCP server requires bunx and will NOT work.${NC}"
+        echo -e "${RED}  Install bun manually from https://bun.sh then re-run this installer.${NC}"
+        echo -e "${RED}  All other MCP servers (npx-based) are unaffected.${NC}"
     fi
 fi
 

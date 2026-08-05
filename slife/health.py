@@ -116,7 +116,28 @@ def check_external_deps() -> None:
         record("npm", "warning", key="missing", value="not found",
                 hint="npm not installed. Re-run install script or install Node.js from https://nodejs.org.")
 
-    # ── uv / uvx (used to run MCP servers) ──
+    # ── bun / bunx (used to run Node.js MCP servers) ──
+    bun_path = _shutil.which("bun")
+    bunx_path = _shutil.which("bunx")
+
+    if bun_path:
+        try:
+            r = _sp.run(["bun", "--version"], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                record("bun", "ok", key="version", value=r.stdout.strip(),
+                        hint="bun found — JavaScript/TypeScript MCP servers can run via bunx.")
+            else:
+                record("bun", "warning", key="exit", value=str(r.returncode),
+                        hint="bun exists but returned non-zero.")
+        except Exception:
+            record("bun", "warning", key="error", value="unexpected error",
+                    hint="bun check failed.")
+    else:
+        record("bun", "warning", key="missing", value="not found",
+                hint="bun not installed. Run the install script or install from https://bun.sh. "
+                     "nvidia-nim MCP server requires bunx; npm/npx fallback used for all other servers.")
+
+    # ── uv / uvx (used to run Python MCP servers) ──
     uv_path = _shutil.which("uv")
     if uv_path:
         try:

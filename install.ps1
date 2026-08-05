@@ -57,6 +57,7 @@ try {
     Write-Host "User data         : $env:USERPROFILE\.slife\"
     Write-Host "Python            : managed by uv (3.13)"
     Write-Host "npx               : auto-install Node.js if needed (required for MCP servers)"
+    Write-Host "bun               : auto-install bun if needed (required for nvidia-nim MCP)"
     Write-Host "Disk space needed : ~500 MB"
     Write-Host ""
 
@@ -209,6 +210,45 @@ try {
         Write-Warn "  Install Node.js LTS from https://nodejs.org then re-run this installer."
         Write-Warn "Help: $slifeRepo"
         exit 1
+    }
+
+    # ── bun / bunx (required by nvidia-nim MCP server) ──
+    Write-Step "[2b] Ensuring bun (JavaScript runtime) is available…"
+
+    function Test-BunAvailable {
+        try {
+            $out = bun --version 2>&1 | ForEach-Object { "$_" }
+            $ver = ($out -join "`n").Trim()
+            if ($ver -match '^\d+\.') { return $ver }
+        } catch { }
+        return $null
+    }
+
+    $haveBun = $false
+    $bunVer = Test-BunAvailable
+    if ($bunVer) {
+        Write-Ok "bun v$bunVer"
+        $haveBun = $true
+    }
+
+    if (-not $haveBun) {
+        Write-Dim "bun not found, installing…"
+        if (Get-Command powershell -ErrorAction SilentlyContinue) {
+            powershell -ExecutionPolicy ByPass -c "irm bun.sh/install.ps1 | iex"
+            $env:PATH = "$env:USERPROFILE\.bun\bin;$env:PATH"
+            $bunVer = Test-BunAvailable
+            if ($bunVer) {
+                Write-Ok "bun v$bunVer"
+                $haveBun = $true
+            }
+        }
+    }
+
+    if (-not $haveBun) {
+        Write-Warn "WARNING: bun not available."
+        Write-Warn "  The nvidia-nim MCP server requires bunx and will NOT work."
+        Write-Warn "  Install bun manually from https://bun.sh then re-run this installer."
+        Write-Warn "  All other MCP servers (npx-based) are unaffected."
     }
 
     # Optional: Mosquitto MQTT broker
