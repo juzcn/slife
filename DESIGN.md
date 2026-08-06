@@ -18,7 +18,7 @@ Everything else — reasoning, planning, tool selection, error recovery, coordin
 What Slife deliberately is not:
 
 - **Not a framework** — no agent composition, pipelines, or orchestration abstractions
-- **Not a safety system** — no guardrails, approval gates, or sandboxing beyond the OS
+- **Not a safety system** — no sandboxing beyond the OS. A single opt-in approval gate exists for external MCP tools (`require_approval` per server), but it is off by default and covers only that one tool class
 - **Not an automation engine** — no scheduled tasks, background workers, or event triggers
 
 It's a chat window with tools. The LLM is in full control.
@@ -28,25 +28,26 @@ It's a chat window with tools. The LLM is in full control.
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  UI (Textual TUI)                                                    │
-│  slife/ui/app.py, chat.py, handler.py, tool_display.py               │
+│  slife/ui/app.py, chat.py, handler.py, tool_display.py,              │
+│  image_utils.py, restore.py, approval_dialog.py                      │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Agent Service                                                       │
 │  slife/agent/service.py — wires client + tools + loop + plugins      │
-│  Manages MCP, MemDB, A2A/MQTT, WeChat, and subagent lifecycles      │
+│  Manages MCP, MemDB, A2A/MQTT, WeChat, and subagent lifecycles       │
 │  Unified inbox serializes human + WeChat + MQTT + subagent messages  │
 ├──────────────────────────────────────────────────────────────────────┤
-│  Agent Loop                              │  MCP Client               │
+│  Agent Loop                              │  MCP Client                │
 │  Streaming function-calling              │  Streamable HTTP transport │
-│  _context_status + _trim_context         │  OAuth support             │
-│  harness notifications                   │  Tool proxy + adapter      │
-│  Reasoning (thinking) support            │                           │
+│  Context trim (_sys_trim) + status       │  OAuth device-code flow    │
+│  (_sys_note); concurrent tool execution  │  Tool proxy + adapter      │
+│  Reasoning (thinking) support            │                            │
 ├──────────────────────────────────────────┴───────────────────────────┤
 │  Tool Registry — unified OpenAI function definitions for all tools   │
-│  Native · MemDB · Skills · MCP Proxy · CLI · REST API · A2A         │
+│  Native · MemDB · Skills · MCP Proxy · CLI · REST API · A2A          │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins (independent child processes, Streamable HTTP)              │
-│  slife-mcp (gateway) · slife-memdb (diary) · slife-wechat          │
-│  slife-memfiles (file server + ngrok tunnel)                         │
+│  slife-mcp (gateway) · slife-memdb (diary) · slife-wechat            │
+│  slife-memfiles (plain-HTTP file server + ngrok tunnel)              │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
@@ -60,24 +61,31 @@ It's a chat window with tools. The LLM is in full control.
 Single function-calling loop. Every tool is registered as an OpenAI function definition in one `ToolRegistry`. The LLM decides what to call and when.
 
 ```
-User Input → Conversation.add_user_message()
-  → loop: trim oldest turns if > 80% window (inserts _trim_context notification)
-    → LLM stream → thinking/text chunks → handler callbacks
-    → tool calls? → ToolRegistry.execute() → sanitize_secrets() → loop
+User Input → Conversation.add_user_message()        (secrets sanitized)
+  → loop (max_iterations):
+    → cancel check
+    → _maybe_trim_context()                          (> ceiling → trim to floor)
+    → insert _sys_note (context status)
+    → LLM stream → thinking/text/tool deltas → handler callbacks
+    → tool calls? → ToolRegistry.execute() concurrently (asyncio.gather)
+                    → sanitize_secrets() on each result → truncate → loop
+    → approval-required tool? → serialized ApprovalDialog before execution
     → no tool calls? → response text → return
-    → save turn to diary (unconditional — even on cancel/error)
+    → save turn to diary (unconditional — even on cancel/error/max-iterations)
 ```
 
-- **Streaming**: thinking and text tokens delivered in real-time via `AgentEventHandler` callbacks
-- **Tool accumulation**: tool call deltas accumulated across chunks, executed as a batch
-- **Tool timeout**: `asyncio.wait_for()` wraps every call (default 60s). Per-call override via `_timeout`
+- **Streaming**: thinking and text tokens delivered in real time via `AgentEventHandler` callbacks
+- **Tool accumulation**: tool-call deltas accumulated across chunks, executed as a batch
+- **Concurrent execution**: all calls in a batch run via `asyncio.gather`; approval dialogs serialize behind a lock
+- **Tool timeout**: single enforcement point — `asyncio.wait_for()` wraps every call (default 60 s, `agent.tool_timeout`). Per-call override via `_timeout`; tools with a native `timeout` parameter (`execute_shell`) receive it directly instead of a double wrap
+- **Background execution**: per-call `_async: true` schedules the tool as a background task and returns a task id immediately; poll with `check_async`, cancel with `cancel_async`
 - **Iteration limit**: `max_iterations` (default 30) prevents infinite loops
-- **Cancellation**: `Esc` sets a cancel event; loop stops at next iteration boundary
-- **Context tracking**: `_last_context_tokens` updated every turn for accurate ceiling detection
+- **Cancellation**: `Esc` sets a cancel event; checked before each iteration, after each stream, and before each tool batch
+- **Context tracking**: `_last_context_tokens` (actual `prompt_tokens` from the last API call) drives trim decisions
 
 ### Context Window Management
 
-Active conversation stays within `context_floor`–`context_ceiling` (default 20%–80%):
+Active conversation stays within `context_floor`–`context_ceiling` (default 20%–80% of `context_window`):
 
 ```
                 context_window
@@ -87,17 +95,18 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Detect**: uses `_last_context_tokens` (accurate `prompt_tokens` from the last API call)
-- **Trim**: oldest complete turns removed; a synthetic `_trim_context` notification inserted after system prompt
-- **Restore**: on startup, recent turns loaded from SQLite within `context_floor` token budget
-- **Tool result cap**: single tool results capped at 20% of context window
+- **Detect**: `_last_context_tokens > context_window × context_ceiling` triggers a trim (falls back to a chars÷3 estimate before the first API call)
+- **Trim**: `Conversation.extract_oldest_turns()` removes oldest complete turns down to `context_window × context_floor`; a synthetic **`_sys_trim`** harness-tool pair is inserted after the system prompt summarizing what was removed
+- **Status**: before every API call a synthetic **`_sys_note`** pair (rendered from `context_status.j2`) is re-inserted after the last user message — current time, token usage, context time range, and change notifications (model/CWD/shell/modalities)
+- **Restore**: on startup, recent turns are loaded directly from SQLite within the `context_floor` token budget
+- **Tool result cap**: a single tool result is truncated at `tool_result_ceiling × context_window × 3` characters (default 20% of the window; ~3 chars/token heuristic)
 
 ### System Prompt
 
 The prompt is a **runtime spec sheet** — facts the LLM cannot discover from training data or tool schemas. Two-part design:
 
-- **Static** — `system_prompt.j2`, rendered once at startup (model, host, platform, CWD, shell, config paths). Never changes → maximal prompt cache hit rate.
-- **Dynamic** — `context_status.j2`, re-rendered before each API call (current time, token usage, context time range, model/CWD/shell change notifications). Injected as synthetic `_context_status` harness-tool pair.
+- **Static** — `slife/agent/templates/system_prompt.j2`, rendered once at startup: model identity, context policy (floor/ceiling/tool-result %), host platform (OS, arch, shell, python), workspace paths (data/config/logs/db/images/skills), credstore backend name, MCP tool naming prefix, and A2A broker info when configured. Never changes → maximal prompt cache hit rate.
+- **Dynamic** — `slife/agent/templates/context_status.j2`, re-rendered before each API call and injected as the `_sys_note` pair: current time + UTC offset and last token usage always; context time range when set; model/CWD/shell/modalities only when changed.
 
 Design principles:
 1. **Project-specific only** — if the LLM can infer it from tool schemas or training data, it doesn't belong
@@ -108,18 +117,26 @@ Design principles:
 
 ## LLM Backends
 
-Three backends, equal citizens — no conversion layer:
+Three backends, equal citizens. The internal message format is OpenAI Chat Completions; each backend owns its own wire conversion (`to_wire_messages()` / `to_wire_tools()`), and all produce the same unified stream:
 
 ```
 LLMClient (thin router)
-  ├── OpenAIBackend         api: "openai-completions"
-  ├── AnthropicBackend      api: "anthropic-messages"
+  ├── OpenAIBackend           api: "openai-completions"
+  ├── AnthropicBackend        api: "anthropic-messages"
   └── OpenAIResponsesBackend  api: "openai-responses"
 ```
 
-- **No fourth format** — internal message format is OpenAI Chat Completions (the format the codebase already uses)
-- **Provider dispatch is automatic** — `ModelConfig.api` determines which backend; `LLMClient.__init__` is a pure router
-- **Unified streaming** — every backend produces the same `StreamChunk` objects (thinking, content, tool_deltas, usage)
+```python
+StreamChunk(thinking=…, content=…, tool_deltas=…, usage=…)   # one chunk type, all backends
+```
+
+Reasoning ("thinking") support is per-backend:
+
+| Backend | Thinking on | Notes |
+|---------|-------------|-------|
+| OpenAI Completions | `extra_body.thinking.type = "enabled"` (+ optional `reasoning_effort`) | DeepSeek requires explicit `"disabled"` when off; thinking streamed from `delta.reasoning_content` |
+| Anthropic Messages | `thinking.budget_tokens = max(max_tokens // 2, 1024)` | `compat.thinkingFormat: "openai"` (Bailian/Qwen) sends no thinking param — the model always thinks |
+| OpenAI Responses | `reasoning.effort` (default `"medium"`) | Streams both `reasoning_text` and `reasoning_summary_text` deltas |
 
 ### Model Management
 
@@ -127,22 +144,32 @@ Runtime model management via native tools — no config editing needed:
 
 | Tool | Description |
 |------|-------------|
-| `list_models` | All configured models grouped by provider |
+| `list_models` | All configured models grouped by provider (active marked) |
 | `add_model` | Add/update a model (creates provider if new) |
 | `remove_model` | Remove by ref; auto-switches if it was active |
-| `switch_model` | Switch active model by ref |
+| `switch_model` | Switch active model by ref — persists to config and rebuilds the client live |
+| `switch_to_nvidia_free` | In-memory-only switch to a free NVIDIA NIM model via the nvidia-nim MCP server |
+
+Model switches fire callbacks that rebuild the LLM client, update loop parameters (vision, context window, modalities), and re-render the system prompt.
 
 ## Tool System
 
 ### Tool ABC
 
-`Tool` (`slife/tools/base.py`) defines `name`, `description`, `parameters` (JSON Schema), `category`, and `async execute(**kwargs) -> str`. Validation at class definition time via `__init_subclass__`.
+`Tool` (`slife/tools/base.py`) defines `name`, `description`, `parameters` (JSON Schema), `category`, and `async execute(**kwargs) -> str`. Required fields are validated at class-definition time via `__init_subclass__`. Optional class flags:
+
+- `requires_a2a` — register only when the A2A mesh is active
+- `_subagent_skip` — hide from subagent workers
+- `requires_approval` — route through the approval dialog before execution
+- `_skip_auto_register` — excluded from auto-discovery (used by `MCPProxyTool`)
+
+`from_config(cfg, config)` allows per-tool construction from the `tools:` overrides in `slife.json5` (e.g. `execute_shell` reads its default timeout there).
 
 ### Auto-Discovery
 
-`slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife/tools.*`, then walks `Tool.__subclasses__()` to discover valid tool classes. A new `.py` file is automatically picked up.
+`slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, `_subagent_skip` in subagent mode, and `requires_a2a` without a mesh.
 
-### Tool Categories
+### Tool Categories — 54 native tools
 
 All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM sees only function names and schemas.
 
@@ -152,81 +179,102 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill.py` | `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set`, `check_skills_dir` |
 | CLI | `cli.py` | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |
-| REST API | `rest_api.py` | `rest_api_add`, `rest_api_remove`, `rest_api_list`, `rest_api_set` |
-| A2A | `a2a.py` | 13 tools — agent discovery, task routing, subagent lifecycle, broadcast |
+| REST API | `rest_api.py` | `rest_api_list`, `rest_api_add`, `rest_api_remove`, `rest_api_set` |
+| A2A | `a2a.py` | 13 tools — `a2a_list_agents`, `a2a_list_subagents`, `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_tasks`, `a2a_subscribe_task`, `a2a_spawn_subagent`, `a2a_stop_subagent`, `a2a_agent_card`, `a2a_notify_user`, `a2a_broadcast` |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `models.py` | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
-| MemFiles | `memfiles.py` | `save_content_or_files`, `expose_file`, `include_image` |
+| MemFiles | `memfiles.py` | `save_content_or_files`, `expose_file`, `prepare_image` |
 | Display | `display.py` | `show_image` |
-| Meta | `meta.py` | `list_tools` |
+| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
-**Five managed categories** (MCP / Skills / CLI / REST API / Native) support a standard **list / add / remove / set** surface. All `add` tools are idempotent upserts. `mcp_set_server` additionally supports `disclosure="lazy"|"eager"` for tool lazy-loading.
+**Five managed categories** (MCP / Skills / CLI / REST API / Models) support a standard **list / add / remove / set** surface. All `add` tools are idempotent upserts. `mcp_set_server` additionally supports `disclosure="lazy"|"eager"` for tool lazy-loading.
+
+### Registry
+
+`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. A module-level singleton (`get_registry()`) lets meta-tools introspect without circular imports. Dynamic tools — plugin tools (memdb, wechat), MCP wrapper tools, and external MCP server tools — are registered at runtime as `MCPProxyTool` instances named `"{server}__{tool}"` (e.g. `filesystem__read_file`, `memdb__memory_search`). Harness-only plugin tools (`memory_save_turn`, `memory_get_recent_turns`, `wechat_drain_incoming`, `wechat_dispatch_reply`) are filtered out before registration.
 
 ### Timeout Architecture
 
-Single enforcement point at the Agent Loop level. `_timeout` is injected into every tool's JSON Schema as a universal per-call override:
+Single enforcement point at the Agent Loop level. `_inject_meta_params()` adds `_timeout` (number) and `_async` (boolean) to **every** function definition sent to the LLM:
 
-- Tools **without** a native `timeout` parameter → `asyncio.wait_for(timeout=...)`
-- Tools **with** a native `timeout` (e.g. `execute_shell`) → mapped to the native argument, no double-wrap
+- Tools **without** a native `timeout` parameter → `asyncio.wait_for(timeout=…)`
+- Tools **with** a native `timeout` (`execute_shell`) → mapped to the native argument, no double-wrap
 
-The MCP Client does not apply its own timeout.
+The MCP client applies no timeout of its own; enforcement stays in one place.
+
+### Approval Gate
+
+Tools flagged `requires_approval` (set per external MCP server via `require_approval: true`) pause execution and push a modal `ApprovalDialog` (Enter = approve, Esc = deny). Dialogs serialize behind a lock. Native tools are not gated.
 
 ## Plugin Architecture
 
-Four built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) or **plain HTTP** (memfiles). Each plugin binds a free port and signals the parent via stdout (`{"port": N}`).
+Four built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) or **plain HTTP** (memfiles).
 
 ### The Plugin Contract
 
-1. Bind a free port, signal the parent: `bind_free_port()` → `signal_port(port)`
-2. Start FastMCP on Streamable HTTP (or aiohttp for memfiles)
-3. Define `@mcp.tool` functions (or HTTP routes for memfiles)
-4. Be importable: `python -m <module>.server`
+1. Bind a free port: `bind_free_port()` pre-binds `127.0.0.1:0` and keeps the socket — no race between port discovery and server start
+2. Signal the parent: `signal_port(port)` writes `{"port": N}` to stdout and closes it
+3. Start FastMCP on Streamable HTTP with the pre-bound socket (or aiohttp for memfiles)
+4. Define `@mcp.tool` functions (or HTTP routes for memfiles)
+5. Be importable: `python -m <module>.server`
 
-No base class, no import hook, no SDK.
+No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. The parent reads the port line with a 30 s timeout; initial client connection retries 30× at 0.1 s. **There is no automatic restart** — a plugin that dies stays down for the session (see REVIEW.md).
+
+Processes communicate through environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `SLIFE_SESSION_ID` / `SLIFE_AGENT_ID` | Log correlation, agent identity |
+| `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` | Directory overrides |
+| `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES) |
+| `SLIFE_MEMFILES_REGISTRY` | JSON token-registry file path for the memfiles server |
+| `SLIFE_MEMFILES_URL` | Public ngrok URL |
 
 ### Built-in Plugins
 
 | Plugin | Transport | Role |
 |--------|-----------|------|
-| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio + HTTP). Manages connection lifecycle — spawn, health-check, route tool calls. |
+| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio + HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config. |
 | **slife-memdb** | Streamable HTTP | Diary database. Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
-| **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Poll loop for incoming messages, dispatch for replies. |
-| **slife-memfiles** | Plain HTTP | Serves local files via ngrok tunnel for LLM vision APIs. File-backed JSON token registry shared with the server subprocess. |
+| **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
+| **slife-memfiles** | Plain HTTP | Serves local files through an ngrok tunnel (`GET /share/{token}`). File-backed JSON token registry shared with the parent. |
 
 ### slife-mcp — External MCP Gateway
 
-Dual transport:
+Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` — deliberately no `ClientSession`/anyio TaskGroups to avoid event-loop conflicts with FastMCP):
 
 | Transport | Mechanism | Use |
 |-----------|-----------|-----|
 | **stdio** | Spawn subprocess, JSON-RPC over pipes | Local MCP servers (npx/uvx/bunx) |
-| **http** | POST JSON-RPC via `httpx.AsyncClient` | Remote MCP endpoints |
+| **http (SSE)** | GET with `Accept: text/event-stream`, POST to message endpoint | Remote SSE endpoints (tried first for URLs) |
+| **http (streamable)** | POST JSON-RPC directly, `mcp-session-id` header | Remote Streamable HTTP endpoints (fallback) |
 
-Both share `MCPServerConnection` — `_request()` dispatches based on `ServerConfig.transport`.
+Exposed management tools: `mcp_add_server` (idempotent upsert), `mcp_remove_server`, `mcp_list_servers`, `mcp_list_tools`, `mcp_call_tool`, `mcp_set_server` (enable/disable/disclosure).
 
-### Subagent MCP Tool Discovery
-
-Subagents share the main agent's plugin servers via environment variables (`SLIFE_MCP_PORT`, etc.). They eagerly discover external MCP tools at startup via `_discover_existing_mcp_tools()` — listing tools from already-connected servers without spawning new processes. This keeps tool naming consistent between main agent and subagents (both have `server__tool` style names).
-
-### MCP Server Lifecycle
+Server lifecycle:
 
 ```
 disabled ──[mcp_set_server enabled=True]──────→ enabled (connected, tools registered)
-disabled ──[mcp_set_server disclosure="lazy"]─→ cannot set disclosure on disabled
 enabled  ──[mcp_set_server enabled=False]─────→ disabled (disconnected, tools unregistered)
 enabled  ──[mcp_set_server disclosure="lazy"]─→ enabled (connected, tools unloaded)
 lazy     ──[mcp_set_server disclosure="eager"]─→ enabled (tools loaded)
 any      ──[mcp_add_server]───────────────────→ upsert (same config → no-op; changed → restart)
 ```
 
-All state changes persist to `slife.json5`.
+All state changes persist to `slife.json5`. Servers needing OAuth use a device-code flow (see below); tokens are stored in the OS keyring via credstore (`mcp_oauth_*`).
+
+### Subagent MCP Tool Discovery
+
+Subagents inherit `SLIFE_MCP_PORT` from the parent environment, connect to the existing MCP wrapper over Streamable HTTP, and eagerly discover external MCP tools at startup via `_discover_existing_mcp_tools()` — listing tools from already-connected servers without spawning new processes or mutating config. This keeps tool naming consistent between main agent and subagents (`server__tool` in both).
 
 ## Memory (MemDB)
 
-Every turn permanently recorded as an independent row — no session concept, a continuous time-ordered log.
+Every turn permanently recorded as an independent row — no session concept, a continuous time-ordered log in `~/.slife/<agent>.db`.
 
 ### Schema
+
+`diary` table:
 
 | Column | Purpose |
 |--------|---------|
@@ -234,12 +282,14 @@ Every turn permanently recorded as an independent row — no session concept, a 
 | `messages` | Assistant response as OpenAI JSON array (thinking, tool calls, results, text) |
 | `summary` | 1–2 sentence gist (LLM-written) |
 | `tags` | Comma-separated topic tags |
-| `created_at` | ISO 8601 with timezone |
+| `created_at` | ISO 8601 with timezone (B-tree indexed) |
 | `channel` | Source: `human`, `wechat`, or remote agent id |
 | `who_helped` / `what_model` | Agent identity + model used |
 | `token_count` | Tokens consumed by this turn |
 
-Turns saved **unconditionally** (cancel, error, or max-iterations).
+Supporting structures: `diary_fts` (FTS5 content-sync table over message/summary/tags/channel with insert/delete triggers), `diary_semantic` (sqlite-vec `vec0` table: embedding + rowid + chunk index + summary/tags/created_at), and `diary_meta` (key-value store tracking the embedding model identity for migration detection).
+
+Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the harness-only `memory_save_turn` tool.
 
 ### Search
 
@@ -260,38 +310,49 @@ Three backends, configurable at runtime via `memory_set_embedding`:
 
 | Backend | Dep | Default model | Dim |
 |---------|-----|---------------|-----|
-| GGUF (local) | `llama-cpp-python` | bge-m3 (Q4_K_M) | 1024 |
+| GGUF (local) | `llama-cpp-python` | bge-m3 | 1024 |
 | Transformer (local) | `sentence-transformers` | BAAI/bge-m3 | 1024 |
 | API (OpenAI-compatible) | Provider key | text-embedding-3-small | 1536 |
 
-Configuration stored in `slife.json5` under `memdb.embedding`. Long turns chunked at paragraph boundaries (~500 tokens, 1-paragraph overlap). Model migration drops and recreates the vec0 table automatically; background reindex runs without blocking.
+Backend selection priority: GGUF file present → transformer requested → API key present → disabled. Long turns are chunked at paragraph boundaries (~2000 chars ≈ 500 tokens, 1-paragraph overlap); the embedded text is the user message plus all assistant/tool contents. Configuration lives in `slife.json5` under `memdb.embedding`. Model/dimension migration drops and recreates the `vec0` table automatically; reindexing runs in the background in small batches without blocking.
 
 ### Session Restore
 
-On startup, recent turns read **directly from SQLite** — no MCP transport, no plugin dependency. UI shows history immediately; plugins start in parallel. Image markers (`[image: <path>]`) re-render from disk if the file still exists.
+On startup, recent turns are read **directly from SQLite** — no MCP transport, no plugin dependency. The UI rebuilds the last session immediately (user messages, assistant text, tool-call widgets, images whose files still exist); plugins start in parallel.
 
 ### Agent Isolation
 
-`--agent alice` creates `~/.slife/alice.db`. `author` is the primary isolation column; `vec0` uses `author` as a partition key — KNN search is automatically scoped to one agent.
+`--agent alice` uses `~/.slife/alice.db` — isolation is at the database-file level. Each agent has its own diary, FTS, and vector indexes; nothing is shared between agents.
 
 ## A2A — Agent-to-Agent
 
-Three transports, unified interface:
+One tool surface over three transports:
 
 ```
-  a2a_list_agents / a2a_send_task
+  a2a_list_agents / a2a_send_task / …
          │
   ┌──────┼──────┐
   │      │      │
  MQTT   HTTP   Subagent
 (paho) (mcp)  (JSON-RPC stdin/stdout)
+ complete skeleton complete
 ```
 
-| Transport | Backend | Use |
-|-----------|---------|-----|
-| **MQTT** | paho-mqtt → asyncio.Queue, LWT | Remote peers over Mosquitto broker |
-| **HTTP Streamable** | `mcp.client.streamable_http` | Direct agent-to-agent |
-| **Subagent** | `asyncio.create_subprocess_exec`, JSON-RPC 2.0 | Local workers (always available) |
+| Transport | Backend | Status |
+|-----------|---------|--------|
+| **MQTT** | paho-mqtt (MQTTv5) → asyncio.Queue, LWT | Fully implemented |
+| **HTTP Streamable** | `mcp.client.streamable_http` | Skeleton — connect/disconnect only |
+| **Subagent** | `asyncio.create_subprocess_exec`, JSON-RPC 2.0 | Fully implemented, always available |
+
+The unification lives at the **tool level**: each `a2a_*` tool routes to the MQTT client or the `SubagentManager` depending on whether the target is a local subagent. Subagents are not a `TransportAdapter`.
+
+### MQTT Mesh
+
+- Topics: `Slife/<agent_id>/presence`, `Slife/<agent_id>/tasks/inbox`, `Slife/<agent_id>/tasks/result`
+- Presence heartbeat every 15 s (configurable); peers silent for 45 s are pruned. LWT publishes `{"status":"offline"}` (QoS 1) so crashes are visible
+- Client id is `<agent_id>-<pid>` to allow multiple processes per agent id
+- Duplicate agent detection: after subscribing, the client listens 1.5 s for an existing presence with the same id and exits with a clear error rather than splitting the identity
+- Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; if the probe fails, A2A is disabled and reported via `system_health`
 
 ### Unified Inbox
 
@@ -299,62 +360,83 @@ All messages flow through a single `asyncio.Queue`:
 
 ```
 Human keyboard ──→ Inbox.post() ──→ Queue ──→ Inbox.run() ──→ AgentLoop
-MQTT inbox msgs ──→ Inbox.post() ──→
-WeChat messages  ──→ Inbox.post() ──→
-Subagent results ──→ Inbox.post() ──→
+MQTT tasks     ──→ Inbox.post() ──→
+WeChat messages──→ Inbox.post() ──→
+Subagent results─→ Inbox.post() ──→
 ```
 
-Messages are processed sequentially — only one AgentLoop runs at a time.
+Messages are processed sequentially — only one AgentLoop runs at a time. Human and WeChat sources keep persistent conversations; remote agents get fresh one-shot conversations. Status flips to `busy`/`idle` around each turn; `on_turn_complete` fires unconditionally (in `finally`), so memory persistence survives cancellation.
+
+### Task Store
+
+Sent/received tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap). The store is **not persisted across restarts** — `a2a_list_tasks` after restart is empty by design.
 
 ### Subagent Transport
 
 Local child-process workers, always available — no config toggle:
 
-- **headless.py**: Slife without TUI, JSON-RPC 2.0 over stdin/stdout
-- **SubagentManager**: spawn/stop/list lifecycle, `max_subagents` limit
-- **Memory isolation**: subagents don't connect to memdb server (avoids deadlock)
-- **Ephemeral**: no persisted registry. `SLIFE_SUBAGENT_NAME` env var prevents recursive spawning
+- **headless.py**: Slife without TUI, JSON-RPC 2.0 over stdin/stdout — methods `tasks/send`, `shutdown`; notifications `tasks/complete`, `tasks/progress`; a `{ready: true}` result signals startup
+- **SubagentManager**: spawn/stop/list lifecycle; auto-names `sub-1`, `sub-2`, …; `max_subagents` default 5, `task_timeout` default 120 s
+- **Memory isolation**: `SLIFE_MEMDB_PORT` / `SLIFE_WECHAT_PORT` are removed from the child environment — subagents don't write to the diary (and can't deadlock on the shared server)
+- **Recursion guard**: `SLIFE_SUBAGENT_NAME` in the child environment prevents spawning further subagent managers
 
 ## Image & Memfiles
 
-### Image Display
+### Image Input
 
-Two-tier rendering: **Sixel** (full-colour, whitelisted terminals: Windows Terminal, WezTerm, iTerm2, Kitty) → **HalfcellImage** (coloured Unicode half-blocks, all true-colour terminals) → text placeholder (fallback).
+User attaches with `@path` / `@url` syntax (quoted paths supported):
 
-User attaches with `@path` syntax:
 ```
 Check this screenshot @D:\Downloads\error.png and tell me what's wrong
 ```
 
+The TUI extracts attachments; `prepare_image_url()` turns each into a vision content block — HTTP(S) URLs pass through, local files are read and base64-encoded as `data:` URIs. The agent can attach images mid-conversation with the `prepare_image` tool (injects into the last user message). Tool results may embed `[image: <path>]` markers; the loop scans for them after each batch and renders them in the UI. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`).
+
+### Image Display
+
+Three-tier rendering in the terminal: **Sixel** (full-colour; whitelisted terminals: Windows Terminal, WezTerm, iTerm2, Kitty — detected via `WT_SESSION` / `TERM_PROGRAM` / `KITTY_WINDOW_ID`) → **HalfcellImage** (coloured Unicode half-blocks, any true-colour terminal) → text placeholder. Chat images are capped at 32×16 cells (thumbnails 20×10).
+
 ### Memfiles — File Serving
 
-A lightweight plain-HTTP server (`slife/plugins/memfiles/server.py`) streams local files to LLM vision APIs via an ngrok tunnel:
+A lightweight plain-HTTP server (`slife/plugins/memfiles/server.py`) streams local files through an ngrok tunnel:
 
-1. `expose_file(path)` → registers file with a short hex token → returns `https://xxx.ngrok-free.dev/share/<token>`
-2. `include_image(url=...)` → passes URL to multimodal LLM
+1. `expose_file(path)` → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`
+2. `GET /share/{token}` streams the file in 64 KB chunks (403 unknown token, 404 file gone)
 
-No BLOBs, no database, no base64 in context. Token→path mappings stored in a JSON registry file shared with the server subprocess — no HMAC, no IPC.
+No BLOBs, no database, no HMAC — token→path mappings live in a JSON registry file (atomic writes) whose path is passed to the server subprocess via `SLIFE_MEMFILES_REGISTRY`. `save_content_or_files` persists content/URL/files under `<agent>.files/` with an `index.json` and returns share URLs the same way.
 
 ### Ngrok Tunnel
 
-Started at session init via the official ngrok Python SDK (embedded agent — no external binary). `NgrokTunnel` (`slife/memfiles/tunnel.py`) manages the lifecycle with a background monitor that retries failed initial starts.
+Started at session init via the official ngrok Python SDK (embedded agent — no external binary). Authtoken resolution: credstore `NGROK_AUTHTOKEN` → environment. Initial start retries up to 3 times with linear backoff (2/4/6 s); a background monitor performs one follow-up retry if the first start failed. Free-tier URLs change between sessions — shared links are ephemeral by nature.
 
 ## UI
 
 Textual TUI with minimal chrome:
 
-- **ChatView** — scrollable message container
+- **ChatView** — scrollable message container; printable keys redirect to the input
 - **UserMessage** — prefix-styled user text with optional image attachments
-- **AssistantMessage** — streaming text with collapsible thinking blocks
-- **ToolCallWidget** — collapsible amber headers with detail
-- **StatusBar** — model name, thinking indicator, token count
-- **Auto-restore** — rebuilds last session's UI on startup
+- **AssistantMessage** — streaming text with collapsible thinking blocks (Enter/Space toggle)
+- **ToolCallWidget** — collapsible amber headers: status icon, label, primary-arg preview, iteration counter; Ctrl+Y copies the result
+- **StatusBar** — model name, thinking indicator, inbox state, token count
+- **ApprovalDialog** — modal approve/deny for `requires_approval` tools
+- **Auto-restore** — rebuilds last session's UI from the diary on startup
 
-All user-facing text rendered with `markup=False` to prevent `MarkupError`.
+All user-supplied text is rendered with `markup=False` to prevent `MarkupError` injection.
+
+### Keyboard
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+C` | Quit |
+| `Esc` | Cancel agent loop |
+| `Ctrl+L` | Focus input |
+| `Home` / `End` | Scroll to top / bottom |
+| `Ctrl+Y` | Copy result (on a tool call) |
+| `Enter` / `Space` | Toggle thinking block (on an assistant message) |
 
 ### Progressive Disclosure
 
-Not all tools are in every request. Three categories use lightweight summaries:
+Not all tools are in every request. Several categories use lightweight summaries:
 
 | Category | Browse | Load |
 |----------|--------|------|
@@ -369,10 +451,10 @@ Not all tools are in every request. Three categories use lightweight summaries:
 ```
 ┌──────────────────────────────────────────────┐
 │  OS Keyring (credstore)                      │
-│  Encrypted at OS level. Survives config.     │
-│  credstore set <KEY>    ← masked stdin        │
+│  Encrypted at OS level + cryptfile backup.   │
+│  credstore set <KEY>    ← masked stdin       │
 └──────────────────┬───────────────────────────┘
-                   │ ${VAR} reference
+                   │ ${VAR} / keyring:service/key reference
                    ▼
 ┌──────────────────────────────────────────────┐
 │  slife.json5 → env: section                  │
@@ -380,49 +462,51 @@ Not all tools are in every request. Three categories use lightweight summaries:
 └──────────────────────────────────────────────┘
 ```
 
+`${VAR:-default}` fallbacks supported; resolution is recursive over strings/lists/dicts.
+
 ### Credstore Backend Matrix
 
-| Platform | Backend | Mechanism |
-|----------|---------|-----------|
-| **Windows** | WinCredKeyring | Windows Credential Manager (pywin32) |
-| **WSL** | WslBackend | PowerShell bridge → advapi32.dll CredReadW/CredWriteW (C# P/Invoke) |
-| **macOS** | Keychain | macOS Keychain via `security` CLI |
-| **Linux (desktop)** | SecretService | D-Bus Secret Service (GNOME Keyring / KWallet) |
-| **Linux (headless)** | KeyutilsBackend | Linux kernel keyring via ctypes |
+| Platform | Backend | Priority | Mechanism |
+|----------|---------|----------|-----------|
+| **WSL** | WslBackend | 9.5 | PowerShell bridge → advapi32.dll CredReadW/CredWriteW (C# P/Invoke) |
+| **Windows** | WinCredKeyring | 9.0 | Windows Credential Manager (pywin32/win32ctypes) |
+| **macOS** | Keychain | 5.0 | macOS Keychain via keyring |
+| **Linux (desktop)** | SecretService | 5.0 | D-Bus Secret Service (GNOME Keyring / KWallet) |
+| **Linux (headless)** | KeyutilsBackend | 1.5 | Kernel persistent keyring via ctypes syscalls (zero deps) |
 
-Auto-selected by priority — no configuration needed.
+Auto-selected by priority — no configuration needed. `credstore set` dual-writes: cryptfile first, then the system keyring (rolled back if the keyring write fails). The CLI also provides `set-password`, `status`, `get`, `delete`, `copy`, `list`, `reset-keyring`, `reset-backup`, `inject`/`uninject` (shell-aware export: bash / powershell / cmd; Windows persistence via `HKCU\Environment`).
 
 ### Secret Sanitization
 
-Three chokepoints, single pattern-masking engine:
+Three chokepoints, single pattern-masking engine (`logfmt.sanitize_secrets`):
 1. **Inbound** — `Conversation.add_user_message()` on every external message
 2. **Tool arguments** — `Conversation.add_assistant_message()` on tool_call arguments
 3. **Outbound** — `AgentLoop._execute_tools()` on every tool result
 
-API key patterns (`sk-*`, `ghp_*`, Bearer tokens, 32+ char hex/base64) masked with `<MASKED>`.
+Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bearer` tokens, and credential-named `key=value` pairs are masked with `<MASKED>`. This is a pattern-based best effort, not a guarantee (see REVIEW.md).
 
 ### Config Sections
 
-`slife.json5` structure:
+`slife.json5` structure parsed by `Config.from_json5`:
 
 | Section | Purpose |
 |---------|---------|
-| `env` | `${VAR}` references resolved at runtime |
+| `env` | `${VAR}` references, applied to the environment at startup |
 | `models.providers` | Provider configs (api_key, base_url, api, models[]) |
 | `active_model` | Currently active model ref (`provider/model`) |
-| `agent` | `max_iterations`, `context_floor`, `context_ceiling`, `tool_timeout` |
+| `agent` | `max_iterations`, `tool_timeout`, `context_floor`, `context_ceiling`, `tool_result_ceiling` |
 | `tools` | Per-tool overrides (timeout, enabled) |
-| `mcp.servers` | External MCP server configs |
-| `memdb.embedding` | Embedding backend config (model, gguf_path, backend, dim) |
-| `mqtt` | A2A broker config (host, port, heartbeat) |
-| `subagent` | `max_subagents`, `task_timeout` |
+| `mcp.servers` | External MCP server configs (incl. `require_approval`, `disclosure`) |
+| `memdb.embedding` | Embedding backend config (backend, model, dim, gguf_path) |
 | `wechat` | `enabled` toggle |
-| `cli_tools` | External CLI tool definitions |
-| `memory` | (legacy — use `memdb`) |
+| `mqtt` | A2A config (transport, broker host/port, heartbeat, task_timeout) |
+| `subagent` | `max_subagents`, `task_timeout` |
+| `cli_tools` | External CLI tool definitions (read by the CLI tools directly) |
+| `rest_apis` | REST API registrations (read by the REST API tools directly) |
 
 ## Health Checks
 
-At startup, `check_external_deps()` probes system dependencies and reports status via `system_health`:
+At startup, `check_external_deps()` probes system dependencies; everything is aggregated in a health registry surfaced by the `system_health` tool:
 
 | Dependency | Use |
 |------------|-----|
@@ -431,49 +515,46 @@ At startup, `check_external_deps()` probes system dependencies and reports statu
 | **bun** | nvidia-nim MCP server (bunx) |
 | **uv** | uvx-based MCP servers |
 
-Missing deps are reported as warnings — Slife still starts, affected MCP servers won't work.
-
-## Ngrok Tunnel Monitoring
-
-The memfiles ngrok tunnel uses the official ngrok Python SDK (embedded Rust agent, no external binary). The background monitor (`NgrokTunnel._run_monitor`) polls every 15s — if the executor failed to start the tunnel (e.g. transient TLS error), the monitor retries once. Since the agent is embedded, it cannot silently crash; no continuous health-ping is needed.
+Missing deps are recorded as warnings — Slife still starts; affected MCP servers won't work. Plugin startup outcomes and broker probes are recorded to the same registry.
 
 ## Project Structure
 
 ```
 slife/
   agent/               # LLM interaction
-    loop.py            #   Function-calling loop (streaming, tool execution, context trim)
-    service.py         #   Lifecycle manager (plugins, inbox, lifecycle)
-    conversation.py    #   Message storage + history (OpenAI-format)
-    llm_client.py      #   Backend router (~50 lines)
+    loop.py            #   Function-calling loop (streaming, concurrent tool execution, trim)
+    service.py         #   Lifecycle manager (plugins, inbox, model switching)
+    conversation.py    #   Message storage + history (OpenAI-format, sanitization, repair)
+    llm_client.py      #   Backend router + StreamChunk
     system_prompt.py   #   Prompt rendering (static + dynamic Jinja2)
+    templates/         #   system_prompt.j2, context_status.j2
     llm_backends/      #   API backends: openai.py, anthropic.py, openai_responses.py
-    inbox.py           #   Unified message queue
+    inbox.py           #   Unified message queue + ConversationStore
     plugins.py         #   Plugin spawn/stop helpers
     multimodal.py      #   Image encoding for vision models
-  tools/               # Native tools (auto-discovered)
+  tools/               # Native tools (auto-discovered, 54)
     base.py            #   Tool ABC
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
-    system.py          #   System health, embedding/wechat check
+    system.py          #   System health, embedding/wechat checks
     exec.py            #   Shell, Python, package install
-    skill.py           #   Skill loading (SKILL.md)
+    skill.py           #   Skill management (SKILL.md)
     cli.py             #   External CLI tool management
-    rest_api.py        #   REST API tool management
-    a2a.py             #   Agent-to-agent tools (13 tools)
+    rest_api.py        #   REST API tool management (OpenAPI → MCP)
+    a2a.py             #   Agent-to-agent tools (13)
     models.py          #   Model management (list/add/remove/switch)
-    config.py          #   Config env var management
-    credentials.py     #   Credential management
-    memfiles.py        #   File save/expose/include
+    config.py          #   Config env var + native tool toggles
+    credentials.py     #   Credential check/inject/uninject
+    memfiles.py        #   File save / expose / prepare_image
     display.py         #   Inline image display
-    meta.py            #   list_tools
+    meta.py            #   list_tools, check_async, cancel_async, clear_context
     _config_io.py      #   JSON5 read/write helpers
   memfiles/            # File serving infra
-    token.py           #   File-backed JSON token registry
+    token.py           #   File-backed JSON token registry (atomic writes)
     tunnel.py          #   Ngrok tunnel lifecycle (official SDK, embedded agent)
-  plugins/             # Built-in MCP plugins
-    mcp/               #   External MCP gateway (connection pool, stdio/http)
-    memdb/             #   Diary database (store, search, embeddings, schema)
+  plugins/             # Built-in plugins (auto-discovered server.py packages)
+    mcp/               #   External MCP gateway (raw JSON-RPC: stdio/SSE/streamable)
+    memdb/             #   Diary database (store, search, embeddings, schema.sql)
     wechat/            #   WeChat messaging (iLink ClawBot client)
     memfiles/          #   Plain-HTTP file server
   mcp/                 # MCP client infra
@@ -482,53 +563,54 @@ slife/
     process.py         #   MCPWrapperProcess (spawn, port handshake)
     oauth.py           #   OAuth 2.0 device-code flow
   a2a/                 # Agent-to-Agent
-    transport.py       #   Abstract transport
-    mqtt.py            #   MQTT transport (paho-mqtt)
-    http.py            #   HTTP Streamable transport
-    client.py          #   A2A client
-    broker.py          #   Broker discovery
-    task_store.py      #   Task state persistence
+    transport.py       #   Abstract transport + TransportMessage
+    mqtt.py            #   MQTT adapter (paho-mqtt, MQTTv5, LWT)
+    http.py            #   HTTP Streamable transport (skeleton)
+    client.py          #   A2A client (presence, heartbeat, task routing)
+    broker.py          #   Broker TCP probe
+    task_store.py      #   In-memory task records
     card.py            #   Agent card (identity)
     config.py          #   A2A config
-    identity.py        #   Agent identity
+    identity.py        #   AgentId, HUMAN/WECHAT sentinels, AgentMessage
+    tools.py           #   Back-compat re-export of slife.tools.a2a
   subagent/            # Local workers
     headless.py        #   Headless JSON-RPC 2.0 process
-    process.py         #   SubagentManager (spawn/stop/list)
-    tools.py           #   Subagent tool implementations
+    process.py         #   SubagentProcess + SubagentManager
   ui/                  # Textual TUI
-    app.py             #   Textual App
+    app.py             #   Textual App, bindings, HistoryInput, StatusBar
     chat.py            #   Chat message widgets
     handler.py         #   TUIHandler (bridges events → widgets)
-    tool_display.py    #   Tool call display helpers
-    image_utils.py     #   Image rendering (Sixel/Halfcell detection)
+    tool_display.py    #   ToolCallWidget + display helpers
+    image_utils.py     #   Image rendering (Sixel/Halfcell/fallback)
     restore.py         #   Session restore (rebuilds UI from diary)
-    approval_dialog.py #   Tool approval dialog
+    approval_dialog.py #   Tool approval modal
     slife.tcss         #   Textual CSS
   config.py            # JSON5 config parsing (models, env, plugins, A2A, subagent)
   paths.py             # Filesystem paths (dev vs prod, data dir, DB, memfiles)
   platform.py          # OS detection, shell detection, process lifecycle, notifications
   logfmt.py            # Structured logging + secret sanitization
   server_utils.py      # Plugin lifecycle: port binding, signal, FastMCP helpers
-  bootstrap.py         # Logging setup, session init
+  bootstrap.py         # Logging setup, skill seeding, console restore
   health.py            # External dependency checks (node, npm, bun, uv)
-  env.py               # Environment variable management
-  os_detect.py         # OS detection for install scripts
+  env.py               # ${VAR} environment resolution
+  os_detect.py         # OS path detection for install scripts
 
 credstore/
-  __init__.py          # Python API (get/set/delete/exists/list)
-  __main__.py          # CLI (10 commands)
-  _store.py            # CredentialStore
-  _backend.py          # Dual-write: system keyring + cryptfile backup
-  _platform.py         # WSL detection
-  _wsl_backend.py      # PowerShell bridge → Windows Credential Manager
-  _keyutils_backend.py # Headless Linux: kernel keyring via ctypes
-  _enumerate.py        # Credential enumeration (Win/WSL)
-  _resolver.py         # keyring: URI resolution
-  _shell.py            # Shell formatting (export/unset)
-  _config.py           # Config file loading
-  _tty.py              # Masked terminal input
+  credstore/
+    __init__.py        # Python API (get/set/delete/exists/list, keyring: URIs)
+    __main__.py        # CLI (11 commands)
+    _store.py          # CredentialStore
+    _backend.py        # Dual-write: system keyring + cryptfile backup
+    _platform.py       # WSL detection
+    _wsl_backend.py    # PowerShell bridge → Windows Credential Manager
+    _keyutils_backend.py # Headless Linux: kernel keyring via ctypes
+    _enumerate.py      # Credential enumeration (Win/WSL)
+    _resolver.py       # keyring: URI resolution
+    _shell.py          # Shell formatting (export/unset) + persistence
+    _config.py         # Config file loading
+    _tty.py            # Masked terminal input
 
-skills/                # On-demand SKILL.md plugins (seeded to ~/.slife/skills/)
+skills/                # On-demand SKILL.md skills (seeded to ~/.slife/skills/)
 ```
 
 ## License
