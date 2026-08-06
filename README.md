@@ -135,7 +135,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
 | Credentials | `credential_check`, `inject_credential`, `uninject_credential` |
-| MemFiles | `save_content_or_files`, `expose_file`, `prepare_image` |
+| MemFiles | `save_content_or_files`, `expose_file`, `include_image` |
 | Display | `show_image` |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
@@ -166,7 +166,7 @@ Attach images with `@path` / `@url` syntax (quotes supported for paths with spac
 Check this screenshot @D:\Downloads\error.png
 ```
 
-Two-tier rendering: **Sixel** (full-colour on Windows Terminal / WezTerm / iTerm2 / Kitty) → **HalfcellImage** (coloured Unicode half-blocks on any true-colour terminal) → text placeholder. Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `prepare_image` tool lets the agent attach images mid-conversation, and `expose_file` publishes any local file as a public HTTPS link via the ngrok tunnel.
+Two-tier rendering: **Sixel** (full-colour on Windows Terminal / WezTerm / iTerm2 / Kitty) → **HalfcellImage** (coloured Unicode half-blocks on any true-colour terminal) → text placeholder. Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `include_image` tool lets the agent attach images mid-conversation, and `expose_file` publishes any local file as a public HTTPS link via the ngrok tunnel.
 
 ### Plugins
 

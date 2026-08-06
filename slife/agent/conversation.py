@@ -7,7 +7,7 @@ import json
 import logging
 import uuid
 
-from slife.agent.multimodal import prepare_image_url
+from slife.agent.multimodal import include_image_url
 from slife.logfmt import sanitize_secrets
 
 logger = logging.getLogger(__name__)
@@ -139,7 +139,7 @@ class Conversation:
             parts: list[dict] = [{"type": "text", "text": content}]
             dropped: list[str] = []
             for img in images:
-                block = prepare_image_url(img)
+                block = include_image_url(img)
                 if block is not None:
                     parts.append(block)
                 else:
@@ -211,7 +211,7 @@ class Conversation:
     ) -> None:
         """Append pre-built image blocks to the last user message.
 
-        Used by ``prepare_image`` so the LLM sees images as vision
+        Used by ``include_image`` so the LLM sees images as vision
         content blocks on the next turn, not just as text.
 
         Each block must be a dict with ``"type": "image_url"``.

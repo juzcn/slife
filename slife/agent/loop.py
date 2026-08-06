@@ -134,7 +134,7 @@ class _StreamResult:
 
 # ── Image detection in tool results ────────────────────────────────
 
-# Matches [image: /path/to/file.png] markers from prepare_image tool and MCP client.
+# Matches [image: /path/to/file.png] markers from include_image tool and MCP client.
 _IMAGE_MARKER_RE = re.compile(r"\[image:\s*(.+?)\]")
 
 
@@ -165,7 +165,7 @@ def _scan_for_images(text: str) -> list[str]:
     """Scan tool result text for ``[image: <path>]`` markers pointing at real files.
 
     Only detects the explicit marker — no heuristic path matching.
-    Tools (``prepare_image``, MCP binary data handler) are responsible
+    Tools (``include_image``, MCP binary data handler) are responsible
     for producing the marker when they have a real image to display.
 
     Returns deduplicated list of absolute paths that exist on disk.

@@ -62,6 +62,13 @@ def create_tools_from_config(
             logger.debug("tool_skipped_subagent name=%s", tool_cls.name)
             continue
 
+        # Skip vision tools when the active model doesn't support images.
+        if getattr(tool_cls, "_requires_vision", False):
+            active = getattr(config, "active_model", None) if config else None
+            if active is None or not active.supports_vision:
+                logger.info("tool_skipped_no_vision name=%s", tool_cls.name)
+                continue
+
         # Skip tools that require the MQTT/A2A mesh when MQTT is not
         # configured or not enabled.  A2AConfig always exists (defaults
         # to enabled=False), so check the enabled flag, not just presence.

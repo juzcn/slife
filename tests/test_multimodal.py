@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from slife.agent.multimodal import prepare_image_url, _ensure_mimetypes
+from slife.agent.multimodal import include_image_url, _ensure_mimetypes
 
 
 # ── _ensure_mimetypes ─────────────────────────────────────────────────
@@ -33,25 +33,25 @@ class TestEnsureMimetypes:
             mock_init.assert_not_called()
 
 
-# ── prepare_image_url ───────────────────────────────────────────────
+# ── include_image_url ───────────────────────────────────────────────
 
 
-class TestPrepareImageUrl:
-    """Tests for prepare_image_url — base64 data-URI generation."""
+class TestIncludeImageUrl:
+    """Tests for include_image_url — base64 data-URI generation."""
 
     def test_file_not_found_returns_none(self, tmp_path):
-        result = prepare_image_url(tmp_path / "nonexistent.png")
+        result = include_image_url(tmp_path / "nonexistent.png")
         assert result is None
 
     def test_not_a_file_returns_none(self, tmp_path):
-        result = prepare_image_url(tmp_path)  # directory, not file
+        result = include_image_url(tmp_path)  # directory, not file
         assert result is None
 
     def test_str_path_accepted(self, tmp_path):
         img = tmp_path / "photo.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
 
-        result = prepare_image_url(str(img))
+        result = include_image_url(str(img))
         assert result is not None
         assert result["type"] == "image_url"
         assert result["image_url"]["url"].startswith("data:image/png;base64,")
@@ -60,7 +60,7 @@ class TestPrepareImageUrl:
         img = tmp_path / "photo.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
 
-        result = prepare_image_url(img)  # Path, not str
+        result = include_image_url(img)  # Path, not str
         assert result is not None
         assert result["type"] == "image_url"
 
@@ -69,7 +69,7 @@ class TestPrepareImageUrl:
         data = b"\x89PNG\r\n\x1a\nfake png content"
         img.write_bytes(data)
 
-        result = prepare_image_url(img)
+        result = include_image_url(img)
         assert result is not None
         assert result["type"] == "image_url"
         url = result["image_url"]["url"]
@@ -82,19 +82,19 @@ class TestPrepareImageUrl:
         img = tmp_path / "photo.jpg"
         img.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF")
 
-        result = prepare_image_url(img)
+        result = include_image_url(img)
         assert result is not None
         url = result["image_url"]["url"]
         assert url.startswith("data:image/")
 
     def test_https_url_passthrough(self):
-        result = prepare_image_url("https://example.com/photo.png")
+        result = include_image_url("https://example.com/photo.png")
         assert result is not None
         assert result["type"] == "image_url"
         assert result["image_url"]["url"] == "https://example.com/photo.png"
 
     def test_http_url_passthrough(self):
-        result = prepare_image_url("http://example.com/photo.jpg")
+        result = include_image_url("http://example.com/photo.jpg")
         assert result is not None
         assert result["image_url"]["url"] == "http://example.com/photo.jpg"
 
@@ -104,7 +104,7 @@ class TestPrepareImageUrl:
         img.write_bytes(b"binary stuff")
 
         with patch("mimetypes.guess_type", return_value=("application/octet-stream", None)):
-            result = prepare_image_url(img)
+            result = include_image_url(img)
 
         assert result is not None
         assert result["type"] == "image_url"
@@ -115,6 +115,6 @@ class TestPrepareImageUrl:
         img.write_bytes(b"data")
 
         with patch.object(Path, "read_bytes", side_effect=OSError("permission denied")):
-            result = prepare_image_url(img)
+            result = include_image_url(img)
 
         assert result is None

@@ -16,7 +16,7 @@ def _ensure_mimetypes() -> None:
         mimetypes.init()
 
 
-def prepare_image_url(source: str | Path) -> dict[str, Any] | None:
+def include_image_url(source: str | Path) -> dict[str, Any] | None:
     """Build a vision content block from a local file path or HTTPS URL.
 
     - Local path → reads file, base64-encodes, returns ``data:`` URI block.
@@ -30,7 +30,7 @@ def prepare_image_url(source: str | Path) -> dict[str, Any] | None:
 
     p = Path(source)
     if not p.is_file():
-        logger.debug("prepare_image_not_found path=%s", p)
+        logger.debug("include_image_not_found path=%s", p)
         return None
 
     _ensure_mimetypes()
@@ -41,7 +41,7 @@ def prepare_image_url(source: str | Path) -> dict[str, Any] | None:
     try:
         data = base64.b64encode(p.read_bytes()).decode("ascii")
     except OSError:
-        logger.debug("prepare_image_read_error path=%s", p)
+        logger.debug("include_image_read_error path=%s", p)
         return None
 
     return {

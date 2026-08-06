@@ -199,7 +199,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `models.py` | `model_list`, `model_add`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
-| MemFiles | `memfiles.py` | `save_content_or_files`, `expose_file`, `prepare_image` |
+| MemFiles | `memfiles.py` | `save_content_or_files`, `expose_file`, `include_image` |
 | Display | `display.py` | `show_image` |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
@@ -436,7 +436,7 @@ User attaches with `@path` / `@url` syntax (quoted paths supported):
 Check this screenshot @D:\Downloads\error.png and tell me what's wrong
 ```
 
-The TUI extracts attachments; `prepare_image_url()` turns each into a vision content block — HTTP(S) URLs pass through, local files are read and base64-encoded as `data:` URIs. The agent can attach images mid-conversation with the `prepare_image` tool (injects into the last user message). Tool results may embed `[image: <path>]` markers; the loop scans for them after each batch and renders them in the UI. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`).
+The TUI extracts attachments; `include_image_url()` turns each into a vision content block — HTTP(S) URLs pass through, local files are read and base64-encoded as `data:` URIs. The agent can attach images mid-conversation with the `include_image` tool (injects into the last user message). Tool results may embed `[image: <path>]` markers; the loop scans for them after each batch and renders them in the UI. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`).
 
 ### Image Display
 
@@ -591,7 +591,7 @@ slife/
     models.py          #   Model management (list/add/remove/switch)
     config.py          #   Config env var + native tool toggles
     credentials.py     #   Credential check/inject/uninject
-    memfiles.py        #   File save / expose / prepare_image
+    memfiles.py        #   File save / expose / include_image
     display.py         #   Inline image display
     meta.py            #   list_tools, check_async, cancel_async, clear_context
     _config_io.py      #   JSON5 read/write helpers

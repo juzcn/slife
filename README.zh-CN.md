@@ -133,7 +133,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
 | Credentials | `credential_check`, `inject_credential`, `uninject_credential` |
-| MemFiles | `save_content_or_files`, `expose_file`, `prepare_image` |
+| MemFiles | `save_content_or_files`, `expose_file`, `include_image` |
 | Display | `show_image` |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
@@ -164,7 +164,7 @@ active_model: "deepseek/deepseek-v4-pro",
 看看这张截图 @D:\Downloads\error.png
 ```
 
-两级渲染：**Sixel**（全彩，Windows Terminal / WezTerm / iTerm2 / Kitty）→ **HalfcellImage**（彩色 Unicode 半块字符，任何真彩终端）→ 文本占位符。支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 直接透传；`prepare_image` 工具允许智能体在对话中途附加图片，`expose_file` 则通过 ngrok 隧道把任意本地文件发布为公开 HTTPS 链接。
+两级渲染：**Sixel**（全彩，Windows Terminal / WezTerm / iTerm2 / Kitty）→ **HalfcellImage**（彩色 Unicode 半块字符，任何真彩终端）→ 文本占位符。支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 直接透传；`include_image` 工具允许智能体在对话中途附加图片，`expose_file` 则通过 ngrok 隧道把任意本地文件发布为公开 HTTPS 链接。
 
 ### 插件
 

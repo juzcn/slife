@@ -235,7 +235,7 @@ class ClearContextTool(Tool):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# prepare_image
+# include_image
 
 
 

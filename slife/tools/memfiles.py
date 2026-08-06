@@ -168,15 +168,16 @@ class ExposeFileTool(Tool):
         )
 
 
-class PrepareImageTool(Tool):
+class IncludeImageTool(Tool):
     """Include an image for the LLM to process with vision.
 
     Takes a local file path or HTTPS URL and makes the image visible
     to the vision model.  Works exactly like the ``@`` syntax in chat.
     """
 
-    name: ClassVar[str] = "prepare_image"
+    name: ClassVar[str] = "include_image"
     category: ClassVar[str] = "MemFiles"
+    _requires_vision: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Include an image for vision processing. "
         "Pass a local file path or HTTPS URL. Works like @ syntax."
@@ -196,9 +197,9 @@ class PrepareImageTool(Tool):
     }
 
     async def execute(self, **kwargs) -> str:
-        from slife.agent.multimodal import prepare_image_url
+        from slife.agent.multimodal import include_image_url
         source: str = kwargs["source"]
-        block = prepare_image_url(source)
+        block = include_image_url(source)
         if block is None:
             return f"Error: cannot read image — {source}"
 
