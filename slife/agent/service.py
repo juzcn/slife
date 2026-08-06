@@ -927,8 +927,8 @@ class AgentService:
     async def start_memfiles(self) -> bool:
         """Start the memfiles server and ngrok tunnel. Returns True on success.
 
-        The memfiles server serves image BLOBs via plain HTTP.  The ngrok
-        tunnel exposes it to the public internet so LLM vision APIs can
+        The memfiles server serves image files via plain HTTP.  The ngrok
+        tunnel exposes them to the public internet so LLM vision APIs can
         fetch images by HTTPS URL instead of inline base64.
         """
         import os

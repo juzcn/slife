@@ -144,8 +144,8 @@ def extract_image_markers(text: str) -> list[str]:
     Pure marker extraction + dedup.  Callers decide whether file
     existence matters: the live agent loop filters down to files that
     exist on disk (:func:`_scan_for_images`), while session restore
-    resolves markers against the BLOB store first and must not depend
-    on the (ephemeral) cache directory — see ``slife.ui.restore``.
+    resolves markers against the filesystem (file exists → render,
+    file gone → ``⚠`` placeholder) — see ``slife.ui.restore``.
 
     Returns deduplicated marker paths in order of appearance.
     """

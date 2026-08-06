@@ -213,38 +213,45 @@ class TestAssistantMessage:
         assert msg._is_thinking_collapsed is False
 
     def test_collapsed_display_shows_summary(self):
-        """Collapsed display shows only the one-line summary."""
+        """Collapsed thinking shows one-liner + response text (always visible)."""
         msg = self._make_msg()
         msg._thinking = "Step by step reasoning"
         msg._has_thinking = True
         msg._is_thinking_collapsed = True
         msg._buffer = "The answer"
         msg._usage = TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        msg._show_usage = True
         msg.update = MagicMock()
         msg._refresh_display()
         content = msg.update.call_args[0][0]
         text = content.plain
+        # Thinking summary is shown (collapsed one-liner).
         assert "Thinking" in text
         assert "22 chars" in text
         assert "▸" in text
-        # Collapsed: no text buffer, no usage
-        assert "The answer" not in text
-        assert "tokens" not in text
+        # Response text is ALWAYS visible — collapsing must not swallow it.
+        assert "The answer" in text
+        # Usage is visible when _show_usage is True.
+        assert "tokens" in text
 
-    def test_collapsed_display_no_text_no_usage(self):
-        """Verify collapsed display excludes text content and token usage."""
+    def test_collapsed_with_show_usage_false(self):
+        """Collapsed thinking with _show_usage=False hides usage but keeps text."""
         msg = self._make_msg()
         msg._thinking = "x"
         msg._has_thinking = True
         msg._is_thinking_collapsed = True
-        msg._buffer = "should not appear"
+        msg._buffer = "response still visible"
         msg._usage = TokenUsage(prompt_tokens=1, completion_tokens=1, total_tokens=2)
-        msg._show_usage = True  # collapse should override this
+        msg._show_usage = False  # intermediate → hide usage
         msg.update = MagicMock()
         msg._refresh_display()
         content = msg.update.call_args[0][0]
         text = content.plain
-        assert "should not appear" not in text
+        # Thinking one-liner is present.
+        assert "Thinking" in text
+        # Response text IS still visible — must never be swallowed.
+        assert "response still visible" in text
+        # Usage is hidden when _show_usage is False.
         assert "tokens" not in text
 
     def test_expanded_display_no_collapse_indicator(self):

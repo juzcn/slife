@@ -62,38 +62,79 @@ class TestResolvePendingImages:
         assert await resolve_pending_images([]) == []
 
 
-# ── Mount scheduling ──────────────────────────────────────────────────
+# ── Restored image mounting ──────────────────────────────────────────
 
 
-class TestMountScheduling:
-    def test_staggered_timers_scheduled(self):
-        app = MagicMock()
-        cv, aw = MagicMock(), MagicMock()
+class TestScheduleImageMounts:
+    """Restore-jitter fix: the first image mounts synchronously;
+    each subsequent image is scheduled via ``app.set_timer`` from the
+    previous callback, giving each ``HalfcellImage`` its own event-loop
+    tick for a compositor cycle.  Only the final image triggers a
+    scroll-to-end."""
+
+    def test_single_image_mounts_and_scrolls(self):
+        """One image: synchronous mount → refresh → scroll."""
+        app, cv, aw = MagicMock(), MagicMock(), MagicMock()
+        _schedule_image_mounts(app, cv, [("/tmp/a.png", "[image: a]", cv, aw)])
+
+        # First image mounted synchronously.
+        assert cv.mount.call_count == 1
+        # call_after_refresh scheduled for final scroll.
+        cv.call_after_refresh.assert_called_once()
+
+        # Fire the scroll callback.
+        cv.call_after_refresh.call_args[0][0]()
+        assert cv.mount.call_count == 1  # no extra mounts
+
+    def test_multiple_images_chain_via_timers(self):
+        """First image synchronous; image 2+3 via timer chain; final scroll."""
+        app, cv, aw = MagicMock(), MagicMock(), MagicMock()
         resolved = [
-            ("/tmp/a.png", "[image: /tmp/a.png]", cv, aw),
-            (None, "[image: /tmp/b.png]", cv, aw),
+            ("/tmp/a.png", "[image: a]", cv, aw),
+            ("/tmp/b.png", "[image: b]", cv, aw),
+            ("/tmp/c.png", "[image: c]", cv, aw),
         ]
+        _schedule_image_mounts(app, cv, resolved)
 
-        _schedule_image_mounts(app, resolved)
+        # Image 0 mounted synchronously.
+        assert cv.mount.call_count == 1
+        # Image 1 scheduled via timer (not scroll — not last).
+        assert app.set_timer.call_count == 1
+        assert cv.call_after_refresh.call_count == 0  # not last yet
 
-        delays = [c.args[0] for c in app.set_timer.call_args_list]
-        assert delays == [pytest.approx(0.5), pytest.approx(0.7)]
+        # Fire timer → mounts image 1, schedules image 2.
+        app.set_timer.call_args_list[0][0][1]()
+        assert cv.mount.call_count == 2
+        assert app.set_timer.call_count == 2
 
-    def test_timer_callback_mounts_widget_after_anchor(self):
-        app = MagicMock()
-        cv, aw = MagicMock(), MagicMock()
-        _schedule_image_mounts(app, [(None, "/tmp/ghost.png", cv, aw)])
+        # Fire timer → mounts image 2 (last), schedules scroll.
+        app.set_timer.call_args_list[1][0][1]()
+        assert cv.mount.call_count == 3
+        assert cv.call_after_refresh.call_count == 1  # final scroll
 
-        callback = app.set_timer.call_args_list[0].args[1]
-        callback()
+        # Fire scroll callback.
+        cv.call_after_refresh.call_args[0][0]()
+        assert cv.mount.call_count == 3  # no extra
+
+    def test_mounts_after_anchor_widget(self):
+        """Image is mounted *after* the ToolCallWidget anchor."""
+        app, cv, aw = MagicMock(), MagicMock(), MagicMock()
+        _schedule_image_mounts(app, cv, [(None, "/tmp/ghost.png", cv, aw)])
 
         cv.mount.assert_called_once()
         assert cv.mount.call_args.kwargs.get("after") is aw
-        cv.call_after_refresh.assert_called_once()
 
     def test_placeholder_mounted_for_missing_image(self):
-        """resolved=None mounts the broken-file fallback."""
+        """resolved=None mounts the broken-file fallback widget."""
         cv, aw = MagicMock(), MagicMock()
         _mount_resolved_image(None, "/tmp/ghost.png", cv, aw)
         widget = cv.mount.call_args.args[0]
         assert "chat-image-fallback" in widget.classes
+
+    def test_empty_resolved_just_scrolls(self):
+        """No images → scroll immediately, no timer or refresh."""
+        app, cv = MagicMock(), MagicMock()
+        _schedule_image_mounts(app, cv, [])
+        cv.scroll_end.assert_called_once_with(animate=False)
+        app.set_timer.assert_not_called()
+        cv.call_after_refresh.assert_not_called()

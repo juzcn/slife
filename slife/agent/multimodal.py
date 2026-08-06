@@ -16,7 +16,7 @@ def _ensure_mimetypes() -> None:
         mimetypes.init()
 
 
-def prepare_image_url(source: str) -> dict[str, Any] | None:
+def prepare_image_url(source: str | Path) -> dict[str, Any] | None:
     """Build a vision content block from a local file path or HTTPS URL.
 
     - Local path → reads file, base64-encodes, returns ``data:`` URI block.
@@ -24,8 +24,9 @@ def prepare_image_url(source: str) -> dict[str, Any] | None:
 
     Returns ``None`` when a local file doesn't exist or can't be read.
     """
-    if source.startswith(("http://", "https://")):
-        return {"type": "image_url", "image_url": {"url": source}}
+    source_str = str(source)
+    if source_str.startswith(("http://", "https://")):
+        return {"type": "image_url", "image_url": {"url": source_str}}
 
     p = Path(source)
     if not p.is_file():

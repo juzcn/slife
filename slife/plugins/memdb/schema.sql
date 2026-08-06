@@ -89,9 +89,3 @@ CREATE TABLE IF NOT EXISTS diary_meta (
 -- ── 索引 ──────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_diary_created ON diary(created_at);
 
-
--- ═══════════════════════════════════════════════════════════════
---  图片 BLOB 存储
---
---  图片由 save_content_or_files 在保存 turn 时原子写入。
-

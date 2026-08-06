@@ -61,6 +61,25 @@ class ChatView(VerticalScroll):
 
     can_focus = True
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # When False, the add_* helpers do not auto-scroll to the end.
+        # Session restore turns this off, rebuilds the whole history, and
+        # scrolls exactly once at the end — scrolling on every widget (the
+        # normal live behaviour) is what made the restore jitter.
+        self._autoscroll: bool = True
+
+    def _follow(self) -> None:
+        """Scroll to the end unless auto-scroll is suppressed (restore)."""
+        if self._autoscroll:
+            self.scroll_end(animate=False)
+
+    def _follow_after_refresh(self) -> None:
+        """Deferred :meth:`_follow` — used after mounting a widget whose
+        full height is only known once it has been laid out (images)."""
+        if self._autoscroll:
+            self.call_after_refresh(self.scroll_end, animate=False)
+
     async def _on_key(self, event: Key) -> None:
         """Redirect printable keys to the input field."""
         if event.is_printable:
@@ -88,7 +107,7 @@ class ChatView(VerticalScroll):
         if images:
             for img_path in images:
                 self.add_image_to_chat(img_path, thumb=True)
-        self.scroll_end(animate=False)
+        self._follow()
         return msg
 
     def add_image_to_chat(
@@ -108,7 +127,7 @@ class ChatView(VerticalScroll):
         self.mount(widget)
         # Defer scroll so the image widget has time to render its full
         # height before we compute the scroll position.
-        self.call_after_refresh(self.scroll_end, animate=False)
+        self._follow_after_refresh()
         return widget
 
     def add_assistant_message(
@@ -122,7 +141,7 @@ class ChatView(VerticalScroll):
         """
         msg = AssistantMessage(name_prefix=name_prefix)
         self.mount(msg)
-        self.scroll_end(animate=False)
+        self._follow()
         return msg
 
     def add_system_message(self, text: str, color: str | None = None) -> None:
@@ -132,7 +151,7 @@ class ChatView(VerticalScroll):
             content = content.stylize(color)
         msg = Static(content, classes="system-message")
         self.mount(msg)
-        self.scroll_end(animate=False)
+        self._follow()
 
     def add_a2a_task_message(self, source: str, text: str) -> "UserMessage":
         """Add an incoming A2A task from another agent.
@@ -151,7 +170,7 @@ class ChatView(VerticalScroll):
         Static.__init__(msg, content)
         msg.add_class("user-message")
         self.mount(msg)
-        self.scroll_end(animate=False)
+        self._follow()
         return msg
 
 
@@ -332,19 +351,25 @@ class AssistantMessage(Static):
         )
 
     def _refresh_display(self) -> None:
-        """Rebuild the display in Claude Code style using safe Content objects."""
-        # Collapsed thinking: show one-liner only, nothing else
-        if self._has_thinking and self._is_thinking_collapsed:
-            self.update(self._build_thinking_collapsed())
-            return
+        """Rebuild the display in Claude Code style using safe Content objects.
 
+        Thinking may collapse to a one-liner, but the response text is
+        ALWAYS rendered — collapsing thinking must never swallow the
+        agent's reply (regression the user can hit on restore/streaming).
+        """
         content = Content()
 
-        # Expanded thinking block
+        # Thinking block: expanded, or collapsed to a one-liner.
         if self._has_thinking:
-            content = content + self._build_thinking_expanded()
+            if self._is_thinking_collapsed:
+                content = content + self._build_thinking_collapsed()
+                if self._buffer:
+                    content = content + Content.from_text("\n", markup=False)
+            else:
+                content = content + self._build_thinking_expanded()
 
-        # Response text — or placeholder if no thinking shown
+        # Response text — always visible, never collapsed away.
+        # Placeholder only when there is neither text nor thinking yet.
         if self._buffer:
             content = content + self._build_response_text()
         elif not self._has_thinking:

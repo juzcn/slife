@@ -73,11 +73,17 @@ ChatView {
 
 /* ── Input (bottom docked) ────────────────────────────────────── */
 
+/* HARDISSUES #1 — box is exactly border (1) + text (1) + spare (1).
+   The border-top slot is occupied in BOTH focus states (colored as
+   background when focused) so geometry never changes: no collapsed
+   content region (text vanishing on blur) and no layout shift.
+   Textual 8 does not stack same-edge docks — the StatusBar overlaps
+   our bottom row, so it must stay a blank padding row. */
 #user-input {
     dock: bottom;
     width: 100%;
     height: 3;
-    padding: 1 1;
+    padding: 0 1 1 1;
     background: #0d1117;
     color: #e6edf3;
     border: none;
@@ -86,6 +92,7 @@ ChatView {
 
 #user-input:focus {
     border: none;
+    border-top: solid #0d1117;
 }
 
 #user-input > .input--placeholder {

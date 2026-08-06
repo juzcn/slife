@@ -82,6 +82,11 @@ class SessionStore:
             stmt = stmt.strip()
             if not stmt:
                 continue
+            # vec0 rejects float[0] — skip the semantic table when
+            # no embedding backend is configured.
+            if self._embedding_dim <= 0 and "vec0" in stmt:
+                logger.debug("schema_skip_vec0 dim=%d — no embedding backend", self._embedding_dim)
+                continue
             try:
                 await self._conn.execute(stmt)
             except Exception as e:
@@ -108,6 +113,8 @@ class SessionStore:
             both 1536).  Vectors live in different spaces and hybrid search
             would mix incompatible scores.
 
+        Skips when no embedding backend is configured (dim ≤ 0).
+
         When either triggers, the old ``diary_semantic`` table is dropped.
         A background reindex will repopulate it with the new model's vectors.
         The new model identity is recorded in ``diary_meta`` so future
@@ -116,6 +123,10 @@ class SessionStore:
         import re
 
         assert self._conn is not None
+
+        # No embedding backend → no vec0 table to migrate.
+        if self._embedding_dim <= 0:
+            return
 
         # ── Check stored model identity ──────────────────────────
         cursor = await self._conn.execute(
