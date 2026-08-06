@@ -669,10 +669,49 @@ class MCPServerConnection:
             )
 
         logger.debug("mcp_tool_call server=%s tool=%s", self.config.name, tool_name)
-        result = await self._request("tools/call", {
-            "name": tool_name,
-            "arguments": arguments,
-        })
+
+        try:
+            result = await self._request("tools/call", {
+                "name": tool_name,
+                "arguments": arguments,
+            })
+        except (ConnectionError, OSError) as e:
+            # Transport error — the server may have died.
+            # Attempt one reconnect before giving up.
+            logger.warning(
+                "mcp_tool_call_transport_error server=%s tool=%s — "
+                "attempting reconnect",
+                self.config.name, tool_name,
+            )
+            try:
+                await self._cleanup_resources()
+                self._status = ServerStatus.DISCONNECTED
+                await self.connect()
+                if self._status != ServerStatus.CONNECTED:
+                    raise ConnectionError(
+                        f"Reconnect to '{self.config.name}' failed: "
+                        f"status is {self._status.value}"
+                    )
+                # Retry
+                result = await self._request("tools/call", {
+                    "name": tool_name,
+                    "arguments": arguments,
+                })
+                logger.info(
+                    "mcp_tool_call_reconnect_ok server=%s tool=%s",
+                    self.config.name, tool_name,
+                )
+            except Exception as reconnect_error:
+                self._status = ServerStatus.FAILED
+                self._error = str(reconnect_error)
+                logger.error(
+                    "mcp_tool_call_reconnect_failed server=%s err=%s",
+                    self.config.name, reconnect_error,
+                )
+                raise ConnectionError(
+                    f"Server '{self.config.name}' connection lost and "
+                    f"reconnect failed: {reconnect_error}"
+                ) from reconnect_error
 
         # Format content blocks
         parts: list[str] = []

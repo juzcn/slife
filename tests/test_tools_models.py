@@ -1,4 +1,4 @@
-"""Tests for model management tools — list_models, add_model, remove_model, switch_model."""
+"""Tests for model management tools — model_list, model_add, model_remove, model_switch."""
 
 import pytest; pytestmark = pytest.mark.unit
 

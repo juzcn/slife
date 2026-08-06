@@ -6,11 +6,28 @@ in slife's ToolRegistry and called like native tools.
 
 import json
 import logging
+from enum import Enum, auto
 from typing import ClassVar
 
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
+
+# ── Proxy routing ──────────────────────────────────────────────────────
+
+
+class ProxyRoute(Enum):
+    """How an :class:`MCPProxyTool` routes execution to its backend."""
+
+    WRAPPER = auto()
+    """MCP wrapper tools — direct call + config persistence callbacks."""
+
+    DIRECT = auto()
+    """Built-in plugin tools (memdb, wechat) — direct call on own client."""
+
+    EXTERNAL = auto()
+    """External MCP server tools — route through ``mcp_call_tool``."""
+
 
 # ── Built-in server / tool name constants ─────────────────────────────
 
@@ -46,11 +63,15 @@ class MCPProxyTool(Tool):
     # create_proxy_tools() with per-server configuration.
     _skip_auto_register: ClassVar[bool] = True
 
-    def __init__(self, mcp_client, tool_info: dict, on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None, on_server_updated=None, require_approval: bool = False):
+    def __init__(self, mcp_client, tool_info: dict, route: ProxyRoute = ProxyRoute.EXTERNAL, on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None, on_server_updated=None, require_approval: bool = False):
         """
         Args:
             mcp_client: MCPClient instance connected to the slife-mcp wrapper.
             tool_info: Dict with server, name, description, inputSchema.
+            route: How execution is dispatched —
+                :attr:`ProxyRoute.WRAPPER` for the MCP management wrapper,
+                :attr:`ProxyRoute.DIRECT` for built-in plugins,
+                :attr:`ProxyRoute.EXTERNAL` for external MCP servers.
             on_server_added: Optional async callback(name, command, args, env, description, source)
                 invoked when mcp_add_server succeeds, for config persistence.
             on_server_removed: Optional async callback(name)
@@ -66,6 +87,7 @@ class MCPProxyTool(Tool):
         self._mcp_client = mcp_client
         self._server = tool_info["server"]
         self._tool_name = tool_info["name"]
+        self._route = route
         self._on_server_added = on_server_added
         self._on_server_removed = on_server_removed
         self._on_server_disclosure_changed = on_server_disclosure_changed
@@ -110,40 +132,28 @@ class MCPProxyTool(Tool):
     async def execute(self, **kwargs) -> str:
         """Execute the tool by calling through the appropriate MCP client.
 
-        Three paths:
-          - Wrapper tools (built-in MCP management): call directly, with
-            config persistence callbacks.
-          - MemDB tools (built-in memdb service): call directly on the
-            standalone memdb MCP client — no routing layer needed.
-          - External MCP server tools: route via mcp_call_tool on the
-            slife-mcp wrapper.
+        Dispatch is determined by :attr:`_route` — no magic-string
+        matching on the server name.
         """
-        if self._server == _MCP_SERVER:
-            # Strip source from kwargs — wrapper doesn't need it,
-            # it's only for the persistence callback.
+        if self._route == ProxyRoute.WRAPPER:
+            # MCP wrapper management tools — direct call with config
+            # persistence callbacks.
             source = kwargs.pop("source", None)
             if not isinstance(source, dict):
                 source = None
 
-            # Wrapper management tool — call directly
             result = await self._mcp_client.call_tool(self._tool_name, kwargs)
 
-            # Side-effect callbacks for config persistence
             await self._handle_add_server(result, source, **kwargs)
             await self._handle_remove_server(result, **kwargs)
             await self._handle_set_server(result, **kwargs)
-        elif self._server == _MEMDB_SERVER:
-            # MemDB tools — call directly on the memdb MCP client.
-            # The memdb service is standalone (not behind the MCP wrapper),
-            # so there's no mcp_call_tool routing layer.
-            result = await self._mcp_client.call_tool(self._tool_name, kwargs)
-        elif self._server == _WECHAT_SERVER:
-            # WeChat tools — call directly on the wechat MCP client.
-            # The wechat service is standalone (not behind the MCP wrapper),
-            # so there's no mcp_call_tool routing layer.
+        elif self._route == ProxyRoute.DIRECT:
+            # Built-in plugin tools (memdb, wechat) — call directly
+            # on the plugin's own MCP client.
             result = await self._mcp_client.call_tool(self._tool_name, kwargs)
         else:
-            # External MCP server tool — route through mcp_call_tool
+            # ProxyRoute.EXTERNAL — route through the MCP wrapper's
+            # mcp_call_tool to reach the external server.
             result = await self._mcp_client.call_tool(
                 _MCP_CALL_TOOL,
                 {
@@ -249,6 +259,21 @@ class MCPProxyTool(Tool):
                 kwargs.get("name", "?"),
             )
 
+def _route_for_server(server: str) -> ProxyRoute:
+    """Return the execution route for *server*.
+
+    Single place to decide how a plugin's tools are dispatched —
+    no more magic-string matching scattered across the codebase.
+    """
+    # Built-in plugins that have their own standalone MCP client
+    if server in (_MEMDB_SERVER, _WECHAT_SERVER):
+        return ProxyRoute.DIRECT
+    # MCP wrapper — has extra config persistence hooks
+    if server == _MCP_SERVER:
+        return ProxyRoute.WRAPPER
+    return ProxyRoute.EXTERNAL
+
+
 def create_proxy_tools(
     mcp_client, tools: list[dict], on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None, on_server_updated=None, require_approval: bool = False,
 ) -> list[MCPProxyTool]:
@@ -275,6 +300,7 @@ def create_proxy_tools(
     return [
         MCPProxyTool(
             mcp_client, t,
+            route=_route_for_server(t["server"]),
             on_server_added=on_server_added,
             on_server_removed=on_server_removed,
             on_server_disclosure_changed=on_server_disclosure_changed,

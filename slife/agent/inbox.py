@@ -102,9 +102,9 @@ class Inbox:
 
     async def _process_one(self, msg: AgentMessage) -> None:
         """Process a single message through the agent loop."""
-        from slife.a2a.identity import HUMAN, WECHAT
+        from slife.a2a.identity import HUMAN, WECHAT, SUBAGENT
 
-        is_remote = msg.source not in (HUMAN, WECHAT)
+        is_remote = msg.source not in (HUMAN, WECHAT, SUBAGENT)
         logger.info(
             "inbox_process source=%s corr_id=%s content=%.80s remote=%s",
             msg.source, msg.correlation_id, msg.content, is_remote,
@@ -347,15 +347,19 @@ class ConversationStore:
         operator has a continuous back-and-forth.  Remote agent
         conversations are fresh each message (one-shot).
         """
-        from slife.a2a.identity import HUMAN, WECHAT
+        from slife.a2a.identity import HUMAN, WECHAT, SUBAGENT
 
-        if source in (HUMAN, WECHAT):
-            # Persistent conversation for human / WeChat operators
-            if source not in self._convs:
-                self._convs[source] = Conversation(
+        if source in (HUMAN, WECHAT, SUBAGENT):
+            # Persistent conversation for human / WeChat / subagent sources.
+            # SUBAGENT shares the HUMAN conversation so the user sees
+            # subagent results inline — but the diary records channel
+            # as "subagent" for audit/memory_search distinguishability.
+            conv_source = HUMAN if source == SUBAGENT else source
+            if conv_source not in self._convs:
+                self._convs[conv_source] = Conversation(
                     system_prompt=self._system_prompt,
                 )
-            return self._convs[source]
+            return self._convs[conv_source]
 
         # One-shot conversation for remote agents
         return Conversation(system_prompt=self._system_prompt)

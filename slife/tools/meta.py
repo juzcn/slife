@@ -38,15 +38,17 @@ def _classify(name: str) -> str:
         return "CLI"
     if name.startswith("rest_api_"):
         return "REST API"
+    if name.startswith("model_") or name == "switch_to_nvidia_free":
+        return "Models"
     if name.startswith("config_env") or name == "native_tool_set":
         return "Config"
-    if name.startswith("skill_") or name in ("list_skills", "use_skill", "add_skill", "remove_skill", "check_skills_dir"):
+    if name.startswith("skill_"):
         return "Skills"
     if name.startswith("check_") or name == "system_health":
         return "System"
     if name.startswith("execute_") or name.startswith("install_") or name.startswith("run_"):
         return "Execution"
-    if name.startswith("credential_") or name.startswith("inject_") or name.startswith("uninject_"):
+    if name.startswith("credential_"):
         return "Credentials"
     if name in ("list_tools", "check_async", "cancel_async", "clear_context"):
         return "Meta"
@@ -70,10 +72,10 @@ class ListToolsTool(Tool):
     }
 
     async def execute(self, category: str = "all", **kwargs) -> str:
-        from slife.tools.registry import get_registry
         from slife.mcp.tool_adapter import MCPProxyTool
 
-        registry = get_registry()
+        ctx = getattr(self, "_ctx", None)
+        registry = ctx.registry if ctx is not None else None
         if registry is None:
             return "Tool registry is not available (called before initialization)."
 
@@ -171,25 +173,25 @@ class CheckAsyncTool(Tool):
         task_id: str = kwargs["task_id"]
         task = _get_task(task_id)
         if task is None:
-            return f"Error: 未找到 task_id='{task_id}'。任务可能已完成并被清理，或 task_id 不正确。"
+            return f"Error: Task '{task_id}' not found. It may have already completed and been cleaned up, or the task_id is incorrect."
         if not task.done():
-            return f"⏳ 任务仍在运行中…\n  task_id: {task_id}\n  稍后再调用 check_async 查询。"
+            return f"⏳ Task is still running…\n  task_id: {task_id}\n  Try check_async again later."
         _pop_task(task_id)
         try:
             result = task.result()
         except Exception as e:
-            result = f"Error: 异步任务执行失败：{type(e).__name__}: {e}"
-        return f"✓ 任务完成（task_id: {task_id}）\n\n{result}"
+            result = f"Error: Async task failed: {type(e).__name__}: {e}"
+        return f"✓ Task completed (task_id: {task_id})\n\n{result}"
 
 
 class CancelAsyncTool(Tool):
     name: ClassVar[str] = "cancel_async"
     category: ClassVar[str] = "Meta"
-    description: ClassVar[str] = "取消正在运行的异步任务。已完成的任务无法取消。"
+    description: ClassVar[str] = "Cancel a running async task. Completed tasks cannot be cancelled."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "task_id": {"type": "string", "description": "要取消的任务的 task_id。"},
+            "task_id": {"type": "string", "description": "The task_id to cancel."},
         },
         "required": ["task_id"],
     }
@@ -198,14 +200,14 @@ class CancelAsyncTool(Tool):
         task_id: str = kwargs["task_id"]
         task = _get_task(task_id)
         if task is None:
-            return f"Error: 未找到 task_id='{task_id}'。任务可能已完成并被清理，或 task_id 不正确。"
+            return f"Error: Task '{task_id}' not found. It may have already completed and been cleaned up, or the task_id is incorrect."
         if task.done():
             _pop_task(task_id)
-            return f"任务 '{task_id}' 已经完成，无需取消。"
+            return f"Task '{task_id}' already completed — nothing to cancel."
         task.cancel()
         _pop_task(task_id)
         logger.info("async_task_cancelled id=%s", task_id)
-        return f"✓ 任务 '{task_id}' 已取消。"
+        return f"✓ Task '{task_id}' cancelled."
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -219,9 +221,9 @@ class ClearContextTool(Tool):
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
-        from slife.agent.conversation import get_conversation
-
-        conv = get_conversation()
+        conv = getattr(self, "_ctx", None)
+        if conv is not None:
+            conv = conv.conversation
         if conv is None:
             return "Conversation is not yet initialised. This tool must be called after the agent service has started."
         removed = conv.clear_history()

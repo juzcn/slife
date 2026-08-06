@@ -19,13 +19,6 @@ logger = logging.getLogger(__name__)
 
 _REST_APIS_KEY = "rest_apis"
 
-_rest_api_mcp_client: object | None = None
-
-
-def set_rest_api_mcp_client(client: object) -> None:
-    global _rest_api_mcp_client
-    _rest_api_mcp_client = client
-
 
 def _rest_api_section(raw: dict) -> dict:
     section = raw.setdefault(_REST_APIS_KEY, {})
@@ -35,10 +28,9 @@ def _rest_api_section(raw: dict) -> dict:
     return section
 
 
-def get_rest_apis_summary(config_path: Path) -> str:
-    raw = read_config(config_path)
-    rest_apis = raw.get(_REST_APIS_KEY, {})
-    if not isinstance(rest_apis, dict) or not rest_apis:
+def _format_rest_apis(rest_apis: dict) -> str:
+    """Format a rest_apis dict into a human-readable summary."""
+    if not rest_apis:
         return "No REST APIs registered."
 
     lines = []
@@ -60,6 +52,15 @@ def get_rest_apis_summary(config_path: Path) -> str:
         lines.append(line)
 
     return "\n".join(lines)
+
+
+def get_rest_apis_summary(config_path: Path) -> str:
+    """Read rest_apis from file (fallback when Config is not available)."""
+    raw = read_config(config_path)
+    rest_apis = raw.get(_REST_APIS_KEY, {})
+    if not isinstance(rest_apis, dict) or not rest_apis:
+        return "No REST APIs registered."
+    return _format_rest_apis(rest_apis)
 
 
 class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
@@ -106,17 +107,30 @@ class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         api_key: str = kwargs.get("api_key", "")
         description: str = kwargs.get("description", "")
 
-        raw = read_config(self._config_path)
-        section = _rest_api_section(raw)
+        
 
-        is_update = name in section
-        entry: dict = {"spec_url": spec_url, "base_url": base_url}
-        if api_key:
-            entry["api_key"] = api_key
-        if description:
-            entry["description"] = description
-        section[name] = entry
-        write_config(self._config_path, raw)
+        is_update = False
+        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
+        
+        if config is not None and config._path is not None:
+            is_update = name in config.rest_apis
+            config.save_rest_api(
+                name=name, spec_url=spec_url, base_url=base_url,
+                api_key=api_key, description=description,
+            )
+        else:
+            # Fallback: write directly to file (e.g. in tests)
+            raw = read_config(self._config_path)
+            section = _rest_api_section(raw)
+            is_update = name in section
+            entry: dict = {"spec_url": spec_url, "base_url": base_url}
+            if api_key:
+                entry["api_key"] = api_key
+            if description:
+                entry["description"] = description
+            section[name] = entry
+            write_config(self._config_path, raw)
+
         logger.info("rest_api_saved name=%s spec=%s", name, spec_url)
 
         mcp_args = [
@@ -139,9 +153,10 @@ class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         if description:
             result_lines.append(f"  description: {description}")
 
-        if _rest_api_mcp_client is not None:
+        mcp = getattr(ctx, "rest_api_mcp_client", None) if ctx is not None else None
+        if mcp is not None:
             try:
-                mcp_result = await _rest_api_mcp_client.call_tool(  # type: ignore[union-attr]
+                mcp_result = await mcp.call_tool(  # type: ignore[union-attr]
                     "mcp_add_server",
                     {
                         "name": name,
@@ -181,19 +196,30 @@ class RestApiRemoveTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompati
 
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
-        raw = read_config(self._config_path)
-        rest_apis = raw.get(_REST_APIS_KEY, {})
 
-        if not isinstance(rest_apis, dict) or name not in rest_apis:
-            return f"REST API '{name}' is not registered."
+        
 
-        del rest_apis[name]
-        write_config(self._config_path, raw)
+        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
+        
+        if config is not None and config._path is not None:
+            if name not in config.rest_apis:
+                return f"REST API '{name}' is not registered."
+            config.remove_rest_api(name)
+        else:
+            # Fallback: write directly to file
+            raw = read_config(self._config_path)
+            rest_apis = raw.get(_REST_APIS_KEY, {})
+            if not isinstance(rest_apis, dict) or name not in rest_apis:
+                return f"REST API '{name}' is not registered."
+            del rest_apis[name]
+            write_config(self._config_path, raw)
+
         logger.info("rest_api_removed name=%s", name)
 
-        if _rest_api_mcp_client is not None:
+        mcp = getattr(ctx, "rest_api_mcp_client", None) if ctx is not None else None
+        if mcp is not None:
             try:
-                await _rest_api_mcp_client.call_tool("mcp_remove_server", {"name": name})  # type: ignore[union-attr]
+                await mcp.call_tool("mcp_remove_server", {"name": name})  # type: ignore[union-attr]
             except Exception as e:
                 logger.warning("rest_api_remove_mcp_failed name=%s err=%s", name, e)
 
@@ -211,6 +237,12 @@ class RestApiListTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibl
     }
 
     async def execute(self, **kwargs) -> str:
+        
+
+        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
+        
+        if config is not None and config._path is not None and config.rest_apis:
+            return _format_rest_apis(config.rest_apis)
         return get_rest_apis_summary(self._config_path)
 
 
@@ -236,19 +268,41 @@ class RestApiSet(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         enabled: bool = kwargs["enabled"]
-        raw = read_config(self._config_path)
-        entries = raw.get("rest_apis", {})
-        if not isinstance(entries, dict) or name not in entries:
-            return f"'{name}' not found in rest_apis."
-        entry = entries[name]
-        if not isinstance(entry, dict):
-            return f"'{name}' in rest_apis is malformed."
-        entry["enabled"] = enabled
-        write_config(self._config_path, raw)
 
-        if _rest_api_mcp_client is not None:
+        
+
+        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
+        
+        if config is not None and config._path is not None:
+            if name not in config.rest_apis:
+                return f"'{name}' not found in rest_apis."
+            entry = config.rest_apis[name]
+            if not isinstance(entry, dict):
+                return f"'{name}' in rest_apis is malformed."
+            entry["enabled"] = enabled
+            config.save_rest_api(
+                name=name,
+                spec_url=entry.get("spec_url", ""),
+                base_url=entry.get("base_url", ""),
+                api_key=entry.get("api_key", ""),
+                description=entry.get("description", ""),
+                source=entry.get("source"),
+            )
+        else:
+            raw = read_config(self._config_path)
+            entries = raw.get("rest_apis", {})
+            if not isinstance(entries, dict) or name not in entries:
+                return f"'{name}' not found in rest_apis."
+            entry = entries[name]
+            if not isinstance(entry, dict):
+                return f"'{name}' in rest_apis is malformed."
+            entry["enabled"] = enabled
+            write_config(self._config_path, raw)
+
+        mcp = getattr(ctx, "rest_api_mcp_client", None) if ctx is not None else None
+        if mcp is not None:
             try:
-                await _rest_api_mcp_client.call_tool("mcp_set_server", {"name": name, "enabled": enabled})  # type: ignore[union-attr]
+                await mcp.call_tool("mcp_set_server", {"name": name, "enabled": enabled})  # type: ignore[union-attr]
             except Exception as e:
                 logger.warning("rest_api_set_mcp_failed name=%s err=%s", name, e)
 

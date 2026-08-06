@@ -127,8 +127,8 @@ async def _ensure_store() -> SessionStore:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(name="memory_save_turn", description="Save a turn. Harness-only.")
-async def memory_save_turn(
+@mcp.tool(name="_memory_save_turn", description="Save a turn. Harness-only.")
+async def _memory_save_turn(
     user_message: str = "",
     messages: list[dict] | None = None,
     token_count: int = 0,
@@ -149,8 +149,8 @@ async def memory_save_turn(
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(name="memory_get_recent_turns", description="Load recent turns for restore. Harness-only.")
-async def memory_get_recent_turns(limit: int = 50) -> str:
+@mcp.tool(name="_memory_get_recent_turns", description="Load recent turns for restore. Harness-only.")
+async def _memory_get_recent_turns(limit: int = 50) -> str:
     store = await _ensure_store()
     try:
         turns = await store.get_recent_turns(limit=limit)

@@ -17,7 +17,6 @@ from slife.tools.rest_api import (
     RestApiSet,
     get_rest_apis_summary,
     _rest_api_section,
-    set_rest_api_mcp_client,
 )
 
 
@@ -220,14 +219,10 @@ class TestRestApiAddTool:
         mock_client.call_tool = MagicMock()
         mock_client.call_tool.return_value = "MCP connected"
 
-        original_client = getattr(
-            __import__("slife.tools.rest_api", fromlist=["_rest_api_mcp_client"]),
-            "_rest_api_mcp_client",
-            None,
-        )
         try:
-            set_rest_api_mcp_client(mock_client)
+            from slife.tools.context import ToolContext
             tool = RestApiAddTool(config_path=temp_config)
+            tool._ctx = ToolContext(rest_api_mcp_client=mock_client, config=None)
             result = await tool.execute(
                 name="github",
                 spec_url="https://api.github.com/openapi.json",
@@ -236,7 +231,7 @@ class TestRestApiAddTool:
             assert "[OK]" in result
             assert mock_client.call_tool.called
         finally:
-            set_rest_api_mcp_client(original_client)
+            tool._ctx = None
 
 
 # ── RestApiRemoveTool ─────────────────────────────────────────────────────
@@ -279,19 +274,15 @@ class TestRestApiRemoveTool:
         mock_client.call_tool = MagicMock()
         mock_client.call_tool.return_value = "disconnected"
 
-        original_client = getattr(
-            __import__("slife.tools.rest_api", fromlist=["_rest_api_mcp_client"]),
-            "_rest_api_mcp_client",
-            None,
-        )
         try:
-            set_rest_api_mcp_client(mock_client)
+            from slife.tools.context import ToolContext
             tool = RestApiRemoveTool(config_path=temp_config)
+            tool._ctx = ToolContext(rest_api_mcp_client=mock_client, config=None)
             result = await tool.execute(name="github")
             assert "[OK]" in result
             assert mock_client.call_tool.called
         finally:
-            set_rest_api_mcp_client(original_client)
+            tool._ctx = None
 
 
 # ── RestApiListTool ───────────────────────────────────────────────────────
@@ -402,16 +393,12 @@ class TestRestApiSet:
         mock_client.call_tool = MagicMock()
         mock_client.call_tool.return_value = "enabled"
 
-        original_client = getattr(
-            __import__("slife.tools.rest_api", fromlist=["_rest_api_mcp_client"]),
-            "_rest_api_mcp_client",
-            None,
-        )
         try:
-            set_rest_api_mcp_client(mock_client)
+            from slife.tools.context import ToolContext
             tool = RestApiSet(config_path=temp_config)
+            tool._ctx = ToolContext(rest_api_mcp_client=mock_client, config=None)
             result = await tool.execute(name="github", enabled=True)
             assert "[OK]" in result
             assert mock_client.call_tool.called
         finally:
-            set_rest_api_mcp_client(original_client)
+            tool._ctx = None

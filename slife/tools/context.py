@@ -1,0 +1,44 @@
+"""Tool context — typed container for runtime objects tools need.
+
+Previously these were scattered module-level singletons
+(``_current_conversation``, ``_current_registry``, ``_current_config``,
+``_rest_api_mcp_client``).  All of them are now fields on one object
+passed through :meth:`Tool.from_config()` at startup — no global state,
+no implicit initialisation order.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from slife.agent.conversation import Conversation
+    from slife.config import Config
+    from slife.tools.registry import ToolRegistry
+
+
+@dataclass
+class ToolContext:
+    """Runtime objects that tools need but don't own.
+
+    Created by :class:`~slife.agent.service.AgentService` at startup
+    and threaded through :meth:`Tool.from_config()` to every registered
+    tool.  Tools that need one of these objects store it in ``_ctx``
+    and access fields directly — no more implicit global lookups.
+    """
+
+    registry: ToolRegistry | None = None
+    """The live :class:`ToolRegistry` (needed by ``list_tools``, model
+    switching, etc.)"""
+
+    config: Config | None = None
+    """The parsed :class:`Config` (needed by REST API / CLI tools, etc.)"""
+
+    rest_api_mcp_client: object | None = None
+    """The MCP client for REST API auto-connect (needed by
+    ``rest_api_add`` / ``rest_api_remove`` / ``rest_api_set``)."""
+
+    conversation: Conversation | None = None
+    """The active :class:`Conversation` (needed by ``clear_context``,
+    ``save_content_or_files``)."""

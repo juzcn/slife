@@ -101,6 +101,21 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 - **Restore**: on startup, recent turns are loaded directly from SQLite within the `context_floor` token budget
 - **Tool result cap**: a single tool result is truncated at `tool_result_ceiling × context_window × 3` characters (default 20% of the window; ~3 chars/token heuristic)
 
+### Harness-Only Tool Convention
+
+Tools whose name starts with `_` (underscore) are **harness-only** — they are never exposed to the LLM. This is enforced by the tool registration filter in `PluginLifecycle.spawn()` and the direct registration helpers in `AgentService`.
+
+| Tool | Purpose |
+|------|---------|
+| `_sys_trim` | Synthetic – inserted after system prompt to mark trimmed turns |
+| `_sys_note` | Synthetic – re-inserted before each API call with context status |
+| `_memory_save_turn` | memdb plugin – persists a turn to the diary |
+| `_memory_get_recent_turns` | memdb plugin – loads recent turns for session restore |
+| `_wechat_drain_incoming` | wechat plugin – drains queued incoming WeChat messages |
+| `_wechat_dispatch_reply` | wechat plugin – sends a reply and cleans up typing indicator |
+
+The convention is self-enforcing: adding a `_` prefix to any tool name automatically hides it from the LLM surface. No hardcoded name lists are needed. New harness tools should follow this convention from the start.
+
 ### System Prompt
 
 The prompt is a **runtime spec sheet** — facts the LLM cannot discover from training data or tool schemas. Two-part design:
@@ -144,10 +159,10 @@ Runtime model management via native tools — no config editing needed:
 
 | Tool | Description |
 |------|-------------|
-| `list_models` | All configured models grouped by provider (active marked) |
-| `add_model` | Add/update a model (creates provider if new) |
-| `remove_model` | Remove by ref; auto-switches if it was active |
-| `switch_model` | Switch active model by ref — persists to config and rebuilds the client live |
+| `model_list` | All configured models grouped by provider (active marked) |
+| `model_add` | Add/update a model (creates provider if new) |
+| `model_remove` | Remove by ref; auto-switches if it was active |
+| `model_switch` | Switch active model by ref — persists to config and rebuilds the client live |
 | `switch_to_nvidia_free` | In-memory-only switch to a free NVIDIA NIM model via the nvidia-nim MCP server |
 
 Model switches fire callbacks that rebuild the LLM client, update loop parameters (vision, context window, modalities), and re-render the system prompt.
@@ -177,22 +192,39 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 |----------|------|-------|
 | System | `system.py` | `system_health`, `check_embedding`, `check_wechat` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
-| Skills | `skill.py` | `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set`, `check_skills_dir` |
+| Skills | `skill.py` | `skill_list`, `skill_use`, `skill_add`, `skill_remove`, `skill_set`, `skill_check_dir` |
 | CLI | `cli.py` | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |
 | REST API | `rest_api.py` | `rest_api_list`, `rest_api_add`, `rest_api_remove`, `rest_api_set` |
 | A2A | `a2a.py` | 13 tools — `a2a_list_agents`, `a2a_list_subagents`, `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_tasks`, `a2a_subscribe_task`, `a2a_spawn_subagent`, `a2a_stop_subagent`, `a2a_agent_card`, `a2a_notify_user`, `a2a_broadcast` |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `models.py` | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
-| Credentials | `credentials.py` | `credential_check`, `inject_credential`, `uninject_credential` |
+| Models | `models.py` | `model_list`, `model_add`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
+| Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
 | MemFiles | `memfiles.py` | `save_content_or_files`, `expose_file`, `prepare_image` |
 | Display | `display.py` | `show_image` |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
 **Five managed categories** (MCP / Skills / CLI / REST API / Models) support a standard **list / add / remove / set** surface. All `add` tools are idempotent upserts. `mcp_set_server` additionally supports `disclosure="lazy"|"eager"` for tool lazy-loading.
 
+#### Tool Naming Convention
+
+All managed tools follow `category_verb[_noun]` order:
+
+| Category | Prefix | Examples |
+|----------|--------|----------|
+| Models | `model_` | `model_list`, `model_add`, `model_switch` |
+| Skills | `skill_` | `skill_list`, `skill_use`, `skill_check_dir` |
+| CLI | `cli_` | `cli_list_tools`, `cli_add_tool` |
+| REST API | `rest_api_` | `rest_api_list`, `rest_api_add` |
+| MCP (built-in) | `mcp_` | `mcp_list_servers`, `mcp_add_server` |
+| A2A | `a2a_` | `a2a_list_agents`, `a2a_send_task` |
+| Config | `config_env_` | `config_env_set`, `config_env_get` |
+| Credentials | `credential_` | `credential_check`, `credential_inject` |
+
+Core execution tools (`execute_shell`, `install_python_package`, `run_python_script`) and meta tools (`list_tools`, `clear_context`) use `verb_noun` without a category prefix — they are singleton tools, not categories.
+
 ### Registry
 
-`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. A module-level singleton (`get_registry()`) lets meta-tools introspect without circular imports. Dynamic tools — plugin tools (memdb, wechat), MCP wrapper tools, and external MCP server tools — are registered at runtime as `MCPProxyTool` instances named `"{server}__{tool}"` (e.g. `filesystem__read_file`, `memdb__memory_search`). Harness-only plugin tools (`memory_save_turn`, `memory_get_recent_turns`, `wechat_drain_incoming`, `wechat_dispatch_reply`) are filtered out before registration.
+`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. A module-level singleton (`get_registry()`) lets meta-tools introspect without circular imports. Dynamic tools — plugin tools (memdb, wechat), MCP wrapper tools, and external MCP server tools — are registered at runtime as `MCPProxyTool` instances named `"{server}__{tool}"` (e.g. `filesystem__read_file`, `memdb__memory_search`). Harness-only plugin tools (prefixed `_`: `_memory_save_turn`, `_wechat_drain_incoming`, etc.) are filtered out before registration.
 
 ### Timeout Architecture
 
@@ -205,7 +237,21 @@ The MCP client applies no timeout of its own; enforcement stays in one place.
 
 ### Approval Gate
 
-Tools flagged `requires_approval` (set per external MCP server via `require_approval: true`) pause execution and push a modal `ApprovalDialog` (Enter = approve, Esc = deny). Dialogs serialize behind a lock. Native tools are not gated.
+Tools flagged `requires_approval` pause execution and push a modal `ApprovalDialog` (Enter = approve, Esc = deny). Dialogs serialize behind a lock.
+
+Two ways to enable approval per tool:
+
+1. **External MCP servers** — set `require_approval: true` on the server config in `mcp.servers.<name>`. All tools from that server require approval.
+2. **Native tools** — add `require_approval: true` to the tool's override entry in the `tools:` section of slife.json5:
+
+```json5
+tools: [
+  {name: "execute_shell", require_approval: true},
+  {name: "install_python_package", require_approval: true},
+]
+```
+
+Default is **off** for all tools.
 
 ## Plugin Architecture
 
@@ -289,7 +335,7 @@ Every turn permanently recorded as an independent row — no session concept, a 
 
 Supporting structures: `diary_fts` (FTS5 content-sync table over message/summary/tags/channel with insert/delete triggers), `diary_semantic` (sqlite-vec `vec0` table: embedding + rowid + chunk index + summary/tags/created_at), and `diary_meta` (key-value store tracking the embedding model identity for migration detection).
 
-Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the harness-only `memory_save_turn` tool.
+Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the harness-only `_memory_save_turn` tool.
 
 ### Search
 
@@ -441,7 +487,7 @@ Not all tools are in every request. Several categories use lightweight summaries
 | Category | Browse | Load |
 |----------|--------|------|
 | MemDB | `memory_search` | `memory_open` |
-| Skills | `list_skills` | `use_skill` |
+| Skills | `skill_list` | `skill_use` |
 | MCP | `mcp_list_servers` / `mcp_list_tools` | `mcp_set_server(enabled=True)` / disclosure |
 
 ## Config & Credentials

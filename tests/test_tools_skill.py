@@ -48,7 +48,7 @@ class TestParseFrontmatter:
 
 class TestAddSkillToolMetadata:
     def test_name(self):
-        assert AddSkillTool.name == "add_skill"
+        assert AddSkillTool.name == "skill_add"
 
     def test_source_param_in_schema(self):
         props = AddSkillTool.parameters.get("properties", {})
@@ -62,8 +62,8 @@ class TestAddSkillToolExecute:
     """Execute tests for AddSkillTool."""
 
     @pytest.mark.asyncio
-    async def test_add_skill_with_source(self, tmp_path):
-        """add_skill writes _meta.json with source when source is provided."""
+    async def test_skill_add_with_source(self, tmp_path):
+        """skill_add writes _meta.json with source when source is provided."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
 
@@ -87,8 +87,8 @@ class TestAddSkillToolExecute:
         assert "fetched_at" in meta["source"]
 
     @pytest.mark.asyncio
-    async def test_add_skill_without_source(self, tmp_path):
-        """add_skill without source does NOT write _meta.json."""
+    async def test_skill_add_without_source(self, tmp_path):
+        """skill_add without source does NOT write _meta.json."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
 
@@ -105,7 +105,7 @@ class TestAddSkillToolExecute:
         assert not meta_path.exists()
 
     @pytest.mark.asyncio
-    async def test_add_skill_source_merges_existing_meta(self, tmp_path):
+    async def test_skill_add_source_merges_existing_meta(self, tmp_path):
         """_meta.json merges with existing fields preserved."""
         skills_dir = tmp_path / "skills"
         skill_dir = skills_dir / "with-meta"
@@ -137,7 +137,7 @@ class TestAddSkillToolExecute:
         assert meta["source"]["version"] == "2.0.0"
 
     @pytest.mark.asyncio
-    async def test_add_skill_already_exists(self, tmp_path):
+    async def test_skill_add_already_exists(self, tmp_path):
         """Overwrites existing skill (upsert)."""
         skills_dir = tmp_path / "skills"
         skill_dir = skills_dir / "existing"
@@ -152,7 +152,7 @@ class TestAddSkillToolExecute:
         assert "Updated" in result
 
     @pytest.mark.asyncio
-    async def test_add_skill_missing_files_and_archive(self, tmp_path):
+    async def test_skill_add_missing_files_and_archive(self, tmp_path):
         """Either files or archive must be provided."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -162,7 +162,7 @@ class TestAddSkillToolExecute:
         assert "[FAIL]" in result
 
     @pytest.mark.asyncio
-    async def test_add_skill_both_files_and_archive(self, tmp_path):
+    async def test_skill_add_both_files_and_archive(self, tmp_path):
         """Cannot provide both files and archive."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()

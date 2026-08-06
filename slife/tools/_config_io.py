@@ -14,8 +14,25 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from slife.config import Config
+    from slife.tools.context import ToolContext
 
 logger = logging.getLogger(__name__)
+
+# ── Module-level Config reference ──────────────────────────────────────
+# Set by AgentService at startup so tool modules can access the parsed
+# Config instead of re-reading slife.json5 ad-hoc.
+_current_config: "Config | None" = None
+
+
+def get_config() -> "Config | None":
+    """Return the live :class:`Config` instance, or None before startup."""
+    return _current_config
+
+
+def set_config(config: "Config") -> None:
+    """Set the live Config (called by AgentService at startup)."""
+    global _current_config
+    _current_config = config
 
 
 def now_iso() -> str:
@@ -85,6 +102,9 @@ class _ConfigPathMixin:
         self._config_path = config_path or get_config_path()
 
     @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None"):  # pyright: ignore[reportIncompatibleMethodOverride]
+    def from_config(cls, cfg: dict, config: "Config | None", ctx: "ToolContext | None" = None):  # pyright: ignore[reportIncompatibleMethodOverride]
         path = config._path if config else None
-        return cls(config_path=path)
+        tool = cls(config_path=path)
+        if ctx is not None:
+            object.__setattr__(tool, "_ctx", ctx)
+        return tool

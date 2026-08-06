@@ -17,10 +17,10 @@ class TestCreateToolsFromConfig:
         names = {t.name for t in registry.list_tools()}
         assert "execute_shell" in names
         assert "run_python_script" in names
-        assert "list_skills" in names
-        assert "use_skill" in names
-        assert "add_skill" in names
-        assert "remove_skill" in names
+        assert "skill_list" in names
+        assert "skill_use" in names
+        assert "skill_add" in names
+        assert "skill_remove" in names
         assert "config_env_set" in names
         assert "config_env_get" in names
         assert "config_env_remove" in names
@@ -61,15 +61,15 @@ class TestCreateToolsFromConfig:
     def test_skill_tool_custom_skills_dir(self):
         """Each skill tool matched individually by name."""
         registry = create_tools_from_config([
-            {"name": "list_skills", "skills_dir": "custom_skills"},
+            {"name": "skill_list", "skills_dir": "custom_skills"},
         ])
         # Overridden tool gets custom dir
-        list_tool = registry.get("list_skills")
+        list_tool = registry.get("skill_list")
         assert list_tool is not None
         assert str(list_tool.skills_dir) == "custom_skills"  # type: ignore[attr-defined]
         # Other skill tools use the resolved default (absolute path)
         from slife.paths import get_skills_dir
-        skill_tool = registry.get("use_skill")
+        skill_tool = registry.get("skill_use")
         assert skill_tool is not None
         assert str(skill_tool.skills_dir) == str(get_skills_dir())  # type: ignore[attr-defined]
 

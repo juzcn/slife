@@ -39,8 +39,11 @@ class ShellTool(Tool):
         self.timeout = timeout
 
     @classmethod
-    def from_config(cls, cfg, config):
-        return cls(timeout=cfg.get("timeout", 30))
+    def from_config(cls, cfg, config, ctx=None):
+        tool = cls(timeout=cfg.get("timeout", 30))
+        if ctx is not None:
+            object.__setattr__(tool, "_ctx", ctx)
+        return tool
 
     async def execute(self, **kwargs) -> str:
         command: str = kwargs["command"]

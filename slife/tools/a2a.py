@@ -136,9 +136,15 @@ class A2AListSubagentsTool(Tool):
 
         manager = get_manager()
         if manager is None:
+            import os as _os
+            if _os.environ.get("SLIFE_SUBAGENT_NAME"):
+                return (
+                    "Subagent operations are not available inside a subagent "
+                    "process (recursion guard)."
+                )
             return (
-                "Subagent support is not enabled. "
-                "Add a [subagent] section to slife.json5."
+                "Subagent manager is not running yet — it starts "
+                "automatically when the agent service initializes."
             )
 
         agent_ids = manager.list()
@@ -654,9 +660,15 @@ class SubagentSpawnTool(Tool):
 
         manager = get_manager()
         if manager is None:
+            import os as _os
+            if _os.environ.get("SLIFE_SUBAGENT_NAME"):
+                return (
+                    "Cannot spawn subagent: already running inside a "
+                    "subagent process (nested subagents are not supported)."
+                )
             return (
-                "Error: Subagent support is not enabled. "
-                "Add a [subagent] section to slife.json5."
+                "Subagent manager is not running yet — it starts "
+                "automatically when the agent service initializes."
             )
 
         agent_name = name.strip() if name else None
@@ -705,9 +717,16 @@ class SubagentStopTool(Tool):
 
         manager = get_manager()
         if manager is None:
+            import os as _os
+            if _os.environ.get("SLIFE_SUBAGENT_NAME"):
+                return (
+                    "Cannot stop subagent: this is already a subagent "
+                    "process — subagent management is only available in "
+                    "the main agent."
+                )
             return (
-                "Error: Subagent support is not enabled. "
-                "Add a [subagent] section to slife.json5."
+                "Subagent manager is not running yet — it starts "
+                "automatically when the agent service initializes."
             )
 
         logger.info("subagent_tool_stop agent_id=%s", agent_id)

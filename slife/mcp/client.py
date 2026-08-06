@@ -225,8 +225,8 @@ class MCPClient:
             result = await self._session.call_tool(name, args)
         except Exception as e:
             msg = (
-                f"工具 '{name}' 执行失败：{type(e).__name__}: {e}。"
-                f"请检查 MCP 服务器状态。"
+                f"Tool '{name}' failed: {type(e).__name__}: {e}. "
+                f"Check the MCP server status."
             )
             logger.info("mcp_tool_error name=%s err=%s", name, e)
             return f"Error: {msg}"

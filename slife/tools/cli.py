@@ -38,11 +38,9 @@ def _cli_section(raw: dict) -> dict:
 
 
 
-def get_cli_tools_summary(config_path: Path) -> str:
-    """Return a formatted summary of registered CLI tools."""
-    raw = read_config(config_path)
-    cli_tools = raw.get(_CLI_TOOLS_KEY, {})
-    if not isinstance(cli_tools, dict) or not cli_tools:
+def _format_cli_tools(cli_tools: dict) -> str:
+    """Format a cli_tools dict into a human-readable summary."""
+    if not cli_tools:
         return "No CLI tools registered."
 
     lines = []
@@ -62,6 +60,15 @@ def get_cli_tools_summary(config_path: Path) -> str:
         lines.append(line)
 
     return "\n".join(lines)
+
+
+def get_cli_tools_summary(config_path: Path) -> str:
+    """Read cli_tools from file (fallback when Config is not available)."""
+    raw = read_config(config_path)
+    cli_tools = raw.get(_CLI_TOOLS_KEY, {})
+    if not isinstance(cli_tools, dict) or not cli_tools:
+        return "No CLI tools registered."
+    return _format_cli_tools(cli_tools)
 
 
 class CliCheckInstalled(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -93,10 +100,15 @@ class CliCheckInstalled(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncomp
     async def execute(self, **kwargs) -> str:
         commands: list[str] = kwargs["commands"]
 
-        raw = read_config(self._config_path)
-        cli_tools = raw.get(_CLI_TOOLS_KEY, {})
-        if not isinstance(cli_tools, dict):
-            cli_tools = {}
+        ctx = getattr(self, "_ctx", None)
+        config = ctx.config if ctx is not None else None
+        if config is not None and config._path is not None:
+            cli_tools = config.cli_tools
+        else:
+            raw = read_config(self._config_path)
+            cli_tools = raw.get(_CLI_TOOLS_KEY, {})
+            if not isinstance(cli_tools, dict):
+                cli_tools = {}
 
         lines = []
         found = 0
@@ -163,19 +175,29 @@ class CliAddTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
         install: str = kwargs.get("install", "")
         source: dict | None = kwargs.get("source")
 
-        raw = read_config(self._config_path)
-        cli_tools = _cli_section(raw)
 
-        entry: dict = {"command": command, "description": description}
-        if install:
-            entry["install"] = install
         source = with_fetched_at(source)
-        if source:
-            entry["source"] = source
+        is_update = False
 
-        is_update = name in cli_tools
-        cli_tools[name] = entry
-        write_config(self._config_path, raw)
+        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
+        
+        if config is not None and config._path is not None:
+            is_update = name in config.cli_tools
+            config.save_cli_tool(
+                name=name, command=command, description=description,
+                install=install, source=source,
+            )
+        else:
+            raw = read_config(self._config_path)
+            cli_tools = _cli_section(raw)
+            is_update = name in cli_tools
+            entry: dict = {"command": command, "description": description}
+            if install:
+                entry["install"] = install
+            if source:
+                entry["source"] = source
+            cli_tools[name] = entry
+            write_config(self._config_path, raw)
 
         action = "Updated" if is_update else "Registered"
         logger.info("cli_%s name=%s", "updated" if is_update else "added", name)
@@ -199,14 +221,23 @@ class CliRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatib
 
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
-        raw = read_config(self._config_path)
-        cli_tools = raw.get(_CLI_TOOLS_KEY, {})
 
-        if not isinstance(cli_tools, dict) or name not in cli_tools:
-            return f"CLI tool '{name}' is not registered."
 
-        del cli_tools[name]
-        write_config(self._config_path, raw)
+        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
+        
+
+        if config is not None and config._path is not None:
+            if name not in config.cli_tools:
+                return f"CLI tool '{name}' is not registered."
+            config.remove_cli_tool(name)
+        else:
+            raw = read_config(self._config_path)
+            cli_tools = raw.get(_CLI_TOOLS_KEY, {})
+            if not isinstance(cli_tools, dict) or name not in cli_tools:
+                return f"CLI tool '{name}' is not registered."
+            del cli_tools[name]
+            write_config(self._config_path, raw)
+
         logger.info("cli_removed name=%s", name)
         return f"[OK] Removed CLI tool '{name}'."
 
@@ -224,8 +255,12 @@ class CliListToolsTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
     }
 
     async def execute(self, **kwargs) -> str:
-        result = get_cli_tools_summary(self._config_path)
-        return result
+
+        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
+        
+        if config is not None and config._path is not None and config.cli_tools:
+            return _format_cli_tools(config.cli_tools)
+        return get_cli_tools_summary(self._config_path)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -251,15 +286,35 @@ class CliSetTool(_ConfigPathMixin, Tool):
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         enabled: bool = kwargs["enabled"]
-        raw = read_config(self._config_path)
-        entries = raw.get("cli_tools", {})
-        if not isinstance(entries, dict) or name not in entries:
-            return f"'{name}' not found in cli_tools."
-        entry = entries[name]
-        if not isinstance(entry, dict):
-            return f"'{name}' in cli_tools is malformed."
-        entry["enabled"] = enabled
-        write_config(self._config_path, raw)
+
+
+        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
+        
+        if config is not None and config._path is not None:
+            if name not in config.cli_tools:
+                return f"'{name}' not found in cli_tools."
+            entry = config.cli_tools[name]
+            if not isinstance(entry, dict):
+                return f"'{name}' in cli_tools is malformed."
+            entry["enabled"] = enabled
+            config.save_cli_tool(
+                name=name,
+                command=entry.get("command", ""),
+                description=entry.get("description", ""),
+                install=entry.get("install", ""),
+                source=entry.get("source"),
+            )
+        else:
+            raw = read_config(self._config_path)
+            entries = raw.get("cli_tools", {})
+            if not isinstance(entries, dict) or name not in entries:
+                return f"'{name}' not found in cli_tools."
+            entry = entries[name]
+            if not isinstance(entry, dict):
+                return f"'{name}' in cli_tools is malformed."
+            entry["enabled"] = enabled
+            write_config(self._config_path, raw)
+
         state = "enabled" if enabled else "disabled"
         logger.info("cli_set_tool name=%s enabled=%s", name, enabled)
         return f"[OK] CLI tool '{name}' {state}. Restart for the change to take effect."

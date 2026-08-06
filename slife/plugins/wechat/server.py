@@ -262,10 +262,10 @@ def _stop_typing_keepalive(from_id: str) -> None:
 
 
 @mcp.tool(
-    name="wechat_drain_incoming",
+    name="_wechat_drain_incoming",
     description="Drain queued incoming WeChat messages. Harness-only.",
 )
-async def wechat_drain_incoming() -> str:
+async def _wechat_drain_incoming() -> str:
     """Return all queued incoming messages and auto-start typing for each.
 
     Called by the AgentService poll loop.  Each returned message gets
@@ -303,10 +303,10 @@ async def wechat_drain_incoming() -> str:
 
 
 @mcp.tool(
-    name="wechat_dispatch_reply",
+    name="_wechat_dispatch_reply",
     description="Send a reply and clean up typing indicator. Harness-only.",
 )
-async def wechat_dispatch_reply(
+async def _wechat_dispatch_reply(
     to_user_id: str = "",
     context_token: str = "",
     text: str = "",

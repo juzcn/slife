@@ -82,7 +82,7 @@ class TestBuild:
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "技能目录:" in result
-        assert "use_skill" in result
+        assert "skill_use" in result
 
     def test_data_dirs_in_prompt(self, cfg):
         from slife.agent.system_prompt import build

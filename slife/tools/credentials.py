@@ -1,8 +1,8 @@
 """Credential management tools.
 
 credential_check    — verify credential in shell/config/keyring
-inject_credential   — load secret from keyring into os.environ
-uninject_credential — remove secret from os.environ (keyring untouched)
+credential_inject   — load secret from keyring into os.environ
+credential_uninject — remove secret from os.environ (keyring untouched)
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ class CredentialCheckTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportInco
 
 
 class InjectCredentialTool(Tool):
-    name = "inject_credential"
+    name = "credential_inject"
     category: ClassVar[str] = "Credentials"
     requires_a2a = False
     description = "Load a secret from OS keyring into os.environ. Temporary, this process only."
@@ -106,7 +106,7 @@ class InjectCredentialTool(Tool):
 
 
 class UninjectCredentialTool(Tool):
-    name = "uninject_credential"
+    name = "credential_uninject"
     category: ClassVar[str] = "Credentials"
     requires_a2a = False
     description = "Remove an env var from os.environ. Keyring secret remains stored."

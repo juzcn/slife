@@ -1,9 +1,9 @@
 """LLM model management tools.
 
-list_models            — list all configured models grouped by provider
-add_model              — add or update a model (creates provider if new)
-remove_model           — remove a model by ref; auto-switches if it was active
-switch_model           — switch the active model (instant, no restart)
+model_list            — list all configured models grouped by provider
+model_add              — add or update a model (creates provider if new)
+model_remove           — remove a model by ref; auto-switches if it was active
+model_switch           — switch the active model (instant, no restart)
 switch_to_nvidia_free  — switch to a free NVIDIA NIM model in-memory only
 """
 
@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, ClassVar
 
 from slife.tools._config_io import _ConfigPathMixin, read_config, write_config
 from slife.tools.base import Tool, make_params
-from slife.tools.registry import get_registry
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -74,7 +73,7 @@ def _find_first_ref(providers: dict) -> str | None:
 class ListModelsTool(_ConfigPathMixin, Tool):
     """List all configured LLM models grouped by provider."""
 
-    name: ClassVar[str] = "list_models"
+    name: ClassVar[str] = "model_list"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
         "List all configured LLM models grouped by provider. "
@@ -135,7 +134,7 @@ class ListModelsTool(_ConfigPathMixin, Tool):
 class AddModelTool(_ConfigPathMixin, Tool):
     """Add a model to a provider in the config."""
 
-    name: ClassVar[str] = "add_model"
+    name: ClassVar[str] = "model_add"
     category: ClassVar[str] = "Models"
     _subagent_skip: ClassVar[bool] = True
     description: ClassVar[str] = (
@@ -266,7 +265,7 @@ class AddModelTool(_ConfigPathMixin, Tool):
 class RemoveModelTool(_ConfigPathMixin, Tool):
     """Remove a model from the config."""
 
-    name: ClassVar[str] = "remove_model"
+    name: ClassVar[str] = "model_remove"
     category: ClassVar[str] = "Models"
     _subagent_skip: ClassVar[bool] = True
     description: ClassVar[str] = (
@@ -338,7 +337,7 @@ class RemoveModelTool(_ConfigPathMixin, Tool):
                 write_config(self._config_path, raw)
                 return (
                     f"[OK] Removed `{ref}` (was active). No models remaining. "
-                    f"Add a model with add_model before continuing."
+                    f"Add a model with model_add before continuing."
                 )
 
         write_config(self._config_path, raw)
@@ -357,12 +356,12 @@ class SwitchModelTool(_ConfigPathMixin, Tool):
     model without a restart.
     """
 
-    name: ClassVar[str] = "switch_model"
+    name: ClassVar[str] = "model_switch"
     category: ClassVar[str] = "Models"
     _subagent_skip: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Switch the active LLM model.  The new model takes effect on the "
-        "next turn.  Use list_models to see available models and their refs."
+        "next turn.  Use model_list to see available models and their refs."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -380,8 +379,11 @@ class SwitchModelTool(_ConfigPathMixin, Tool):
         self._config: Config | None = config
 
     @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None"):
-        return cls(config_path=config._path if config else None, config=config)
+    def from_config(cls, cfg: dict, config: "Config | None", ctx=None):
+        tool = cls(config_path=config._path if config else None, config=config)
+        if ctx is not None:
+            object.__setattr__(tool, "_ctx", ctx)
+        return tool
 
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
@@ -412,7 +414,7 @@ class SwitchModelTool(_ConfigPathMixin, Tool):
                     break
 
         if not found:
-            return f"Error: model '{ref}' not found in config. Use list_models."
+            return f"Error: model '{ref}' not found in config. Use model_list."
 
         old = raw.get(_ACTIVE_KEY, "(none)")
         raw[_ACTIVE_KEY] = ref
@@ -488,8 +490,11 @@ class SwitchToNvidiaFreeTool(Tool):
         self._config: Config | None = config
 
     @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None"):  # noqa: ARG003
-        return cls(config=config)
+    def from_config(cls, cfg: dict, config: "Config | None", ctx=None):  # noqa: ARG003
+        tool = cls(config=config)
+        if ctx is not None:
+            object.__setattr__(tool, "_ctx", ctx)
+        return tool
 
     async def execute(
         self,
@@ -558,11 +563,12 @@ class SwitchToNvidiaFreeTool(Tool):
     # ── MCP tool callers ────────────────────────────────────────────
 
     async def _list_nim_models(self) -> list[str] | None:
-        """Call nvidia-nim__nim_list_models."""
-        registry = get_registry()
+        """Call nvidia-nim__nim_model_list."""
+        ctx = getattr(self, "_ctx", None)
+        registry = ctx.registry if ctx is not None else None
         if registry is None:
             return None
-        tool = registry.get("nvidia-nim__nim_list_models")
+        tool = registry.get("nvidia-nim__nim_model_list")
         if tool is None:
             return None
         try:
@@ -580,7 +586,8 @@ class SwitchToNvidiaFreeTool(Tool):
         The MCP tool returns JSON like:
           {"type": "chat", "vision": false, "tools": true, "context": 131072, "notes": "..."}
         """
-        registry = get_registry()
+        ctx = getattr(self, "_ctx", None)
+        registry = ctx.registry if ctx is not None else None
         if registry is None:
             return None
         tool = registry.get("nvidia-nim__nim_get_model_capabilities")

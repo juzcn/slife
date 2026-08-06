@@ -35,7 +35,7 @@ from slife.mcp.tool_adapter import create_proxy_tools
 logger = logging.getLogger(__name__)
 
 # Module-level callbacks invoked when the active model is switched at
-# runtime (e.g. by the switch_model tool).  Each callback receives the
+# runtime (e.g. by the model_switch tool).  Each callback receives the
 # new model ref string (e.g. "deepseek/deepseek-v4-flash").
 _on_model_switched: list[Callable[[str], None]] = []
 
@@ -59,7 +59,17 @@ class AgentService:
         assert self.config.a2a_config is not None
         assert self.config.subagent_config is not None
         self.is_subagent = is_subagent
-        self.tool_registry = create_tools_from_config(config.tools, config=config, is_subagent=is_subagent)
+
+        # Build the shared ToolContext — replaces scattered module-level
+        # singletons (get_registry, get_config, _rest_api_mcp_client, etc.)
+        from slife.tools.context import ToolContext
+        self._tool_ctx = ToolContext(config=config)
+        self.tool_registry = create_tools_from_config(
+            config.tools, config=config, is_subagent=is_subagent,
+            ctx=self._tool_ctx,
+        )
+        # Backfill the registry reference (created by the factory)
+        self._tool_ctx.registry = self.tool_registry
         self.llm_client = LLMClient(config.active_model)
         # Max tool result = tool_result_ceiling × context_window × 3 chars/token
         max_tool_result_chars = int(
@@ -84,10 +94,7 @@ class AgentService:
         self.conversation = Conversation(
             system_prompt=build_system_prompt(self.config),
         )
-        # Expose the conversation so tools (e.g. clear_context) can
-        # access it without creating a circular import.
-        from slife.agent.conversation import set_conversation
-        set_conversation(self.conversation)
+        self._tool_ctx.conversation = self.conversation
         self.session_usage = TokenUsage()
 
         # ── Unified message queue (always active) ──────────────────
@@ -304,6 +311,16 @@ class AgentService:
         # connects — no need to block startup on slow/hung servers.
         asyncio.create_task(self._auto_connect_mcp_servers())
         asyncio.create_task(self._auto_connect_rest_apis())
+
+        # Watchdog: on MCP wrapper crash, respawn + reconnect external servers
+        async def _restart_mcp():
+            await self._connect_mcp_wrapper()
+            await self._register_mcp_wrapper_tools()
+            asyncio.create_task(self._auto_connect_mcp_servers())
+            asyncio.create_task(self._auto_connect_rest_apis())
+
+        self._plugins["mcp"].start_watchdog(restart_cb=_restart_mcp)
+
         logger.info("mcp_init_done tools=%d", len(self.tool_registry.list_tools()))
 
     # ── HTTP-connect helpers (subagents share the main agent's plugins) ──
@@ -365,6 +382,7 @@ class AgentService:
             args=mcp_cfg.wrapper_args,
         )
         await self._mcp_process.start()
+        self._plugins["mcp"].process = self._mcp_process
         self._plugins["mcp"].port = self._mcp_process.port
         os.environ["SLIFE_MCP_PORT"] = str(self._plugins["mcp"].port)
         self._plugins["mcp"].client = await self._mcp_process.create_client()
@@ -405,8 +423,7 @@ class AgentService:
         logger.debug("mcp_wrapper_tools_registered count=%d", len(proxy_tools))
 
         # Let REST API tools call mcp_add_server / mcp_remove_server
-        from slife.tools.rest_api import set_rest_api_mcp_client
-        set_rest_api_mcp_client(self._plugins["mcp"].client)
+        self._tool_ctx.rest_api_mcp_client = self._plugins["mcp"].client
 
     async def _auto_connect_mcp_servers(self) -> None:
         """Auto-connect to pre-configured MCP servers and discover
@@ -522,12 +539,8 @@ class AgentService:
         if not self._plugins["mcp"].client:
             return
 
-        raw = self.config._read_config("auto_connect_rest_apis", "all")
-        if raw is None:
-            return
-
-        rest_apis = raw.get("rest_apis", {})
-        if not isinstance(rest_apis, dict) or not rest_apis:
+        rest_apis = self.config.rest_apis
+        if not rest_apis:
             return
 
         mcp_client = self._plugins["mcp"].client
@@ -833,11 +846,14 @@ class AgentService:
         self,
         name: str,
         module: str,
-        harness_tools: set[str],
+        harness_tools: set[str] | None = None,
     ) -> None:
         """Spawn a plugin child process, connect, and register its LLM-visible tools.
 
         Delegates to ``PluginLifecycle.spawn()`` for the actual work.
+
+        *harness_tools* is **deprecated** — harness-only tools are now
+        identified by the ``_`` prefix naming convention.
         """
         await self._plugins[name].spawn(module, harness_tools)
 
@@ -854,11 +870,10 @@ class AgentService:
             [t["name"] for t in memdb_tools],
         )
 
-        harness_tools = {"memory_save_turn", "memory_get_recent_turns"}
         tagged = [
             {**t, "server": "memdb"}
             for t in memdb_tools
-            if t["name"] not in harness_tools
+            if not t["name"].startswith("_")
         ]
 
         proxy_tools = create_proxy_tools(self._plugins["memdb"].client, tagged)
@@ -879,11 +894,10 @@ class AgentService:
             [t["name"] for t in wechat_tools],
         )
 
-        harness_tools = {"wechat_drain_incoming", "wechat_dispatch_reply"}
         tagged = [
             {**t, "server": "wechat"}
             for t in wechat_tools
-            if t["name"] not in harness_tools
+            if not t["name"].startswith("_")
         ]
 
         proxy_tools = create_proxy_tools(self._plugins["wechat"].client, tagged)
@@ -901,8 +915,8 @@ class AgentService:
             await self._spawn_and_register_plugin(
                 "memdb",
                 "slife.plugins.memdb.server",
-                harness_tools={"memory_save_turn", "memory_get_recent_turns"},
             )
+            self._plugins["memdb"].start_watchdog()
             logger.info("memdb_init_done tools=%d", len(self.tool_registry.list_tools()))
             from slife.health import record
             record(
@@ -995,7 +1009,6 @@ class AgentService:
             await self._spawn_and_register_plugin(
                 "wechat",
                 "slife.plugins.wechat.server",
-                harness_tools={"wechat_drain_incoming", "wechat_dispatch_reply"},
             )
 
             # Auto-restore session at startup (triggers server-side poll loop)
@@ -1009,6 +1022,24 @@ class AgentService:
 
             # Start background poll loop — injects WeChat messages into the inbox
             self._plugins["wechat"].poll_task = asyncio.create_task(self._wechat_poll_loop())
+
+            # Watchdog: on crash, respawn + restore poll loop
+            async def _restart_wechat():
+                await self._spawn_and_register_plugin(
+                    "wechat",
+                    "slife.plugins.wechat.server",
+                    )
+                wc = self._plugins["wechat"].client
+                if wc is not None:
+                    try:
+                        await wc.call_tool("check_status", {})
+                    except Exception:
+                        pass
+                self._plugins["wechat"].poll_task = asyncio.create_task(
+                    self._wechat_poll_loop(),
+                )
+
+            self._plugins["wechat"].start_watchdog(restart_cb=_restart_wechat)
 
             logger.info("wechat_init_done tools=%d", len(self.tool_registry.list_tools()))
             from slife.health import record
@@ -1047,7 +1078,7 @@ class AgentService:
                 assert self._plugins["wechat"].client is not None
 
                 result = await self._plugins["wechat"].client.call_tool(
-                    "wechat_drain_incoming", {},
+                    "_wechat_drain_incoming", {},
                 )
                 data = _json.loads(result)
                 msgs = data.get("messages", [])
@@ -1065,7 +1096,7 @@ class AgentService:
                     async def _reply(reply_text: str,
                                      uid=from_id, tok=ctx_token) -> None:
                         try:
-                            await wc.call_tool("wechat_dispatch_reply", {
+                            await wc.call_tool("_wechat_dispatch_reply", {
                                 "to_user_id": uid,
                                 "context_token": tok,
                                 "text": reply_text,
@@ -1147,7 +1178,7 @@ class AgentService:
         try:
             await asyncio.wait_for(
                 self._plugins["memdb"].client.call_tool(
-                    "memory_save_turn",
+                    "_memory_save_turn",
                     {
                         "user_message": user_message,
                         "messages": turn_messages,
@@ -1395,11 +1426,12 @@ class AgentService:
         # When a subagent completes an async task, push the result into
         # the inbox so the user sees it without having to poll.
         async def _on_subagent_done(agent_id: str, task_id: str, result: str) -> None:
-            from slife.a2a.identity import AgentMessage, HUMAN
+            from slife.a2a.identity import AgentMessage, SUBAGENT
             msg = AgentMessage(
-                source=HUMAN,
+                source=SUBAGENT,
                 content=(
-                    f"子 agent **{agent_id}** 的异步任务已完成（ID: `{task_id}`）：\n\n"
+                    f"Subagent **{agent_id}** completed async task "
+                    f"(ID: `{task_id}`):\n\n"
                     f"{result}"
                 ),
             )

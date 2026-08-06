@@ -16,7 +16,7 @@ import json5
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
 
@@ -342,6 +342,9 @@ class Config:
     wechat_config: WechatConfig | None = None
     a2a_config: A2AConfig | None = None
     subagent_config: dict | None = None
+    # Sections previously only read ad-hoc by tools:
+    rest_apis: dict = field(default_factory=dict)
+    cli_tools: dict = field(default_factory=dict)
     _path: Path | None = None
 
     def __post_init__(self):
@@ -382,6 +385,8 @@ class Config:
             "wechat_config": asdict(self.wechat_config) if self.wechat_config else None,
             "a2a_config": asdict(self.a2a_config) if self.a2a_config else None,
             "subagent_config": self.subagent_config,
+            "rest_apis": self.rest_apis,
+            "cli_tools": self.cli_tools,
         }
 
     @classmethod
@@ -424,6 +429,8 @@ class Config:
             wechat_config=wc_cfg,
             a2a_config=a2a_cfg,
             subagent_config=data.get("subagent_config"),
+            rest_apis=data.get("rest_apis", {}),
+            cli_tools=data.get("cli_tools", {}),
         )
 
     # ── Config file I/O helpers ─────────────────────────────────────
@@ -533,6 +540,132 @@ class Config:
                 else:
                     self.mcp_config.servers[name]["disclosure"] = disclosure
             logger.info("config_set_disclosure server=%s disclosure=%s", name, disclosure)
+
+    # ── REST API + CLI tool persistence ──────────────────────────────
+
+    def _rest_api_section(self, raw: dict) -> dict:
+        section = raw.setdefault("rest_apis", {})
+        if not isinstance(section, dict):
+            section = {}
+            raw["rest_apis"] = section
+        return section
+
+    def _cli_section(self, raw: dict) -> dict:
+        section = raw.setdefault("cli_tools", {})
+        if not isinstance(section, dict):
+            section = {}
+            raw["cli_tools"] = section
+        return section
+
+    def save_rest_api(
+        self,
+        name: str,
+        spec_url: str = "",
+        base_url: str = "",
+        api_key: str = "",
+        description: str = "",
+        source: dict | None = None,
+    ) -> bool:
+        """Persist a REST API entry. Returns True if persisted to file.
+
+        Always updates the in-memory ``rest_apis`` snapshot even when no
+        config path is set (tests, headless consumers).
+        """
+        entry: dict = {
+            "spec_url": spec_url,
+            "base_url": base_url,
+            "api_key": api_key,
+            "description": description,
+        }
+        if source:
+            entry["source"] = source
+        existing = self.rest_apis.get(name, {})
+        if isinstance(existing, dict) and "enabled" in existing:
+            entry["enabled"] = existing["enabled"]
+        # Always update in-memory snapshot
+        self.rest_apis[name] = entry
+
+        if not self._path:
+            logger.debug("config_no_path — rest_api %s in memory only", name)
+            return False
+        raw = self._read_config("save_rest_api", name)
+        if raw is None:
+            return False
+        section = self._rest_api_section(raw)
+        section[name] = dict(entry)
+        self._write_config(raw)
+        logger.info("config_save_rest_api name=%s", name)
+        return True
+
+    def remove_rest_api(self, name: str) -> bool:
+        """Remove a REST API entry. Returns True if removed from file.
+
+        Always updates the in-memory ``rest_apis`` snapshot.
+        """
+        # Always update in-memory snapshot
+        existed = self.rest_apis.pop(name, None) is not None
+
+        if not self._path:
+            logger.debug("config_no_path — rest_api %s removed from memory only", name)
+            return existed
+        raw = self._read_config("remove_rest_api", name)
+        if raw is None:
+            return existed
+        section = self._rest_api_section(raw)
+        section.pop(name, None)
+        self._write_config(raw)
+        logger.info("config_remove_rest_api name=%s existed=%s", name, existed)
+        return existed
+
+    def save_cli_tool(
+        self,
+        name: str,
+        command: str = "",
+        description: str = "",
+        install: str = "",
+        source: dict | None = None,
+    ) -> bool:
+        """Persist a CLI tool entry. Returns True if persisted to file.
+
+        Always updates the in-memory ``cli_tools`` snapshot.
+        """
+        entry: dict = {"command": command, "description": description, "install": install}
+        if source:
+            entry["source"] = source
+        # Always update in-memory snapshot
+        self.cli_tools[name] = entry
+
+        if not self._path:
+            logger.debug("config_no_path — cli_tool %s in memory only", name)
+            return False
+        raw = self._read_config("save_cli_tool", name)
+        if raw is None:
+            return False
+        section = self._cli_section(raw)
+        section[name] = dict(entry)
+        self._write_config(raw)
+        logger.info("config_save_cli_tool name=%s", name)
+        return True
+
+    def remove_cli_tool(self, name: str) -> bool:
+        """Remove a CLI tool entry. Returns True if removed from file.
+
+        Always updates the in-memory ``cli_tools`` snapshot.
+        """
+        # Always update in-memory snapshot
+        existed = self.cli_tools.pop(name, None) is not None
+
+        if not self._path:
+            logger.debug("config_no_path — cli_tool %s removed from memory only", name)
+            return existed
+        raw = self._read_config("remove_cli_tool", name)
+        if raw is None:
+            return existed
+        section = self._cli_section(raw)
+        section.pop(name, None)
+        self._write_config(raw)
+        logger.info("config_remove_cli_tool name=%s existed=%s", name, existed)
+        return existed
 
     @property
     def active_model(self) -> ModelConfig:
@@ -853,6 +986,10 @@ class Config:
             subagent_config["task_timeout"],
         )
 
+        # REST API tools + CLI tools — managed sections, no config classes
+        rest_apis = _parse_section(raw, "rest_apis", dict, {})
+        cli_tools = _parse_section(raw, "cli_tools", dict, {})
+
         config = Config(
             models=all_models,
             active_model_ref=raw.get("active_model", all_models[0].ref),
@@ -869,6 +1006,8 @@ class Config:
             wechat_config=wechat_config,
             a2a_config=a2a_config,
             subagent_config=subagent_config,
+            rest_apis=rest_apis,
+            cli_tools=cli_tools,
         )
         config._path = path
         return config

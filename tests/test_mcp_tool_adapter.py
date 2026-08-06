@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from slife.mcp.tool_adapter import MCPProxyTool, create_proxy_tools
+from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute, create_proxy_tools
 from slife.tools.base import Tool
 
 
@@ -142,7 +142,7 @@ class TestMCPProxyToolExecute:
         client = make_mock_mcp_client()
         client.call_tool.return_value = '{"tools":[]}'
 
-        tool = MCPProxyTool(client, info)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER)
         result = await tool.execute(server="filesystem")
 
         client.call_tool.assert_called_once_with("mcp_list_tools", {"server": "filesystem"})
@@ -171,7 +171,7 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "connected"})
         on_add = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_added=on_add)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add)
         result = await tool.execute(
             name="myserver", command="python",
             args=["-m", "myserver"], env={"KEY": "VAL"},
@@ -194,7 +194,7 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "error", "error": "boom"})
         on_add = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_added=on_add)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add)
         await tool.execute(name="bad", command="badcmd")
 
         on_add.assert_not_called()
@@ -207,7 +207,7 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = "not json"
         on_add = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_added=on_add)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add)
         result = await tool.execute(name="test")
 
         assert result == "not json"
@@ -221,7 +221,7 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "removed"})
         on_remove = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_removed=on_remove)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove)
         await tool.execute(name="oldserver")
 
         on_remove.assert_called_once_with(name="oldserver")
@@ -234,7 +234,7 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "not_found"})
         on_remove = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_removed=on_remove)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove)
         await tool.execute(name="missing")
 
         on_remove.assert_not_called()
@@ -248,7 +248,7 @@ class TestMCPProxyToolExecute:
         on_disc = AsyncMock()
         on_upd = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
         await tool.execute(name="myserver", disclosure="eager")
 
         on_upd.assert_called_once_with(name="myserver", enabled=True)
@@ -263,7 +263,7 @@ class TestMCPProxyToolExecute:
         on_disc = AsyncMock()
         on_upd = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
         await tool.execute(name="test")
 
         on_disc.assert_not_called()
@@ -277,7 +277,7 @@ class TestMCPProxyToolExecute:
         on_disc = AsyncMock()
         on_upd = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
         await tool.execute(name="test")
 
         on_disc.assert_not_called()
@@ -289,7 +289,7 @@ class TestMCPProxyToolExecute:
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "connected"})
 
-        tool = MCPProxyTool(client, info)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER)
         await tool.execute(name="test", command="cmd", source={"url": "x"})
 
         # source key should not be passed to the MCP client
@@ -303,7 +303,7 @@ class TestMCPProxyToolExecute:
         client = make_mock_mcp_client()
         client.call_tool.return_value = json.dumps({"status": "connected"})
 
-        tool = MCPProxyTool(client, info)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER)
         await tool.execute(name="test", source="string-source")
 
         # source is always stripped from MCP client call
@@ -317,7 +317,7 @@ class TestMCPProxyToolExecute:
         client = make_mock_mcp_client()
         client.call_tool.return_value = "search results"
 
-        tool = MCPProxyTool(client, info)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.DIRECT)
         result = await tool.execute(query="test query")
 
         client.call_tool.assert_called_once_with("memory_search", {"query": "test query"})
@@ -331,7 +331,7 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "connected"})
         on_add = AsyncMock(side_effect=RuntimeError("callback exploded"))
 
-        tool = MCPProxyTool(client, info, on_server_added=on_add)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add)
         # Should not raise
         result = await tool.execute(name="test", command="cmd")
         assert json.loads(result)["status"] == "connected"
@@ -345,7 +345,7 @@ class TestMCPProxyToolExecute:
         on_disc = AsyncMock(side_effect=RuntimeError("callback error"))
         on_upd = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_updated=on_upd, on_server_disclosure_changed=on_disc)
         # Should not raise
         result = await tool.execute(name="test", disclosure="lazy")
         assert json.loads(result)["disclosure"] == "lazy"
@@ -358,7 +358,7 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "removed"})
         on_remove = AsyncMock(side_effect=RuntimeError("callback error"))
 
-        tool = MCPProxyTool(client, info, on_server_removed=on_remove)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove)
         # Should not raise
         result = await tool.execute(name="old")
         assert json.loads(result)["status"] == "removed"
@@ -371,7 +371,7 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = "not valid json"
         on_remove = AsyncMock()
 
-        tool = MCPProxyTool(client, info, on_server_removed=on_remove)
+        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove)
         await tool.execute(name="test")
         on_remove.assert_not_called()
 

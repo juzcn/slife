@@ -122,6 +122,16 @@ class TestA2AConfigFromDict:
         assert cfg.broker_host == "localhost"
         assert cfg.broker_port == 1883
 
+    def test_http_transport_rejected(self):
+        """transport 'http' raises ValueError with a clear message."""
+        with pytest.raises(ValueError, match="not yet implemented"):
+            A2AConfig.from_dict({"transport": "http"}, agent_id="agent-1")
+
+    def test_mqtt_transport_accepted(self):
+        """transport 'mqtt' is the default and passes through."""
+        cfg = A2AConfig.from_dict({"transport": "mqtt"}, agent_id="agent-1")
+        assert cfg.transport == "mqtt"
+
 
 # ── A2AConfig defaults ──────────────────────────────────────────────────
 

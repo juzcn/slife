@@ -573,7 +573,7 @@ class AgentLoop:
                 async with _approval_lock:
                     approved = await handler.on_tool_approval(tc) if handler else True
                 if not approved:
-                    result = "Error: 用户拒绝了工具执行。"
+                    result = "Error: Tool execution was denied by user."
                     result = sanitize_secrets(result)
                     if handler:
                         await handler.on_tool_result(tc.id, result, is_error=True)
@@ -608,7 +608,7 @@ class AgentLoop:
                     result = await coro
                 except Exception as e:
                     result = (
-                        f"Error: 工具 '{tc.name}' 执行失败：{type(e).__name__}: {e}。"
+                        f"Error: Tool '{tc.name}' failed: {type(e).__name__}: {e}."
                     )
                     logger.info(
                         "tool_error name=%s err=%s", tc.name, e,
@@ -628,8 +628,8 @@ class AgentLoop:
                         result = await coro
                 except asyncio.TimeoutError:
                     result = (
-                        f"Error: 工具 '{tc.name}' 执行超时（{effective_timeout}s）。"
-                        f"服务器或网络可能无响应，请检查后重试。"
+                        f"Error: Tool '{tc.name}' timed out "
+                        f"({effective_timeout}s)."
                     )
                     logger.info(
                         "tool_timeout name=%s timeout=%ds args=%s",
@@ -638,7 +638,7 @@ class AgentLoop:
                     )
                 except Exception as e:
                     result = (
-                        f"Error: 工具 '{tc.name}' 执行失败：{type(e).__name__}: {e}。"
+                        f"Error: Tool '{tc.name}' failed: {type(e).__name__}: {e}."
                     )
                     logger.info(
                         "tool_error name=%s err=%s", tc.name, e,

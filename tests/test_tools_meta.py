@@ -46,11 +46,11 @@ class TestClassify:
 
     def test_skill_tools(self):
         assert _classify("skill_set") == "Skills"
-        assert _classify("list_skills") == "Skills"
-        assert _classify("use_skill") == "Skills"
-        assert _classify("add_skill") == "Skills"
-        assert _classify("remove_skill") == "Skills"
-        assert _classify("check_skills_dir") == "Skills"
+        assert _classify("skill_list") == "Skills"
+        assert _classify("skill_use") == "Skills"
+        assert _classify("skill_add") == "Skills"
+        assert _classify("skill_remove") == "Skills"
+        assert _classify("skill_check_dir") == "Skills"
 
     def test_system_tools(self):
         assert _classify("check_embedding") == "System"
@@ -63,8 +63,8 @@ class TestClassify:
 
     def test_credential_tools(self):
         assert _classify("credential_check") == "Credentials"
-        assert _classify("inject_credential") == "Credentials"
-        assert _classify("uninject_credential") == "Credentials"
+        assert _classify("credential_inject") == "Credentials"
+        assert _classify("credential_uninject") == "Credentials"
 
     def test_meta_tools(self):
         # list_tools, cancel_async, clear_context → Meta
@@ -95,28 +95,24 @@ class TestListToolsTool:
     async def test_registry_unavailable(self):
         """When registry is None, returns clear message."""
         tool = ListToolsTool()
-        import slife.tools.registry as _mod
-        original = _mod._current_registry
         try:
-            _mod._current_registry = None
             result = await tool.execute()
             assert "not available" in result.lower()
         finally:
-            _mod._current_registry = original
+            tool._ctx = None
 
     @pytest.mark.asyncio
     async def test_registry_empty(self):
         """When registry has no tools, returns appropriate message."""
         from slife.tools.registry import ToolRegistry
         tool = ListToolsTool()
-        import slife.tools.registry as _mod
-        original = _mod._current_registry
+        from slife.tools.context import ToolContext
         try:
-            _mod._current_registry = ToolRegistry()
+            tool._ctx = ToolContext(registry=ToolRegistry())
             result = await tool.execute()
             assert "no tools" in result.lower()
         finally:
-            _mod._current_registry = original
+            tool._ctx = None
 
     @pytest.mark.asyncio
     async def test_native_tools_listed(self):
@@ -134,15 +130,14 @@ class TestListToolsTool:
         registry.register(_TestNative())
 
         tool = ListToolsTool()
-        import slife.tools.registry as _mod
-        original = _mod._current_registry
+        from slife.tools.context import ToolContext
         try:
-            _mod._current_registry = registry
+            tool._ctx = ToolContext(registry=registry)
             result = await tool.execute(category="native")
             assert "check_something" in result
             assert "System" in result  # auto-classified as System
         finally:
-            _mod._current_registry = original
+            tool._ctx = None
 
     @pytest.mark.asyncio
     async def test_mcp_tools_listed(self):
@@ -164,14 +159,13 @@ class TestListToolsTool:
         registry.register(mock_tool)
 
         tool = ListToolsTool()
-        import slife.tools.registry as _mod
-        original = _mod._current_registry
+        from slife.tools.context import ToolContext
         try:
-            _mod._current_registry = registry
+            tool._ctx = ToolContext(registry=registry)
             result = await tool.execute(category="mcp")
             assert "memdb" in result.lower() or "memory__search" in result
         finally:
-            _mod._current_registry = original
+            tool._ctx = None
 
     @pytest.mark.asyncio
     async def test_category_all_shows_both(self):
@@ -189,15 +183,14 @@ class TestListToolsTool:
         registry.register(_Native())
 
         tool = ListToolsTool()
-        import slife.tools.registry as _mod
-        original = _mod._current_registry
+        from slife.tools.context import ToolContext
         try:
-            _mod._current_registry = registry
+            tool._ctx = ToolContext(registry=registry)
             result = await tool.execute(category="all")
             assert "Native Tools" in result
             assert "echo" in result
         finally:
-            _mod._current_registry = original
+            tool._ctx = None
 
     @pytest.mark.asyncio
     async def test_category_mcp_no_servers(self):
@@ -217,14 +210,13 @@ class TestListToolsTool:
         registry.register(_Native())
 
         tool = ListToolsTool()
-        import slife.tools.registry as _mod
-        original = _mod._current_registry
+        from slife.tools.context import ToolContext
         try:
-            _mod._current_registry = registry
+            tool._ctx = ToolContext(registry=registry)
             result = await tool.execute(category="mcp")
             assert "no mcp servers connected" in result.lower()
         finally:
-            _mod._current_registry = original
+            tool._ctx = None
 
 
 # ── Async task helpers ────────────────────────────────────────────────────
@@ -346,7 +338,7 @@ class TestCheckAsyncTool:
         """Non-existent task_id returns error message."""
         tool = CheckAsyncTool()
         result = await tool.execute(task_id="nonexistent")
-        assert "未找到" in result
+        assert "not found" in result
 
     @pytest.mark.asyncio
     async def test_task_still_running(self):
@@ -360,7 +352,7 @@ class TestCheckAsyncTool:
         assert tid in _tasks
 
         result = await tool.execute(task_id=tid)
-        assert "运行中" in result
+        assert "still running" in result
 
         # Clean up
         _tasks[tid].cancel()
@@ -382,7 +374,7 @@ class TestCheckAsyncTool:
         await asyncio.sleep(0.1)
 
         result = await tool.execute(task_id=tid)
-        assert "任务完成" in result
+        assert "Task completed" in result
         assert "all done!" in result
         assert tid not in _tasks  # popped after retrieval
 
@@ -398,7 +390,7 @@ class TestCheckAsyncTool:
         await asyncio.sleep(0.1)
 
         result = await tool.execute(task_id=tid)
-        assert "任务完成" in result
+        assert "Task completed" in result
         assert "RuntimeError" in result
         assert "boom" in result
         assert tid not in _tasks
@@ -426,7 +418,7 @@ class TestCancelAsyncTool:
         """Cancelling a non-existent task returns error."""
         tool = CancelAsyncTool()
         result = await tool.execute(task_id="nonexistent")
-        assert "未找到" in result
+        assert "not found" in result
 
     @pytest.mark.asyncio
     async def test_task_already_done(self):
@@ -440,7 +432,7 @@ class TestCancelAsyncTool:
         await asyncio.sleep(0.1)  # let it complete
 
         result = await tool.execute(task_id=tid)
-        assert "已经完成" in result
+        assert "already completed" in result
         assert tid not in _tasks
 
     @pytest.mark.asyncio
@@ -458,7 +450,7 @@ class TestCancelAsyncTool:
         assert tid in _tasks
 
         result = await tool.execute(task_id=tid)
-        assert "已取消" in result
+        assert "cancelled" in result
         assert tid not in _tasks
 
 
@@ -478,14 +470,13 @@ class TestClearContextTool:
     async def test_conversation_not_initialised(self):
         """When conversation is None, returns appropriate message."""
         tool = ClearContextTool()
-        import slife.agent.conversation as _conv_mod
-        original = _conv_mod._current_conversation
+        from slife.tools.context import ToolContext
         try:
-            _conv_mod._current_conversation = None
+            tool._ctx = ToolContext(conversation=None)
             result = await tool.execute()
             assert "not yet initialised" in result.lower()
         finally:
-            _conv_mod._current_conversation = original
+            tool._ctx = None
 
     @pytest.mark.asyncio
     async def test_already_clean(self):
@@ -494,14 +485,13 @@ class TestClearContextTool:
         tool = ClearContextTool()
         conv = Conversation(system_prompt="You are helpful.")
 
-        import slife.agent.conversation as _conv_mod
-        original = _conv_mod._current_conversation
+        from slife.tools.context import ToolContext
         try:
-            _conv_mod._current_conversation = conv
+            tool._ctx = ToolContext(conversation=conv)
             result = await tool.execute()
             assert "already clean" in result.lower()
         finally:
-            _conv_mod._current_conversation = original
+            tool._ctx = None
 
     @pytest.mark.asyncio
     async def test_clears_history(self):
@@ -517,14 +507,13 @@ class TestClearContextTool:
         conv.add_user_message("current question")    # turn 2 (current, preserved)
         conv.add_assistant_message(content="current answer")
 
-        import slife.agent.conversation as _conv_mod
-        original = _conv_mod._current_conversation
+        from slife.tools.context import ToolContext
         try:
-            _conv_mod._current_conversation = conv
+            tool._ctx = ToolContext(conversation=conv)
             result = await tool.execute()
             assert "Cleared" in result
             assert "remaining" in result.lower()
             # System prompt should still be there
             assert len(conv.messages) >= 1
         finally:
-            _conv_mod._current_conversation = original
+            tool._ctx = None

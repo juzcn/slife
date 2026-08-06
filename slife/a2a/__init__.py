@@ -12,10 +12,10 @@ They use module-level transport references set by :class:`AgentService`.
 from slife.a2a.card import AgentCard
 from slife.a2a.client import A2AClient
 from slife.a2a.config import A2AConfig
-from slife.a2a.identity import AgentId, AgentMessage, HUMAN
+from slife.a2a.identity import AgentId, AgentMessage, HUMAN, SUBAGENT
 from slife.a2a.mqtt import MQTTAdapter
 from slife.a2a.transport import TransportAdapter, TransportMessage
-from slife.a2a.tools import (  # noqa: F401
+from slife.tools.a2a import (  # noqa: F401 — re-export for slife.a2a namespace
     A2ABroadcastTool,
     A2ACancelTaskTool,
     A2AGetAgentCardTool,
@@ -50,6 +50,7 @@ __all__ = [
     "AgentMessage",
     "HUMAN",
     "MQTTAdapter",
+    "SUBAGENT",
     "SubagentSpawnTool",
     "SubagentStopTool",
     "TransportAdapter",

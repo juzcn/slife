@@ -11,10 +11,11 @@ import pkgutil
 from typing import TYPE_CHECKING
 
 from slife.tools.base import Tool
-from slife.tools.registry import ToolRegistry, set_registry
+from slife.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from slife.config import Config
+    from slife.tools.context import ToolContext
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ def create_tools_from_config(
     overrides: list[dict] | None = None,
     config: "Config | None" = None,
     is_subagent: bool = False,
+    ctx: "ToolContext | None" = None,
 ) -> ToolRegistry:
     """Build a ToolRegistry by auto-discovering all Tool subclasses.
 
@@ -37,12 +39,9 @@ def create_tools_from_config(
     subagents, writing config files).
 
     Example overrides:
-        [{name: "execute_shell", timeout: 60}, {name: "list_skills", enabled: false}]
+        [{name: "execute_shell", timeout: 60}, {name: "skill_list", enabled: false}]
     """
     registry = ToolRegistry()
-    # Expose the registry so meta-tools (e.g. list_tools) can
-    # introspect it without creating a circular import.
-    set_registry(registry)
 
     override_map: dict[str, dict] = {}
     for entry in (overrides or []):
@@ -72,7 +71,14 @@ def create_tools_from_config(
                 logger.debug("tool_skipped_no_a2a_config name=%s", tool_cls.name)
                 continue
 
-        tool = tool_cls.from_config(cfg, config)
+        tool = tool_cls.from_config(cfg, config, ctx)
+
+        # Honour per-tool require_approval override from the tools: config
+        # section.  This extends the approval gate (originally MCP-only)
+        # to native tools like execute_shell, install_python_package, etc.
+        if cfg.get("require_approval"):
+            object.__setattr__(tool, "requires_approval", True)
+
         registry.register(tool)
 
     return registry

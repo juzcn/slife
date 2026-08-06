@@ -1,9 +1,9 @@
 """Skill tools — 自然语言操作手册的渐进式披露.
 
-list_skills:   列出所有可用 skill 的名称和描述
-use_skill:     加载指定 skill 的完整文档到上下文
-add_skill:     从远程 URL 安装 skill（拉取文件写入 skills 目录）
-remove_skill:  删除一个 skill 目录及其内容
+skill_list:   列出所有可用 skill 的名称和描述
+skill_use:     加载指定 skill 的完整文档到上下文
+skill_add:     从远程 URL 安装 skill（拉取文件写入 skills 目录）
+skill_remove:  删除一个 skill 目录及其内容
 """
 
 import json
@@ -160,8 +160,11 @@ class _SkillDirMixin:
         self.skills_dir = _resolve_skills_dir(skills_dir)
 
     @classmethod
-    def from_config(cls, cfg, config):  # pyright: ignore[reportIncompatibleMethodOverride]
-        return cls(skills_dir=cfg.get("skills_dir", ""))
+    def from_config(cls, cfg, config, ctx=None):  # pyright: ignore[reportIncompatibleMethodOverride]
+        tool = cls(skills_dir=cfg.get("skills_dir", ""))
+        if ctx is not None:
+            object.__setattr__(tool, "_ctx", ctx)
+        return tool
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -177,7 +180,7 @@ class CheckSkillsDirTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompa
     relative paths like ``skills/<name>/scripts/…`` to absolute paths.
     """
 
-    name = "check_skills_dir"
+    name = "skill_check_dir"
     category = "Skills"
     category: ClassVar[str] = "Skills"
     description = "Absolute path to the skills directory and installed subdirectories."
@@ -222,7 +225,7 @@ class CheckSkillsDirTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompa
 class ListSkillsTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """List all available skills with their names and descriptions."""
 
-    name = "list_skills"
+    name = "skill_list"
     category = "Skills"
     description = "List installed skills with names and one-line descriptions."
     parameters = {
@@ -239,13 +242,13 @@ class ListSkillsTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibl
 class UseSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """Load a skill's full SKILL.md documentation into context."""
 
-    name = "use_skill"
+    name = "skill_use"
     category = "Skills"
     description = "Return the full SKILL.md documentation for a skill."
     parameters = {
         "type": "object",
         "properties": {
-            "skill_name": {"type": "string", "description": "Skill name, from list_skills."},
+            "skill_name": {"type": "string", "description": "Skill name, from skill_list."},
         },
         "required": ["skill_name"],
     }
@@ -266,14 +269,14 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
       - files: list of {path, content} dicts (use with GitHub MCP)
       - archive: base64-encoded .zip or .tar.gz (use with fetch MCP)
 
-    After installation, list_skills and use_skill pick it up immediately
+    After installation, skill_list and skill_use pick it up immediately
     (the skills directory is re-scanned on every call).
     """
 
-    name = "add_skill"
+    name = "skill_add"
     category = "Skills"
     _subagent_skip = True
-    description = "Install or update a skill from files or base64 archive (upsert — idempotent). Immediately discoverable by list_skills."
+    description = "Install or update a skill from files or base64 archive (upsert — idempotent). Immediately discoverable by skill_list."
     parameters = {
         "type": "object",
         "properties": {
@@ -353,7 +356,7 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
         msg = f"[OK] {action} skill '{name}' ({count} files) → {skill_dir}"
         if not has_skill_md:
             msg += (
-                "\n[WARN] No SKILL.md found. list_skills will not discover "
+                "\n[WARN] No SKILL.md found. skill_list will not discover "
                 "this skill until a SKILL.md with proper frontmatter is added."
             )
         return msg
@@ -393,7 +396,7 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
         msg = f"[OK] {action} skill '{name}' from archive → {skill_dir}"
         if not has_skill_md:
             msg += (
-                "\n[WARN] No SKILL.md found. list_skills will not discover "
+                "\n[WARN] No SKILL.md found. skill_list will not discover "
                 "this skill until a SKILL.md with proper frontmatter is added."
             )
         return msg
@@ -429,14 +432,14 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
     Matches by frontmatter 'name' field first, then by directory name.
     """
 
-    name = "remove_skill"
+    name = "skill_remove"
     category = "Skills"
     _subagent_skip = True
     description = "Delete a skill directory and all its contents."
     parameters = {
         "type": "object",
         "properties": {
-            "skill_name": {"type": "string", "description": "Skill name, from list_skills."},
+            "skill_name": {"type": "string", "description": "Skill name, from skill_list."},
         },
         "required": ["skill_name"],
     }
@@ -489,7 +492,7 @@ class SkillSet(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethod
     parameters = {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "Skill name, from list_skills."},
+            "name": {"type": "string", "description": "Skill name, from skill_list."},
             "enabled": {"type": "boolean", "description": "Enable or disable."},
         },
         "required": ["name", "enabled"],

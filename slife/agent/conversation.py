@@ -116,16 +116,17 @@ class Conversation:
     ) -> None:
         """Add a user message, optionally with attached images.
 
-        If images are provided, each is shared via a signed URL served
-        by the memfiles server.  Images are skipped silently when the
-        ngrok tunnel is not active (no base64 fallback).
+        Local image files are read and base64-encoded into data URIs;
+        remote URLs (``https://``) are passed through as-is.  Images that
+        cannot be read are dropped with a visible note appended to the
+        message so the LLM knows the attachment was lost.
 
         User input is sanitized to mask any API keys / tokens before the
         message enters the LLM context or persistent storage.
 
         Args:
             content: The user's text input.
-            images: Optional list of image file paths to attach.
+            images: Optional list of image file paths or URLs to attach.
         """
         # Ensure the conversation is well-formed before adding a user
         # message.  If a previous request was cancelled during tool
@@ -136,10 +137,25 @@ class Conversation:
 
         if images:
             parts: list[dict] = [{"type": "text", "text": content}]
+            dropped: list[str] = []
             for img in images:
                 block = prepare_image_url(img)
                 if block is not None:
                     parts.append(block)
+                else:
+                    dropped.append(str(img))
+            if dropped:
+                note = (
+                    "\n\n[System note: the following image file(s) could not be "
+                    "read and were NOT sent to the model: "
+                    + ", ".join(dropped)
+                    + "]"
+                )
+                parts.append({"type": "text", "text": note})
+                logger.warning(
+                    "conv_user_dropped_images count=%d files=%s",
+                    len(dropped), dropped,
+                )
             self.messages.append({"role": "user", "content": parts})
             logger.debug("conv_user text=%.80s imgs=%d", content, len(images))
         else:
@@ -360,67 +376,6 @@ class Conversation:
             if msg.get("images"):
                 total += len(msg["images"]) * 200  # rough per-image estimate
         return max(total, 1)
-
-    def trim_context(
-        self,
-        context_window: int,
-        floor: float = 0.2,
-        ceiling: float = 0.8,
-    ) -> int:
-        """Trim oldest turns when context exceeds ceiling, down to floor.
-
-        Preserves the system prompt. Removes whole turns only — a turn
-        starts with a user message and includes all following assistant
-        and tool messages until the next user message.
-
-        Returns the number of messages removed.
-        """
-        if not self.messages or context_window <= 0:
-            return 0
-
-        ceiling_tokens = int(context_window * ceiling)
-        current = self.count_tokens()
-
-        if current <= ceiling_tokens:
-            return 0
-
-        target = int(context_window * floor)
-
-        # Find system prompt boundary
-        sys_end = 1 if self.messages[0]["role"] == "system" else 0
-
-        removed_total = 0
-        while current > target and sys_end < len(self.messages):
-            # Find the next user message (start of a turn)
-            turn_start = None
-            for i in range(sys_end, len(self.messages)):
-                if self.messages[i]["role"] == "user":
-                    turn_start = i
-                    break
-
-            if turn_start is None:
-                break  # no complete turns left to trim
-
-            # Find the end of this turn (next user message or end)
-            turn_end = len(self.messages)
-            for i in range(turn_start + 1, len(self.messages)):
-                if self.messages[i]["role"] == "user":
-                    turn_end = i
-                    break
-
-            # Remove the entire turn
-            count = turn_end - turn_start
-            del self.messages[turn_start:turn_end]
-            removed_total += count
-            current = self.count_tokens()
-
-        if removed_total > 0:
-            logger.info(
-                "context_trimmed removed=%d turns_tokens=%d window=%d floor=%.0f%%",
-                removed_total, current, context_window, floor * 100,
-            )
-
-        return removed_total
 
     # ── Extract turns helpers ─────────────────────────────────────
 

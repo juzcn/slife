@@ -46,17 +46,19 @@ class TestAddUserMessage:
         assert conv.messages[0]["role"] == "user"
         assert conv.messages[0]["content"] == "Hello!"
 
-    def test_text_with_images(self):
-        """Non-existent images are silently skipped."""
+    def test_text_with_images_dropped_notifies_llm(self):
+        """Unreadable images are dropped with a visible note for the LLM."""
         conv = Conversation()
         conv.add_user_message("Describe", images=["/fake/img.png"])
-        # Image that doesn't exist → prepare_image_url returns None → skipped
         assert conv.messages[0]["role"] == "user"
-        # Images path gone → multimodal parts list with only text
         parts = conv.messages[0]["content"]
         assert isinstance(parts, list)
-        assert len(parts) == 1
+        # Original text + dropped-image note = 2 parts
+        assert len(parts) == 2
         assert parts[0] == {"type": "text", "text": "Describe"}
+        assert "System note" in parts[1]["text"]
+        assert "/fake/img.png" in parts[1]["text"]
+        assert "NOT sent" in parts[1]["text"]
 
     def test_image_paths_not_provided(self):
         """images=None is treated as no images."""
@@ -461,88 +463,3 @@ class TestCountTokens:
         assert count > 200  # ~200 tokens per image
 
 
-# ── trim_context ─────────────────────────────────────────────────────
-
-
-class TestTrimContext:
-    """Tests for Conversation.trim_context()."""
-
-    def test_noop_when_under_ceiling(self):
-        conv = Conversation(system_prompt="You are helpful.")
-        conv.add_user_message("short")
-        conv.add_assistant_message("short reply")
-        removed = conv.trim_context(context_window=1_000_000)
-        assert removed == 0
-        assert len(conv.messages) == 3
-
-    def test_noop_when_no_messages(self):
-        conv = Conversation()
-        removed = conv.trim_context(context_window=1000)
-        assert removed == 0
-
-    def test_noop_when_zero_window(self):
-        conv = Conversation(system_prompt="test")
-        conv.add_user_message("hello")
-        removed = conv.trim_context(context_window=0)
-        assert removed == 0
-
-    def test_trims_oldest_turns(self):
-        """Oldest user→assistant turns are trimmed to make room."""
-        conv = Conversation(system_prompt="S")
-        # Add many large turns
-        for i in range(20):
-            conv.add_user_message(f"question {i} " + "x" * 500)
-            conv.add_assistant_message(f"answer {i} " + "y" * 500)
-
-        original_count = len(conv.messages)
-        removed = conv.trim_context(context_window=2000, floor=0.3, ceiling=0.7)
-        if removed > 0:
-            assert len(conv.messages) < original_count
-            # System prompt should still be first
-            assert conv.messages[0]["role"] == "system"
-
-    def test_preserves_system_prompt(self):
-        conv = Conversation(system_prompt="Do not remove me.")
-        # Add enough content to trigger trimming
-        for i in range(30):
-            conv.add_user_message("q" + "x" * 200)
-            conv.add_assistant_message("a" + "y" * 200)
-
-        conv.trim_context(context_window=1000, floor=0.2, ceiling=0.5)
-        if len(conv.messages) > 0:
-            assert conv.messages[0]["role"] == "system"
-            assert conv.messages[0]["content"] == "Do not remove me."
-
-    def test_trim_no_system_prompt(self):
-        conv = Conversation()
-        for i in range(30):
-            conv.add_user_message("q" + "x" * 300)
-            conv.add_assistant_message("a" + "y" * 300)
-
-        conv.trim_context(context_window=1000, floor=0.2, ceiling=0.5)
-        # Should not crash without system prompt
-        if len(conv.messages) > 0:
-            assert conv.messages[0]["role"] == "user"
-
-    def test_trim_no_user_messages_to_trim(self):
-        """When only assistant messages remain (no user turns), trim exits early.
-        This covers the break on line 232 (no complete turns left to trim)."""
-        conv = Conversation()
-        # Add only assistant messages (no user messages) — so count_tokens()
-        # will be high but no user turns to remove.
-        for i in range(50):
-            conv.messages.append({
-                "role": "assistant",
-                "content": "x" * 500,
-            })
-
-        removed = conv.trim_context(context_window=100, floor=0.1, ceiling=0.2)
-        # Should exit early with break since there are no user messages to
-        # anchor turn boundaries
-        assert removed == 0
-
-    def test_trim_zero_window_returns_zero(self):
-        conv = Conversation(system_prompt="test")
-        conv.add_user_message("hello")
-        removed = conv.trim_context(context_window=0)
-        assert removed == 0

@@ -12,7 +12,7 @@ the name ``NGROK_AUTHTOKEN``.  Register at https://ngrok.com/signup
 and store it via::
 
     credential_check NGROK_AUTHTOKEN
-    inject_credential NGROK_AUTHTOKEN
+    credential_inject NGROK_AUTHTOKEN
 """
 
 from __future__ import annotations

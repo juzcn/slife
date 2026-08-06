@@ -79,6 +79,7 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 if TYPE_CHECKING:
     from slife.config import Config
+    from slife.tools.context import ToolContext
 
 logger = logging.getLogger(__name__)
 
@@ -196,14 +197,22 @@ class Tool(ABC):
         ...
 
     @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None") -> Self:
+    def from_config(cls, cfg: dict, config: "Config | None", ctx: "ToolContext | None" = None) -> Self:
         """Create tool instance from config override dict.
 
         The default implementation calls cls() with no arguments.
         Override in subclasses that need constructor parameters
         (e.g. timeout, skills_dir).
+
+        *ctx* is a :class:`~slife.tools.context.ToolContext` holding
+        runtime references (registry, config, MCP client, conversation).
+        Tools that need any of these store it as ``self._ctx``.
         """
-        return cls()
+        from slife.tools.context import ToolContext  # noqa: F811
+        tool = cls()
+        if ctx is not None:
+            object.__setattr__(tool, "_ctx", ctx)
+        return tool
 
     def to_openai_function(self) -> dict:
         """Convert to OpenAI function definition format."""

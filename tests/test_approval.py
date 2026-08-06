@@ -158,7 +158,7 @@ class TestAgentLoopApproval:
         # Result should be "denied"
         handler.on_tool_result.assert_called_once()
         call_args = handler.on_tool_result.call_args
-        assert "用户拒绝" in call_args[0][1] or "拒绝" in str(call_args)
+        assert "denied by user" in call_args[0][1]
 
     @pytest.mark.asyncio
     async def test_approval_granted_proceeds_normally(self):

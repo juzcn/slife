@@ -79,11 +79,20 @@ class A2AConfig:
         # start_a2a() won't even attempt a probe.
         default_enabled = isinstance(data, dict)
 
+        transport = (data or {}).get("transport", "mqtt")
+        if transport == "http":
+            raise ValueError(
+                "A2A transport 'http' is not yet implemented. "
+                "Use transport 'mqtt' (the default) for A2A pub/sub messaging. "
+                "The HTTP transport skeleton (connect/disconnect only) "
+                "will be completed when the A2A HTTP server side is built."
+            )
+
         return cls(
             enabled=default_enabled,  # downgraded at runtime on probe failure
             agent_id=agent_id,
             agent_name=agent_name,
-            transport=(data or {}).get("transport", "mqtt"),
+            transport=transport,
             broker_host=broker.get("host", "localhost"),
             broker_port=broker.get("port", 1883),
             http_host=(data or {}).get("http_host", "127.0.0.1"),

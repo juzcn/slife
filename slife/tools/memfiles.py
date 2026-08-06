@@ -197,14 +197,13 @@ class PrepareImageTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         from slife.agent.multimodal import prepare_image_url
-        from slife.agent.conversation import get_conversation
-
         source: str = kwargs["source"]
         block = prepare_image_url(source)
         if block is None:
             return f"Error: cannot read image — {source}"
 
-        conv = get_conversation()
+        ctx = getattr(self, "_ctx", None)
+        conv = ctx.conversation if ctx is not None else None
         if conv is not None:
             conv.inject_images_to_last_user([block])
 

@@ -127,7 +127,7 @@ class TestA2AListSubagentsTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = A2AListSubagentsTool()
             result = await tool.execute()
-            assert "not enabled" in result
+            assert "not running yet" in result
 
     @pytest.mark.asyncio
     async def test_no_subagents(self):
@@ -462,7 +462,7 @@ class TestSubagentSpawnTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentSpawnTool()
             result = await tool.execute()
-            assert "not enabled" in result
+            assert "not running yet" in result
 
     @pytest.mark.asyncio
     async def test_spawn_success(self):
@@ -513,7 +513,7 @@ class TestSubagentStopTool:
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentStopTool()
             result = await tool.execute(agent_id="sub-1")
-            assert "not enabled" in result
+            assert "not running yet" in result
 
     @pytest.mark.asyncio
     async def test_stop_success(self):
