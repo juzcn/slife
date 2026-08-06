@@ -136,8 +136,8 @@ class Conversation:
 
         if images:
             parts: list[dict] = [{"type": "text", "text": content}]
-            for img_path in images:
-                block = prepare_image_url(img_path)
+            for img in images:
+                block = prepare_image_url(img)
                 if block is not None:
                     parts.append(block)
             self.messages.append({"role": "user", "content": parts})
@@ -189,6 +189,30 @@ class Conversation:
             "tool_call_id": tool_call_id,
             "content": content,
         })
+
+    def inject_images_to_last_user(
+        self, image_blocks: list[dict],
+    ) -> None:
+        """Append pre-built image blocks to the last user message.
+
+        Used by ``prepare_image`` so the LLM sees images as vision
+        content blocks on the next turn, not just as text.
+
+        Each block must be a dict with ``"type": "image_url"``.
+        """
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i]["role"] == "user":
+                content = self.messages[i]["content"]
+                if not isinstance(content, list):
+                    # Convert plain text to multimodal
+                    self.messages[i]["content"] = [
+                        {"type": "text", "text": content},
+                    ]
+                self.messages[i]["content"].extend(image_blocks)
+                logger.debug(
+                    "conv_inject_images count=%d", len(image_blocks),
+                )
+                break
 
     def to_openai_messages(
         self, thinking_enabled: bool = False,

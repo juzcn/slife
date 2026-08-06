@@ -53,10 +53,12 @@ async def handle_share(request: web.Request) -> web.StreamResponse:
     logger.info("share_served path=%s mime=%s size=%s", file_path, content_type, file_path.stat().st_size)
     logger.debug("share_streaming path=%s mime=%s", file_path, content_type)
 
+    file_size = file_path.stat().st_size
     response = web.StreamResponse(
         status=200,
         headers={
             "Content-Type": content_type,
+            "Content-Length": str(file_size),
             "Content-Disposition": f'inline; filename="{file_path.name}"',
             # Suppress the ngrok free-tier interstitial browser-warning page.
             # Without this, ngrok-free.dev returns HTML instead of the file.

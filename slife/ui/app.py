@@ -137,25 +137,32 @@ _IMAGE_ATTACH_RE = re.compile(
 
 
 def _parse_images_from_input(raw: str) -> tuple[str, list[str]]:
-    """Extract ``@path`` image directives from user input.
+    """Extract ``@path`` and ``@url`` image directives from user input.
 
-    Returns ``(cleaned_text, [absolute_paths])``.  Paths that don't
-    exist or have non-image extensions are left in the text unchanged.
+    Supports:
+      - ``@path/img.png``          → local file
+      - ``@https://example.com/...`` → remote URL
+
+    Returns ``(cleaned_text, [paths_or_urls])``.  Items that are neither
+    a valid local image file nor an HTTPS URL are left in the text.
     """
     images: list[str] = []
     parts: list[str] = []
     last_end = 0
 
     for match in _IMAGE_ATTACH_RE.finditer(raw):
-        # Text before this @directive
         parts.append(raw[last_end:match.start()])
-        file_path = match.group(1) or match.group(2) or match.group(3)
-        p = Path(file_path)
-        if p.exists() and p.is_file() and is_image_file(file_path):
-            images.append(str(p.resolve()))
+        value = match.group(1) or match.group(2) or match.group(3)
+
+        if value.startswith(("http://", "https://")):
+            images.append(value)
         else:
-            # Not a valid image — leave the @directive as-is
-            parts.append(raw[match.start():match.end()])
+            p = Path(value)
+            if p.exists() and p.is_file() and is_image_file(value):
+                images.append(str(p.resolve()))
+            else:
+                # Not a valid image — leave the @directive as-is
+                parts.append(raw[match.start():match.end()])
         last_end = match.end()
 
     parts.append(raw[last_end:])

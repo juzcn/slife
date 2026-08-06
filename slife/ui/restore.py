@@ -275,9 +275,10 @@ async def restore_session(
                 turn_idx += 1
                 ch = _channel_by_row.get(turn_idx, "")
                 prefix = restore_prefix(ch, agent_id)
+                raw = msg.get("content", "") or ""
                 ui_ops.append({
                     "type": "user",
-                    "content": msg.get("content", "") or "",
+                    "content": raw,
                     "images": msg.get("images"),
                     "prefix": prefix,
                 })

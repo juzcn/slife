@@ -1,19 +1,12 @@
-"""Multimodal utilities — image URL generation for vision APIs.
-
-User-attached images (via ``@path`` syntax) are shared as lightweight
-HTTPS URLs through the memfiles server.  No BLOBs, no base64 — the file
-is served directly from disk via a signed token.
-"""
+"""Multimodal utilities — image content block generation for vision APIs."""
 
 from __future__ import annotations
 
+import base64
 import logging
 import mimetypes
 from pathlib import Path
 from typing import Any
-
-from slife.memfiles.token import register_file
-from slife.memfiles.tunnel import share_url_for
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +16,18 @@ def _ensure_mimetypes() -> None:
         mimetypes.init()
 
 
-def prepare_image_url(path: str | Path) -> dict[str, Any] | None:
-    """Build an OpenAI vision content block for a local image file.
+def prepare_image_url(source: str) -> dict[str, Any] | None:
+    """Build a vision content block from a local file path or HTTPS URL.
 
-    Generates a signed sharing URL that the LLM can fetch.  Returns
-    ``None`` when the file doesn't exist or the tunnel is offline.
+    - Local path → reads file, base64-encodes, returns ``data:`` URI block.
+    - HTTPS URL → returns the URL block directly.
+
+    Returns ``None`` when a local file doesn't exist or can't be read.
     """
-    p = Path(path)
+    if source.startswith(("http://", "https://")):
+        return {"type": "image_url", "image_url": {"url": source}}
+
+    p = Path(source)
     if not p.is_file():
         logger.debug("prepare_image_not_found path=%s", p)
         return None
@@ -39,10 +37,13 @@ def prepare_image_url(path: str | Path) -> dict[str, Any] | None:
     if not mime_type.startswith("image/"):
         mime_type = "image/png"
 
-    file_id = register_file(str(p.resolve()))
-    url = share_url_for(file_id)
-    if url is None:
-        logger.debug("prepare_image_no_tunnel path=%s", p)
+    try:
+        data = base64.b64encode(p.read_bytes()).decode("ascii")
+    except OSError:
+        logger.debug("prepare_image_read_error path=%s", p)
         return None
 
-    return {"type": "image_url", "image_url": {"url": url}}
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{mime_type};base64,{data}"},
+    }

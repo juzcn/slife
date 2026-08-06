@@ -168,85 +168,47 @@ class ExposeFileTool(Tool):
         )
 
 
-class IncludeImageTool(Tool):
-    """Wrap an image reference in OpenAI vision content-block format.
+class PrepareImageTool(Tool):
+    """Include an image for the LLM to process with vision.
 
-    A pure passthrough — accepts the two image formats the OpenAI vision
-    API natively supports and returns them structured for multimodal use.
-    Local file paths are **not** accepted; use ``expose_file`` first to
-    convert a local path to an HTTPS URL, then pass that URL here.
-
-    OpenAI vision API accepts two image formats:
-
-      - **url**  — ``https://...`` (remote URL)
-      - **base64** — ``data:image/jpeg;base64,/9j/4AAQ...``
-
-    At least one of *url* or *base64* must be provided.
+    Takes a local file path or HTTPS URL and makes the image visible
+    to the vision model.  Works exactly like the ``@`` syntax in chat.
     """
 
-    name: ClassVar[str] = "include_image"
+    name: ClassVar[str] = "prepare_image"
     category: ClassVar[str] = "MemFiles"
     description: ClassVar[str] = (
-        "Include an image for multimodal processing. "
-        "Provide either url (https:// URL) or base64 (data: URI). "
-        "Local file paths are NOT accepted — use expose_file first to "
-        "convert a local path to a public HTTPS URL, then call this tool."
+        "Include an image for vision processing. "
+        "Pass a local file path or HTTPS URL. Works like @ syntax."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "url": {
+            "source": {
                 "type": "string",
                 "description": (
-                    "Image as an HTTPS URL (https://...). "
-                    "NOT a local file path — use expose_file for that."
-                ),
-            },
-            "base64": {
-                "type": "string",
-                "description": (
-                    "Image as a data URI (data:image/jpeg;base64,/9j/4AAQ...)."
+                    "Local file path (e.g. 'D:\\Downloads\\photo.jpg') "
+                    "or HTTPS URL (e.g. 'https://example.com/photo.jpg')."
                 ),
             },
         },
+        "required": ["source"],
     }
 
     async def execute(self, **kwargs) -> str:
-        url: str = kwargs.get("url", "")
-        base64: str = kwargs.get("base64", "")
+        from slife.agent.multimodal import prepare_image_url
+        from slife.agent.conversation import get_conversation
 
-        if not url and not base64:
-            return "Error: provide at least one of 'url' or 'base64'."
+        source: str = kwargs["source"]
+        block = prepare_image_url(source)
+        if block is None:
+            return f"Error: cannot read image — {source}"
 
-        # ── Reject local file paths ───────────────────────────────────
-        if url and not url.startswith(("http://", "https://")):
-            if len(url) >= 2 and url[1] == ":":
-                return (
-                    "Error: local file paths are not accepted. "
-                    "Use expose_file first to get a public HTTPS URL, "
-                    "then pass that URL here."
-                )
-            return (
-                "Error: 'url' must be an HTTPS URL. "
-                "For local files, call expose_file first."
-            )
+        conv = get_conversation()
+        if conv is not None:
+            conv.inject_images_to_last_user([block])
 
-        # ── base64 data URI ───────────────────────────────────────────
-        if base64:
-            return self._format_result(base64, source="data URI")
-
-        # ── HTTPS URL ─────────────────────────────────────────────────
-        return self._format_result(url, source="URL")
-
-    @staticmethod
-    def _format_result(image_url: str, source: str) -> str:
-        """Return a consistent result format."""
-        return (
-            f"Image ready for multimodal use (source: {source}):\n"
-            f"{image_url}\n\n"
-            f"Use this URL in multimodal API calls to let the LLM process "
-            f"the image."
-        )
+        return f"Image included: {source}"
 
 
 # ═══════════════════════════════════════════════════════════════════════

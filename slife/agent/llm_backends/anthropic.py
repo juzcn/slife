@@ -61,12 +61,19 @@ class AnthropicBackend:
                     for part in content:
                         if part.get("type") == "image_url":
                             url = part.get("image_url", {}).get("url", "")
-                            header, b64 = url.split(",", 1)
-                            mime = header.split(":")[1].split(";")[0]
-                            blocks.append({
-                                "type": "image",
-                                "source": {"type": "base64", "media_type": mime, "data": b64},
-                            })
+                            if url.startswith("data:"):
+                                # data:image/jpeg;base64,<data>
+                                header, b64 = url.split(",", 1)
+                                mime = header.split(":")[1].split(";")[0]
+                                blocks.append({
+                                    "type": "image",
+                                    "source": {"type": "base64", "media_type": mime, "data": b64},
+                                })
+                            else:
+                                blocks.append({
+                                    "type": "image",
+                                    "source": {"type": "url", "url": url},
+                                })
                         else:
                             blocks.append(part)
                     converted.append({"role": "user", "content": blocks})
