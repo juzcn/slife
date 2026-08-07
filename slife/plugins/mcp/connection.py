@@ -245,8 +245,24 @@ class MCPServerConnection:
         exe = resolve_command(self.config.command)
         env = dict(os.environ)
         if self.config.env:
+            logger.debug(
+                "mcp_stdio_env server=%s keys=%s",
+                self.config.name, list(self.config.env.keys()),
+            )
             for key, value in self.config.env.items():
-                env[key] = _resolve_secret(value)
+                resolved = _resolve_secret(value)
+                env[key] = resolved
+                # Log whether resolution succeeded (don't log the actual value)
+                is_still_ref = resolved.startswith("${") and resolved.endswith("}")
+                logger.debug(
+                    "mcp_stdio_env_set server=%s key=%s resolved=%s",
+                    self.config.name, key, not is_still_ref,
+                )
+        else:
+            logger.debug(
+                "mcp_stdio_env server=%s env=None or empty — using parent env only",
+                self.config.name,
+            )
 
         # Resolve ${VAR} references in args (e.g. "Authorization: Bearer ${GITHUB_TOKEN}")
         resolved_args = [
