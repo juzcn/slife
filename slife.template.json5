@@ -349,21 +349,21 @@
         },
       },
       "nvidia-nim": {
-        "command": "bunx",
+        "command": "npx",
         "args": [
-          "@hallaxius/nvidia-nim-mcp",
-          "--allowed-local-media-path",
-          "D:\\Downloads",
+          "-y",
+          "@hallaxius/nvidia-nim-mcp"
         ],
-        "description": "NVIDIA NIM API (chat, vision, embeddings, OCR, image gen) with local media path support",
+        "description": "NVIDIA NIM API (chat, vision, embeddings, OCR, image gen). Cross-platform: uses npx (works on both Windows & WSL/Linux)",
         "env": {
-          "NVIDIA_API_KEY": "${NVAPI_KEY}",
+          "NVIDIA_API_KEY": "${NVAPI_KEY}"
         },
         "source": {
+          "description": "README standard: npx -y @hallaxius/nvidia-nim-mcp; NVAPI_KEY env alias; removed invalid --allowed-local-media-path flag",
           "type": "npm",
-          "description": "Configured to allow local file paths for vision/OCR tools",
-          "fetched_at": "2026-08-04T07:49:26.111175+00:00",
-        },
+          "version": "0.1.0",
+          "fetched_at": "2026-08-07T03:42:31.080818+00:00"
+        }
       },
     },
   },
