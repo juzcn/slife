@@ -3,6 +3,7 @@
 Tools:
     check_embedding          — embedding backend status
     check_wechat             — WeChat plugin status
+    check_watchdog           — plugin watchdog (auto-restart) status
     system_health            — orchestrate checks + startup records
     list_tools               — enumerate native vs MCP-proxied tools (with category filter)
     check_mcp_servers        — MCP server connection status
@@ -181,6 +182,44 @@ class CheckWechatTool(Tool):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# check_watchdog
+# ═══════════════════════════════════════════════════════════════════════
+
+def check_watchdog() -> list[dict]:
+    """Return plugin watchdog status from health records.
+
+    Deduplicates by plugin name — only the latest record per plugin
+    is kept.  Plugins without any record were never started (normal
+    for subagents or when a plugin is disabled).
+    """
+    results: list[dict] = []
+    records = get_startup_records()
+
+    # Collect watchdog records, keep only latest per plugin
+    seen: dict[str, dict] = {}
+    for r in records:
+        if r.get("component") != "watchdog":
+            continue
+        key = r.get("key", "")
+        if key:
+            seen[key] = r  # later records overwrite earlier ones
+
+    if not seen:
+        results.append({
+            "component": "watchdog", "level": "ok",
+            "key": "status", "value": "none",
+            "hint": "No plugin watchdogs active (subagent, or plugins not started).",
+        })
+        return results
+
+    for name in sorted(seen):
+        r = seen[name]
+        results.append(dict(r))  # copy — don't mutate health records
+
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # check_mcp_servers
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -299,6 +338,7 @@ _CHECK_FUNCTIONS: list[str] = [
     "check_embedding",
     "check_wechat",
     "check_mcp_servers",
+    "check_watchdog",
 ]
 
 

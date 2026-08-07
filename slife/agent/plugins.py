@@ -153,6 +153,12 @@ class PluginLifecycle:
         self._restart_count = 0
         self._watchdog_task = asyncio.ensure_future(self._watchdog_loop())
         logger.info("%s_watchdog_started", self.name)
+        from slife.health import record
+        record(
+            "watchdog", "ok",
+            key=self.name, value="active",
+            hint=f"Watchdog monitoring {self.name} plugin process.",
+        )
 
     async def _watchdog_loop(self) -> None:
         """Monitor the child process; restart on unexpected exit."""
@@ -191,6 +197,16 @@ class PluginLifecycle:
                     "%s_watchdog_max_restarts name=%s count=%d — giving up",
                     self.name, self._restart_count,
                 )
+                from slife.health import record
+                record(
+                    "watchdog", "error",
+                    key=self.name, value="exhausted",
+                    hint=(
+                        f"{self.name} plugin crashed {self._restart_count} times "
+                        f"(max {self._max_restarts}) — watchdog gave up. "
+                        f"Restart slife to recover."
+                    ),
+                )
                 return
 
             # ── Clean up dead tools ──────────────────────────────────
@@ -223,6 +239,16 @@ class PluginLifecycle:
                 "%s_watchdog_restart name=%s attempt=%d/%d",
                 self.name, self._restart_count, self._max_restarts,
             )
+            from slife.health import record
+            record(
+                "watchdog", "warning",
+                key=self.name, value=f"restarting ({self._restart_count}/{self._max_restarts})",
+                hint=(
+                    f"{self.name} plugin exited (code {returncode}), "
+                    f"restart attempt {self._restart_count}/{self._max_restarts} "
+                    f"with {backoff:.1f}s backoff."
+                ),
+            )
             try:
                 if self._restart_cb is not None:
                     await self._restart_cb()
@@ -236,6 +262,12 @@ class PluginLifecycle:
                 # Success — reset counters
                 backoff = _WATCHDOG_BACKOFF_INITIAL
                 self._restart_count = 0
+                from slife.health import record
+                record(
+                    "watchdog", "ok",
+                    key=self.name, value="active",
+                    hint=f"{self.name} plugin restarted successfully — watchdog monitoring.",
+                )
             except Exception:
                 backoff = min(
                     backoff * _WATCHDOG_BACKOFF_MULTIPLIER,
