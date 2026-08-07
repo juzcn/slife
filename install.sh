@@ -48,6 +48,7 @@ echo -e "User data         : ${CYAN}$HOME/.slife/${NC}"
 echo "Python            : managed by uv (3.13)"
 echo "npx               : auto-install Node.js if needed (required for MCP servers)"
 echo "bun               : auto-install bun if needed (required for nvidia-nim MCP)"
+echo "unzip             : auto-install on Linux if missing (bun installer dependency)"
 echo "Disk space needed : ~500 MB"
 echo ""
 
