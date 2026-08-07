@@ -186,8 +186,6 @@ async def mcp_remove_server(name: str) -> str:
 async def mcp_list_servers() -> str:
     """List all configured MCP servers."""
     servers = _pool.list_servers()
-    if not servers:
-        return "No MCP servers configured."
     return json.dumps(servers, ensure_ascii=False, indent=2)
 
 

@@ -279,13 +279,84 @@ def check_watchdog() -> list[dict]:
 # check_mcp
 # ═══════════════════════════════════════════════════════════════════════
 
-async def check_mcp() -> list[dict]:
-    """Return MCP server status by calling mcp_list_servers.
+def _diagnose_mcp_server(server: dict) -> dict:
+    """Diagnose a single MCP server from raw ``mcp_list_servers`` data.
 
-    Reports per-server: enabled/disabled, connected/disconnected state,
-    disclosure mode (eager/lazy), tool count, transport, and errors.
+    Pure data transformation — no side effects, no external calls.
+    Maps the raw server state to a health-check entry with an
+    appropriate level (info / ok / warning) and human-readable hint.
     """
-    results: list[dict] = []
+    name = server.get("name", "?")
+    state = server.get("state", "unknown")
+    enabled = server.get("enabled", True)
+    active = server.get("active", True)
+    tool_count = server.get("tool_count", 0)
+    transport = server.get("transport", "")
+    error_msg = server.get("error", "")
+    disclosure = "eager" if active else "lazy"
+
+    if not enabled:
+        return {
+            "component": "mcp_servers", "level": "info",
+            "key": name, "value": "disabled",
+            "enabled": False, "state": "disabled",
+            "disclosure": disclosure, "tool_count": 0,
+            "transport": transport,
+            "hint": f"MCP server '{name}' is disabled (disclosure={disclosure}, not connected).",
+        }
+
+    if state == "running":
+        tool_note = (
+            f"{tool_count} tools loaded" if active
+            else f"{tool_count} tools available (not loaded)"
+        )
+        return {
+            "component": "mcp_servers", "level": "ok",
+            "key": name, "value": f"connected [{disclosure}] ({tool_note})",
+            "enabled": True, "state": "connected",
+            "disclosure": disclosure, "tool_count": tool_count,
+            "transport": transport,
+            "hint": (
+                f"MCP server '{name}': connected via {transport}, "
+                f"disclosure={disclosure}, {tool_note}."
+            ),
+        }
+
+    if state == "stopped":
+        detail = f" — {error_msg}" if error_msg else ""
+        return {
+            "component": "mcp_servers", "level": "warning",
+            "key": name, "value": f"disconnected{detail}",
+            "enabled": True, "state": "disconnected",
+            "disclosure": disclosure, "tool_count": 0,
+            "transport": transport,
+            "hint": (
+                f"MCP server '{name}' is enabled but NOT connected.{detail} "
+                f"Use mcp_list_servers to check current status and error details."
+            ),
+        }
+
+    # Unknown / other states (e.g. "connecting", "failed")
+    return {
+        "component": "mcp_servers", "level": "warning",
+        "key": name, "value": state,
+        "enabled": enabled, "state": state,
+        "disclosure": "unknown", "tool_count": tool_count,
+        "transport": transport,
+        "hint": f"MCP server '{name}' state={state}.",
+    }
+
+
+async def check_mcp() -> list[dict]:
+    """Check MCP wrapper health + diagnose each external MCP server.
+
+    Calls ``mcp_list_servers`` for the raw server list, then applies
+    :func:`_diagnose_mcp_server` to each entry to produce health-check
+    records with an appropriate level and remediation hint.
+
+    Wrapper-level problems (registry not initialized, tool missing) are
+    reported before any per-server diagnostics.
+    """
     try:
         from slife.tools.registry import get_registry
         registry = get_registry()
@@ -313,72 +384,8 @@ async def check_mcp() -> list[dict]:
                      "key": "status", "value": "none",
                      "hint": "No external MCP servers configured."}]
 
-        for server in data:
-            name = server.get("name", "?")
-            state = server.get("state", "unknown")
-            tool_count = server.get("tool_count", 0)
-            transport = server.get("transport", "")
-            error_msg = server.get("error", "")
-            enabled = server.get("enabled", True)
-            active = server.get("active", True)
+        return [_diagnose_mcp_server(s) for s in data]
 
-            if not enabled:
-                # Disabled: intentionally not connected, no tools loaded.
-                disclosure = "eager" if active else "lazy"
-                results.append({
-                    "component": "mcp_servers", "level": "info",
-                    "key": name, "value": "disabled",
-                    "enabled": False,
-                    "state": "disabled",
-                    "disclosure": disclosure,
-                    "tool_count": 0,
-                    "transport": transport,
-                    "hint": f"MCP server '{name}' is disabled (disclosure={disclosure}, not connected).",
-                })
-            elif state == "running":
-                disclosure = "eager" if active else "lazy"
-                tool_note = f"{tool_count} tools loaded" if active else f"{tool_count} tools available (not loaded)"
-                results.append({
-                    "component": "mcp_servers", "level": "ok",
-                    "key": name, "value": f"connected [{disclosure}] ({tool_note})",
-                    "enabled": True,
-                    "state": "connected",
-                    "disclosure": disclosure,
-                    "tool_count": tool_count,
-                    "transport": transport,
-                    "hint": (
-                        f"MCP server '{name}': connected via {transport}, "
-                        f"disclosure={disclosure}, {tool_note}."
-                    ),
-                })
-            elif state == "stopped":
-                detail = f" — {error_msg}" if error_msg else ""
-                results.append({
-                    "component": "mcp_servers", "level": "warning",
-                    "key": name, "value": f"disconnected{detail}",
-                    "enabled": True,
-                    "state": "disconnected",
-                    "disclosure": "eager" if active else "lazy",
-                    "tool_count": 0,
-                    "transport": transport,
-                    "hint": (
-                        f"MCP server '{name}' is enabled but NOT connected.{detail} "
-                        f"Use mcp_check_server to diagnose."
-                    ),
-                })
-            else:
-                results.append({
-                    "component": "mcp_servers", "level": "warning",
-                    "key": name, "value": state,
-                    "enabled": enabled,
-                    "state": state,
-                    "disclosure": "unknown",
-                    "tool_count": tool_count,
-                    "transport": transport,
-                    "hint": f"MCP server '{name}' state={state}.",
-                })
-
-        return results
     except Exception as e:
         logger.warning("check_mcp_failed err=%s", e)
         return [{"component": "mcp_servers", "level": "error",
