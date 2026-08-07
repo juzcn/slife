@@ -72,15 +72,34 @@ fi
 echo -e "${GREEN}  ✓${NC} uv $(uv --version 2>&1)"
 
 #
+# Helper: detect Windows executables on WSL (paths under /mnt/).
+# WSL interop does not forward custom env vars to Windows .exe
+# processes, breaking MCP servers that need API keys.
+_is_windows_exe() {
+    local _p
+    _p="$(command -v "$1" 2>/dev/null || true)"
+    [ -n "$_p" ] || return 1
+    case "$_p" in
+        /mnt/*) return 0 ;;
+        *)      return 1 ;;
+    esac
+}
+
+#
 echo -e "${YELLOW}[2/5] Ensuring npx (Node.js) is available…${NC}"
 HAVE_NPX=false
-if command -v npx &>/dev/null; then
+# On WSL, a Windows npx won't forward custom env vars — install Linux-native.
+if command -v npx &>/dev/null && ! _is_windows_exe npx; then
     echo -e "${GREEN}  ✓${NC} npx v$(npx --version 2>&1)"
     HAVE_NPX=true
 fi
 
 if [ "$HAVE_NPX" = false ]; then
-    echo -e "${YELLOW}  npx not found, installing Node.js…${NC}"
+    if _is_windows_exe npx; then
+        echo -e "${YELLOW}  npx is a Windows executable — installing Linux-native Node.js…${NC}"
+    else
+        echo -e "${YELLOW}  npx not found, installing Node.js…${NC}"
+    fi
     # Try official repos (safe — no curl-to-shell).  Do NOT pipe
     # third-party scripts directly into sudo bash (security risk).
     if command -v apt-get &>/dev/null; then
@@ -94,13 +113,13 @@ if [ "$HAVE_NPX" = false ]; then
     elif command -v pacman &>/dev/null; then
         sudo pacman -S --noconfirm nodejs npm 2>/dev/null || true
     fi
-    # Re-check after install attempt
-    if command -v npx &>/dev/null; then
+    # Re-check after install attempt (Linux-native only)
+    if command -v npx &>/dev/null && ! _is_windows_exe npx; then
         echo -e "${GREEN}  ✓${NC} npx v$(npx --version 2>&1)"
         HAVE_NPX=true
     fi
     if [ "$HAVE_NPX" = false ]; then
-        echo -e "${RED}WARNING: npx not available.${NC}"
+        echo -e "${RED}WARNING: Linux-native npx not available.${NC}"
         echo -e "${RED}  These MCP servers require npx and will NOT work:${NC}"
         echo -e "${RED}    file-search, serper, tavily-mcp, github, amap-maps, filesystem${NC}"
         echo -e "${RED}  Install Node.js LTS from https://nodejs.org then re-run this installer.${NC}"
@@ -112,21 +131,26 @@ fi
 #
 echo -e "${YELLOW}[2b] Ensuring bun (JavaScript runtime) is available…${NC}"
 HAVE_BUN=false
-if command -v bun &>/dev/null; then
+# On WSL, a Windows bun won't forward custom env vars — install Linux-native.
+if command -v bun &>/dev/null && ! _is_windows_exe bun; then
     echo -e "${GREEN}  ✓${NC} bun v$(bun --version 2>&1)"
     HAVE_BUN=true
 fi
 
 if [ "$HAVE_BUN" = false ]; then
-    echo -e "${YELLOW}  bun not found, installing…${NC}"
+    if _is_windows_exe bun; then
+        echo -e "${YELLOW}  bun is a Windows executable — installing Linux-native bun…${NC}"
+    else
+        echo -e "${YELLOW}  bun not found, installing…${NC}"
+    fi
     curl -fsSL https://bun.sh/install | bash
     export PATH="$HOME/.bun/bin:$PATH"
-    if command -v bun &>/dev/null; then
+    if command -v bun &>/dev/null && ! _is_windows_exe bun; then
         echo -e "${GREEN}  ✓${NC} bun v$(bun --version 2>&1)"
         HAVE_BUN=true
     fi
     if [ "$HAVE_BUN" = false ]; then
-        echo -e "${RED}WARNING: bun not available.${NC}"
+        echo -e "${RED}WARNING: Linux-native bun not available.${NC}"
         echo -e "${RED}  The nvidia-nim MCP server requires bunx and will NOT work.${NC}"
         echo -e "${RED}  Install bun manually from https://bun.sh then re-run this installer.${NC}"
         echo -e "${RED}  All other MCP servers (npx-based) are unaffected.${NC}"
