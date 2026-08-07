@@ -107,10 +107,10 @@ class ExposeFileTool(Tool):
     category: ClassVar[str] = "MemFiles"
     _requires_tunnel: ClassVar[bool] = True  # skipped at registration when tunnel is offline
     description: ClassVar[str] = (
-        "Expose a local file as a public HTTPS URL. "
+        "Expose a local file as a public HTTPS URL via the ngrok tunnel. "
         "Use this to convert a local file path into a URL that multimodal "
         "LLMs can fetch directly — e.g. to pass a local image to a vision "
-        "model. Returns an error if the memfiles tunnel is not running."
+        "model. This tool is only available when the memfiles tunnel is active."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -229,9 +229,9 @@ class SaveToMemfilesTool(Tool):
     description: ClassVar[str] = (
         "Save content to persistent file storage. Provide ONE of: content (markdown "
         "text), url (to download), or path (to a local file). The file is "
-        "stored in the memfiles/ folder and accessible via both local path and "
-        "a public sharing URL. Use when the user says 'remember this', "
-        "'save this', or 'keep this file'."
+        "stored in the memfiles/ folder. A public sharing URL is included when "
+        "the ngrok tunnel is active; otherwise the file is only accessible locally. "
+        "Use when the user says 'remember this', 'save this', or 'keep this file'."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
