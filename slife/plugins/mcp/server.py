@@ -62,7 +62,6 @@ def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
         "For `command`: use the binary name directly (npx, uvx, bunx, python, etc.). "
         "On WSL/Linux/macOS (平台类别 ≠ native-Windows), do NOT wrap in `cmd /c` — "
         "cmd.exe only exists on native Windows. The platform info is in the system prompt. "
-        "For `description`: use English only — avoids encoding issues across platforms. "
         "For the `env` parameter: use ${VAR} references for secrets "
         "(e.g. SERPER_API_KEY: '${SERPER_API_KEY}'). NEVER pass plaintext "
         "API keys or tokens — tell the user to run 'credstore set <KEY>' "
