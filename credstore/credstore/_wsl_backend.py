@@ -241,15 +241,6 @@ class WslBackend(KeyringBackend):
     # ── KeyringBackend interface ──────────────────────────────────
 
     def get_password(self, service: str, username: str) -> Optional[str]:
-        # Match WinVaultKeyring._resolve_credential() fallback order:
-        # 1. Try bare service name first — credentials stored by the
-        #    native Windows backend (WinVaultKeyring) use the service
-        #    name ("credstore") as the CredMan target.
-        # 2. Fall back to compound name: {username}@{service} —
-        #    credentials stored by WslBackend itself.
-        result = _get_credential(service)
-        if result is not None:
-            return result
         return _get_credential(self._target(service, username))
 
     def set_password(self, service: str, username: str, password: str) -> None:
