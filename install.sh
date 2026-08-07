@@ -143,6 +143,17 @@ if [ "$HAVE_BUN" = false ]; then
     else
         echo -e "${YELLOW}  bun not found, installing…${NC}"
     fi
+    # bun's installer requires unzip
+    if ! command -v unzip &>/dev/null; then
+        echo -e "${YELLOW}  Installing unzip (bun installer dependency)…${NC}"
+        if command -v apt-get &>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y unzip 2>/dev/null || true
+        elif command -v dnf &>/dev/null; then
+            sudo dnf install -y unzip 2>/dev/null || true
+        elif command -v pacman &>/dev/null; then
+            sudo pacman -S --noconfirm unzip 2>/dev/null || true
+        fi
+    fi
     curl -fsSL https://bun.sh/install | bash
     export PATH="$HOME/.bun/bin:$PATH"
     if command -v bun &>/dev/null && ! _is_windows_exe bun; then
