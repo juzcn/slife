@@ -300,10 +300,8 @@
         },
       },
       "excel-mcp": {
-        "command": "cmd",
+        "command": "npx",
         "args": [
-          "/c",
-          "npx",
           "--yes",
           "@negokaz/excel-mcp-server",
         ],
