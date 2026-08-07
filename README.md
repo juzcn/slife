@@ -181,6 +181,8 @@ Four built-in plugins as independent child processes:
 
 External MCP servers configured in `slife.json5` → `mcp.servers`. Any stdio or HTTP MCP server works — no Slife SDK required. Per-server option `require_approval: true` adds a human approval gate before each of its tool calls.
 
+All plugins run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 3 retries). The MCP wrapper watchdog also reconnects external servers after restart.
+
 ### A2A — Agent-to-Agent
 
 Two working transports plus local workers, unified behind one tool surface: **MQTT** (remote peers over a Mosquitto broker — presence, heartbeat, task routing), **Subagent** (local child-process workers over JSON-RPC, always available), and an experimental **HTTP Streamable** transport. All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.

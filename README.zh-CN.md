@@ -179,6 +179,8 @@ active_model: "deepseek/deepseek-v4-pro",
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置。任何 stdio 或 HTTP MCP 服务器均可接入——无需 Slife SDK。按服务器配置 `require_approval: true` 可为其工具调用添加人工审批关卡。
 
+所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 3 次重试）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。
+
 ### A2A — 智能体间通信
 
 两种可用传输加本地工作者，统一在同一套工具接口之后：**MQTT**（通过 Mosquitto broker 连接远程智能体——在线状态、心跳、任务路由）、**子智能体**（本地子进程工作者，JSON-RPC 通信，始终可用），以及实验性的 **HTTP Streamable** 传输。所有消息——人类输入、微信、MQTT、子智能体结果——通过单一收件箱队列逐个处理。

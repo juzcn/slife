@@ -265,7 +265,22 @@ Four built-in plugins run as independent child processes. Communication is via *
 4. Define `@mcp.tool` functions (or HTTP routes for memfiles)
 5. Be importable: `python -m <module>.server`
 
-No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. The parent reads the port line with a 30 s timeout; initial client connection retries 30× at 0.1 s. **There is no automatic restart** — a plugin that dies stays down for the session (see REVIEW.md).
+No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. The parent reads the port line with a 30 s timeout; initial client connection retries 30× at 0.1 s.
+
+### Watchdog (Auto-Restart)
+
+Each plugin runs with a **watchdog** background task that monitors the child process and auto-restarts it on unexpected exit:
+
+| Feature | Detail |
+|---------|--------|
+| Detection | `await subprocess.wait()` — blocks until the child exits |
+| On crash | Unregisters the plugin's proxy tools, then restarts the process |
+| Backoff | Exponential: 1 s → 2 s → 4 s → … → 30 s max |
+| Max restarts | 3 consecutive failures → watchdog gives up and logs an error |
+| Success reset | A successful restart resets the backoff and retry counter |
+| Scope | **mcp** (respawns wrapper + reconnects external servers), **memdb**, **wechat** (restores poll loop) |
+
+Subagents do **not** have their own watchdog — they connect to the main agent's plugin processes via HTTP, so a subagent crash only kills the subagent, not the shared infrastructure.
 
 Processes communicate through environment variables:
 
