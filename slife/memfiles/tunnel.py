@@ -136,7 +136,7 @@ class NgrokTunnel:
                 last_error = e
                 if attempt < _MAX_RETRIES:
                     delay = _RETRY_DELAY * attempt
-                    logger.warning(
+                    logger.info(
                         "tunnel_retry attempt=%d/%d delay=%.1fs err=%s",
                         attempt, _MAX_RETRIES, delay, e,
                     )
@@ -204,7 +204,7 @@ class NgrokTunnel:
             self._monitor_retries = 0
         except Exception as e:
             self._monitor_retries += 1
-            logger.warning(
+            logger.info(
                 "tunnel_initial_start_failed port=%s err=%s", port, e,
             )
 

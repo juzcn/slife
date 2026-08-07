@@ -142,10 +142,8 @@ class ExposeFileTool(Tool):
 
         if not is_active():
             return (
-                "Error: the memfiles tunnel is not running. "
-                "Start ngrok with an auth token (NGROK_AUTHTOKEN) first, "
-                "or use @path syntax in the chat input which handles this "
-                "automatically."
+                "Error: file sharing service is not available. "
+                "Run system_health to check service status."
             )
 
         # ── Register and build the URL ─────────────────────────────
@@ -156,8 +154,8 @@ class ExposeFileTool(Tool):
 
         if url is None:
             return (
-                "Error: memfiles tunnel went offline while building the URL. "
-                "Please retry."
+                "Error: file sharing service became unavailable. "
+                "Please retry or run system_health for details."
             )
 
         return (

@@ -983,7 +983,7 @@ class AgentService:
                 try:
                     start_tunnel(port)
                 except Exception as e:
-                    logger.warning(
+                    logger.info(
                         "tunnel_init_failed port=%s err=%s — memfiles sharing offline",
                         port, e,
                     )
