@@ -574,13 +574,17 @@ try {
     Write-Step "[5/5] Finalising PATH..."
 
     $localBin   = "$env:USERPROFILE\.local\bin"
+    $bunBin     = "$env:USERPROFILE\.bun\bin"
     $scriptsDir = "$env:USERPROFILE\.slife\Scripts"
 
-    # Ensure ~/.local/bin is on PATH and remove stale venv entries.
+    # Ensure ~/.local/bin and ~/.bun/bin are on PATH; remove stale venv entries.
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $newPath  = ($userPath -split ';' | Where-Object { $_ -and $_ -ne $scriptsDir }) -join ';'
     if ($newPath -notlike "*$localBin*") {
         $newPath = "$localBin;$newPath"
+    }
+    if ($newPath -notlike "*$bunBin*") {
+        $newPath = "$bunBin;$newPath"
     }
     if ($newPath -ne $userPath) {
         [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
@@ -588,7 +592,7 @@ try {
             Write-Dim "  Removed stale PATH entry: $scriptsDir"
         }
     }
-    $env:PATH = "$localBin;$env:PATH"
+    $env:PATH = "$bunBin;$localBin;$env:PATH"
 
     Write-Ok "slife + credstore commands ready"
 

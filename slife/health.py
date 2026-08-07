@@ -122,7 +122,8 @@ def check_external_deps() -> None:
 
     if bun_path:
         try:
-            r = _sp.run(["bun", "--version"], capture_output=True, text=True, timeout=5)
+            bun_cmd = ["cmd", "/c", "bun", "--version"] if _sys.platform == "win32" else ["bun", "--version"]
+            r = _sp.run(bun_cmd, capture_output=True, text=True, timeout=5)
             if r.returncode == 0:
                 record("bun", "ok", key="version", value=r.stdout.strip(),
                         hint="bun found — JavaScript/TypeScript MCP servers can run via bunx.")
