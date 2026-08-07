@@ -70,7 +70,7 @@ class AgentService:
         )
         # Backfill the registry reference (created by the factory)
         self._tool_ctx.registry = self.tool_registry
-        # Also set the module-level singleton so check_mcp_servers()
+        # Also set the module-level singleton so check_mcp()
         # and other legacy callers of get_registry() can find it.
         # Subagents get their own filtered registry — don't overwrite
         # the main agent's reference with a subagent's.

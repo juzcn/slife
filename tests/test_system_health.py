@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from slife.tools.system import (
-    check_embedding,
+    check_memdb,
     check_wechat,
     _group_by_component,
     _component_status,
@@ -160,27 +160,43 @@ class TestBuildSummary:
         assert "1 error(s): c" in summary
 
 
-# ── check_embedding ───────────────────────────────────────────
+# ── check_memdb ────────────────────────────────────────────────
 
 
-class TestCheckEmbeddingConfig:
-    """Tests for check_embedding()."""
+class TestCheckMemdb:
+    """Tests for check_memdb()."""
+
+    @staticmethod
+    def _db_patch(exists: bool = True, size: int = 1048576) -> object:
+        """Return a get_db_path patch with a mock Path."""
+        mock_path = MagicMock()
+        mock_path.exists.return_value = exists
+        mock_path.stat.return_value.st_size = size
+        mock_path.__str__ = lambda s: "/fake/slife.db"
+        return patch("slife.paths.get_db_path", return_value=mock_path)
+
+    def _find(self, results: list[dict], key: str) -> dict:
+        """Find an entry by key."""
+        for r in results:
+            if r.get("key") == key:
+                return r
+        raise AssertionError(f"key={key!r} not found in {results}")
 
     def test_no_config_returns_warning(self):
-        # These are imported inside check_embedding via:
-        #   from slife.plugins.memdb.embedding_config import read_embedding_config
-        #   from slife.plugins.memdb.embeddings import EmbeddingClient
-        with patch(
-            "slife.plugins.memdb.embedding_config.read_embedding_config",
-            return_value=None,
-        ):
-            with patch("slife.plugins.memdb.embeddings.EmbeddingClient"):
-                result = check_embedding()
-                assert len(result) == 1
-                assert result[0]["component"] == "embeddings"
-                assert result[0]["level"] == "warning"
-                assert result[0]["key"] == "backend"
-                assert result[0]["value"] == "none"
+        with self._db_patch(exists=False), \
+             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value=None), \
+             patch("slife.plugins.memdb.embeddings.EmbeddingClient"):
+            result = check_memdb()
+            assert len(result) == 2
+            # db entry
+            assert result[0]["component"] == "memdb"
+            assert result[0]["key"] == "db"
+            assert result[0]["value"] == "not found"
+            # embedding entry
+            assert result[1]["component"] == "memdb"
+            assert result[1]["key"] == "embedding"
+            assert result[1]["value"] == "none"
 
     def test_gguf_available(self):
         mock_client = MagicMock()
@@ -189,19 +205,16 @@ class TestCheckEmbeddingConfig:
         mock_client.dimension = 384
         cfg = {"gguf_path": "/tmp/model.gguf", "model": "bge-small"}
 
-        with patch(
-            "slife.plugins.memdb.embeddings.EmbeddingClient"
-        ) as MockClient:
+        with self._db_patch(), \
+             patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
+             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value=cfg):
             MockClient.from_config.return_value = mock_client
-            with patch(
-                "slife.plugins.memdb.embedding_config.read_embedding_config",
-                return_value=cfg,
-            ):
-                result = check_embedding()
-                assert len(result) == 1
-                assert result[0]["level"] == "ok"
-                assert result[0]["value"] == "gguf"
-                assert "dim=384" in result[0]["hint"]
+            result = check_memdb()
+            e = self._find(result, "embedding")
+            assert e["level"] == "ok"
+            assert e["value"] == "gguf"
+            assert "dim=384" in e["hint"]
 
     def test_api_available(self):
         mock_client = MagicMock()
@@ -210,19 +223,16 @@ class TestCheckEmbeddingConfig:
         mock_client.dimension = 1536
         cfg = {"model": "text-embedding-3-small"}
 
-        with patch(
-            "slife.plugins.memdb.embeddings.EmbeddingClient"
-        ) as MockClient:
+        with self._db_patch(), \
+             patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
+             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value=cfg):
             MockClient.from_config.return_value = mock_client
-            with patch(
-                "slife.plugins.memdb.embedding_config.read_embedding_config",
-                return_value=cfg,
-            ):
-                result = check_embedding()
-                assert len(result) == 1
-                assert result[0]["level"] == "ok"
-                assert result[0]["value"] == "api"
-                assert "API embeddings ready" in result[0]["hint"]
+            result = check_memdb()
+            e = self._find(result, "embedding")
+            assert e["level"] == "ok"
+            assert e["value"] == "api"
+            assert "API embeddings ready" in e["hint"]
 
     def test_gguf_unavailable(self):
         mock_client = MagicMock()
@@ -230,19 +240,16 @@ class TestCheckEmbeddingConfig:
         mock_client.available = False
         cfg = {"gguf_path": "/tmp/model.gguf", "model": "bge-small"}
 
-        with patch(
-            "slife.plugins.memdb.embeddings.EmbeddingClient"
-        ) as MockClient:
+        with self._db_patch(), \
+             patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
+             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value=cfg):
             MockClient.from_config.return_value = mock_client
-            with patch(
-                "slife.plugins.memdb.embedding_config.read_embedding_config",
-                return_value=cfg,
-            ):
-                result = check_embedding()
-                assert len(result) == 1
-                assert result[0]["level"] == "warning"
-                assert result[0]["value"] == "gguf"
-                assert "NOT installed" in result[0]["hint"]
+            result = check_memdb()
+            e = self._find(result, "embedding")
+            assert e["level"] == "warning"
+            assert e["value"] == "gguf"
+            assert "NOT installed" in e["hint"]
 
     def test_api_unavailable(self):
         mock_client = MagicMock()
@@ -250,37 +257,42 @@ class TestCheckEmbeddingConfig:
         mock_client.available = False
         cfg = {"model": "text-embedding-3-small"}
 
-        with patch(
-            "slife.plugins.memdb.embeddings.EmbeddingClient"
-        ) as MockClient:
+        with self._db_patch(), \
+             patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
+             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value=cfg):
             MockClient.from_config.return_value = mock_client
-            with patch(
-                "slife.plugins.memdb.embedding_config.read_embedding_config",
-                return_value=cfg,
-            ):
-                result = check_embedding()
-                assert len(result) == 1
-                assert result[0]["level"] == "warning"
-                assert result[0]["value"] == "api"
-                assert "NOT installed" in result[0]["hint"]
+            result = check_memdb()
+            e = self._find(result, "embedding")
+            assert e["level"] == "warning"
+            assert e["value"] == "api"
+            assert "NOT installed" in e["hint"]
 
     def test_unknown_backend_unavailable(self):
         mock_client = MagicMock()
         mock_client.backend = "unknown_backend"
         mock_client.available = False
 
-        with patch(
-            "slife.plugins.memdb.embeddings.EmbeddingClient"
-        ) as MockClient:
+        with self._db_patch(), \
+             patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
+             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value={"model": "x"}):
             MockClient.from_config.return_value = mock_client
-            with patch(
-                "slife.plugins.memdb.embedding_config.read_embedding_config",
-                return_value={"model": "x"},
-            ):
-                result = check_embedding()
-                assert len(result) == 1
-                assert result[0]["level"] == "warning"
-                assert result[0]["value"] == "unknown_backend"
+            result = check_memdb()
+            e = self._find(result, "embedding")
+            assert e["level"] == "warning"
+            assert e["value"] == "unknown_backend"
+
+    def test_db_exists(self):
+        """When the db file exists, report size and ok."""
+        with self._db_patch(exists=True, size=3145728), \
+             patch("slife.plugins.memdb.embeddings.EmbeddingClient"), \
+             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
+                   return_value=None):
+            result = check_memdb()
+            e = self._find(result, "db")
+            assert e["level"] == "ok"
+            assert "3.0 MB" in e["value"]
 
 
 # ── check_wechat ──────────────────────────────────────────────
@@ -403,10 +415,10 @@ class TestSystemHealthToolExecute:
     async def test_execute_returns_json(self):
         tool = SystemHealthTool()
         with patch("slife.tools.system.get_startup_records", return_value=[]), \
-             patch("slife.tools.system.check_embedding", return_value=[]), \
+             patch("slife.tools.system.check_memdb", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
              patch("slife.tools.system.check_memfiles", return_value=[]), \
-             patch("slife.tools.system.check_mcp_servers", return_value=[]):
+             patch("slife.tools.system.check_mcp", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert "healthy" in parsed
@@ -421,9 +433,9 @@ class TestSystemHealthToolExecute:
              "value": "done", "hint": "all good"},
         ]
         with patch("slife.tools.system.get_startup_records", return_value=startup_entries), \
-             patch("slife.tools.system.check_embedding", return_value=[]), \
+             patch("slife.tools.system.check_memdb", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
-             patch("slife.tools.system.check_mcp_servers", return_value=[]):
+             patch("slife.tools.system.check_mcp", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert "startup" in parsed["components"]
@@ -436,9 +448,9 @@ class TestSystemHealthToolExecute:
              "value": "migrated", "hint": "check logs"},
         ]
         with patch("slife.tools.system.get_startup_records", return_value=startup_entries), \
-             patch("slife.tools.system.check_embedding", return_value=[]), \
+             patch("slife.tools.system.check_memdb", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
-             patch("slife.tools.system.check_mcp_servers", return_value=[]):
+             patch("slife.tools.system.check_mcp", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert parsed["healthy"] is False
@@ -455,13 +467,13 @@ class TestSystemHealthToolExecute:
             "slife.tools.system.get_startup_records",
             return_value=startup_entries,
         ), patch(
-            "slife.tools.system.check_embedding", return_value=[],
+            "slife.tools.system.check_memdb", return_value=[],
         ), patch(
             "slife.tools.system.check_wechat", return_value=[],
         ), patch(
             "slife.tools.system.check_memfiles", return_value=[],
         ), patch(
-            "slife.tools.system.check_mcp_servers", return_value=[],
+            "slife.tools.system.check_mcp", return_value=[],
         ):
             result = await tool.execute()
             parsed = json.loads(result)

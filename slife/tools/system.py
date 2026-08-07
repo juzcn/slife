@@ -1,12 +1,12 @@
 """System introspection & health check tools.
 
 Tools:
-    check_embedding          — embedding backend status
+    check_memdb              — MemDB plugin: database + embedding backend
     check_wechat             — WeChat plugin status
     check_watchdog           — plugin watchdog (auto-restart) status
     system_health            — orchestrate checks + startup records
     list_tools               — enumerate native vs MCP-proxied tools (with category filter)
-    check_mcp_servers        — MCP server connection status
+    check_mcp        — MCP server connection status
 
 OS name, architecture, Python path/version, current shell, CWD,
 environment mode, and package manager are in the system prompt.
@@ -30,12 +30,32 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# check_embedding
+# check_memdb
 # ═══════════════════════════════════════════════════════════════════════
 
-def check_embedding() -> list[dict]:
-    """Return embedding backend status as health-check entries."""
+def check_memdb() -> list[dict]:
+    """Return MemDB plugin status: database file + embedding backend."""
     results: list[dict] = []
+    from slife.paths import get_db_path
+
+    # ── Database file ─────────────────────────────────────────────
+    db_path = get_db_path()
+    if db_path.exists():
+        size_mb = db_path.stat().st_size / (1024 * 1024)
+        results.append({
+            "component": "memdb", "level": "ok", "key": "db",
+            "value": f"{size_mb:.1f} MB",
+            "hint": f"Database ready: {db_path}",
+        })
+    else:
+        results.append({
+            "component": "memdb", "level": "warning", "key": "db",
+            "value": "not found",
+            "hint": f"Database file not found at {db_path}. "
+                    "Will be created on first memory write.",
+        })
+
+    # ── Embedding backend ─────────────────────────────────────────
     from slife.plugins.memdb.embeddings import EmbeddingClient
     from slife.plugins.memdb.embedding_config import read_embedding_config
 
@@ -43,12 +63,14 @@ def check_embedding() -> list[dict]:
     cfg = read_embedding_config()
 
     if cfg is None:
-        results.append({"component": "embeddings", "level": "warning", "key": "backend",
-                        "value": "none",
-                        "hint": ("No embedding backend configured. Semantic search (hybrid mode) will NOT work. "
-                                 "Keyword search (grep/fts5/time) still works normally. "
-                                 "Use memory_set_embedding to configure one: "
-                                 "GGUF local model, transformer (sentence-transformers), or OpenAI-compatible API.")})
+        results.append({
+            "component": "memdb", "level": "warning", "key": "embedding",
+            "value": "none",
+            "hint": ("No embedding backend configured. Semantic search (hybrid mode) will NOT work. "
+                     "Keyword search (grep/fts5/time) still works normally. "
+                     "Use memory_set_embedding to configure: GGUF local model, "
+                     "transformer (sentence-transformers), or OpenAI-compatible API."),
+        })
         return results
 
     backend = client.backend
@@ -59,39 +81,42 @@ def check_embedding() -> list[dict]:
             "gguf": f"GGUF model ready: {cfg.get('model', '?')} (dim={client.dimension}, path={cfg.get('gguf_path', 'unknown')})",
             "transformer": f"Transformer model ready: {cfg.get('model', '?')} (dim={client.dimension})",
         }
-        results.append({"component": "embeddings", "level": "ok", "key": "backend",
-                        "value": backend,
-                        "hint": hints.get(backend, f"API embeddings ready: {cfg.get('model', '?')} (dim={client.dimension})")})
+        results.append({
+            "component": "memdb", "level": "ok", "key": "embedding",
+            "value": backend,
+            "hint": hints.get(backend, f"API embeddings ready: {cfg.get('model', '?')} (dim={client.dimension})"),
+        })
     else:
         warnings = {
             "gguf": (f"GGUF file exists ({cfg.get('gguf_path', 'unknown')}) but "
                      "llama-cpp-python is NOT installed. Semantic search (hybrid mode) will NOT work. "
-                     "Install with: uv pip install llama-cpp-python. Keyword search (grep/fts5/time) still works normally."),
+                     "Install with: uv pip install llama-cpp-python."),
             "transformer": (f"Transformer model configured ({cfg.get('model', '?')}) but "
                             "sentence-transformers is NOT installed. Semantic search (hybrid mode) will NOT work. "
-                            "Install with: uv pip install sentence-transformers. Keyword search (grep/fts5/time) still works normally."),
+                            "Install with: uv pip install sentence-transformers."),
             "api": ("API key configured but openai package is NOT installed. "
                     "Semantic search (hybrid mode) will NOT work. "
-                    "Install with: uv pip install openai. Keyword search (grep/fts5/time) still works normally."),
+                    "Install with: uv pip install openai."),
         }
-        results.append({"component": "embeddings", "level": "warning", "key": "backend",
-                        "value": backend,
-                        "hint": warnings.get(backend, "Embedding backend is unavailable for unknown reasons. "
-                                             "Semantic search (hybrid mode) will NOT work. "
-                                             "Keyword search (grep/fts5/time) still works normally.")})
+        results.append({
+            "component": "memdb", "level": "warning", "key": "embedding",
+            "value": backend,
+            "hint": warnings.get(backend, "Embedding backend is unavailable. "
+                                         "Semantic search (hybrid mode) will NOT work."),
+        })
     return results
 
 
-class CheckEmbeddingTool(Tool):
-    """Check embedding backend for semantic memory search."""
+class CheckMemdbTool(Tool):
+    """Check MemDB plugin status: database file and embedding backend."""
 
-    name = "check_embedding"
+    name = "check_memdb"
     category: ClassVar[str] = "System"
-    description = "Embedding backend status (gguf/transformer/api/none) and availability."
+    description = "MemDB plugin status: SQLite database size + embedding backend (gguf/transformer/api/none)."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
-        return json.dumps(check_embedding(), ensure_ascii=False, indent=2)
+        return json.dumps(check_memdb(), ensure_ascii=False, indent=2)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -251,10 +276,10 @@ def check_watchdog() -> list[dict]:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# check_mcp_servers
+# check_mcp
 # ═══════════════════════════════════════════════════════════════════════
 
-async def check_mcp_servers() -> list[dict]:
+async def check_mcp() -> list[dict]:
     """Return MCP server status by calling mcp_list_servers.
 
     Reports per-server: enabled/disabled, connected/disconnected state,
@@ -355,7 +380,7 @@ async def check_mcp_servers() -> list[dict]:
 
         return results
     except Exception as e:
-        logger.warning("check_mcp_servers_failed err=%s", e)
+        logger.warning("check_mcp_failed err=%s", e)
         return [{"component": "mcp_servers", "level": "error",
                  "key": "check_failed", "value": str(e),
                  "hint": f"Failed to check MCP servers: {e}"}]
@@ -366,10 +391,10 @@ async def check_mcp_servers() -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════
 
 _CHECK_FUNCTIONS: list[str] = [
-    "check_embedding",
+    "check_memdb",
     "check_wechat",
     "check_memfiles",
-    "check_mcp_servers",
+    "check_mcp",
     "check_watchdog",
 ]
 

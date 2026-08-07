@@ -124,7 +124,7 @@ active_model: "deepseek/deepseek-v4-pro",
 
 | 类别 | 工具 |
 |------|------|
-| System | `system_health`, `check_embedding`, `check_wechat` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set`, `check_skills_dir` |
 | CLI | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |

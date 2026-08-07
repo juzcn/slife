@@ -126,7 +126,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 
 | Category | Tools |
 |----------|-------|
-| System | `system_health`, `check_embedding`, `check_wechat`, `check_memfiles` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set`, `check_skills_dir` |
 | CLI | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |
@@ -181,7 +181,7 @@ Four built-in plugins as independent child processes:
 
 External MCP servers configured in `slife.json5` → `mcp.servers`. Any stdio or HTTP MCP server works — no Slife SDK required. Per-server option `require_approval: true` adds a human approval gate before each of its tool calls.
 
-All plugins run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 3 retries). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_embedding`, `check_wechat`, `check_memfiles`, `check_mcp_servers` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
+All plugins run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 3 retries). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
 
 ### A2A — Agent-to-Agent
 

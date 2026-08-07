@@ -190,7 +190,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 
 | Category | File | Tools |
 |----------|------|-------|
-| System | `system.py` | `system_health`, `check_embedding`, `check_wechat`, `check_memfiles` |
+| System | `system.py` | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill.py` | `skill_list`, `skill_use`, `skill_add`, `skill_remove`, `skill_set`, `skill_check_dir` |
 | CLI | `cli.py` | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |
@@ -586,10 +586,10 @@ Health checks fall into two categories, both surfaced through `system_health`:
 
 | Check | What it monitors | Layer |
 |-------|-----------------|-------|
-| `check_embedding` | Embedding model loaded? backend configured? dimension? | Application state (memdb plugin) |
+| `check_memdb` | Database file + embedding backend (model, dimension, availability) | Application state (memdb plugin) |
 | `check_wechat` | Login status, session age, QR expiry | Application state (wechat plugin) |
 | `check_memfiles` | File-sharing tunnel online? ngrok URL? | Application state (memfiles plugin) |
-| `check_mcp_servers` | Per-server connection status, tool count, disclosure mode | Application state (MCP wrapper) |
+| `check_mcp` | Per-server connection status, tool count, disclosure mode | Application state (MCP wrapper) |
 | `check_watchdog` | Plugin process PID alive? restart count? | Process layer |
 
 The watchdog only monitors processes — it does not introspect application state. Each plugin owns its own runtime health check. Missing deps are recorded as warnings — Slife still starts; affected MCP servers won't work.
