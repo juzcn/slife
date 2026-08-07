@@ -470,7 +470,9 @@ No BLOBs, no database, no HMAC — token→path mappings live in a JSON registry
 
 ### Ngrok Tunnel
 
-Started at session init via the official ngrok Python SDK (embedded agent — no external binary). Authtoken resolution: credstore `NGROK_AUTHTOKEN` → environment. Initial start retries up to 3 times with linear backoff (2/4/6 s); a background monitor performs one follow-up retry if the first start failed. Free-tier URLs change between sessions — shared links are ephemeral by nature.
+Started at session init via the official ngrok Python SDK (embedded agent — no external binary). Authtoken resolution: credstore `NGROK_AUTHTOKEN` → environment. Each slife instance creates an ephemeral tunnel (random subdomain) — no reserved domain is used, so multiple instances (WSL + Windows, etc.) can coexist without competing for the same endpoint. Initial start retries up to 3 times with linear backoff (2/4 s); a background monitor performs one follow-up retry if the first start failed. Free-tier URLs change between sessions — shared links are ephemeral by nature.
+
+ngrok free tier limits: 3 online endpoints, 3 concurrent agents, 1 GB transfer, 20k HTTP requests/month.
 
 ## UI
 

@@ -100,7 +100,15 @@ class NgrokTunnel:
             self._starting = False
 
     def _do_start(self, port: int) -> str:
-        """Internal start logic (caller holds _starting guard)."""
+        """Internal start logic (caller holds _starting guard).
+
+        Each slife instance creates its own ephemeral ngrok tunnel
+        (random subdomain).  We intentionally never request a reserved
+        domain — that way multiple instances (WSL + Windows, etc.) can
+        coexist without competing for the same endpoint.
+
+        ngrok free tier: up to 3 online endpoints / 3 concurrent agents.
+        """
         token = _read_auth_token()
         if not token:
             raise RuntimeError(
@@ -113,6 +121,7 @@ class NgrokTunnel:
         last_error: Exception | None = None
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
+                # No *domain* arg → ephemeral tunnel (random subdomain).
                 self._listener = self._ngrok.forward(
                     port, authtoken=token,
                 )
@@ -125,20 +134,6 @@ class NgrokTunnel:
                 return self._public_url
             except Exception as e:
                 last_error = e
-                # ERR_NGROK_334: reserved domain already in use by another
-                # slife instance (common when WSL + Windows run together).
-                # Not a transient error — don't retry; log once and give up.
-                if "ERR_NGROK_334" in str(e):
-                    logger.info(
-                        "tunnel_domain_busy port=%s msg=%s — "
-                        "ngrok reserved domain is in use by another slife instance; "
-                        "memfiles sharing is available via that instance.",
-                        port, e,
-                    )
-                    raise RuntimeError(
-                        f"ngrok reserved domain already in use by another slife "
-                        f"instance: {e}"
-                    )
                 if attempt < _MAX_RETRIES:
                     delay = _RETRY_DELAY * attempt
                     logger.warning(
