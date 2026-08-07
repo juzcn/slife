@@ -315,6 +315,8 @@ Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` 
 
 Exposed management tools: `mcp_add_server` (idempotent upsert), `mcp_remove_server`, `mcp_list_servers`, `mcp_list_tools`, `mcp_call_tool`, `mcp_set_server` (enable/disable/disclosure).
 
+`mcp_list_servers` returns raw server state (name, enabled, active, state, tool_count, transport, error) — pure data, no diagnosis. `check_mcp` (via `system_health`) consumes that data and adds health levels (ok/warning/info) with remediation hints. The separation avoids duplicated state-interpretation logic.
+
 Server lifecycle:
 
 ```
@@ -589,7 +591,7 @@ Health checks fall into two categories, both surfaced through `system_health`:
 | `check_memdb` | Database file + embedding backend (model, dimension, availability) | Application state (memdb plugin) |
 | `check_wechat` | Login status, session age, QR expiry | Application state (wechat plugin) |
 | `check_memfiles` | File-sharing tunnel online? ngrok URL? | Application state (memfiles plugin) |
-| `check_mcp` | Per-server connection status, tool count, disclosure mode | Application state (MCP wrapper) |
+| `check_mcp` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, disclosure, hints) | Application state (MCP wrapper + external servers) |
 | `check_watchdog` | Plugin process PID alive? restart count? | Process layer |
 
 The watchdog only monitors processes — it does not introspect application state. Each plugin owns its own runtime health check. Missing deps are recorded as warnings — Slife still starts; affected MCP servers won't work.
