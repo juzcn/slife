@@ -70,6 +70,13 @@ class AgentService:
         )
         # Backfill the registry reference (created by the factory)
         self._tool_ctx.registry = self.tool_registry
+        # Also set the module-level singleton so check_mcp_servers()
+        # and other legacy callers of get_registry() can find it.
+        # Subagents get their own filtered registry — don't overwrite
+        # the main agent's reference with a subagent's.
+        if not is_subagent:
+            from slife.tools.registry import set_registry
+            set_registry(self.tool_registry)
         self.llm_client = LLMClient(config.active_model)
         # Max tool result = tool_result_ceiling × context_window × 3 chars/token
         max_tool_result_chars = int(
