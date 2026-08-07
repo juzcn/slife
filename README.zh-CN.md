@@ -175,7 +175,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | **slife-mcp** | 外部 MCP 服务器网关（stdio + HTTP） |
 | **slife-memdb** | 日记数据库 + 混合搜索 |
 | **slife-wechat** | 双向微信消息 |
-| **slife-memfiles** | 文件服务器 + ngrok 隧道（endpoint pooling，多实例共享 dev domain） |
+| **slife-memfiles** | 文件服务器 + ngrok 隧道（免费版仅限 1 个 agent——只有最先启动的 agent 获得隧道） |
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置。任何 stdio 或 HTTP MCP 服务器均可接入——无需 Slife SDK。按服务器配置 `require_approval: true` 可为其工具调用添加人工审批关卡。
 

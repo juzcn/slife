@@ -474,7 +474,7 @@ No BLOBs, no database, no HMAC — token→path mappings live in a JSON registry
 
 Started at session init via the official ngrok Python SDK (embedded agent — no external binary). Authtoken resolution: credstore `NGROK_AUTHTOKEN` → environment. Uses **endpoint pooling** (`pooling_enabled=True`) so multiple slife instances (WSL + Windows, sub-agents on different machines) share the same dev domain — ngrok load-balances across all online agents. Initial start retries up to 3 times with linear backoff (2/4 s); a background monitor performs one follow-up retry if the first start failed.
 
-ngrok free tier limits: 3 online endpoints, 3 concurrent agents, 1 GB transfer, 20k HTTP requests/month. Endpoint pooling requires no paid plan.
+ngrok free tier limits: **1 online agent** (one tunnel per token — only the first agent to start gets the memfiles tunnel; subsequent agents fail to bind), 1 GB transfer/month, 20k HTTP requests/month. Endpoint pooling requires no paid plan.
 
 ## UI
 

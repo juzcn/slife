@@ -177,7 +177,7 @@ Four built-in plugins as independent child processes:
 | **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) |
 | **slife-memdb** | Diary database with hybrid search |
 | **slife-wechat** | Bidirectional WeChat messaging |
-| **slife-memfiles** | File server + ngrok tunnel (endpoint pooling, shared dev domain across instances) |
+| **slife-memfiles** | File server + ngrok tunnel (free tier: 1 agent — only the first agent gets the tunnel) |
 
 External MCP servers configured in `slife.json5` → `mcp.servers`. Any stdio or HTTP MCP server works — no Slife SDK required. Per-server option `require_approval: true` adds a human approval gate before each of its tool calls.
 
