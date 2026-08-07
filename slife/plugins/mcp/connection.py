@@ -251,14 +251,9 @@ class MCPServerConnection:
             )
             for key, value in self.config.env.items():
                 resolved = _resolve_secret(value)
-                # Only override os.environ if the value was actually resolved.
-                # When _resolve_secret returns the original ${VAR} placeholder
-                # (credstore unavailable, etc.), preserve whatever os.environ
-                # already has — the parent process may have injected the real
-                # value via MCPConfig.from_dict() or _inject_env_vars().
+                env[key] = resolved
+                # Log whether resolution succeeded (don't log the actual value)
                 is_still_ref = resolved.startswith("${") and resolved.endswith("}")
-                if not is_still_ref:
-                    env[key] = resolved
                 logger.debug(
                     "mcp_stdio_env_set server=%s key=%s resolved=%s",
                     self.config.name, key, not is_still_ref,
