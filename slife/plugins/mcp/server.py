@@ -59,6 +59,9 @@ def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
         "streamable HTTP.\n"
         "- http (streamable): provide `url` for a stateless MCP endpoint.\n"
         "Research the server's docs first. "
+        "For `command`: use the binary name directly (npx, uvx, bunx, python, etc.). "
+        "On WSL/Linux/macOS (平台类别 ≠ native-Windows), do NOT wrap in `cmd /c` — "
+        "cmd.exe only exists on native Windows. The platform info is in the system prompt. "
         "For the `env` parameter: use ${VAR} references for secrets "
         "(e.g. SERPER_API_KEY: '${SERPER_API_KEY}'). NEVER pass plaintext "
         "API keys or tokens — tell the user to run 'credstore set <KEY>' "
@@ -94,21 +97,6 @@ async def mcp_add_server(
             "Either 'command' (for stdio) or 'url' (for HTTP) must be provided.",
             server=name,
         )
-
-    # ── Auto-correct Windows-style cmd /c wrapper on non-Windows ─────
-    # LLMs sometimes emit ``cmd /c npx …`` which only works on native
-    # Windows.  On WSL / Linux / macOS, strip the wrapper and use the
-    # real command directly.
-    if command.lower() == "cmd" and args and args[0].lower() in ("/c", "/k"):
-        import sys as _sys
-        if _sys.platform != "win32":
-            original_cmd = [command] + list(args)
-            command = args[1] if len(args) > 1 else args[0]
-            args = list(args[2:]) if len(args) > 2 else []
-            logger.info(
-                "mcp_cmd_autocorrect name=%s original=%s corrected=%s args=%s",
-                name, " ".join(original_cmd), command, args,
-            )
 
     config = ServerConfig(
         name=name,
