@@ -405,6 +405,7 @@ class TestSystemHealthToolExecute:
         with patch("slife.tools.system.get_startup_records", return_value=[]), \
              patch("slife.tools.system.check_embedding", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
+             patch("slife.tools.system.check_memfiles", return_value=[]), \
              patch("slife.tools.system.check_mcp_servers", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
@@ -457,6 +458,8 @@ class TestSystemHealthToolExecute:
             "slife.tools.system.check_embedding", return_value=[],
         ), patch(
             "slife.tools.system.check_wechat", return_value=[],
+        ), patch(
+            "slife.tools.system.check_memfiles", return_value=[],
         ), patch(
             "slife.tools.system.check_mcp_servers", return_value=[],
         ):

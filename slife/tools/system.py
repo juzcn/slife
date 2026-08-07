@@ -181,6 +181,37 @@ class CheckWechatTool(Tool):
         return json.dumps(check_wechat(), ensure_ascii=False, indent=2)
 
 
+# check_memfiles
+# ═══════════════════════════════════════════════════════════════════════
+
+def check_memfiles() -> list[dict]:
+    """Return file-sharing tunnel status."""
+    from slife.memfiles.tunnel import is_active as _tunnel_active, public_url as _tunnel_url
+
+    if _tunnel_active():
+        url = _tunnel_url() or "?"
+        return [{"component": "memfiles", "level": "ok", "key": "tunnel",
+                 "value": url,
+                 "hint": "File sharing tunnel is online."}]
+    return [{"component": "memfiles", "level": "warning", "key": "tunnel",
+             "value": "offline",
+             "hint": "File sharing tunnel unavailable. "
+                     "Check NGROK_AUTHTOKEN credential or ngrok account limits "
+                     "(free tier: 3 endpoints, 3 agents)."}]
+
+
+class CheckMemfilesTool(Tool):
+    """Check file-sharing tunnel (ngrok) status."""
+
+    name = "check_memfiles"
+    category: ClassVar[str] = "System"
+    description = "File sharing tunnel status (online/offline) for expose_file and save_content_or_files."
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs) -> str:
+        return json.dumps(check_memfiles(), ensure_ascii=False, indent=2)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # check_watchdog
 # ═══════════════════════════════════════════════════════════════════════
@@ -337,6 +368,7 @@ async def check_mcp_servers() -> list[dict]:
 _CHECK_FUNCTIONS: list[str] = [
     "check_embedding",
     "check_wechat",
+    "check_memfiles",
     "check_mcp_servers",
     "check_watchdog",
 ]

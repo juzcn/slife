@@ -247,6 +247,10 @@ def share_url_for(file_id: str) -> str | None:
     return _tunnel.share_url_for(file_id)
 
 
+def public_url() -> str | None:
+    return _tunnel.public_url
+
+
 def is_active() -> bool:
     return _tunnel.is_active
 
