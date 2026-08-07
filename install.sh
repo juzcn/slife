@@ -1,4 +1,22 @@
 #!/usr/bin/env bash
+
+# ── Piped-stdin guard (WSL interop) ──────────────────────────────
+# When bash reads this script from a pipe (curl … | bash), any
+# Windows .exe run via WSL interop inherits and may consume the
+# pipe and truncate the script.  Save stdin to a temp file first.
+# Must run *before* `set -euo pipefail` so CRLF line-endings in a
+# Windows-hosted copy don't cause `set … \r` to fail.
+if [ ! -t 0 ]; then
+    _SLIFE_INSTALL_SCRIPT="$(mktemp)" || exit 1
+    cat > "$_SLIFE_INSTALL_SCRIPT"   || exit 1
+    sed -i'' -e 's/\r$//' "$_SLIFE_INSTALL_SCRIPT" 2>/dev/null || true
+    _SLIFE_CLEANUP_SCRIPT="$_SLIFE_INSTALL_SCRIPT" exec bash "$_SLIFE_INSTALL_SCRIPT" "$@"
+    exit 1  # exec failed
+fi
+if [ -n "${_SLIFE_CLEANUP_SCRIPT:-}" ]; then
+    trap 'rm -f "$_SLIFE_CLEANUP_SCRIPT"' EXIT
+fi
+
 set -euo pipefail
 
 # Slife one-click installer for macOS, Linux, and WSL.
