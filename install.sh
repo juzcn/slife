@@ -10,7 +10,7 @@ if [ ! -t 0 ]; then
     _SLIFE_INSTALL_SCRIPT="$(mktemp)" || exit 1
     cat > "$_SLIFE_INSTALL_SCRIPT"   || exit 1
     sed -i'' -e 's/\r$//' "$_SLIFE_INSTALL_SCRIPT" 2>/dev/null || true
-    _SLIFE_CLEANUP_SCRIPT="$_SLIFE_INSTALL_SCRIPT" exec bash "$_SLIFE_INSTALL_SCRIPT" "$@"
+    _SLIFE_CLEANUP_SCRIPT="$_SLIFE_INSTALL_SCRIPT" _SLIFE_PIPED_INSTALL=1 exec bash "$_SLIFE_INSTALL_SCRIPT" "$@"
     exit 1  # exec failed
 fi
 if [ -n "${_SLIFE_CLEANUP_SCRIPT:-}" ]; then
@@ -353,6 +353,10 @@ echo -e "${GREEN}  ✓${NC} slife + credstore commands ready"
 if command -v slife &>/dev/null; then
     SLIFE_PATH="$(command -v slife)"
     echo -e "  ${GREEN}  slife${NC} → ${GRAY}$SLIFE_PATH${NC}"
+    if [ -n "${_SLIFE_PIPED_INSTALL:-}" ]; then
+        echo -e "  ${YELLOW}  NOTE: piped install — this PATH is set only in the installer subshell.${NC}"
+        echo -e "  ${YELLOW}  Your interactive shell won't find slife until you reload.${NC}"
+    fi
 else
     echo -e "  ${RED}  ⚠ slife binary not found on PATH${NC}"
 fi
@@ -366,7 +370,10 @@ echo ""
 # When piped to bash, the exports above only affect the script's subshell —
 # not the user's interactive shell.  Remind them to refresh their PATH.
 NEEDS_SHELL_REFRESH=true
-if command -v slife &>/dev/null; then
+# When piped to bash, the script runs in a subshell where ~/.local/bin
+# was added to PATH by step 1 — so command -v succeeds but the user's
+# interactive shell still doesn't have it.  Force the reminder.
+if [ -z "${_SLIFE_PIPED_INSTALL:-}" ] && command -v slife &>/dev/null; then
     NEEDS_SHELL_REFRESH=false
 fi
 
