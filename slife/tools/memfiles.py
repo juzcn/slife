@@ -105,6 +105,7 @@ class ExposeFileTool(Tool):
 
     name: ClassVar[str] = "expose_file"
     category: ClassVar[str] = "MemFiles"
+    _requires_tunnel: ClassVar[bool] = True  # skipped at registration when tunnel is offline
     description: ClassVar[str] = (
         "Expose a local file as a public HTTPS URL. "
         "Use this to convert a local file path into a URL that multimodal "

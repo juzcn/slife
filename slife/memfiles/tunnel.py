@@ -160,12 +160,16 @@ class NgrokTunnel:
 
     # ── Health monitor ──────────────────────────────────────────────
 
-    def start_monitor(self, port: int) -> None:
-        """Spawn a background monitor that restarts the tunnel on failure."""
+    def start_monitor(self, port: int, on_tunnel_up=None) -> None:
+        """Spawn a background monitor that restarts the tunnel on failure.
+
+        When *on_tunnel_up* is provided, it is called (no arguments) if
+        the monitor successfully starts the tunnel after a retry.
+        """
         if self._monitor_task is not None and not self._monitor_task.done():
             self._monitor_task.cancel()
         self._monitor_task = asyncio.ensure_future(
-            self._run_monitor(port)
+            self._run_monitor(port, on_tunnel_up)
         )
         logger.debug("tunnel_monitor_started port=%s", port)
 
@@ -175,7 +179,7 @@ class NgrokTunnel:
             self._monitor_task.cancel()
             self._monitor_task = None
 
-    async def _run_monitor(self, port: int) -> None:
+    async def _run_monitor(self, port: int, on_tunnel_up=None) -> None:
         """Background task: one-shot retry if the executor failed."""
         await asyncio.sleep(2.0)  # let the executor handshake finish
 
@@ -198,6 +202,8 @@ class NgrokTunnel:
                 port, self._public_url,
             )
             self._monitor_retries = 0
+            if on_tunnel_up:
+                on_tunnel_up()
         except Exception as e:
             self._monitor_retries += 1
             logger.info(
@@ -259,8 +265,8 @@ def stop_tunnel() -> None:
     _tunnel.stop()
 
 
-def start_monitor(port: int) -> None:
-    _tunnel.start_monitor(port)
+def start_monitor(port: int, on_tunnel_up=None) -> None:
+    _tunnel.start_monitor(port, on_tunnel_up)
 
 
 def stop_monitor() -> None:

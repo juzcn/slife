@@ -977,30 +977,49 @@ class AgentService:
             os.environ["SLIFE_MEMFILES_PORT"] = str(process.port)
 
             # Tunnel handshake (~3-5s) — run in executor so startup isn't blocked.
-            # Wrapped in _start_tunnel_safe so executor exceptions are logged
-            # (asyncio.Future exceptions are silently dropped otherwise).
-            def _start_tunnel_safe(port: int) -> None:
+            # On success, dynamically register expose_file (the only tool that
+            # depends on the tunnel).  On failure, expose_file stays unregistered.
+            async def _start_tunnel_and_register(port: int) -> None:
+                loop = asyncio.get_running_loop()
                 try:
-                    start_tunnel(port)
+                    await loop.run_in_executor(None, start_tunnel, port)
                 except Exception as e:
                     logger.info(
                         "tunnel_init_failed port=%s err=%s — memfiles sharing offline",
                         port, e,
                     )
+                    return
+                self._maybe_register_expose_file()
 
-            loop = asyncio.get_running_loop()
-            self._plugins["memfiles"].tunnel_task = loop.run_in_executor(
-                None, _start_tunnel_safe, process.port,
+            self._plugins["memfiles"].tunnel_task = asyncio.ensure_future(
+                _start_tunnel_and_register(process.port),
             )
-            # Background health monitor — handles both initial start retry
-            # and runtime restart on heartbeat timeout.
+            # Background health monitor — one-shot retry if the executor failed.
+            # Passes a callback to register expose_file on monitor retry success.
             from slife.memfiles.tunnel import start_monitor
-            start_monitor(process.port)
+            start_monitor(process.port, on_tunnel_up=self._maybe_register_expose_file)
             logger.info("memfiles_init_done port=%s", process.port)
             return True
         except Exception as e:
             logger.warning("memfiles_init_failed err=%s — continuing without memfiles URL", e)
             return False
+
+    def _maybe_register_expose_file(self) -> None:
+        """Register expose_file tool if the tunnel is active and it's not already registered.
+
+        Called when the ngrok tunnel comes up (initial start or monitor retry).
+        expose_file is the only tool that depends on the tunnel — without it,
+        file sharing is a no-op, so we keep the tool hidden from the LLM.
+        """
+        from slife.memfiles.tunnel import is_active
+        if not is_active():
+            return
+        if self.tool_registry.get("expose_file") is not None:
+            return
+        from slife.tools.memfiles import ExposeFileTool
+        tool = ExposeFileTool.from_config({}, self.config, self._tool_ctx)
+        self.tool_registry.register(tool)
+        logger.info("expose_file_registered — tunnel is active")
 
     # ── WeChat lifecycle ───────────────────────────────────────────────
 
