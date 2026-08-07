@@ -8,12 +8,16 @@ so special characters like &, [, ] are never interpreted as markup —
 eliminating MarkupError crashes from search results containing URLs, JSON, etc.
 """
 
+import os
 import subprocess
 import sys
 from textual.content import Content
 from textual.widgets import Static
 
 from slife.platform import IS_WINDOWS
+
+# WSL: Linux kernel with Windows interop — clip.exe is the native clipboard.
+_IS_WSL = sys.platform == "linux" and os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop")
 
 _counter: int = 0
 
@@ -298,6 +302,13 @@ def _copy_to_clipboard(text: str) -> None:
             )
         elif sys.platform == "darwin":
             subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=False)
+        elif _IS_WSL:
+            # WSL: use Windows clip.exe (no X11/Wayland clipboard on most WSL setups)
+            subprocess.run(
+                ["clip.exe"],
+                input=text.encode("utf-8"),
+                check=False,
+            )
         else:
             # Linux — try wl-copy (Wayland) then xclip (X11)
             for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"]):
