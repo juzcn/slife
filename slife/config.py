@@ -245,14 +245,6 @@ class MCPConfig:
                                 "not in shell or credstore",
                                 sname, k, raw_val[2:-1],
                             )
-                        # Inject resolved value into os.environ so child
-                        # processes (MCP wrapper, external MCP servers)
-                        # inherit it without needing their own credstore lookup.
-                        if resolved and resolved != raw_val and k not in os.environ:
-                            os.environ[k] = resolved
-                            logger.debug(
-                                "mcp_env_injected server=%s key=%s", sname, k,
-                            )
             # Resolve ${VAR} in auth section (client_id, client_secret)
             if isinstance(scfg, dict) and "auth" in scfg:
                 auth = scfg["auth"]
