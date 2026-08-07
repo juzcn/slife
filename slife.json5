@@ -357,7 +357,7 @@
         ],
         "description": "NVIDIA NIM API (chat, vision, embeddings, OCR, image gen) with local media path support",
         "env": {
-          "NVAPI_KEY": "${NVAPI_KEY}",
+          "NVIDIA_API_KEY": "${NVAPI_KEY}",
         },
         "source": {
           "type": "npm",
