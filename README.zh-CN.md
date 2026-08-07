@@ -164,7 +164,7 @@ active_model: "deepseek/deepseek-v4-pro",
 看看这张截图 @D:\Downloads\error.png
 ```
 
-两级渲染：**Sixel**（全彩，Windows Terminal / WezTerm / iTerm2 / Kitty）→ **HalfcellImage**（彩色 Unicode 半块字符，任何真彩终端）→ 文本占位符。支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 直接透传；`include_image` 工具允许智能体在对话中途附加图片，`expose_file` 则通过 ngrok 隧道把任意本地文件发布为公开 HTTPS 链接。
+两级渲染：**Sixel**（全彩，Windows Terminal / WezTerm / iTerm2 / Kitty）→ **HalfcellImage**（彩色 Unicode 半块字符，任何真彩终端）→ 文本占位符。支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 直接透传；`include_image` 工具允许智能体在对话中途附加图片，`expose_file` 则通过 ngrok 隧道把任意本地文件发布为公开 HTTPS 链接（仅在隧道在线时可用）。
 
 ### 插件
 

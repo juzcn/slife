@@ -166,7 +166,7 @@ Attach images with `@path` / `@url` syntax (quotes supported for paths with spac
 Check this screenshot @D:\Downloads\error.png
 ```
 
-Two-tier rendering: **Sixel** (full-colour on Windows Terminal / WezTerm / iTerm2 / Kitty) → **HalfcellImage** (coloured Unicode half-blocks on any true-colour terminal) → text placeholder. Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `include_image` tool lets the agent attach images mid-conversation, and `expose_file` publishes any local file as a public HTTPS link via the ngrok tunnel.
+Two-tier rendering: **Sixel** (full-colour on Windows Terminal / WezTerm / iTerm2 / Kitty) → **HalfcellImage** (coloured Unicode half-blocks on any true-colour terminal) → text placeholder. Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `include_image` tool lets the agent attach images mid-conversation, and `expose_file` publishes any local file as a public HTTPS link via the ngrok tunnel (only available when the tunnel is active).
 
 ### Plugins
 

@@ -199,7 +199,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `models.py` | `model_list`, `model_add`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
-| MemFiles | `memfiles.py` | `save_content_or_files`, `expose_file`, `include_image` |
+| MemFiles | `memfiles.py` | `save_content_or_files`, `expose_file` (tunnel active only), `include_image` |
 | Display | `display.py` | `show_image` |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
@@ -468,7 +468,7 @@ A lightweight plain-HTTP server (`slife/plugins/memfiles/server.py`) streams loc
 1. `expose_file(path)` → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`.  This tool is **dynamically registered** — it only appears in the tool list when the ngrok tunnel is active.  If the tunnel fails to start (no token, free-tier limit reached), the tool is hidden from the LLM entirely rather than returning errors at runtime.
 2. `GET /share/{token}` streams the file in 64 KB chunks (403 unknown token, 404 file gone)
 
-No BLOBs, no database, no HMAC — token→path mappings live in a JSON registry file (atomic writes) whose path is passed to the server subprocess via `SLIFE_MEMFILES_REGISTRY`. `save_content_or_files` persists content/URL/files under `<agent>.files/` with an `index.json` and returns share URLs the same way.
+No BLOBs, no database, no HMAC — token→path mappings live in a JSON registry file (atomic writes) whose path is passed to the server subprocess via `SLIFE_MEMFILES_REGISTRY`. `save_content_or_files` persists content/URL/files under `<agent>.files/` with an `index.json` and returns share URLs when the tunnel is active; when offline, files are still saved locally and the result notes "(sharing offline)".
 
 ### Ngrok Tunnel
 
