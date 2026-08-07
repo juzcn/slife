@@ -146,7 +146,7 @@ class CliAddTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
     name = "cli_add_tool"
     category = "CLI"
     _subagent_skip = True
-    description = "Register an external CLI in slife.json5. Does not execute — records for future discovery."
+    description = "Register an external CLI in slife.json5. Does not execute — records for future discovery. Use the language from the CLI's own documentation for the description — don't translate."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
