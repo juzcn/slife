@@ -59,6 +59,8 @@ def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
         "streamable HTTP.\n"
         "- http (streamable): provide `url` for a stateless MCP endpoint.\n"
         "Research the server's docs first. "
+        "Use the language from the server's own documentation / source "
+        "for `description` — don't translate. "
         "For `command`: use the binary name directly (npx, uvx, bunx, python, etc.). "
         "On WSL/Linux/macOS (平台类别 ≠ native-Windows), do NOT wrap in `cmd /c` — "
         "cmd.exe only exists on native Windows. The platform info is in the system prompt. "
