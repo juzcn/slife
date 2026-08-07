@@ -119,7 +119,7 @@ class NgrokTunnel:
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
                 self._listener = self._ngrok.forward(
-                    port, authtoken=token, pooling_enabled=True,
+                    f"localhost:{port}", authtoken=token, pooling_enabled=True,
                 )
                 self._public_url = str(self._listener.url()).rstrip("/")
                 os.environ["SLIFE_MEMFILES_URL"] = self._public_url
