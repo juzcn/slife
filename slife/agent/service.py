@@ -1197,6 +1197,8 @@ class AgentService:
                 ),
                 timeout=10.0,
             )
+        except asyncio.TimeoutError:
+            logger.warning("memdb_save_timeout — _memory_save_turn exceeded 10s (first save loads embedding model)")
         except Exception as e:
             logger.warning("memdb_save_error err=%s", e)
 

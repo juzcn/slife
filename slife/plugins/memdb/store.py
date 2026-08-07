@@ -468,10 +468,12 @@ class SessionStore:
         # not allow GROUP BY.
         fetch_limit = (limit * 4) if (since or until) else (limit * 2)
         cursor = await self._conn.execute(
-            """SELECT diary_rowid AS rowid, summary, tags, created_at, distance
-               FROM diary_semantic
-               WHERE turn_embedding MATCH ? AND k = ?
-               ORDER BY distance""",
+            """SELECT ds.diary_rowid AS rowid, d.user_message,
+                      ds.summary, ds.tags, ds.created_at, ds.distance
+               FROM diary_semantic ds
+               JOIN diary d ON ds.diary_rowid = d.rowid
+               WHERE ds.turn_embedding MATCH ? AND ds.k = ?
+               ORDER BY ds.distance""",
             (vec_blob, fetch_limit),
         )
         # Deduplicate by diary_rowid — keep best (lowest) distance per turn
