@@ -1,187 +1,431 @@
 {
-  // ── Environment Variables ──────────────────────────────────────
-  // ${VAR} references resolve at runtime: shell → OS keyring → default.
-  //
-  // IMPORTANT: Plaintext API keys are REJECTED at startup.
-  // All api_key fields MUST use ${VAR} references (e.g. ${DEEPSEEK_API_KEY}).
-  // Store the actual key via credstore (never paste keys here):
-  //   credstore set DEEPSEEK_API_KEY
-  env: {
-    BAIDU_API_KEY: "${BAIDU_API_KEY}",
-    // SERPER_API_KEY: "${SERPER_API_KEY}",
+  "env": {
+    "BAIDU_API_KEY": "${BAIDU_API_KEY}",
   },
-
-  // ── Tools ──────────────────────────────────────────────────────
-  // Override defaults: set timeout, or disable a tool with enabled: false.
-  tools: [
-     {name: "install_python_package",enabled: false}
+  "tools": [
+    {
+      "name": "install_python_package",
+      "enabled": false,
+    },
   ],
-
-  // ── Agent Behavior ─────────────────────────────────────────────
-  agent: {
-    max_iterations: 30,
-    context_floor: 0.2,   // trigger trim at 20% remaining
-    context_ceiling: 0.8, // trim down to 80% of window
-    tool_timeout: 60,     // each tool call deadline (seconds), 0 = no limit
+  "agent": {
+    "max_iterations": 30,
+    "context_floor": 0.2,
+    "context_ceiling": 0.8,
+    "tool_timeout": 60,
   },
-
-  // ── Subagent ───────────────────────────────────────────────────
-  // Local child processes for parallel work. Always available.
-  subagent: {
-    max_subagents: 5,
-    task_timeout: 120,
-  },
-
-  // ── MQTT / A2A Mesh ────────────────────────────────────────────
-  // Multi-agent communication.  Requires paho-mqtt + Mosquitto.
-  // Start Mosquitto BEFORE launching slife — its presence is the
-  // on/off switch.  agent_id is derived from --agent (default "slife").
-  // agent_name is an optional human-readable display name.
-  mqtt: {
-    // agent_name: "my-agent",   // optional display name
-    broker: { host: "localhost", port: 1883 },
-    heartbeat_interval: 15,
-    heartbeat_timeout: 45,
-    task_timeout: 120,
-  },
-
-  // ── Model Provider ─────────────────────────────────────────────
-  // slife supports three API backends as first-class citizens:
-  //
-  //   api: "openai-completions"  → OpenAI, DeepSeek, Ollama, etc.
-  //   api: "anthropic-messages"  → Claude, Bailian/Qwen, etc.
-  //   api: "openai-responses"    → Newer OpenAI Responses API
-  //
-  // api_key MUST be a ${VAR} reference — plaintext keys are REJECTED.
-  // ${DEEPSEEK_API_KEY} resolves from keyring automatically.
-  // Store the key first:  credstore set DEEPSEEK_API_KEY
-  models: {
-    mode: "merge",
-    providers: {
-      deepseek: {
-        base_url: "https://api.deepseek.com",
-        api_key: "${DEEPSEEK_API_KEY}",
-        api: "openai-completions",
-        models: [
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "deepseek": {
+        "base_url": "https://api.deepseek.com",
+        "api_key": "${DEEPSEEK_API_KEY}",
+        "api": "openai-completions",
+        "models": [
           {
-            model: "deepseek-v4-flash",
-            name: "DeepSeek V4 Flash",
-            reasoning: true,
-            input: ["text"],
-            context_window: 1000000,
-            max_tokens: 384000,
-            temperature: 0.7,
-            top_p: 1.0,
+            "model": "deepseek-v4-flash",
+            "name": "DeepSeek V4 Flash",
+            "reasoning": true,
+            "input": [
+              "text",
+            ],
+            "context_window": 1000000,
+            "max_tokens": 384000,
+            "temperature": 0.7,
+            "top_p": 1.0,
           },
           {
-            model: "deepseek-v4-pro",
-            name: "DeepSeek V4 Pro",
-            reasoning: true,
-            input: ["text"],
-            context_window: 1000000,
-            max_tokens: 384000,
-            temperature: 0.7,
-            top_p: 1.0,
+            "model": "deepseek-v4-pro",
+            "name": "DeepSeek V4 Pro",
+            "reasoning": true,
+            "input": [
+              "text",
+            ],
+            "context_window": 1000000,
+            "max_tokens": 384000,
+            "temperature": 0.7,
+            "top_p": 1.0,
           },
         ],
       },
-      // Alibaba Cloud Bailian token-plan (Anthropic protocol)
-      // Set BAILIAN_API_KEY via:  credstore set BAILIAN_API_KEY
-      bailian: {
-        base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
-        api_key: "${QWEN_TOKEN_PLAN_API_KEY}",
-        api: "anthropic-messages",
-        models: [
-          { model: "qwen3.8-max", name: "Qwen3.8 Max", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072, compat: {thinkingFormat: "openai"} },
-          { model: "qwen3.8-max-preview", name: "Qwen3.8 Max Preview", reasoning: true, input: ["text","image"], context_window: 983616, max_tokens: 131072, compat: {thinkingFormat: "openai"} },
+      "bailian": {
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+        "api_key": "${QWEN_TOKEN_PLAN_API_KEY}",
+        "api": "anthropic-messages",
+        "models": [
+          {
+            "model": "qwen3.8-max",
+            "name": "Qwen3.8 Max",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image",
+            ],
+            "context_window": 983616,
+            "max_tokens": 131072,
+            "compat": {
+              "thinkingFormat": "openai",
+            },
+          },
         ],
       },
     },
   },
-  active_model: "deepseek/deepseek-v4-flash",
-
-  // ── MCP Servers ────────────────────────────────────────────────
-  // Add any MCP-compatible server here (Python, Node, Go, Rust).
-  //
-  // Server fields:
-  //   command / args:  for stdio transport (local subprocess)
-  //   url / headers:   for HTTP transport (remote endpoint)
-  //   env:             ${VAR} references resolved at connection time
-  //   require_approval: true = user must confirm each tool call (default false)
-  //   auth:            OAuth 2.0 device code flow configuration (optional)
-  //
-  //   OAuth example:
-  //     auth: {
-  //       type: "oauth",
-  //       client_id: "${MY_CLIENT_ID}",
-  //       client_secret: "${MY_CLIENT_SECRET}",
-  //       device_auth_url: "https://provider.com/device/code",
-  //       token_url: "https://provider.com/oauth/token",
-  //       scopes: ["read", "write"],
-  //     }
-  mcp: {
-    servers: {
-      "iflow-mcp": {
-        // command execution may timeout on Windows — use slife's built-in execute_shell for shell commands
-        command: "uvx",
-        args: ["--from", "iflow-mcp-mcp-claude-code", "claudecode"],
-        os_paths: true,
-        description: "Local filesystem + shell + notebook — read, write, edit, grep, multi-edit, AST search.",
-        // require_approval: true,
+  "active_model": "deepseek/deepseek-v4-flash",
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "enabled": false,
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          ".",
+        ],
+        "description": "Local filesystem operations — read, write, list, and search files within allowed directories.",
+        "require_approval": true,
       },
-      "file-search": {
-        command: "npx",
-        args: ["-y", "file-search-mcp"],
-        description: "Fast codebase search via ripgrep — search_files, search_content, fuzzy_find, tree.",
+      "serper": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "serper-search-scrape-mcp-server",
+        ],
+        "env": {
+          "SERPER_API_KEY": "${SERPER_API_KEY}",
+        },
+        "description": "Google web search via Serper — search the web and scrape result pages.",
       },
-      fetch: {
-        command: "uvx",
-        args: ["--with", "mcp>=1.0,<1.29", "mcp-server-fetch"],
-        description: "Fetch and convert web pages to markdown.  Pins mcp<1.29 for McpError compatibility.",
+      "fetch": {
+        "command": "uvx",
+        "args": [
+          "--with",
+          "mcp>=1.0,<1.29",
+          "mcp-server-fetch",
+        ],
+        "description": "Fetch and convert web pages to markdown. Pins mcp<1.29 for McpError compatibility.",
+      },
+      "tavily-mcp": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "tavily-mcp@latest",
+        ],
+        "env": {
+          "TAVILY_API_KEY": "${TAVILY_API_KEY}",
+        },
+        "description": "Tavily AI-optimized web search — designed for LLM agents, returns clean structured results.",
+      },
+      "github": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "anyapi-mcp-server",
+          "--name",
+          "github",
+          "--spec",
+          "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml",
+          "--base-url",
+          "https://api.github.com",
+          "--header",
+          "Authorization: Bearer ${GITHUB_TOKEN}",
+        ],
+        "env": {
+          "GITHUB_TOKEN": "${GITHUB_TOKEN}",
+        },
+        "description": "GitHub REST API via anyapi-mcp-server — manage repos, issues, PRs, users, and more.",
       },
       "duckduckgo-search": {
-        command: "uvx",
-        args: [
-          "--with", "duckduckgo-mcp-server[browser]",
+        "command": "uvx",
+        "args": [
+          "--with",
+          "duckduckgo-mcp-server[browser]",
           "duckduckgo-mcp-server",
-          "--fetch-backend", "auto",
-          "--search-backend", "auto",
+          "--fetch-backend",
+          "auto",
+          "--search-backend",
+          "auto",
         ],
-        description: "DuckDuckGo web search. No API key required.",
+        "description": "DuckDuckGo search MCP server — web search and content extraction via DuckDuckGo.",
       },
-      // serper: {
-      //   command: "npx",
-      //   args: ["-y", "serper-search-scrape-mcp-server"],
-      //   env: { SERPER_API_KEY: "${SERPER_API_KEY}" },
-      //   description: "Google web search via Serper. Set SERPER_API_KEY first.",
-      // },
+      "amap-maps": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@amap/amap-maps-mcp-server",
+        ],
+        "description": "高德地图官方 MCP Server，提供地理编码、逆地理编码、IP定位、天气查询、骑行/步行/驾车/公交路径规划、距离测量、关键词/周边/详情POI搜索、专属地图、输入提示、搜索提示、矩形区域交通态势、路径信息、距离测量等多种地图和位置服务。免费，需要申请 Web服务 API Key。",
+        "env": {
+          "AMAP_MAPS_API_KEY": "${AMAP_MAPS_API_KEY}",
+        },
+      },
+      "iflow-mcp": {
+        "enabled": true,
+        "command": "uvx",
+        "args": [
+          "--from",
+          "iflow-mcp-mcp-claude-code",
+          "claudecode",
+        ],
+        "os_paths": true,
+        "description": "MCP implementation of Claude Code capabilities - allows Claude to directly execute instructions for modifying and improving project files",
+        "source": {
+          "type": "pypi",
+          "url": "https://pypi.org/project/iflow-mcp_mcp-claude-code/",
+          "description": "PyPI package for Claude Code MCP server",
+          "fetched_at": "2026-07-23T01:42:26.885197+00:00",
+        },
+      },
+      "file-search": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "file-search-mcp",
+        ],
+        "description": "Blazingly fast MCP server for searching files and content in large codebases — uses ripgrep (100x faster than grep), fuzzy find, and tree view. Tools: search_files, search_content, fuzzy_find, tree.",
+        "source": {
+          "type": "npm",
+          "url": "https://github.com/elad12390/file-search-mcp",
+          "description": "npm package for fast file search in large codebases",
+          "fetched_at": "2026-07-23T02:12:23.593046+00:00",
+        },
+      },
+      "playwright": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@playwright/mcp@latest",
+          "--headless",
+        ],
+        "description": "Playwright MCP server (official Microsoft) — headless browser automation via accessibility snapshots. Supports navigation, clicks, typing, screenshots, form filling, file uploads, and JavaScript execution.",
+        "source": {
+          "type": "npm",
+          "url": "https://www.npmjs.com/package/@playwright/mcp",
+          "version": "latest",
+          "description": "Official Playwright MCP server from Microsoft",
+          "fetched_at": "2026-08-02T00:00:00.000000+00:00",
+        },
+      },
+      "context7": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@upstash/context7-mcp",
+        ],
+        "description": "Context7 MCP server (Upstash) — up-to-date library/framework API docs to eliminate LLM hallucinations. Resolution-based lookups for any version or commit (Unpkg-compatible projects only).",
+        "env": {
+          "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}",
+        },
+        "source": {
+          "type": "npm",
+          "url": "https://www.npmjs.com/package/@upstash/context7-mcp",
+          "version": "latest",
+          "description": "Context7 MCP server from Upstash",
+          "fetched_at": "2026-08-01T23:30:38.777971+00:00",
+        },
+      },
+      "chrome-devtools": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "chrome-devtools-mcp@latest",
+          "--no-usage-statistics",
+        ],
+        "description": "Chrome DevTools MCP (official Google) — control and inspect real Chrome browser with performance profiling, network inspection, console access, DOM manipulation, and screenshots.",
+        "source": {
+          "type": "npm",
+          "url": "https://github.com/ChromeDevTools/chrome-devtools-mcp",
+          "version": "latest",
+          "description": "Chrome DevTools for coding agents - official Google project",
+          "fetched_at": "2026-08-01T23:41:47.240842+00:00",
+        },
+      },
+      "citecheck": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@jhlee0619/citecheck",
+        ],
+        "description": "citecheck MCP server — automatically validate and fix references in academic papers. Extracts references from .tex/.md/.docx/.txt/.bib, validates against databases, and fixes inconsistencies. Supports arXiv/DOI/DBLP/ACL/custom APIs.",
+        "source": {
+          "type": "npm",
+          "url": "https://github.com/jhlee0619/citecheck",
+          "version": "latest",
+          "description": "MCP server for automatic reference repair in scholarly manuscripts (MIT)",
+          "fetched_at": "2026-08-01T23:51:06.761712+00:00",
+        },
+      },
+      "mcp-pandoc": {
+        "command": "uvx",
+        "args": [
+          "mcp-pandoc",
+        ],
+        "description": "mcp-pandoc document format converter — use Pandoc to convert between Markdown/HTML/PDF/DOCX/RST/LaTeX/EPUB/TXT/IPYNB and more.",
+        "source": {
+          "type": "pypi",
+          "url": "https://github.com/vivekVells/mcp-pandoc",
+          "version": "latest",
+          "description": "Pandoc document conversion MCP server (official MCP servers project)",
+          "fetched_at": "2026-08-01T23:52:45.022542+00:00",
+        },
+      },
+      "markitdown": {
+        "command": "uvx",
+        "args": [
+          "markitdown-mcp",
+        ],
+        "description": "MarkItDown MCP server (Microsoft) — convert various file formats (PDF, DOCX, PPTX, XLSX, images via OCR, audio transcription, HTML, CSV, JSON, XML, ZIP) to Markdown.",
+        "source": {
+          "type": "pypi",
+          "url": "https://github.com/microsoft/markitdown",
+          "version": "0.0.1a4",
+          "description": "Microsoft MarkItDown MCP server for document-to-markdown conversion",
+          "fetched_at": "2026-08-01T23:56:15.694479+00:00",
+        },
+      },
+      "office-word-mcp": {
+        "command": "uvx",
+        "args": [
+          "--from",
+          "office-word-mcp-server",
+          "word_mcp_server",
+        ],
+        "description": "Office-Word-MCP server — create/read/edit Microsoft Word documents. Supports document management (create, merge, convert to PDF), content creation (headings, paragraphs, tables, images, page breaks), formatting (font, alignment, spacing), and comments.",
+        "source": {
+          "type": "pypi",
+          "url": "https://github.com/GongRzhe/Office-Word-MCP-Server",
+          "version": "latest",
+          "description": "MCP server for creating/reading/editing Word documents",
+          "fetched_at": "2026-08-02T00:00:39.614231+00:00",
+        },
+      },
+      "excel-mcp": {
+        "command": "cmd",
+        "args": [
+          "/c",
+          "npx",
+          "--yes",
+          "@negokaz/excel-mcp-server",
+        ],
+        "description": "Excel MCP server — read/write MS Excel files. Supports reading/writing text values and formulas, creating worksheets/tables, copying worksheets, formatting cells (Windows: live editing + screenshots). Supports .xlsx/.xlsm/.xltx/.xltm. Free and open source.",
+        "env": {
+          "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000",
+        },
+        "source": {
+          "type": "npm",
+          "url": "https://github.com/negokaz/excel-mcp-server",
+          "version": "latest",
+          "description": "MCP server for reading/writing MS Excel files",
+          "fetched_at": "2026-08-02T00:00:58.187765+00:00",
+        },
+      },
+      "pdf-toolkit": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@aryanbv/pdf-toolkit-mcp",
+        ],
+        "description": "PDF Toolkit MCP — 22-tool PDF suite: create PDFs from Markdown/structured data, render pages as images (for vision models to read scans), fill forms and extract values, split/merge/rotate/crop pages, add text/watermarks/annotations, extract and re-embed attachments.",
+        "source": {
+          "type": "npm",
+          "url": "https://github.com/aryanbv/pdf-toolkit-mcp",
+          "version": "latest",
+          "description": "Write-capable PDF toolkit MCP server (22 tools)",
+          "fetched_at": "2026-08-02T00:04:47.866829+00:00",
+        },
+      },
+      "sqlite": {
+        "command": "uvx",
+        "args": [
+          "--with",
+          "mcp>=1.0,<1.29",
+          "mcp-server-sqlite",
+        ],
+        "description": "SQLite MCP (official modelcontextprotocol/servers reference) — query and manipulate SQLite databases via natural language: create tables, CRUD operations, schema inspection, and more.",
+        "source": {
+          "type": "github",
+          "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite",
+          "version": "latest",
+          "description": "Official SQLite MCP reference server",
+          "fetched_at": "2026-08-02T00:05:14.333705+00:00",
+        },
+      },
+      "nvidia-nim": {
+        "command": "bunx",
+        "args": [
+          "@hallaxius/nvidia-nim-mcp",
+          "--allowed-local-media-path",
+          "D:\\Downloads",
+        ],
+        "description": "NVIDIA NIM API (chat, vision, embeddings, OCR, image gen) with local media path support",
+        "env": {
+          "NVAPI_KEY": "${NVAPI_KEY}",
+        },
+        "source": {
+          "type": "npm",
+          "description": "Configured to allow local file paths for vision/OCR tools",
+          "fetched_at": "2026-08-04T07:49:26.111175+00:00",
+        },
+      },
     },
   },
-
-  // ── CLI Tools ──────────────────────────────────────────────────
-  // External commands the agent discovers and persists at runtime.
-  cli_tools: {
-    uv: {
-      command: "uv",
-      description: "Fast Python package manager. Subcommands: uv pip install, uv venv, uv init, uv add, uv run, uv sync, uv tool install.",
-      install: "curl -LsSf https://astral.sh/uv/install.sh | sh",
+  "mqtt": {
+    "broker": {
+      "host": "localhost",
+      "port": 1883,
     },
-    uvx: {
-      command: "uvx",
-      description: "Run Python CLI tools without installing (like npx for Python). Usage: uvx ruff check ., uvx black file.py.",
-      install: "Bundled with uv.",
+    "heartbeat_interval": 15,
+    "heartbeat_timeout": 45,
+    "task_timeout": 120,
+  },
+  "subagent": {
+    "max_subagents": 5,
+    "task_timeout": 120,
+  },
+  "cli_tools": {
+    "yt-dlp": {
+      "command": "yt-dlp",
+      "description": "yt-dlp is a powerful command-line video downloader supporting 1000+ sites including YouTube, Twitter/X, Bilibili, TikTok, etc. Common usage: yt-dlp <URL> to download best quality; yt-dlp -f \"bestvideo+bestaudio\" --merge-output-format mp4 <URL> for best quality merged MP4; yt-dlp --list-formats <URL> to list available formats; yt-dlp -f <format_id> <URL> for specific format. Supports cookies, subtitles, playlists, and more.",
+      "install": "uv pip install yt-dlp",
+    },
+    "npm": {
+      "command": "npm",
+      "description": "Node Package Manager — install, manage, and publish Node.js packages. Common subcommands: npm install <pkg> — install a package; npm install -g <pkg> — install globally; npm init — create a package.json; npm run <script> — run a script from package.json; npm publish — publish a package; npm update — update packages; npm audit — audit dependencies; npm ls — list installed packages.",
+      "install": "Download from https://nodejs.org/ or use a version manager like nvm.",
+    },
+    "npx": {
+      "command": "npx",
+      "description": "Node Package Executor — run Node.js packages without installing them globally. Common usage: npx <pkg> — run a package directly; npx <pkg>@<version> — run a specific version; npx -y <pkg> — skip confirmation prompt; npx --help — show help. Used for one-off commands like npx create-react-app, npx tsx, etc.",
+      "install": "Comes bundled with npm (Node.js). Download from https://nodejs.org/.",
+    },
+    "uv": {
+      "command": "uv",
+      "description": "Fast Python package and project manager (replaces pip, pip-tools, poetry, etc.). Common subcommands: uv pip install <pkg> — install a Python package; uv pip sync — sync from requirements; uv venv — create a virtual environment; uv init — init a new project; uv add <pkg> — add a dependency; uv run <script> — run a script in the project venv; uv lock — generate lockfile; uv sync — sync the project environment; uv tool install <pkg> — install a CLI tool globally (like pipx).",
+      "install": "Install via: powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\" (Windows) or curl -LsSf https://astral.sh/uv/install.sh | sh (macOS/Linux).",
+    },
+    "uvx": {
+      "command": "uvx",
+      "description": "UV Package Executor — run Python-based CLI tools without installing them (like npx but for Python). Common usage: uvx <pkg> — run a Python CLI tool directly; uvx <pkg>@<version> — run a specific version; uvx <pkg> -- <args> — pass args to the tool. Examples: uvx ruff check ., uvx black file.py, uvx streamlit run app.py.",
+      "install": "Comes bundled with uv. Install uv first via: powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\" (Windows).",
+    },
+    "browser-harness": {
+      "command": "browser-harness",
+      "description": "Direct browser control via CDP — automation, scraping, testing, screenshots. Subcommands: browser-harness <<'PY' ... PY (run Python helpers like new_tab, page_info, capture_screenshot, click_at_xy, js, etc.), browser-harness --doctor (diagnose connection), browser-harness skill (print SKILL.md), browser-harness auth login (cloud auth), browser-harness telemetry disable.",
+      "install": "uv tool install --python 3.12 --upgrade --force browser-harness",
+      "source": {
+        "type": "pypi",
+        "url": "https://pypi.org/project/browser-harness/",
+        "version": "0.1.5",
+        "description": "Official browser-harness package",
+        "fetched_at": "2026-07-13T00:44:43.891352+00:00",
+      },
     },
   },
-
-  // ── Memory ─────────────────────────────────────────────────────
-  // Always on — DB auto-located at ~/.slife/<agent_id>.db.
-  // Embedding config is optional; without it keyword search still works.
-  memdb: {
-    // Local GGUF embeddings (offline).  Install: slife[embeddings]
-    // embedding: {
-    //   model: "bge-m3",
-    //   gguf_path: "/path/to/bge-m3-Q4_K_M.gguf",
-    //   dim: 1024,
-    // },
+  "memdb": {
+    "embedding": {
+      "model": "bge-m3",
+      "gguf_path": "C:\\OneDrive\\AI\\hf_KimChen_bge-m3-q4_k_m.gguf",
+      "dim": 1024,
+    },
   },
 }
