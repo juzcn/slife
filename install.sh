@@ -132,7 +132,6 @@ fi
 #
 echo -e "${YELLOW}[2b] Ensuring bun (JavaScript runtime) is available…${NC}"
 HAVE_BUN=false
-# On WSL, a Windows bun won't forward custom env vars — install Linux-native.
 # Check both PATH and the default install location (may not be in PATH after reboot).
 if command -v bun &>/dev/null && ! _is_windows_exe bun; then
     echo -e "${GREEN}  ✓${NC} bun v$(bun --version 2>&1)"
