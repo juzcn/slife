@@ -15,7 +15,7 @@ Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
 ## Install
 
-**Zero prerequisites.** The install script auto-installs uv, Node.js, and bun if needed. Mosquitto (only needed for the A2A MQTT mesh) is offered interactively.
+**Zero prerequisites.** The install script auto-installs uv, Node.js, and bun if needed. On WSL, Linux-native versions are installed (Windows executables cannot receive custom env vars via WSL interop). Mosquitto (only needed for the A2A MQTT mesh) is offered interactively.
 
 ### macOS / Linux / WSL
 
