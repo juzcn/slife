@@ -133,7 +133,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
 | Credentials | `credential_check`, `inject_credential`, `uninject_credential` |
-| MemFiles | `save_content_or_files`, `expose_file`, `include_image` |
+| MemFiles | `save_content_or_files`, `expose_file`（隧道在线时可用）, `include_image` |
 | Display | `show_image` |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 

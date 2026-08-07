@@ -465,7 +465,7 @@ Three-tier rendering in the terminal: **Sixel** (full-colour; whitelisted termin
 
 A lightweight plain-HTTP server (`slife/plugins/memfiles/server.py`) streams local files through an ngrok tunnel:
 
-1. `expose_file(path)` → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`
+1. `expose_file(path)` → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`.  This tool is **dynamically registered** — it only appears in the tool list when the ngrok tunnel is active.  If the tunnel fails to start (no token, free-tier limit reached), the tool is hidden from the LLM entirely rather than returning errors at runtime.
 2. `GET /share/{token}` streams the file in 64 KB chunks (403 unknown token, 404 file gone)
 
 No BLOBs, no database, no HMAC — token→path mappings live in a JSON registry file (atomic writes) whose path is passed to the server subprocess via `SLIFE_MEMFILES_REGISTRY`. `save_content_or_files` persists content/URL/files under `<agent>.files/` with an `index.json` and returns share URLs the same way.
