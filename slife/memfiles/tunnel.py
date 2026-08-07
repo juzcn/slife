@@ -102,10 +102,9 @@ class NgrokTunnel:
     def _do_start(self, port: int) -> str:
         """Internal start logic (caller holds _starting guard).
 
-        Each slife instance creates its own ephemeral ngrok tunnel.
-        We use ``connect()`` with a per-instance session label so
-        multiple instances (WSL + Windows, etc.) get distinct URLs
-        without competing for the account's dev domain.
+        Uses endpoint pooling so multiple slife instances (WSL + Windows,
+        sub-agents on different machines, etc.) can share the same ngrok
+        dev domain.  ngrok load-balances across all online agents.
         """
         token = _read_auth_token()
         if not token:
@@ -116,16 +115,12 @@ class NgrokTunnel:
 
         self._ngrok = _import_ngrok()
 
-        # Set auth token globally (once per process) so connect() calls
-        # don't each trigger dev-domain auto-claim.
-        self._ngrok.set_auth_token(token)
-
         last_error: Exception | None = None
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                # connect() creates an ephemeral tunnel (random subdomain)
-                # when no domain is specified.
-                self._listener = self._ngrok.connect(port)
+                self._listener = self._ngrok.forward(
+                    port, authtoken=token, pooling_enabled=True,
+                )
                 self._public_url = str(self._listener.url()).rstrip("/")
                 os.environ["SLIFE_MEMFILES_URL"] = self._public_url
                 logger.info(
