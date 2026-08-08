@@ -11,6 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Any, Callable, Coroutine
 
 
 @dataclass
@@ -44,6 +45,11 @@ class TransportAdapter(ABC):
             print(msg.topic, msg.payload)
         await adapter.disconnect()
     """
+
+    #: Optional callback invoked when the transport auto-reconnects after
+    #: a drop (MQTT uses it to re-announce presence; the HTTP transport
+    #: never reconnects and leaves it None).  Must be a coroutine function.
+    on_reconnect: "Callable[[], Coroutine[Any, Any, None]] | None" = None
 
     @abstractmethod
     async def connect(self, host: str, port: int) -> None:

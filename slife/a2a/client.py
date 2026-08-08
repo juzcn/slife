@@ -127,6 +127,10 @@ class A2AClient:
         logger.info("a2a_connect host=%s port=%d id=%s", host, port, self._agent_id)
         await self._adapter.connect(host, port)
 
+        # On a paho auto-reconnect, re-announce presence so peers (which
+        # saw our LWT "offline") mark us online again (REVIEW H6).
+        self._adapter.on_reconnect = self._publish_presence
+
         # Subscribe to peer presence before publishing our own,
         # so we can detect duplicate agent-ids already on the mesh.
         await self._adapter.subscribe("Slife/+/presence")
@@ -547,7 +551,11 @@ class A2AClient:
         )
 
         try:
-            while self._adapter.is_connected:
+            # Loop until cancelled (at shutdown) — NOT `while is_connected`:
+            # a transient broker disconnect must not kill the inbox listener.
+            # The forward() tasks' messages() iterators now survive reconnects
+            # (see MQTTAdapter.messages), so this keeps delivering afterwards.
+            while True:
                 try:
                     msg = await asyncio.wait_for(merged.get(), timeout=0.5)
                 except asyncio.TimeoutError:

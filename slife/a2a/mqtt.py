@@ -17,7 +17,7 @@ import logging
 import time as _time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Coroutine
 
 import paho.mqtt.client as mqtt
 
@@ -80,6 +80,24 @@ class MQTTAdapter(TransportAdapter):
         self._queues: dict[str, asyncio.Queue[TransportMessage]] = {}
         self._connected = False
 
+        # ── Reconnect support (REVIEW H6) ─────────────────────────
+        # Subscriptions tracked so they can be re-issued on reconnect
+        # (clean_start=True drops them on the broker side).
+        self._subscriptions: dict[str, int] = {}
+        # Deliberate shutdown flag — unlike _connected it does NOT flip
+        # during a transient disconnect, so message() generators survive.
+        self._closed = False
+        self._ever_connected = False
+        # Created in __init__ (not after loop_start) to close the
+        # _on_connect-before-wait race for a fast local broker.
+        self._connect_event = asyncio.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        #: App callback invoked on a REconnect (not the first connect),
+        #: so the caller can re-announce presence.  Must be a coroutine
+        #: function (it is scheduled on the event loop via
+        #: ``run_coroutine_threadsafe``).
+        self.on_reconnect: "Callable[[], Coroutine[Any, Any, None]] | None" = None
+
         # Keep-alive ping tracking
         self._last_publish_time = 0.0
 
@@ -112,6 +130,7 @@ class MQTTAdapter(TransportAdapter):
         c.connect_async(host, port, keepalive=30)
         c.loop_start()
         self._client = c
+        self._loop = asyncio.get_running_loop()
 
         # Wait for the connection to complete
         await self._wait_for_connection(timeout=10.0)
@@ -125,6 +144,10 @@ class MQTTAdapter(TransportAdapter):
 
     async def disconnect(self) -> None:
         """Gracefully disconnect — publish offline, then stop the loop."""
+        # Always mark closed so message() generators terminate, even if the
+        # connection was already lost (a bare `if _connected` early-return
+        # would leave them spinning forever).
+        self._closed = True
         if not self._connected or self._client is None:
             return
 
@@ -170,6 +193,9 @@ class MQTTAdapter(TransportAdapter):
         if self._client is None:
             raise RuntimeError("MQTT not connected")
         self._client.subscribe(topic, qos=qos)
+        # Track the subscription so it can be re-issued on reconnect
+        # (clean_start=True drops subscriptions on the broker side).
+        self._subscriptions[topic] = qos
         # Create a queue for this subscription if it doesn't exist
         if topic not in self._queues:
             self._queues[topic] = asyncio.Queue()
@@ -185,7 +211,11 @@ class MQTTAdapter(TransportAdapter):
             queue = asyncio.Queue()
             self._queues[topic_filter] = queue
 
-        while self._connected:
+        # Loop on _closed (deliberate shutdown), NOT _connected: a transient
+        # disconnect must not end the generator — after paho reconnects,
+        # _on_connect restores _connected and re-subscribes, and the same
+        # iterator keeps delivering (REVIEW H6).
+        while not self._closed:
             try:
                 msg = await asyncio.wait_for(queue.get(), timeout=1.0)
                 yield msg
@@ -202,10 +232,33 @@ class MQTTAdapter(TransportAdapter):
         reason_code: mqtt.ReasonCode,
         properties: Any,
     ) -> None:
+        was_reconnect = self._ever_connected
+        self._ever_connected = True
+        self._connected = True
         self._connect_event.set()
+
+        if was_reconnect:
+            # paho auto-reconnected.  clean_start=True means the broker
+            # dropped every subscription — re-issue them all, then let the
+            # app re-announce presence (peers saw our LWT "offline").
+            for topic, qos in self._subscriptions.items():
+                try:
+                    client.subscribe(topic, qos=qos)
+                    logger.debug("a2a_mqtt_resubscribed topic=%s", topic)
+                except Exception:
+                    logger.warning(
+                        "a2a_mqtt_resubscribe_fail topic=%s", topic, exc_info=True,
+                    )
+            cb = self.on_reconnect
+            if cb is not None and self._loop is not None:
+                try:
+                    asyncio.run_coroutine_threadsafe(cb(), self._loop)
+                except Exception:
+                    logger.warning("a2a_mqtt_reconnect_cb_error", exc_info=True)
+
         logger.debug(
-            "a2a_mqtt_on_connect id=%s rc=%s",
-            self._client_id, reason_code,
+            "a2a_mqtt_on_connect id=%s rc=%s reconnect=%s",
+            self._client_id, reason_code, was_reconnect,
         )
 
     def _on_disconnect(
@@ -265,8 +318,12 @@ class MQTTAdapter(TransportAdapter):
     # ── Helpers ───────────────────────────────────────────────────────
 
     async def _wait_for_connection(self, timeout: float) -> None:
-        """Spin until _on_connect signals, or timeout."""
-        self._connect_event = asyncio.Event()
+        """Spin until _on_connect signals, or timeout.
+
+        The event is created in ``__init__`` — before ``loop_start()`` — so
+        a fast local broker that connects before this coroutine runs still
+        signals the same event (avoids a spurious 10s timeout).
+        """
         try:
             await asyncio.wait_for(self._connect_event.wait(), timeout=timeout)
         except asyncio.TimeoutError:

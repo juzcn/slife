@@ -296,3 +296,87 @@ class TestMQTTAdapterCallbacks:
 
         adapter._on_disconnect(None, None, None, None, None)
         assert not adapter.is_connected
+
+
+# ── MQTTAdapter reconnect (REVIEW H6) ────────────────────────────────────
+
+
+class TestMQTTAdapterReconnect:
+    """A broker disconnect must not kill the A2A mesh.
+
+    On paho's auto-reconnect, _on_connect must restore _connected,
+    re-issue every subscription (clean_start drops them), and let the app
+    re-announce presence via the on_reconnect callback.
+    """
+
+    def test_on_connect_restores_connected_and_resubscribes(self):
+        adapter = MQTTAdapter("test")
+        adapter._connect_event = asyncio.Event()
+        adapter._ever_connected = True  # this is a reconnect
+        adapter._subscriptions = {
+            "Slife/+/presence": 1,
+            "Slife/test/tasks/inbox": 1,
+        }
+        mock_client = Mock()
+
+        adapter._on_connect(mock_client, None, None, None, None)
+
+        assert adapter.is_connected
+        assert mock_client.subscribe.call_count == 2
+        mock_client.subscribe.assert_any_call("Slife/+/presence", qos=1)
+        mock_client.subscribe.assert_any_call("Slife/test/tasks/inbox", qos=1)
+
+    def test_on_connect_first_connect_does_not_resubscribe(self):
+        adapter = MQTTAdapter("test")
+        adapter._connect_event = asyncio.Event()
+        adapter._subscriptions = {"Slife/+/presence": 1}
+        mock_client = Mock()
+
+        adapter._on_connect(mock_client, None, None, None, None)
+
+        assert adapter.is_connected
+        assert adapter._ever_connected
+        mock_client.subscribe.assert_not_called()  # first connect
+
+    @pytest.mark.asyncio
+    async def test_messages_survives_transient_disconnect(self):
+        """messages() keeps delivering across a disconnect/reconnect cycle."""
+        adapter = MQTTAdapter("test")
+        adapter._queues["t"] = asyncio.Queue()
+
+        it = adapter.messages("t").__aiter__()
+        adapter._queues["t"].put_nowait(MQTTMessage(topic="t", payload="a"))
+        assert (await asyncio.wait_for(it.__anext__(), timeout=1)).payload == "a"
+
+        # Disconnect + reconnect (as paho would do automatically).
+        adapter._on_disconnect(None, None, None, None, None)
+        assert not adapter.is_connected
+        adapter._on_connect(Mock(), None, None, None, None)
+        assert adapter.is_connected
+
+        # The generator never exited — it still delivers.
+        adapter._queues["t"].put_nowait(MQTTMessage(topic="t", payload="b"))
+        assert (await asyncio.wait_for(it.__anext__(), timeout=1)).payload == "b"
+
+        # Deliberate shutdown ends the generator.
+        adapter._closed = True
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(it.__anext__(), timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_on_reconnect_fires_callback(self):
+        """The app's presence re-announce runs on a reconnect."""
+        adapter = MQTTAdapter("test")
+        adapter._connect_event = asyncio.Event()
+        adapter._ever_connected = True
+        adapter._loop = asyncio.get_running_loop()
+
+        fired = asyncio.Event()
+        async def cb():
+            fired.set()
+        adapter.on_reconnect = cb
+
+        adapter._on_connect(Mock(), None, None, None, None)
+
+        await asyncio.wait_for(fired.wait(), timeout=1)
+        assert fired.is_set()
