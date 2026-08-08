@@ -1,8 +1,8 @@
 """slife-memfiles — plain HTTP server for shared files.
 
-Serves ``GET /share/<token>/<filename>`` → validates the signed token
-and streams the local file.  No database — the token carries the file
-path and is validated via HMAC.
+Serves ``GET /share/<file_id>`` → resolves the id to a fixed path in the
+JSON registry (``slife/memfiles/token.py``) and streams the local file.
+File ids are random hex tokens — no HMAC, no shared state.
 
 Designed to be exposed to the internet via ngrok.
 

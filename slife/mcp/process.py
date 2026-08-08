@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 # Default wrapper module path
 _DEFAULT_SERVER_MODULE = "slife.plugins.mcp.server"
 
+# stderr markers emitted by the OAuth device flow inside the gateway child
+# (slife.mcp.oauth) — the gateway's stdout is closed after the port signal,
+# so user instructions come over stderr (REVIEW H7).
+_OAUTH_MARKER = "[OAUTH]"
+_OAUTH_ACTION_MARKER = "[OAUTH-ACTION]"
+
+
+def _notify_user(title: str, message: str) -> None:
+    """Best-effort desktop notification via the project's daemon convention."""
+    from slife.platform import desktop_notify
+    from slife.threads import run_daemon
+    run_daemon(desktop_notify, title, message, name="desktop-notify")
+
 
 class MCPWrapperProcess:
     """Manages the plugin child process lifecycle.
@@ -123,15 +136,32 @@ class MCPWrapperProcess:
             await self._cleanup_failed_start()
             raise
 
-    async def _read_stderr_tail(self) -> str:
-        """Read remaining stderr from the child process (best-effort)."""
+    async def _read_stderr_tail(self, max_lines: int = 40) -> str:
+        """Read a bounded tail of stderr from the child process (best-effort).
+
+        Reads up to *max_lines* lines, each with its own 1s timeout — never
+        blocking to EOF.  A live-but-silent child would otherwise hang
+        ``start()`` forever on the port-signal timeout path and leak the
+        process (REVIEW H8).
+        """
         if not self._process or not self._process.stderr:
             return "(stderr not available)"
+        lines: list[str] = []
         try:
-            remaining = await self._process.stderr.read()
-            return remaining.decode("utf-8", errors="replace")[-2000:] or "(empty)"
+            for _ in range(max_lines):
+                try:
+                    line = await asyncio.wait_for(
+                        self._process.stderr.readline(), timeout=1.0,
+                    )
+                except asyncio.TimeoutError:
+                    break
+                if not line:
+                    break
+                lines.append(line.decode("utf-8", errors="replace").rstrip())
         except Exception:
             return "(stderr read failed)"
+        tail = "\n".join(lines)[-2000:]
+        return tail or "(empty)"
 
     async def _read_port_signal(self) -> None:
         """Read the port-discovery JSON line from child stdout."""
@@ -283,6 +313,18 @@ class MCPWrapperProcess:
         ):
             stripped = text.strip()
             if not stripped:
+                continue
+
+            # OAuth device-flow instructions from the gateway child
+            # (slife.mcp.oauth).  Relay the box at WARNING so it's visible;
+            # fire a desktop notification for the compact URL+code action.
+            if stripped.startswith(_OAUTH_ACTION_MARKER):
+                body = stripped[len(_OAUTH_ACTION_MARKER):].strip()
+                _notify_user("slife — OAuth authorization required", body)
+                continue
+            if stripped.startswith(_OAUTH_MARKER):
+                body = stripped[len(_OAUTH_MARKER):].strip()
+                logger.warning("oauth_instructions %s", body)
                 continue
 
             if any(c in stripped for c in _BANNER_CHARS):

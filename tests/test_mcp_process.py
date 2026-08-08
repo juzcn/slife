@@ -217,6 +217,56 @@ class TestMCPWrapperProcessCreateClient:
             await wp.create_client()
 
 
+class TestMCPWrapperProcessStderrTail:
+    """_read_stderr_tail must be bounded (REVIEW H8)."""
+
+    @pytest.mark.asyncio
+    async def test_read_stderr_tail_bounded_when_child_silent(self):
+        """A live-but-silent child must NOT hang _read_stderr_tail forever.
+
+        The old ``await stderr.read()`` blocked to EOF; on the 30s
+        port-signal timeout this hung start() and leaked the child.
+        """
+        import sys as _sys
+
+        proc = await asyncio.create_subprocess_exec(
+            _sys.executable, "-c", "import time; time.sleep(300)",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        wp = MCPWrapperProcess()
+        wp._process = proc
+        try:
+            # Must return quickly (well under 5s) — not hang.
+            tail = await asyncio.wait_for(wp._read_stderr_tail(), timeout=5.0)
+            assert tail == "(empty)"
+        finally:
+            proc.kill()
+            await proc.wait()
+
+    @pytest.mark.asyncio
+    async def test_read_stderr_tail_reads_written_lines(self):
+        """Lines written before the child goes silent are captured."""
+        import sys as _sys
+
+        proc = await asyncio.create_subprocess_exec(
+            _sys.executable, "-c",
+            "import sys, time; "
+            "print('boom line', file=sys.stderr, flush=True); "
+            "time.sleep(300)",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        wp = MCPWrapperProcess()
+        wp._process = proc
+        try:
+            tail = await asyncio.wait_for(wp._read_stderr_tail(), timeout=5.0)
+            assert "boom line" in tail
+        finally:
+            proc.kill()
+            await proc.wait()
+
+
 class TestMCPWrapperProcessStop:
     """Tests for MCPWrapperProcess.stop()."""
 

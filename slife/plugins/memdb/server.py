@@ -681,14 +681,14 @@ async def memory_set_enabled(enabled: bool) -> str:
                 _reindex_task.cancel()
             _reindex_task = asyncio.create_task(_background_reindex())
             unembedded = await _count_unembedded()
-            status["message"] = "语义搜索已启用。"
+            status["message"] = "Semantic search enabled."
             if unembedded > 0:
-                status["reindex"] = f"后台索引已启动，{unembedded} 条待处理"
+                status["reindex"] = f"Background reindex started, {unembedded} items pending"
         else:
             embedded_count = await _count_all_embedded()
-            status["message"] = "语义搜索已禁用。关键词搜索仍可用。"
+            status["message"] = "Semantic search disabled. Keyword search still available."
             if embedded_count > 0:
-                status["preserved"] = f"{embedded_count} 条已有嵌入保留。"
+                status["preserved"] = f"{embedded_count} existing embeddings preserved."
         return json.dumps(status, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("set_enabled_failed enabled=%s", enabled)

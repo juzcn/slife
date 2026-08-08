@@ -20,12 +20,32 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time as _time
 from dataclasses import dataclass, field
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# ── User-facing output channel ─────────────────────────────────────────
+# The device flow runs inside the slife-mcp gateway child, whose stdout is
+# CLOSED right after the port signal (server_utils.signal_port) — printing
+# there raised "ValueError: I/O operation on closed file" (REVIEW H7).
+# All user instructions go to stderr instead, prefixed so the parent's
+# MCPWrapperProcess._log_stderr can surface them.
+_OAUTH_MARKER = "[OAUTH]"
+_OAUTH_ACTION_MARKER = "[OAUTH-ACTION]"
+
+
+def _emit_user_message(text: str, marker: str = _OAUTH_MARKER) -> None:
+    """Write *text* to stderr, one marker-prefixed line per line.
+
+    ``[OAUTH]`` lines are relayed at WARNING by the parent; the single
+    ``[OAUTH-ACTION]`` line (URL + code) fires a desktop notification.
+    """
+    for line in text.splitlines():
+        print(f"{marker} {line}", file=sys.stderr, flush=True)
 
 # credstore key prefix for OAuth tokens
 _TOKEN_KEY_PREFIX = "mcp_oauth_"
@@ -213,7 +233,14 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
         "═" * 55,
         "",
     ]
-    print("\n".join(msg_parts), flush=True)
+    _emit_user_message("\n".join(msg_parts))
+    # One compact action line so the parent can fire a desktop
+    # notification with the URL + code.
+    _emit_user_message(
+        f"Open {verification_uri} and enter code: {user_code} "
+        f"(authorizes '{server_name}', expires in {expires_in}s)",
+        marker=_OAUTH_ACTION_MARKER,
+    )
 
     # ── Step 3: Poll for token ──────────────────────────────────────
     poll_body: dict = {
@@ -249,7 +276,7 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
                 token_type=token_data.get("token_type", "Bearer"),
             )
             _store_tokens(server_name, tokens)
-            print(f"  ✓ Authorized! Token stored for {server_name}.\n", flush=True)
+            _emit_user_message(f"  ✓ Authorized! Token stored for {server_name}.")
             logger.info("oauth_authorized server=%s", server_name)
             return tokens
 
@@ -264,6 +291,21 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
             raise RuntimeError(
                 f"Device code expired for {server_name}. "
                 f"Please restart the authorization."
+            )
+        elif error in (
+            "access_denied", "invalid_client", "invalid_grant",
+            "unsupported_grant_type",
+        ):
+            # RFC 8628 §3.5 terminal errors — the user denied, or the grant
+            # is dead.  Abort immediately instead of polling to the deadline
+            # (REVIEW S6).  invalid_grant/invalid_client also invalidate the
+            # stored tokens.
+            if error in ("invalid_grant", "invalid_client"):
+                _delete_tokens(server_name)
+            raise RuntimeError(
+                f"OAuth authorization failed for {server_name}: {error} "
+                f"({token_data.get('error_description', '')}). "
+                f"Please try again."
             )
         elif error:
             logger.warning(
@@ -336,11 +378,21 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
             )
             resp.raise_for_status()
             data = resp.json()
-        except httpx.HTTPError as e:
-            _delete_tokens(server_name)
+        except httpx.HTTPStatusError as e:
+            # A 4xx from the token endpoint usually means the grant is dead
+            # (invalid_grant / invalid_client) — only then destroy the stored
+            # refresh token so the user must re-authorize.
+            if e.response.status_code in (400, 401, 403):
+                _delete_tokens(server_name)
             raise RuntimeError(
                 f"Token refresh failed for '{server_name}': {e}. "
                 f"Re-run device code flow."
+            ) from e
+        except httpx.HTTPError as e:
+            # Transient transport failure (connection reset, timeout) — keep
+            # the stored refresh token so the next refresh can succeed (REVIEW S6).
+            raise RuntimeError(
+                f"Token refresh failed for '{server_name}': {e}."
             ) from e
 
     tokens = OAuthTokens(

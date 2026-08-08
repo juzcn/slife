@@ -174,6 +174,65 @@ class TestDeviceCodeFlow:
         assert result.refresh_token == "gh_refresh_xyz"
         mock_store.assert_called_once()
 
+    def test_emit_user_message_uses_stderr_with_marker(self, capsys):
+        """REVIEW H7: instructions go to stderr (stdout is closed in the
+        gateway child), prefixed so the parent can surface them."""
+        from slife.mcp.oauth import (
+            _emit_user_message, _OAUTH_MARKER, _OAUTH_ACTION_MARKER,
+        )
+
+        _emit_user_message("line one\nline two")
+        _emit_user_message("Open https://x enter code: ABC-123", marker=_OAUTH_ACTION_MARKER)
+
+        captured = capsys.readouterr()
+        assert captured.out == ""  # nothing on stdout — the closed channel
+        assert f"{_OAUTH_MARKER} line one" in captured.err
+        assert f"{_OAUTH_MARKER} line two" in captured.err
+        assert f"{_OAUTH_ACTION_MARKER} Open https://x enter code: ABC-123" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_flow_completes_with_closed_stdout(self, monkeypatch):
+        """REVIEW H7: with stdout closed (gateway child), the flow no longer
+        raises 'I/O operation on closed file' — it completes via stderr."""
+        class _ClosedStdout:
+            """Behaves like the gateway child's closed stdout."""
+            def write(self, *_a):
+                raise ValueError("I/O operation on closed file")
+            def flush(self):
+                pass
+
+        monkeypatch.setattr("sys.stdout", _ClosedStdout())
+
+        device_data = {
+            "device_code": "dc_123",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://example.com/device",
+            "expires_in": 300,
+            "interval": 1,
+        }
+        token_data = {
+            "access_token": "gh_token_abc",
+            "refresh_token": "gh_refresh_xyz",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        }
+        mock_http = _make_http_mock(device_data, token_data)
+
+        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("slife.mcp.oauth._store_tokens") as mock_store, \
+             patch("slife.mcp.oauth.asyncio.sleep", AsyncMock()):
+            result = await run_device_code_flow(AUTH, "test-server")
+
+        assert result.access_token == "gh_token_abc"
+        mock_store.assert_called_once()
+
+    def test_oauth_markers_match_wrapper_detection(self):
+        """The gateway emits and the wrapper detects the SAME markers."""
+        from slife.mcp import oauth
+        from slife.mcp import process
+        assert oauth._OAUTH_MARKER == process._OAUTH_MARKER
+        assert oauth._OAUTH_ACTION_MARKER == process._OAUTH_ACTION_MARKER
+
     @pytest.mark.asyncio
     async def test_incomplete_auth_config(self):
         with pytest.raises(ValueError, match="incomplete"):
@@ -225,6 +284,24 @@ class TestDeviceCodeFlow:
             with pytest.raises(RuntimeError, match="expired"):
                 await run_device_code_flow(AUTH, "test-server")
 
+    @pytest.mark.asyncio
+    async def test_poll_aborts_on_access_denied(self):
+        """REVIEW S6: RFC 8628 terminal errors abort immediately, not at timeout."""
+        device_data = {
+            "device_code": "dc_deny",
+            "user_code": "DENY-9999",
+            "verification_uri": "https://example.com/device",
+            "expires_in": 300,
+            "interval": 1,
+        }
+        denied = {"error": "access_denied", "error_description": "user said no"}
+        mock_http = _make_http_mock(device_data, denied)
+
+        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("slife.mcp.oauth.asyncio.sleep", AsyncMock()):
+            with pytest.raises(RuntimeError, match="access_denied"):
+                await run_device_code_flow(AUTH, "test-server")
+
 
 # ── Token refresh ─────────────────────────────────────────────────────
 
@@ -269,6 +346,44 @@ class TestRefreshToken:
         with patch("credstore.get_credential", return_value=raw):
             with pytest.raises(RuntimeError, match="No refresh token"):
                 await refresh_access_token(AUTH, "test-server")
+
+    @pytest.mark.asyncio
+    async def test_transport_error_keeps_stored_tokens(self):
+        """REVIEW S6: a transient network failure must NOT delete the token."""
+        raw = _serialize(make_tokens(expires_in=1))
+
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.post = AsyncMock(side_effect=httpx.ConnectError("connection reset"))
+
+        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("credstore.get_credential", return_value=raw), \
+             patch("slife.mcp.oauth._delete_tokens") as mock_delete:
+            with pytest.raises(RuntimeError, match="refresh failed"):
+                await refresh_access_token(AUTH, "test-server")
+
+        mock_delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_invalid_grant_deletes_tokens(self):
+        """REVIEW S6: a 400 (invalid_grant) invalidates the stored token."""
+        raw = _serialize(make_tokens(expires_in=1))
+
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.post = AsyncMock(return_value=httpx.Response(
+            400, request=httpx.Request("POST", "https://token.example.com"),
+        ))
+
+        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("credstore.get_credential", return_value=raw), \
+             patch("slife.mcp.oauth._delete_tokens") as mock_delete:
+            with pytest.raises(RuntimeError, match="refresh failed"):
+                await refresh_access_token(AUTH, "test-server")
+
+        mock_delete.assert_called_once()
 
 
 # ── slow_down handling ────────────────────────────────────────────────

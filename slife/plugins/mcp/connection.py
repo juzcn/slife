@@ -282,72 +282,91 @@ class MCPServerConnection:
             )
 
         self._http_client = httpx.AsyncClient(
+            headers=headers,
             timeout=httpx.Timeout(30.0),
         )
 
         # Detect SSE: send GET with Accept: text/event-stream
         url = self._resolved_url.rstrip("/")
         sse_detected = False
+
+        # The detection GET doubles as the persistent SSE stream.  Once
+        # handed to ``_read_sse_stream`` the response is owned by that task
+        # (it closes it), so it must stay open here — a context-managed
+        # ``stream()`` would ``aclose()`` it on exit and kill the reader
+        # (REVIEW H1).
+        request = self._http_client.build_request(
+            "GET", url,
+            headers={"Accept": "text/event-stream", **headers},
+        )
+        resp: httpx.Response | None = None
         try:
-            async with self._http_client.stream(
-                "GET", url,
-                headers={"Accept": "text/event-stream", **headers},
-            ) as resp:
-                if (
-                    resp.status_code == 200
-                    and "text/event-stream" in resp.headers.get("content-type", "")
-                ):
-                    self._sse_mode = True
-                    self._sse_queue = asyncio.Queue()
-                    self._sse_task = asyncio.create_task(
-                        self._read_sse_stream(resp)
+            resp = await self._http_client.send(request, stream=True)
+            if (
+                resp.status_code == 200
+                and "text/event-stream" in resp.headers.get("content-type", "")
+            ):
+                self._sse_mode = True
+                self._sse_queue = asyncio.Queue()
+                self._sse_task = asyncio.create_task(
+                    self._read_sse_stream(resp)
+                )
+                # Wait for the endpoint event to discover the POST URL
+                endpoint = await asyncio.wait_for(
+                    self._sse_queue.get(), timeout=5.0,
+                )
+                if endpoint.get("type") != "endpoint":
+                    raise ConnectionError(
+                        f"Expected endpoint event, got {endpoint.get('type')}"
                     )
-                    # Wait for the endpoint event to discover the POST URL
-                    endpoint = await asyncio.wait_for(
-                        self._sse_queue.get(), timeout=5.0,
-                    )
-                    if endpoint.get("type") != "endpoint":
-                        raise ConnectionError(
-                            f"Expected endpoint event, got {endpoint.get('type')}"
-                        )
-                    # Resolve relative endpoint URL against base URL
+                # Resolve the message endpoint.  Servers may send it as a
+                # bare URL/path or as a JSON object
+                # {"uri": ..., "type": "endpoint"}; prefer the parsed ``uri``
+                # when present.
+                ep = None
+                msg = endpoint.get("msg")
+                if isinstance(msg, dict):
+                    ep = msg.get("uri")
+                if not ep:
                     ep = endpoint["data"]
-                    if ep.startswith("/"):
-                        from urllib.parse import urlparse
-                        parsed = urlparse(url)
-                        ep = f"{parsed.scheme}://{parsed.netloc}{ep}"
-                    self._sse_message_url = ep
-                    logger.info(
-                        "mcp_sse_connected server=%s msg_url=%s",
-                        self.config.name, self._sse_message_url,
-                    )
-                    sse_detected = True
-                    return
-                else:
-                    # Non-200 or wrong content-type — consume response body
-                    # so the connection can be reused, then fall through to
-                    # streamable HTTP.
-                    logger.debug(
-                        "mcp_sse_not_detected server=%s status=%d content_type=%s",
-                        self.config.name, resp.status_code,
-                        resp.headers.get("content-type", ""),
-                    )
+                if ep.startswith("/"):
+                    from urllib.parse import urlparse
+                    parsed = urlparse(url)
+                    ep = f"{parsed.scheme}://{parsed.netloc}{ep}"
+                self._sse_message_url = ep
+                logger.info(
+                    "mcp_sse_connected server=%s msg_url=%s",
+                    self.config.name, self._sse_message_url,
+                )
+                sse_detected = True
+                # ``resp`` stays open — owned by ``_read_sse_stream`` and
+                # closed there (or by its cancellation in cleanup).
+                return
+            else:
+                # Non-200 or wrong content-type — consume response body
+                # so the connection can be reused, then fall through to
+                # streamable HTTP.
+                logger.debug(
+                    "mcp_sse_not_detected server=%s status=%d content_type=%s",
+                    self.config.name, resp.status_code,
+                    resp.headers.get("content-type", ""),
+                )
         except Exception:
             if self._sse_task:
                 self._sse_task.cancel()
+                try:
+                    await self._sse_task
+                except asyncio.CancelledError:
+                    pass
                 self._sse_task = None
             self._sse_queue = None
             self._sse_mode = False
         finally:
-            if not sse_detected:
-                # Re-create client for streamable HTTP — the SSE detection
-                # GET consumed the connection, and we need user headers
-                # set on the client for subsequent POST requests.
-                await self._http_client.aclose()
-                self._http_client = httpx.AsyncClient(
-                    headers=headers,
-                    timeout=httpx.Timeout(30.0),
-                )
+            if not sse_detected and resp is not None:
+                # Streamable-HTTP fallthrough: release the detection
+                # response; the client (carrying user headers) is reused
+                # for subsequent POST requests.
+                await resp.aclose()
 
         logger.debug(
             "mcp_streamable_http server=%s url=%s",
@@ -459,7 +478,11 @@ class MCPServerConnection:
 
     async def _read_sse_stream(self, response) -> None:
         """Read SSE events from *response* and push JSON-RPC messages
-        into ``_sse_queue``."""
+        into ``_sse_queue``.
+
+        Owns ``response`` — it is closed here when the stream ends or the
+        task is cancelled, never by the caller (REVIEW H1).
+        """
         import json as _json
         event_type = ""
         data_buffer = ""
@@ -473,7 +496,12 @@ class MCPServerConnection:
                     continue
                 if line == "" and data_buffer:
                     # End of event — dispatch
-                    msg = _json.loads(data_buffer)
+                    try:
+                        msg = _json.loads(data_buffer)
+                    except ValueError:
+                        # Non-JSON payload (e.g. a bare endpoint URL) —
+                        # pass through the raw text.
+                        msg = data_buffer
                     entry = {"type": event_type, "data": data_buffer, "msg": msg}
                     if self._sse_queue:
                         await self._sse_queue.put(entry)
@@ -485,6 +513,11 @@ class MCPServerConnection:
                 await self._sse_queue.put(
                     {"type": "error", "data": str(e), "msg": {}}
                 )
+        finally:
+            try:
+                await response.aclose()
+            except Exception:
+                pass
 
     async def _request_sse(self, request: dict) -> dict:
         """Send JSON-RPC via POST to SSE message endpoint, wait for
@@ -512,7 +545,7 @@ class MCPServerConnection:
                     f"SSE stream closed for '{self.config.name}': {entry['data']}"
                 )
             msg = entry.get("msg", {})
-            if msg.get("id") == req_id:
+            if isinstance(msg, dict) and msg.get("id") == req_id:
                 if "error" in msg:
                     raise Exception(
                         f"MCP error from '{self.config.name}': {msg['error']}"
@@ -675,7 +708,7 @@ class MCPServerConnection:
                 "name": tool_name,
                 "arguments": arguments,
             })
-        except (ConnectionError, OSError) as e:
+        except (ConnectionError, OSError):
             # Transport error — the server may have died.
             # Attempt one reconnect before giving up.
             logger.warning(

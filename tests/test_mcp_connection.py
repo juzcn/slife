@@ -563,9 +563,9 @@ class TestMCPServerConnectionHTTP:
     async def test_http_headers_passed_to_client(self):
         """Custom config.headers are used in Streamable HTTP requests.
 
-        _connect_http first creates a bare httpx client for SSE detection,
-        then re-creates it with headers for Streamable HTTP POST requests.
-        Headers are also passed to the SSE detection stream() call.
+        _connect_http creates a single httpx client already carrying the
+        resolved headers, so the SSE detection GET and subsequent
+        Streamable HTTP POST requests all inherit them (REVIEW M7).
         """
         import httpx
 
@@ -576,30 +576,117 @@ class TestMCPServerConnectionHTTP:
         )
         conn = MCPServerConnection(cfg)
 
-        # Mock the SSE detection stream to raise, falling through
-        # to Streamable HTTP where config.headers are merged.
+        # Mock the SSE detection send() to raise, falling through
+        # to Streamable HTTP where config.headers are already on the client.
         mock_client1 = MagicMock(spec=httpx.AsyncClient)
-        mock_client1.stream = MagicMock(side_effect=ConnectionError("refused"))
+        mock_client1.send = MagicMock(side_effect=ConnectionError("refused"))
         mock_client1.aclose = AsyncMock()
 
-        mock_client2 = MagicMock(spec=httpx.AsyncClient)
-
         with patch.object(httpx, "AsyncClient") as mock_cls:
-            mock_cls.side_effect = [mock_client1, mock_client2]
+            mock_cls.side_effect = [mock_client1]
 
             await conn._connect_http()
 
-            # First AsyncClient: no headers (bare client for SSE detection)
-            assert mock_cls.call_count == 2
+            # A single AsyncClient is created, carrying the resolved headers.
+            assert mock_cls.call_count == 1
             first_kwargs = mock_cls.call_args_list[0].kwargs
-            assert "headers" not in first_kwargs
+            assert first_kwargs["headers"]["Authorization"] == "Bearer mytoken"
 
-            # SSE detection stream() was called with custom headers + Accept
-            mock_client1.stream.assert_called_once()
-            stream_kwargs = mock_client1.stream.call_args.kwargs
-            assert stream_kwargs["headers"]["Authorization"] == "Bearer mytoken"
-            assert stream_kwargs["headers"]["Accept"] == "text/event-stream"
+            # SSE detection GET carries custom headers + Accept
+            mock_client1.build_request.assert_called_once()
+            req_kwargs = mock_client1.build_request.call_args.kwargs
+            assert req_kwargs["headers"]["Authorization"] == "Bearer mytoken"
+            assert req_kwargs["headers"]["Accept"] == "text/event-stream"
 
-            # Second AsyncClient: includes custom headers
-            second_kwargs = mock_cls.call_args_list[1].kwargs
-            assert second_kwargs["headers"]["Authorization"] == "Bearer mytoken"
+            # Sent as a streamed request
+            mock_client1.send.assert_called_once()
+            assert mock_client1.send.call_args.kwargs["stream"] is True
+
+    @pytest.mark.asyncio
+    async def test_sse_connect_stream_stays_open(self):
+        """SSE detection response stays open after _connect_http returns.
+
+        Regression for REVIEW H1: the response must be owned by the
+        _read_sse_stream task (which closes it), not closed on function
+        return as the old ``async with stream(...)`` did.
+        """
+        import httpx
+
+        cfg = ServerConfig(
+            name="sse_srv",
+            url="http://remote:8080/mcp",
+        )
+        conn = MCPServerConnection(cfg)
+
+        # Simulated SSE event stream: JSON-object endpoint event, then stays open.
+        async def sse_lines():
+            yield "event: endpoint"
+            yield 'data: {"uri": "/mcp-message", "type": "endpoint"}'
+            yield ""
+            await asyncio.sleep(3600)  # keep the stream alive
+
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "text/event-stream"}
+        mock_resp.aiter_lines = sse_lines
+        mock_resp.aclose = AsyncMock()
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.build_request.return_value = MagicMock()
+        mock_client.send = AsyncMock(return_value=mock_resp)
+
+        with patch.object(httpx, "AsyncClient", return_value=mock_client):
+            await conn._connect_http()
+
+        assert conn._sse_mode is True
+        assert conn._sse_message_url == "http://remote:8080/mcp-message"
+        assert conn._sse_task is not None and not conn._sse_task.done()
+        # _connect_http must NOT have closed the response — the reader owns it.
+        mock_resp.aclose.assert_not_called()
+
+        # Cleanup: cancelling the reader task closes the response it owns.
+        conn._sse_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await conn._sse_task
+        mock_resp.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sse_connect_bare_path_endpoint(self):
+        """SSE endpoint event sent as a bare path (non-JSON) is accepted.
+
+        The reader passes non-JSON payloads through raw, and _connect_http
+        resolves the path against the base URL.
+        """
+        import httpx
+
+        cfg = ServerConfig(
+            name="sse_srv",
+            url="http://remote:8080/mcp",
+        )
+        conn = MCPServerConnection(cfg)
+
+        async def sse_lines():
+            yield "event: endpoint"
+            yield "data: /mcp-message"
+            yield ""
+            await asyncio.sleep(3600)
+
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "text/event-stream"}
+        mock_resp.aiter_lines = sse_lines
+        mock_resp.aclose = AsyncMock()
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.build_request.return_value = MagicMock()
+        mock_client.send = AsyncMock(return_value=mock_resp)
+
+        with patch.object(httpx, "AsyncClient", return_value=mock_client):
+            await conn._connect_http()
+
+        assert conn._sse_mode is True
+        assert conn._sse_message_url == "http://remote:8080/mcp-message"
+
+        conn._sse_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await conn._sse_task

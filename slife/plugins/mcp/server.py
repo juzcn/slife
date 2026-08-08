@@ -62,7 +62,7 @@ def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
         "Use the language from the server's own documentation / source "
         "for `description` — don't translate. "
         "For `command`: use the binary name directly (npx, uvx, bunx, python, etc.). "
-        "On WSL/Linux/macOS (平台类别 ≠ native-Windows), do NOT wrap in `cmd /c` — "
+        "On WSL/Linux/macOS (platform type ≠ native-Windows), do NOT wrap in `cmd /c` — "
         "cmd.exe only exists on native Windows. The platform info is in the system prompt. "
         "For the `env` parameter: use ${VAR} references for secrets "
         "(e.g. SERPER_API_KEY: '${SERPER_API_KEY}'). NEVER pass plaintext "
