@@ -5,6 +5,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import asyncio
 import os
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -144,6 +145,37 @@ class TestNgrokTunnelStart:
         """start() raises RuntimeError when a concurrent start is already in progress."""
         tunnel = NgrokTunnel()
         tunnel._starting = True
+        with pytest.raises(RuntimeError, match="already in progress"):
+            tunnel.start(8080)
+
+    def test_stale_start_is_superseded(self):
+        """A start stuck past _TUNNEL_START_TIMEOUT is superseded, not rejected.
+
+        Guards against the permanent wedge: a hung daemon thread leaves
+        _starting=True forever, so every later start would raise "already
+        in progress".  After the timeout a fresh attempt must proceed.
+        """
+        tunnel = NgrokTunnel()
+        tunnel._starting = True
+        tunnel._starting_at = time.monotonic() - tmod._TUNNEL_START_TIMEOUT - 10
+        with patch.object(tunnel, "_do_start", return_value="https://fresh.ngrok.io") as mock_do:
+            url = tunnel.start(8080)
+        assert url == "https://fresh.ngrok.io"
+        mock_do.assert_called_once_with(8080)
+        # Guard cleared after the fresh attempt completes.
+        assert tunnel._starting is False
+        assert tunnel._starting_at is None
+
+    def test_stale_start_resets_guard(self):
+        """After a superseded start, a fresh concurrent start is guarded again."""
+        tunnel = NgrokTunnel()
+        tunnel._starting = True
+        tunnel._starting_at = time.monotonic() - tmod._TUNNEL_START_TIMEOUT - 10
+        with patch.object(tunnel, "_do_start", return_value="https://fresh.ngrok.io"):
+            tunnel.start(8080)
+        # A second start while a *new* attempt is in flight must be rejected.
+        tunnel._starting = True
+        tunnel._starting_at = time.monotonic()
         with pytest.raises(RuntimeError, match="already in progress"):
             tunnel.start(8080)
 

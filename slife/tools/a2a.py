@@ -29,7 +29,6 @@ and suggests polling with a2a_get_task_result if still pending.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os as _os
 from typing import TYPE_CHECKING, ClassVar
@@ -851,10 +850,11 @@ class A2ANotifyUserTool(Tool):
         # Log prominently
         logger.warning("USER_NOTIFICATION title=%s message=%s", title, message)
 
-        # Fire desktop notification (best-effort, non-blocking)
-        loop = asyncio.get_running_loop()
+        # Fire desktop notification (best-effort, non-blocking).
+        # Daemon thread: a hung notify backend must never block shutdown.
         from slife.platform import desktop_notify
-        loop.run_in_executor(None, desktop_notify, title, message)
+        from slife.threads import run_daemon
+        run_daemon(desktop_notify, title, message, name="desktop-notify")
 
         return f"Notification sent: [{title}] {message}"
 

@@ -951,9 +951,9 @@ class AgentService:
             # On success, dynamically register expose_file (the only tool that
             # depends on the tunnel).  On failure, expose_file stays unregistered.
             async def _start_tunnel_and_register(port: int) -> None:
-                loop = asyncio.get_running_loop()
+                from slife.threads import run_daemon
                 try:
-                    await loop.run_in_executor(None, start_tunnel, port)
+                    await run_daemon(start_tunnel, port, name="ngrok-tunnel")
                 except Exception as e:
                     logger.info(
                         "tunnel_init_failed port=%s err=%s",

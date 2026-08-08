@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -29,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 3
 _RETRY_DELAY = 2.0  # seconds
+
+# A start attempt stuck longer than this is considered dead (its daemon
+# thread is hung in credstore/forward) — a fresh attempt may supersede it.
+# The stale thread is harmless: daemon threads die with the process.
+_TUNNEL_START_TIMEOUT = 45.0  # seconds
 
 
 # ── NgrokTunnel ───────────────────────────────────────────────────────
@@ -49,6 +55,9 @@ class NgrokTunnel:
         self._monitor_task: "asyncio.Task[None] | None" = None
         self._monitor_retries: int = 0
         self._starting: bool = False  # guard against concurrent starts
+        self._starting_at: float | None = None  # monotonic time of the in-flight start
+        self._start_gen: int = 0  # bumped per accepted start attempt (stale ownership)
+        self._start_lock = threading.Lock()  # serializes guard mutation only
 
     # ── Properties ─────────────────────────────────────────────────
 
@@ -90,14 +99,32 @@ class NgrokTunnel:
             return self._public_url
 
         # Guard against concurrent start attempts (e.g. executor + monitor).
-        if self._starting:
-            logger.debug("tunnel_start_already_in_progress")
-            raise RuntimeError("Tunnel start already in progress")
-        self._starting = True
+        # A start stuck longer than _TUNNEL_START_TIMEOUT is considered dead
+        # (its daemon thread is hung in credstore/forward) — supersede it so
+        # the tunnel isn't wedged in "already in progress" forever.
+        with self._start_lock:
+            if self._starting:
+                elapsed = time.monotonic() - (self._starting_at or time.monotonic())
+                if elapsed < _TUNNEL_START_TIMEOUT:
+                    logger.debug("tunnel_start_already_in_progress")
+                    raise RuntimeError("Tunnel start already in progress")
+                logger.warning(
+                    "tunnel_start_stale_superseded elapsed=%.0fs timeout=%.0fs",
+                    elapsed, _TUNNEL_START_TIMEOUT,
+                )
+            self._start_gen += 1
+            gen = self._start_gen
+            self._starting = True
+            self._starting_at = time.monotonic()
         try:
             return self._do_start(port)
         finally:
-            self._starting = False
+            # Only the current owner clears the guard — a superseded thread
+            # finishing later must not clobber the newer attempt's state.
+            with self._start_lock:
+                if self._start_gen == gen:
+                    self._starting = False
+                    self._starting_at = None
 
     def _do_start(self, port: int) -> str:
         """Internal start logic (caller holds _starting guard).
@@ -180,11 +207,11 @@ class NgrokTunnel:
             self._monitor_task = None
 
     async def _run_monitor(self, port: int, on_tunnel_up=None) -> None:
-        """Background task: one-shot retry if the executor failed."""
-        await asyncio.sleep(2.0)  # let the executor handshake finish
+        """Background task: one-shot retry if the initial start failed."""
+        await asyncio.sleep(2.0)  # let the daemon-thread handshake finish
 
-        # Only retry if the initial executor failed — the embedded SDK
-        # cannot silently crash, so no continuous health-ping is needed.
+        # Only retry if the initial start failed — the embedded SDK cannot
+        # silently crash, so no continuous health-ping is needed.
         if self._public_url is not None:
             return
 
@@ -194,9 +221,9 @@ class NgrokTunnel:
         logger.info(
             "tunnel_monitor_retry port=%s phase=initial_start", port,
         )
-        loop = asyncio.get_running_loop()
+        from slife.threads import run_daemon
         try:
-            await loop.run_in_executor(None, self.start, port)
+            await run_daemon(self.start, port, name="ngrok-tunnel-retry")
             logger.info(
                 "tunnel_initial_start_ok port=%s url=%s",
                 port, self._public_url,
