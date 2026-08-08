@@ -87,6 +87,7 @@ class TestShellExecute:
 
         mock_process = MagicMock()
         mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_process.returncode = None  # still running when the timeout fires
         mock_process.kill = MagicMock()
         mock_process.wait = AsyncMock()
 

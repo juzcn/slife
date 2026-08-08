@@ -472,3 +472,83 @@ class TestAddSkillToolArchive:
         assert "[FAIL]" in result
         # Directory should be cleaned up
         assert not (skills_dir / "error-skill").exists()
+
+
+# ── Security: path traversal & zip-slip (REVIEW H2) ─────────────────────
+
+
+class TestSkillSecurity:
+    """skill_add / skill_remove must not escape the skills root."""
+
+    @pytest.mark.asyncio
+    async def test_install_rejects_traversal_name(self, tmp_path):
+        """skill_add with a path-traversal name is refused."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        escape_target = (skills_dir / "../../escape").resolve()
+        tool = AddSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(
+            name="../../escape",
+            files=[{"path": "SKILL.md", "content": "# x"}],
+        )
+
+        assert "[FAIL]" in result
+        assert not escape_target.exists()
+
+    @pytest.mark.asyncio
+    async def test_install_rejects_traversal_file_path(self, tmp_path):
+        """skill_add refuses a file path that escapes the skill dir."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        tool = AddSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(
+            name="s",
+            files=[{"path": "../../evil.txt", "content": "pwned"}],
+        )
+
+        assert "[FAIL]" in result
+        assert not (tmp_path / "evil.txt").exists()
+        assert not (skills_dir / "s").exists()  # cleaned up
+
+    @pytest.mark.asyncio
+    async def test_install_rejects_zip_slip(self, tmp_path):
+        """skill_add refuses a zip archive containing a ../ member."""
+        import base64
+        import io
+        import zipfile
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("../evil.txt", "pwned")
+            zf.writestr("SKILL.md", "# x")
+        archive_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        tool = AddSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(name="s", archive=archive_b64)
+
+        assert "[FAIL]" in result
+        assert not (skills_dir / "evil.txt").exists()
+        assert not (skills_dir / "s").exists()  # cleaned up
+
+    @pytest.mark.asyncio
+    async def test_remove_rejects_traversal_name(self, tmp_path):
+        """skill_remove with a path-traversal name refuses to delete."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # A real directory outside the skills root that must survive.
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        (victim / "keep.txt").write_text("keep")
+
+        tool = RemoveSkillTool(skills_dir=str(skills_dir))
+        result = await tool.execute(skill_name="../victim")
+
+        assert "[FAIL]" in result
+        assert victim.exists()
+        assert (victim / "keep.txt").exists()

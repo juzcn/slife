@@ -8,10 +8,47 @@ Tools:
 
 import asyncio
 import logging
+import os
+import signal
+import subprocess
 import sys
 
 from slife.platform import _resolve_skill_script
 from slife.tools.base import Tool
+
+
+async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
+    """Terminate a subprocess and its whole process tree.
+
+    ``process.kill()`` only kills the direct child (``cmd.exe`` / ``sh``).
+    Any grandchildren it spawned — e.g. yt-dlp started by a shell, or
+    ffmpeg spawned by yt-dlp — survive as orphans, keep writing to the
+    console and garble the TUI, and hold their pipes open forever.  This
+    kills the tree: ``taskkill /T`` on Windows, the process group on POSIX
+    (children are spawned with ``start_new_session=True``).
+    """
+    if process is None or process.returncode is not None:
+        return
+    if os.name == "nt":
+        await asyncio.to_thread(
+            subprocess.run,
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+    try:
+        await process.wait()
+    except (ProcessLookupError, OSError):
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +92,19 @@ class ShellTool(Tool):
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own process group on POSIX so a timeout can kill the whole
+            # tree (sh + children like yt-dlp/ffmpeg) — see _kill_process_tree.
+            start_new_session=True,
         )
         try:
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(), timeout=timeout,
             )
         except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
+            # Kill the whole tree — a bare process.kill() only kills the
+            # shell and orphans yt-dlp/ffmpeg, which keep writing to the
+            # console and garble the TUI.
+            await _kill_process_tree(process)
             logger.warning("shell_timeout timeout=%ds cmd=%.200s", timeout, command)
             return f"Error: Command timed out after {timeout}s"
 
@@ -134,8 +176,18 @@ class RunPythonScriptTool(Tool):
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own process group on POSIX so cancel/timeout can kill the
+            # whole tree — see _kill_process_tree.
+            start_new_session=True,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await proc.communicate()
+        except asyncio.CancelledError:
+            # The loop's tool-timeout cancels communicate() — kill the
+            # child tree so the running script (e.g. a yt-dlp download)
+            # doesn't survive as an orphan writing to the console.
+            await _kill_process_tree(proc)
+            raise
         out = stdout.decode("utf-8", errors="replace").strip()
         err = stderr.decode("utf-8", errors="replace").strip()
 

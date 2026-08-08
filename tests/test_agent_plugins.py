@@ -291,3 +291,89 @@ class TestPluginLifecycleKill:
         lifecycle.process = mock_process
 
         lifecycle.kill()  # Should not raise — getattr returns None
+
+
+# ── Watchdog restart (REVIEW H5) ─────────────────────────────────────────
+
+
+class TestWatchdogRestart:
+    """Watchdog auto-restart behavior — memdb fallback + retry-on-failure."""
+
+    @staticmethod
+    def _dead_process(returncode=1):
+        """A process wrapper whose child exits with *returncode*."""
+        proc = MagicMock()
+        proc._process.wait = AsyncMock(return_value=returncode)
+        return proc
+
+    @staticmethod
+    def _living_process():
+        """A process wrapper whose child stays alive (blocks until cancelled)."""
+        proc = MagicMock()
+        proc._process.wait = lambda: asyncio.Future()  # never resolves on its own
+        return proc
+
+    @pytest.mark.asyncio
+    async def test_restart_via_fallback_spawn_without_restart_cb(self, lifecycle):
+        """A plugin spawned without restart_cb (like memdb) is restarted via spawn."""
+        new_proc = self._living_process()
+        lifecycle.process = self._dead_process()
+        lifecycle._module = "slife.plugins.memdb.server"
+
+        spawned = []
+        async def fake_spawn(module, harness_tools=None):
+            spawned.append((module, harness_tools))
+            lifecycle.process = new_proc
+
+        with patch.object(lifecycle, "spawn", new=fake_spawn):
+            task = asyncio.create_task(lifecycle._watchdog_loop())
+            try:
+                for _ in range(100):
+                    if lifecycle.process is new_proc:
+                        break
+                    await asyncio.sleep(0.01)
+                # The watchdog respawned via the fallback path (no restart_cb).
+                assert lifecycle.process is new_proc
+                assert spawned == [("slife.plugins.memdb.server", None)]
+                # A successful restart resets the counters.
+                assert lifecycle._restart_count == 0
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+    @pytest.mark.asyncio
+    async def test_failed_restart_retries_with_backoff(self, lifecycle, monkeypatch):
+        """A failed restart backs off and retries instead of killing the watchdog."""
+        import slife.agent.plugins as plugin_mod
+
+        monkeypatch.setattr(plugin_mod, "_WATCHDOG_BACKOFF_INITIAL", 0.01)
+        monkeypatch.setattr(plugin_mod, "_WATCHDOG_BACKOFF_MULTIPLIER", 2.0)
+
+        new_proc = self._living_process()
+        lifecycle.process = self._dead_process()
+        lifecycle._module = "slife.plugins.memdb.server"
+
+        attempts = 0
+        async def flaky_spawn(module, harness_tools=None):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("spawn boom")
+            lifecycle.process = new_proc
+
+        with patch.object(lifecycle, "spawn", new=flaky_spawn):
+            task = asyncio.create_task(lifecycle._watchdog_loop())
+            try:
+                for _ in range(200):
+                    if lifecycle.process is new_proc:
+                        break
+                    await asyncio.sleep(0.01)
+                # First attempt failed, watchdog retried and succeeded.
+                assert lifecycle.process is new_proc
+                assert attempts == 2
+                assert lifecycle._restart_count == 0
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task

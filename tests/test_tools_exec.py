@@ -11,6 +11,7 @@ from slife.tools.exec import (
     ShellTool,
     RunPythonScriptTool,
     InstallPythonPackageTool,
+    _kill_process_tree,
     _parse_input,
 )
 
@@ -136,6 +137,7 @@ class TestShellToolExecute:
         tool = ShellTool(timeout=5)
         mock_process = MagicMock()
         mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_process.returncode = None  # still running when the timeout fires
         mock_process.kill = MagicMock()
         mock_process.wait = AsyncMock()
 
@@ -468,6 +470,7 @@ class TestErrorFormat:
         tool = ShellTool(timeout=1)
         mock_process = MagicMock()
         mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_process.returncode = None  # still running when the timeout fires
         mock_process.kill = MagicMock()
         mock_process.wait = AsyncMock()
 
@@ -535,3 +538,55 @@ class TestRequiredParams:
         tool = RunPythonScriptTool()
         with pytest.raises(KeyError):
             await tool.execute()
+
+
+# ── Process-tree kill (REVIEW: exec timeout leaks orphaned children) ─────
+
+
+class TestKillProcessTree:
+    """_kill_process_tree must terminate the process AND its descendants.
+
+    A bare process.kill() only kills the shell (cmd.exe / sh); children
+    like yt-dlp/ffmpeg survive as orphans, keep writing to the console,
+    and garble the TUI.  This is the regression for that bug.
+    """
+
+    @pytest.mark.asyncio
+    async def test_kill_process_tree_terminates_real_process(self):
+        """The process itself is terminated and reaped."""
+        import sys as _sys
+
+        proc = await asyncio.create_subprocess_exec(
+            _sys.executable, "-c", "import time; time.sleep(300)",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        assert proc.returncode is None
+        await _kill_process_tree(proc)
+        assert proc.returncode is not None
+
+    @pytest.mark.asyncio
+    async def test_kill_process_tree_uses_taskkill_tree_on_windows(self, monkeypatch):
+        """On Windows the tree is killed via taskkill /T, not just the shell."""
+        import os as _os
+        import sys as _sys
+        from slife.tools import exec as exec_mod
+
+        proc = await asyncio.create_subprocess_exec(
+            _sys.executable, "-c", "import time; time.sleep(300)",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+
+        fake_run = MagicMock()
+        monkeypatch.setattr(exec_mod.subprocess, "run", fake_run)
+        await _kill_process_tree(proc)
+
+        if _os.name == "nt":
+            assert fake_run.called
+            args = fake_run.call_args[0][0]
+            assert args[0] == "taskkill"
+            assert "/F" in args and "/T" in args  # force + whole tree
+            assert str(proc.pid) in args
+        # process is actually gone regardless of platform
+        assert proc.returncode is not None

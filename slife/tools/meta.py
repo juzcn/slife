@@ -12,10 +12,7 @@ import asyncio
 import logging
 import uuid
 from collections import defaultdict
-from typing import ClassVar, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from slife.config import Config
+from typing import ClassVar
 
 from slife.tools.base import Tool
 
@@ -232,10 +229,6 @@ class ClearContextTool(Tool):
         remaining = len(conv.messages)
         logger.info("clear_context removed=%d remaining=%d", removed, remaining)
         return f"[OK] Cleared {removed} old message(s); {remaining} remaining (system prompt + current turn)."
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# include_image
 
 
 

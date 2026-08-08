@@ -7,7 +7,6 @@ adapts them for the OpenAI Responses API.  No public conversion layer.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time as _time
 from collections.abc import AsyncIterator
@@ -183,6 +182,12 @@ class OpenAIResponsesBackend:
         )
 
         stream = await self.client.responses.create(**kwargs)
+        # Function-call metadata keyed by item_id (fc_…): the name and the
+        # call_id only arrive on response.output_item.{added,done} — the
+        # function_call_arguments.delta event carries neither (REVIEW H4).
+        _tool_meta: dict[str, dict] = {}
+        _tool_index: dict[str, int] = {}
+        _next_index = 0
         try:
             async for event in stream:
                 if cancel_event is not None and cancel_event.is_set():
@@ -199,14 +204,36 @@ class OpenAIResponsesBackend:
                     "response.reasoning_summary_text.delta",
                 ):
                     yield StreamChunk(thinking=getattr(event, "delta", ""))
+                elif etype in (
+                    "response.output_item.added",
+                    "response.output_item.done",
+                ):
+                    item = getattr(event, "item", None)
+                    if (
+                        item is not None
+                        and getattr(item, "type", None) == "function_call"
+                    ):
+                        # Record name + call_id; argument deltas for this
+                        # item reference it by item_id.
+                        _tool_meta[getattr(item, "id", "")] = {
+                            "name": getattr(item, "name", ""),
+                            "call_id": getattr(item, "call_id", ""),
+                        }
                 elif etype == "response.function_call_arguments.delta":
                     item_id = getattr(event, "item_id", "")
-                    idx = hash(item_id) % 10000 if item_id else 0
+                    if item_id not in _tool_index:
+                        # Deterministic per-batch index (not a hash) so two
+                        # parallel tool calls can never collide.
+                        _tool_index[item_id] = _next_index
+                        _next_index += 1
+                    meta = _tool_meta.get(item_id, {})
                     yield StreamChunk(tool_deltas=[{
-                        "index": idx,
-                        "id": item_id or "",
+                        "index": _tool_index[item_id],
+                        # Responses correlates tool results by call_id, not
+                        # by the item id.
+                        "id": meta.get("call_id") or item_id,
                         "function": {
-                            "name": "",
+                            "name": meta.get("name", ""),
                             "arguments": getattr(event, "delta", ""),
                         },
                     }])

@@ -297,3 +297,93 @@ class TestChatStream:
         call_kwargs = mock_create.call_args[1]
         assert call_kwargs["stream"] is True
         assert call_kwargs["stream_options"] == {"include_usage": True}
+
+
+# ── OpenAIResponsesBackend (Responses API) ──────────────────────────────
+
+
+class TestOpenAIResponsesBackend:
+    """Tests for OpenAIResponsesBackend — Responses API streaming.
+
+    The Responses API streams function calls as ``response.*`` events:
+    the name/call_id arrive on ``output_item.added``/``done`` while
+    ``function_call_arguments.delta`` carries only argument chunks.
+    Regression for REVIEW H4: previously the name was never captured, so
+    every tool call became "Unknown tool ''".
+    """
+
+    def _responses_cfg(self):
+        return ModelConfig(
+            ref="openai/gpt-5",
+            provider="openai",
+            api_model="gpt-5",
+            display_name="GPT-5",
+            api_key="sk-test",
+            base_url="https://api.openai.com/v1",
+            api="openai-responses",
+        )
+
+    @staticmethod
+    def _evt(etype, **kw):
+        from types import SimpleNamespace
+        return SimpleNamespace(type=etype, **kw)
+
+    @staticmethod
+    def _fn_item(item_id, name, call_id):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            type="function_call", id=item_id, name=name, call_id=call_id, arguments="",
+        )
+
+    @pytest.mark.asyncio
+    async def test_stream_captures_function_name_from_output_item(self):
+        """Tool deltas carry the name/call_id captured on output_item.added."""
+        from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
+
+        events = make_async_iter([
+            self._evt("response.output_item.added", item=self._fn_item("fc_1", "web_search", "call_abc"), output_index=0, sequence_number=0),
+            self._evt("response.function_call_arguments.delta", item_id="fc_1", output_index=0, sequence_number=1, delta='{"query"'),
+            self._evt("response.function_call_arguments.delta", item_id="fc_1", output_index=0, sequence_number=2, delta=': "cats"}'),
+            self._evt("response.output_item.done", item=self._fn_item("fc_1", "web_search", "call_abc"), output_index=0, sequence_number=3),
+            self._evt("response.completed", response=MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5, total_tokens=15))),
+        ])
+
+        backend = OpenAIResponsesBackend(self._responses_cfg())
+        backend.client.responses.create = AsyncMock(return_value=events)
+
+        chunks = []
+        async for chunk in backend.chat_stream([{"role": "user", "content": "hi"}]):
+            chunks.append(chunk)
+
+        tool_deltas = [c.tool_deltas[0] for c in chunks if c.tool_deltas]
+        assert len(tool_deltas) == 2
+        for td in tool_deltas:
+            assert td["function"]["name"] == "web_search"
+            assert td["id"] == "call_abc"  # call_id, not item_id
+        # Stable, collision-free index across the deltas of one item.
+        assert tool_deltas[0]["index"] == tool_deltas[1]["index"] == 0
+        assert "".join(td["function"]["arguments"] for td in tool_deltas) == '{"query": "cats"}'
+
+    @pytest.mark.asyncio
+    async def test_stream_parallel_tool_calls_distinct_indices(self):
+        """Two tool calls in one batch get distinct deterministic indices."""
+        from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
+
+        events = make_async_iter([
+            self._evt("response.output_item.added", item=self._fn_item("fc_1", "tool_a", "call_a"), output_index=0, sequence_number=0),
+            self._evt("response.output_item.added", item=self._fn_item("fc_2", "tool_b", "call_b"), output_index=1, sequence_number=1),
+            self._evt("response.function_call_arguments.delta", item_id="fc_1", output_index=0, sequence_number=2, delta='{}'),
+            self._evt("response.function_call_arguments.delta", item_id="fc_2", output_index=1, sequence_number=3, delta='{}'),
+        ])
+
+        backend = OpenAIResponsesBackend(self._responses_cfg())
+        backend.client.responses.create = AsyncMock(return_value=events)
+
+        chunks = []
+        async for chunk in backend.chat_stream([]):
+            chunks.append(chunk)
+
+        tool_deltas = [c.tool_deltas[0] for c in chunks if c.tool_deltas]
+        assert [td["index"] for td in tool_deltas] == [0, 1]
+        assert [td["function"]["name"] for td in tool_deltas] == ["tool_a", "tool_b"]
+        assert [td["id"] for td in tool_deltas] == ["call_a", "call_b"]

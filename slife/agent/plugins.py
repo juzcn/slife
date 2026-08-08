@@ -166,40 +166,68 @@ class PluginLifecycle:
         )
 
     async def _watchdog_loop(self) -> None:
-        """Monitor the child process; restart on unexpected exit."""
+        """Monitor the child process; restart on unexpected exit.
+
+        The loop alternates between *waiting* on a live child and
+        *restarting* it.  A failed restart does **not** end the watchdog —
+        it backs off (1s → 2s → … → 30s) and retries until
+        ``_max_restarts`` consecutive failures, then gives up.  The
+        fallback path (``spawn`` from the saved ``_module``) also works for
+        plugins started without a ``restart_cb``, e.g. memdb — previously
+        the ``_harness_tools is not None`` guard made it exit instead
+        (REVIEW H5).
+        """
         backoff = _WATCHDOG_BACKOFF_INITIAL
 
         while not self._stopping:
+            # ── Wait for a live child to exit ─────────────────────────
             process = self.process
-            if process is None:
-                logger.debug("%s_watchdog_no_process — exiting", self.name)
-                return
-
-            subprocess = getattr(process, "_process", None)
-            if subprocess is None:
-                logger.debug("%s_watchdog_no_subprocess — exiting", self.name)
-                return
-
-            # Block until the child exits
-            try:
-                returncode = await subprocess.wait()
-            except Exception:
-                logger.debug(
-                    "%s_watchdog_wait_error — exiting", self.name, exc_info=True,
+            if process is not None:
+                subprocess = getattr(process, "_process", None)
+                if subprocess is None:
+                    logger.debug("%s_watchdog_no_subprocess — exiting", self.name)
+                    return
+                try:
+                    returncode = await subprocess.wait()
+                except Exception:
+                    logger.debug(
+                        "%s_watchdog_wait_error — exiting", self.name, exc_info=True,
+                    )
+                    return
+                if self._stopping:
+                    return
+                logger.warning(
+                    "%s_process_exited returncode=%s",
+                    self.name, returncode,
                 )
-                return
 
-            if self._stopping:
-                return
+                # ── Clean up dead tools ──────────────────────────────
+                try:
+                    removed = self._service.tool_registry.unregister_by_prefix(
+                        f"{self.name}__",
+                    )
+                    if removed:
+                        logger.info(
+                            "%s_watchdog_unregistered_tools count=%d",
+                            self.name, removed,
+                        )
+                except Exception:
+                    logger.debug(
+                        "%s_watchdog_unregister_error", self.name, exc_info=True,
+                    )
 
-            logger.warning(
-                "%s_process_exited name=%s returncode=%s",
-                self.name, returncode,
-            )
+                self.process = None
+                self.client = None
+                self.port = 0
 
+            # A fresh process is running — go back to waiting on it.
+            if self.process is not None:
+                continue
+
+            # ── Give up after max consecutive failures ───────────────
             if self._restart_count >= self._max_restarts:
                 logger.error(
-                    "%s_watchdog_max_restarts name=%s count=%d — giving up",
+                    "%s_watchdog_max_restarts count=%d — giving up",
                     self.name, self._restart_count,
                 )
                 from slife.health import record
@@ -214,34 +242,15 @@ class PluginLifecycle:
                 )
                 return
 
-            # ── Clean up dead tools ──────────────────────────────────
-            try:
-                removed = self._service.tool_registry.unregister_by_prefix(
-                    f"{self.name}__",
-                )
-                if removed:
-                    logger.info(
-                        "%s_watchdog_unregistered_tools name=%s count=%d",
-                        self.name, removed,
-                    )
-            except Exception:
-                logger.debug(
-                    "%s_watchdog_unregister_error", self.name, exc_info=True,
-                )
-
-            self.process = None
-            self.client = None
-            self.port = 0
-
-            # ── Backoff ──────────────────────────────────────────────
-            await asyncio.sleep(backoff)
-            if self._stopping:
+            # No live process and no way to restart one — nothing to do.
+            if self._restart_cb is None and self._module is None:
+                logger.debug("%s_watchdog_no_restart_info — exiting", self.name)
                 return
 
-            # ── Restart ──────────────────────────────────────────────
+            # ── Restart (backoff applies between failed attempts) ────
             self._restart_count += 1
             logger.info(
-                "%s_watchdog_restart name=%s attempt=%d/%d",
+                "%s_watchdog_restart attempt=%d/%d",
                 self.name, self._restart_count, self._max_restarts,
             )
             from slife.health import record
@@ -249,22 +258,26 @@ class PluginLifecycle:
                 "watchdog", "warning",
                 key=self.name, value=f"restarting ({self._restart_count}/{self._max_restarts})",
                 hint=(
-                    f"{self.name} plugin exited (code {returncode}), "
+                    f"{self.name} plugin exited, "
                     f"restart attempt {self._restart_count}/{self._max_restarts} "
                     f"with {backoff:.1f}s backoff."
                 ),
             )
             try:
+                # The guard above guarantees at least one of
+                # restart_cb / _module; when restart_cb is absent, _module
+                # is set (so the fallback spawn can restart the plugin).
                 if self._restart_cb is not None:
                     await self._restart_cb()
-                elif self._module is not None and self._harness_tools is not None:
-                    await self.spawn(self._module, self._harness_tools)
                 else:
-                    logger.error(
-                        "%s_watchdog_no_restart_info name=%s", self.name,
-                    )
-                    return
-                # Success — reset counters
+                    # When restart_cb is absent, _module is guaranteed set
+                    # by the guard above (local copy lets Pylance narrow).
+                    module = self._module
+                    if module is None:
+                        logger.error("%s_watchdog_no_module", self.name)
+                        return
+                    await self.spawn(module, self._harness_tools)
+                # Success — reset counters and backoff
                 backoff = _WATCHDOG_BACKOFF_INITIAL
                 self._restart_count = 0
                 from slife.health import record
@@ -279,9 +292,11 @@ class PluginLifecycle:
                     _WATCHDOG_BACKOFF_MAX,
                 )
                 logger.error(
-                    "%s_watchdog_restart_failed name=%s backoff=%.1fs",
+                    "%s_watchdog_restart_failed backoff=%.1fs",
                     self.name, backoff, exc_info=True,
                 )
+                if not self._stopping:
+                    await asyncio.sleep(backoff)
 
     # ── connect via HTTP (subagent memfiles) ──────────────────────────────
 

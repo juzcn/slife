@@ -8,6 +8,7 @@ skill_remove:  删除一个 skill 目录及其内容
 
 import json
 import logging
+import zipfile
 from pathlib import Path
 from typing import ClassVar
 
@@ -70,6 +71,47 @@ def _iter_skills(skills_dir: Path) -> list[tuple[Path, dict, str]]:
         fm, body = _parse_frontmatter(content)
         result.append((d, fm, body))
     return result
+
+
+def _ensure_within(base: Path, candidate: Path) -> Path:
+    """Resolve ``candidate`` and require it to stay under ``base``.
+
+    Raises ``ValueError`` on any path that escapes ``base`` (path traversal,
+    absolute paths, ``..`` segments).  Used to sandbox skill file writes,
+    archive extraction targets, and deletion targets to the skills root.
+    """
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(base.resolve()):
+        raise ValueError(f"Path escapes '{base}': {candidate}")
+    return resolved
+
+
+def _extract_zip_safely(zf: zipfile.ZipFile, dest: Path) -> None:
+    """Extract a zip archive, refusing entries that escape ``dest``.
+
+    ``zipfile`` has no ``filter=`` protection (unlike tarfile's PEP 706
+    ``filter="data"``), so validate every member manually: absolute paths,
+    ``..`` traversal, and symlinks are rejected.  Raises ``ValueError`` on
+    the first unsafe member, leaving the caller to clean up.
+    """
+    import shutil
+    import stat as _stat
+
+    dest_resolved = dest.resolve()
+    for member in zf.namelist():
+        target = (dest / member).resolve()
+        if not target.is_relative_to(dest_resolved):
+            raise ValueError(f"Archive entry escapes '{dest}': {member!r}")
+        info = zf.getinfo(member)
+        # Refuse symlinks — their target could point anywhere.
+        if _stat.S_ISLNK(info.external_attr >> 16):
+            raise ValueError(f"Archive entry is a symlink, refusing: {member!r}")
+        if member.endswith("/"):
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(member) as src, open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst)
 
 
 def get_skills_summary(skills_dir: str | Path = "skills") -> str:
@@ -324,6 +366,12 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             return "[FAIL] Provide 'files' or 'archive', not both."
 
         skill_dir = self.skills_dir / name
+        # Reject path traversal in the skill name (e.g. "../../foo") before
+        # creating any directory.
+        try:
+            skill_dir = _ensure_within(self.skills_dir, skill_dir)
+        except ValueError:
+            return f"[FAIL] Invalid skill name: {name!r}"
         is_update = skill_dir.exists()
 
         skill_dir.mkdir(parents=True, exist_ok=True)
@@ -345,11 +393,13 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
         """Write individual files to the skill directory."""
         count = 0
         for f in files:
-            file_path = skill_dir / f["path"]
+            rel = f["path"]
+            # Reject any path that escapes the skill directory (traversal).
+            file_path = _ensure_within(skill_dir, skill_dir / rel)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(f["content"], encoding="utf-8")
             count += 1
-            logger.debug("skill_wrote_file path=%s", f["path"])
+            logger.debug("skill_wrote_file path=%s", rel)
 
         has_skill_md = (skill_dir / "SKILL.md").exists()
         action = "Updated" if is_update else "Installed"
@@ -374,7 +424,9 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
         # Detect format by magic bytes
         if data[:2] == b'PK':
             with zipfile.ZipFile(bio) as zf:
-                zf.extractall(skill_dir)
+                # zipfile has no filter= protection (unlike tarfile's
+                # PEP 706 filter="data"), so validate members manually.
+                _extract_zip_safely(zf, skill_dir)
         elif data[:2].hex() == '1f8b':  # gzip magic
             with tarfile.open(fileobj=bio, mode="r:gz") as tf:
                 tf.extractall(skill_dir, filter="data")
@@ -446,6 +498,12 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
 
     async def execute(self, **kwargs) -> str:
         skill_name: str = kwargs["skill_name"]
+
+        # Reject path traversal in the skill name before touching the FS.
+        try:
+            _ensure_within(self.skills_dir, self.skills_dir / skill_name)
+        except ValueError:
+            return f"[FAIL] Invalid skill name: {skill_name!r}"
 
         # 1) Try matching via _iter_skills (directories with SKILL.md)
         skills = _iter_skills(self.skills_dir)
