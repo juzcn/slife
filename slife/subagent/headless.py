@@ -80,7 +80,7 @@ async def _process(task_text: str, rpc_id, service) -> None:
         _write(error={"code": -32000, "message": str(e)}, rpc_id=rpc_id)
         _notify("tasks/complete", {"task_id": str(rpc_id)})
     except Exception as e:
-        logger.error("task_error id=%s err=%s", rpc_id, e)
+        logger.exception("task_error id=%s err=%s", rpc_id, e)
         _write(error={"code": -32000, "message": str(e)}, rpc_id=rpc_id)
         _notify("tasks/complete", {"task_id": str(rpc_id)})
 
@@ -145,7 +145,7 @@ async def run_headless() -> None:
     # used by the main agent for session persistence and messaging.
 
     _write(result={"ready": True})
-    logger.info("subagent_ready")
+    logger.info("subagent_ready pid=%s", os.getpid())
 
     # Read JSON-RPC lines from stdin.  On Windows, connect_read_pipe
     # fails with OSError [WinError 6] (句柄无效) when sys.stdin is a

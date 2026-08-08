@@ -85,7 +85,7 @@ class SessionStore:
             # vec0 rejects float[0] — skip the semantic table when
             # no embedding backend is configured.
             if self._embedding_dim <= 0 and "vec0" in stmt:
-                logger.debug("schema_skip_vec0 dim=%d — no embedding backend", self._embedding_dim)
+                logger.debug("schema_skip_vec0 dim=%d reason=no_embedding_backend", self._embedding_dim)
                 continue
             try:
                 await self._conn.execute(stmt)
@@ -99,7 +99,7 @@ class SessionStore:
         # recreates with the correct dimension — old embeddings are
         # invalid anyway (different model → different vector space).
         await self._maybe_migrate_vec_dimension()
-        logger.debug("schema_ready")
+        logger.debug("schema_ready path=%s", self._db_path)
 
     async def _maybe_migrate_vec_dimension(self) -> None:
         """Drop and recreate ``diary_semantic`` if the embedding config changed.
@@ -176,7 +176,7 @@ class SessionStore:
             else "table missing"
         )
         logger.info(
-            "vec_migrate reason=%s — dropping diary_semantic", reason,
+            "vec_migrate reason=%s action=drop_diary_semantic", reason,
         )
         await self._conn.execute("DROP TABLE IF EXISTS diary_semantic")
         await self._conn.commit()
@@ -214,7 +214,7 @@ class SessionStore:
         if self._conn:
             await self._conn.close()
             self._conn = None
-            logger.info("store_closed")
+            logger.info("store_closed path=%s", self._db_path)
 
     # ── Turn CRUD ──────────────────────────────────────────────────
 

@@ -69,7 +69,7 @@ def set_embedding_enabled(enabled: bool) -> bool:
     """
     cfg = read_embedding_config()
     if cfg is None:
-        logger.info("embedding_enable_skipped — no config to enable/disable")
+        logger.info("embedding_enable_skipped reason=no_config")
         return False
     cfg["enabled"] = enabled
     write_embedding_config(cfg)
@@ -144,7 +144,7 @@ async def reload_embedder() -> dict:
             "message": f"已启用 {e.backend} 后端: {e._model} (dim={e.dimension})",
         }
     else:
-        logger.info("embedder_reloaded — embeddings disabled")
+        logger.info("embedder_reloaded state=disabled")
         return {
             "status": "ok",
             "backend": "none",

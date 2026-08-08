@@ -1,17 +1,31 @@
 """Lightweight structured logging — session/request correlation and timing.
 
 Provides:
-  - Session ID shared across slife + slife_mcp (via env var)
+  - Session ID shared across slife + plugins (via env var)
   - Request ID for grouping log lines per user message
   - SessionFormatter with millisecond timestamps
   - contextvars-based — async-safe, no global mutation
   - read_stderr_lines — shared async generator for subprocess stderr
 
+Log message convention: ``event_name key1=value1 key2=value2 …``
+
+  - Event name: snake_case, past-tense for completions (``tool_done``),
+    present-tense for state (``mcp_connected``).
+  - Keys: no spaces around ``=``.  Values with embedded spaces or special
+    characters are ``%s``-formatted.
+  - Timing: use :func:`elapsed` context manager — it appends
+    ``took_ms=<N>`` automatically when the block exits.
+  - Errors: ``logger.exception("event_failed key=value …")`` so the
+    traceback is captured alongside structured context.
+  - Level guide: ``debug`` for per-request detail, ``info`` for lifecycle
+    milestones, ``warning`` for recoverable problems, ``error`` for
+    hard failures (use ``exception()`` to include the traceback).
+
 Usage:
     from slife.logfmt import init_session_id, request_scope, SessionFormatter
 
     sid = init_session_id()
-    fmt = SessionFormatter("%(asctime)s ... %(sid)s ... %(rid)s ...")
+    fmt = SessionFormatter("%(asctime)s … [s=%(sid)s] [r=%(rid)s] …")
 
     with request_scope("user: hello"):
         logger.info("something")  # automatically tagged with request id
@@ -40,7 +54,7 @@ _request_id: contextvars.ContextVar[str] = contextvars.ContextVar(
 
 # Default format for file handlers. Console stays plain for TUI safety.
 FILE_LOG_FORMAT = (
-    "%(asctime)s [%(levelname)-5s] %(name)-24s [s=%(sid)s] [r=%(rid)s] | %(message)s"
+    "%(asctime)s [%(levelname)-5s] %(name)-32s [s=%(sid)s] [r=%(rid)s] | %(message)s"
 )
 
 # Third-party loggers that should be silenced to WARNING to avoid

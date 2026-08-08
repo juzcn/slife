@@ -183,6 +183,7 @@ class MCPProxyTool(Tool):
                     url=kwargs.get("url", ""),
                     headers=kwargs.get("headers"),
                 )
+                logger.debug("mcp_persisted server=%s", kwargs.get("name", "?"))
             else:
                 logger.info(
                     "mcp_not_persisted server=%s status=%s error=%s",
@@ -209,6 +210,7 @@ class MCPProxyTool(Tool):
             parsed = json.loads(result)
             if parsed.get("status") == "removed":
                 await self._on_server_removed(name=kwargs.get("name", ""))
+                logger.debug("mcp_removed server=%s", kwargs.get("name", "?"))
             else:
                 logger.info(
                     "mcp_not_unpersisted server=%s status=%s",

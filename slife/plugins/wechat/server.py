@@ -74,7 +74,7 @@ def _render_qr_ascii(content: str) -> str:
             lines.append("".join(row_chars))
         return "\n".join(lines)
     except ImportError:
-        logger.warning("qrcode_lib_unavailable — install qrcode into slife venv")
+        logger.warning("qrcode_lib_unavailable hint=install_qrcode")
         return content
 
 # ── Global state ─────────────────────────────────────────────────────────
@@ -178,7 +178,7 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
             backoff = min(backoff * 1.5, 30.0)  # back off on errors
         await asyncio.sleep(backoff)
 
-    logger.info("poll_loop_stop")
+    logger.info("poll_loop_stop interval=%.1fs", poll_interval)
 
 
 def _flush_logs() -> None:
@@ -407,7 +407,7 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
                     await _qr_poll_loop(new_qr, base_url, refresh_count + 1)
                     return
                 except Exception as e:
-                    logger.exception("qr_refresh_failed")
+                    logger.exception("qr_refresh_failed refresh_count=%d", refresh_count)
                     _qr_status = "error"
                     _qr_error = f"QR refresh failed: {e}"
                     return

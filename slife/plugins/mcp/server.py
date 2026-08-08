@@ -211,7 +211,7 @@ async def mcp_list_tools(server: str) -> str:
 
         return ok_json(tools=tools)
     except Exception as e:
-        logger.exception("mcp_list_tools_failed")
+        logger.exception("mcp_list_tools_failed server=%s", server)
         return error_json(str(e))
 
 
@@ -354,7 +354,7 @@ def main():
     try:
         run_plugin_server(mcp)
     finally:
-        logger.info("mcp_stop")
+        logger.info("mcp_stop log=%s pid=%s", _log_path, os.getpid())
         shutdown_server_logging()
 
 

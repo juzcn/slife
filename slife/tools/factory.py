@@ -97,6 +97,7 @@ def create_tools_from_config(
 
         registry.register(tool)
 
+    logger.info("tools_loaded count=%d subagent=%s", len(registry.list_tools()), is_subagent)
     return registry
 
 

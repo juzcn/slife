@@ -91,7 +91,7 @@ class NgrokTunnel:
 
         # Guard against concurrent start attempts (e.g. executor + monitor).
         if self._starting:
-            logger.debug("tunnel_start_already_in_progress — skipping")
+            logger.debug("tunnel_start_already_in_progress")
             raise RuntimeError("Tunnel start already in progress")
         self._starting = True
         try:
@@ -192,7 +192,7 @@ class NgrokTunnel:
             return
 
         logger.info(
-            "tunnel_not_started — attempting initial start port=%s", port,
+            "tunnel_monitor_retry port=%s phase=initial_start", port,
         )
         loop = asyncio.get_running_loop()
         try:
@@ -233,7 +233,7 @@ def _read_auth_token() -> str | None:
         if token:
             return token
     except (ImportError, OSError, ValueError):
-        logger.debug("credstore_read_failed", exc_info=True)
+        logger.warning("credstore_read_failed")
     return os.environ.get("NGROK_AUTHTOKEN")
 
 

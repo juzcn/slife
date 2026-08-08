@@ -108,7 +108,7 @@ class WechatClawbotClient:
             qrcode = data["qrcode"]
             qrcode_img = data.get("qrcode_img_content", "")
 
-            logger.info("qrcode=%s", qrcode)
+            logger.debug("qr_fetched qrcode=%s", qrcode)
 
             result = await self._wait_login_confirmation(qrcode, url)
             if result.get("bot_token"):
@@ -116,13 +116,13 @@ class WechatClawbotClient:
                 result["status"] = "confirmed"
                 return result
             if result.get("already_connected"):
-                logger.debug("Server reports already connected; refreshing QR")
+                logger.debug("qr_server_connected action=refresh")
             elif result.get("expired"):
-                logger.info("QR code expired, refreshing…")
+                logger.info("qr_expired action=refresh")
             elif result.get("verify_code_blocked"):
-                logger.warning("Verify code blocked, refreshing QR…")
+                logger.warning("qr_verify_blocked action=refresh")
             elif result.get("timeout"):
-                logger.info("Login timeout, refreshing QR…")
+                logger.info("qr_timeout action=refresh")
 
             refresh_count += 1
             if refresh_count >= max_refresh:
@@ -135,7 +135,7 @@ class WechatClawbotClient:
         )
         if data.get("qrcode"):
             return data
-        logger.debug("POST did not return qrcode, trying GET fallback")
+        logger.debug("qr_post_empty action=get_fallback")
         return await self._api_get(
             "ilink/bot/get_bot_qrcode?bot_type=3", base_url,
         )
@@ -172,7 +172,7 @@ class WechatClawbotClient:
                 return {"verify_code_blocked": True}
             return {"need_verifycode": True, "retry_verifycode": bool(verify_code)}
         if state and state != "wait":
-            logger.debug("Login status: %s, raw: %s", state, status)
+            logger.debug("login_poll status=%s raw=%.200s", state, status)
 
         return {}
 
@@ -192,7 +192,7 @@ class WechatClawbotClient:
                     qrcode, current_base_url, pending_verify_code,
                 )
             except Exception as e:
-                logger.debug("Poll login status failed: %s", e)
+                logger.debug("login_poll_failed err=%s", e)
                 await asyncio.sleep(1)
                 continue
 
@@ -204,16 +204,16 @@ class WechatClawbotClient:
                 return result
             if result.get("redirect_base"):
                 current_base_url = result["redirect_base"]
-                logger.debug("Switching poll node to: %s", current_base_url)
+                logger.debug("poll_node_switch url=%s", current_base_url)
                 continue
             if result.get("scanned"):
                 if pending_verify_code and result.get("verify_code_accepted"):
                     pending_verify_code = None
-                logger.info("QR code scanned, waiting for phone confirmation…")
+                logger.info("qr_scanned action=wait_confirmation")
             if result.get("need_verifycode"):
                 # Headless mode — can't prompt for verify code.
                 # Just wait; most logins don't require it.
-                logger.warning("Verify code required but running headless — waiting…")
+                logger.warning("qr_verify_required mode=headless")
                 continue
 
             await asyncio.sleep(1)
@@ -247,7 +247,7 @@ class WechatClawbotClient:
 
         saved_at = saved.get("saved_at", 0)
         if time.time() - saved_at > self.SESSION_MAX_AGE:
-            logger.debug("Saved session expired (>%sh old)", self.SESSION_MAX_AGE // 3600)
+            logger.debug("session_expired age_hours=%s", self.SESSION_MAX_AGE // 3600)
             return False
 
         bot_token = saved.get("bot_token")
@@ -260,7 +260,7 @@ class WechatClawbotClient:
             ilink_user_id=saved.get("ilink_user_id", ""),
             ilink_bot_id=saved.get("ilink_bot_id", ""),
         )
-        logger.debug("Session restored from saved dict")
+        logger.debug("session_restored")
         return True
 
     def get_session_dict(self) -> dict:
@@ -371,7 +371,7 @@ class WechatClawbotClient:
                 url, headers=_make_headers(self._bot_token),
             ) as res:
                 text = await res.text()
-                logger.debug("[GET %s] HTTP %s → %s", path, res.status, text.rstrip()[:200])
+                logger.debug("http_request method=GET url=%s status=%s body=%.200s", path, res.status, text)
                 try:
                     return json.loads(text)
                 except Exception:
@@ -387,7 +387,7 @@ class WechatClawbotClient:
                 url, json=body, headers=_make_headers(self._bot_token),
             ) as res:
                 text = await res.text()
-                logger.debug("[POST %s] HTTP %s → %s", path, res.status, text.rstrip()[:200])
+                logger.debug("http_request method=POST url=%s status=%s body=%.200s", path, res.status, text)
                 try:
                     return json.loads(text)
                 except Exception:

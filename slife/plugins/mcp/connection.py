@@ -152,7 +152,7 @@ class MCPServerConnection:
             try:
                 tokens = await refresh_access_token(auth, name)
             except Exception:
-                logger.info("oauth_refresh_failed server=%s — running device flow", name)
+                logger.info("oauth_refresh_failed server=%s action=device_flow", name)
                 tokens = await run_device_code_flow(auth, name)
 
         # Inject token into headers
@@ -235,7 +235,7 @@ class MCPServerConnection:
                 self._error = f"{e}\n\n[server stderr]\n{stderr_tail}"
             else:
                 self._error = str(e)
-            logger.error("mcp_connect_failed server=%s err=%s", self.config.name, e)
+            logger.exception("mcp_connect_failed server=%s err=%s", self.config.name, e)
             await self._cleanup_resources()
 
     async def _connect_stdio(self) -> None:
@@ -390,7 +390,7 @@ class MCPServerConnection:
 
             # Already installed — nothing to do
             if os.path.isdir(os.path.join(jsdir, "node_modules")):
-                logger.debug("readabilipy node_modules already present")
+                logger.debug("fetch_npm_skip reason=node_modules_present")
                 return
 
             logger.info(
@@ -402,7 +402,7 @@ class MCPServerConnection:
                 capture_output=True, text=True, timeout=60,
             )
             if install.returncode == 0:
-                logger.info("fetch_npm_install_done")
+                logger.info("fetch_npm_install_done jsdir=%s", jsdir)
             else:
                 logger.debug(
                     "fetch_npm_install_fail rc=%d stderr=%s",
@@ -679,8 +679,7 @@ class MCPServerConnection:
             # Transport error — the server may have died.
             # Attempt one reconnect before giving up.
             logger.warning(
-                "mcp_tool_call_transport_error server=%s tool=%s — "
-                "attempting reconnect",
+                "mcp_tool_call_transport_error server=%s tool=%s action=reconnect",
                 self.config.name, tool_name,
             )
             try:
@@ -704,7 +703,7 @@ class MCPServerConnection:
             except Exception as reconnect_error:
                 self._status = ServerStatus.FAILED
                 self._error = str(reconnect_error)
-                logger.error(
+                logger.exception(
                     "mcp_tool_call_reconnect_failed server=%s err=%s",
                     self.config.name, reconnect_error,
                 )
@@ -740,7 +739,7 @@ class ConnectionPool:
         if config.enabled:
             await conn.connect()
         else:
-            logger.info("mcp_server_disabled name=%s — added to pool, not connecting", config.name)
+            logger.info("mcp_server_disabled name=%s", config.name)
         return conn
 
     async def remove_server(self, name: str) -> None:
@@ -858,11 +857,11 @@ class ConnectionPool:
         try:
             return await conn.call_tool(tool_name, arguments)
         except Exception as e:
-            logger.error("mcp_tool_call_failed server=%s tool=%s err=%s", server_name, tool_name, e)
+            logger.exception("mcp_tool_call_failed server=%s tool=%s err=%s", server_name, tool_name, e)
             return f"Error calling '{tool_name}' on '{server_name}': {e}"
 
     async def shutdown(self) -> None:
         logger.info("mcp_shutdown servers=%d", len(self._connections))
         for name in list(self._connections.keys()):
             await self.remove_server(name)
-        logger.info("mcp_shutdown_done")
+        logger.info("mcp_shutdown_done servers=%d", len(self._connections))

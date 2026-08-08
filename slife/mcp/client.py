@@ -91,7 +91,7 @@ class MCPClient:
             logger.warning("mcp_client_already_connected")
             return
 
-        logger.info("mcp_client_connect transport=streamable-http url=%s", url)
+        logger.info("mcp_client_connect transport=%s url=%s", "streamable-http", url)
 
         last_err = None
         attempt: int = -1
@@ -130,8 +130,8 @@ class MCPClient:
 
         self._connected = True
         logger.info(
-            "mcp_client_connected transport=streamable-http url=%s attempts=%d",
-            url, attempt + 1,
+            "mcp_client_connected transport=%s url=%s attempts=%d",
+            "streamable-http", url, attempt + 1,
         )
 
     async def disconnect(self) -> None:

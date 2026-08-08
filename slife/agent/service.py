@@ -221,7 +221,7 @@ class AgentService:
         # ── MCP wrapper: custom command, auto-connects external servers ──
         if name == "mcp":
             if not self.config.mcp_config:
-                logger.debug("mcp_skipped — no mcp_config")
+                logger.debug("mcp_skipped reason=no_config")
                 return False
             await self.start_mcp()
             return self.mcp_enabled
@@ -293,7 +293,7 @@ class AgentService:
         mcp_cfg = self.config.mcp_config
         assert mcp_cfg is not None  # guaranteed by Config.__post_init__
 
-        logger.info("mcp_init start")
+        logger.info("mcp_init_start")
         try:
             await self._connect_mcp_wrapper()
             await self._register_mcp_wrapper_tools()
@@ -917,7 +917,7 @@ class AgentService:
         mem_cfg = self.config.memdb_config
         assert mem_cfg is not None  # guaranteed by Config.__post_init__
 
-        logger.info("memdb_init start")
+        logger.info("memdb_init_start")
         try:
             await self._spawn_and_register_plugin(
                 "memdb",
@@ -933,7 +933,7 @@ class AgentService:
             )
             return True
         except Exception as e:
-            logger.warning("memdb_init_failed err=%s — continuing without memdb", e)
+            logger.warning("memdb_init_failed err=%s fallback=continue_without_memdb", e)
             from slife.health import record
             record(
                 "memdb_service", "error",
@@ -957,7 +957,7 @@ class AgentService:
         from slife.mcp.process import MCPWrapperProcess
         from slife.memfiles.tunnel import start_tunnel
 
-        logger.info("memfiles_init start")
+        logger.info("memfiles_init_start")
         try:
             # Create the token→path registry file that the memfiles
             # server subprocess uses to resolve share tokens.
@@ -985,7 +985,7 @@ class AgentService:
                     await loop.run_in_executor(None, start_tunnel, port)
                 except Exception as e:
                     logger.info(
-                        "tunnel_init_failed port=%s err=%s — memfiles sharing offline",
+                        "tunnel_init_failed port=%s err=%s",
                         port, e,
                     )
                     return
@@ -1001,7 +1001,7 @@ class AgentService:
             logger.info("memfiles_init_done port=%s", process.port)
             return True
         except Exception as e:
-            logger.warning("memfiles_init_failed err=%s — continuing without memfiles URL", e)
+            logger.warning("memfiles_init_failed err=%s fallback=continue_without_memfiles", e)
             return False
 
     def _maybe_register_expose_file(self) -> None:
@@ -1019,7 +1019,7 @@ class AgentService:
         from slife.tools.memfiles import ExposeFileTool
         tool = ExposeFileTool.from_config({}, self.config, self._tool_ctx)
         self.tool_registry.register(tool)
-        logger.info("expose_file_registered — tunnel is active")
+        logger.info("expose_file_registered")
 
     # ── WeChat lifecycle ───────────────────────────────────────────────
 
@@ -1030,7 +1030,7 @@ class AgentService:
             logger.debug("wechat_not_enabled")
             return False
 
-        logger.info("wechat_init start")
+        logger.info("wechat_init_start")
         try:
             await self._spawn_and_register_plugin(
                 "wechat",
@@ -1076,7 +1076,7 @@ class AgentService:
             )
             return True
         except Exception as e:
-            logger.warning("wechat_init_failed err=%s — continuing without WeChat", e)
+            logger.warning("wechat_init_failed err=%s fallback=continue_without_wechat", e)
             from slife.health import record
             record(
                 "wechat_service", "error",
@@ -1217,7 +1217,7 @@ class AgentService:
                 timeout=10.0,
             )
         except asyncio.TimeoutError:
-            logger.warning("memdb_save_timeout — _memory_save_turn exceeded 10s (first save loads embedding model)")
+            logger.warning("memdb_save_timeout reason=first_save_loads_embedding_model")
         except Exception as e:
             logger.warning("memdb_save_error err=%s", e)
 
@@ -1304,7 +1304,7 @@ class AgentService:
             logger.debug("a2a_disabled")
             return False
 
-        logger.info("a2a_init start")
+        logger.info("a2a_init_start")
 
         # ── Transport selection ──────────────────────────────────────
         from slife.a2a.client import A2AClient, DuplicateAgentError
@@ -1327,7 +1327,7 @@ class AgentService:
             from slife.a2a.broker import probe_broker
             if not await probe_broker(a2a_cfg.broker_host, a2a_cfg.broker_port):
                 logger.info(
-                    "a2a_broker_not_found host=%s port=%d — A2A disabled",
+                    "a2a_broker_not_found host=%s port=%d action=a2a_disabled",
                     a2a_cfg.broker_host, a2a_cfg.broker_port,
                 )
                 a2a_cfg.enabled = False
@@ -1439,10 +1439,10 @@ class AgentService:
         """
         import os as _os
         if _os.environ.get("SLIFE_SUBAGENT_NAME"):
-            logger.debug("subagent_skipped — running as subagent")
+            logger.debug("subagent_skipped reason=is_subagent")
             return
 
-        logger.info("subagent_init start")
+        logger.info("subagent_init_start")
 
         from slife.subagent.process import SubagentManager, set_manager
         self._subagent_manager = SubagentManager(self.config)

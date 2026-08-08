@@ -142,11 +142,9 @@ class EmbeddingClient:
                 )
             else:
                 _log_warn(
-                    "embeddings_gguf_unavailable — GGUF file found (%s) but "
-                    "llama-cpp-python is not installed. Install with: "
-                    "uv pip install llama-cpp-python. "
-                    "Semantic search will be unavailable; keyword search still works.",
-                    gguf_path,
+                    "embeddings_unavailable backend=gguf model=%s reason=llama_cpp_not_installed "
+                    "hint='uv pip install llama-cpp-python'",
+                    model,
                 )
         elif backend == "transformer":
             self._backend = "transformer"
@@ -158,10 +156,8 @@ class EmbeddingClient:
                 )
             else:
                 _log_warn(
-                    "embeddings_transformer_unavailable — model=%s configured but "
-                    "sentence-transformers is not installed. Install with: "
-                    "uv pip install sentence-transformers. "
-                    "Semantic search will be unavailable; keyword search still works.",
+                    "embeddings_unavailable backend=transformer model=%s reason=sentence_transformers_not_installed "
+                    "hint='uv pip install sentence-transformers'",
                     model,
                 )
         elif api_key:
@@ -173,15 +169,13 @@ class EmbeddingClient:
                 )
             else:
                 _log_warn(
-                    "embeddings_api_unavailable — api_key configured but "
-                    "openai package is not installed. Install with: "
-                    "uv pip install openai. "
-                    "Semantic search will be unavailable; keyword search still works.",
+                    "embeddings_unavailable backend=api model=%s reason=openai_not_installed "
+                    "hint='uv pip install openai'",
+                    model,
                 )
         else:
             _log_warn(
-                "embeddings_disabled — no gguf_path, transformer model, or api_key configured. "
-                "Semantic search will be unavailable; keyword search still works."
+                "embeddings_unavailable backend=none reason=no_config"
             )
 
     @classmethod
@@ -205,7 +199,7 @@ class EmbeddingClient:
         try:
             import json5
         except ImportError:
-            _log_warn("json5_not_installed — embeddings disabled")
+            _log_warn("json5_not_installed reason=json5_missing")
             return cls(api_key="", quiet=quiet)
 
         if config_path is None:
@@ -264,8 +258,7 @@ class EmbeddingClient:
 
         if not api_key:
             _log_warn(
-                "no_api_key and no gguf_path — embeddings disabled. "
-                "FTS5 keyword search will still work."
+                "embeddings_unavailable backend=none reason=no_api_key_and_no_gguf_path"
             )
 
         dim = emb_cfg.get("dim", _guess_dim(model))
@@ -326,8 +319,8 @@ class EmbeddingClient:
             from llama_cpp import Llama  # type: ignore[import-not-found]
         except ImportError:
             logger.warning(
-                "llama_cpp not installed. Install with: "
-                "uv pip install llama-cpp-python"
+                "embeddings_unavailable backend=gguf reason=llama_cpp_not_installed "
+                "hint='uv pip install llama-cpp-python'"
             )
             return None
 
@@ -365,8 +358,8 @@ class EmbeddingClient:
             from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
         except ImportError:
             logger.warning(
-                "sentence_transformers not installed. Install with: "
-                "uv pip install sentence-transformers"
+                "embeddings_unavailable backend=transformer reason=sentence_transformers_not_installed "
+                "hint='uv pip install sentence-transformers'"
             )
             return None
 
@@ -411,7 +404,8 @@ class EmbeddingClient:
             from openai import AsyncOpenAI
         except ImportError:
             logger.warning(
-                "openai not installed. Install with: uv pip install openai"
+                "embeddings_unavailable backend=api reason=openai_not_installed "
+                "hint='uv pip install openai'"
             )
             return None
 

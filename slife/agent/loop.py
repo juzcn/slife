@@ -530,7 +530,7 @@ class AgentLoop:
         """
         # Check cancellation before starting the batch
         if self._cancel_event.is_set():
-            logger.info("agent_cancelled before_batch iter=%d", iteration)
+            logger.info("agent_cancelled phase=before_batch iter=%d", iteration)
             return
 
         # Serialize approval dialogs — concurrent modals would overlap
@@ -539,6 +539,7 @@ class AgentLoop:
         async def _run_one(tc: ToolCallInfo) -> None:
             """Execute a single tool call with timeout, sanitization, and
             handler notifications.  Safe to run concurrently."""
+            logger.debug("tool_start name=%s", tc.name)
             if handler:
                 await handler.on_tool_call(
                     tc,
@@ -651,7 +652,9 @@ class AgentLoop:
             # read doesn't blow up the context window.
             max_chars = self.max_tool_result_chars
             if max_chars > 0 and len(result) > max_chars:
-                result = result[:max_chars] + f"\n…（已截断，原文 {len(result)} 字符）"
+                original_len = len(result)
+                result = result[:max_chars] + f"\n…（已截断，原文 {original_len} 字符）"
+                logger.debug("tool_result_truncated name=%s original=%d truncated=%d", tc.name, original_len, max_chars)
             is_error = result.startswith("Error")
 
             # ── Scan for images in tool output ──────────────────
@@ -734,7 +737,7 @@ class AgentLoop:
 
                         # Check for cancellation after stream
                         if self._cancel_event.is_set():
-                            logger.info("agent_cancelled after_stream iter=%d", i + 1)
+                            logger.info("agent_cancelled phase=after_stream iter=%d", i + 1)
                             raise AgentCancelled()
 
                         # Tool calls?
@@ -779,5 +782,6 @@ class AgentLoop:
                 self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except MaxIterationsExceeded:
+                logger.warning("max_iterations_exceeded max=%d", self.max_iterations)
                 self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)

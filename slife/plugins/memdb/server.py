@@ -118,7 +118,7 @@ async def _ensure_store() -> SessionStore:
                 _embedder.backend, _embedder._model, _embedder.dimension,
             )
         else:
-            logger.info("embeddings_disabled")
+            logger.info("embeddings_disabled backend=%s", _embedder.backend if _embedder else "none")
         return _store
 
 
@@ -145,7 +145,7 @@ async def _memory_save_turn(
         )
         return json.dumps({"rowid": rowid, "status": "saved"}, ensure_ascii=False)
     except Exception as e:
-        logger.exception("save_turn_failed")
+        logger.exception("save_turn_failed user_msg=%.80s", user_message)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -156,7 +156,7 @@ async def _memory_get_recent_turns(limit: int = 50) -> str:
         turns = await store.get_recent_turns(limit=limit)
         return json.dumps({"turns": turns}, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("get_recent_turns_failed")
+        logger.exception("get_recent_turns_failed limit=%d", limit)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -348,7 +348,7 @@ async def memory_list_recent(limit: int = 20) -> str:
                 e["user_message"] = um[:200] + "…"
         return json.dumps(entries, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("list_recent_failed")
+        logger.exception("list_recent_failed limit=%d", limit)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -375,7 +375,7 @@ async def memory_count(
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("count_failed")
+        logger.exception("count_failed query=%s mode=%s", query, mode)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -397,7 +397,7 @@ async def memory_open(rowid: int) -> str:
             )
         return json.dumps(turn, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("open_failed")
+        logger.exception("open_failed rowid=%s", rowid)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -437,7 +437,7 @@ async def memory_search(
             return json.dumps({"mode": "time", "since": since, "until": until, "results": hits},
                               ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.exception("search_time_failed")
+            logger.exception("search_time_failed since=%s until=%s", since, until)
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     if not query.strip():
@@ -488,7 +488,7 @@ async def memory_search(
             "hint": hint,
         }, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("search_failed")
+        logger.exception("search_failed query=%s mode=%s", query, mode)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -532,7 +532,7 @@ async def memory_summarize(
 
         return json.dumps({"status": "已更新", "rowid": rowid}, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("summarize_failed")
+        logger.exception("summarize_failed rowid=%s", rowid)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -651,7 +651,7 @@ async def memory_set_embedding(
 
         return json.dumps(status, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("set_embedding_failed")
+        logger.exception("set_embedding_failed backend=%s model=%s", backend, model)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -691,7 +691,7 @@ async def memory_set_enabled(enabled: bool) -> str:
                 status["preserved"] = f"{embedded_count} 条已有嵌入保留。"
         return json.dumps(status, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("set_enabled_failed")
+        logger.exception("set_enabled_failed enabled=%s", enabled)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -725,7 +725,7 @@ def main():
     try:
         run_plugin_server(mcp, port=args.port)
     finally:
-        logger.info("memdb_stop")
+        logger.info("memdb_stop log=%s pid=%s db=%s", _log_path, os.getpid(), _db_path)
         shutdown_server_logging()
 
 
