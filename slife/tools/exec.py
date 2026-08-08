@@ -38,7 +38,15 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
         )
     else:
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            pgid = os.getpgid(process.pid)
+            if pgid == process.pid:
+                # Child leads its own process group (start_new_session=True)
+                # — kill the whole group safely.
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                # Child shares our process group — killing the group would
+                # SIGKILL us too.  Kill only the direct child (REVIEW H8 fix).
+                os.kill(process.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
     try:

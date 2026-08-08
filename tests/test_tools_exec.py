@@ -560,6 +560,9 @@ class TestKillProcessTree:
             _sys.executable, "-c", "import time; time.sleep(300)",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            # Own process group so a POSIX killpg only hits the child, not
+            # the pytest/CI process group.
+            start_new_session=True,
         )
         assert proc.returncode is None
         await _kill_process_tree(proc)
@@ -576,6 +579,8 @@ class TestKillProcessTree:
             _sys.executable, "-c", "import time; time.sleep(300)",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            # Own process group so a POSIX killpg only hits the child.
+            start_new_session=True,
         )
 
         fake_run = MagicMock()
