@@ -19,6 +19,7 @@ class ShowImageTool(Tool):
 
     name: ClassVar[str] = "show_image"
     category: ClassVar[str] = "Display"
+    _requires_vision: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Display an image in the terminal. Accepts a local file path or "
         "an http(s) URL. Use this when the user asks to see an image."
