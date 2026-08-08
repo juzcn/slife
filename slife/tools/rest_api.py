@@ -6,6 +6,7 @@ Persisted to slife.json5 → rest_apis: section.
 
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 
 from slife.tools._config_io import (
     _ConfigPathMixin,
@@ -18,6 +19,25 @@ from slife.tools.base import Tool
 logger = logging.getLogger(__name__)
 
 _REST_APIS_KEY = "rest_apis"
+
+
+def _validate_http_url(url: str, what: str) -> str:
+    """Require *url* to be an ``http(s)`` URL with a host (REVIEW S2).
+
+    ``spec_url`` / ``base_url`` are handed to ``anyapi-mcp-server``, which
+    fetches them — an LLM-supplied ``file://`` or internal-host URL would
+    otherwise be an SSRF vector.  (Private IPs are intentionally allowed:
+    local APIs are a legitimate use.)
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(
+            f"{what} must be an http(s) URL with a host, got {url!r}"
+        )
+    return url
 
 
 def _rest_api_section(raw: dict) -> dict:
@@ -103,12 +123,15 @@ class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
 
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
-        spec_url: str = kwargs["spec_url"]
-        base_url: str = kwargs["base_url"]
+        # Validate before persisting or spawning anyapi-mcp-server — an
+        # LLM-supplied file:// or internal URL would be fetched by the npx
+        # child (REVIEW S2).
+        spec_url: str = _validate_http_url(kwargs["spec_url"], "spec_url")
+        base_url: str = _validate_http_url(kwargs["base_url"], "base_url")
         api_key: str = kwargs.get("api_key", "")
         description: str = kwargs.get("description", "")
 
-        
+
 
         is_update = False
         ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None

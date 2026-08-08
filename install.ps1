@@ -418,16 +418,15 @@ try {
         }
     }
 
-    # Kill any running slife processes — they hold locks on the venv.
+    # If slife is running, its tool-venv files are locked and the uv
+    # reinstall below will fail.  We deliberately do NOT force-kill here —
+    # a filter like `-like "*slife*"` could kill an unrelated interpreter
+    # whose path merely contains "slife".  Warn and let the user close it.
     $slifeProcs = Get-Process -Name "slife","python" -ErrorAction SilentlyContinue |
-                  Where-Object { $_.Path -like "*slife*" -or $_.Path -like "*uv\tools\slife*" }
+                  Where-Object { $_.Path -like "*uv\tools\slife*" }
     if ($slifeProcs) {
-        Write-Warn "Stopping running slife processes..."
-        $slifeProcs | ForEach-Object {
-            try { Stop-Process -Id $_.Id -Force -ErrorAction Stop; Write-Dim "  Stopped $($_.ProcessName) (PID $($_.Id))" }
-            catch { Write-Warn "  Could not stop $($_.ProcessName) (PID $($_.Id))" }
-        }
-        Start-Sleep -Seconds 2  # Let file handles release
+        Write-Warn "slife is running — close it first, otherwise the reinstall may fail because the tool venv is locked."
+        Write-Dim "  Detected $($slifeProcs.Count) slife process(es). Close them yourself, then re-run this installer."
     }
 
     # Remove previous installation (clean slate for uv tool install).

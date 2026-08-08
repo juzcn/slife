@@ -201,16 +201,38 @@ class TestRestApiAddTool:
         """Adding an already-registered API updates it (upsert)."""
         _write_config(temp_config, {
             "rest_apis": {
-                "github": {"spec_url": "old", "base_url": "old"},
+                "github": {"spec_url": "https://api.github.com/spec", "base_url": "https://api.github.com"},
             }
         })
         tool = RestApiAddTool(config_path=temp_config)
         result = await tool.execute(
             name="github",
-            spec_url="new",
-            base_url="new",
+            spec_url="https://api.github.com/spec",
+            base_url="https://api.github.com",
         )
         assert "Updated" in result
+
+    @pytest.mark.asyncio
+    async def test_add_rejects_non_http_scheme(self, temp_config):
+        """REVIEW S2: file:// (and other non-http) specs are rejected."""
+        tool = RestApiAddTool(config_path=temp_config)
+        with pytest.raises(ValueError, match="URL with a host"):
+            await tool.execute(
+                name="evil",
+                spec_url="file:///etc/passwd",
+                base_url="https://api.example.com",
+            )
+
+    @pytest.mark.asyncio
+    async def test_add_rejects_url_without_host(self, temp_config):
+        """REVIEW S2: a bare string with no http(s) host is rejected."""
+        tool = RestApiAddTool(config_path=temp_config)
+        with pytest.raises(ValueError, match="URL with a host"):
+            await tool.execute(
+                name="bare",
+                spec_url="https://api.example.com/spec",
+                base_url="not-a-url",
+            )
 
     @pytest.mark.asyncio
     async def test_add_with_mcp_client(self, temp_config):

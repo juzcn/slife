@@ -474,6 +474,8 @@ class A2AListTasksTool(Tool):
         "and transport (mqtt/subagent). "
         "Returns task records sorted newest-first, with task_id, status, "
         "agent, transport, and preview. "
+        "NOTE: the task store is in-memory only — it is EMPTY after a restart, "
+        "so tasks from before the restart are not visible here. "
         "Use this to monitor task progress across your agent fleet."
     )
     parameters: ClassVar[dict] = {
