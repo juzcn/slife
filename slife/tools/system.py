@@ -222,7 +222,7 @@ def check_memfiles() -> list[dict]:
              "value": "offline",
              "hint": "File sharing tunnel unavailable. "
                      "Check NGROK_AUTHTOKEN credential or ngrok account limits "
-                     "(free tier: 3 endpoints, 3 agents)."}]
+                     "(free tier: 1 online agent — one tunnel per token)."}]
 
 
 class CheckMemfilesTool(Tool):

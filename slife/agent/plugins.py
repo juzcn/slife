@@ -142,9 +142,14 @@ class PluginLifecycle:
         Idempotent — if a watchdog is already running it returns
         immediately.
         """
-        if self._watchdog_task is not None and not self._watchdog_task.done():
-            logger.debug("%s_watchdog_already_running", self.name)
-            return
+        if self._watchdog_task is not None:
+            if self._watchdog_task.done():
+                # Task completed (process exited or was stopped) — clean up
+                # the reference so we can start a fresh watchdog below.
+                self._watchdog_task = None
+            else:
+                logger.debug("%s_watchdog_already_running", self.name)
+                return
 
         if restart_cb is not None:
             self._restart_cb = restart_cb
