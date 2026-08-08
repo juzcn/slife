@@ -349,22 +349,23 @@
         },
       },
       "nvidia-nim": {
-        "command": "npx",
-        "args": [
-          "-y",
-          "@hallaxius/nvidia-nim-mcp"
+        command: "npx",
+        args: [
+          "nvidia-nim-mcp"
         ],
-        "description": "NVIDIA NIM API (chat, vision, embeddings, OCR, image gen). Cross-platform: uses npx (works on both Windows & WSL/Linux)",
-        "env": {
-          "NVIDIA_API_KEY": "${NVAPI_KEY}"
+        description: "Production-ready MCP server for NVIDIA NIM models - 50+ LLMs, multimodal, image generation, embeddings, reranking with rich metadata for agent selection (david-eve-za/nvidia-nim-mcp)",
+        env: {
+          NVIDIA_API_KEY: "${NVAPI_KEY}",
+          LOG_LEVEL: "info"
         },
-        "source": {
-          "description": "README standard: npx -y @hallaxius/nvidia-nim-mcp; NVAPI_KEY env alias; removed invalid --allowed-local-media-path flag",
-          "type": "npm",
-          "version": "0.1.0",
-          "fetched_at": "2026-08-07T03:42:31.080818+00:00"
+        source: {
+          description: "david-eve-za/nvidia-nim-mcp v2.1.2 - README: npx nvidia-nim-mcp",
+          type: "github",
+          url: "https://github.com/david-eve-za/nvidia-nim-mcp",
+          version: "2.1.2",
+          fetched_at: "2026-08-08T02:20:03.818876+00:00"
         }
-      },
+      }
     },
   },
   "mqtt": {
