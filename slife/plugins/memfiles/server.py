@@ -23,7 +23,7 @@ from slife.server_utils import (
 )
 from slife.memfiles.token import lookup_file
 
-_log_path = setup_server_logging("_memfiles")
+_log_path = setup_server_logging("memfiles")
 logger = logging.getLogger("slife_memfiles")
 
 

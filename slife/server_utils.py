@@ -15,7 +15,7 @@ FastMCP instance
   All tools are decorated with ``@mcp.tool(name="…")``.
 
 Logging
-  Call ``setup_server_logging("<_suffix>")`` at module level.  Returns the
+  Call ``setup_server_logging("<suffix>")`` at module level.  Returns the
   per-session log path.  The harness streams stderr to its own log.
 
 Lazy-init rule (CRITICAL)
@@ -42,7 +42,7 @@ Minimal example
       from fastmcp import FastMCP
       from slife.server_utils import setup_server_logging, run_plugin_server
 
-      _log_path = setup_server_logging("_my_plugin")
+      _log_path = setup_server_logging("my_plugin")
 
       mcp = FastMCP("slife-my-plugin", instructions="…")
 
@@ -97,10 +97,10 @@ def setup_server_logging(
     """Configure shared logging for a server process (stderr + file).
 
     - Adopts ``SLIFE_SESSION_ID`` and ``SLIFE_AGENT_ID`` from the parent env.
-    - stderr: DEBUG+ with plain formatter (parent adds session/request context).
-    - File:    DEBUG+ with ``SessionFormatter``, one per session.
-    - File name includes *agent_id* to avoid conflicts when multiple agents
-      run in the same directory (e.g. ``logs/..._slife_mcp.log``).
+    - stderr: DEBUG+ with timestamped format (parent captures and relays).
+    - File:    DEBUG+ with ``SessionFormatter`` (session/request IDs), one per session.
+    - File naming: ``{YYYYMMDD_HHMMSS}_{agent_id}_{service}.log``
+      (e.g. ``logs/20260808_143025_slife_mcp.log``).
     - Silences httpx/httpcore/openai/asyncio and FastMCP noise.
 
     Returns the log file path.
@@ -241,8 +241,8 @@ def create_plugin_server(name: str, instructions: str) -> tuple:
     """
     from fastmcp import FastMCP
 
-    # "slife-memdb" → suffix="_memdb", logger_name="slife_memdb"
-    service_suffix = "_" + name.split("-", 1)[-1] if "-" in name else "_" + name
+    # "slife-memdb" → suffix="memdb", logger_name="slife_memdb"
+    service_suffix = name.split("-", 1)[-1] if "-" in name else name
     logger_name = name.replace("-", "_")
 
     log_path = setup_server_logging(service_suffix)

@@ -91,7 +91,7 @@ async def run_headless() -> None:
     from slife.agent.service import AgentService
 
     _name = os.environ.get("SLIFE_SUBAGENT_NAME", "")
-    _suffix = f"_{_name}" if _name else "_subagent"
+    _suffix = f"subagent_{_name}" if _name else "subagent"
     _log_path = setup_server_logging(_suffix)
     logger.info(
         "subagent_start log=%s name=%s pid=%s",
