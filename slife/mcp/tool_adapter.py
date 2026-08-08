@@ -114,20 +114,9 @@ class MCPProxyTool(Tool):
             }
         object.__setattr__(self, "parameters", schema)
 
-    def to_openai_function(self) -> dict:
-        """Convert to OpenAI function definition using instance-level values.
-
-        Overrides the base classmethod because MCPProxyTool sets its
-        name/description/parameters at instance level (not class level).
-        """
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
-        }
+    # to_openai_function() is inherited from Tool — it already resolves
+    # self.name / self.description / self.parameters at instance level,
+    # so the override is unnecessary even for instance-level attributes.
 
     async def execute(self, **kwargs) -> str:
         """Execute the tool by calling through the appropriate MCP client.

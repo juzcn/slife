@@ -103,3 +103,15 @@ class LLMClient:
     ) -> AsyncIterator[StreamChunk]:
         """Stream a chat completion, yielding ``StreamChunk`` objects."""
         return self._backend.chat_stream(messages, tools, cancel_event)
+
+
+# ── Shared utility ─────────────────────────────────────────────────────
+
+
+async def _safe_close_stream(stream) -> None:
+    """Close an async stream, swallowing all exceptions."""
+    if hasattr(stream, "close"):
+        try:
+            await stream.close()
+        except Exception:
+            pass

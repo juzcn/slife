@@ -29,7 +29,6 @@ from slife.agent.inbox import Inbox, ConversationStore
 from slife.agent.plugins import PluginLifecycle
 from slife.a2a.identity import HUMAN
 from slife.tools.factory import create_tools_from_config
-from slife.mcp.client import MCPClient
 from slife.mcp.tool_adapter import create_proxy_tools
 
 logger = logging.getLogger(__name__)
@@ -296,7 +295,13 @@ class AgentService:
         logger.info("mcp_init_start")
         try:
             await self._connect_mcp_wrapper()
-            await self._register_mcp_wrapper_tools()
+            await self._register_plugin_tools(
+                "mcp",
+                on_server_added=self._persist_server,
+                on_server_removed=self._unpersist_server,
+                on_server_disclosure_changed=self._on_server_disclosure_changed,
+                on_server_updated=self._on_server_updated,
+            )
             from slife.health import record
             record(
                 "mcp_wrapper", "ok",
@@ -322,7 +327,13 @@ class AgentService:
         # Watchdog: on MCP wrapper crash, respawn + reconnect external servers
         async def _restart_mcp():
             await self._connect_mcp_wrapper()
-            await self._register_mcp_wrapper_tools()
+            await self._register_plugin_tools(
+                "mcp",
+                on_server_added=self._persist_server,
+                on_server_removed=self._unpersist_server,
+                on_server_disclosure_changed=self._on_server_disclosure_changed,
+                on_server_updated=self._on_server_updated,
+            )
             asyncio.create_task(self._auto_connect_mcp_servers())
             asyncio.create_task(self._auto_connect_rest_apis())
 
@@ -354,7 +365,13 @@ class AgentService:
         from already-connected servers — it never spawns new processes.
         """
         await self._connect_plugin_http("mcp", port)
-        await self._register_mcp_wrapper_tools()
+        await self._register_plugin_tools(
+            "mcp",
+            on_server_added=self._persist_server,
+            on_server_removed=self._unpersist_server,
+            on_server_disclosure_changed=self._on_server_disclosure_changed,
+            on_server_updated=self._on_server_updated,
+        )
         if not self.is_subagent:
             await self._auto_connect_mcp_servers()
             await self._auto_connect_rest_apis()
@@ -365,13 +382,13 @@ class AgentService:
     async def connect_memdb_http(self, port: int) -> None:
         """Connect to an already-running memdb server via Streamable HTTP."""
         await self._connect_plugin_http("memdb", port)
-        await self._register_memdb_tools()
+        await self._register_plugin_tools("memdb")
         logger.info("memdb_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_wechat_http(self, port: int) -> None:
         """Connect to an already-running wechat server via Streamable HTTP."""
         await self._connect_plugin_http("wechat", port)
-        await self._register_wechat_tools()
+        await self._register_plugin_tools("wechat")
         logger.info("wechat_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     # ── MCP private helpers ──────────────────────────────────────────
@@ -394,43 +411,43 @@ class AgentService:
         os.environ["SLIFE_MCP_PORT"] = str(self._plugins["mcp"].port)
         self._plugins["mcp"].client = await self._mcp_process.create_client()
 
-    async def _register_mcp_wrapper_tools(self) -> None:
-        """Discover and register wrapper management tools as proxy tools.
+    async def _register_plugin_tools(self, name: str, **kwargs) -> None:
+        """Discover and register a connected plugin's tools as proxy tools.
 
-        For the main agent, excludes ``mcp_call_tool`` — external MCP
-        tools are registered directly with full schemas, so the LLM
-        never needs to call it manually.
+        Tags each tool with the plugin's ``server`` name, filters out
+        harness-only tools (names starting with ``_`` and ``mcp_call_tool``
+        for non-subagents), creates proxy tools, and registers them.
 
-        For subagents, **includes** ``mcp_call_tool`` — subagents do
-        not eagerly discover external MCP tools, so they need
-        ``mcp_call_tool`` to invoke tools on external servers.
+        Args:
+            name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``).
+            **kwargs: Forwarded to :func:`create_proxy_tools` (e.g.
+                ``on_server_added``, ``on_server_removed``).
         """
-        assert self._plugins["mcp"].client is not None
-        wrapper_tools = await self._plugins["mcp"].client.list_tools()
+        assert self._plugins[name].client is not None
+        tools = await self._plugins[name].client.list_tools()
         logger.debug(
-            "mcp_wrapper_tools names=%s",
-            [t["name"] for t in wrapper_tools],
+            "%s_tools names=%s", name,
+            [t["name"] for t in tools],
         )
 
+        # Harness-only: ``_`` prefix tools are internal; ``mcp_call_tool``
+        # is excluded for the main agent (subagents need it to call
+        # external MCP tools directly).
         tagged = [
-            {**t, "server": "mcp"}
-            for t in wrapper_tools
-            if self.is_subagent or t["name"] != "mcp_call_tool"
+            {**t, "server": name}
+            for t in tools
+            if not t["name"].startswith("_")
+            and (self.is_subagent or t["name"] != "mcp_call_tool")
         ]
 
-        proxy_tools = create_proxy_tools(
-            self._plugins["mcp"].client, tagged,
-            on_server_added=self._persist_server,
-            on_server_removed=self._unpersist_server,
-            on_server_disclosure_changed=self._on_server_disclosure_changed,
-            on_server_updated=self._on_server_updated,
-        )
+        proxy_tools = create_proxy_tools(self._plugins[name].client, tagged, **kwargs)
         for tool in proxy_tools:
             self.tool_registry.register(tool)
-        logger.debug("mcp_wrapper_tools_registered count=%d", len(proxy_tools))
+        logger.debug("%s_tools_registered count=%d", name, len(proxy_tools))
 
-        # Let REST API tools call mcp_add_server / mcp_remove_server
-        self._tool_ctx.rest_api_mcp_client = self._plugins["mcp"].client
+        # MCP-specific: let REST API tools call mcp_add_server / mcp_remove_server
+        if name == "mcp":
+            self._tool_ctx.rest_api_mcp_client = self._plugins["mcp"].client
 
     async def _auto_connect_mcp_servers(self) -> None:
         """Auto-connect to pre-configured MCP servers and discover
@@ -864,53 +881,6 @@ class AgentService:
         """
         await self._plugins[name].spawn(module, harness_tools)
 
-    async def _register_memdb_tools(self) -> None:
-        """Discover and register memdb plugin tools as proxy tools.
-
-        Called from the HTTP-connect path when a subagent shares the
-        main agent's already-running memdb server.
-        """
-        assert self._plugins["memdb"].client is not None
-        memdb_tools = await self._plugins["memdb"].client.list_tools()
-        logger.debug(
-            "memdb_tools names=%s",
-            [t["name"] for t in memdb_tools],
-        )
-
-        tagged = [
-            {**t, "server": "memdb"}
-            for t in memdb_tools
-            if not t["name"].startswith("_")
-        ]
-
-        proxy_tools = create_proxy_tools(self._plugins["memdb"].client, tagged)
-        for tool in proxy_tools:
-            self.tool_registry.register(tool)
-        logger.debug("memdb_tools_registered count=%d", len(proxy_tools))
-
-    async def _register_wechat_tools(self) -> None:
-        """Discover and register wechat plugin tools as proxy tools.
-
-        Called from the HTTP-connect path when a subagent shares the
-        main agent's already-running wechat server.
-        """
-        assert self._plugins["wechat"].client is not None
-        wechat_tools = await self._plugins["wechat"].client.list_tools()
-        logger.debug(
-            "wechat_tools names=%s",
-            [t["name"] for t in wechat_tools],
-        )
-
-        tagged = [
-            {**t, "server": "wechat"}
-            for t in wechat_tools
-            if not t["name"].startswith("_")
-        ]
-
-        proxy_tools = create_proxy_tools(self._plugins["wechat"].client, tagged)
-        for tool in proxy_tools:
-            self.tool_registry.register(tool)
-        logger.debug("wechat_tools_registered count=%d", len(proxy_tools))
 
     async def start_memdb(self) -> bool:
         """Connect to slife-memdb and register tools. Returns True on success."""

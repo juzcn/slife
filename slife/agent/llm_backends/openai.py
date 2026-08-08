@@ -148,6 +148,5 @@ class OpenAIBackend:
                     )
                     yield StreamChunk(usage=usage)
         finally:
-            if hasattr(stream, "close"):
-                try: await stream.close()
-                except Exception: pass
+            from slife.agent.llm_client import _safe_close_stream
+            await _safe_close_stream(stream)

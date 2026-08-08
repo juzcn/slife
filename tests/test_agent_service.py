@@ -104,7 +104,7 @@ class TestAgentServiceMCPLifecycle:
         service = AgentService(config)
 
         with patch.object(service, "_connect_mcp_wrapper", AsyncMock()) as mock_connect, \
-             patch.object(service, "_register_mcp_wrapper_tools", AsyncMock()) as mock_register, \
+             patch.object(service, "_register_plugin_tools", AsyncMock()) as mock_register, \
              patch.object(service, "_auto_connect_mcp_servers", AsyncMock()) as mock_auto:
             await service.start_mcp()
 

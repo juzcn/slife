@@ -18,7 +18,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from slife.env import resolve_env
 from slife.tools._config_io import with_fetched_at
@@ -216,7 +216,7 @@ class MCPConfig:
             self.servers = {}
 
     @classmethod
-    def from_dict(cls, data: dict) -> "MCPConfig":
+    def from_dict(cls, data: Any) -> "MCPConfig":
         """Parse mcp config section from JSON5 config."""
         if not isinstance(data, dict):
             return cls()
@@ -287,7 +287,7 @@ class MemdbConfig:
     embedding_dim: int = 1536
 
     @classmethod
-    def from_dict(cls, data: dict) -> "MemdbConfig":
+    def from_dict(cls, data: Any) -> "MemdbConfig":
         """Parse memdb config section from JSON5 config."""
         if not isinstance(data, dict):
             return cls()
@@ -311,7 +311,7 @@ class WechatConfig:
     enabled: bool = True
 
     @classmethod
-    def from_dict(cls, data: dict) -> "WechatConfig":
+    def from_dict(cls, data: Any) -> "WechatConfig":
         """Parse wechat config section from JSON5 config.
 
         Defaults to enabled when the wechat section is absent -- the plugin
@@ -543,18 +543,11 @@ class Config:
 
     # ── REST API + CLI tool persistence ──────────────────────────────
 
-    def _rest_api_section(self, raw: dict) -> dict:
-        section = raw.setdefault("rest_apis", {})
+    def _typed_section(self, raw: dict, key: str) -> dict:
+        section = raw.setdefault(key, {})
         if not isinstance(section, dict):
             section = {}
-            raw["rest_apis"] = section
-        return section
-
-    def _cli_section(self, raw: dict) -> dict:
-        section = raw.setdefault("cli_tools", {})
-        if not isinstance(section, dict):
-            section = {}
-            raw["cli_tools"] = section
+            raw[key] = section
         return section
 
     def save_rest_api(
@@ -591,7 +584,7 @@ class Config:
         raw = self._read_config("save_rest_api", name)
         if raw is None:
             return False
-        section = self._rest_api_section(raw)
+        section = self._typed_section(raw, "rest_apis")
         section[name] = dict(entry)
         self._write_config(raw)
         logger.info("config_save_rest_api name=%s", name)
@@ -611,7 +604,7 @@ class Config:
         raw = self._read_config("remove_rest_api", name)
         if raw is None:
             return existed
-        section = self._rest_api_section(raw)
+        section = self._typed_section(raw, "rest_apis")
         section.pop(name, None)
         self._write_config(raw)
         logger.info("config_remove_rest_api name=%s existed=%s", name, existed)
@@ -641,7 +634,7 @@ class Config:
         raw = self._read_config("save_cli_tool", name)
         if raw is None:
             return False
-        section = self._cli_section(raw)
+        section = self._typed_section(raw, "cli_tools")
         section[name] = dict(entry)
         self._write_config(raw)
         logger.info("config_save_cli_tool name=%s", name)
@@ -661,7 +654,7 @@ class Config:
         raw = self._read_config("remove_cli_tool", name)
         if raw is None:
             return existed
-        section = self._cli_section(raw)
+        section = self._typed_section(raw, "cli_tools")
         section.pop(name, None)
         self._write_config(raw)
         logger.info("config_remove_cli_tool name=%s existed=%s", name, existed)

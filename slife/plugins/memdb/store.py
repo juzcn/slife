@@ -37,6 +37,11 @@ class SessionStore:
         self._embedding_dim = DEFAULT_EMBEDDING_DIM
 
     @property
+    def _c(self):
+        assert self._conn is not None
+        return self._conn
+
+    @property
     def db_path(self) -> Path:
         return self._db_path
 
@@ -63,16 +68,14 @@ class SessionStore:
 
     async def _load_vec_extension(self) -> None:
         import sqlite_vec
-        assert self._conn is not None  # setup() has completed
-        await self._conn.enable_load_extension(True)
-        await self._conn.load_extension(sqlite_vec.loadable_path())
-        await self._conn.enable_load_extension(False)
-        row = await self._conn.execute("SELECT vec_version()")
+        await self._c.enable_load_extension(True)
+        await self._c.load_extension(sqlite_vec.loadable_path())
+        await self._c.enable_load_extension(False)
+        row = await self._c.execute("SELECT vec_version()")
         version = await row.fetchone()
         logger.info("vec_loaded version=%s", version[0] if version else "unknown")
 
     async def _run_schema(self) -> None:
-        assert self._conn is not None  # setup() has completed
         schema_path = Path(__file__).parent / "schema.sql"
         schema_sql = schema_path.read_text(encoding="utf-8")
         schema_sql = schema_sql.replace("float[1536]", f"float[{self._embedding_dim}]")
@@ -88,10 +91,10 @@ class SessionStore:
                 logger.debug("schema_skip_vec0 dim=%d reason=no_embedding_backend", self._embedding_dim)
                 continue
             try:
-                await self._conn.execute(stmt)
+                await self._c.execute(stmt)
             except Exception as e:
                 logger.debug("schema_stmt_error err=%s stmt=%.80s", e, stmt)
-        await self._conn.commit()
+        await self._c.commit()
 
         # Detect and fix embedding dimension mismatch after model change.
         # CREATE TABLE IF NOT EXISTS won't alter a vec0 table whose
@@ -122,14 +125,12 @@ class SessionStore:
         """
         import re
 
-        assert self._conn is not None
-
         # No embedding backend → no vec0 table to migrate.
         if self._embedding_dim <= 0:
             return
 
         # ── Check stored model identity ──────────────────────────
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             "SELECT value FROM diary_meta WHERE key = 'embedding_model'",
         )
         row = await cursor.fetchone()
@@ -137,7 +138,7 @@ class SessionStore:
         model_identity = self._embedding_model or ""
 
         # ── Check current vec0 dimension ─────────────────────────
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             "SELECT sql FROM sqlite_master "
             "WHERE type='table' AND name='diary_semantic'",
         )
@@ -160,12 +161,12 @@ class SessionStore:
         if not dim_changed and not model_changed and not table_missing:
             # Record model identity if not yet stored (first run / upgrade).
             if model_identity and not stored_model:
-                await self._conn.execute(
+                await self._c.execute(
                     "INSERT OR REPLACE INTO diary_meta (key, value) "
                     "VALUES ('embedding_model', ?)",
                     (model_identity,),
                 )
-                await self._conn.commit()
+                await self._c.commit()
             return
 
         reason = (
@@ -178,8 +179,8 @@ class SessionStore:
         logger.info(
             "vec_migrate reason=%s action=drop_diary_semantic", reason,
         )
-        await self._conn.execute("DROP TABLE IF EXISTS diary_semantic")
-        await self._conn.commit()
+        await self._c.execute("DROP TABLE IF EXISTS diary_semantic")
+        await self._c.commit()
 
         # Recreate with the correct dimension.
         schema_path = Path(__file__).parent / "schema.sql"
@@ -192,21 +193,21 @@ class SessionStore:
             if not stmt or "diary_semantic" not in stmt:
                 continue
             try:
-                await self._conn.execute(stmt)
+                await self._c.execute(stmt)
             except Exception as e:
                 logger.debug(
                     "vec_recreate_error err=%s stmt=%.80s", e, stmt,
                 )
-        await self._conn.commit()
+        await self._c.commit()
 
         # Persist the new model identity.
         if model_identity:
-            await self._conn.execute(
+            await self._c.execute(
                 "INSERT OR REPLACE INTO diary_meta (key, value) "
                 "VALUES ('embedding_model', ?)",
                 (model_identity,),
             )
-            await self._conn.commit()
+            await self._c.commit()
 
         logger.info("vec_migrated reason=%s", reason)
 
@@ -229,18 +230,16 @@ class SessionStore:
         embedder=None,
     ) -> int:
         """Insert a turn. Returns rowid. Generates embedding if embedder available."""
-        assert self._conn is not None
-
         now = _now()
         messages_json = json.dumps(messages or [], ensure_ascii=False)
 
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             """INSERT INTO diary (user_message, messages, summary, tags,
                                   channel, created_at, who_helped, what_model, token_count)
                VALUES (?, ?, '', '', ?, ?, ?, ?, ?)""",
             (user_message, messages_json, channel, now, who_helped, what_model, token_count),
         )
-        await self._conn.commit()
+        await self._c.commit()
         rowid = cursor.lastrowid
         assert rowid is not None  # insert just succeeded
         logger.debug("turn_saved rowid=%s", rowid)
@@ -276,8 +275,7 @@ class SessionStore:
 
     async def get_turn(self, rowid: int) -> dict | None:
         """Return a single turn by rowid."""
-        assert self._conn is not None
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             "SELECT rowid, * FROM diary WHERE rowid = ?",
             (rowid,),
         )
@@ -286,8 +284,7 @@ class SessionStore:
 
     async def get_recent_turns(self, limit: int = 50) -> list[dict]:
         """Return the most recent N turns, oldest-first for restore."""
-        assert self._conn is not None
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             """SELECT rowid, user_message, messages, summary, tags,
                       channel, created_at, who_helped, what_model, token_count
                FROM diary
@@ -302,8 +299,7 @@ class SessionStore:
 
     async def has_turns(self) -> bool:
         """Check if there are any turns."""
-        assert self._conn is not None
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             "SELECT rowid FROM diary LIMIT 1",
         )
         return await cursor.fetchone() is not None
@@ -317,9 +313,7 @@ class SessionStore:
 
         Returns {total, filtered, since, until, query, mode}.
         """
-        assert self._conn is not None
-
-        row = await self._conn.execute("SELECT COUNT(*) FROM diary")
+        row = await self._c.execute("SELECT COUNT(*) FROM diary")
         total = (await row.fetchone())[0]
 
         if query and query.strip():
@@ -331,7 +325,7 @@ class SessionStore:
                 params: list = [like_pattern, like_pattern]
             else:
                 fts_query = _to_fts5_query(query)
-                row2 = await self._conn.execute(
+                row2 = await self._c.execute(
                     "SELECT COUNT(*) FROM diary_fts WHERE diary_fts MATCH ?",
                     (fts_query,),
                 )
@@ -348,7 +342,7 @@ class SessionStore:
                 until = _normalize_time_param(until, role="until")
                 where += " AND created_at <= ?"
                 params.append(until)
-            row2 = await self._conn.execute(
+            row2 = await self._c.execute(
                 f"SELECT COUNT(*) FROM diary WHERE {where}", params,
             )
             filtered = (await row2.fetchone())[0]
@@ -364,7 +358,7 @@ class SessionStore:
                 clauses.append("created_at <= ?")
                 params.append(until)
             where = " AND ".join(clauses)
-            row2 = await self._conn.execute(
+            row2 = await self._c.execute(
                 f"SELECT COUNT(*) FROM diary WHERE {where}", params,
             )
             filtered = (await row2.fetchone())[0]
@@ -379,8 +373,7 @@ class SessionStore:
 
     async def list_recent(self, limit: int = 20) -> list[dict]:
         """List recent turns, newest first. Lightweight — no full messages."""
-        assert self._conn is not None
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             """SELECT rowid, user_message, summary, tags, created_at,
                       token_count, who_helped, what_model
                FROM diary
@@ -397,7 +390,6 @@ class SessionStore:
         summary: str | None = None, tags: str | None = None,
     ) -> None:
         """Write summary and/or tags for a turn."""
-        assert self._conn is not None
         updates = []
         params: list = []
         if summary is not None:
@@ -409,11 +401,11 @@ class SessionStore:
         if not updates:
             return
         params.append(rowid)
-        await self._conn.execute(
+        await self._c.execute(
             f"UPDATE diary SET {', '.join(updates)} WHERE rowid = ?",
             params,
         )
-        await self._conn.commit()
+        await self._c.commit()
 
     # ── Search ──────────────────────────────────────────────────────
 
@@ -422,7 +414,6 @@ class SessionStore:
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """FTS5 keyword search with snippet highlighting."""
-        assert self._conn is not None
         fts_query = _to_fts5_query(query)
         time_clauses = ""
         time_params: list[str] = []
@@ -435,7 +426,7 @@ class SessionStore:
             time_clauses += " AND d.created_at <= ?"
             time_params.append(until)
         try:
-            cursor = await self._conn.execute(
+            cursor = await self._c.execute(
                 f"""SELECT d.rowid, d.user_message, d.summary, d.tags, d.created_at,
                           snippet(diary_fts, 3, '…', '…', '…', 40) AS snippet, rank
                    FROM diary_fts fts
@@ -461,13 +452,12 @@ class SessionStore:
         (lowest distance) match per turn so the result list has one entry
         per turn.
         """
-        assert self._conn is not None
         vec_blob = _serialize_f32(embedding)
         # Fetch extra rows to account for duplicate diary_rowid entries
         # (one turn → multiple chunks).  Dedup in Python: vec0 KNN does
         # not allow GROUP BY.
         fetch_limit = (limit * 4) if (since or until) else (limit * 2)
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             """SELECT ds.diary_rowid AS rowid, d.user_message,
                       ds.summary, ds.tags, ds.created_at, ds.distance
                FROM diary_semantic ds
@@ -500,7 +490,6 @@ class SessionStore:
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """Time-range browsing of turns."""
-        assert self._conn is not None
         clauses: list[str] = []
         params: list[str | int] = []
         if since:
@@ -516,7 +505,7 @@ class SessionStore:
         else:
             where = ""
         params.append(limit)
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             f"""SELECT rowid, user_message, summary, tags, created_at, token_count
                FROM diary {where} ORDER BY created_at DESC LIMIT ?""",
             params,
@@ -530,7 +519,6 @@ class SessionStore:
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """Exact substring search over user_message + messages."""
-        assert self._conn is not None
         safe = pattern.replace("%", r"\%").replace("_", r"\_")
         like_pattern = f"%{safe}%"
         time_clauses = ""
@@ -543,7 +531,7 @@ class SessionStore:
             until = _normalize_time_param(until, role="until")
             time_clauses += " AND created_at <= ?"
             time_params.append(until)
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             f"""SELECT rowid, user_message, summary, tags, created_at,
                       substr(messages, max(0, instr(messages, ?) - 40), 160) AS context
                FROM diary
@@ -568,25 +556,23 @@ class SessionStore:
         When re-embedding (e.g. after summary update), all chunks for
         the same *diary_rowid* are replaced.
         """
-        assert self._conn is not None
         vec_blob = _serialize_f32(turn_embedding)
-        await self._conn.execute(
+        await self._c.execute(
             """INSERT INTO diary_semantic
                (turn_embedding, diary_rowid, chunk_index, summary, tags, created_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (vec_blob, diary_rowid, chunk_index, summary, tags, created_at),
         )
-        await self._conn.commit()
+        await self._c.commit()
         logger.debug("embedding_upserted diary_rowid=%s chunk=%s", diary_rowid, chunk_index)
 
     async def _clear_chunks(self, diary_rowid: int) -> None:
         """Delete all embedding chunks for a turn (prep for re-embed)."""
-        assert self._conn is not None
-        await self._conn.execute(
+        await self._c.execute(
             "DELETE FROM diary_semantic WHERE diary_rowid = ?",
             (diary_rowid,),
         )
-        await self._conn.commit()
+        await self._c.commit()
 
     async def get_unembedded_turns(self, limit: int = 100) -> list[dict]:
         """Return turns that have no embedding in diary_semantic.
@@ -594,8 +580,7 @@ class SessionStore:
         These need re-indexing after embedding config is added or changed.
         Returns lightweight rows: rowid, user_message, messages, created_at.
         """
-        assert self._conn is not None
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             """SELECT d.rowid, d.user_message, d.messages, d.created_at
                FROM diary d
                WHERE d.rowid NOT IN (
@@ -609,8 +594,7 @@ class SessionStore:
 
     async def count_unembedded(self) -> int:
         """Count turns that need re-indexing."""
-        assert self._conn is not None
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             """SELECT COUNT(*) FROM diary d
                WHERE d.rowid NOT IN (
                    SELECT DISTINCT diary_rowid FROM diary_semantic
@@ -621,18 +605,16 @@ class SessionStore:
 
     async def clear_all_embeddings(self) -> int:
         """Delete all rows from diary_semantic. Returns count deleted."""
-        assert self._conn is not None
-        cursor = await self._conn.execute("SELECT COUNT(*) FROM diary_semantic")
+        cursor = await self._c.execute("SELECT COUNT(*) FROM diary_semantic")
         row = await cursor.fetchone()
         count = row[0] if row else 0
-        await self._conn.execute("DELETE FROM diary_semantic")
-        await self._conn.commit()
+        await self._c.execute("DELETE FROM diary_semantic")
+        await self._c.commit()
         logger.info("embeddings_cleared count=%d", count)
         return count
 
     async def has_embedding(self, diary_rowid: int) -> bool:
-        assert self._conn is not None
-        cursor = await self._conn.execute(
+        cursor = await self._c.execute(
             "SELECT rowid FROM diary_semantic WHERE diary_rowid = ? LIMIT 1",
             (diary_rowid,),
         )
