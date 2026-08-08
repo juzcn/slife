@@ -423,8 +423,9 @@ class AgentService:
             **kwargs: Forwarded to :func:`create_proxy_tools` (e.g.
                 ``on_server_added``, ``on_server_removed``).
         """
-        assert self._plugins[name].client is not None
-        tools = await self._plugins[name].client.list_tools()
+        client = self._plugins[name].client
+        assert client is not None
+        tools = await client.list_tools()
         logger.debug(
             "%s_tools names=%s", name,
             [t["name"] for t in tools],
