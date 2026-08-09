@@ -62,21 +62,37 @@ class TestOaMsgsToAnthropic:
             {"role": "user", "content": "Hi"},
         ]
         system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
-        assert system == "You are helpful."
+        assert system == [
+            {"type": "text", "text": "You are helpful.",
+             "cache_control": {"type": "ephemeral"}},
+        ]
         assert len(converted) == 1
         assert converted[0]["role"] == "user"
         assert converted[0]["content"] == "Hi"
 
-    def test_multiple_system_concatenated(self):
+    def test_multiple_system_blocks_last_gets_cache_control(self):
         messages = [
             {"role": "system", "content": "Be helpful."},
             {"role": "system", "content": "Be concise."},
             {"role": "user", "content": "OK"},
         ]
         system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
-        assert "Be helpful." in system
-        assert "Be concise." in system
+        assert system == [
+            {"type": "text", "text": "Be helpful."},
+            {"type": "text", "text": "Be concise.",
+             "cache_control": {"type": "ephemeral"}},
+        ]
         assert len(converted) == 1
+
+    def test_system_no_cache_control_when_disabled(self):
+        messages = [
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user", "content": "OK"},
+        ]
+        system, converted = AnthropicBackend._oa_msgs_to_anthropic(
+            messages, cache_control=False,
+        )
+        assert system == [{"type": "text", "text": "Be helpful."}]
 
     def test_user_text_passthrough(self):
         messages = [{"role": "user", "content": "Hello world"}]
@@ -176,7 +192,10 @@ class TestOaMsgsToAnthropic:
             {"role": "tool", "tool_call_id": "tc1", "content": "4"},
         ]
         system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
-        assert system == "Be helpful."
+        assert system == [
+            {"type": "text", "text": "Be helpful.",
+             "cache_control": {"type": "ephemeral"}},
+        ]
         assert len(converted) == 3
         assert converted[0]["role"] == "user"
         assert converted[1]["role"] == "assistant"
@@ -255,13 +274,26 @@ class TestAnthropicBuildKwargs:
         assert "tools" not in kw
 
     def test_with_system_prompt(self, anthropic_cfg):
+        """Official Anthropic endpoint → system block list with cache_control."""
         backend = AnthropicBackend(anthropic_cfg)
         kw = backend._build_kwargs(
             [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "hi"}],
             None,
         )
-        assert kw["system"] == "Be helpful."
+        assert kw["system"] == [
+            {"type": "text", "text": "Be helpful.",
+             "cache_control": {"type": "ephemeral"}},
+        ]
         assert len(kw["messages"]) == 1  # system stripped from messages
+
+    def test_with_system_prompt_compat_endpoint_no_cache(self, anthropic_thinking_cfg):
+        """Bailian/Qwen Anthropic-compatible endpoint → no cache_control."""
+        backend = AnthropicBackend(anthropic_thinking_cfg)
+        kw = backend._build_kwargs(
+            [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "hi"}],
+            None,
+        )
+        assert kw["system"] == [{"type": "text", "text": "Be helpful."}]
 
     def test_with_tools(self, anthropic_cfg):
         backend = AnthropicBackend(anthropic_cfg)
@@ -309,6 +341,44 @@ class TestAnthropicBuildKwargs:
         backend = AnthropicBackend(cfg)
         kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
         assert "temperature" not in kw
+
+
+# ── System cache_control guard ─────────────────────────────────────────
+
+
+class TestUseSystemCacheControl:
+    """_use_system_cache_control — default by endpoint, overridable via compat."""
+
+    def _backend(self, **kw):
+        cfg = ModelConfig(
+            ref="test/m", provider="anthropic", api_model="m", display_name="M",
+            api_key="k", api="anthropic-messages", **kw,
+        )
+        return AnthropicBackend(cfg)
+
+    def test_default_on_for_official_anthropic(self):
+        backend = self._backend(base_url="https://api.anthropic.com")
+        assert backend._use_system_cache_control() is True
+
+    def test_default_off_for_compat_endpoint(self):
+        backend = self._backend(
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+        )
+        assert backend._use_system_cache_control() is False
+
+    def test_compat_override_forces_off(self):
+        backend = self._backend(
+            base_url="https://api.anthropic.com",
+            compat={"cacheControl": False},
+        )
+        assert backend._use_system_cache_control() is False
+
+    def test_compat_override_forces_on(self):
+        backend = self._backend(
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+            compat={"cacheControl": True},
+        )
+        assert backend._use_system_cache_control() is True
 
 
 # ── Chat Streaming ────────────────────────────────────────────────────

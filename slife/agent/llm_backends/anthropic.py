@@ -40,12 +40,21 @@ class AnthropicBackend:
     @staticmethod
     def _oa_msgs_to_anthropic(
         messages: list[dict],
-    ) -> tuple[str | None, list[dict]]:
+        cache_control: bool = True,
+    ) -> tuple[list[dict] | None, list[dict]]:
         """Adapt OpenAI-format messages → Anthropic Messages format.
 
-        Returns (system_prompt, anthropic_messages).
+        Returns ``(system_blocks, anthropic_messages)``.
+
+        *system_blocks* is a list of Anthropic system content blocks
+        (``{"type": "text", "text": ...}``), one per OpenAI ``system``
+        message in order, or ``None`` when there are none.  When
+        *cache_control* is true the **last** block carries
+        ``cache_control: {"type": "ephemeral"}`` so the stable system
+        prompt acts as a prompt-cache breakpoint (everything before it is
+        cached across turns).
         """
-        system: str | None = None
+        system_parts: list[str] = []
         converted: list[dict] = []
 
         for msg in messages:
@@ -53,8 +62,7 @@ class AnthropicBackend:
             content = msg.get("content", "")
 
             if role == "system":
-                s = str(content)
-                system = (system + "\n\n" + s) if system else s
+                system_parts.append(str(content))
             elif role == "user":
                 if isinstance(content, list):
                     blocks = []
@@ -105,7 +113,13 @@ class AnthropicBackend:
                         "content": str(content),
                     }],
                 })
-        return system, converted
+
+        system_blocks: list[dict] | None = None
+        if system_parts:
+            system_blocks = [{"type": "text", "text": p} for p in system_parts]
+            if cache_control:
+                system_blocks[-1]["cache_control"] = {"type": "ephemeral"}
+        return system_blocks, converted
 
     @staticmethod
     def _oa_tools_to_anthropic(tools: list[dict]) -> list[dict]:
@@ -125,12 +139,28 @@ class AnthropicBackend:
             })
         return result
 
+    def _use_system_cache_control(self) -> bool:
+        """Whether to attach ``cache_control`` to the system blocks.
+
+        On by default for the official Anthropic endpoint; off for
+        Anthropic-compatible providers (Bailian/Qwen, …) that may reject
+        the field.  Override per model with ``compat.cacheControl``
+        (bool).
+        """
+        compat = self.model_config.compat or {}
+        if "cacheControl" in compat:
+            return bool(compat["cacheControl"])
+        base = (self.model_config.base_url or "").rstrip("/")
+        return "api.anthropic.com" in base
+
     # ── Build kwargs ──────────────────────────────────────────────────
 
     def _build_kwargs(
         self, messages: list[dict], tools: list[dict] | None
     ) -> dict:
-        system, msgs = self._oa_msgs_to_anthropic(messages)
+        system, msgs = self._oa_msgs_to_anthropic(
+            messages, cache_control=self._use_system_cache_control(),
+        )
         kwargs: dict = {
             "model": self.model_config.api_model,
             "messages": msgs,
