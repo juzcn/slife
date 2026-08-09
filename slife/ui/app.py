@@ -10,6 +10,7 @@ from textual.binding import Binding
 from textual.widgets import Input, Static
 
 from slife.config import Config
+from slife.a2a.card import format_presence_line
 from slife.agent.service import AgentService
 from slife.agent.loop import MaxIterationsExceeded
 from slife.ui.chat import ChatView
@@ -436,21 +437,13 @@ class SlifeApp(App):
             if card is None:
                 return
             event = kwargs.get("event", "")
-            if event == "online":
-                name = card.display_name or card.agent_id
-                extra = f" ({card.agent_id})" if card.display_name and card.display_name != card.agent_id else ""
-                chat_view.add_system_message(
-                    f"⚡ {name}{extra} online [{card.status}]",
-                    color="#7c3aed",
-                )
-            elif event == "offline":
-                chat_view.add_system_message(
-                    f"✗ {card.agent_id} offline", color="#6e7681",
-                )
-            elif event == "timeout":
-                chat_view.add_system_message(
-                    f"⏱ {card.agent_id} timed out", color="#d29922",
-                )
+            line = format_presence_line(card, event)
+            if line is None:
+                return  # status_change (heartbeat) etc. — not user-visible
+            color = {"online": "#7c3aed", "offline": "#6e7681", "timeout": "#d29922"}.get(
+                event, "#6e7681"
+            )
+            chat_view.add_system_message(line, color=color)
 
         elif kind == "task_received":
             source = kwargs.get("source", "unknown")

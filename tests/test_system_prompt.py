@@ -1,6 +1,7 @@
 """Tests for Slife.agent.system_prompt."""
 
 import sys
+from datetime import datetime
 import pytest; pytestmark = pytest.mark.unit
 
 from unittest.mock import patch
@@ -271,3 +272,85 @@ class TestHelpers:
         monkeypatch.setattr(sys, "platform", "linux")
         with patch("os.path.exists", return_value=True):
             assert _platform_type() == "wsl"
+
+
+# ── Context footer presence events ───────────────────────────────────────
+
+class TestContextStatusPresence:
+    """build_context_status renders pending A2A presence events."""
+
+    def _events(self):
+        return [
+            (1723183402.0, "⚡ desk-02 (采采) online [idle]"),
+            (1723183547.0, "✗ desk-03 offline"),
+            (1723183561.0, "⏱ desk-04 timed out"),
+        ]
+
+    def test_renders_section_when_events_present(self):
+        from slife.agent.system_prompt import build_context_status
+        result = build_context_status(presence_events=self._events())
+        assert "▸ 最近 peer 上线/下线" in result
+        assert "⚡ desk-02 (采采) online [idle]" in result
+        assert "✗ desk-03 offline" in result
+        assert "⏱ desk-04 timed out" in result
+
+    def test_timestamp_matches_footer_time_format(self):
+        """Event timestamps use the same %Y-%m-%d %H:%M:%S as current time."""
+        from slife.agent.system_prompt import build_context_status
+        epoch = 1723183402.0
+        expected = datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
+        result = build_context_status(presence_events=[(epoch, "⚡ desk-02 online [idle]")])
+        assert f"- {expected} ⚡ desk-02 online [idle]" in result
+
+    def test_no_section_when_no_events(self):
+        from slife.agent.system_prompt import build_context_status
+        result = build_context_status(presence_events=None)
+        assert "peer 上线/下线" not in result
+        result = build_context_status(presence_events=[])
+        assert "peer 上线/下线" not in result
+
+    def test_multiple_events_kept_in_order(self):
+        from slife.agent.system_prompt import build_context_status
+        result = build_context_status(presence_events=self._events())
+        online_idx = result.index("desk-02 (采采) online")
+        offline_idx = result.index("desk-03 offline")
+        timeout_idx = result.index("desk-04 timed out")
+        assert online_idx < offline_idx < timeout_idx
+
+
+class TestFormatPresenceLine:
+    """format_presence_line renders TUI-identical text and filters noise."""
+
+    def _card(self, **kw):
+        from slife.a2a.card import AgentCard
+        defaults = dict(agent_id="desk-02", display_name="", status="idle")
+        defaults.update(kw)
+        return AgentCard(**defaults)
+
+    def test_online_with_display_name(self):
+        from slife.a2a.card import format_presence_line
+        card = self._card(agent_id="desk-02", display_name="采采", status="busy")
+        assert format_presence_line(card, "online") == "⚡ 采采 (desk-02) online [busy]"
+
+    def test_online_without_display_name(self):
+        from slife.a2a.card import format_presence_line
+        card = self._card(agent_id="desk-02")
+        assert format_presence_line(card, "online") == "⚡ desk-02 online [idle]"
+
+    def test_online_same_display_and_id_no_duplicate(self):
+        from slife.a2a.card import format_presence_line
+        card = self._card(agent_id="desk-02", display_name="desk-02")
+        assert format_presence_line(card, "online") == "⚡ desk-02 online [idle]"
+
+    def test_offline(self):
+        from slife.a2a.card import format_presence_line
+        assert format_presence_line(self._card(), "offline") == "✗ desk-02 offline"
+
+    def test_timeout(self):
+        from slife.a2a.card import format_presence_line
+        assert format_presence_line(self._card(), "timeout") == "⏱ desk-02 timed out"
+
+    def test_status_change_filtered(self):
+        """Heartbeat-driven status_change is not a user-visible transition."""
+        from slife.a2a.card import format_presence_line
+        assert format_presence_line(self._card(), "status_change") is None

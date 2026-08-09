@@ -13,3 +13,9 @@
    - 已切换到 Shell: {{ shell }}
 {%- endif %}
    - 上轮 Token: {{ last_total_tokens }} ({{ last_usage_pct }}%)
+{%- if presence_events %}
+▸ 最近 peer 上线/下线
+{%- for ev in presence_events %}
+   - {{ ev.time }} {{ ev.text }}
+{%- endfor %}
+{%- endif %}

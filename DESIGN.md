@@ -97,7 +97,7 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 
 - **Detect**: `_last_context_tokens > context_window × context_ceiling` triggers a trim (falls back to a chars÷3 estimate before the first API call)
 - **Trim**: `Conversation.extract_oldest_turns()` removes oldest complete turns down to `context_window × context_floor`; a synthetic **`_sys_trim`** harness-tool pair is inserted after the system prompt summarizing what was removed
-- **Status**: before every API call a synthetic **`_sys_note`** pair (rendered from `context_status.j2`) is re-inserted after the last user message — current time, token usage, context time range, and change notifications (model/CWD/shell/modalities)
+- **Status**: before every API call a synthetic **`_sys_note`** pair (rendered from `context_status.j2`) is re-inserted after the last user message — current time, token usage, context time range, change notifications (model/CWD/shell/modalities), and any A2A peer presence events since the last turn (online/offline/timeout, drained read-once)
 - **Restore**: on startup, recent turns are loaded directly from SQLite within the `context_floor` token budget
 - **Tool result cap**: a single tool result is truncated at `tool_result_ceiling × context_window × 3` characters (default 20% of the window; ~3 chars/token heuristic)
 
@@ -121,7 +121,7 @@ The convention is self-enforcing: adding a `_` prefix to any tool name automatic
 The prompt is a **runtime spec sheet** — facts the LLM cannot discover from training data or tool schemas. Two-part design:
 
 - **Static** — `slife/agent/templates/system_prompt.j2`, rendered once at startup: model identity, context policy (floor/ceiling/tool-result %), host platform (OS, arch, shell, python), workspace paths (data/config/logs/db/images/skills), credstore backend name, MCP tool naming prefix, and A2A broker info when configured. Never changes → maximal prompt cache hit rate.
-- **Dynamic** — `slife/agent/templates/context_status.j2`, re-rendered before each API call and injected as the `_sys_note` pair: current time + UTC offset and last token usage always; context time range when set; model/CWD/shell/modalities only when changed.
+- **Dynamic** — `slife/agent/templates/context_status.j2`, re-rendered before each API call and injected as the `_sys_note` pair: current time + UTC offset and last token usage always; context time range when set; model/CWD/shell/modalities only when changed; pending A2A peer presence events since the last turn (the same lines the TUI shows, drained once).
 
 Design principles:
 1. **Project-specific only** — if the LLM can infer it from tool schemas or training data, it doesn't belong
@@ -418,6 +418,7 @@ The unification lives at the **tool level**: each `a2a_*` tool routes to the MQT
 - Client id is `<agent_id>-<pid>` to allow multiple processes per agent id
 - Duplicate agent detection: after subscribing, the client listens 1.5 s for an existing presence with the same id and exits with a clear error rather than splitting the identity
 - Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; if the probe fails, A2A is disabled and reported via `system_health`
+- Peer presence **transitions** (online/offline/timeout) reach the LLM context: `AgentService._on_agent_change` appends the TUI-identical line (via `format_presence_line`, which also filters heartbeat-driven `status_change`) to a buffer that `AgentLoop` drains read-once into the `_sys_note` footer each turn. The footer carries only *changes* — the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with stale state
 
 ### Unified Inbox
 
@@ -648,7 +649,7 @@ slife/
     client.py          #   A2A client (presence, heartbeat, task routing)
     broker.py          #   Broker TCP probe
     task_store.py      #   In-memory task records
-    card.py            #   Agent card (identity)
+    card.py            #   AgentCard + format_presence_line (TUI/context shared)
     config.py          #   A2A config
     identity.py        #   AgentId, HUMAN/WECHAT sentinels, AgentMessage
     tools.py           #   Back-compat re-export of slife.tools.a2a

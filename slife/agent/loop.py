@@ -7,6 +7,7 @@ import os
 import re
 import time as _time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -211,6 +212,7 @@ class AgentLoop:
         supports_vision: bool = False,
         model_name: str = "",
         input_modalities: str = "",
+        presence_provider: Callable[[], list[tuple[float, str]]] | None = None,
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -224,6 +226,10 @@ class AgentLoop:
         self.supports_vision = supports_vision
         self.model_name = model_name
         self.input_modalities = input_modalities
+        #: Read-and-clear provider for pending A2A peer presence events.
+        #: Injected by AgentService so the context footer can show what
+        #: changed since the last turn.  Returns ``(epoch_seconds, text)``.
+        self._presence_provider = presence_provider
         self._cancel_event = asyncio.Event()
         self._last_context_tokens: int = 0
         self._last_usage = TokenUsage()
@@ -454,6 +460,8 @@ class AgentLoop:
             self._last_shell = shell_now
         if self._context_time_start:
             kwargs["context_time_start"] = self._context_time_start
+        if self._presence_provider is not None:
+            kwargs["presence_events"] = self._presence_provider()
         conversation.insert_context_status(build_context_status(**kwargs))
 
         async for chunk in self.llm_client.chat_stream(

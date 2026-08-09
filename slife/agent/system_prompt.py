@@ -93,6 +93,7 @@ def build_context_status(
     cwd: str = "",
     shell: str = "",
     context_time_start: str = "",
+    presence_events: list[tuple[float, str]] | None = None,
 ) -> str:
     """Render the dynamic context status footer.
 
@@ -101,6 +102,13 @@ def build_context_status(
     *context_time_start* is passed every turn — it shows what time
     window the current context covers, and is updated after restore
     and after each trim.
+
+    *presence_events* is a list of ``(epoch_seconds, text)`` pairs for
+    peer agents that came online / went offline / timed out since the
+    last turn.  Each line's timestamp uses the same ``%Y-%m-%d %H:%M:%S``
+    format as *current_datetime*.  ``text`` is the TUI's own line
+    (via ``format_presence_line``), so the context shows exactly what
+    the user saw.
     """
     now = datetime.now().astimezone()
     last_usage_pct = (
@@ -108,6 +116,13 @@ def build_context_status(
         if context_window > 0 and last_total_tokens > 0
         else 0
     )
+    rendered_presence: list[dict[str, str]] = []
+    if presence_events:
+        for epoch, text in presence_events:
+            ev_time = datetime.fromtimestamp(epoch, tz=now.tzinfo).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rendered_presence.append({"time": ev_time, "text": text})
     return _env.get_template("context_status.j2").render(
         current_datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
         utc_offset=now.strftime("%z"),
@@ -119,6 +134,7 @@ def build_context_status(
         cwd=cwd,
         shell=shell,
         context_time_start=context_time_start,
+        presence_events=rendered_presence,
     ).strip()
 
 

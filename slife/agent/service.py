@@ -16,11 +16,14 @@ import json
 import logging
 import os
 import sys
+import time as _time
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from slife.agent.system_prompt import build as build_system_prompt
+from slife.a2a.card import format_presence_line
 from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.conversation import Conversation
@@ -83,6 +86,12 @@ class AgentService:
             * config.active_model.context_window
             * 3
         )
+        # Pending A2A peer presence events (epoch, TUI line), drained into
+        # the context footer on the next turn.  Unbounded by design — events
+        # are consumed on every turn, so the steady-state size is "events
+        # since last turn"; the guard below only protects against a
+        # pathological long-idle + heavy-flapping session.
+        self._presence_events: deque[tuple[float, str]] = deque()
         self.agent_loop = AgentLoop(
             llm_client=self.llm_client,
             tool_registry=self.tool_registry,
@@ -96,6 +105,7 @@ class AgentService:
             supports_vision=config.active_model.supports_vision,
             model_name=config.active_model.display_name,
             input_modalities=", ".join(config.active_model.input_modalities),
+            presence_provider=self._drain_presence_events,
         )
         self.conversation = Conversation(
             system_prompt=build_system_prompt(self.config),
@@ -1462,13 +1472,36 @@ class AgentService:
         logger.info("subagent_shutdown")
 
     async def _on_agent_change(self, card, event: str) -> None:
-        """Log agent presence changes and notify TUI callbacks."""
+        """Log agent presence changes, buffer for context, notify TUI."""
         logger.info(
             "a2a_peer_%s id=%s name=%s", event, card.agent_id, card.display_name,
         )
+        text = format_presence_line(card, event)
+        if text is not None:
+            self._presence_events.append((_time.time(), text))
         await self._notify_a2a_activity(
             "agent_change", card=card, event=event,
         )
+
+    def _drain_presence_events(self) -> list[tuple[float, str]]:
+        """Return pending presence events and clear the buffer.
+
+        Called by ``AgentLoop`` at the start of each turn (read-once):
+        events that happened since the last turn are injected into the
+        context footer exactly once.  If the buffer ever grows
+        pathologically large it is trimmed here, not silently at
+        render time — the oldest entries are dropped with a warning.
+        """
+        if not self._presence_events:
+            return []
+        if len(self._presence_events) > 1000:
+            logger.warning(
+                "presence_events_overflow dropped=%d",
+                len(self._presence_events) - 1000,
+            )
+        events = list(self._presence_events)[-1000:]
+        self._presence_events.clear()
+        return events
 
     async def _notify_a2a_activity(self, kind: str, **kwargs) -> None:
         """Fire all registered A2A activity callbacks."""
