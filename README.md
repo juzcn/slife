@@ -122,7 +122,7 @@ Switch at runtime: `list_models` → `switch_model(ref="bailian/qwen3.8-max")`.
 
 All unified as OpenAI function definitions. The LLM sees no difference between native and MCP tools.
 
-**54 native tools in 12 categories** — auto-discovered from `slife/tools/`:
+**53 native tools in 13 categories** — auto-discovered from `slife/tools/`:
 
 | Category | Tools |
 |----------|-------|
@@ -137,9 +137,12 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Credentials | `credential_check`, `inject_credential`, `uninject_credential` |
 | MemFiles | `save_content_or_files`, `expose_file` (tunnel active only), `include_image` |
 | Display | `show_image` |
+| Harness | `_sys_note` (context status), `_sys_trim` (context trim) — auto-invoked, not for LLM use |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
 Every tool additionally accepts two harness meta-parameters: `_timeout` (per-call override) and `_async` (run in background, poll with `check_async`).
+
+**Harness tools** (`_`-prefixed, e.g. `_sys_note` / `_sys_trim`) are system-internal: the agent loop auto-invokes them each turn to maintain context state (report usage %, trim old turns when over the ceiling). They are declared in the tool schema — required so the Anthropic / OpenAI-Responses backends accept their call pairs — but the system prompt forbids the LLM from calling them, and both are harmless if it does anyway.
 
 **Five managed categories** (MCP / Skills / CLI / REST API / Models) support `list` / `add` / `remove` / `set` — all `add` tools are idempotent upserts.
 

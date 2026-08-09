@@ -1,12 +1,12 @@
 """Function-calling agent loop with real-time streaming and thinking support."""
 
 import asyncio
+import copy
 import json
 import logging
 import os
 import re
 import time as _time
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +15,7 @@ from typing import Protocol
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.logfmt import sanitize_secrets
 from slife.agent.conversation import Conversation
-from slife.agent.system_prompt import build_context_status, _current_shell
+from slife.agent.system_prompt import _current_shell
 from slife.tools.registry import ToolRegistry
 from slife.logfmt import request_scope, elapsed
 
@@ -323,6 +323,11 @@ class AgentLoop:
         """
         for func in functions:
             schema = func.get("function", {}).get("parameters", {})
+            # Deep-copy so the injected params don't mutate the tool's own
+            # shared parameters dict (to_openai_function() returns it by
+            # reference — mutating here would poison every later call).
+            schema = copy.deepcopy(schema)
+            func["function"]["parameters"] = schema
             props = schema.setdefault("properties", {})
             if "_timeout" not in props:
                 props["_timeout"] = {
@@ -345,70 +350,80 @@ class AgentLoop:
 
     # ── Context trimming ────────────────────────────────────────────
 
-    async def _maybe_trim_context(self, conversation: Conversation) -> None:
-        """Check context size and trim oldest turns when over ceiling.
+    # ── Harness tool invocation ────────────────────────────────────
 
-        When the conversation exceeds ``ceiling * context_window`` tokens,
-        the oldest complete turns are removed and a synthetic
-        ``_sys_trim`` tool-call + result pair is inserted so the LLM
-        sees a visible notification.  Trimmed turns were already persisted
-        by :meth:`AgentService.save_to_memory` when each turn is completed,
-        so the LLM can retrieve them via ``memory_search``.
+    def _footer_kwargs(self, conversation: Conversation, current: int) -> dict:
+        """Build the render kwargs for the ``_sys_note`` status tool.
+
+        Time + token always shown; model/CWD/shell only when they
+        changed since the last turn.  *current* is the context token
+        count — computed once in :meth:`run` and shared with the trim
+        gate, so ``_sys_note``'s percentage and the trim decision come
+        from the same value (no recompute).
+        """
+        cwd_now = os.getcwd()
+        shell_now = _current_shell()
+        kwargs: dict = {
+            "context_window": self.context_window,
+            "last_context_tokens": current,
+        }
+        if self.model_name != self._last_model_name:
+            kwargs["model_name"] = self.model_name
+            kwargs["input_modalities"] = self.input_modalities
+            self._last_model_name = self.model_name
+        if cwd_now != self._last_cwd:
+            kwargs["cwd"] = cwd_now
+            self._last_cwd = cwd_now
+        if shell_now != self._last_shell:
+            kwargs["shell"] = shell_now
+            self._last_shell = shell_now
+        if self._context_time_start:
+            kwargs["context_time_start"] = self._context_time_start
+        if self._presence_provider is not None:
+            kwargs["presence_events"] = self._presence_provider()
+        return kwargs
+
+    async def _auto_invoke(
+        self,
+        name: str,
+        args: dict,
+        conversation: Conversation,
+    ) -> None:
+        """Invoke a declared tool on the harness's behalf.
+
+        Produces a normal ``assistant(tool_calls)`` + ``tool`` result pair
+        through the same execution path as LLM-requested tools
+        (:meth:`_execute_tools`) — harness tools are not special-cased
+        beyond who initiated the call.  No handler events are emitted
+        (the TUI already skips ``_``-prefixed tools).  Used for
+        ``_sys_note`` / ``_sys_trim``.
         """
         if self._cancel_event.is_set():
             return
-        if not conversation.messages or self.context_window <= 0:
+        if self.tool_registry.get(name) is None:
+            logger.warning("auto_invoke_tool_missing name=%s", name)
             return
-
-        ceiling_tokens = int(self.context_window * self.context_ceiling)
-
-        # Use the accurate context size from the last turn's final API
-        # call when available; fall back to the chars/3 estimate for the
-        # first turn of a session.
-        current = self._last_context_tokens or conversation.count_tokens()
-        if current <= ceiling_tokens:
-            return
-
-        target = int(self.context_window * self.context_floor)
-        turns, tokens_freed = conversation.extract_oldest_turns(target)
-        # After trimming, update the baseline so the next check is accurate.
-        self._last_context_tokens = conversation.count_tokens()
-        if not turns:
-            return
-
-        # ── Build human-readable summary ──────────────────────────
-        summary_parts = []
-        for idx, turn in enumerate(turns, 1):
-            user_msg = turn.get("user_message", "(无文本)")
-            est = turn.get("estimated_tokens", 0)
-            if len(user_msg) > 80:
-                user_msg = user_msg[:80] + "..."
-            summary_parts.append(
-                f'- 轮次{idx}: "{user_msg}" (约{est} tokens)'
-            )
-
-        turns_summary = "\n".join(summary_parts)
-        if len(turns_summary) > 2000:
-            turns_summary = turns_summary[:2000] + "\n...（摘要过长已截断）"
-
-        tool_call_id = f"_trim_{uuid.uuid4().hex[:8]}"
-        conversation.insert_trim_notification(
-            tool_call_id=tool_call_id,
-            turns_removed=len(turns),
-            tokens_freed=tokens_freed,
-            turns_summary=turns_summary,
-            memory_saved=self.memdb_enabled,
+        tc = ToolCallInfo(
+            id=f"_harness_{name[1:]}_{_time.time_ns():x}",
+            name=name,
+            arguments=args,
         )
-
-        # Advance the context time range so _sys_note reflects
-        # the new earliest turn still in context.
-        for _ in turns:
-            if self._context_turn_dates:
-                self._context_time_start = self._context_turn_dates.pop(0)
-        logger.info(
-            "context_trimmed turns=%d tokens_freed=%d tool_call_id=%s time_start=%s",
-            len(turns), tokens_freed, tool_call_id, self._context_time_start,
+        conversation.add_assistant_message(
+            content=None, tool_calls=self._serialize_tool_calls([tc]),
         )
+        await self._execute_tools([tc], conversation, None, iteration=0)
+
+    def _ensure_turn_closed(self, conversation: Conversation, content: str = "") -> None:
+        """Close a turn that ended on a user-role message.
+
+        Cancelled / errored / max-iteration turns end on a ``user`` or
+        ``tool`` message (a tool result is a ``user`` role on the Anthropic
+        wire), so the next ``add_user_message`` would produce two
+        consecutive user messages — rejected with a 400.  Appending a
+        closing assistant message keeps the roles alternating.
+        """
+        if conversation.messages and conversation.messages[-1]["role"] in ("user", "tool"):
+            conversation.add_assistant_message(content=content or "（本轮无输出）")
 
     # ── Stream processing ──────────────────────────────────────────
 
@@ -433,36 +448,6 @@ class AgentLoop:
         thinking_parts: list[str] = []
         tool_accum: dict[int, dict] = {}
         stream_usage = TokenUsage()
-
-        # Trim oldest turns when context exceeds ceiling — the LLM
-        # sees a synthetic _trim_context tool call + result so it
-        # knows what was removed and can retrieve it via memory_search.
-        await self._maybe_trim_context(conversation)
-
-        # Inject dynamic context footer.  Time + token always shown;
-        # model, CWD, shell only when they changed since last turn.
-        lu = self._last_usage
-        cwd_now = os.getcwd()
-        shell_now = _current_shell()
-        kwargs: dict = {
-            "context_window": self.context_window,
-            "last_total_tokens": lu.total_tokens,
-        }
-        if self.model_name != self._last_model_name:
-            kwargs["model_name"] = self.model_name
-            kwargs["input_modalities"] = self.input_modalities
-            self._last_model_name = self.model_name
-        if cwd_now != self._last_cwd:
-            kwargs["cwd"] = cwd_now
-            self._last_cwd = cwd_now
-        if shell_now != self._last_shell:
-            kwargs["shell"] = shell_now
-            self._last_shell = shell_now
-        if self._context_time_start:
-            kwargs["context_time_start"] = self._context_time_start
-        if self._presence_provider is not None:
-            kwargs["presence_events"] = self._presence_provider()
-        conversation.insert_context_status(build_context_status(**kwargs))
 
         async for chunk in self.llm_client.chat_stream(
             messages=conversation.to_openai_messages(
@@ -716,18 +701,52 @@ class AgentLoop:
                 f"请使用支持视觉的模型，或移除 @path 附件。"
             )
             logger.warning("vision_unsupported imgs=%d model_vision=%s", n_imgs, self.supports_vision)
-            # Add text-only — don't encode images the model can't handle
+            # Add text-only — don't encode images the model can't handle.
+            # The warning is recorded as the assistant reply so the
+            # conversation doesn't end on a dangling user message.
             conversation.add_user_message(user_input, images=None)
+            conversation.add_assistant_message(content=msg)
             return AgentResult(text=msg, usage=TokenUsage())
 
         conversation.add_user_message(user_input, images=images)
         total_usage = TokenUsage()
         t_request = _time.monotonic()
+        last_text = ""
 
         logger.info("req_start msg=%.100s imgs=%d", user_input, n_imgs)
 
         with request_scope(user_input[:50]):
             try:
+                # Context usage is computed ONCE and shared: _sys_note
+                # reports it as the usage %, and the trim gate below uses
+                # the same value (no recompute).
+                current = self._last_context_tokens or conversation.count_tokens()
+                await self._auto_invoke(
+                    "_sys_note", self._footer_kwargs(conversation, current), conversation,
+                )
+                # Trigger _sys_trim when the reported usage hits the
+                # configured ceiling (context_ceiling) — the same
+                # percentage _sys_note just showed.
+                if current >= int(self.context_window * self.context_ceiling):
+                    users_before = sum(
+                        1 for m in conversation.messages if m.get("role") == "user"
+                    )
+                    await self._auto_invoke(
+                        "_sys_trim", {"memory_saved": self.memdb_enabled}, conversation,
+                    )
+                    self._last_context_tokens = conversation.count_tokens()
+                    # Advance the context time range by the number of
+                    # removed turns (each complete turn has one user msg).
+                    removed = users_before - sum(
+                        1 for m in conversation.messages if m.get("role") == "user"
+                    )
+                    for _ in range(removed):
+                        if self._context_turn_dates:
+                            self._context_time_start = self._context_turn_dates.pop(0)
+                    logger.info(
+                        "context_trimmed turns=%d time_start=%s",
+                        removed, self._context_time_start,
+                    )
                 for i in range(self.max_iterations):
                     # Check for cancellation before each iteration
                     if self._cancel_event.is_set():
@@ -736,6 +755,7 @@ class AgentLoop:
 
                     with elapsed("iter", logger, iter=i + 1):
                         result = await self._process_stream(conversation, handler)
+                        last_text = result.content or last_text
 
                         # Capture usage even when cancelled — the API call
                         # already consumed tokens regardless of outcome.
@@ -787,9 +807,17 @@ class AgentLoop:
 
                 raise MaxIterationsExceeded(self.max_iterations)
             except AgentCancelled:
+                self._ensure_turn_closed(conversation, last_text)
                 self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except MaxIterationsExceeded:
                 logger.warning("max_iterations_exceeded max=%d", self.max_iterations)
+                self._ensure_turn_closed(conversation, last_text)
                 self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
+            except Exception:
+                # Close the turn on transient errors too, then re-raise so
+                # the caller (inbox) handles the error as before — but the
+                # conversation no longer ends on a user-role message.
+                self._ensure_turn_closed(conversation, last_text)
+                raise

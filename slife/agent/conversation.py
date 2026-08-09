@@ -3,9 +3,7 @@
 Supports multimodal messages (text + images) for vision-capable models.
 """
 
-import json
 import logging
-import uuid
 
 from slife.agent.multimodal import include_image_url
 from slife.logfmt import sanitize_secrets
@@ -110,6 +108,28 @@ class Conversation:
                 pending_ids.append(msg.get("tool_call_id", ""))
             i -= 1
         return repaired
+
+    def ensure_alternation(self) -> None:
+        """Guarantee user/assistant roles alternate (for restored sessions).
+
+        Turns persisted before the turn-closing fix may end on a user-role
+        message (``user`` or ``tool`` — a tool result is a ``user`` role on
+        the Anthropic wire).  Two consecutive user-role messages would 400
+        on the strict backends, so a closing assistant is inserted between
+        them.  Tool-call/result pairing is unaffected (the assistant is
+        inserted after the tool result, never inside a pair).
+        """
+        i = 0
+        while i < len(self.messages) - 1:
+            cur = self.messages[i].get("role", "")
+            nxt = self.messages[i + 1].get("role", "")
+            if cur in ("user", "tool") and nxt in ("user", "tool"):
+                self.messages.insert(
+                    i + 1, {"role": "assistant", "content": "（轮次无输出）"},
+                )
+                i += 2
+            else:
+                i += 1
 
     def add_user_message(
         self, content: str, images: list[str] | None = None
@@ -506,131 +526,3 @@ class Conversation:
         )
         return turns, max(tokens_freed, 1)
 
-    def insert_trim_notification(
-        self,
-        tool_call_id: str,
-        turns_removed: int,
-        tokens_freed: int,
-        turns_summary: str,
-        memory_saved: bool = True,
-    ) -> None:
-        """Insert a synthetic ``_sys_trim`` tool-call + result pair.
-
-        The pair is inserted right after the system prompt (or at
-        position 0 when there is no system prompt), so the LLM sees the
-        trim as a chronological event before the remaining conversation.
-        """
-        assistant_msg: dict = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": tool_call_id,
-                    "type": "function",
-                    "function": {
-                        "name": "_sys_trim",
-                        "arguments": json.dumps(
-                            {
-                                "turns_removed": turns_removed,
-                                "tokens_freed": tokens_freed,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                }
-            ],
-        }
-
-        if memory_saved:
-            result_content = (
-                f"已裁剪 {turns_removed} 个最旧轮次（约 {tokens_freed} tokens），"
-                f"内容已存入记忆库，如需回顾请用 memory_search。\n"
-                f"\n{turns_summary}"
-            )
-        else:
-            result_content = (
-                f"已裁剪 {turns_removed} 个最旧轮次（约 {tokens_freed} tokens），"
-                f"内容已丢弃。\n"
-                f"\n{turns_summary}"
-            )
-
-        tool_msg: dict = {
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "content": result_content,
-        }
-
-        insert_pos = 1 if (
-            self.messages and self.messages[0]["role"] == "system"
-        ) else 0
-        self.messages.insert(insert_pos, tool_msg)
-        self.messages.insert(insert_pos, assistant_msg)
-
-        logger.debug(
-            "conv_insert_trim_notification id=%s turns=%d tokens=%d",
-            tool_call_id,
-            turns_removed,
-            tokens_freed,
-        )
-
-    def insert_context_status(self, content: str) -> None:
-        """Insert a synthetic ``_sys_note`` tool-call + result pair.
-
-        Placed right after the last user message so the LLM sees current
-        time, token usage, and any changed model/CWD/shell at the start
-        of each turn.  Like ``_sys_trim``, this is a harness
-        notification — not in the tool schema, ``_`` prefix marks it as
-        internal.
-
-        Old ``_sys_note`` pairs are removed first to keep the
-        conversation clean.
-        """
-        self._remove_synthetic_tool("_sys_note")
-
-        tool_call_id = f"_ctx_{uuid.uuid4().hex[:8]}"
-        assistant_msg: dict = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": tool_call_id,
-                    "type": "function",
-                    "function": {
-                        "name": "_sys_note",
-                        "arguments": "{}",
-                    },
-                }
-            ],
-        }
-        tool_msg: dict = {
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "content": content,
-        }
-
-        # Insert right after the last user message.
-        for i in range(len(self.messages) - 1, -1, -1):
-            if self.messages[i].get("role") == "user":
-                self.messages.insert(i + 1, tool_msg)
-                self.messages.insert(i + 1, assistant_msg)
-                break
-
-        logger.debug("conv_insert_context_status id=%s", tool_call_id)
-
-    def _remove_synthetic_tool(self, name: str) -> None:
-        """Remove all synthetic tool-call + result pairs with *name*."""
-        i = 0
-        while i < len(self.messages):
-            msg = self.messages[i]
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    if tc.get("function", {}).get("name") == name:
-                        if i + 1 < len(self.messages):
-                            del self.messages[i:i + 2]
-                        else:
-                            del self.messages[i]
-                        break
-                else:
-                    i += 1
-            else:
-                i += 1

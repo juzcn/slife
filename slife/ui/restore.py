@@ -382,6 +382,9 @@ async def restore_session(
 
     # ── Phase 2: Replace conversation messages ────────────────────────
     conversation.messages = all_messages
+    # Old persisted turns (pre turn-closing fix) may end on a user-role
+    # message → normalize so the strict backends' alternation holds.
+    conversation.ensure_alternation()
 
     # Prime the context time range so _sys_note shows the LLM
     # what time window its current context covers.  The start date is

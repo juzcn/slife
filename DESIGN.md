@@ -81,6 +81,7 @@ User Input → Conversation.add_user_message()        (secrets sanitized)
 - **Background execution**: per-call `_async: true` schedules the tool as a background task and returns a task id immediately; poll with `check_async`, cancel with `cancel_async`
 - **Iteration limit**: `max_iterations` (default 30) prevents infinite loops
 - **Cancellation**: `Esc` sets a cancel event; checked before each iteration, after each stream, and before each tool batch
+- **Alternation guarantee**: every turn closes with an assistant message — `_ensure_turn_closed` fires on cancel / max-iterations / transient error, and the vision-unsupported branch records the warning as the assistant reply; `Conversation.ensure_alternation()` normalizes restored history. User/assistant roles therefore always alternate on the wire, satisfying the strict Anthropic / OpenAI-Responses backends (no consecutive-user 400)
 - **Context tracking**: `_last_context_tokens` (actual `prompt_tokens` from the last API call) drives trim decisions
 
 ### Context Window Management
@@ -95,33 +96,36 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Detect**: `_last_context_tokens > context_window × context_ceiling` triggers a trim (falls back to a chars÷3 estimate before the first API call)
-- **Trim**: `Conversation.extract_oldest_turns()` removes oldest complete turns down to `context_window × context_floor`; a synthetic **`_sys_trim`** harness-tool pair is inserted after the system prompt summarizing what was removed
-- **Status**: before every API call a synthetic **`_sys_note`** pair (rendered from `context_status.j2`) is re-inserted after the last user message — current time, token usage, context time range, change notifications (model/CWD/shell/modalities), and any A2A peer presence events since the last turn (online/offline/timeout, drained read-once)
+- **Detect**: context usage is computed **once per turn** as `_last_context_tokens` (accurate prompt tokens) or the chars÷3 estimate on the first turn; `_sys_note` reports it as the usage %
+- **Trim**: when the reported usage % hits the configured `context_ceiling` (default 80%), the loop auto-invokes **`_sys_trim`** — which is the trim itself. It removes the oldest complete turns down to `context_window × context_floor` (default 20%) and returns the notification. The gate lives outside the tool so `_sys_trim` is only invoked — and only records a pair — when a trim actually happens; if the LLM calls it directly it genuinely compacts the context (a legitimate action, not a no-op)
+- **Status**: once per turn the loop auto-invokes **`_sys_note`** (a normal tool-call pair) with the same `current` value the trim gate uses — it renders `context_status.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), and any A2A peer presence events since the last turn (online/offline/timeout, drained read-once)
 - **Restore**: on startup, recent turns are loaded directly from SQLite within the `context_floor` token budget
 - **Tool result cap**: a single tool result is truncated at `tool_result_ceiling × context_window × 3` characters (default 20% of the window; ~3 chars/token heuristic)
 
 ### Harness-Only Tool Convention
 
-Tools whose name starts with `_` (underscore) are **harness-only** — they are never exposed to the LLM. This is enforced by the tool registration filter in `PluginLifecycle.spawn()` and the direct registration helpers in `AgentService`.
+Tools whose name starts with `_` (underscore) are **harness-owned** — internal machinery the LLM never needs to call. Two shapes:
 
-| Tool | Purpose |
-|------|---------|
-| `_sys_trim` | Synthetic – inserted after system prompt to mark trimmed turns |
-| `_sys_note` | Synthetic – re-inserted before each API call with context status |
-| `_memory_save_turn` | memdb plugin – persists a turn to the diary |
-| `_memory_get_recent_turns` | memdb plugin – loads recent turns for session restore |
-| `_wechat_drain_incoming` | wechat plugin – drains queued incoming WeChat messages |
-| `_wechat_dispatch_reply` | wechat plugin – sends a reply and cleans up typing indicator |
+1. **Hidden from the schema** (default) — plugin harness tools are filtered out of `to_openai_functions()` by `PluginLifecycle.spawn()` / `AgentService`.
+2. **Declared but auto-invoked** (the two native exceptions) — `_sys_note` / `_sys_trim` live in `slife/tools/harness.py` and **do** appear in the schema. This is required so the Anthropic / OpenAI-Responses backends accept their tool-call pairs in history (they validate tool names against the declared list — the H3 bug). `AgentLoop._auto_invoke()` calls them on the harness's behalf as normal tool-call pairs; the system prompt forbids the LLM from calling them. `_sys_note` is pure (only reads state); `_sys_trim` genuinely trims to the floor — a legitimate action if the LLM calls it anyway.
 
-The convention is self-enforcing: adding a `_` prefix to any tool name automatically hides it from the LLM surface. No hardcoded name lists are needed. New harness tools should follow this convention from the start.
+| Tool | Shape | Purpose |
+|------|-------|---------|
+| `_sys_note` | Native tool, auto-invoked each turn | Reports current context status (time / usage % / tokens / peer events) |
+| `_sys_trim` | Native tool, auto-invoked on trim | Trims the oldest complete turns down to `context_floor` and returns the notification |
+| `_memory_save_turn` | memdb plugin – hidden | Persists a turn to the diary |
+| `_memory_get_recent_turns` | memdb plugin – hidden | Loads recent turns for session restore |
+| `_wechat_drain_incoming` | wechat plugin – hidden | Drains queued incoming WeChat messages |
+| `_wechat_dispatch_reply` | wechat plugin – hidden | Sends a reply and cleans up typing indicator |
+
+The `_` prefix marks harness ownership; hiding from the schema is the default but not the only valid shape — a harness tool is schema-declared when backend history validation requires the name to exist.
 
 ### System Prompt
 
 The prompt is a **runtime spec sheet** — facts the LLM cannot discover from training data or tool schemas. Two-part design:
 
 - **Static** — `slife/agent/templates/system_prompt.j2`, rendered once at startup: model identity, context policy (floor/ceiling/tool-result %), host platform (OS, arch, shell, python), workspace paths (data/config/logs/db/images/skills), credstore backend name, MCP tool naming prefix, and A2A broker info when configured. Never changes → maximal prompt cache hit rate.
-- **Dynamic** — `slife/agent/templates/context_status.j2`, re-rendered before each API call and injected as the `_sys_note` pair: current time + UTC offset and last token usage always; context time range when set; model/CWD/shell/modalities only when changed; pending A2A peer presence events since the last turn (the same lines the TUI shows, drained once).
+- **Dynamic** — `slife/agent/templates/context_status.j2`, rendered by the `_sys_note` tool (auto-invoked once per turn): current time + UTC offset and context usage % always; context time range when set; model/CWD/shell/modalities only when changed; pending A2A peer presence events since the last turn (the same lines the TUI shows, drained once).
 
 Design principles:
 1. **Project-specific only** — if the LLM can infer it from tool schemas or training data, it doesn't belong
@@ -153,7 +157,9 @@ Reasoning ("thinking") support is per-backend:
 | Anthropic Messages | `thinking.budget_tokens = max(max_tokens // 2, 1024)` | `compat.thinkingFormat: "openai"` (Bailian/Qwen) sends no thinking param — the model always thinks |
 | OpenAI Responses | `reasoning.effort` (default `"medium"`) | Streams both `reasoning_text` and `reasoning_summary_text` deltas |
 
-**Prompt caching (Anthropic system blocks):** `AnthropicBackend._oa_msgs_to_anthropic` emits each OpenAI `system` message as an Anthropic system content block and tags the **last** one with `cache_control: {type: "ephemeral"}` — the static base prompt becomes the cache breakpoint, so only the dynamic `_sys_note` footer (a message-stream pair, never a second `system` message) changes per turn. Guarded by `_use_system_cache_control()`: on by default for `api.anthropic.com`, off for Anthropic-compatible providers (Bailian/Qwen) that may reject the field, overridable per model via `compat.cacheControl`.
+**Prompt caching (Anthropic system blocks):** `AnthropicBackend._oa_msgs_to_anthropic` emits each OpenAI `system` message as an Anthropic system content block and tags the **last** one with `cache_control: {type: "ephemeral"}` — the static base prompt becomes the cache breakpoint, so only the dynamic `_sys_note` status (a message-stream tool pair, never a second `system` message) changes per turn. Guarded by `_use_system_cache_control()`: on by default for `api.anthropic.com`, off for Anthropic-compatible providers (Bailian/Qwen) that may reject the field, overridable per model via `compat.cacheControl`.
+
+**History validation (H3, resolved):** Anthropic and OpenAI-Responses reject tool calls in history whose names aren't in the declared `tools` list. `_sys_note` / `_sys_trim` are therefore **declared native tools** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not conversation-layer fabrications — so their pairs validate. The system prompt forbids the LLM from calling them (see §6 of `system_prompt.j2`), and both are side-effect free if it does. No backend serialization special-casing is needed; DeepSeek (Chat Completions) doesn't validate and is unaffected.
 
 ### Model Management
 

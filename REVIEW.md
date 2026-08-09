@@ -2,7 +2,7 @@
 
 **Review date:** 2026-08-08 · **Original pass:** 2026-08-06 (B1–B10, D1–D10) · **Scope:** full codebase (~45k lines: `slife/`, `credstore/`, `skills/`, install scripts, 90 test files) · **Method:** 7 parallel subsystem audits cross-checked against README/DESIGN claims; every HIGH finding re-verified against source; fixes applied in order and re-tested after each.
 
-**Current state:** full suite **1691 passed**. All pass-2 high-severity bugs (H1–H8, M1) are **fixed**; pass-1 is mostly fixed. H3 is intentionally **deferred** (see §4).
+**Current state:** full suite **1726 passed**. All pass-2 high-severity bugs (H1–H8, M1) are **fixed**; pass-1 is mostly fixed. H3 was resolved on 2026-08-09 (see §4).
 
 **Verdict:** the architecture is coherent — one loop, one registry, one serial inbox, uniform tool surface. The Aug-6 pass was largely actioned; the Aug-8 pass found and fixed a cluster of latent defects in non-default paths (SSE transport, Responses backend, plugin watchdog, MQTT reconnect, OAuth device flow, subprocess leaks). What remains is hardening: security (§2.1), a few correctness gaps (§2.2), config-write serialization, test/CI coverage, and naming/doc cleanup.
 
@@ -37,7 +37,7 @@
 
 ### 1.3 Deferred (§4)
 
-| H3 | Synthetic `_sys_note` / `_sys_trim` tool calls break the Anthropic & OpenAI-Responses backends | ⏸ **DEFERRED 2026-08-08** — fix when a runtime failure appears |
+| H3 | Synthetic `_sys_note` / `_sys_trim` tool calls break the Anthropic & OpenAI-Responses backends | ✅ **RESOLVED 2026-08-09** — both became real schema-declared tools, auto-invoked by the loop (see §4) |
 
 ### 1.4 Fixed (§3)
 
@@ -93,14 +93,15 @@ Real subagent-process tests, end-to-end backend tests, CI that exercises the bui
 
 ---
 
-## 4. Deferred — H3
+## 4. Resolved — H3
 
-Synthetic `_sys_note` / `_sys_trim` tool calls break the Anthropic & OpenAI-Responses backends (both validate history tool names against the declared `tools` list → 400 on the first turn).
+Synthetic `_sys_note` / `_sys_trim` tool calls broke the Anthropic & OpenAI-Responses backends (both validate history tool names against the declared `tools` list → 400 on the first turn).
 
-**Why deferred (decision 2026-08-08):**
-- **Latent, not active.** Only the Anthropic/Responses backends validate history tool names; the default DeepSeek path and all 1691 tests never trigger it. No user has hit a 400.
-- **The design is deliberate, not an accident.** The context status is a **harness-injected tool pair** (never LLM-chosen), placed *after the last user message* so that (a) the static system prompt stays byte-identical and **prompt-cache hits survive** — appending a dynamic footer to the system prompt would invalidate the whole cached prefix every turn; (b) `pop_last_turn()` rolls back cleanly at the last user message. The system prompt is static and **not persisted**; the status is ephemeral, regenerated each turn and filtered on restore (`restore.py:333-346`).
-- **Agreed fix when we do it:** keep the tool-pair in the conversation; in `anthropic.py` / `openai_responses.py` serialization **only**, fold `_`-prefixed synthetic tool-call + result pairs into an **assistant text block** (content = the result). Do **not** insert assistant/user messages into the conversation model, and do **not** touch the system prompt. DeepSeek stays untouched.
+**Resolved 2026-08-09** — the fix went further than the agreed fold-to-text: instead of hiding the synthetic pairs at serialization time, `_sys_note` / `_sys_trim` became **real, schema-declared native tools** (`slife/tools/harness.py`), auto-invoked by `AgentLoop._auto_invoke()` through the same execution path as LLM-requested tools. Because their names are now in the declared `tools` list, history validation passes on every backend; no backend serialization special-casing is needed, and DeepSeek (which never validated) is untouched.
+
+- **Design preserved.** The static system prompt stays byte-identical (prompt-cache hits survive); the dynamic status is a message-stream tool pair, never a second `system` message or injected assistant text (no false author attribution).
+- **New constraints kept the design honest.** The system prompt §6 forbids the LLM from calling `_`-prefixed tools; `_sys_note` is pure (reads state), `_sys_trim` genuinely trims to the floor (a legitimate action if the LLM calls it anyway).
+- **Related fix.** The harness tool-call pairs — and every turn — must alternate user/assistant on the wire, so cancelled/errored turns close with an assistant message (`_ensure_turn_closed`) and restored history is normalized (`Conversation.ensure_alternation()`). This also closes a latent consecutive-user 400.
 
 ---
 
@@ -110,7 +111,7 @@ Synthetic `_sys_note` / `_sys_trim` tool calls break the Anthropic & OpenAI-Resp
 
 **Gaps:**
 - **Highest-risk path untested:** `tests/test_subagent_process.py` is entirely mock-based — the JSON-RPC ready handshake, response routing, shutdown ordering, and `send_task` future resolution are never exercised against a real subprocess (and C4 above is real).
-- **Backends' wire format untested end-to-end** — H3 and H4 were invisible because tests mock streams with well-formed shapes (`conftest.py:209-211`). H4 now has streaming tests; H3 still doesn't (deferred).
+- **Backends' wire format untested end-to-end** — H3 and H4 were invisible because tests mock streams with well-formed shapes (`conftest.py:209-211`). H4 now has streaming tests; H3 is covered by `tests/test_tools_harness.py` (schema declaration + Anthropic wire alternation).
 - `tests/test_tools_shell.py:143` — `assert "�" in result or result` is tautological.
 - `ci.yml:34-38` builds a wheel but `uv run pytest` re-syncs from pyproject → tests run against source, the **wheel is never exercised**; `pytest-cov`/`pytest-xdist` installed but unused; integration/slow/e2e markers run on every PR with no deselect and no coverage gate.
 - **No CI job exercises the install scripts** (no shellcheck / PSScriptAnalyzer / smoke run); `publish.yml` installs an unpinned `twine`.

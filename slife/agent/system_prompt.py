@@ -87,7 +87,7 @@ def build(config: Config) -> str:
 
 def build_context_status(
     context_window: int = 0,
-    last_total_tokens: int = 0,
+    last_context_tokens: int = 0,
     model_name: str = "",
     input_modalities: str = "",
     cwd: str = "",
@@ -112,8 +112,8 @@ def build_context_status(
     """
     now = datetime.now().astimezone()
     last_usage_pct = (
-        round(last_total_tokens / context_window * 100, 1)
-        if context_window > 0 and last_total_tokens > 0
+        round(last_context_tokens / context_window * 100, 1)
+        if context_window > 0 and last_context_tokens > 0
         else 0
     )
     rendered_presence: list[dict[str, str]] = []
@@ -126,7 +126,7 @@ def build_context_status(
     return _env.get_template("context_status.j2").render(
         current_datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
         utc_offset=now.strftime("%z"),
-        last_total_tokens=f"{last_total_tokens:,}",
+        last_context_tokens=f"{last_context_tokens:,}",
         last_usage_pct=last_usage_pct,
         model_name=model_name,
         context_window=f"{context_window:,}" if context_window else "",
