@@ -389,18 +389,19 @@ class AgentLoop:
         args: dict,
         conversation: Conversation,
     ) -> None:
-        """Invoke a declared tool on the harness's behalf.
+        """Invoke a declared harness tool on the loop's behalf.
 
-        Produces a normal ``assistant(tool_calls)`` + ``tool`` result pair
-        through the same execution path as LLM-requested tools
-        (:meth:`_execute_tools`) — harness tools are not special-cased
-        beyond who initiated the call.  No handler events are emitted
-        (the TUI already skips ``_``-prefixed tools).  Used for
-        ``_sys_note`` / ``_sys_trim``.
+        Records a normal ``assistant(tool_calls)`` + ``tool`` result pair,
+        executing the tool **directly** — not through :meth:`_execute_tools`
+        (no approval / timeout / async wrapping, and no cancel early-return
+        race that could orphan the pair).  The tool is still a real
+        schema-declared tool; only *who* invokes it differs from an
+        LLM-requested call.
         """
         if self._cancel_event.is_set():
             return
-        if self.tool_registry.get(name) is None:
+        tool = self.tool_registry.get(name)
+        if tool is None:
             logger.warning("auto_invoke_tool_missing name=%s", name)
             return
         tc = ToolCallInfo(
@@ -411,7 +412,12 @@ class AgentLoop:
         conversation.add_assistant_message(
             content=None, tool_calls=self._serialize_tool_calls([tc]),
         )
-        await self._execute_tools([tc], conversation, None, iteration=0)
+        try:
+            result = await tool.execute(**args)
+        except Exception as e:
+            result = f"Error: Tool '{name}' failed: {type(e).__name__}: {e}."
+            logger.warning("auto_invoke_error name=%s err=%s", name, e)
+        conversation.add_tool_result(tc.id, sanitize_secrets(result))
 
     def _ensure_turn_closed(self, conversation: Conversation, content: str = "") -> None:
         """Close a turn that ended on a user-role message.

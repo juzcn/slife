@@ -110,20 +110,23 @@ class Conversation:
         return repaired
 
     def ensure_alternation(self) -> None:
-        """Guarantee user/assistant roles alternate (for restored sessions).
+        """Guarantee no user-role message is directly followed by a new user.
 
-        Turns persisted before the turn-closing fix may end on a user-role
-        message (``user`` or ``tool`` — a tool result is a ``user`` role on
-        the Anthropic wire).  Two consecutive user-role messages would 400
-        on the strict backends, so a closing assistant is inserted between
-        them.  Tool-call/result pairing is unaffected (the assistant is
-        inserted after the tool result, never inside a pair).
+        For restored sessions: turns persisted before the turn-closing fix
+        may end on a user-role message (``user`` or ``tool`` — a tool result
+        is a ``user`` role on the Anthropic wire).  When such a message is
+        immediately followed by a **new ``user`` turn**, insert a closing
+        assistant so the strict backends' alternation holds.
+
+        Crucially, consecutive ``tool`` messages are **never** split — they
+        are one batch's results and must stay contiguous for OpenAI-format
+        backends (a 400 otherwise).
         """
         i = 0
         while i < len(self.messages) - 1:
             cur = self.messages[i].get("role", "")
             nxt = self.messages[i + 1].get("role", "")
-            if cur in ("user", "tool") and nxt in ("user", "tool"):
+            if cur in ("user", "tool") and nxt == "user":
                 self.messages.insert(
                     i + 1, {"role": "assistant", "content": "（轮次无输出）"},
                 )
