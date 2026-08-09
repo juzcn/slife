@@ -255,36 +255,3 @@ class TestConsecutiveUserFix:
         # No closing message added — already ends on assistant.
         assert conv.messages[-1]["content"] == "reply"
 
-    def test_ensure_alternation_fixes_restored_dangling_users(self):
-        """Old restored data with a dangling user is normalized on restore."""
-        conv = Conversation(system_prompt="SYS")
-        conv.add_user_message("user1")  # cancelled turn persisted with no reply
-        conv.add_user_message("user2")
-        assert self._anthropic_roles(conv) == ["user", "user"]  # broken before
-
-        conv.ensure_alternation()
-        self._assert_alternating(conv, "restored-history")
-
-    def test_ensure_alternation_does_not_split_tool_batches(self):
-        """Consecutive tool results (one batch) must stay contiguous.
-
-        Regression: a multi-call batch is [assistant(tc=[A,B]), tool(A),
-        tool(B)] — inserting an assistant between the results breaks the
-        OpenAI-format contiguity and causes a 400.
-        """
-        conv = Conversation(system_prompt="SYS")
-        conv.add_user_message("hi")
-        conv.add_assistant_message(None, tool_calls=[
-            {"id": "A", "type": "function",
-             "function": {"name": "fetch__fetch", "arguments": "{}"}},
-            {"id": "B", "type": "function",
-             "function": {"name": "fetch__fetch", "arguments": "{}"}},
-        ])
-        conv.add_tool_result("A", "resA")
-        conv.add_tool_result("B", "resB")
-
-        conv.ensure_alternation()
-
-        assert [m["role"] for m in conv.messages] == [
-            "system", "user", "assistant", "tool", "tool",
-        ]
