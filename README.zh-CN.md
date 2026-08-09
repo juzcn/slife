@@ -120,11 +120,11 @@ active_model: "deepseek/deepseek-v4-pro",
 
 统一为 OpenAI 函数定义。LLM 看不出原生工具和 MCP 工具的区别。
 
-**12 个类别共 54 个原生工具** — 从 `slife/tools/` 自动发现：
+**12 个类别共 55 个原生工具** — 从 `slife/tools/` 自动发现：
 
 | 类别 | 工具 |
 |------|------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set`, `check_skills_dir` |
 | CLI | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |

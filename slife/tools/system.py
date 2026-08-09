@@ -275,12 +275,24 @@ def check_watchdog() -> list[dict]:
     return results
 
 
+class CheckWatchdogTool(Tool):
+    """Check plugin watchdog (auto-restart) status."""
+
+    name = "check_watchdog"
+    category: ClassVar[str] = "System"
+    description = "Plugin watchdog status: which plugins are auto-restarted, latest restart records."
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs) -> str:
+        return json.dumps(check_watchdog(), ensure_ascii=False, indent=2)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # check_mcp
 # ═══════════════════════════════════════════════════════════════════════
 
 def _diagnose_mcp_server(server: dict) -> dict:
-    """Diagnose a single MCP server from raw ``mcp_list_servers`` data.
+    """Diagnose a single MCP server from raw ``mcp_connection_status`` data.
 
     Pure data transformation — no side effects, no external calls.
     Maps the raw server state to a health-check entry with an
@@ -332,7 +344,7 @@ def _diagnose_mcp_server(server: dict) -> dict:
             "transport": transport,
             "hint": (
                 f"MCP server '{name}' is enabled but NOT connected.{detail} "
-                f"Use mcp_list_servers to check current status and error details."
+                f"Use mcp_connection_status to check current status and error details."
             ),
         }
 
@@ -347,16 +359,28 @@ def _diagnose_mcp_server(server: dict) -> dict:
     }
 
 
-async def check_mcp() -> list[dict]:
-    """Check MCP wrapper health + diagnose each external MCP server.
+async def check_mcp(server: str = "") -> list[dict]:
+    """Check MCP wrapper health + diagnose external MCP server(s).
 
-    Calls ``mcp_list_servers`` for the raw server list, then applies
-    :func:`_diagnose_mcp_server` to each entry to produce health-check
-    records with an appropriate level and remediation hint.
+    Calls ``mcp_connection_status`` for the raw live server state, then
+    applies :func:`_diagnose_mcp_server` to each entry to produce
+    health-check records with an appropriate level and remediation hint.
+
+    Args:
+        server: Optional server name to check alone.  Empty (default)
+            checks all configured servers.
 
     Wrapper-level problems (registry not initialized, tool missing) are
     reported before any per-server diagnostics.
     """
+    def _not_found(target: str) -> list[dict]:
+        return [{
+            "component": "mcp_servers", "level": "warning",
+            "key": target, "value": "not_found",
+            "hint": f"MCP server '{target}' is not configured. "
+                    "Use mcp_list_servers to see configured servers.",
+        }]
+
     try:
         from slife.tools.registry import get_registry
         registry = get_registry()
@@ -365,24 +389,32 @@ async def check_mcp() -> list[dict]:
                      "key": "status", "value": "not_initialized",
                      "hint": "Tool registry not yet initialized — MCP status unavailable."}]
 
-        mcp_list_tool = None
+        mcp_status_tool = None
         for t in registry.list_tools():
-            if t.name == "mcp_list_servers" or t.name.endswith("__mcp_list_servers"):
-                mcp_list_tool = t
+            if t.name == "mcp_connection_status" or t.name.endswith("__mcp_connection_status"):
+                mcp_status_tool = t
                 break
 
-        if mcp_list_tool is None:
+        if mcp_status_tool is None:
             return [{"component": "mcp_servers", "level": "warning",
                      "key": "status", "value": "tool_missing",
-                     "hint": "mcp_list_servers tool not found — slife-mcp may not be running."}]
+                     "hint": "mcp_connection_status tool not found — slife-mcp may not be running."}]
 
-        raw = await mcp_list_tool.execute()
+        raw = await mcp_status_tool.execute()
         data = json.loads(raw)
 
         if not isinstance(data, list) or len(data) == 0:
+            if server:
+                return _not_found(server)
             return [{"component": "mcp_servers", "level": "ok",
                      "key": "status", "value": "none",
                      "hint": "No external MCP servers configured."}]
+
+        if server:
+            matched = [s for s in data if s.get("name") == server]
+            if not matched:
+                return _not_found(server)
+            data = matched
 
         return [_diagnose_mcp_server(s) for s in data]
 
@@ -391,6 +423,30 @@ async def check_mcp() -> list[dict]:
         return [{"component": "mcp_servers", "level": "error",
                  "key": "check_failed", "value": str(e),
                  "hint": f"Failed to check MCP servers: {e}"}]
+
+
+class CheckMcpTool(Tool):
+    """Check external MCP server connection status."""
+
+    name = "check_mcp"
+    category: ClassVar[str] = "System"
+    description = ("External MCP server status: connected/disconnected/disabled per server, "
+                   "with tool counts and error details. Pass 'server' to check a single server; "
+                   "omit it to check all.")
+    parameters = {
+        "type": "object",
+        "properties": {
+            "server": {
+                "type": "string",
+                "description": "Server name to check alone. Leave empty to check all configured servers.",
+                "default": "",
+            },
+        },
+        "required": [],
+    }
+
+    async def execute(self, server: str = "", **kwargs) -> str:
+        return json.dumps(await check_mcp(server=server), ensure_ascii=False, indent=2)
 
 
 # ═══════════════════════════════════════════════════════════════════════

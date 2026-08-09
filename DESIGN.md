@@ -192,13 +192,13 @@ Model switches fire callbacks that rebuild the LLM client, update loop parameter
 
 `slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, `_subagent_skip` in subagent mode, and `requires_a2a` without a mesh.
 
-### Tool Categories — 54 native tools
+### Tool Categories — 55 native tools
 
 All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM sees only function names and schemas.
 
 | Category | File | Tools |
 |----------|------|-------|
-| System | `system.py` | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp` |
+| System | `system.py` | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill.py` | `skill_list`, `skill_use`, `skill_add`, `skill_remove`, `skill_set`, `skill_check_dir` |
 | CLI | `cli.py` | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |
@@ -223,7 +223,7 @@ All managed tools follow `category_verb[_noun]` order:
 | Skills | `skill_` | `skill_list`, `skill_use`, `skill_check_dir` |
 | CLI | `cli_` | `cli_list_tools`, `cli_add_tool` |
 | REST API | `rest_api_` | `rest_api_list`, `rest_api_add` |
-| MCP (built-in) | `mcp_` | `mcp_list_servers`, `mcp_add_server` |
+| MCP (built-in) | `mcp_` | `mcp_list_servers`, `mcp_connection_status`, `mcp_add_server` |
 | A2A | `a2a_` | `a2a_list_agents`, `a2a_send_task` |
 | Config | `config_env_` | `config_env_set`, `config_env_get` |
 | Credentials | `credential_` | `credential_check`, `credential_inject` |
@@ -321,9 +321,9 @@ Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` 
 | **http (SSE)** | GET with `Accept: text/event-stream`, POST to message endpoint | Remote SSE endpoints (tried first for URLs) |
 | **http (streamable)** | POST JSON-RPC directly, `mcp-session-id` header | Remote Streamable HTTP endpoints (fallback) |
 
-Exposed management tools: `mcp_add_server` (idempotent upsert), `mcp_remove_server`, `mcp_list_servers`, `mcp_list_tools`, `mcp_call_tool`, `mcp_set_server` (enable/disable/disclosure).
+Exposed management tools: `mcp_add_server` (idempotent upsert), `mcp_remove_server`, `mcp_list_servers` (config view), `mcp_connection_status` (live state), `mcp_list_tools`, `mcp_call_tool`, `mcp_set_server` (enable/disable/disclosure).
 
-`mcp_list_servers` returns raw server state (name, enabled, active, state, tool_count, transport, error) — pure data, no diagnosis. `check_mcp` (via `system_health`) consumes that data and adds health levels (ok/warning/info) with remediation hints. The separation avoids duplicated state-interpretation logic.
+`mcp_list_servers` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, disclosure, description), with no live state and no secrets (env/headers/auth omitted). `mcp_connection_status` returns the raw live server state (name, enabled, active, state, tool_count, transport, error) — pure data, no diagnosis. `check_mcp` (a standalone tool, also run by `system_health`) consumes `mcp_connection_status` and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
 
 Server lifecycle:
 
@@ -582,9 +582,9 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 
 ## Health Checks
 
-Health checks fall into two categories, both surfaced through `system_health`:
+Health checks fall into two categories. `system_health` runs all of them together, and every dynamic check is also exposed as a standalone native tool (`check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog`) so the LLM can probe a single subsystem directly without the full report. `check_mcp` additionally takes an optional `server` argument (default: all) to diagnose just one external server.
 
-**Static startup checks** — `check_external_deps()` probes system tooling once at startup:
+**Static startup checks** — `check_external_deps()` probes system tooling once at startup; results are recorded via `slife.health.record()` and appear in `system_health`'s report:
 
 | Dependency | Use |
 |------------|-----|
@@ -601,7 +601,7 @@ Health checks fall into two categories, both surfaced through `system_health`:
 | `check_wechat` | Login status, session age, QR expiry | Application state (wechat plugin) |
 | `check_memfiles` | File-sharing tunnel online? ngrok URL? | Application state (memfiles plugin) |
 | `check_mcp` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, disclosure, hints) | Application state (MCP wrapper + external servers) |
-| `check_watchdog` | Plugin process PID alive? restart count? | Process layer |
+| `check_watchdog` | Auto-restart status per plugin, deduplicated from health records (latest record per plugin) | Process layer |
 
 The watchdog only monitors processes — it does not introspect application state. Each plugin owns its own runtime health check. Missing deps are recorded as warnings — Slife still starts; affected MCP servers won't work.
 

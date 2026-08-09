@@ -179,12 +179,28 @@ async def mcp_remove_server(name: str) -> str:
 @mcp.tool(
     name="mcp_list_servers",
     description=(
-        "List all configured MCP servers with their connection status, "
-        "tool counts, disclosure mode (eager/lazy), and enabled/disabled state."
+        "List configured external MCP servers — static configuration only: "
+        "name, transport (stdio/http), command/args or url, enabled/disabled, "
+        "disclosure mode (eager/lazy), description. Does NOT report live "
+        "connection status; use mcp_connection_status for connectivity diagnosis."
     ),
 )
 async def mcp_list_servers() -> str:
-    """List all configured MCP servers."""
+    """List configured external MCP servers (static config view)."""
+    servers = _pool.list_configured()
+    return json.dumps(servers, ensure_ascii=False, indent=2)
+
+
+@mcp.tool(
+    name="mcp_connection_status",
+    description=(
+        "Report live connection status of external MCP servers: running/stopped, "
+        "tool counts, error messages, disclosure mode. Use for diagnosis — "
+        "mcp_list_servers only lists the configured servers, not their status."
+    ),
+)
+async def mcp_connection_status() -> str:
+    """Report live connection status of all external MCP servers."""
     servers = _pool.list_servers()
     return json.dumps(servers, ensure_ascii=False, indent=2)
 

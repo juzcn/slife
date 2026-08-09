@@ -171,6 +171,59 @@ class TestConnectionPoolListServers:
         assert s["description"] == "First"
 
 
+class TestConnectionPoolListConfigured:
+    """Tests for list_configured — static config view, no live state."""
+
+    def test_returns_config_fields_only(self):
+        pool = ConnectionPool()
+        cfg = ServerConfig(
+            name="srv1", command="cmd1", args=["-a"], description="First",
+            active=False, require_approval=True,
+        )
+        conn = MCPServerConnection(cfg)
+        conn._tools_cache = [{"name": "t1"}, {"name": "t2"}]
+        conn._status = ServerStatus.CONNECTED
+        conn._error = "boom"
+        pool._connections["srv1"] = conn
+
+        servers = pool.list_configured()
+        assert len(servers) == 1
+        s = servers[0]
+        assert s["name"] == "srv1"
+        assert s["transport"] == "stdio"
+        assert s["command"] == "cmd1"
+        assert s["args"] == ["-a"]
+        assert s["url"] == ""
+        assert s["enabled"] is True
+        assert s["disclosure"] == "lazy"  # active=False → lazy
+        assert s["description"] == "First"
+        assert s["require_approval"] is True
+        # No live state — those belong to list_servers / mcp_connection_status
+        assert "status" not in s
+        assert "state" not in s
+        assert "tool_count" not in s
+        assert "error" not in s
+        assert "active" not in s
+
+    def test_omits_secret_holding_fields(self):
+        pool = ConnectionPool()
+        cfg = ServerConfig(
+            name="srv", url="http://localhost:8080/mcp",
+            headers={"Authorization": "Bearer secret"},
+            env={"API_KEY": "sk-secret"},
+            auth={"client_id": "x"},
+        )
+        conn = MCPServerConnection(cfg)
+        pool._connections["srv"] = conn
+
+        servers = pool.list_configured()
+        assert len(servers) == 1
+        s = servers[0]
+        assert s["transport"] == "http"
+        for secret_field in ("env", "headers", "auth"):
+            assert secret_field not in s
+
+
 class TestConnectionPoolListAllTools:
     """Tests for list_all_tools."""
 

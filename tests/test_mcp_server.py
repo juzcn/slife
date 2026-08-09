@@ -79,6 +79,7 @@ class TestAddServerToolRegistration:
             "mcp_add_server",
             "mcp_remove_server",
             "mcp_list_servers",
+            "mcp_connection_status",
             "mcp_list_tools",
             "mcp_call_tool",
             "mcp_set_server",

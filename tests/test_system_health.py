@@ -4,18 +4,21 @@ import pytest; pytestmark = pytest.mark.integration
 
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from slife.tools.system import (
     check_memdb,
     check_wechat,
+    check_mcp,
     _group_by_component,
     _component_status,
     _build_summary,
     _overall_healthy,
     SystemHealthTool,
+    CheckWatchdogTool,
+    CheckMcpTool,
 )
 
 
@@ -479,3 +482,136 @@ class TestSystemHealthToolExecute:
             parsed = json.loads(result)
             assert parsed["healthy"] is True
             assert "ok" in parsed["summary"].lower()
+
+
+# ── CheckWatchdogTool / CheckMcpTool ───────────────────────────────────
+
+
+class TestCheckWatchdogTool:
+    """Tests for CheckWatchdogTool metadata and execute."""
+
+    def test_metadata(self):
+        tool = CheckWatchdogTool()
+        assert tool.name == "check_watchdog"
+        assert "watchdog" in tool.description.lower()
+        assert tool.parameters["type"] == "object"
+        assert tool.parameters["required"] == []
+
+    @pytest.mark.asyncio
+    async def test_execute_returns_json(self):
+        tool = CheckWatchdogTool()
+        with patch("slife.tools.system.check_watchdog", return_value=[
+            {"component": "watchdog", "level": "ok", "key": "plugin_a",
+             "value": "running", "hint": "auto-restart active"},
+        ]):
+            result = await tool.execute()
+            parsed = json.loads(result)
+            assert parsed[0]["component"] == "watchdog"
+            assert parsed[0]["value"] == "running"
+
+
+class TestCheckMcpTool:
+    """Tests for CheckMcpTool metadata and execute."""
+
+    def test_metadata(self):
+        tool = CheckMcpTool()
+        assert tool.name == "check_mcp"
+        assert "mcp" in tool.description.lower()
+        assert tool.parameters["type"] == "object"
+        assert tool.parameters["required"] == []
+        assert "server" in tool.parameters["properties"]
+        assert tool.parameters["properties"]["server"]["default"] == ""
+
+    @pytest.mark.asyncio
+    async def test_execute_returns_json(self):
+        tool = CheckMcpTool()
+        with patch("slife.tools.system.check_mcp",
+                   new=AsyncMock(return_value=[
+                       {"component": "mcp_servers", "level": "ok",
+                        "key": "server_a", "value": "connected [eager]",
+                        "hint": "all good"},
+                   ])):
+            result = await tool.execute()
+            parsed = json.loads(result)
+            assert parsed[0]["component"] == "mcp_servers"
+            assert parsed[0]["value"] == "connected [eager]"
+
+    @pytest.mark.asyncio
+    async def test_execute_forwards_server_param(self):
+        tool = CheckMcpTool()
+        mock = AsyncMock(return_value=[])
+        with patch("slife.tools.system.check_mcp", new=mock):
+            await tool.execute(server="github")
+        mock.assert_awaited_once_with(server="github")
+
+
+class _FakeMcpStatusTool:
+    """Minimal stand-in for the proxied mcp_connection_status tool."""
+
+    name = "mcp_connection_status"
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def execute(self, **kwargs):
+        return json.dumps(self._payload)
+
+
+class TestCheckMcpFunction:
+    """Tests for check_mcp() server filtering."""
+
+    @staticmethod
+    def _registry(payload):
+        reg = MagicMock()
+        reg.list_tools.return_value = [_FakeMcpStatusTool(payload)]
+        return reg
+
+    @staticmethod
+    def _server(name, state="running"):
+        return {
+            "name": name,
+            "state": state,
+            "status": "connected" if state == "running" else "failed",
+            "enabled": True,
+            "tool_count": 2 if state == "running" else 0,
+            "error": "" if state == "running" else "boom",
+            "transport": "stdio",
+            "active": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_checks_all_by_default(self):
+        payload = [self._server("fs"), self._server("github", state="stopped")]
+        with patch("slife.tools.registry.get_registry",
+                   return_value=self._registry(payload)):
+            entries = await check_mcp()
+        assert [e["key"] for e in entries] == ["fs", "github"]
+
+    @pytest.mark.asyncio
+    async def test_checks_single_server(self):
+        payload = [self._server("fs"), self._server("github", state="stopped")]
+        with patch("slife.tools.registry.get_registry",
+                   return_value=self._registry(payload)):
+            entries = await check_mcp(server="github")
+        assert len(entries) == 1
+        assert entries[0]["key"] == "github"
+        assert entries[0]["level"] == "warning"
+
+    @pytest.mark.asyncio
+    async def test_server_not_found(self):
+        payload = [self._server("fs")]
+        with patch("slife.tools.registry.get_registry",
+                   return_value=self._registry(payload)):
+            entries = await check_mcp(server="nope")
+        assert len(entries) == 1
+        assert entries[0]["key"] == "nope"
+        assert entries[0]["value"] == "not_found"
+        assert entries[0]["level"] == "warning"
+
+    @pytest.mark.asyncio
+    async def test_server_not_found_when_no_servers(self):
+        with patch("slife.tools.registry.get_registry",
+                   return_value=self._registry([])):
+            entries = await check_mcp(server="nope")
+        assert len(entries) == 1
+        assert entries[0]["value"] == "not_found"

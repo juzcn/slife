@@ -795,6 +795,31 @@ class ConnectionPool:
     def get_server(self, name: str) -> MCPServerConnection | None:
         return self._connections.get(name)
 
+    def list_configured(self) -> list[dict]:
+        """List configured servers — static config fields only, no live state.
+
+        This is the *config view*: what servers are configured, their transport,
+        command/args or URL, enabled/disabled, disclosure mode, and description.
+        It deliberately excludes live connection state (connected/disconnected,
+        tool counts, errors) — that is reported by :meth:`list_servers` for the
+        ``mcp_connection_status`` tool.  Secret-holding fields (``env``,
+        ``headers``, ``auth``) are omitted so the listing never leaks tokens.
+        """
+        return [
+            {
+                "name": name,
+                "transport": conn.config.transport,
+                "command": conn.config.command,
+                "args": list(conn.config.args),
+                "url": conn.config.url,
+                "enabled": conn.config.enabled,
+                "disclosure": "eager" if conn.config.active else "lazy",
+                "description": conn.config.description,
+                "require_approval": conn.config.require_approval,
+            }
+            for name, conn in self._connections.items()
+        ]
+
     def list_servers(self) -> list[dict]:
         return [
             {
