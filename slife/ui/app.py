@@ -12,6 +12,7 @@ from textual.widgets import Input, Static
 from slife.config import Config
 from slife.a2a.card import format_presence_line
 from slife.agent.service import AgentService
+from slife.agent.plugins import PluginStartStatus
 from slife.agent.loop import MaxIterationsExceeded
 from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
@@ -352,16 +353,26 @@ class SlifeApp(App):
     # ── Plugin startup helpers ────────────────────────────────────
 
     async def _start_plugin_safe(self, name: str, coro) -> None:
-        """Start a plugin and show unified success/failure in chat."""
+        """Start a plugin and show success / skip / failure in chat.
+
+        ``SKIPPED`` is an expected no-op (e.g. mqtt without a running MQTT
+        broker, or a plugin disabled in config) — shown as neutral info,
+        never as an error warning.
+        """
         try:
-            result = await coro
-            if result is False:
+            status = await coro
+            if status is PluginStartStatus.STARTED:
                 self._show_system_message(
-                    f"⚠ 插件启动失败: {name}", color="#d29922",
+                    f"🔌 插件已加载: {name}", color="#3fb950",
+                )
+            elif status is PluginStartStatus.SKIPPED:
+                logger.debug("plugin_skipped name=%s", name)
+                self._show_system_message(
+                    f"ℹ️ 插件未加载: {name}", color="#8b949e",
                 )
             else:
                 self._show_system_message(
-                    f"🔌 插件已加载: {name}", color="#3fb950",
+                    f"⚠ 插件启动失败: {name}", color="#d29922",
                 )
         except Exception as e:
             self._show_system_message(

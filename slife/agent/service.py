@@ -28,7 +28,7 @@ from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.conversation import Conversation
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
 from slife.agent.inbox import Inbox, ConversationStore
-from slife.agent.plugins import PluginLifecycle
+from slife.agent.plugins import PluginLifecycle, PluginStartStatus
 from slife.a2a.identity import HUMAN
 from slife.tools.factory import create_tools_from_config
 from slife.mcp.tool_adapter import create_proxy_tools
@@ -215,7 +215,7 @@ class AgentService:
 
     async def start_plugin_server(
         self, name: str, module: str,
-    ) -> bool:
+    ) -> PluginStartStatus:
         """Spawn a plugin child process, connect, and register its tools.
 
         Single entry point for ALL plugins — built-in (mcp, memdb,
@@ -224,16 +224,21 @@ class AgentService:
 
         Dispatches internally for MCP (configurable wrapper command) and
         WeChat (poll loop); everything else uses the generic spawn path.
-        Returns ``True`` on success, ``False`` on controlled failure,
+        Returns ``PluginStartStatus.STARTED`` on success, ``SKIPPED`` for
+        expected no-ops (not configured / dependency absent — e.g. mqtt
+        without a running broker), ``FAILED`` on controlled failure, and
         raises on unexpected errors.
         """
         # ── MCP wrapper: custom command, auto-connects external servers ──
         if name == "mcp":
             if not self.config.mcp_config:
                 logger.debug("mcp_skipped reason=no_config")
-                return False
+                return PluginStartStatus.SKIPPED
             await self.start_mcp()
-            return self.mcp_enabled
+            return (
+                PluginStartStatus.STARTED
+                if self.mcp_enabled else PluginStartStatus.FAILED
+            )
 
         # ── WeChat: needs poll loop after registration ──────────────────
         if name == "wechat":
@@ -251,7 +256,9 @@ class AgentService:
         started = await self._spawn_plugin_generic(name, module)
         if started:
             self._start_generic_watchdog(name, module)
-        return started
+        return (
+            PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
+        )
 
     def _start_generic_watchdog(self, name: str, module: str) -> None:
         """Attach a crash watchdog to a generically-spawned plugin.
@@ -970,12 +977,14 @@ class AgentService:
 
     # ── Sharing lifecycle ──────────────────────────────────────────────
 
-    async def start_memfiles(self) -> bool:
-        """Start the memfiles server and ngrok tunnel. Returns True on success.
+    async def start_memfiles(self) -> PluginStartStatus:
+        """Start the memfiles server and ngrok tunnel.
 
         The memfiles server serves image files via plain HTTP.  The ngrok
         tunnel exposes them to the public internet so LLM vision APIs can
         fetch images by HTTPS URL instead of inline base64.
+
+        Returns ``STARTED`` on success, ``FAILED`` on start error.
         """
         import os
 
@@ -1053,10 +1062,10 @@ class AgentService:
             self._plugins["memfiles"].start_watchdog(restart_cb=_restart_memfiles)
 
             logger.info("memfiles_init_done port=%s", process.port)
-            return True
+            return PluginStartStatus.STARTED
         except Exception as e:
             logger.warning("memfiles_init_failed err=%s fallback=continue_without_memfiles", e)
-            return False
+            return PluginStartStatus.FAILED
 
     def _maybe_register_expose_file(self) -> None:
         """Register expose_file tool if the tunnel is active and it's not already registered.
@@ -1077,12 +1086,16 @@ class AgentService:
 
     # ── WeChat lifecycle ───────────────────────────────────────────────
 
-    async def start_wechat(self) -> bool:
-        """Start the WeChat plugin if enabled in config. Returns True on success."""
+    async def start_wechat(self) -> PluginStartStatus:
+        """Start the WeChat plugin if enabled in config.
+
+        Returns ``STARTED`` on success, ``SKIPPED`` when WeChat is not
+        enabled (expected), ``FAILED`` on start error.
+        """
         wechat_cfg = self.config.wechat_config
         if wechat_cfg is None or not wechat_cfg.enabled:
             logger.debug("wechat_not_enabled")
-            return False
+            return PluginStartStatus.SKIPPED
 
         logger.info("wechat_init_start")
         try:
@@ -1128,7 +1141,7 @@ class AgentService:
                 key="status", value="connected",
                 hint="WeChat plugin started and tools registered.",
             )
-            return True
+            return PluginStartStatus.STARTED
         except Exception as e:
             logger.warning("wechat_init_failed err=%s fallback=continue_without_wechat", e)
             from slife.health import record
@@ -1138,7 +1151,7 @@ class AgentService:
                 hint=f"WeChat plugin failed to start: {e}. "
                      "WeChat messaging is unavailable.",
             )
-            return False
+            return PluginStartStatus.FAILED
 
     async def _wechat_poll_loop(self, interval: float = 5.0) -> None:
         """Poll the wechat plugin for new messages and inject them into the inbox.
@@ -1334,22 +1347,23 @@ class AgentService:
 
     # ── A2A lifecycle ──────────────────────────────────────────────────
 
-    async def start_mqtt(self) -> bool:
+    async def start_mqtt(self) -> PluginStartStatus:
         """Start the A2A mesh as a plugin (thin client: connect + drain).
 
         All A2A/MQTT logic lives in the mqtt plugin process — the harness
         only spawns it, registers the ``a2a__*`` tools, and polls
         ``__a2a_drain_incoming`` for inbound tasks/presence.  Probes
-        Mosquitto first; returns False when the broker is unreachable or
-        A2A is not configured.  Idempotent.
+        Mosquitto first; returns ``SKIPPED`` when the broker is
+        unreachable or A2A is not configured (expected, not an error).
+        Idempotent.
         """
         if self._plugins["mqtt"].process is not None:
-            return True  # already started
+            return PluginStartStatus.STARTED  # already started
 
         a2a_cfg = self.config.a2a_config
         if a2a_cfg is None or not a2a_cfg.enabled:
             logger.debug("a2a_disabled")
-            return False
+            return PluginStartStatus.SKIPPED
 
         from slife.a2a.broker import probe_broker
         if not await probe_broker(a2a_cfg.broker_host, a2a_cfg.broker_port):
@@ -1358,7 +1372,7 @@ class AgentService:
                 a2a_cfg.broker_host, a2a_cfg.broker_port,
             )
             a2a_cfg.enabled = False
-            return False
+            return PluginStartStatus.SKIPPED
         a2a_cfg.enabled = True
 
         # Pass the a2a config to the plugin process via env.
@@ -1371,7 +1385,7 @@ class AgentService:
             "mqtt", "slife.plugins.mqtt.server",
         )
         if not started:
-            return False
+            return PluginStartStatus.FAILED
 
         # Expose the mesh client so the native a2a_* tools can reach remote
         # peers (when the plugin is down this stays None → mesh tools report
@@ -1394,7 +1408,7 @@ class AgentService:
             hint="A2A P2P mesh connected (plugin).",
         )
         logger.info("mqtt_plugin_started")
-        return True
+        return PluginStartStatus.STARTED
 
     async def _mqtt_poll_loop(self, interval: float = 1.0) -> None:
         """Drain inbound a2a tasks/presence from the plugin into the inbox.

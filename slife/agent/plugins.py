@@ -13,6 +13,7 @@ backoff up to a configurable max restart count.
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
 import os
 import sys
@@ -31,6 +32,20 @@ _WATCHDOG_BACKOFF_INITIAL: float = 1.0
 _WATCHDOG_BACKOFF_MAX: float = 30.0
 _WATCHDOG_BACKOFF_MULTIPLIER: float = 2.0
 _WATCHDOG_MAX_RESTARTS: int = 5
+
+
+class PluginStartStatus(enum.Enum):
+    """Outcome of a plugin startup attempt.
+
+    ``SKIPPED`` is an *expected* no-op — the plugin is not configured or
+    a dependency is absent (e.g. the MQTT plugin with no broker running).
+    It must never be surfaced as an error; ``FAILED`` is an unexpected
+    start error.
+    """
+
+    STARTED = "started"
+    SKIPPED = "skipped"
+    FAILED = "failed"
 
 
 class PluginLifecycle:

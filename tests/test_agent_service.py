@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from slife.agent.service import AgentService
+from slife.agent.plugins import PluginStartStatus
 from slife.agent.llm_client import TokenUsage
 from slife.a2a.identity import HUMAN, WECHAT
 
@@ -195,8 +196,28 @@ class TestAgentServiceA2A:
     async def test_start_mqtt_disabled_noop(self, sample_config):
         service = AgentService(sample_config)
         result = await service.start_mqtt()
-        assert result is False
+        assert result is PluginStartStatus.SKIPPED
         assert service._plugins["mqtt"].process is None
+
+    @pytest.mark.asyncio
+    async def test_start_mqtt_broker_unreachable_skips(self, sample_config):
+        """A2A enabled but no broker on the port → SKIPPED, not a failure.
+
+        This is the "mosquitto 未启动" case: the plugin is expected to be
+        skipped (A2A disabled at runtime), never reported as a crash.
+        """
+        from slife.a2a.config import A2AConfig
+        service = AgentService(sample_config)
+        service.config.a2a_config = A2AConfig(
+            enabled=True, broker_host="localhost", broker_port=1883,
+        )
+        with patch(
+            "slife.a2a.broker.probe_broker", AsyncMock(return_value=False),
+        ):
+            result = await service.start_mqtt()
+        assert result is PluginStartStatus.SKIPPED
+        assert service._plugins["mqtt"].process is None
+        assert service.config.a2a_config.enabled is False  # downgraded
 
     @pytest.mark.asyncio
     async def test_stop_mqtt_noop_when_disabled(self, sample_config):
@@ -464,7 +485,7 @@ class TestAgentServiceWeChat:
             result = await service.start_wechat()
 
             mock_spawn.assert_called_once()
-            assert result is True
+            assert result is PluginStartStatus.STARTED
 
     @pytest.mark.asyncio
     async def test_stop_wechat_cancels_poll_and_disconnects(self, sample_config):
