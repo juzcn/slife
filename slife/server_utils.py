@@ -88,6 +88,7 @@ import socket
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from slife.logfmt import (
     SessionFormatter,
@@ -222,7 +223,12 @@ def signal_port(port: int) -> None:
 # ── Plugin factory & runner ────────────────────────────────────────────
 
 
-def create_plugin_server(name: str, instructions: str) -> tuple:
+def create_plugin_server(
+    name: str,
+    instructions: str,
+    *,
+    lifespan: "Callable | None" = None,
+) -> tuple:
     """Create a standard Slife plugin FastMCP server with logging.
 
     A single call replaces the per-plugin boilerplate of
@@ -249,6 +255,10 @@ def create_plugin_server(name: str, instructions: str) -> tuple:
         name: e.g. ``"slife-mcp"`` — drives the logger name
             (``slife_mcp``) and log-file suffix (``_mcp``).
         instructions: FastMCP server instructions string.
+        lifespan: Optional ``@asynccontextmanager`` startup/shutdown hook
+            (FastMCP ``lifespan=`` argument).  Runs on the server's event
+            loop — enter before serving, exit on shutdown.  Defaults to
+            ``None`` (no-op).
 
     Returns:
         ``(mcp, log_path, logger)`` — the FastMCP instance ready for
@@ -263,7 +273,7 @@ def create_plugin_server(name: str, instructions: str) -> tuple:
 
     log_path = setup_server_logging(service_suffix)
     plogger = logging.getLogger(logger_name)
-    server = FastMCP(name, instructions=instructions)
+    server = FastMCP(name, instructions=instructions, lifespan=lifespan)
 
     return server, log_path, plogger
 

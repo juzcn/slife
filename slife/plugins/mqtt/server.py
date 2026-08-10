@@ -20,12 +20,41 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextlib import asynccontextmanager
 
 from slife.a2a.card import AgentCard
 from slife.a2a.client import A2AClient
 from slife.a2a.config import A2AConfig
 from slife.a2a.identity import AgentId, AgentMessage
 from slife.server_utils import create_plugin_server, run_plugin_server
+
+
+@asynccontextmanager
+async def _mqtt_lifespan(_app):
+    """Connect the mesh eagerly on plugin startup.
+
+    Restores the pre-pluginization behavior (``AgentService.start_a2a``)
+    where the A2AClient connected at launch — this agent announces
+    presence and is reachable by peers without any a2a_* tool call.
+
+    A failed eager connect is tolerated: it logs a warning and the
+    client stays disconnected (mesh tools still attempt a lazy connect
+    on demand).  On shutdown the client disconnects, announcing offline.
+    """
+    try:
+        await _ensure_connected()
+    except Exception as e:
+        logger.warning("mqtt_plugin_eager_connect_failed err=%s", e)
+    try:
+        yield
+    finally:
+        client = _client
+        if client is not None and client.is_connected:
+            try:
+                await client.disconnect()
+            except Exception as e:
+                logger.debug("mqtt_plugin_disconnect_error err=%s", e)
+
 
 mcp, _log_path, logger = create_plugin_server(
     "slife-mqtt",
@@ -34,6 +63,7 @@ mcp, _log_path, logger = create_plugin_server(
         "(send_task / send_task_async), discover agents (list_agents), "
         "broadcast, cancel tasks, and query agent cards."
     ),
+    lifespan=_mqtt_lifespan,
 )
 
 # ── Lazy client init (FastMCP lazy-init rule) ──────────────────────

@@ -18,6 +18,8 @@ def _fake_client():
     """A mocked A2AClient returning canned values."""
     client = MagicMock()
     client.is_connected = True
+    client.connect = AsyncMock()
+    client.disconnect = AsyncMock()
     client.send_task = AsyncMock(return_value="result-text")
     client.send_task_async = AsyncMock(return_value="corr-1")
     client.list_agents = AsyncMock(return_value=[
@@ -137,3 +139,64 @@ class TestConfig:
         loaded = plugin._load_config()
         assert loaded.agent_id == "slife"
         assert loaded.broker_port == 1883
+
+
+class TestEagerConnect:
+    """The mesh connects at plugin startup (lifespan), not lazily on tool call."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_state(self):
+        plugin._client = None
+        plugin._inbound_tasks.clear()
+        plugin._presence_events.clear()
+        yield
+        plugin._client = None
+        plugin._inbound_tasks.clear()
+        plugin._presence_events.clear()
+
+    @pytest.mark.asyncio
+    async def test_lifespan_connects_on_startup(self):
+        """Entering the lifespan eagerly calls _ensure_connected."""
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)) as mock_conn:
+            async with plugin._mqtt_lifespan(None):
+                mock_conn.assert_awaited_once()
+        # The mock didn't set plugin._client — nothing to disconnect on exit.
+
+    @pytest.mark.asyncio
+    async def test_lifespan_disconnects_on_shutdown(self):
+        """Exiting the lifespan disconnects a live client (announces offline)."""
+        client = _fake_client()
+        plugin._client = client
+        with patch.object(plugin, "_ensure_connected", AsyncMock()):
+            async with plugin._mqtt_lifespan(None):
+                pass
+        client.disconnect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_lifespan_tolerates_connect_failure(self):
+        """A failed eager connect must not crash plugin startup."""
+        with patch.object(
+            plugin, "_ensure_connected",
+            AsyncMock(side_effect=RuntimeError("broker down")),
+        ):
+            async with plugin._mqtt_lifespan(None):
+                pass  # no raise
+
+    @pytest.mark.asyncio
+    async def test_ensure_connected_creates_and_connects_client(self, monkeypatch):
+        """_ensure_connected builds an A2AClient, connects it, and caches it."""
+        import json as _json
+        monkeypatch.setenv("SLIFE_MQTT_CONFIG", _json.dumps({
+            "enabled": True, "agent_id": "slife", "agent_name": "",
+            "transport": "mqtt", "broker_host": "localhost", "broker_port": 1883,
+            "http_host": "127.0.0.1", "http_port": 0,
+            "heartbeat_interval": 15, "heartbeat_timeout": 45, "task_timeout": 120,
+        }))
+        fake_client = _fake_client()
+        with patch.object(plugin, "A2AClient", return_value=fake_client) as mock_cls:
+            result = await plugin._ensure_connected()
+        mock_cls.assert_called_once()
+        fake_client.connect.assert_awaited_once()
+        assert result is fake_client
+        assert plugin._client is fake_client
