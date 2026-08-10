@@ -138,9 +138,9 @@ async def __memory_save_turn(
 ) -> str:
     store = await _ensure_store()
     try:
-        # The harness guarantees a consistent turn (no orphaned tool_calls)
-        # via AgentLoop._ensure_turn_consistent before it ever calls here —
-        # the storage layer persists what it receives.
+        # The harness guarantees a consistent turn (no orphaned tool_calls,
+        # alternating roles) via Conversation._ensure_turn_consistent before
+        # it ever calls here — the storage layer persists what it receives.
         rowid = await store.save_turn(
             user_message=user_message, messages=messages,
             token_count=token_count, who_helped=who_helped, what_model=what_model,

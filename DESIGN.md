@@ -89,7 +89,11 @@ User Input → Conversation.add_user_message()        (secrets sanitized)
 - **Background execution**: per-call `_async: true` schedules the tool as a background task and returns a task id immediately; poll with `check_async`, cancel with `cancel_async`
 - **Iteration limit**: `max_iterations` (default 30) prevents infinite loops
 - **Cancellation**: `Esc` sets a cancel event; checked before each iteration, after each stream, and before each tool batch
-- **Alternation guarantee**: every turn closes with an assistant message — `_ensure_turn_closed` fires on cancel / max-iterations / transient error, and the vision-unsupported branch records the warning as the assistant reply; `Conversation.ensure_alternation()` normalizes restored history. User/assistant roles therefore always alternate on the wire, satisfying the strict Anthropic / OpenAI-Responses backends (no consecutive-user 400)
+- **Turn consistency**: one function — `Conversation._ensure_turn_consistent()` — enforces two idempotent invariants on every conversation before it reaches the wire, the DB, or a new user message:
+  1. **No orphaned tool_calls** — an assistant `tool_call` whose result never arrived (an interrupted turn, e.g. a hung tool) gets a synthetic `Error: request cancelled by user` result inserted right after it; otherwise the orphan is persisted and re-repaired on every restore.
+  2. **Alternating roles** — a conversation ending on a `user`/`tool` message (a tool result is a `user` role on the Anthropic wire, which rejects two consecutive users with a 400) gets a closing assistant message.
+
+  It is called at **every point a turn can become inconsistent**: `add_user_message` (before appending), the agent loop's cancel / max-iterations / transient-error handlers, `save_to_memory` (before persisting — the save-side guarantee), and `restore_session` (after loading from memory — the load-side guarantee). Each turn also opens with an auto-invoked `_sys_note` assistant+tool pair, so a user message is always sandwiched between assistant messages.
 - **Context tracking**: `_last_context_tokens` (actual `prompt_tokens` from the last API call) drives trim decisions
 
 ### Context Window Management
@@ -476,6 +480,8 @@ The plugin owns everything — the in-process token registry, the ngrok tunnel, 
 2. `GET /share/{token}` streams the file in 64 KB chunks (403 unknown token, 404 file gone).
 
 No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file). `save_content_or_files` persists content/URL/files under `<agent>.files/` with an `index.json` and returns share URLs when the tunnel is active; when offline, files are still saved locally and the result notes "(sharing offline)". `include_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/vision.py`) that injects image blocks into the main-process conversation.
+
+`GET /share/{token}` streams the file with an RFC 5987 `Content-Disposition` — a non-ASCII filename (e.g. CJK) is emitted as an ASCII fallback in `filename=` plus the real name percent-encoded in `filename*=UTF-8''`, because HTTP header values must be Latin-1 (a raw CJK filename otherwise raises `UnicodeEncodeError` → HTTP 500).
 
 ### Ngrok Tunnel
 
