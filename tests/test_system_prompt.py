@@ -152,11 +152,11 @@ class TestBuild:
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
         result = build(cfg, is_subagent=True)
-        assert "Subagent identity" in result
+        assert "Subagent role" in result
         assert "You are a subagent named sub-7" in result
-        assert "same capabilities as the main agent" in result
+        assert "with the same capabilities" in result
         assert "may SEND messages" in result
-        assert "all replies and management belong to the main agent" in result
+        assert "all replies and management belong to" in result
         assert "conversation is not persisted" in result
 
     def test_subagent_identity_includes_name(self, cfg, monkeypatch):
@@ -166,6 +166,16 @@ class TestBuild:
         result = build(cfg, is_subagent=True)
         assert "You are a subagent named sub-7" in result
 
+    def test_subagent_identity_forbids_persona(self, cfg, monkeypatch):
+        """A subagent has no independent identity — it speaks as the parent
+        agent, never introducing itself as a named persona to remote peers."""
+        from slife.agent.system_prompt import build
+        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
+        result = build(cfg, is_subagent=True)
+        assert "NO independent identity" in result
+        assert "no personality" in result
+        assert "NEVER introduce yourself by name" in result
+
     def test_subagent_context_pure_by_default(self, cfg, monkeypatch):
         """Context defaults to clean (pure) when SLIFE_SUBAGENT_CONTEXT unset."""
         from slife.agent.system_prompt import build
@@ -173,7 +183,7 @@ class TestBuild:
         monkeypatch.delenv("SLIFE_SUBAGENT_CONTEXT", raising=False)
         result = build(cfg, is_subagent=True)
         assert "Context: clean (pure)" in result
-        assert "cloned from the main agent" not in result
+        assert "cloned from" not in result
 
     def test_subagent_context_cloned(self, cfg, monkeypatch):
         """SLIFE_SUBAGENT_CONTEXT=cloned renders the cloned-context identity."""
@@ -181,7 +191,7 @@ class TestBuild:
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
         monkeypatch.setenv("SLIFE_SUBAGENT_CONTEXT", "cloned")
         result = build(cfg, is_subagent=True)
-        assert "Context: cloned from the main agent" in result
+        assert "Context: cloned from" in result
 
     def test_a2a_section_when_configured(self, cfg):
         """A2A section visible when a2a is configured."""

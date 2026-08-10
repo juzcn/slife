@@ -88,9 +88,11 @@ def build(config: Config, is_subagent: bool = False) -> str:
     if is_subagent:
         prompt += "\n\n" + _env.get_template("subagent.j2").render(
             # The spawner (subagent/process.py) sets SLIFE_SUBAGENT_NAME and
-            # SLIFE_SUBAGENT_CONTEXT ("pure" | "cloned").
+            # SLIFE_SUBAGENT_CONTEXT ("pure" | "cloned").  agent_name is the
+            # MAIN agent's name — the subagent speaks AS it on the network.
             subagent_name=os.environ.get("SLIFE_SUBAGENT_NAME", ""),
             context_source=os.environ.get("SLIFE_SUBAGENT_CONTEXT", "pure"),
+            agent_name=agent_name,
         ).strip()
     return prompt
 
@@ -145,7 +147,7 @@ def build_context_status(
         shell=shell,
         context_time_start=context_time_start,
         presence_events=rendered_presence,
-        # Subagent identity: only set when running as a subagent
+        # Subagent name: only set when running as a subagent
         # (SLIFE_SUBAGENT_NAME is set by the spawner in process.py).
         subagent_name=os.environ.get("SLIFE_SUBAGENT_NAME", ""),
     ).strip()

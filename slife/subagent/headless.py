@@ -164,9 +164,9 @@ async def run_headless() -> None:
         except Exception as e:
             logger.warning("wechat_http_failed port=%s err=%s", _wechat_port, e)
 
-    # Reuse the main agent's mqtt plugin (thin client): register the a2a__*
+    # Reuse the parent agent's mqtt plugin (thin client): register the a2a__*
     # tools so we can send, but never drain the inbound queue (all replies
-    # and management belong to the main agent).
+    # and management belong to the parent agent).
     _mqtt_port = os.environ.get("SLIFE_MQTT_PORT", "")
     if _mqtt_port:
         try:
