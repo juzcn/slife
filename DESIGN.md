@@ -114,7 +114,7 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 
 Harness tools are internal machinery the LLM never needs to call. Two prefixes encode the visibility tier:
 
-1. **`__` (double underscore) = harness, LLM-invisible.** Plugin harness tools (`__memory_save_turn`, `__a2a_drain_incoming`, `__wechat_drain_incoming`, `__send_task`, …) are filtered out of the schema entirely by `PluginLifecycle.spawn()` / `AgentService` — they never reach `to_openai_functions()`. They are called programmatically via `client.call_tool("__…")`.
+1. **`__` (double underscore) = harness, LLM-invisible.** Plugin harness tools (`__memory_save_turn`, `__a2a_drain_incoming`, `__wechat_drain_incoming`, `__send_task`, `__mcp_call_tool`, …) are filtered out of the schema entirely by `PluginLifecycle.spawn()` / `AgentService` — they never reach `to_openai_functions()`. They are called programmatically via `client.call_tool("__…")`.
 2. **`_` (single underscore) = harness, LLM-visible but reserved.** The native `_sys_note` / `_sys_trim` (in `slife/tools/harness.py`) **do** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept their tool-call pairs in history (they validate tool names against the declared list — the H3 bug). `AgentLoop._auto_invoke()` calls them on the harness's behalf as normal tool-call pairs; the system prompt forbids the LLM from calling them. `_sys_note` is pure (only reads state); `_sys_trim` genuinely trims to the floor — a legitimate action if the LLM calls it anyway.
 
 | Tool | Shape | Purpose |
@@ -178,7 +178,7 @@ Runtime model management via native tools — no config editing needed:
 | Tool | Description |
 |------|-------------|
 | `model_list` | All configured models grouped by provider (active marked) |
-| `model_add` | Add/update a model (creates provider if new) |
+| `model_set` | Add/update a model (creates provider if new) |
 | `model_remove` | Remove by ref; auto-switches if it was active |
 | `model_switch` | Switch active model by ref — persists to config and rebuilds the client live |
 | `switch_to_nvidia_free` | In-memory-only switch to a free NVIDIA NIM model via the nvidia-nim MCP server |
@@ -208,18 +208,18 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 |----------|------|-------|
 | System | `system.py` | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
-| Skills | `skill.py` | `skill_list`, `skill_use`, `skill_add`, `skill_remove`, `skill_set`, `skill_check_dir` |
-| CLI | `cli.py` | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |
-| REST API | `rest_api.py` | `rest_api_list`, `rest_api_add`, `rest_api_remove`, `rest_api_set` |
+| Skills | `skill.py` | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
+| CLI | `cli.py` | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled`, `cli_check_installed` |
+| REST API | `rest_api.py` | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | A2A | `a2a.py` + `mqtt` plugin | native, one uniform `a2a_` prefix — `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task` (A2A standard ops, both transports), `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card` (agent/MQTT only), `a2a_broadcast` (extension); `spawn_subagent`, `list_subagents`, `stop_subagent` (subagent lifecycle, no prefix), `notify_user` (desktop alert, not A2A) |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `models.py` | `model_list`, `model_add`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
+| Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
 | MemFiles | `memfiles.py` | `save_content_or_files`, `expose_file` (tunnel active only), `include_image` |
 | Display | `display.py` | `show_image` |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
-**Five managed categories** (MCP / Skills / CLI / REST API / Models) support a standard **list / add / remove / set** surface. All `add` tools are idempotent upserts. `mcp_set_server` additionally supports `disclosure="lazy"|"eager"` for tool lazy-loading.
+**Five managed categories** (MCP / Skills / CLI / REST API / Models) support a standard **list / set / remove** surface (plus `X_set_enabled` where an enable/disable toggle applies). `X_set` is an idempotent upsert — add + update in one call.
 
 #### Tool Naming Convention
 
@@ -227,11 +227,11 @@ All managed tools follow `category_verb[_noun]` order:
 
 | Category | Prefix | Examples |
 |----------|--------|----------|
-| Models | `model_` | `model_list`, `model_add`, `model_switch` |
-| Skills | `skill_` | `skill_list`, `skill_use`, `skill_check_dir` |
-| CLI | `cli_` | `cli_list_tools`, `cli_add_tool` |
-| REST API | `rest_api_` | `rest_api_list`, `rest_api_add` |
-| MCP (built-in) | `mcp_` | `mcp_list_servers`, `mcp_connection_status`, `mcp_add_server` |
+| Models | `model_` | `model_list`, `model_set`, `model_switch` |
+| Skills | `skill_` | `skill_list`, `skill_use` |
+| CLI | `cli_` | `cli_list`, `cli_set` |
+| REST API | `rest_api_` | `rest_api_list`, `rest_api_set` |
+| MCP (built-in) | `mcp_` | `mcp_set`, `mcp_list`, `mcp_list_tools` |
 | Subagent (lifecycle) | `subagent` / verb_noun | `spawn_subagent`, `list_subagents`, `stop_subagent` |
 | A2A (standard ops) | `a2a_` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task` (both transports) |
 | A2A (mesh discovery) | `a2a_` | `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` (agent/MQTT only) |
@@ -319,18 +319,16 @@ Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` 
 | **http (SSE)** | GET with `Accept: text/event-stream`, POST to message endpoint | Remote SSE endpoints (tried first for URLs) |
 | **http (streamable)** | POST JSON-RPC directly, `mcp-session-id` header | Remote Streamable HTTP endpoints (fallback) |
 
-Exposed management tools: `mcp_add_server` (idempotent upsert), `mcp_remove_server`, `mcp_list_servers` (config view), `mcp_connection_status` (live state), `mcp_list_tools`, `mcp_call_tool`, `mcp_set_server` (enable/disable/disclosure).
+Exposed management tools: `mcp_set` (configure: add/update a server, idempotent), `mcp_set_enabled` (toggle enable/disable), `mcp_remove`, `mcp_list` (config view), `mcp_list_tools`. Live status is reported by `check_mcp` via the harness `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is a harness tool — LLM-invisible, invoked only by the `server__tool` proxies.
 
-`mcp_list_servers` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, disclosure, description), with no live state and no secrets (env/headers/auth omitted). `mcp_connection_status` returns the raw live server state (name, enabled, active, state, tool_count, transport, error) — pure data, no diagnosis. `check_mcp` (a standalone tool, also run by `system_health`) consumes `mcp_connection_status` and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
+`mcp_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp` (a standalone tool, also run by `system_health`) calls the harness `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
 
 Server lifecycle:
 
 ```
-disabled ──[mcp_set_server enabled=True]──────→ enabled (connected, tools registered)
-enabled  ──[mcp_set_server enabled=False]─────→ disabled (disconnected, tools unregistered)
-enabled  ──[mcp_set_server disclosure="lazy"]─→ enabled (connected, tools unloaded)
-lazy     ──[mcp_set_server disclosure="eager"]─→ enabled (tools loaded)
-any      ──[mcp_add_server]───────────────────→ upsert (same config → no-op; changed → restart)
+disabled ──[mcp_set_enabled(name, enabled=true)]──→ enabled (connected, tools registered)
+enabled  ──[mcp_set_enabled(name, enabled=false)]─→ disabled (disconnected, tools unregistered)
+enabled  ──[mcp_set(changed config)]───────────────→ restarted with new settings
 ```
 
 All state changes persist to `slife.json5`. Servers needing OAuth use a device-code flow (see below); tokens are stored in the OS keyring via credstore (`mcp_oauth_*`).
@@ -516,7 +514,7 @@ Not all tools are in every request. Several categories use lightweight summaries
 |----------|--------|------|
 | MemDB | `memory_search` | `memory_open` |
 | Skills | `skill_list` | `skill_use` |
-| MCP | `mcp_list_servers` / `mcp_list_tools` | `mcp_set_server(enabled=True)` / disclosure |
+| MCP | `mcp_list` / `mcp_list_tools` | `mcp_set_enabled(name, enabled=True)` |
 
 ## Config & Credentials
 
@@ -570,7 +568,7 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 | `active_model` | Currently active model ref (`provider/model`) |
 | `agent` | `max_iterations`, `tool_timeout`, `context_floor`, `context_ceiling`, `tool_result_ceiling` |
 | `tools` | Per-tool overrides (timeout, enabled) |
-| `mcp.servers` | External MCP server configs (incl. `require_approval`, `disclosure`) |
+| `mcp.servers` | External MCP server configs (incl. `require_approval`) |
 | `memdb.embedding` | Embedding backend config (backend, model, dim, gguf_path) |
 | `wechat` | `enabled` toggle |
 | `mqtt` | A2A config (transport, broker host/port, heartbeat, task_timeout) |
@@ -598,7 +596,7 @@ Health checks fall into two categories. `system_health` runs all of them togethe
 | `check_memdb` | Database file + embedding backend (model, dimension, availability) | Application state (memdb plugin) |
 | `check_wechat` | Login status, session age, QR expiry | Application state (wechat plugin) |
 | `check_memfiles` | File-sharing tunnel online? ngrok URL? | Application state (memfiles plugin) |
-| `check_mcp` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, disclosure, hints) | Application state (MCP wrapper + external servers) |
+| `check_mcp` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, hints) | Application state (MCP wrapper + external servers) |
 | `check_watchdog` | Auto-restart status per plugin, deduplicated from health records (latest record per plugin) | Process layer |
 
 The watchdog only monitors processes — it does not introspect application state. Each plugin owns its own runtime health check. Missing deps are recorded as warnings — Slife still starts; affected MCP servers won't work.

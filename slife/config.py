@@ -512,32 +512,31 @@ class Config:
             self.mcp_config.servers.pop(name, None)
             logger.info("config_remove_mcp server=%s", name)
 
-    def set_server_disclosure(self, name: str, disclosure: str) -> None:
-        """Persist disclosure mode for an MCP server to the config file.
+    def set_server_enabled(self, name: str, enabled: bool) -> None:
+        """Persist the enabled flag for an MCP server to the config file.
 
-        Args:
-            name: Server name.
-            disclosure: 'eager' or 'lazy'.
+        enabled=True removes the flag (enabled is the default); enabled=False
+        writes ``"enabled": false``.
         """
-        raw = self._read_config("set_disclosure", name)
+        raw = self._read_config("set_enabled", name)
         if raw is None:
             return
 
         servers = raw.setdefault("mcp", {}).setdefault("servers", {})
         if name in servers:
-            if disclosure == "eager":
-                servers[name].pop("disclosure", None)
+            if enabled:
+                servers[name].pop("enabled", None)
             else:
-                servers[name]["disclosure"] = disclosure
+                servers[name]["enabled"] = False
             self._write_config(raw)
             # Update in-memory state
             assert self.mcp_config is not None  # guaranteed by __post_init__
             if name in self.mcp_config.servers:
-                if disclosure == "eager":
-                    self.mcp_config.servers[name].pop("disclosure", None)
+                if enabled:
+                    self.mcp_config.servers[name].pop("enabled", None)
                 else:
-                    self.mcp_config.servers[name]["disclosure"] = disclosure
-            logger.info("config_set_disclosure server=%s disclosure=%s", name, disclosure)
+                    self.mcp_config.servers[name]["enabled"] = False
+            logger.info("config_set_enabled server=%s enabled=%s", name, enabled)
 
     # ── REST API + CLI tool persistence ──────────────────────────────
 

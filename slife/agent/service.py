@@ -346,7 +346,6 @@ class AgentService:
                 "mcp",
                 on_server_added=self._persist_server,
                 on_server_removed=self._unpersist_server,
-                on_server_disclosure_changed=self._on_server_disclosure_changed,
                 on_server_updated=self._on_server_updated,
             )
             from slife.health import record
@@ -378,7 +377,6 @@ class AgentService:
                 "mcp",
                 on_server_added=self._persist_server,
                 on_server_removed=self._unpersist_server,
-                on_server_disclosure_changed=self._on_server_disclosure_changed,
                 on_server_updated=self._on_server_updated,
             )
             asyncio.create_task(self._auto_connect_mcp_servers())
@@ -416,7 +414,6 @@ class AgentService:
             "mcp",
             on_server_added=self._persist_server,
             on_server_removed=self._unpersist_server,
-            on_server_disclosure_changed=self._on_server_disclosure_changed,
             on_server_updated=self._on_server_updated,
         )
         if not self.is_subagent:
@@ -477,9 +474,8 @@ class AgentService:
         """Discover and register a connected plugin's tools as proxy tools.
 
         Tags each tool with the plugin's ``server`` name (the ``server__tool``
-        prefix), filters out harness-only tools (names starting with ``_`` and
-        ``mcp_call_tool`` for non-subagents), creates proxy tools, and
-        registers them.
+        prefix), filters out harness-only tools (names starting with ``__``),
+        creates proxy tools, and registers them.
 
         Args:
             name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``,
@@ -497,13 +493,11 @@ class AgentService:
         )
 
         # Harness-only: ``__`` (double-underscore) plugin tools are internal
-        # and filtered out; ``mcp_call_tool`` is excluded for the main agent
-        # (subagents need it to call external MCP tools directly).
+        # and filtered out for all agents.
         tagged = [
             {**t, "server": name}
             for t in tools
             if not t["name"].startswith("__")
-            and (self.is_subagent or t["name"] != "mcp_call_tool")
         ]
 
         proxy_tools = create_proxy_tools(self._plugins[name].client, tagged, **kwargs)
@@ -511,9 +505,9 @@ class AgentService:
             self.tool_registry.register(tool)
         logger.debug("%s_tools_registered count=%d", name, len(proxy_tools))
 
-        # MCP-specific: let REST API tools call mcp_add_server / mcp_remove_server
+        # MCP-specific: let REST API tools call mcp_set / mcp_remove
         if name == "mcp":
-            self._tool_ctx.rest_api_mcp_client = self._plugins["mcp"].client
+            self._tool_ctx.mcp_client = self._plugins["mcp"].client
 
     async def _auto_connect_mcp_servers(self) -> None:
         """Auto-connect to pre-configured MCP servers and discover
@@ -539,10 +533,10 @@ class AgentService:
                 if cfg.get("enabled") is False:
                     # Load into pool but don't connect or register tools.
                     # Server stays in pool (disabled) — no connection made.
-                    # Use mcp_set_server to enable and connect later.
+                    # Use mcp_set_enabled(name=..., enabled=true) to enable later.
                     logger.debug("mcp_server_loading_disabled name=%s", name)
                     result = await mcp_client.call_tool(
-                        "mcp_add_server",
+                        "mcp_set",
                         {
                             "name": name,
                             "command": cfg.get("command", ""),
@@ -551,7 +545,6 @@ class AgentService:
                             "url": cfg.get("url", ""),
                             "headers": cfg.get("headers"),
                             "auth": cfg.get("auth"),
-                            "activate": False,
                             "enabled": False,
                         },
                     )
@@ -560,9 +553,6 @@ class AgentService:
                         name, result,
                     )
                     return
-                disclosure = cfg.get("disclosure", "eager")
-                activate = disclosure != "lazy"
-
                 # ── os_paths: auto-detect OS-accessible paths ──────────
                 # When a file MCP has ``os_paths: true``, inject every
                 # OS-accessible path as a ``--allow-path`` arg so the LLM
@@ -579,7 +569,7 @@ class AgentService:
                     )
 
                 result = await mcp_client.call_tool(
-                    "mcp_add_server",
+                    "mcp_set",
                     {
                         "name": name,
                         "command": cfg.get("command", ""),
@@ -588,23 +578,20 @@ class AgentService:
                         "url": cfg.get("url", ""),
                         "headers": cfg.get("headers"),
                         "auth": cfg.get("auth"),
-                        "activate": activate,
                     },
                 )
                 logger.debug(
-                    "mcp_server_connected name=%s disclosure=%s result=%.200s",
-                    name, disclosure, result,
+                    "mcp_server_connected name=%s result=%.200s",
+                    name, result,
                 )
                 from slife.health import record
                 record(
                     "mcp_server", "ok",
                     key=name, value="connected",
-                    hint=f"MCP server '{name}' connected (disclosure={disclosure}).",
+                    hint=f"MCP server '{name}' connected.",
                 )
-                # Eager servers: discover and register tools immediately.
-                # Lazy servers: connected but tools not registered yet.
-                if activate:
-                    await self._discover_and_register_external_tools(server_name=name)
+                # Register tools immediately — enabled implies eager.
+                await self._discover_and_register_external_tools(server_name=name)
             except Exception as e:
                 logger.error("mcp_auto_connect_failed server=%s err=%s", name, e)
                 from slife.health import record
@@ -621,7 +608,7 @@ class AgentService:
     async def _auto_connect_rest_apis(self) -> None:
         """Auto-connect REST APIs from the ``rest_apis`` config section.
 
-        Each entry is connected via ``mcp_add_server`` with
+        Each entry is connected via ``mcp_set`` with
         anyapi-mcp-server as the backend.  The LLM never sees npx or
         anyapi-mcp-server — it only sees the generated tools prefixed
         with the API name.
@@ -661,13 +648,12 @@ class AgentService:
                     ])
 
                 result = await mcp_client.call_tool(
-                    "mcp_add_server",
+                    "mcp_set",
                     {
                         "name": name,
                         "command": "npx",
                         "args": mcp_args,
                         "description": description,
-                        "activate": True,
                     },
                 )
                 logger.debug(
@@ -686,7 +672,7 @@ class AgentService:
         Used by subagents — they share the main agent's MCP gateway, so
         external servers are already spawned.  Unlike
         :meth:`_auto_connect_mcp_servers`, this never calls
-        ``mcp_add_server`` — it only lists tools from connected servers
+        ``mcp_set`` — it only lists tools from connected servers
         and registers them as proxy tools.
 
         Each ``mcp_list_tools`` call uses its own POST SSE stream,
@@ -707,9 +693,7 @@ class AgentService:
                 if cfg.get("enabled") is False:
                     logger.debug("mcp_server_skipped name=%s reason=disabled", name)
                     return
-                disclosure = cfg.get("disclosure", "eager")
-                if disclosure != "lazy":
-                    await self._discover_and_register_external_tools(server_name=name)
+                await self._discover_and_register_external_tools(server_name=name)
             except Exception as e:
                 logger.debug("mcp_discover_existing_failed server=%s err=%s", name, e)
 
@@ -789,24 +773,8 @@ class AgentService:
         if removed:
             logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
 
-    async def _on_server_disclosure_changed(self, name: str, disclosure: str):
-        """Callback: persist disclosure change and update tool registration.
-
-        eager → immediately discover and register tools.
-        lazy → immediately unregister tools to save context.
-        """
-        logger.info("mcp_disclosure name=%s disclosure=%s", name, disclosure)
-        self.config.set_server_disclosure(name, disclosure)
-
-        if disclosure == "eager":
-            await self._discover_and_register_external_tools(server_name=name)
-        else:
-            removed = self.tool_registry.unregister_by_prefix(f"{name}__")
-            if removed:
-                logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
-
     async def _on_server_updated(self, name: str, enabled: bool):
-        """Callback: handle mcp_set_server enable/disable toggle.
+        """Callback: persist the enabled flag and update tool registration.
 
         - enabled=False → unregister tools, persist enabled=False.
         - enabled=True  → persist enabled=True, re-discover + register tools.
@@ -815,15 +783,17 @@ class AgentService:
         assert mcp_cfg is not None
 
         if not enabled:
-            # Unregister tools from agent loop
+            # Unregister tools from agent loop, persist disabled
             removed = self.tool_registry.unregister_by_prefix(f"{name}__")
             if removed:
                 logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
+            self.config.set_server_enabled(name, False)
             return
 
-        # enabled=True — re-discover and register tools
+        # enabled=True — persist, re-discover and register tools
         self.tool_registry.unregister_by_prefix(f"{name}__")
         await self._discover_and_register_external_tools(server_name=name)
+        self.config.set_server_enabled(name, True)
 
     # ── Stop helpers ────────────────────────────────────────────────────
 

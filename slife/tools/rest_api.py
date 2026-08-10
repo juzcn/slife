@@ -1,6 +1,6 @@
 """REST API management — register external APIs backed by anyapi-mcp-server.
 
-rest_api_add / rest_api_remove / rest_api_list.
+rest_api_set / rest_api_remove / rest_api_list.
 Persisted to slife.json5 → rest_apis: section.
 """
 
@@ -83,12 +83,13 @@ def get_rest_apis_summary(config_path: Path) -> str:
     return _format_rest_apis(rest_apis)
 
 
-class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
-    name = "rest_api_add"
+class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
+    name = "rest_api_set"
     category = "REST API"
     description = (
-        "Register/update an external REST API from its OpenAPI spec; generates "
-        "typed tools per endpoint. For auth, pass the credential var name "
+        "Register/update an external REST API from its OpenAPI spec (upsert, "
+        "idempotent — add + update in one call); generates typed tools per "
+        "endpoint. For auth, pass the credential var name "
         "(e.g. GITHUB_TOKEN) via credstore. Use the API's own language for `description`."
     )
     parameters = {
@@ -174,17 +175,16 @@ class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         if description:
             result_lines.append(f"  description: {description}")
 
-        mcp = getattr(ctx, "rest_api_mcp_client", None) if ctx is not None else None
+        mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is not None:
             try:
                 mcp_result = await mcp.call_tool(  # type: ignore[union-attr]
-                    "mcp_add_server",
+                    "mcp_set",
                     {
                         "name": name,
                         "command": "npx",
                         "args": mcp_args,
                         "description": description,
-                        "activate": True,
                     },
                 )
                 result_lines.append(f"\n{mcp_result}")
@@ -236,10 +236,10 @@ class RestApiRemoveTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompati
 
         logger.info("rest_api_removed name=%s", name)
 
-        mcp = getattr(ctx, "rest_api_mcp_client", None) if ctx is not None else None
+        mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is not None:
             try:
-                await mcp.call_tool("mcp_remove_server", {"name": name})  # type: ignore[union-attr]
+                await mcp.call_tool("mcp_remove", {"name": name})  # type: ignore[union-attr]
             except Exception as e:
                 logger.warning("rest_api_remove_mcp_failed name=%s err=%s", name, e)
 
@@ -267,12 +267,12 @@ class RestApiListTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibl
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# rest_api_set
+# rest_api_set_enabled
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class RestApiSet(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
-    name = "rest_api_set"
+class RestApiSetEnabledTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
+    name = "rest_api_set_enabled"
     category = "REST API"
     description = "Enable or disable a REST API. Connects/disconnects immediately."
     parameters = {
@@ -318,13 +318,13 @@ class RestApiSet(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
             entry["enabled"] = enabled
             write_config(self._config_path, raw)
 
-        mcp = getattr(ctx, "rest_api_mcp_client", None) if ctx is not None else None
+        mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is not None:
             try:
-                await mcp.call_tool("mcp_set_server", {"name": name, "enabled": enabled})  # type: ignore[union-attr]
+                await mcp.call_tool("mcp_set_enabled", {"name": name, "enabled": enabled})  # type: ignore[union-attr]
             except Exception as e:
                 logger.warning("rest_api_set_mcp_failed name=%s err=%s", name, e)
 
         state = "enabled" if enabled else "disabled"
-        logger.info("rest_api_set name=%s enabled=%s", name, enabled)
+        logger.info("rest_api_set_enabled name=%s enabled=%s", name, enabled)
         return f"[OK] REST API '{name}' {state}."

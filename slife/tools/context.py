@@ -35,9 +35,9 @@ class ToolContext:
     config: Config | None = None
     """The parsed :class:`Config` (needed by REST API / CLI tools, etc.)"""
 
-    rest_api_mcp_client: object | None = None
-    """The MCP client for REST API auto-connect (needed by
-    ``rest_api_add`` / ``rest_api_remove`` / ``rest_api_set``)."""
+    mcp_client: object | None = None
+    """The slife-mcp wrapper client — used by ``rest_api_*`` tools for
+    auto-connect and by ``check_mcp`` for live server status."""
 
     a2a_mcp_client: object | None = None
     """The mqtt plugin's MCP client — the A2A remote-mesh transport

@@ -1,9 +1,9 @@
 """CLI tool management — register external CLI commands for discovery.
 
-cli_add_tool:          register a CLI so the LLM can discover it next turn
+cli_set:               register/update a CLI so the LLM can discover it next turn
 cli_check_installed:   check whether a CLI command is installed on the system
-cli_remove_tool:       remove a registered CLI
-cli_list_tools:        list all registered CLI tools
+cli_remove:            remove a registered CLI
+cli_list:              list all registered CLI tools
 
 Registered CLIs are persisted to slife.json5 → cli_tools: section.
 These tools only manage the registry — they don't execute commands.
@@ -78,7 +78,7 @@ class CliCheckInstalled(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncomp
     you whether slife already knows about a CLI (its command, description,
     install method) without running anything on the system.
 
-    Use before re-installing, before calling cli_add_tool, or when the
+    Use before re-installing, before calling cli_set, or when the
     user asks "do I have X set up?".  Does NOT run the actual command.
     """
 
@@ -134,8 +134,8 @@ class CliCheckInstalled(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncomp
         return summary + "\n" + "\n".join(lines)
 
 
-class CliAddTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
-    """Register a CLI tool so the LLM can discover it in future turns.
+class CliSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
+    """Register or update a CLI tool so the LLM can discover it in future turns.
 
     Does NOT execute the CLI — just records its existence, what it does,
     and how to install it.
@@ -143,9 +143,9 @@ class CliAddTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
     Call this after you've verified the CLI works (--help succeeded).
     """
 
-    name = "cli_add_tool"
+    name = "cli_set"
     category = "CLI"
-    description = "Register an external CLI in slife.json5. Does not execute — records for future discovery. Use the language from the CLI's own documentation for the description — don't translate."
+    description = "Register/update an external CLI in slife.json5 (upsert, idempotent — add + update in one call). Does not execute — records for future discovery. Use the language from the CLI's own documentation for the description — don't translate."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
@@ -206,13 +206,13 @@ class CliAddTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
 class CliRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """Remove a registered CLI tool from slife.json5."""
 
-    name = "cli_remove_tool"
+    name = "cli_remove"
     category = "CLI"
     description = "Remove a CLI registration from slife.json5. Does not uninstall the command."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "CLI name, from cli_list_tools."},
+            "name": {"type": "string", "description": "CLI name, from cli_list."},
         },
         "required": ["name"],
     }
@@ -243,7 +243,7 @@ class CliRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatib
 class CliListToolsTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """List all registered CLI tools."""
 
-    name = "cli_list_tools"
+    name = "cli_list"
     category = "CLI"
     description = "List registered CLI tools with descriptions, commands, and install instructions."
     parameters: ClassVar[dict] = {
@@ -262,19 +262,19 @@ class CliListToolsTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# cli_set_tool
+# cli_set_enabled
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class CliSetTool(_ConfigPathMixin, Tool):
-    name = "cli_set_tool"
+class CliSetEnabledTool(_ConfigPathMixin, Tool):
+    name = "cli_set_enabled"
     category = "CLI"
     description = "Enable or disable a registered CLI tool. Takes effect after restart."
 
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "CLI tool name, from cli_list_tools."},
+            "name": {"type": "string", "description": "CLI tool name, from cli_list."},
             "enabled": {"type": "boolean", "description": "Enable or disable."},
         },
         "required": ["name", "enabled"],
@@ -313,5 +313,5 @@ class CliSetTool(_ConfigPathMixin, Tool):
             write_config(self._config_path, raw)
 
         state = "enabled" if enabled else "disabled"
-        logger.info("cli_set_tool name=%s enabled=%s", name, enabled)
+        logger.info("cli_set_enabled name=%s enabled=%s", name, enabled)
         return f"[OK] CLI tool '{name}' {state}. Restart for the change to take effect."

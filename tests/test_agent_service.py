@@ -148,6 +148,30 @@ class TestAgentServiceMCPLifecycle:
         await service.stop_mcp()
         assert service._plugins["mcp"].client is None
 
+    @pytest.mark.asyncio
+    async def test_on_server_updated_disabled_persists(self, sample_config):
+        """_on_server_updated(enabled=False) unregisters tools and persists."""
+        service = AgentService(sample_config)
+        with patch.object(service.config, "set_server_enabled") as mock_set, \
+             patch.object(service.tool_registry, "unregister_by_prefix", return_value=3) as mock_unreg:
+            await service._on_server_updated("filesystem", False)
+
+            mock_unreg.assert_called_once_with("filesystem__")
+            mock_set.assert_called_once_with("filesystem", False)
+
+    @pytest.mark.asyncio
+    async def test_on_server_updated_enabled_persists(self, sample_config):
+        """_on_server_updated(enabled=True) re-discovers and persists."""
+        service = AgentService(sample_config)
+        with patch.object(service.config, "set_server_enabled") as mock_set, \
+             patch.object(service.tool_registry, "unregister_by_prefix", return_value=0) as mock_unreg, \
+             patch.object(service, "_discover_and_register_external_tools", AsyncMock()) as mock_disc:
+            await service._on_server_updated("filesystem", True)
+
+            mock_unreg.assert_called_once_with("filesystem__")
+            mock_disc.assert_awaited_once_with(server_name="filesystem")
+            mock_set.assert_called_once_with("filesystem", True)
+
 
 # ── AgentService memory ─────────────────────────────────────────────────────
 

@@ -43,26 +43,25 @@ def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
         and a.url == b.url
         and a.headers == b.headers
         and a.enabled == b.enabled
-        and a.active == b.active
         and a.auth == b.auth
     )
 
 
 @mcp.tool(
-    name="mcp_add_server",
+    name="mcp_set",
     description=(
-        "Add/update an external MCP server (upsert). "
-        "stdio: `command` + `args` (use the binary name — npx, uvx, python; "
-        "do NOT wrap in `cmd /c` unless the platform type is native-Windows). "
-        "http: `url` (SSE or streamable, auto-detected). "
+        "Add/update an external MCP server (upsert, idempotent — add + update "
+        "in one call). stdio: `command` + `args` (use the binary name — npx, "
+        "uvx, python; do NOT wrap in `cmd /c` unless the platform type is "
+        "native-Windows). http: `url` (SSE or streamable, auto-detected). "
         "`env`/`headers`: use ${VAR} refs for secrets, never plaintext — run "
-        "'credstore set <KEY>' first. "
-        "activate=false connects without loading tools (lazy). "
+        "'credstore set <KEY>' first. `enabled` sets the initial state; to "
+        "toggle enable/disable at runtime use mcp_set_enabled. "
         "Write `description` in the server's own language — don't translate. "
         "Add `source` provenance when from a known registry."
     ),
 )
-async def mcp_add_server(
+async def mcp_set(
     name: str,
     command: str = "",
     args: list[str] | None = None,
@@ -70,16 +69,15 @@ async def mcp_add_server(
     url: str = "",
     headers: dict[str, str] | None = None,
     description: str = "",
-    activate: bool = True,
     enabled: bool = True,
     source: dict | None = None,
     auth: dict | None = None,
 ) -> str:
     """Add or update an MCP server (upsert — idempotent).
 
-    If a server with *name* already exists and its config is identical,
-    returns ``already_connected`` without restarting.  If config differs,
-    the server is restarted with the new settings.
+    Identical config → ``already_connected``, no restart.  Changed config →
+    restart.  ``enabled`` sets the initial state; use ``mcp_set_enabled`` to
+    toggle enable/disable at runtime.
     """
     if not command and not url:
         return error_json(
@@ -95,7 +93,6 @@ async def mcp_add_server(
         url=url,
         headers=headers,
         description=description,
-        active=activate,
         enabled=enabled,
         auth=auth,
     )
@@ -138,17 +135,61 @@ async def mcp_add_server(
                 server=name,
             )
     except Exception as e:
-        logger.exception("mcp_add_failed server=%s", name)
+        logger.exception("mcp_set_failed server=%s", name)
         return error_json(str(e), server=name)
 
 
 @mcp.tool(
-    name="mcp_remove_server",
+    name="mcp_set_enabled",
+    description=(
+        "Enable or disable an existing MCP server. enabled=true reconnects and "
+        "loads tools; enabled=false disconnects and unloads tools. This toggles "
+        "only the enabled flag — distinct from mcp_set, which configures the "
+        "server definition."
+    ),
+)
+async def mcp_set_enabled(name: str, enabled: bool) -> str:
+    """Toggle enable/disable on an existing MCP server."""
+    existing = _pool.get_server(name)
+    if existing is None:
+        return error_json(
+            f"Server '{name}' not found. Use mcp_set to add it first.",
+            server=name,
+        )
+    existing.config.enabled = enabled
+    if enabled:
+        if existing.status != ServerStatus.CONNECTED:
+            await existing.connect()
+        if existing.status == ServerStatus.CONNECTED:
+            tools = existing.list_tools()
+            return ok_json(
+                status="connected",
+                server=name,
+                transport=existing.config.transport,
+                tool_count=len(tools),
+                tools=[t["name"] for t in tools],
+                note="Server enabled.",
+            )
+        return error_json(
+            existing.error or "Unknown error",
+            status=existing.status.value,
+            server=name,
+        )
+    await _pool.disconnect_server(name)
+    return ok_json(
+        status="disabled",
+        server=name,
+        note="Server disabled. Re-enable with mcp_set_enabled(name=..., enabled=true).",
+    )
+
+
+@mcp.tool(
+    name="mcp_remove",
     description=(
         "Remove an MCP server: stop process, unregister tools, persist removal to config."
     ),
 )
-async def mcp_remove_server(name: str) -> str:
+async def mcp_remove(name: str) -> str:
     """Stop and remove an MCP server.
 
     Args:
@@ -163,26 +204,26 @@ async def mcp_remove_server(name: str) -> str:
 
 
 @mcp.tool(
-    name="mcp_list_servers",
+    name="mcp_list",
     description=(
         "List configured MCP servers (static config: transport, command/url, "
-        "enabled, disclosure). For live status use mcp_connection_status."
+        "enabled). For live status use check_mcp."
     ),
 )
-async def mcp_list_servers() -> str:
+async def mcp_list() -> str:
     """List configured external MCP servers (static config view)."""
     servers = _pool.list_configured()
     return json.dumps(servers, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
-    name="mcp_connection_status",
+    name="__mcp_connection_status",
     description=(
         "Live connection status of MCP servers: running/stopped, tool counts, "
-        "errors, disclosure mode."
+        "errors. Harness-only — consumed by the check_mcp tool."
     ),
 )
-async def mcp_connection_status() -> str:
+async def __mcp_connection_status() -> str:
     """Report live connection status of all external MCP servers."""
     servers = _pool.list_servers()
     return json.dumps(servers, ensure_ascii=False, indent=2)
@@ -191,14 +232,14 @@ async def mcp_connection_status() -> str:
 @mcp.tool(
     name="mcp_list_tools",
     description=(
-        "List an MCP server's tools (even if inactive). Names are prefixed server__tool."
+        "List a connected MCP server's tools. Names are prefixed server__tool."
     ),
 )
 async def mcp_list_tools(server: str) -> str:
     """List tools from an MCP server.
 
     Args:
-        server: Server name (required). Use mcp_list_servers to discover server names.
+        server: Server name (required). Use mcp_list to discover server names.
     """
     try:
         tools = _pool.list_all_tools(server_name=server)
@@ -213,12 +254,14 @@ async def mcp_list_tools(server: str) -> str:
 
 
 @mcp.tool(
-    name="mcp_call_tool",
+    name="__mcp_call_tool",
     description=(
-        "Call a tool on a connected MCP server. arguments = JSON object string."
+        "Call a tool on a connected MCP server (harness-only — invoked by the "
+        "server__tool proxies, not directly by the agent). "
+        "arguments = JSON object string."
     ),
 )
-async def mcp_call_tool(
+async def __mcp_call_tool(
     server: str,
     tool_name: str,
     arguments: str = "{}",
@@ -239,99 +282,6 @@ async def mcp_call_tool(
 
     result = await _pool.call_tool(server, tool_name, args_dict)
     return result
-
-
-@mcp.tool(
-    name="mcp_set_server",
-    description=(
-        "Enable/disable an MCP server or set disclosure mode (eager = tools loaded; "
-        "lazy = connected but tools unloaded). Config preserved."
-    ),
-)
-async def mcp_set_server(
-    name: str,
-    enabled: bool | None = None,
-    disclosure: str | None = None,
-) -> str:
-    conn = _pool.get_server(name)
-    if conn is None:
-        return error_json(
-            f"Server '{name}' not found. Use mcp_add_server to add it first.",
-            server=name,
-        )
-
-    changed: list[str] = []
-
-    # ── Handle enable / disable ──────────────────────────────────────
-    if enabled is True:
-        conn.config.enabled = True
-        changed.append("enabled")
-        try:
-            if conn.status.value != "connected":
-                await conn.connect()
-
-            if conn.status.value == "connected":
-                tools = conn.list_tools()
-                return ok_json(
-                    status="connected" if "enabled" in changed else "already_connected",
-                    server=name,
-                    tool_count=len(tools),
-                    tools=[t["name"] for t in tools],
-                    changed=changed,
-                )
-            else:
-                return error_json(
-                    conn.error or "Unknown error",
-                    status=conn.status.value,
-                    server=name,
-                )
-        except Exception as e:
-            logger.exception("mcp_set_enable_failed server=%s", name)
-            return error_json(str(e), server=name)
-    elif enabled is False:
-        conn.config.enabled = False
-        changed.append("disabled")
-        await _pool.disconnect_server(name)
-
-    # ── Handle disclosure change ─────────────────────────────────────
-    if disclosure == "eager":
-        if not conn.config.enabled:
-            return error_json(
-                "Cannot set eager disclosure on a disabled server. Enable it first.",
-                server=name,
-            )
-        result = await _pool.activate_server(name)
-        result["disclosure"] = "eager"
-        result["changed"] = changed + ["disclosure"]
-        return json.dumps(result, ensure_ascii=False, indent=2)
-    elif disclosure == "lazy":
-        conn.set_active(False)
-        changed.append("disclosure")
-        return ok_json(
-            server=name,
-            disclosure="lazy",
-            tool_count=conn.tool_count,
-            changed=changed,
-            note="Tools unregistered. Server stays connected — set disclosure=eager to reload.",
-        )
-    elif disclosure is not None:
-        return error_json(
-            f"Invalid disclosure value: '{disclosure}'. Must be 'eager' or 'lazy'.",
-            server=name,
-        )
-
-    if not changed:
-        return ok_json(
-            status="unchanged",
-            server=name,
-            note="No changes requested. Pass enabled=true/false or disclosure=eager/lazy.",
-        )
-
-    return ok_json(
-        status="ok",
-        server=name,
-        changed=changed,
-    )
 
 
 # ── Entry point ──────────────────────────────────────────────────────

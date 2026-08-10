@@ -26,9 +26,9 @@
 | C6 | WeChat dedup key (`from_user_id + context_token`) can **drop real messages** (`context_token` is per-conversation, so 2nd+ messages share the key) | OPEN | `plugins/wechat/server.py:110-134` |
 | C7 | Approval dialog "Deny (Esc)" is intercepted by the App's priority `escape → cancel` binding — the modal's `on_key` never fires | OPEN | `ui/approval_dialog.py:129-136`, `ui/app.py:184` |
 | C8 (D2) | MCP dispatch centralized behind `ProxyRoute` but still **keyed on the raw server name**; nothing reserves `"mcp"`/`"memdb"`/`"wechat"`, so an external server with that name misroutes | PARTIAL | `mcp/tool_adapter.py:253-265` |
-| C9 (D4) | Harness-only tool filtering uses **three inconsistent mechanisms** (`_`-prefix, a hardcoded `mcp_call_tool` exception, a `"harness-only"` description marker) | PARTIAL | `service.py:261,441` |
+| C9 (D4) | Harness-only tool filtering uses **inconsistent mechanisms** (`_`-prefix, `__`-prefix, a `"harness-only"` description marker); the hardcoded `mcp_call_tool` exception was removed 2026-08-10 (now a `__`-prefixed harness tool, filtered for all agents) | PARTIAL | `plugins.py:130`, `service.py:308,505` |
 | N1 (D3) | Config **write race** persists — no file lock, two writers (Config methods + raw `read/write_config`), concurrent `asyncio.gather` tools clobber the file and stale the in-memory snapshot | PARTIAL | `tools/_config_io.py`, `config.py` |
-| N2 (D6) | Tool naming inconsistent: `model_list` / `cli_list_tools` / `rest_api_list` / `mcp_list_servers`; README is a third naming layer | OPEN | `tools/` |
+| ~~N2 (D6)~~ ✅ | Tool naming unified 2026-08-10: all categories use `X_list` / `X_set` (upsert = add+update) / `X_remove` (+ `X_set_enabled` for toggles); `add` removed; README aligned | FIXED | `tools/`, `plugins/mcp/` |
 | N3 (D7) | `switch_to_nvidia_free` **always errors out of the box** (hardcodes provider `"nvidia"` + `nim_*` tool names not re-verified against `nvidia-nim-mcp v2.1.2`); docs/installers still say `bunx`, config runs `npx` | OPEN | `tools/models.py:571,593,668` |
 | N4 (B5) | Secret sanitizer is a known-shape allowlist — **no exact-match denylist** from credstore for the user's real secrets | OPEN | `logfmt.py` |
 | ~~N5 (B9)~~ ✅ | Residual Chinese in tool output — translated to English (also the 3 sibling memdb status strings) | FIXED | — |

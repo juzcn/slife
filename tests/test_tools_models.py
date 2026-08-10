@@ -1,4 +1,4 @@
-"""Tests for model management tools — model_list, model_add, model_remove, model_switch."""
+"""Tests for model management tools — model_list, model_set, model_remove, model_switch."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -7,7 +7,7 @@ import pytest
 from pathlib import Path
 
 from slife.tools.models import (
-    ListModelsTool, AddModelTool, RemoveModelTool, SwitchModelTool,
+    ListModelsTool, SetModelTool, RemoveModelTool, SwitchModelTool,
 )
 
 
@@ -68,14 +68,14 @@ class TestListModelsTool:
         assert "No models" in result
 
 
-# ── AddModelTool ──────────────────────────────────────────────────────
+# ── SetModelTool ──────────────────────────────────────────────────────
 
 
-class TestAddModelTool:
+class TestSetModelTool:
     @pytest.mark.asyncio
     async def test_add_to_existing_provider(self, tmp_path):
         p = _make_path(tmp_path)
-        tool = AddModelTool(config_path=p)
+        tool = SetModelTool(config_path=p)
         result = await tool.execute(
             provider="test", model="new-model", name="New Model",
             reasoning=True, input=["text", "image"], context_window=50000, max_tokens=2048,
@@ -95,7 +95,7 @@ class TestAddModelTool:
     @pytest.mark.asyncio
     async def test_create_new_provider(self, tmp_path):
         p = _make_path(tmp_path)
-        tool = AddModelTool(config_path=p)
+        tool = SetModelTool(config_path=p)
         result = await tool.execute(
             provider="bailian", model="qwen-max", name="Qwen Max",
             base_url="https://bailian.api/v1", api_key="${BAILIAN_KEY}",
@@ -111,14 +111,14 @@ class TestAddModelTool:
     @pytest.mark.asyncio
     async def test_new_provider_requires_base_url(self, tmp_path):
         p = _make_path(tmp_path)
-        tool = AddModelTool(config_path=p)
+        tool = SetModelTool(config_path=p)
         result = await tool.execute(provider="newp", model="m", name="M")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_upsert_replaces_existing(self, tmp_path):
         p = _make_path(tmp_path)
-        tool = AddModelTool(config_path=p)
+        tool = SetModelTool(config_path=p)
         result = await tool.execute(provider="test", model="test-model", name="Updated Test Model")
         assert "Updated" in result
 
@@ -130,7 +130,7 @@ class TestAddModelTool:
 
     @pytest.mark.asyncio
     async def test_no_config_path(self, tmp_path):
-        tool = AddModelTool(config_path=None)
+        tool = SetModelTool(config_path=None)
         result = await tool.execute(provider="t", model="m", name="N")
         assert "Error" in result
 

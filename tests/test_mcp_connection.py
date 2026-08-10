@@ -29,7 +29,6 @@ class TestServerConfig:
         assert cfg.args == []
         assert cfg.env is None
         assert cfg.description == ""
-        assert cfg.active is True
 
     def test_full_config(self):
         cfg = ServerConfig(
@@ -38,12 +37,10 @@ class TestServerConfig:
             args=["-y", "@modelcontextprotocol/server-filesystem"],
             env={"HOME": "/tmp"},
             description="My filesystem server",
-            active=False,
         )
         assert cfg.command == "npx"
         assert len(cfg.args) == 2
         assert cfg.env == {"HOME": "/tmp"}
-        assert cfg.active is False
 
 
 # ── ServerStatus ─────────────────────────────────────────────────────────────
@@ -71,22 +68,8 @@ class TestMCPServerConnectionInit:
 
         assert conn.config is cfg
         assert conn.status == ServerStatus.DISCONNECTED
-        assert conn.active is True
         assert conn.tool_count == 0
         assert conn.error is None
-
-    def test_respects_config_active(self):
-        cfg = ServerConfig(name="test", command="echo", active=False)
-        conn = MCPServerConnection(cfg)
-        assert conn.active is False
-
-    def test_set_active_toggle(self):
-        cfg = ServerConfig(name="test", command="echo")
-        conn = MCPServerConnection(cfg)
-        conn.set_active(False)
-        assert conn.active is False
-        conn.set_active(True)
-        assert conn.active is True
 
 
 class TestMCPServerConnectionListTools:
@@ -167,7 +150,6 @@ class TestConnectionPoolListServers:
         assert s["name"] == "srv1"
         assert s["status"] == "disconnected"
         assert s["tool_count"] == 2
-        assert s["active"] is True
         assert s["description"] == "First"
 
 
@@ -178,7 +160,6 @@ class TestConnectionPoolListConfigured:
         pool = ConnectionPool()
         cfg = ServerConfig(
             name="srv1", command="cmd1", args=["-a"], description="First",
-            active=False,
         )
         conn = MCPServerConnection(cfg)
         conn._tools_cache = [{"name": "t1"}, {"name": "t2"}]
@@ -195,9 +176,8 @@ class TestConnectionPoolListConfigured:
         assert s["args"] == ["-a"]
         assert s["url"] == ""
         assert s["enabled"] is True
-        assert s["disclosure"] == "lazy"  # active=False → lazy
         assert s["description"] == "First"
-        # No live state — those belong to list_servers / mcp_connection_status
+        # No live state — those belong to list_servers / __mcp_connection_status
         assert "status" not in s
         assert "state" not in s
         assert "tool_count" not in s
@@ -242,100 +222,6 @@ class TestConnectionPoolListAllTools:
         assert len(tools) == 1
         assert tools[0]["server"] == "filesystem"
         assert tools[0]["full_name"] == "filesystem__read_file"
-
-
-class TestConnectionPoolCheckServer:
-    """Tests for check_server."""
-
-    def test_not_found(self):
-        pool = ConnectionPool()
-        result = pool.check_server("ghost")
-        assert result["status"] == "not_found"
-
-    def test_found(self):
-        pool = ConnectionPool()
-        cfg = ServerConfig(name="test", command="cmd", description="A test server")
-        conn = MCPServerConnection(cfg)
-        pool._connections["test"] = conn
-
-        result = pool.check_server("test")
-        assert result["name"] == "test"
-        assert result["status"] == "disconnected"
-        assert result["active"] is True
-        assert result["description"] == "A test server"
-
-
-class TestConnectionPoolDeactivateServer:
-    """Tests for deactivate_server / activate_server."""
-
-    @pytest.mark.asyncio
-    async def test_deactivate_not_found(self):
-        pool = ConnectionPool()
-        result = await pool.deactivate_server("ghost")
-        assert result["status"] == "error"
-
-    @pytest.mark.asyncio
-    async def test_deactivate_already_inactive(self):
-        pool = ConnectionPool()
-        cfg = ServerConfig(name="test", command="cmd", active=False)
-        conn = MCPServerConnection(cfg)
-        pool._connections["test"] = conn
-
-        result = await pool.deactivate_server("test")
-        assert result["status"] == "already_inactive"
-
-    @pytest.mark.asyncio
-    async def test_deactivate_success(self):
-        pool = ConnectionPool()
-        cfg = ServerConfig(name="test", command="cmd", active=True)
-        conn = MCPServerConnection(cfg)
-        pool._connections["test"] = conn
-
-        result = await pool.deactivate_server("test")
-        assert result["status"] == "deactivated"
-        assert not conn.active
-
-    @pytest.mark.asyncio
-    async def test_activate_not_found(self):
-        pool = ConnectionPool()
-        result = await pool.activate_server("ghost")
-        assert result["status"] == "error"
-
-    @pytest.mark.asyncio
-    async def test_activate_already_active(self):
-        pool = ConnectionPool()
-        cfg = ServerConfig(name="test", command="cmd")
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
-        conn._tools_cache = [{"name": "t1"}]
-        pool._connections["test"] = conn
-
-        result = await pool.activate_server("test")
-        assert result["status"] == "already_active"
-
-    @pytest.mark.asyncio
-    async def test_activate_success(self):
-        pool = ConnectionPool()
-        cfg = ServerConfig(name="test", command="cmd", active=False)
-        conn = MCPServerConnection(cfg)
-        conn._status = ServerStatus.CONNECTED
-        conn._tools_cache = [{"name": "t1"}]
-        pool._connections["test"] = conn
-
-        result = await pool.activate_server("test")
-        assert result["status"] == "activated"
-        assert conn.active
-
-    @pytest.mark.asyncio
-    async def test_activate_not_connected(self):
-        pool = ConnectionPool()
-        cfg = ServerConfig(name="test", command="cmd")
-        conn = MCPServerConnection(cfg)
-        # Status is DISCONNECTED by default
-        pool._connections["test"] = conn
-
-        result = await pool.activate_server("test")
-        assert result["status"] == "error"
 
 
 class TestConnectionPoolCallTool:

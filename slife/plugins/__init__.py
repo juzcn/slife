@@ -18,7 +18,7 @@ Built-in plugins
 External (non‑Python) MCP servers
   npm‑/uvx‑based servers (filesystem, fetch, serper, etc.) are NOT
   Python plugins — they are configured in ``slife.json5`` →
-  ``mcp.servers`` and connected via the ``mcp_add_server`` tool.
+  ``mcp.servers`` and connected via the ``mcp_set`` tool.
 """
 
 import pkgutil

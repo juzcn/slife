@@ -19,14 +19,14 @@ class TestCreateToolsFromConfig:
         assert "run_python_script" in names
         assert "skill_list" in names
         assert "skill_use" in names
-        assert "skill_add" in names
+        assert "skill_set" in names
         assert "skill_remove" in names
         assert "config_env_set" in names
         assert "config_env_get" in names
         assert "config_env_remove" in names
-        assert "cli_add_tool" in names
-        assert "cli_remove_tool" in names
-        assert "cli_list_tools" in names
+        assert "cli_set" in names
+        assert "cli_remove" in names
+        assert "cli_list" in names
 
     def test_empty_list_same_as_none(self):
         """Empty overrides list == all tools discovered."""

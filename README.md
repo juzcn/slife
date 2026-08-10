@@ -128,9 +128,9 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 |----------|-------|
 | System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
-| Skills | `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set`, `check_skills_dir` |
-| CLI | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |
-| REST API | `rest_api_list`, `rest_api_add`, `rest_api_remove`, `rest_api_set` |
+| Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
+| CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled`, `cli_check_installed` |
+| REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | A2A | native, uniform `a2a_*` — task routing (auto-routed local ↔ remote) + mesh discovery (`a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`) + subagent lifecycle (`spawn_subagent`, `list_subagents`, `stop_subagent`) |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |

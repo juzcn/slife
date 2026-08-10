@@ -528,13 +528,13 @@ class TestCheckMcpTool:
         with patch("slife.tools.system.check_mcp",
                    new=AsyncMock(return_value=[
                        {"component": "mcp_servers", "level": "ok",
-                        "key": "server_a", "value": "connected [eager]",
+                        "key": "server_a", "value": "connected (5 tools loaded)",
                         "hint": "all good"},
                    ])):
             result = await tool.execute()
             parsed = json.loads(result)
             assert parsed[0]["component"] == "mcp_servers"
-            assert parsed[0]["value"] == "connected [eager]"
+            assert parsed[0]["value"] == "connected (5 tools loaded)"
 
     @pytest.mark.asyncio
     async def test_execute_forwards_server_param(self):
@@ -542,18 +542,17 @@ class TestCheckMcpTool:
         mock = AsyncMock(return_value=[])
         with patch("slife.tools.system.check_mcp", new=mock):
             await tool.execute(server="github")
-        mock.assert_awaited_once_with(server="github")
+        mock.assert_awaited_once_with(server="github", client=None)
 
 
-class _FakeMcpStatusTool:
-    """Minimal stand-in for the proxied mcp_connection_status tool."""
-
-    name = "mcp_connection_status"
+class _FakeMcpClient:
+    """Minimal stand-in for the slife-mcp wrapper client."""
 
     def __init__(self, payload):
         self._payload = payload
 
-    async def execute(self, **kwargs):
+    async def call_tool(self, name, arguments=None):
+        assert name == "__mcp_connection_status"
         return json.dumps(self._payload)
 
 
@@ -561,10 +560,8 @@ class TestCheckMcpFunction:
     """Tests for check_mcp() server filtering."""
 
     @staticmethod
-    def _registry(payload):
-        reg = MagicMock()
-        reg.list_tools.return_value = [_FakeMcpStatusTool(payload)]
-        return reg
+    def _client(payload):
+        return _FakeMcpClient(payload)
 
     @staticmethod
     def _server(name, state="running"):
@@ -576,23 +573,18 @@ class TestCheckMcpFunction:
             "tool_count": 2 if state == "running" else 0,
             "error": "" if state == "running" else "boom",
             "transport": "stdio",
-            "active": True,
         }
 
     @pytest.mark.asyncio
     async def test_checks_all_by_default(self):
         payload = [self._server("fs"), self._server("github", state="stopped")]
-        with patch("slife.tools.registry.get_registry",
-                   return_value=self._registry(payload)):
-            entries = await check_mcp()
+        entries = await check_mcp(client=self._client(payload))
         assert [e["key"] for e in entries] == ["fs", "github"]
 
     @pytest.mark.asyncio
     async def test_checks_single_server(self):
         payload = [self._server("fs"), self._server("github", state="stopped")]
-        with patch("slife.tools.registry.get_registry",
-                   return_value=self._registry(payload)):
-            entries = await check_mcp(server="github")
+        entries = await check_mcp(server="github", client=self._client(payload))
         assert len(entries) == 1
         assert entries[0]["key"] == "github"
         assert entries[0]["level"] == "warning"
@@ -600,9 +592,7 @@ class TestCheckMcpFunction:
     @pytest.mark.asyncio
     async def test_server_not_found(self):
         payload = [self._server("fs")]
-        with patch("slife.tools.registry.get_registry",
-                   return_value=self._registry(payload)):
-            entries = await check_mcp(server="nope")
+        entries = await check_mcp(server="nope", client=self._client(payload))
         assert len(entries) == 1
         assert entries[0]["key"] == "nope"
         assert entries[0]["value"] == "not_found"
@@ -610,8 +600,12 @@ class TestCheckMcpFunction:
 
     @pytest.mark.asyncio
     async def test_server_not_found_when_no_servers(self):
-        with patch("slife.tools.registry.get_registry",
-                   return_value=self._registry([])):
-            entries = await check_mcp(server="nope")
+        entries = await check_mcp(server="nope", client=self._client([]))
         assert len(entries) == 1
         assert entries[0]["value"] == "not_found"
+
+    @pytest.mark.asyncio
+    async def test_client_unavailable(self):
+        entries = await check_mcp()
+        assert entries[0]["value"] == "client_unavailable"
+        assert entries[0]["level"] == "warning"

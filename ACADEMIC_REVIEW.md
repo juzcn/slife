@@ -134,7 +134,7 @@ Red-team the three inbound channels (tool output, WeChat, MQTT) for prompt injec
 
 1. **Unconditional recording** of conversations — including third parties on WeChat — requires a retention/deletion policy and, for any study, participant consent; the diary is currently plaintext at rest.
 2. **WeChat automation** via an unofficial bridge risks violating platform ToS; a paper should disclose the mechanism and its fragility, and treat it as one instance of a generic IM-channel adapter.
-3. **Skill supply chain:** `add_skill` installs and later executes third-party markdown+archives — the same risk class Unit 42 has documented for OpenClaw's marketplace. At minimum: provenance display (exists: `_meta.json`), and a discussion section.
+3. **Skill supply chain:** `skill_set` installs and later executes third-party markdown+archives — the same risk class Unit 42 has documented for OpenClaw's marketplace. At minimum: provenance display (exists: `_meta.json`), and a discussion section.
 4. **Approval gate defaults off** for shell execution; any deployment study must state what users were told.
 
 ---

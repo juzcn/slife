@@ -33,11 +33,11 @@ class TestClassify:
         assert _classify("a2a_broadcast") == "Agent Communication (A2A)"
 
     def test_cli_tools(self):
-        assert _classify("cli_add_tool") == "CLI"
-        assert _classify("cli_list_tools") == "CLI"
+        assert _classify("cli_set") == "CLI"
+        assert _classify("cli_list") == "CLI"
 
     def test_rest_api_tools(self):
-        assert _classify("rest_api_add") == "REST API"
+        assert _classify("rest_api_set") == "REST API"
         assert _classify("rest_api_list") == "REST API"
 
     def test_config_tools(self):
@@ -45,12 +45,11 @@ class TestClassify:
         assert _classify("native_tool_set") == "Config"
 
     def test_skill_tools(self):
-        assert _classify("skill_set") == "Skills"
+        assert _classify("skill_set_enabled") == "Skills"
         assert _classify("skill_list") == "Skills"
         assert _classify("skill_use") == "Skills"
-        assert _classify("skill_add") == "Skills"
+        assert _classify("skill_set") == "Skills"
         assert _classify("skill_remove") == "Skills"
-        assert _classify("skill_check_dir") == "Skills"
 
     def test_system_tools(self):
         assert _classify("check_memdb") == "System"

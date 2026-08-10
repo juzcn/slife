@@ -61,7 +61,7 @@ async def main(allowed_dir: str | None = None):
     # ── 3. Add filesystem MCP server ──────────────────────────────
     print("3. Adding filesystem MCP server...")
     result = await client.call_tool(
-        "mcp_add_server",
+        "mcp_set",
         {
             "name": "fs",
             "command": "npx",
@@ -84,7 +84,7 @@ async def main(allowed_dir: str | None = None):
     # ── 5. Call list_allowed_directories ──────────────────────────
     print("5. Calling list_allowed_directories...")
     result = await client.call_tool(
-        "mcp_call_tool",
+        "__mcp_call_tool",
         {
             "server": "fs",
             "tool_name": "list_allowed_directories",
@@ -97,7 +97,7 @@ async def main(allowed_dir: str | None = None):
     # ── 6. Call list_directory ────────────────────────────────────
     print("6. Calling list_directory...")
     result = await client.call_tool(
-        "mcp_call_tool",
+        "__mcp_call_tool",
         {
             "server": "fs",
             "tool_name": "list_directory",
@@ -111,13 +111,13 @@ async def main(allowed_dir: str | None = None):
 
     # ── 7. Server status ──────────────────────────────────────────
     print("7. Server status:")
-    result = await client.call_tool("mcp_list_servers", {})
+    result = await client.call_tool("mcp_list", {})
     print(f"   {result}")
     print()
 
     # ── 8. Remove server ──────────────────────────────────────────
     print("8. Removing filesystem server...")
-    result = await client.call_tool("mcp_remove_server", {"name": "fs"})
+    result = await client.call_tool("mcp_remove", {"name": "fs"})
     print(f"   Result: {result}")
     print()
 

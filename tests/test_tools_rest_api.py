@@ -1,4 +1,4 @@
-"""Tests for slife.tools.rest_api — RestApiAddTool, RestApiRemoveTool, RestApiListTool, RestApiSet."""
+"""Tests for slife.tools.rest_api — RestApiSetTool, RestApiRemoveTool, RestApiListTool, RestApiSetEnabledTool."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -11,10 +11,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from slife.tools.rest_api import (
-    RestApiAddTool,
+    RestApiSetTool,
     RestApiRemoveTool,
     RestApiListTool,
-    RestApiSet,
+    RestApiSetEnabledTool,
     get_rest_apis_summary,
     _rest_api_section,
 )
@@ -149,16 +149,16 @@ class TestGetRestApisSummary:
         assert "github" in result
 
 
-# ── RestApiAddTool ────────────────────────────────────────────────────────
+# ── RestApiSetTool ────────────────────────────────────────────────────────
 
 
-class TestRestApiAddTool:
-    """Tests for RestApiAddTool."""
+class TestRestApiSetTool:
+    """Tests for RestApiSetTool."""
 
     @pytest.mark.asyncio
     async def test_metadata(self):
-        tool = RestApiAddTool()
-        assert tool.name == "rest_api_add"
+        tool = RestApiSetTool()
+        assert tool.name == "rest_api_set"
         assert "name" in tool.parameters["required"]
         assert "spec_url" in tool.parameters["required"]
         assert "base_url" in tool.parameters["required"]
@@ -166,7 +166,7 @@ class TestRestApiAddTool:
     @pytest.mark.asyncio
     async def test_add_new_api(self, temp_config):
         """Adding a new REST API writes to config and returns success."""
-        tool = RestApiAddTool(config_path=temp_config)
+        tool = RestApiSetTool(config_path=temp_config)
         result = await tool.execute(
             name="github",
             spec_url="https://api.github.com/openapi.json",
@@ -184,7 +184,7 @@ class TestRestApiAddTool:
     @pytest.mark.asyncio
     async def test_add_with_api_key(self, temp_config):
         """Adding with api_key stores the credential reference."""
-        tool = RestApiAddTool(config_path=temp_config)
+        tool = RestApiSetTool(config_path=temp_config)
         result = await tool.execute(
             name="protected",
             spec_url="https://example.com/openapi.json",
@@ -204,7 +204,7 @@ class TestRestApiAddTool:
                 "github": {"spec_url": "https://api.github.com/spec", "base_url": "https://api.github.com"},
             }
         })
-        tool = RestApiAddTool(config_path=temp_config)
+        tool = RestApiSetTool(config_path=temp_config)
         result = await tool.execute(
             name="github",
             spec_url="https://api.github.com/spec",
@@ -215,7 +215,7 @@ class TestRestApiAddTool:
     @pytest.mark.asyncio
     async def test_add_rejects_non_http_scheme(self, temp_config):
         """REVIEW S2: file:// (and other non-http) specs are rejected."""
-        tool = RestApiAddTool(config_path=temp_config)
+        tool = RestApiSetTool(config_path=temp_config)
         with pytest.raises(ValueError, match="URL with a host"):
             await tool.execute(
                 name="evil",
@@ -226,7 +226,7 @@ class TestRestApiAddTool:
     @pytest.mark.asyncio
     async def test_add_rejects_url_without_host(self, temp_config):
         """REVIEW S2: a bare string with no http(s) host is rejected."""
-        tool = RestApiAddTool(config_path=temp_config)
+        tool = RestApiSetTool(config_path=temp_config)
         with pytest.raises(ValueError, match="URL with a host"):
             await tool.execute(
                 name="bare",
@@ -243,8 +243,8 @@ class TestRestApiAddTool:
 
         try:
             from slife.tools.context import ToolContext
-            tool = RestApiAddTool(config_path=temp_config)
-            tool._ctx = ToolContext(rest_api_mcp_client=mock_client, config=None)
+            tool = RestApiSetTool(config_path=temp_config)
+            tool._ctx = ToolContext(mcp_client=mock_client, config=None)
             result = await tool.execute(
                 name="github",
                 spec_url="https://api.github.com/openapi.json",
@@ -286,7 +286,7 @@ class TestRestApiRemoveTool:
 
     @pytest.mark.asyncio
     async def test_remove_with_mcp_client(self, temp_config):
-        """When MCP client is available, calls mcp_remove_server."""
+        """When MCP client is available, calls mcp_remove."""
         _write_config(temp_config, {
             "rest_apis": {
                 "github": {"spec_url": "u", "base_url": "b"},
@@ -299,7 +299,7 @@ class TestRestApiRemoveTool:
         try:
             from slife.tools.context import ToolContext
             tool = RestApiRemoveTool(config_path=temp_config)
-            tool._ctx = ToolContext(rest_api_mcp_client=mock_client, config=None)
+            tool._ctx = ToolContext(mcp_client=mock_client, config=None)
             result = await tool.execute(name="github")
             assert "[OK]" in result
             assert mock_client.call_tool.called
@@ -338,16 +338,16 @@ class TestRestApiListTool:
         assert "GitHub API" in result
 
 
-# ── RestApiSet ────────────────────────────────────────────────────────────
+# ── RestApiSetEnabledTool ────────────────────────────────────────────────────────────
 
 
-class TestRestApiSet:
-    """Tests for RestApiSet."""
+class TestRestApiSetEnabledTool:
+    """Tests for RestApiSetEnabledTool."""
 
     @pytest.mark.asyncio
     async def test_metadata(self):
-        tool = RestApiSet()
-        assert tool.name == "rest_api_set"
+        tool = RestApiSetEnabledTool()
+        assert tool.name == "rest_api_set_enabled"
         assert tool.category == "REST API"
         assert "name" in tool.parameters["required"]
         assert "enabled" in tool.parameters["required"]
@@ -355,7 +355,7 @@ class TestRestApiSet:
     @pytest.mark.asyncio
     async def test_not_found(self, temp_config):
         """Setting a non-existent API returns error."""
-        tool = RestApiSet(config_path=temp_config)
+        tool = RestApiSetEnabledTool(config_path=temp_config)
         result = await tool.execute(name="nonexistent", enabled=True)
         assert "not found" in result.lower()
 
@@ -367,7 +367,7 @@ class TestRestApiSet:
                 "bad": "not a dict",
             }
         })
-        tool = RestApiSet(config_path=temp_config)
+        tool = RestApiSetEnabledTool(config_path=temp_config)
         result = await tool.execute(name="bad", enabled=True)
         assert "malformed" in result.lower()
 
@@ -379,7 +379,7 @@ class TestRestApiSet:
                 "github": {"spec_url": "u", "base_url": "b"},
             }
         })
-        tool = RestApiSet(config_path=temp_config)
+        tool = RestApiSetEnabledTool(config_path=temp_config)
         result = await tool.execute(name="github", enabled=True)
         assert "[OK]" in result
         assert "enabled" in result.lower()
@@ -395,7 +395,7 @@ class TestRestApiSet:
                 "github": {"spec_url": "u", "base_url": "b", "enabled": True},
             }
         })
-        tool = RestApiSet(config_path=temp_config)
+        tool = RestApiSetEnabledTool(config_path=temp_config)
         result = await tool.execute(name="github", enabled=False)
         assert "[OK]" in result
         assert "disabled" in result.lower()
@@ -405,7 +405,7 @@ class TestRestApiSet:
 
     @pytest.mark.asyncio
     async def test_set_with_mcp_client(self, temp_config):
-        """When MCP client is available, calls mcp_set_server."""
+        """When MCP client is available, calls mcp_set."""
         _write_config(temp_config, {
             "rest_apis": {
                 "github": {"spec_url": "u", "base_url": "b"},
@@ -417,8 +417,8 @@ class TestRestApiSet:
 
         try:
             from slife.tools.context import ToolContext
-            tool = RestApiSet(config_path=temp_config)
-            tool._ctx = ToolContext(rest_api_mcp_client=mock_client, config=None)
+            tool = RestApiSetEnabledTool(config_path=temp_config)
+            tool._ctx = ToolContext(mcp_client=mock_client, config=None)
             result = await tool.execute(name="github", enabled=True)
             assert "[OK]" in result
             assert mock_client.call_tool.called

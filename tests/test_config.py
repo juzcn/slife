@@ -615,37 +615,8 @@ class TestConfigMCPSaveRemove:
         assert srv["headers"] == {"Authorization": "Bearer token"}
         assert srv["description"] == "A web server"
 
-    def test_set_server_disclosure_eager(self, tmp_path, monkeypatch):
-        """set_server_disclosure eager removes disclosure key."""
-        monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
-            "models": {
-                "providers": {
-                    "d": {
-                        "api_key": "${KEY}",
-                        "models": [{"model": "m"}],
-                    }
-                }
-            },
-            "mcp": {
-                "servers": {
-                    "mysrv": {"command": "echo", "args": [], "disclosure": "lazy"},
-                },
-            },
-        }))
-        config = Config.from_json5(str(cfg_path))
-        # Pre-populate in-memory state with disclosure=lazy
-        config.mcp_config.servers["mysrv"]["disclosure"] = "lazy"
-
-        config.set_server_disclosure("mysrv", "eager")
-
-        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
-        assert "disclosure" not in raw["mcp"]["servers"]["mysrv"]
-        assert "disclosure" not in config.mcp_config.servers["mysrv"]
-
-    def test_set_server_disclosure_lazy(self, tmp_path, monkeypatch):
-        """set_server_disclosure lazy adds disclosure key."""
+    def test_set_server_enabled_false(self, tmp_path, monkeypatch):
+        """set_server_enabled False writes enabled:false."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({
@@ -664,16 +635,42 @@ class TestConfigMCPSaveRemove:
             },
         }))
         config = Config.from_json5(str(cfg_path))
-        config.mcp_config.servers["mysrv"] = {"command": "echo", "args": []}
 
-        config.set_server_disclosure("mysrv", "lazy")
+        config.set_server_enabled("mysrv", False)
 
         raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
-        assert raw["mcp"]["servers"]["mysrv"]["disclosure"] == "lazy"
-        assert config.mcp_config.servers["mysrv"]["disclosure"] == "lazy"
+        assert raw["mcp"]["servers"]["mysrv"]["enabled"] is False
+        assert config.mcp_config.servers["mysrv"]["enabled"] is False
 
-    def test_set_server_disclosure_no_path(self, caplog):
-        """set_server_disclosure without _path logs warning."""
+    def test_set_server_enabled_true_removes_key(self, tmp_path, monkeypatch):
+        """set_server_enabled True removes enabled:false."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "d": {
+                        "api_key": "${KEY}",
+                        "models": [{"model": "m"}],
+                    }
+                }
+            },
+            "mcp": {
+                "servers": {
+                    "mysrv": {"command": "echo", "args": [], "enabled": False},
+                },
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+
+        config.set_server_enabled("mysrv", True)
+
+        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "enabled" not in raw["mcp"]["servers"]["mysrv"]
+        assert "enabled" not in config.mcp_config.servers["mysrv"]
+
+    def test_set_server_enabled_no_path(self, caplog):
+        """set_server_enabled without _path logs warning."""
         from slife.config import Config, ModelConfig
         mc = ModelConfig(
             ref="test/m", provider="test", api_model="m",
@@ -683,9 +680,8 @@ class TestConfigMCPSaveRemove:
         config.mcp_config.servers["mysrv"] = {"command": "cmd"}
 
         with caplog.at_level(logging.WARNING):
-            config.set_server_disclosure("mysrv", "lazy")
+            config.set_server_enabled("mysrv", False)
         assert "config_no_path" in caplog.text
-
 
 # ── MemdbConfig ──────────────────────────────────────────────────────
 

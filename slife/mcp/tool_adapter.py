@@ -26,7 +26,7 @@ class ProxyRoute(Enum):
     """Built-in plugin tools (memdb, wechat) — direct call on own client."""
 
     EXTERNAL = auto()
-    """External MCP server tools — route through ``mcp_call_tool``."""
+    """External MCP server tools — route through ``__mcp_call_tool``."""
 
 
 # ── Built-in server / tool name constants ─────────────────────────────
@@ -34,10 +34,10 @@ class ProxyRoute(Enum):
 _MCP_SERVER = "mcp"           # built-in MCP management server
 _MEMDB_SERVER = "memdb"       # built-in memdb service
 _WECHAT_SERVER = "wechat"     # built-in WeChat messaging plugin
-_MCP_ADD_SERVER = "mcp_add_server"
-_MCP_REMOVE_SERVER = "mcp_remove_server"
-_MCP_SET_SERVER = "mcp_set_server"
-_MCP_CALL_TOOL = "mcp_call_tool"
+_MCP_SET = "mcp_set"
+_MCP_SET_ENABLED = "mcp_set_enabled"
+_MCP_REMOVE = "mcp_remove"
+_MCP_CALL_TOOL = "__mcp_call_tool"
 
 
 class MCPProxyTool(Tool):
@@ -63,7 +63,7 @@ class MCPProxyTool(Tool):
     # create_proxy_tools() with per-server configuration.
     _skip_auto_register: ClassVar[bool] = True
 
-    def __init__(self, mcp_client, tool_info: dict, route: ProxyRoute = ProxyRoute.EXTERNAL, on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None, on_server_updated=None):
+    def __init__(self, mcp_client, tool_info: dict, route: ProxyRoute = ProxyRoute.EXTERNAL, on_server_added=None, on_server_removed=None, on_server_updated=None):
         """
         Args:
             mcp_client: MCPClient instance connected to the slife-mcp wrapper.
@@ -73,14 +73,12 @@ class MCPProxyTool(Tool):
                 :attr:`ProxyRoute.DIRECT` for built-in plugins,
                 :attr:`ProxyRoute.EXTERNAL` for external MCP servers.
             on_server_added: Optional async callback(name, command, args, env, description, source)
-                invoked when mcp_add_server succeeds, for config persistence.
+                invoked when mcp_set succeeds, for config persistence.
             on_server_removed: Optional async callback(name)
-                invoked when mcp_remove_server succeeds, for config persistence.
-            on_server_disclosure_changed: Optional async callback(name, disclosure)
-                invoked when mcp_set_disclosure succeeds, to persist and update tools.
-            on_server_updated: Optional async callback(name, enabled, command, args, env, url, headers, description)
-                invoked when mcp_set_server or mcp_add_server succeeds, to persist config
-                and register/unregister tools.
+                invoked when mcp_remove succeeds, for config persistence.
+            on_server_updated: Optional async callback(name, enabled)
+                invoked when mcp_set_enabled toggles a server, to persist the
+                change and update tool registration.
         """
         self._mcp_client = mcp_client
         self._server = tool_info["server"]
@@ -88,7 +86,6 @@ class MCPProxyTool(Tool):
         self._route = route
         self._on_server_added = on_server_added
         self._on_server_removed = on_server_removed
-        self._on_server_disclosure_changed = on_server_disclosure_changed
         self._on_server_updated = on_server_updated
 
         # Namespaced tool name: "server__toolname"
@@ -130,16 +127,15 @@ class MCPProxyTool(Tool):
 
             result = await self._mcp_client.call_tool(self._tool_name, kwargs)
 
-            await self._handle_add_server(result, source, **kwargs)
-            await self._handle_remove_server(result, **kwargs)
-            await self._handle_set_server(result, **kwargs)
+            await self._handle_set(result, source, **kwargs)
+            await self._handle_remove(result, **kwargs)
         elif self._route == ProxyRoute.DIRECT:
             # Built-in plugin tools (memdb, wechat) — call directly
             # on the plugin's own MCP client.
             result = await self._mcp_client.call_tool(self._tool_name, kwargs)
         else:
             # ProxyRoute.EXTERNAL — route through the MCP wrapper's
-            # mcp_call_tool to reach the external server.
+            # __mcp_call_tool to reach the external server.
             result = await self._mcp_client.call_tool(
                 _MCP_CALL_TOOL,
                 {
@@ -152,15 +148,18 @@ class MCPProxyTool(Tool):
 
     # ── Callback helpers ────────────────────────────────────────────
 
-    async def _handle_add_server(self, result: str, source: dict | None, **kwargs) -> None:
-        """Persist newly added MCP servers to config."""
-        if self._tool_name != _MCP_ADD_SERVER or not self._on_server_added:
+    async def _handle_set(self, result: str, source: dict | None, **kwargs) -> None:
+        """Persist mcp_set / mcp_set_enabled side effects."""
+        if self._tool_name not in (_MCP_SET, _MCP_SET_ENABLED) or not (self._on_server_added or self._on_server_updated):
             return
         try:
             parsed = json.loads(result)
-            if parsed.get("status") == "connected":
+            status = parsed.get("status", "")
+            server_name = kwargs.get("name", "")
+            if status == "connected" and self._tool_name == _MCP_SET and self._on_server_added:
+                # mcp_set defined a server — persist full config + register tools.
                 await self._on_server_added(
-                    name=kwargs.get("name", ""),
+                    name=server_name,
                     command=kwargs.get("command", ""),
                     args=kwargs.get("args", []),
                     env=kwargs.get("env"),
@@ -169,12 +168,19 @@ class MCPProxyTool(Tool):
                     url=kwargs.get("url", ""),
                     headers=kwargs.get("headers"),
                 )
-                logger.debug("mcp_persisted server=%s", kwargs.get("name", "?"))
+                logger.debug("mcp_persisted server=%s", server_name)
+            elif status == "connected" and self._on_server_updated:
+                # mcp_set_enabled re-enabled — persist + register tools.
+                await self._on_server_updated(name=server_name, enabled=True)
+            elif status == "disabled" and self._on_server_updated:
+                # enabled=False — persist disabled and unregister tools.
+                await self._on_server_updated(name=server_name, enabled=False)
+                logger.debug("mcp_disabled server=%s", server_name)
             else:
                 logger.info(
                     "mcp_not_persisted server=%s status=%s error=%s",
-                    kwargs.get("name", "?"),
-                    parsed.get("status", "?"),
+                    server_name,
+                    status,
                     parsed.get("error", "?"),
                 )
         except json.JSONDecodeError:
@@ -188,9 +194,9 @@ class MCPProxyTool(Tool):
                 kwargs.get("name", "?"),
             )
 
-    async def _handle_remove_server(self, result: str, **kwargs) -> None:
+    async def _handle_remove(self, result: str, **kwargs) -> None:
         """Persist MCP server removals to config."""
-        if self._tool_name != _MCP_REMOVE_SERVER or not self._on_server_removed:
+        if self._tool_name != _MCP_REMOVE or not self._on_server_removed:
             return
         try:
             parsed = json.loads(result)
@@ -214,39 +220,6 @@ class MCPProxyTool(Tool):
                 kwargs.get("name", "?"),
             )
 
-    async def _handle_set_server(self, result: str, **kwargs) -> None:
-        """Handle mcp_set_server side effects: enable/disable + disclosure."""
-        if self._tool_name != _MCP_SET_SERVER or not self._on_server_updated:
-            return
-        try:
-            parsed = json.loads(result)
-            status = parsed.get("status", "")
-            server_name = kwargs.get("name", "")
-            changed = parsed.get("changed", [])
-
-            if "disabled" in changed:
-                await self._on_server_updated(name=server_name, enabled=False)
-            elif status in ("connected", "already_connected"):
-                await self._on_server_updated(name=server_name, enabled=True)
-
-            # Disclosure change via mcp_set_server
-            new_disclosure = parsed.get("disclosure", "")
-            if new_disclosure in ("eager", "lazy") and self._on_server_disclosure_changed:
-                await self._on_server_disclosure_changed(
-                    name=server_name,
-                    disclosure=new_disclosure,
-                )
-        except json.JSONDecodeError:
-            logger.warning(
-                "mcp_set_server_parse_fail server=%s result=%.200s",
-                kwargs.get("name", "?"), result[:200],
-            )
-        except Exception:
-            logger.exception(
-                "mcp_set_server_callback_failed server=%s",
-                kwargs.get("name", "?"),
-            )
-
 def _route_for_server(server: str) -> ProxyRoute:
     """Return the execution route for *server*.
 
@@ -263,7 +236,7 @@ def _route_for_server(server: str) -> ProxyRoute:
 
 
 def create_proxy_tools(
-    mcp_client, tools: list[dict], on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None, on_server_updated=None,
+    mcp_client, tools: list[dict], on_server_added=None, on_server_removed=None, on_server_updated=None,
 ) -> list[MCPProxyTool]:
     """Create MCPProxyTool instances from a list of tool info dicts.
 
@@ -272,13 +245,11 @@ def create_proxy_tools(
         tools: List of tool info dicts, each with:
             server, name, description, inputSchema.
         on_server_added: Optional async callback(name, command, args, env, description, source)
-            invoked when mcp_add_server succeeds.
+            invoked when mcp_set succeeds.
         on_server_removed: Optional async callback(name)
-            invoked when mcp_remove_server succeeds.
-        on_server_disclosure_changed: Optional async callback(name, disclosure)
-            invoked when mcp_set_disclosure succeeds.
-        on_server_updated: Optional async callback(name, enabled, ...)
-            invoked when mcp_set_server or mcp_add_server succeeds.
+            invoked when mcp_remove succeeds.
+        on_server_updated: Optional async callback(name, enabled)
+            invoked when mcp_set_enabled toggles a server.
 
     Returns:
         List of MCPProxyTool instances ready for ToolRegistry registration.
@@ -289,7 +260,6 @@ def create_proxy_tools(
             route=_route_for_server(t["server"]),
             on_server_added=on_server_added,
             on_server_removed=on_server_removed,
-            on_server_disclosure_changed=on_server_disclosure_changed,
             on_server_updated=on_server_updated,
         )
         for t in tools

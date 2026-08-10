@@ -1,7 +1,7 @@
 """LLM model management tools.
 
 model_list            — list all configured models grouped by provider
-model_add              — add or update a model (creates provider if new)
+model_set              — add or update a model (creates provider if new)
 model_remove           — remove a model by ref; auto-switches if it was active
 model_switch           — switch the active model (instant, no restart)
 switch_to_nvidia_free  — switch to a free NVIDIA NIM model in-memory only
@@ -129,14 +129,15 @@ class ListModelsTool(_ConfigPathMixin, Tool):
 # ── Add Model ────────────────────────────────────────────────────────
 
 
-class AddModelTool(_ConfigPathMixin, Tool):
-    """Add a model to a provider in the config."""
+class SetModelTool(_ConfigPathMixin, Tool):
+    """Add or update a model on a provider in the config."""
 
-    name: ClassVar[str] = "model_add"
+    name: ClassVar[str] = "model_set"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
-        "Add an LLM model to the configuration. If the provider doesn't exist, "
-        "it will be created.  Supported api values: openai-completions, "
+        "Add/update an LLM model in the configuration (upsert, idempotent — add "
+        "+ update in one call). If the provider doesn't exist, it will be created. "
+        "Supported api values: openai-completions, "
         "anthropic-messages, openai-responses."
     )
     parameters: ClassVar[dict] = {
@@ -333,7 +334,7 @@ class RemoveModelTool(_ConfigPathMixin, Tool):
                 write_config(self._config_path, raw)
                 return (
                     f"[OK] Removed `{ref}` (was active). No models remaining. "
-                    f"Add a model with model_add before continuing."
+                    f"Add a model with model_set before continuing."
                 )
 
         write_config(self._config_path, raw)

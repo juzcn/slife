@@ -81,7 +81,7 @@ class TestPluginLifecycleSpawn:
 
                 await lifecycle.spawn(
                     module="slife.plugins.mcp.server",
-                    harness_tools={"mcp_set_disclosure"},
+                    harness_tools={"__mcp_call_tool"},
                 )
 
         import os

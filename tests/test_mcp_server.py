@@ -1,8 +1,8 @@
 """Tests for slife.plugins.mcp.server — wrapper-server tool registration.
 
 Regression test for a decorator-detachment bug: the
-``@mcp.tool(name="mcp_add_server")`` decorator must bind to the
-``mcp_add_server`` function.  When a helper (``_server_config_equal``)
+``@mcp.tool(name="mcp_set")`` decorator must bind to the
+``mcp_set`` function.  When a helper (``_server_config_equal``)
 was accidentally placed between the decorator and the function, the tool
 was registered with the helper's ``(a, b)`` signature, so every startup
 auto-connect call failed pydantic validation ("Missing required argument
@@ -44,7 +44,7 @@ def _import_mcp_server():
 
 
 class TestAddServerToolRegistration:
-    """mcp_add_server must be registered with its real signature."""
+    """mcp_set must be registered with its real signature."""
 
     @pytest.mark.asyncio
     async def test_add_server_has_real_parameters(self, restore_root_logger):
@@ -52,16 +52,16 @@ class TestAddServerToolRegistration:
         tools = await srv.mcp.list_tools()
         by_name = {t.name: t for t in tools}
 
-        assert "mcp_add_server" in by_name
-        props = by_name["mcp_add_server"].parameters.get("properties", {})
+        assert "mcp_set" in by_name
+        props = by_name["mcp_set"].parameters.get("properties", {})
         # The real function's parameters.  The helper had only (a, b) —
         # if the decorator is mis-bound these are all absent.
         for expected in (
             "name", "command", "args", "env", "url",
-            "headers", "description", "activate", "enabled",
+            "headers", "description", "enabled",
         ):
             assert expected in props, f"missing param: {expected}"
-        assert by_name["mcp_add_server"].parameters.get("required") == ["name"]
+        assert by_name["mcp_set"].parameters.get("required") == ["name"]
 
     @pytest.mark.asyncio
     async def test_helper_not_exposed_as_tool(self, restore_root_logger):
@@ -76,11 +76,11 @@ class TestAddServerToolRegistration:
         tools = await srv.mcp.list_tools()
         names = {t.name for t in tools}
         assert names == {
-            "mcp_add_server",
-            "mcp_remove_server",
-            "mcp_list_servers",
-            "mcp_connection_status",
+            "mcp_set",
+            "mcp_set_enabled",
+            "mcp_remove",
+            "mcp_list",
             "mcp_list_tools",
-            "mcp_call_tool",
-            "mcp_set_server",
+            "__mcp_call_tool",
+            "__mcp_connection_status",
         }

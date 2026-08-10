@@ -2,7 +2,7 @@
 
 skill_list:   list all available skills' names and descriptions
 skill_use:    load a skill's full documentation into context
-skill_add:    install a skill from a remote URL (fetch files into the skills dir)
+skill_set:   install/update a skill from a remote URL (fetch files into the skills dir)
 skill_remove: delete a skill directory and its contents
 """
 
@@ -214,56 +214,6 @@ class _SkillDirMixin:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class CheckSkillsDirTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
-    """Report the absolute path to the skills directory.
-
-    Skills live in ``<data_dir>/skills/``: the project root in dev
-    mode, ``~/.slife/skills/`` in production.  Call this to resolve
-    relative paths like ``skills/<name>/scripts/…`` to absolute paths.
-    """
-
-    name = "skill_check_dir"
-    category = "Skills"
-    category: ClassVar[str] = "Skills"
-    description = "Absolute path to the skills directory and installed subdirectories."
-    parameters = {
-        "type": "object",
-        "properties": {},
-        "required": [],
-    }
-
-    async def execute(self, **kwargs) -> str:
-        resolved = self.skills_dir.resolve()
-        lines = [
-            f"Skills directory: {resolved}",
-            "",
-        ]
-        if resolved.is_dir():
-            items = sorted(
-                d for d in resolved.iterdir()
-                if d.is_dir() and (d / "SKILL.md").exists()
-            )
-            if items:
-                lines.append("Installed skills (with script paths):")
-                for d in items:
-                    scripts_dir = d / "scripts"
-                    if scripts_dir.is_dir():
-                        scripts = sorted(
-                            str(p.relative_to(d))
-                            for p in scripts_dir.iterdir()
-                            if p.is_file()
-                        )
-                        for s in scripts:
-                            lines.append(f"  {d.name}/{s}")
-                    else:
-                        lines.append(f"  {d.name}/ (no scripts/)")
-            else:
-                lines.append("No installed skills found.")
-        else:
-            lines.append("[WARN] Skills directory does not exist.")
-        return "\n".join(lines)
-
-
 class ListSkillsTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     """List all available skills with their names and descriptions."""
 
@@ -300,8 +250,8 @@ class UseSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
         return _read_skill(self.skills_dir, skill_name)
 
 
-class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
-    """Install a skill by writing its files to the local skills directory.
+class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
+    """Install or update a skill by writing its files to the local skills directory.
 
     The agent is responsible for fetching the skill's files (e.g. via
     GitHub MCP, fetch MCP, or other tools). This tool just writes them
@@ -315,9 +265,9 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
     (the skills directory is re-scanned on every call).
     """
 
-    name = "skill_add"
+    name = "skill_set"
     category = "Skills"
-    description = "Install/update a skill from [{path, content}] files or a base64 .zip/.tar.gz archive (upsert, idempotent). Use the skill's own language for `description`."
+    description = "Install/update a skill (upsert, idempotent) from [{path, content}] files or a base64 .zip/.tar.gz archive. Add + update in one call. Use the skill's own language for `description`."
     parameters = {
         "type": "object",
         "properties": {
@@ -536,11 +486,11 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# skill_set
+# skill_set_enabled
 # ═══════════════════════════════════════════════════════════════════════
 
-class SkillSet(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
-    name = "skill_set"
+class SkillSetEnabledTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
+    name = "skill_set_enabled"
     category = "Skills"
     category: ClassVar[str] = "Skills"
     description = "Enable or disable a skill. Takes effect after restart."
@@ -566,5 +516,5 @@ class SkillSet(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethod
         entry["enabled"] = enabled
         write_config(self._config_path, raw)
         state = "enabled" if enabled else "disabled"
-        logger.info("skill_set name=%s enabled=%s", name, enabled)
+        logger.info("skill_set_enabled name=%s enabled=%s", name, enabled)
         return f"[OK] Skill '{name}' {state}. Restart for the change to take effect."

@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from slife.tools.skill import (
-    AddSkillTool,
+    SetSkillTool,
     RemoveSkillTool,
     ListSkillsTool,
     UseSkillTool,
@@ -43,31 +43,31 @@ class TestParseFrontmatter:
         assert body == ""
 
 
-# ── AddSkillTool ─────────────────────────────────────────────────────────
+# ── SetSkillTool ─────────────────────────────────────────────────────────
 
 
-class TestAddSkillToolMetadata:
+class TestSetSkillToolMetadata:
     def test_name(self):
-        assert AddSkillTool.name == "skill_add"
+        assert SetSkillTool.name == "skill_set"
 
     def test_source_param_in_schema(self):
-        props = AddSkillTool.parameters.get("properties", {})
+        props = SetSkillTool.parameters.get("properties", {})
         assert "source" in props
         source_props = props["source"].get("properties", {})
         assert "url" in source_props
         assert "type" in source_props
 
 
-class TestAddSkillToolExecute:
-    """Execute tests for AddSkillTool."""
+class TestSetSkillToolExecute:
+    """Execute tests for SetSkillTool."""
 
     @pytest.mark.asyncio
-    async def test_skill_add_with_source(self, tmp_path):
-        """skill_add writes _meta.json with source when source is provided."""
+    async def test_skill_set_with_source(self, tmp_path):
+        """skill_set writes _meta.json with source when source is provided."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
 
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(
             name="my-skill",
             files=[
@@ -87,12 +87,12 @@ class TestAddSkillToolExecute:
         assert "fetched_at" in meta["source"]
 
     @pytest.mark.asyncio
-    async def test_skill_add_without_source(self, tmp_path):
-        """skill_add without source does NOT write _meta.json."""
+    async def test_skill_set_without_source(self, tmp_path):
+        """skill_set without source does NOT write _meta.json."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
 
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(
             name="no-source-skill",
             files=[
@@ -105,7 +105,7 @@ class TestAddSkillToolExecute:
         assert not meta_path.exists()
 
     @pytest.mark.asyncio
-    async def test_skill_add_source_merges_existing_meta(self, tmp_path):
+    async def test_skill_set_source_merges_existing_meta(self, tmp_path):
         """_meta.json merges with existing fields preserved."""
         skills_dir = tmp_path / "skills"
         skill_dir = skills_dir / "with-meta"
@@ -119,7 +119,7 @@ class TestAddSkillToolExecute:
             json.dumps(existing_meta), encoding="utf-8"
         )
 
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         # skill_dir already exists, so this will fail with "already exists"
         # Instead, test _write_meta_json via installing a new skill then checking merge behavior
         result = await tool.execute(
@@ -137,14 +137,14 @@ class TestAddSkillToolExecute:
         assert meta["source"]["version"] == "2.0.0"
 
     @pytest.mark.asyncio
-    async def test_skill_add_already_exists(self, tmp_path):
+    async def test_skill_set_already_exists(self, tmp_path):
         """Overwrites existing skill (upsert)."""
         skills_dir = tmp_path / "skills"
         skill_dir = skills_dir / "existing"
         skill_dir.mkdir(parents=True)
         skill_dir.joinpath("SKILL.md").write_text("---\nname: existing\n---\nbody", encoding="utf-8")
 
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(
             name="existing",
             files=[{"path": "SKILL.md", "content": "new"}],
@@ -152,22 +152,22 @@ class TestAddSkillToolExecute:
         assert "Updated" in result
 
     @pytest.mark.asyncio
-    async def test_skill_add_missing_files_and_archive(self, tmp_path):
+    async def test_skill_set_missing_files_and_archive(self, tmp_path):
         """Either files or archive must be provided."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
 
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(name="bad")
         assert "[FAIL]" in result
 
     @pytest.mark.asyncio
-    async def test_skill_add_both_files_and_archive(self, tmp_path):
+    async def test_skill_set_both_files_and_archive(self, tmp_path):
         """Cannot provide both files and archive."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
 
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(
             name="bad",
             files=[{"path": "x", "content": "y"}],
@@ -374,10 +374,10 @@ class TestUseSkillToolExecute:
         assert "# Body" in result
 
 
-# ── AddSkillTool — archive installation ──────────────────────────────
+# ── SetSkillTool — archive installation ──────────────────────────────
 
 
-class TestAddSkillToolArchive:
+class TestSetSkillToolArchive:
     @pytest.mark.asyncio
     async def test_install_from_zip_archive(self, tmp_path):
         """Install a skill from a base64-encoded zip archive."""
@@ -394,7 +394,7 @@ class TestAddSkillToolArchive:
             zf.writestr("SKILL.md", "---\nname: zipped\ndescription: From zip\n---\n# Zipped Skill")
         archive_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(name="zipped", archive=archive_b64)
         assert "[OK]" in result
         assert (skills_dir / "zipped" / "SKILL.md").exists()
@@ -414,7 +414,7 @@ class TestAddSkillToolArchive:
             zf.writestr("my-skill-v1/SKILL.md", "---\nname: wrapped\ndescription: Wrapped\n---\n# Wrapped")
         archive_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(name="wrapped", archive=archive_b64)
         assert "[OK]" in result
         assert (skills_dir / "wrapped" / "SKILL.md").exists()
@@ -439,7 +439,7 @@ class TestAddSkillToolArchive:
             tf.addfile(info, io.BytesIO(content))
         archive_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(name="targz", archive=archive_b64)
         assert "[OK]" in result
         assert (skills_dir / "targz" / "SKILL.md").exists()
@@ -453,7 +453,7 @@ class TestAddSkillToolArchive:
         skills_dir.mkdir()
 
         archive_b64 = base64.b64encode(b"not a valid archive").decode("ascii")
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(name="bad-archive", archive=archive_b64)
         assert "[FAIL]" in result
 
@@ -464,7 +464,7 @@ class TestAddSkillToolArchive:
         skills_dir.mkdir()
 
         # Pass files with a missing key to trigger an error
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(
             name="error-skill",
             files=[{"path": "SKILL.md"}],  # missing 'content' key
@@ -478,16 +478,16 @@ class TestAddSkillToolArchive:
 
 
 class TestSkillSecurity:
-    """skill_add / skill_remove must not escape the skills root."""
+    """skill_set / skill_remove must not escape the skills root."""
 
     @pytest.mark.asyncio
     async def test_install_rejects_traversal_name(self, tmp_path):
-        """skill_add with a path-traversal name is refused."""
+        """skill_set with a path-traversal name is refused."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
 
         escape_target = (skills_dir / "../../escape").resolve()
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(
             name="../../escape",
             files=[{"path": "SKILL.md", "content": "# x"}],
@@ -498,11 +498,11 @@ class TestSkillSecurity:
 
     @pytest.mark.asyncio
     async def test_install_rejects_traversal_file_path(self, tmp_path):
-        """skill_add refuses a file path that escapes the skill dir."""
+        """skill_set refuses a file path that escapes the skill dir."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
 
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(
             name="s",
             files=[{"path": "../../evil.txt", "content": "pwned"}],
@@ -514,7 +514,7 @@ class TestSkillSecurity:
 
     @pytest.mark.asyncio
     async def test_install_rejects_zip_slip(self, tmp_path):
-        """skill_add refuses a zip archive containing a ../ member."""
+        """skill_set refuses a zip archive containing a ../ member."""
         import base64
         import io
         import zipfile
@@ -528,7 +528,7 @@ class TestSkillSecurity:
             zf.writestr("SKILL.md", "# x")
         archive_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
-        tool = AddSkillTool(skills_dir=str(skills_dir))
+        tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(name="s", archive=archive_b64)
 
         assert "[FAIL]" in result

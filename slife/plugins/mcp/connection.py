@@ -70,7 +70,6 @@ class ServerConfig:
     headers: dict[str, str] | None = None   # http: extra request headers
     enabled: bool = True  # False = don't auto-connect at startup
     description: str = ""
-    active: bool = True  # False = connected but tools not disclosed yet
     auth: dict | None = None  # OAuth config for device code flow
 
     @property
@@ -92,7 +91,6 @@ class MCPServerConnection:
     def __init__(self, config: ServerConfig):
         self.config = config
         self._status = ServerStatus.DISCONNECTED
-        self._active = config.active
         self._process: asyncio.subprocess.Process | None = None
         self._http_client: httpx.AsyncClient | None = None
         self._session_id: str | None = None
@@ -113,20 +111,12 @@ class MCPServerConnection:
         return self._status
 
     @property
-    def active(self) -> bool:
-        return self._active
-
-    @property
     def tool_count(self) -> int:
         return len(self._tools_cache)
 
     @property
     def error(self) -> str | None:
         return self._error
-
-    def set_active(self, value: bool) -> None:
-        """Toggle whether this server's tools are disclosed."""
-        self._active = value
 
     async def _ensure_oauth_token(self) -> None:
         """Obtain or refresh an OAuth token and inject it into connection headers.
@@ -798,10 +788,10 @@ class ConnectionPool:
         """List configured servers — static config fields only, no live state.
 
         This is the *config view*: what servers are configured, their transport,
-        command/args or URL, enabled/disabled, disclosure mode, and description.
+        command/args or URL, enabled/disabled, and description.
         It deliberately excludes live connection state (connected/disconnected,
         tool counts, errors) — that is reported by :meth:`list_servers` for the
-        ``mcp_connection_status`` tool.  Secret-holding fields (``env``,
+        ``__mcp_connection_status`` harness tool.  Secret-holding fields (``env``,
         ``headers``, ``auth``) are omitted so the listing never leaks tokens.
         """
         return [
@@ -812,7 +802,6 @@ class ConnectionPool:
                 "args": list(conn.config.args),
                 "url": conn.config.url,
                 "enabled": conn.config.enabled,
-                "disclosure": "eager" if conn.config.active else "lazy",
                 "description": conn.config.description,
             }
             for name, conn in self._connections.items()
@@ -830,7 +819,6 @@ class ConnectionPool:
                 "command": conn.config.command, "args": conn.config.args,
                 "url": conn.config.url,
                 "description": conn.config.description,
-                "active": conn.active,
             }
             for name, conn in self._connections.items()
         ]
@@ -844,66 +832,6 @@ class ConnectionPool:
             {**tool, "server": server_name, "full_name": f"{server_name}__{tool['name']}"}
             for tool in conn.list_tools()
         ]
-
-    async def activate_server(self, name: str) -> dict:
-        """Activate a connected-but-inactive server and return its tools.
-
-        Returns:
-            dict with status, server, tool_count, tools list.
-        """
-        conn = self._connections.get(name)
-        if conn is None:
-            return {"status": "error", "server": name, "error": f"Server '{name}' not found."}
-        if conn.status != ServerStatus.CONNECTED:
-            return {"status": "error", "server": name, "error": f"Server '{name}' is not connected (status: {conn.status.value})."}
-        if conn.active:
-            tools = conn.list_tools()
-            return {
-                "status": "already_active",
-                "server": name,
-                "tool_count": len(tools),
-                "tools": [t["name"] for t in tools],
-            }
-        conn.set_active(True)
-        tools = conn.list_tools()
-        return {
-            "status": "activated",
-            "server": name,
-            "tool_count": len(tools),
-            "tools": [t["name"] for t in tools],
-        }
-
-    def check_server(self, name: str) -> dict:
-        """Return status snapshot for a single server.
-
-        Returns:
-            dict with name, status, active, tool_count, description, error.
-        """
-        conn = self._connections.get(name)
-        if conn is None:
-            return {"name": name, "status": "not_found"}
-        return {
-            "name": name,
-            "status": conn.status.value,
-            "active": conn.active,
-            "tool_count": conn.tool_count,
-            "description": conn.config.description,
-            "error": conn.error,
-        }
-
-    async def deactivate_server(self, name: str) -> dict:
-        """Deactivate a connected server, hiding its tools from discovery.
-
-        Returns:
-            dict with status, server, tool_count.
-        """
-        conn = self._connections.get(name)
-        if conn is None:
-            return {"status": "error", "server": name, "error": f"Server '{name}' not found."}
-        if not conn.active:
-            return {"status": "already_inactive", "server": name, "tool_count": conn.tool_count}
-        conn.set_active(False)
-        return {"status": "deactivated", "server": name, "tool_count": conn.tool_count}
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict) -> str:
         conn = self._connections.get(server_name)

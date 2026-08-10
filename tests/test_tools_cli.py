@@ -7,30 +7,30 @@ import json5
 import pytest
 from pathlib import Path
 
-from slife.tools.cli import CliAddTool, CliCheckInstalled, CliRemoveTool, CliListToolsTool, get_cli_tools_summary
+from slife.tools.cli import CliSetTool, CliCheckInstalled, CliRemoveTool, CliListToolsTool, get_cli_tools_summary
 from slife.tools._config_io import with_fetched_at
 
 
-# ── CliAddTool ─────────────────────────────────────────────────────────
+# ── CliSetTool ─────────────────────────────────────────────────────────
 
 
-class TestCliAddToolMetadata:
-    """Metadata validation for CliAddTool."""
+class TestCliSetToolMetadata:
+    """Metadata validation for CliSetTool."""
 
     def test_name(self):
-        assert CliAddTool.name == "cli_add_tool"
+        assert CliSetTool.name == "cli_set"
 
     def test_description(self):
-        assert "Register" in CliAddTool.description
+        assert "Register" in CliSetTool.description
 
     def test_required_params(self):
-        required = CliAddTool.parameters.get("required", [])
+        required = CliSetTool.parameters.get("required", [])
         assert "name" in required
         assert "command" in required
         assert "description" in required
 
     def test_source_param_in_schema(self):
-        props = CliAddTool.parameters.get("properties", {})
+        props = CliSetTool.parameters.get("properties", {})
         assert "source" in props
         source_props = props["source"].get("properties", {})
         assert "url" in source_props
@@ -38,16 +38,16 @@ class TestCliAddToolMetadata:
         assert "version" in source_props
 
 
-class TestCliAddToolExecute:
-    """Execute tests for CliAddTool."""
+class TestCliSetToolExecute:
+    """Execute tests for CliSetTool."""
 
     @pytest.mark.asyncio
     async def test_add_with_source(self, tmp_path):
-        """cli_add_tool stores source dict with auto-generated fetched_at."""
+        """cli_set stores source dict with auto-generated fetched_at."""
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({}))
 
-        tool = CliAddTool(config_path=cfg_path)
+        tool = CliSetTool(config_path=cfg_path)
         result = await tool.execute(
             name="yt-dlp",
             command="yt-dlp",
@@ -69,11 +69,11 @@ class TestCliAddToolExecute:
 
     @pytest.mark.asyncio
     async def test_add_without_source(self, tmp_path):
-        """cli_add_tool without source is backward compatible — no source key."""
+        """cli_set without source is backward compatible — no source key."""
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({}))
 
-        tool = CliAddTool(config_path=cfg_path)
+        tool = CliSetTool(config_path=cfg_path)
         result = await tool.execute(
             name="npm",
             command="npm",
@@ -90,7 +90,7 @@ class TestCliAddToolExecute:
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({}))
 
-        tool = CliAddTool(config_path=cfg_path)
+        tool = CliSetTool(config_path=cfg_path)
         await tool.execute(
             name="gh",
             command="gh",
@@ -111,7 +111,7 @@ class TestCliAddToolExecute:
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({}))
 
-        tool = CliAddTool(config_path=cfg_path)
+        tool = CliSetTool(config_path=cfg_path)
         await tool.execute(
             name="yldp",
             command="yldp",
@@ -132,7 +132,7 @@ class TestCliAddToolExecute:
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({}))
 
-        tool = CliAddTool(config_path=cfg_path)
+        tool = CliSetTool(config_path=cfg_path)
         # First add
         await tool.execute(
             name="foo", command="foo", description="old",
@@ -156,7 +156,7 @@ class TestCliAddToolExecute:
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({}))
 
-        tool = CliAddTool(config_path=cfg_path)
+        tool = CliSetTool(config_path=cfg_path)
         await tool.execute(
             name="cmd", command="cmd", description="desc",
             source=None,
@@ -166,8 +166,8 @@ class TestCliAddToolExecute:
         assert "source" not in raw["cli_tools"]["cmd"]
 
 
-class TestCliAddToolWithExistingConfig:
-    """CliAddTool works alongside other config sections."""
+class TestCliSetToolWithExistingConfig:
+    """CliSetTool works alongside other config sections."""
 
     @pytest.mark.asyncio
     async def test_cli_tools_section_created(self, tmp_path):
@@ -175,7 +175,7 @@ class TestCliAddToolWithExistingConfig:
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({"models": {}, "env": {"KEY": "val"}}))
 
-        tool = CliAddTool(config_path=cfg_path)
+        tool = CliSetTool(config_path=cfg_path)
         await tool.execute(name="test", command="test", description="A test CLI")
 
         raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
