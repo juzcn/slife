@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time as _time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -79,6 +80,12 @@ class MQTTAdapter(TransportAdapter):
         self._client: mqtt.Client | None = None
         self._queues: dict[str, asyncio.Queue[TransportMessage]] = {}
         self._connected = False
+        # Guards _queues/_subscriptions: paho's callback thread iterates them
+        # while the event loop's subscribe()/messages() mutate them.  Iterating
+        # a dict that changes size concurrently raises RuntimeError, and paho
+        # re-raises callback exceptions, killing the network thread (silent
+        # permanent message loss — no reconnect).  All access takes this lock.
+        self._state_lock = threading.Lock()
 
         # ── Reconnect support (REVIEW H6) ─────────────────────────
         # Subscriptions tracked so they can be re-issued on reconnect
@@ -115,7 +122,11 @@ class MQTTAdapter(TransportAdapter):
         mq = _get_mqtt()
 
         lwt_topic = f"Slife/{self._agent_id}/presence"
-        lwt_payload = json.dumps({"status": "offline"})
+        # agent_id is required by the peer watchdog to identify who left —
+        # a bare {"status":"offline"} is dropped as "unknown peer".
+        lwt_payload = json.dumps(
+            {"status": "offline", "agent_id": self._agent_id},
+        )
 
         c = mq.Client(  # type: ignore[union-attr]
             mq.CallbackAPIVersion.VERSION2,
@@ -156,7 +167,9 @@ class MQTTAdapter(TransportAdapter):
         try:
             self._client.publish(
                 f"Slife/{self._agent_id}/presence",
-                json.dumps({"status": "offline"}),
+                json.dumps(
+                    {"status": "offline", "agent_id": self._agent_id},
+                ),
                 qos=1,
                 retain=False,
             )
@@ -195,10 +208,11 @@ class MQTTAdapter(TransportAdapter):
         self._client.subscribe(topic, qos=qos)
         # Track the subscription so it can be re-issued on reconnect
         # (clean_start=True drops subscriptions on the broker side).
-        self._subscriptions[topic] = qos
-        # Create a queue for this subscription if it doesn't exist
-        if topic not in self._queues:
-            self._queues[topic] = asyncio.Queue()
+        with self._state_lock:
+            self._subscriptions[topic] = qos
+            # Create a queue for this subscription if it doesn't exist
+            if topic not in self._queues:
+                self._queues[topic] = asyncio.Queue()
         logger.debug("a2a_mqtt_subscribed topic=%s", topic)
 
     async def messages(self, topic_filter: str) -> AsyncIterator[TransportMessage]:
@@ -206,10 +220,11 @@ class MQTTAdapter(TransportAdapter):
 
         Must call ``subscribe()`` for the same filter first.
         """
-        queue = self._queues.get(topic_filter)
-        if queue is None:
-            queue = asyncio.Queue()
-            self._queues[topic_filter] = queue
+        with self._state_lock:
+            queue = self._queues.get(topic_filter)
+            if queue is None:
+                queue = asyncio.Queue()
+                self._queues[topic_filter] = queue
 
         # Loop on _closed (deliberate shutdown), NOT _connected: a transient
         # disconnect must not end the generator — after paho reconnects,
@@ -237,24 +252,34 @@ class MQTTAdapter(TransportAdapter):
         self._connected = True
         self._connect_event.set()
 
-        if was_reconnect:
-            # paho auto-reconnected.  clean_start=True means the broker
-            # dropped every subscription — re-issue them all, then let the
-            # app re-announce presence (peers saw our LWT "offline").
-            for topic, qos in self._subscriptions.items():
-                try:
-                    client.subscribe(topic, qos=qos)
-                    logger.debug("a2a_mqtt_resubscribed topic=%s", topic)
-                except Exception:
-                    logger.warning(
-                        "a2a_mqtt_resubscribe_fail topic=%s", topic, exc_info=True,
-                    )
-            cb = self.on_reconnect
-            if cb is not None and self._loop is not None:
-                try:
-                    asyncio.run_coroutine_threadsafe(cb(), self._loop)
-                except Exception:
-                    logger.warning("a2a_mqtt_reconnect_cb_error", exc_info=True)
+        try:
+            if was_reconnect:
+                # paho auto-reconnected.  clean_start=True means the broker
+                # dropped every subscription — re-issue them all, then let the
+                # app re-announce presence (peers saw our LWT "offline").
+                # Snapshot under the lock — subscribe() (event loop) may add
+                # to _subscriptions concurrently, and mutating mid-iteration
+                # would crash paho's loop thread (see _state_lock).
+                with self._state_lock:
+                    subs = list(self._subscriptions.items())
+                for topic, qos in subs:
+                    try:
+                        client.subscribe(topic, qos=qos)
+                        logger.debug("a2a_mqtt_resubscribed topic=%s", topic)
+                    except Exception:
+                        logger.warning(
+                            "a2a_mqtt_resubscribe_fail topic=%s", topic, exc_info=True,
+                        )
+                cb = self.on_reconnect
+                if cb is not None and self._loop is not None:
+                    try:
+                        asyncio.run_coroutine_threadsafe(cb(), self._loop)
+                    except Exception:
+                        logger.warning("a2a_mqtt_reconnect_cb_error", exc_info=True)
+        except Exception as e:
+            # Never let a callback exception escape to paho — it re-raises
+            # and kills the network thread (silent, no reconnect).
+            logger.warning("a2a_mqtt_on_connect_error err=%s", e)
 
         logger.debug(
             "a2a_mqtt_on_connect id=%s rc=%s reconnect=%s",
@@ -269,11 +294,15 @@ class MQTTAdapter(TransportAdapter):
         reason_code: mqtt.ReasonCode,
         properties: Any,
     ) -> None:
-        logger.debug(
-            "a2a_mqtt_on_disconnect id=%s rc=%s",
-            self._client_id, reason_code,
-        )
-        self._connected = False
+        try:
+            logger.debug(
+                "a2a_mqtt_on_disconnect id=%s rc=%s",
+                self._client_id, reason_code,
+            )
+            self._connected = False
+        except Exception as e:
+            # See _on_connect — never let a callback exception escape to paho.
+            logger.warning("a2a_mqtt_on_disconnect_error err=%s", e)
 
     def _on_message(
         self,
@@ -282,38 +311,48 @@ class MQTTAdapter(TransportAdapter):
         msg: mqtt.MQTTMessage,
     ) -> None:
         """Route incoming messages to the matching asyncio.Queue(s)."""
-        transport_msg = TransportMessage(
-            topic=msg.topic,
-            payload=msg.payload.decode("utf-8", errors="replace"),
-        )
-
-        logger.debug(
-            "a2a_mqtt_on_message topic=%s len=%d",
-            msg.topic, len(msg.payload),
-        )
-
-        # Route to all matching subscribed queues
-        mq = _get_mqtt()
-        matched = False
-        for topic_filter, queue in self._queues.items():
-            if mq.topic_matches_sub(topic_filter, msg.topic):
-                matched = True
-                try:
-                    queue.put_nowait(transport_msg)
-                    logger.debug(
-                        "a2a_mqtt_routed topic=%s -> filter=%s",
-                        msg.topic, topic_filter,
-                    )
-                except asyncio.QueueFull:
-                    logger.warning(
-                        "a2a_mqtt_queue_full filter=%s topic=%s",
-                        topic_filter, msg.topic,
-                    )
-        if not matched:
-            logger.debug(
-                "a2a_mqtt_no_match topic=%s queues=%s",
-                msg.topic, list(self._queues.keys()),
+        try:
+            transport_msg = TransportMessage(
+                topic=msg.topic,
+                payload=msg.payload.decode("utf-8", errors="replace"),
             )
+
+            logger.debug(
+                "a2a_mqtt_on_message topic=%s len=%d",
+                msg.topic, len(msg.payload),
+            )
+
+            # Route to all matching subscribed queues.  Snapshot under the
+            # lock — subscribe()/messages() (event loop) may add to _queues
+            # concurrently, and mutating mid-iteration would crash paho's
+            # loop thread (see _state_lock).
+            mq = _get_mqtt()
+            with self._state_lock:
+                queues = list(self._queues.items())
+            matched = False
+            for topic_filter, queue in queues:
+                if mq.topic_matches_sub(topic_filter, msg.topic):
+                    matched = True
+                    try:
+                        queue.put_nowait(transport_msg)
+                        logger.debug(
+                            "a2a_mqtt_routed topic=%s -> filter=%s",
+                            msg.topic, topic_filter,
+                        )
+                    except asyncio.QueueFull:
+                        logger.warning(
+                            "a2a_mqtt_queue_full filter=%s topic=%s",
+                            topic_filter, msg.topic,
+                        )
+            if not matched:
+                logger.debug(
+                    "a2a_mqtt_no_match topic=%s queues=%s",
+                    msg.topic, list(self._queues.keys()),
+                )
+        except Exception as e:
+            # Never let a callback exception escape to paho — it re-raises
+            # and kills the network thread (silent, no reconnect).
+            logger.warning("a2a_mqtt_on_message_error topic=%s err=%s", msg.topic, e)
 
     # ── Helpers ───────────────────────────────────────────────────────
 

@@ -465,6 +465,12 @@ class A2AClient:
             except json.JSONDecodeError:
                 continue
 
+            # Prune on every presence sighting — including our own echo and
+            # malformed/offline payloads that fail to identify a peer.  Without
+            # this, a peer that vanishes silently (lost offline message) is
+            # never marked offline, because prune only ran on the peer path.
+            await self._prune_stale_peers(timeout)
+
             peer_id = AgentId(data.get("agent_id", ""))
             if not peer_id or peer_id == self._agent_id:
                 continue
@@ -492,9 +498,6 @@ class A2AClient:
                 await self._notify_agent_change(card, "online")
             else:
                 await self._notify_agent_change(card, "status_change")
-
-            # Also prune stale peers on each message receipt
-            await self._prune_stale_peers(timeout)
 
     async def _prune_stale_peers(self, timeout: float) -> None:
         """Remove peers we haven't heard from within *timeout* seconds."""

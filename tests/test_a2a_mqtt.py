@@ -124,7 +124,8 @@ class TestMQTTAdapterConnect:
 
         mock_client.will_set.assert_called_once_with(
             "Slife/agent-01/presence",
-            json.dumps({"status": "offline"}),
+            # agent_id lets peers' watchdog identify who went offline.
+            json.dumps({"status": "offline", "agent_id": "agent-01"}),
             qos=1,
             retain=False,
         )
@@ -149,7 +150,10 @@ class TestMQTTAdapterDisconnect:
         await adapter.disconnect()
 
         assert not adapter.is_connected
-        mock_client.publish.assert_called()  # publishes offline
+        # Publishes an offline presence carrying agent_id so the peer
+        # watchdog can identify who left.
+        offline_payload = json.loads(mock_client.publish.call_args.args[1])
+        assert offline_payload == {"status": "offline", "agent_id": "agent-01"}
         mock_client.loop_stop.assert_called_once()
         mock_client.disconnect.assert_called_once()
 
@@ -380,3 +384,57 @@ class TestMQTTAdapterReconnect:
 
         await asyncio.wait_for(fired.wait(), timeout=1)
         assert fired.is_set()
+
+
+class TestMQTTAdapterConcurrency:
+    """Regression: subscribe() mutating _queues while paho's callback thread
+    iterates it used to raise RuntimeError (dict changed size during
+    iteration), which paho re-raises and kills its network thread — silent,
+    permanent message loss with no reconnect."""
+
+    @pytest.mark.asyncio
+    async def test_on_message_survives_concurrent_subscribe(self):
+        import threading as _threading
+        import time as _time
+
+        adapter = MQTTAdapter("race-test")
+        adapter._client = Mock()
+        adapter._connected = True
+
+        # Pre-populate so each _on_message call iterates several topics; a
+        # slow matcher widens the iteration window so a concurrent subscribe()
+        # mutation (adding NEW queues) lands mid-iteration and would crash the
+        # racy version with "dictionary changed size during iteration".
+        for i in range(8):
+            adapter._queues[f"Slife/race-test/base/{i}"] = asyncio.Queue()
+
+        def _slow_match(sub: str, topic: str) -> bool:
+            _time.sleep(0.0005)
+            return topic.startswith("Slife/race-test/")
+
+        errors: list[Exception] = []
+        with patch("slife.a2a.mqtt.mqtt") as mock_mqtt:
+            mock_mqtt.topic_matches_sub.side_effect = _slow_match
+
+            def _deliver() -> None:
+                msg = Mock()
+                msg.topic = "Slife/race-test/presence"
+                msg.payload = b'{"status":"online"}'
+                for _ in range(30):
+                    try:
+                        adapter._on_message(None, None, msg)
+                    except Exception as e:  # pragma: no cover
+                        errors.append(e)
+                        break
+
+            thread = _threading.Thread(target=_deliver)
+            thread.start()
+            # Pace the subscribes so the dict grows DURING the deliver
+            # thread's slow iterations (not all up-front, which would leave
+            # nothing to mutate mid-iteration).
+            for i in range(30):
+                await adapter.subscribe(f"Slife/race-test/tasks/t{i}")
+                await asyncio.sleep(0.0005)
+            thread.join()
+
+        assert not errors
