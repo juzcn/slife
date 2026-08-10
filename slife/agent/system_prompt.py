@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import platform
-import socket
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -52,7 +51,6 @@ def build(config: Config, is_subagent: bool = False) -> str:
         model_name=model.display_name,
         context_window=f"{model.context_window:,}",
         input_modalities=", ".join(model.input_modalities),
-        hostname=socket.gethostname(),
         platform_type=_platform_type(),
         platform_name=_os_name(),
         os_version=platform.uname().release,

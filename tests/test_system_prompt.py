@@ -211,12 +211,6 @@ class TestBuild:
         # 工作目录 / 当前时间 are now in the dynamic context_status.j2,
         # not the static system prompt.
 
-    def test_hostname_in_prompt(self, cfg):
-        from slife.agent.system_prompt import build
-        result = build(cfg)
-        assert "Host:" in result
-        assert "{{ hostname }}" not in result
-
     def test_arch_in_prompt(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
