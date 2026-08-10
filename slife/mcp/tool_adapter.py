@@ -63,7 +63,7 @@ class MCPProxyTool(Tool):
     # create_proxy_tools() with per-server configuration.
     _skip_auto_register: ClassVar[bool] = True
 
-    def __init__(self, mcp_client, tool_info: dict, route: ProxyRoute = ProxyRoute.EXTERNAL, on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None, on_server_updated=None, require_approval: bool = False):
+    def __init__(self, mcp_client, tool_info: dict, route: ProxyRoute = ProxyRoute.EXTERNAL, on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None, on_server_updated=None):
         """
         Args:
             mcp_client: MCPClient instance connected to the slife-mcp wrapper.
@@ -81,8 +81,6 @@ class MCPProxyTool(Tool):
             on_server_updated: Optional async callback(name, enabled, command, args, env, url, headers, description)
                 invoked when mcp_set_server or mcp_add_server succeeds, to persist config
                 and register/unregister tools.
-            require_approval: If True, the agent loop will request user
-                confirmation before executing this tool.
         """
         self._mcp_client = mcp_client
         self._server = tool_info["server"]
@@ -98,7 +96,6 @@ class MCPProxyTool(Tool):
 
         # Override class-level attrs at instance level with real values
         object.__setattr__(self, "name", full_name)
-        object.__setattr__(self, "requires_approval", require_approval)
 
         desc = tool_info.get("description", "")
         server_prefix = f"[{self._server}] "
@@ -266,7 +263,7 @@ def _route_for_server(server: str) -> ProxyRoute:
 
 
 def create_proxy_tools(
-    mcp_client, tools: list[dict], on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None, on_server_updated=None, require_approval: bool = False,
+    mcp_client, tools: list[dict], on_server_added=None, on_server_removed=None, on_server_disclosure_changed=None, on_server_updated=None,
 ) -> list[MCPProxyTool]:
     """Create MCPProxyTool instances from a list of tool info dicts.
 
@@ -282,8 +279,6 @@ def create_proxy_tools(
             invoked when mcp_set_disclosure succeeds.
         on_server_updated: Optional async callback(name, enabled, ...)
             invoked when mcp_set_server or mcp_add_server succeeds.
-        require_approval: If True, all tools in this batch require user
-            approval before execution.
 
     Returns:
         List of MCPProxyTool instances ready for ToolRegistry registration.
@@ -296,7 +291,6 @@ def create_proxy_tools(
             on_server_removed=on_server_removed,
             on_server_disclosure_changed=on_server_disclosure_changed,
             on_server_updated=on_server_updated,
-            require_approval=require_approval,
         )
         for t in tools
     ]

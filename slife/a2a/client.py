@@ -39,7 +39,7 @@ class DuplicateAgentError(RuntimeError):
 logger = logging.getLogger(__name__)
 
 # ── Module-level current-client reference ────────────────────────────
-# Set by AgentService.start_a2a() / stop_a2a() so that native tools
+# Set by AgentService.start_mqtt() / stop_mqtt() so that native tools
 # (Slife.tools.a2a) can look up the live transport without closures.
 _current_client: "A2AClient | None" = None
 
@@ -50,13 +50,13 @@ def get_client() -> "A2AClient | None":
 
 
 def set_client(client: "A2AClient") -> None:
-    """Set the current A2AClient (called by AgentService.start_a2a)."""
+    """Set the current A2AClient (called by AgentService.start_mqtt)."""
     global _current_client
     _current_client = client
 
 
 def clear_client() -> None:
-    """Clear the current A2AClient (called by AgentService.stop_a2a)."""
+    """Clear the current A2AClient (called by AgentService.stop_mqtt)."""
     global _current_client
     _current_client = None
 

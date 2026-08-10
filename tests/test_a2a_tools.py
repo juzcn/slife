@@ -7,19 +7,10 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from slife.tools.a2a import (
-    A2AListAgentsTool,
     A2AListSubagentsTool,
-    A2ASendTaskTool,
-    A2ASendTaskAsyncTool,
-    A2AGetTaskResultTool,
-    A2ACancelTaskTool,
-    A2AListTasksTool,
-    A2ASubscribeTaskTool,
     SubagentSpawnTool,
     SubagentStopTool,
-    A2AGetAgentCardTool,
     A2ANotifyUserTool,
-    A2ABroadcastTool,
 )
 
 # Patch paths: tools use lazy imports from Slife.a2a.client / Slife.subagent.process
@@ -32,19 +23,10 @@ MANAGER_PATH = "slife.subagent.process.get_manager"
 
 
 TOOLS = [
-    A2AListAgentsTool,
     A2AListSubagentsTool,
-    A2ASendTaskTool,
-    A2ASendTaskAsyncTool,
-    A2AGetTaskResultTool,
-    A2ACancelTaskTool,
-    A2AListTasksTool,
-    A2ASubscribeTaskTool,
     SubagentSpawnTool,
     SubagentStopTool,
-    A2AGetAgentCardTool,
     A2ANotifyUserTool,
-    A2ABroadcastTool,
 ]
 
 
@@ -74,50 +56,6 @@ class TestAllToolsMetadata:
 
 # ═══════════════════════════════════════════════════════════════════════════
 # A2AListAgentsTool
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestA2AListAgentsTool:
-    @pytest.mark.asyncio
-    async def test_no_client_available(self):
-        with patch(CLIENT_PATH, return_value=None):
-            tool = A2AListAgentsTool()
-            result = await tool.execute()
-            assert "not active" in result
-
-    @pytest.mark.asyncio
-    async def test_no_peers(self):
-        mock_client = MagicMock()
-        mock_client.list_agents = AsyncMock(return_value=[])
-        with patch(CLIENT_PATH, return_value=mock_client):
-            tool = A2AListAgentsTool()
-            result = await tool.execute()
-            # Now always includes self — never returns "No remote agents"
-            assert "(you)" in result
-
-    @pytest.mark.asyncio
-    async def test_with_peers(self):
-        from slife.a2a.card import AgentCard
-        from slife.a2a.identity import AgentId
-
-        mock_client = MagicMock()
-        mock_client.list_agents = AsyncMock(return_value=[
-            AgentCard(agent_id=AgentId("peer-1"), display_name="Peer 1", status="idle"),
-            AgentCard(agent_id=AgentId("peer-2"), display_name="", status="busy"),
-        ])
-        with patch(CLIENT_PATH, return_value=mock_client):
-            tool = A2AListAgentsTool()
-            result = await tool.execute()
-            assert "peer-1" in result
-            assert "Peer 1" in result
-            assert "peer-2" in result
-            assert "idle" in result
-            assert "(you)" in result  # self is always listed
-            assert "busy" in result
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# A2AListSubagentsTool
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -162,300 +100,6 @@ class TestA2AListSubagentsTool:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestA2ASendTaskTool:
-    @pytest.mark.asyncio
-    async def test_missing_required_params(self):
-        tool = A2ASendTaskTool()
-        result = await tool.execute(agent_id="", task="")
-        assert "Error" in result
-        assert "required" in result
-
-    @pytest.mark.asyncio
-    async def test_missing_task(self):
-        tool = A2ASendTaskTool()
-        result = await tool.execute(agent_id="agent-1", task="")
-        assert "Error" in result
-
-    @pytest.mark.asyncio
-    async def test_agent_not_found(self):
-        with patch(MANAGER_PATH, return_value=None), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2ASendTaskTool()
-            result = await tool.execute(agent_id="unknown", task="do stuff")
-            assert "not found" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_routes_to_subagent(self):
-        mock_mgr = MagicMock()
-        mock_mgr.list = MagicMock(return_value=["sub-1"])
-        mock_mgr.send_task = AsyncMock(return_value="Task completed: result here")
-
-        with patch(MANAGER_PATH, return_value=mock_mgr), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2ASendTaskTool()
-            result = await tool.execute(agent_id="sub-1", task="do stuff")
-            assert "Task completed" in result
-            mock_mgr.send_task.assert_awaited_once_with("sub-1", "do stuff")
-
-    @pytest.mark.asyncio
-    async def test_subagent_timeout(self):
-        mock_mgr = MagicMock()
-        mock_mgr.list = MagicMock(return_value=["sub-1"])
-        mock_mgr.send_task = AsyncMock(side_effect=TimeoutError())
-
-        with patch(MANAGER_PATH, return_value=mock_mgr), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2ASendTaskTool()
-            result = await tool.execute(agent_id="sub-1", task="do stuff")
-            assert "timed out" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_routes_to_mqtt_peer(self):
-        mock_client = MagicMock()
-        mock_client.send_task = AsyncMock(return_value="MQTT result")
-
-        with patch(MANAGER_PATH, return_value=None), \
-             patch(CLIENT_PATH, return_value=mock_client):
-            tool = A2ASendTaskTool()
-            result = await tool.execute(agent_id="peer-1", task="do remote")
-            assert "MQTT result" in result
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# A2ASendTaskAsyncTool
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestA2ASendTaskAsyncTool:
-    @pytest.mark.asyncio
-    async def test_missing_params(self):
-        tool = A2ASendTaskAsyncTool()
-        result = await tool.execute(agent_id="", task="")
-        assert "Error" in result
-
-    @pytest.mark.asyncio
-    async def test_subagent_async_success(self):
-        mock_mgr = MagicMock()
-        mock_mgr.list = MagicMock(return_value=["sub-1"])
-        mock_mgr.send_task_async = AsyncMock(return_value="rpc-123")
-
-        with patch(MANAGER_PATH, return_value=mock_mgr), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2ASendTaskAsyncTool()
-            result = await tool.execute(agent_id="sub-1", task="async work")
-            assert "rpc-123" in result
-            assert "asynchronously" in result
-
-    @pytest.mark.asyncio
-    async def test_mqtt_async_success(self):
-        mock_client = MagicMock()
-        mock_client.send_task_async = AsyncMock(return_value="corr-456")
-
-        with patch(MANAGER_PATH, return_value=None), \
-             patch(CLIENT_PATH, return_value=mock_client):
-            tool = A2ASendTaskAsyncTool()
-            result = await tool.execute(agent_id="peer-1", task="async remote")
-            assert "corr-456" in result
-            assert "MQTT" in result
-
-    @pytest.mark.asyncio
-    async def test_agent_not_found(self):
-        with patch(MANAGER_PATH, return_value=None), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2ASendTaskAsyncTool()
-            result = await tool.execute(agent_id="unknown", task="work")
-            assert "not found" in result.lower()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# A2AGetTaskResultTool
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestA2AGetTaskResultTool:
-    @pytest.mark.asyncio
-    async def test_missing_params(self):
-        tool = A2AGetTaskResultTool()
-        result = await tool.execute(agent_id="", task_id="")
-        assert "Error" in result
-
-    @pytest.mark.asyncio
-    async def test_task_not_found_agent_exists(self):
-        from slife.a2a.task_store import clear_store
-
-        clear_store()
-        mock_mgr = MagicMock()
-        mock_mgr.list = MagicMock(return_value=["sub-1"])
-        mock_mgr.get_task_result = MagicMock(return_value=None)
-
-        with patch(MANAGER_PATH, return_value=mock_mgr), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2AGetTaskResultTool()
-            result = await tool.execute(agent_id="sub-1", task_id="t-unknown")
-            assert "not found" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_agent_not_found(self):
-        from slife.a2a.task_store import clear_store
-
-        clear_store()
-        mock_mgr = MagicMock()
-        mock_mgr.list = MagicMock(return_value=[])
-        mock_mgr.get_task_result = MagicMock(return_value=None)
-
-        with patch(MANAGER_PATH, return_value=mock_mgr), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2AGetTaskResultTool()
-            result = await tool.execute(agent_id="unknown", task_id="t-x")
-            assert "not found" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_task_found_in_store(self):
-        from slife.a2a.task_store import get_store, clear_store
-
-        clear_store()
-        store = get_store()
-        store.record_send("t1", "agent-1", "test task", "subagent")
-        store.record_result("t1", "All done!")
-
-        with patch(MANAGER_PATH, return_value=None), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2AGetTaskResultTool()
-            result = await tool.execute(agent_id="agent-1", task_id="t1")
-            assert "COMPLETED" in result
-            assert "All done!" in result
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# A2ACancelTaskTool
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestA2ACancelTaskTool:
-    @pytest.mark.asyncio
-    async def test_missing_params(self):
-        tool = A2ACancelTaskTool()
-        result = await tool.execute(agent_id="", task_id="")
-        assert "Error" in result
-
-    @pytest.mark.asyncio
-    async def test_cancel_not_found(self):
-        mock_mgr = MagicMock()
-        mock_mgr.get_task_result = MagicMock(return_value=None)
-
-        with patch(MANAGER_PATH, return_value=mock_mgr), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2ACancelTaskTool()
-            result = await tool.execute(agent_id="sub-1", task_id="t-x")
-            assert "not found" in result.lower()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# A2AListTasksTool
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestA2AListTasksTool:
-    @pytest.mark.asyncio
-    async def test_empty_store(self):
-        from slife.a2a.task_store import clear_store
-
-        clear_store()
-        tool = A2AListTasksTool()
-        result = await tool.execute()
-        assert "No tasks found" in result
-
-    @pytest.mark.asyncio
-    async def test_with_tasks(self):
-        from slife.a2a.task_store import get_store, clear_store
-
-        clear_store()
-        store = get_store()
-        store.record_send("t1", "agent-1", "task one", "mqtt")
-        store.record_send("t2", "agent-2", "task two", "subagent")
-        store.record_result("t1", "done")
-
-        tool = A2AListTasksTool()
-        result = await tool.execute()
-        assert "t1" in result
-        assert "t2" in result
-
-    @pytest.mark.asyncio
-    async def test_with_filter(self):
-        from slife.a2a.task_store import get_store, clear_store
-
-        clear_store()
-        store = get_store()
-        store.record_send("t1", "agent-1", "task one", "mqtt")
-        store.record_send("t2", "agent-2", "task two", "subagent")
-
-        tool = A2AListTasksTool()
-        result = await tool.execute(status="pending")
-        assert "t1" in result
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# A2ASubscribeTaskTool
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestA2ASubscribeTaskTool:
-    @pytest.mark.asyncio
-    async def test_missing_params(self):
-        tool = A2ASubscribeTaskTool()
-        result = await tool.execute(agent_id="", task_id="")
-        assert "Error" in result
-
-    @pytest.mark.asyncio
-    async def test_already_completed(self):
-        from slife.a2a.task_store import get_store, clear_store
-
-        clear_store()
-        store = get_store()
-        store.record_send("t1", "agent-1", "task", "mqtt")
-        store.record_result("t1", "Already done")
-
-        tool = A2ASubscribeTaskTool()
-        result = await tool.execute(agent_id="agent-1", task_id="t1")
-        assert "completed" in result.lower()
-        assert "Already done" in result
-
-    @pytest.mark.asyncio
-    async def test_single_check_returns_status(self):
-        from slife.a2a.task_store import get_store, clear_store
-
-        clear_store()
-        store = get_store()
-        store.record_send("t1", "agent-1", "task", "mqtt")
-
-        with patch(MANAGER_PATH, return_value=None), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2ASubscribeTaskTool()
-            result = await tool.execute(agent_id="agent-1", task_id="t1")
-            assert "pending" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_completed_task_returns_result(self):
-        from slife.a2a.task_store import get_store, clear_store
-
-        clear_store()
-        store = get_store()
-        store.record_send("t1", "agent-1", "task", "mqtt")
-        store.record_result("t1", "all done")
-
-        with patch(MANAGER_PATH, return_value=None), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2ASubscribeTaskTool()
-            result = await tool.execute(agent_id="agent-1", task_id="t1")
-            assert "completed" in result.lower()
-            assert "all done" in result
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# SubagentSpawnTool
-# ═══════════════════════════════════════════════════════════════════════════
-
-
 class TestSubagentSpawnTool:
     @pytest.mark.asyncio
     async def test_no_manager(self):
@@ -494,6 +138,69 @@ class TestSubagentSpawnTool:
             tool = SubagentSpawnTool()
             result = await tool.execute()
             assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_spawn_context_default_pure(self):
+        """Spawn defaults to a pure context (no cloned messages)."""
+        mock_mgr = MagicMock()
+        mock_mgr.spawn = AsyncMock(return_value="sub-3")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = SubagentSpawnTool()
+            await tool.execute()
+
+        kwargs = mock_mgr.spawn.call_args.kwargs
+        assert kwargs["context_source"] == "pure"
+        assert kwargs["context_messages"] is None
+
+    @pytest.mark.asyncio
+    async def test_spawn_context_cloned_serializes(self):
+        """context='cloned' passes the parent conversation messages to spawn."""
+        from slife.agent.conversation import Conversation
+        from slife.config import Config, ModelConfig
+        from slife.tools.context import ToolContext
+
+        conv = Conversation(system_prompt="SYS")
+        conv.add_user_message("t1")
+        conv.add_assistant_message("r1")
+        mc = ModelConfig(
+            ref="t/m", provider="t", api_model="m", display_name="M",
+            api_key="k", context_window=1000,
+        )
+        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_id="testbot")
+
+        mock_mgr = MagicMock()
+        mock_mgr.spawn = AsyncMock(return_value="sub-4")
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = SubagentSpawnTool()
+            object.__setattr__(tool, "_ctx", ToolContext(conversation=conv, config=cfg))
+            await tool.execute(context="cloned")
+
+        kwargs = mock_mgr.spawn.call_args.kwargs
+        assert kwargs["context_source"] == "cloned"
+        assert kwargs["context_messages"] is not None
+        roles = [m["role"] for m in kwargs["context_messages"]]
+        assert roles == ["user", "assistant"]
+
+    def test_serialize_cloned_context_drops_system(self):
+        """The parent's system message (incl. footer) is not serialized."""
+        from slife.agent.conversation import Conversation
+        from slife.config import Config, ModelConfig
+        from slife.tools.a2a import _serialize_cloned_context
+        from slife.tools.context import ToolContext
+
+        conv = Conversation(system_prompt="PARENT_SYS")
+        conv.add_user_message("t1")
+        conv.add_assistant_message("r1")
+        mc = ModelConfig(
+            ref="t/m", provider="t", api_model="m", display_name="M",
+            api_key="k", context_window=1000,
+        )
+        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_id="testbot")
+
+        data = _serialize_cloned_context(ToolContext(conversation=conv, config=cfg))
+        assert data is not None
+        assert all(m.get("role") != "system" for m in data)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -541,65 +248,6 @@ class TestSubagentStopTool:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestA2AGetAgentCardTool:
-    @pytest.mark.asyncio
-    async def test_missing_agent_id(self):
-        tool = A2AGetAgentCardTool()
-        result = await tool.execute(agent_id="")
-        assert "Error" in result
-
-    @pytest.mark.asyncio
-    async def test_agent_not_found(self):
-        mock_mgr = MagicMock()
-        mock_mgr.list = MagicMock(return_value=[])
-
-        with patch(MANAGER_PATH, return_value=mock_mgr), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2AGetAgentCardTool()
-            result = await tool.execute(agent_id="unknown")
-            assert "not found" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_local_subagent_card(self):
-        mock_proc = MagicMock()
-        mock_proc.pid = 9999
-        mock_proc.is_ready = True
-        mock_proc.is_running = True
-
-        mock_mgr = MagicMock()
-        mock_mgr.list = MagicMock(return_value=["sub-1"])
-        mock_mgr.get = MagicMock(return_value=mock_proc)
-
-        with patch(MANAGER_PATH, return_value=mock_mgr), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2AGetAgentCardTool()
-            result = await tool.execute(agent_id="sub-1")
-            assert "local subagent" in result
-            assert "pid=9999" in result
-
-    @pytest.mark.asyncio
-    async def test_mqtt_peer_card(self):
-        from slife.a2a.card import AgentCard
-        from slife.a2a.identity import AgentId
-
-        mock_client = MagicMock()
-        mock_client.get_agent_card = MagicMock(return_value=AgentCard(
-            agent_id=AgentId("peer-1"), display_name="Remote", status="idle",
-        ))
-
-        with patch(MANAGER_PATH, return_value=None), \
-             patch(CLIENT_PATH, return_value=mock_client):
-            tool = A2AGetAgentCardTool()
-            result = await tool.execute(agent_id="peer-1")
-            assert "MQTT" in result
-            assert "Remote" in result
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# A2ANotifyUserTool
-# ═══════════════════════════════════════════════════════════════════════════
-
-
 class TestA2ANotifyUserTool:
     @pytest.mark.asyncio
     async def test_missing_message(self):
@@ -622,31 +270,3 @@ class TestA2ANotifyUserTool:
 # A2ABroadcastTool
 # ═══════════════════════════════════════════════════════════════════════════
 
-
-class TestA2ABroadcastTool:
-    @pytest.mark.asyncio
-    async def test_missing_task(self):
-        tool = A2ABroadcastTool()
-        result = await tool.execute(task="")
-        assert "Error" in result
-
-    @pytest.mark.asyncio
-    async def test_no_agents_available(self):
-        with patch(MANAGER_PATH, return_value=None), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2ABroadcastTool()
-            result = await tool.execute(task="hello everyone")
-            assert "No agents available" in result
-
-    @pytest.mark.asyncio
-    async def test_broadcast_to_subagents(self):
-        mock_mgr = MagicMock()
-        mock_mgr.broadcast = AsyncMock(return_value=["corr-1", "corr-2"])
-
-        with patch(MANAGER_PATH, return_value=mock_mgr), \
-             patch(CLIENT_PATH, return_value=None):
-            tool = A2ABroadcastTool()
-            result = await tool.execute(task="hello")
-            assert "2 agent" in result
-            assert "corr-1" in result
-            assert "corr-2" in result

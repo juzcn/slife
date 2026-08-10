@@ -101,8 +101,9 @@ class OpenAIResponsesBackend:
             schema.setdefault("type", "object")
             schema.setdefault("properties", {})
             schema.setdefault("required", [])
-            schema["properties"].pop("_timeout", None)
-            schema["properties"].pop("_async", None)
+            # Keep harness meta-params (_timeout/_async/_approve): the three
+            # backends expose the same tool schemas to the model, so the LLM
+            # can drive timeouts/async/approval uniformly on every API.
             result.append({
                 "type": "function",
                 "name": fn.get("name", ""),

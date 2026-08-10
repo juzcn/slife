@@ -32,18 +32,21 @@ _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)))
 
 
-def build(config: Config) -> str:
+def build(config: Config, is_subagent: bool = False) -> str:
     """Render the system prompt from the runtime spec sheet template.
 
     All platform facts are computed here — no dependency on
     ``slife.tools`` or any tool module.
+
+    When *is_subagent* is True, the subagent identity template
+    (``subagent.j2``) is appended so the spawned process knows its role.
     """
     model = config.active_model
     now = datetime.now().astimezone()
     a2a = config.a2a_config
     agent_name: str = (a2a.agent_name if a2a else "") or config.agent_id
 
-    return _env.get_template("system_prompt.j2").render(
+    prompt = _env.get_template("system_prompt.j2").render(
         # ── 1. 环境 ──
         agent_name=agent_name,
         model_name=model.display_name,
@@ -83,6 +86,15 @@ def build(config: Config) -> str:
         a2a_broker_host=(a2a.broker_host if a2a else "localhost"),
         a2a_broker_port=(a2a.broker_port if a2a else 1883),
     ).strip()
+
+    if is_subagent:
+        prompt += "\n\n" + _env.get_template("subagent.j2").render(
+            # The spawner (subagent/process.py) sets SLIFE_SUBAGENT_NAME and
+            # SLIFE_SUBAGENT_CONTEXT ("pure" | "cloned").
+            subagent_name=os.environ.get("SLIFE_SUBAGENT_NAME", ""),
+            context_source=os.environ.get("SLIFE_SUBAGENT_CONTEXT", "pure"),
+        ).strip()
+    return prompt
 
 
 def build_context_status(
@@ -135,6 +147,9 @@ def build_context_status(
         shell=shell,
         context_time_start=context_time_start,
         presence_events=rendered_presence,
+        # Subagent identity: only set when running as a subagent
+        # (SLIFE_SUBAGENT_NAME is set by the spawner in process.py).
+        subagent_name=os.environ.get("SLIFE_SUBAGENT_NAME", ""),
     ).strip()
 
 
@@ -192,4 +207,4 @@ def _credstore_backend() -> str:
     except ImportError:
         return "不可用"
     except Exception:
-        return "未知"
+        return "unknown"

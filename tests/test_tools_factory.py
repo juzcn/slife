@@ -107,11 +107,15 @@ class TestCreateToolsOverrideEdgeCases:
         # Warning should be logged
         assert any("tool_override_no_name" in r.message for r in caplog.records)
 
-    def test_a2a_tools_skipped_when_no_a2a_config(self):
-        """A2A tools with requires_a2a=True are skipped when A2A is disabled."""
+    def test_local_subagent_native_but_mesh_in_plugin(self):
+        """Local subagent ops are native (no broker); pure mesh tools are plugin."""
         registry = create_tools_from_config(None, config=None)
         names = {t.name for t in registry.list_tools()}
-        # Only a2a_list_agents has requires_a2a=True
-        assert "a2a_list_agents" not in names
-        # Other A2A tools don't require A2A and are always registered
+        # Local subagent task/lifecycle tools are native.
         assert "a2a_send_task" in names
+        assert "a2a_send_task_async" in names
+        assert "a2a_spawn_subagent" in names
+        assert "a2a_list_subagents" in names
+        # Pure mesh tools live in the a2a plugin (a2a__*), not native.
+        assert "mqtt_list_agents" not in names
+        assert "mqtt_broadcast" not in names

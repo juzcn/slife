@@ -1,115 +1,36 @@
-"""A2A / subagent tools — complete A2A-protocol toolset for the LLM.
+"""Subagent lifecycle tools — local subagent management (native).
 
-All tools are proper :class:`Tool` subclasses, auto-discovered by
-``create_tools_from_config`` and always registered.  They use module-level
-transport references (set by ``AgentService``) to reach the live
-:class:`A2AClient` and :class:`SubagentManager` at call time.
+Local subagent workers are stdin/stdout processes managed by the
+:class:`SubagentManager` — they need no MQTT broker.  Remote mesh peers
+go through the a2a plugin (``a2a__*`` tools), which only exists when the
+broker (Mosquitto) is running.
 
-Tool inventory (13 tools, A2A protocol aligned)
-----------------------------------------------
-A2A method              slife tool                status
-message/send            a2a_send_task             full
-tasks/get               a2a_get_task_result       full (TaskRecord)
-tasks/list              a2a_list_tasks            full (filterable)
-tasks/cancel            a2a_cancel_task           full
-tasks/subscribe         a2a_subscribe_task        non-blocking status check
-—                       a2a_list_agents           MQTT peers only
-—                       a2a_list_subagents        local workers only
-—                       a2a_spawn_subagent        agent lifecycle
-—                       a2a_stop_subagent         agent lifecycle
-—                       a2a_agent_card            agent introspection
-—                       a2a_notify_user           desktop alert
-—                       a2a_broadcast             scatter/gather
-
-Note: a2a_send_task_async internally registers an event-driven Future
-so results are pushed to the chat inbox automatically on completion.
-a2a_subscribe_task is non-blocking — it returns the current status
-and suggests polling with a2a_get_task_result if still pending.
+Tool inventory (9 tools)
+------------------------
+a2a_spawn_subagent       spawn a local worker
+a2a_list_subagents       list local workers
+a2a_stop_subagent        stop a local worker
+a2a_send_task            send a task to a local worker (sync)
+a2a_send_task_async      send a task to a local worker (fire-and-forget)
+a2a_get_task_result      poll a local worker's async result
+a2a_cancel_task          cancel a local worker's pending task
+a2a_subscribe_task       wait for a local worker's task to complete
+a2a_notify_user          desktop alert
 """
 
 from __future__ import annotations
 
 import logging
-import os as _os
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from slife.tools.base import Tool, require_params
-
-if TYPE_CHECKING:
-    from slife.config import Config
 
 logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Helpers
+# Subagent lifecycle
 # ═══════════════════════════════════════════════════════════════════════════
-
-# Sentinel for "no manager / no client"
-_NO_TRANSPORT_MSG = (
-    "Agent '{agent_id}' not found. "
-    "Use a2a_list_agents or a2a_list_subagents to see available agents."
-)
-
-
-def _get_transports():
-    """Return (manager, client) — the live transport references.
-
-    Imports are lazy (inside each tool's execute) to avoid circular
-    dependencies at module-load time.  This helper consolidates the
-    repeated three-line stanza into one call.
-    """
-    from slife.a2a.client import get_client
-    from slife.subagent.process import get_manager
-
-    return get_manager(), get_client()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Discovery
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class A2AListAgentsTool(Tool):
-    """List remote agents on the MQTT P2P mesh — remote-only, not local subagents."""
-
-    name = "a2a_list_agents"
-    category = "A2A"
-    requires_a2a = True
-    _subagent_skip = True  # subagents have no MQTT transport
-    description = (
-        "List remote agents discovered on the MQTT P2P mesh. "
-        "Shows agent_id, display name, and status (idle/busy). "
-        "This is *remote only* — it never includes local subagents. "
-        "Use a2a_list_subagents for local workers. "
-        "Use before delegating tasks via a2a_send_task or a2a_send_task_async."
-    )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {},
-        "required": [],
-    }
-
-    async def execute(self, **kwargs) -> str:
-        from slife.a2a.client import get_client
-
-        client = get_client()
-        if client is None:
-            return (
-                "A2A MQTT mesh is not active. "
-                "Start Mosquitto and configure mqtt in slife.json5 to join the P2P mesh."
-            )
-
-        peers = await client.list_agents()
-
-        lines = [f"Agents ({len(peers) + 1}):"]
-        # Include self
-        name = f" ({client._config.agent_name})" if client._config.agent_name else ""
-        lines.append(f"  - {client.agent_id}{name} [{client.status}] (you)")
-        for c in peers:
-            name = f" ({c.display_name})" if c.display_name else ""
-            lines.append(f"  - {c.agent_id}{name} [{c.status}]")
-        return "\n".join(lines)
 
 
 class A2AListSubagentsTool(Tool):
@@ -117,7 +38,6 @@ class A2AListSubagentsTool(Tool):
 
     name = "a2a_list_subagents"
     category = "A2A"
-    _subagent_skip = True  # subagents have no SubagentManager
     description = (
         "List locally-spawned subagent workers (stdin/stdout IPC). "
         "Shows agent_id, PID, and readiness. "
@@ -167,294 +87,9 @@ class A2AListSubagentsTool(Tool):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class A2ASendTaskTool(Tool):
-    """Send a task to any agent and wait for the result (synchronous)."""
-
-    name = "a2a_send_task"
-    category = "A2A"
-    _subagent_skip = True  # subagents have no transport (MQTT or SubagentManager)
-    description = (
-        "Send a task to any agent and wait for the result. "
-        "Works with local subagents and remote MQTT peers — routing is "
-        "automatic.  Use a2a_list_agents and a2a_list_subagents first "
-        "to discover available agents.  "
-        "Be specific — the remote agent has no context of your conversation. "
-        "For parallel work, use a2a_send_task_async to send without waiting."
-    )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {
-                "type": "string",
-                "description": "Target agent id (from a2a_list_agents or a2a_list_subagents).",
-            },
-            "task": {
-                "type": "string",
-                "description": "Self-contained task description for the agent.",
-            },
-        },
-        "required": ["agent_id", "task"],
-    }
-
-    async def execute(self, agent_id: str = "", task: str = "", **kwargs) -> str:
-        if err := require_params(agent_id=agent_id, task=task):
-            return err
-
-        from slife.a2a.identity import AgentId
-        manager, client = _get_transports()
-
-        # Route to local subagent first
-        if manager is not None and agent_id in manager.list():
-            try:
-                return await manager.send_task(agent_id, task)
-            except TimeoutError:
-                return f"Error: task to '{agent_id}' timed out."
-            except Exception as e:
-                return f"Error sending task to subagent '{agent_id}': {e}"
-
-        # Route to MQTT peer
-        if client is not None:
-            try:
-                return await client.send_task(AgentId(agent_id), task)
-            except TimeoutError:
-                return f"Error: task to '{agent_id}' timed out."
-            except Exception as e:
-                return f"Error sending task to agent '{agent_id}': {e}"
-
-        return _NO_TRANSPORT_MSG.format(agent_id=agent_id)
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Task management — asynchronous
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-class A2ASendTaskAsyncTool(Tool):
-    """Send a task without waiting — fire-and-forget."""
-
-    name = "a2a_send_task_async"
-    category = "A2A"
-    _subagent_skip = True  # subagents have no transport (MQTT or SubagentManager)
-    description = (
-        "Send a task to an agent without waiting for the result. "
-        "Returns a task_id immediately. "
-        "Results are pushed to the chat inbox automatically on completion. "
-        "Use a2a_get_task_result for a one-shot status check, or "
-        "a2a_subscribe_task for a non-blocking status lookup. "
-        "Works with local subagents and remote MQTT peers. "
-        "Use a2a_list_agents and a2a_list_subagents first to discover agents."
-    )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {
-                "type": "string",
-                "description": "Target agent id (from a2a_list_agents or a2a_list_subagents).",
-            },
-            "task": {
-                "type": "string",
-                "description": "Self-contained task description.",
-            },
-        },
-        "required": ["agent_id", "task"],
-    }
-
-    async def execute(self, agent_id: str = "", task: str = "", **kwargs) -> str:
-        if err := require_params(agent_id=agent_id, task=task):
-            return err
-
-        from slife.a2a.identity import AgentId
-        manager, client = _get_transports()
-
-        # Route to local subagent first
-        if manager is not None and agent_id in manager.list():
-            try:
-                rpc_id = await manager.send_task_async(agent_id, task)
-                # Register event-driven Future so a2a_subscribe_task
-                # returns immediately when the result arrives (no polling).
-                try:
-                    await manager.set_push_notification(
-                        agent_id, rpc_id,
-                        f"Slife:local:notify:{rpc_id}",
-                    )
-                except Exception:
-                    pass  # notification setup is best-effort
-                return (
-                    f"Task sent asynchronously.\n"
-                    f"  Task ID: {rpc_id}\n"
-                    f"  Agent: {agent_id}\n"
-                    f'  Use a2a_get_task_result with task_id="{rpc_id}" '
-                    f'and agent_id="{agent_id}" to check the result.'
-                )
-            except Exception as e:
-                return f"Error sending async task to subagent '{agent_id}': {e}"
-
-        # Route to MQTT peer
-        if client is not None:
-            try:
-                corr_id = await client.send_task_async(AgentId(agent_id), task)
-                # MQTT results arrive via the reply_to topic automatically —
-                # no extra notification setup needed.
-                return (
-                    f"Task sent asynchronously.\n"
-                    f"  Task ID: {corr_id}\n"
-                    f"  Agent: {agent_id} (MQTT)\n"
-                    f'  Use a2a_get_task_result with task_id="{corr_id}" '
-                    f'and agent_id="{agent_id}" to check the result.'
-                )
-            except Exception as e:
-                return f"Error sending async task to agent '{agent_id}': {e}"
-
-        return _NO_TRANSPORT_MSG.format(agent_id=agent_id)
-
-
-class A2AGetTaskResultTool(Tool):
-    """Poll for the result of an asynchronous task.
-
-    Returns the full task record (status, timestamps, result) when available.
-    Uses the shared TaskStore so results survive across calls.
-    """
-
-    name = "a2a_get_task_result"
-    category = "A2A"
-    _subagent_skip = True  # subagents can't send tasks, so results are always empty
-    description = (
-        "Check the status and result of a task once (non-blocking). "
-        "Returns the task record including status (pending/completed/failed/cancelled), "
-        "timestamps, and result text. "
-        "Use after a2a_send_task_async to check if a task is done without waiting. "
-        "To check status, use a2a_subscribe_task. "
-        "For a list of all tasks, use a2a_list_tasks."
-    )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {
-                "type": "string",
-                "description": "The agent the task was sent to.",
-            },
-            "task_id": {
-                "type": "string",
-                "description": "The task_id returned by a2a_send_task_async.",
-            },
-        },
-        "required": ["agent_id", "task_id"],
-    }
-
-    async def execute(self, agent_id: str = "", task_id: str = "", **kwargs) -> str:
-        if err := require_params(agent_id=agent_id, task_id=task_id):
-            return err
-
-        from slife.a2a.identity import AgentId
-        from slife.a2a.task_store import get_store
-
-        manager, client = _get_transports()
-        store = get_store()
-
-        # Consume result from both transports (updates task store as side effect).
-        # Order: subagent first (fast, local), then MQTT (network).
-        if manager is not None:
-            manager.get_task_result(agent_id, task_id)
-
-        if client is not None:
-            client.get_task_result(task_id)
-
-        # Read full record from task store
-        rec = store.get(task_id)
-        if rec is None:
-            # Task unknown — check if agent exists
-            agent_exists = False
-            if manager is not None and agent_id in manager.list():
-                agent_exists = True
-            if client is not None and client.get_agent_card(AgentId(agent_id)) is not None:
-                agent_exists = True
-            if agent_exists:
-                return (
-                    f"Task '{task_id}' not found. "
-                    f"It may have been pruned from the task store. "
-                    f"Use a2a_list_tasks to see active tasks."
-                )
-            return f"Agent '{agent_id}' not found. Use a2a_list_agents or a2a_list_subagents."
-
-        # Format full task record
-        status_emoji = {"pending": "⏳", "completed": "✅", "failed": "❌", "cancelled": "🚫"}
-        emoji = status_emoji.get(rec.status, "❓")
-        lines = [
-            f"{emoji} Task: {rec.task_id}",
-            f"  Status: {rec.status.upper()}",
-            f"  Agent: {rec.agent_id}",
-            f"  Transport: {rec.transport}",
-            f"  Task: {rec.task_preview}",
-        ]
-        if rec.completed_at is not None:
-            elapsed = rec.completed_at - rec.created_at
-            lines.append(f"  Duration: {elapsed:.1f}s")
-        if rec.result:
-            lines.append(f"  Result:\n{rec.result}")
-        elif rec.status == "pending":
-            lines.append("  Result: (still pending — use a2a_get_task_result to check)")
-        else:
-            lines.append("  Result: (no result)")
-
-        return "\n".join(lines)
-
-
-class A2ACancelTaskTool(Tool):
-    """Cancel a pending or in-flight task."""
-
-    name = "a2a_cancel_task"
-    category = "A2A"
-    _subagent_skip = True  # subagents have no transport (MQTT or SubagentManager)
-    description = (
-        "Cancel a pending task (synchronous or asynchronous). "
-        "Sends a cancellation notice to the target agent. "
-        "Returns whether the task was found and cancelled locally. "
-        "Note: the remote agent may still complete the task — cancellation "
-        "is best-effort."
-    )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {
-                "type": "string",
-                "description": "The agent the task was sent to.",
-            },
-            "task_id": {
-                "type": "string",
-                "description": "The task_id to cancel (from a2a_send_task_async, or correlation_id from a2a_send_task).",
-            },
-        },
-        "required": ["agent_id", "task_id"],
-    }
-
-    async def execute(self, agent_id: str = "", task_id: str = "", **kwargs) -> str:
-        if err := require_params(agent_id=agent_id, task_id=task_id):
-            return err
-
-        from slife.a2a.identity import AgentId
-        manager, client = _get_transports()
-        cancelled = False
-
-        # Try local subagent
-        if manager is not None:
-            # For subagents, just clear any stored result
-            result = manager.get_task_result(agent_id, task_id)
-            if result is not None:
-                cancelled = True
-
-        # Try MQTT client
-        if client is not None and not cancelled:
-            try:
-                cancelled = await client.cancel_task(AgentId(agent_id), task_id)
-            except Exception as e:
-                return f"Error cancelling task: {e}"
-
-        if cancelled:
-            return f"Task '{task_id}' on agent '{agent_id}' cancelled."
-        return (
-            f"Task '{task_id}' not found on agent '{agent_id}'. "
-            f"It may have already completed or the task_id is incorrect."
-        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -462,165 +97,9 @@ class A2ACancelTaskTool(Tool):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class A2AListTasksTool(Tool):
-    """List tasks with optional status and agent filters — A2A tasks/list."""
-
-    name = "a2a_list_tasks"
-    category = "A2A"
-    _subagent_skip = True  # subagents can't send tasks, so listings are always empty
-    description = (
-        "List tasks across all agents, with optional filters. "
-        "Supports filtering by agent_id, status (pending/completed/failed/cancelled), "
-        "and transport (mqtt/subagent). "
-        "Returns task records sorted newest-first, with task_id, status, "
-        "agent, transport, and preview. "
-        "NOTE: the task store is in-memory only — it is EMPTY after a restart, "
-        "so tasks from before the restart are not visible here. "
-        "Use this to monitor task progress across your agent fleet."
-    )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {
-                "type": "string",
-                "description": "Filter by target agent id (optional).",
-            },
-            "status": {
-                "type": "string",
-                "description": "Filter by status: pending, completed, failed, cancelled (optional).",
-            },
-            "transport": {
-                "type": "string",
-                "description": "Filter by transport: mqtt or subagent (optional).",
-            },
-        },
-        "required": [],
-    }
-
-    async def execute(
-        self, agent_id: str = "", status: str = "", transport: str = "", **kwargs,
-    ) -> str:
-        from slife.a2a.task_store import get_store
-
-        store = get_store()
-
-        filters = {}
-        if agent_id.strip():
-            filters["agent_id"] = agent_id.strip()
-        if status.strip():
-            filters["status"] = status.strip().lower()
-        if transport.strip():
-            filters["transport"] = transport.strip().lower()
-
-        records = store.list_tasks(**filters, limit=50)
-        counts = store.count_by_status()
-
-        if not records:
-            filter_desc = ", ".join(f"{k}={v}" for k, v in filters.items())
-            prefix = f"No tasks found" + (f" matching {filter_desc}" if filter_desc else "") + "."
-            if counts:
-                prefix += f" Task summary: {counts}"
-            return prefix
-
-        lines = [f"Tasks ({len(records)} shown)"]
-        if counts:
-            summary = " | ".join(f"{s}: {c}" for s, c in sorted(counts.items()))
-            lines.append(f"Summary: {summary}")
-        lines.append("")
-
-        status_icons = {
-            "pending": "⏳", "completed": "✅",
-            "failed": "❌", "cancelled": "🚫",
-        }
-        for r in records:
-            icon = status_icons.get(r.status, "❓")
-            age = f"{r.completed_at - r.created_at:.1f}s" if r.completed_at else "…"
-            lines.append(
-                f"  {icon} {r.task_id} [{r.status.upper():10s}] "
-                f"→ {r.agent_id} ({r.transport}) "
-                f"「{r.task_preview[:60]}」 {age}"
-            )
-
-        return "\n".join(lines)
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Task subscription (A2A tasks/subscribe)
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-class A2ASubscribeTaskTool(Tool):
-    """Subscribe to task completion — wait for a task to finish."""
-
-    name = "a2a_subscribe_task"
-    category = "A2A"
-    _subagent_skip = True  # subagents have no transport to subscribe through
-    description = (
-        "Check the status of an async task (non-blocking). "
-        "Returns the result if the task has completed; otherwise returns "
-        "the current status and suggests polling with a2a_get_task_result. "
-        "Use after a2a_send_task_async to check task progress. "
-        "For completed tasks: returns the full result immediately. "
-        "For pending tasks: returns status — results are pushed to the "
-        "chat inbox automatically when the task completes."
-    )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {
-                "type": "string",
-                "description": "The agent the task was sent to.",
-            },
-            "task_id": {
-                "type": "string",
-                "description": "The task_id to subscribe to.",
-            },
-        },
-        "required": ["agent_id", "task_id"],
-    }
-
-    async def execute(
-        self, agent_id: str = "", task_id: str = "", **kwargs,
-    ) -> str:
-        if err := require_params(agent_id=agent_id, task_id=task_id):
-            return err
-
-        from slife.a2a.task_store import get_store
-
-        manager, client = _get_transports()
-        store = get_store()
-
-        # Consume any result that may have arrived
-        if manager is not None:
-            manager.get_task_result(agent_id, task_id)
-        if client is not None:
-            client.get_task_result(task_id)
-
-        # Check the task store for final status
-        rec = store.get(task_id)
-        if rec is None:
-            return (
-                f"Task '{task_id}' not found. "
-                f"It may have been pruned or the task_id is incorrect."
-            )
-
-        if rec.status in ("completed", "failed", "cancelled"):
-            status_emoji = {"completed": "✅", "failed": "❌", "cancelled": "🚫"}
-            emoji = status_emoji.get(rec.status, "❓")
-            return (
-                f"{emoji} Task {rec.status}.\n"
-                f"  Task ID: {task_id}\n"
-                f"  Result: {rec.result or '(no result)'}"
-            )
-
-        # Still pending — LLM should poll with a2a_get_task_result
-        return (
-            f"⏳ Task is still pending.\n"
-            f"  Task ID: {task_id}\n"
-            f"  Agent: {agent_id}\n"
-            f"  Use a2a_get_task_result to check progress. "
-            f"Results are pushed to the chat inbox automatically on completion."
-        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -628,9 +107,23 @@ class A2ASubscribeTaskTool(Tool):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _serialize_cloned_context(ctx) -> list[dict] | None:
+    """Return the parent conversation messages for a cloned subagent.
+
+    The parent's messages are cloned as-is (the subagent rebuilds its own
+    system prompt).  No upfront trimming: context overflow is handled by
+    the loop's own ``_sys_trim`` on the first turn.  Returns None when no
+    conversation is available.
+    """
+    conversation = getattr(ctx, "conversation", None)
+    if conversation is None:
+        return None
+    # Drop the parent's system message (incl. its dynamic context footer).
+    return [m for m in conversation.messages if m.get("role") != "system"]
+
+
 class SubagentSpawnTool(Tool):
     """Spawn a new local subagent worker process."""
-    _subagent_skip = True  # subagents must not spawn more subagents
 
     name = "a2a_spawn_subagent"
     category = "A2A"
@@ -652,34 +145,56 @@ class SubagentSpawnTool(Tool):
                     '"sub-1" is used.'
                 ),
             },
+            "context": {
+                "type": "string",
+                "enum": ["pure", "cloned"],
+                "description": (
+                    'Context for the subagent: "pure" (default, a fresh '
+                    'independent context) or "cloned" (inherit a trimmed '
+                    "copy of your current conversation)."
+                ),
+            },
         },
         "required": [],
     }
 
-    async def execute(self, name: str = "", **kwargs) -> str:
+    async def execute(
+        self, name: str = "", context: str = "pure", **kwargs,
+    ) -> str:
         from slife.subagent.process import get_manager
 
         manager = get_manager()
         if manager is None:
-            import os as _os
-            if _os.environ.get("SLIFE_SUBAGENT_NAME"):
-                return (
-                    "Cannot spawn subagent: already running inside a "
-                    "subagent process (nested subagents are not supported)."
-                )
             return (
                 "Subagent manager is not running yet — it starts "
                 "automatically when the agent service initializes."
             )
 
+        context_source = context if context in ("pure", "cloned") else "pure"
+        context_messages = (
+            _serialize_cloned_context(getattr(self, "_ctx", None))
+            if context_source == "cloned" else None
+        )
+        if context_source == "cloned" and not context_messages:
+            logger.warning("subagent_clone_ctx_unavailable — falling back to pure")
+            context_source = "pure"
+
         agent_name = name.strip() if name else None
-        logger.info("subagent_tool_spawn name=%s", agent_name or "<auto>")
+        logger.info(
+            "subagent_tool_spawn name=%s context=%s",
+            agent_name or "<auto>", context_source,
+        )
 
         try:
-            agent_id = await manager.spawn(name=agent_name)
+            agent_id = await manager.spawn(
+                name=agent_name,
+                context_source=context_source,
+                context_messages=context_messages,
+            )
             return (
                 f"Subagent spawned successfully.\n"
                 f"  Agent ID: {agent_id}\n"
+                f"  Context: {context_source}\n"
                 f"  Use a2a_list_subagents to see all local workers.\n"
                 f'  Use a2a_send_task with agent_id="{agent_id}" to delegate work.'
             )
@@ -690,7 +205,6 @@ class SubagentSpawnTool(Tool):
 
 class SubagentStopTool(Tool):
     """Stop a locally-managed subagent process."""
-    _subagent_skip = True  # subagents must not manage sibling subagents
 
     name = "a2a_stop_subagent"
     category = "A2A"
@@ -751,67 +265,6 @@ class SubagentStopTool(Tool):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class A2AGetAgentCardTool(Tool):
-    """Get the detailed card of a specific agent."""
-
-    name = "a2a_agent_card"
-    category = "A2A"
-    _subagent_skip = True  # subagents have no transport to look up agents
-    description = (
-        "Get the detailed Agent Card for a specific agent. "
-        "Shows agent_id, display name, status (idle/busy), and whether "
-        "the agent is a local subagent or remote MQTT peer. "
-        "Use this to check if an agent is idle before sending a task."
-    )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {
-                "type": "string",
-                "description": "The agent_id to look up.",
-            },
-        },
-        "required": ["agent_id"],
-    }
-
-    async def execute(self, agent_id: str = "", **kwargs) -> str:
-        if not agent_id:
-            return "Error: agent_id is required."
-
-        from slife.a2a.identity import AgentId
-        manager, client = _get_transports()
-
-        # Check local subagent first
-        if manager is not None and agent_id in manager.list():
-            p = manager.get(agent_id)
-            pid = f"pid={p.pid}" if p and p.pid else "unknown"
-            ready = "ready" if p and p.is_ready else "starting"
-            return (
-                f"Agent Card — {agent_id}\n"
-                f"  Type: local subagent\n"
-                f"  Status: {ready}\n"
-                f"  PID: {pid}\n"
-                f"  Running: {p.is_running if p else 'unknown'}"
-            )
-
-        # Check MQTT peer
-        if client is not None:
-            card = client.get_agent_card(AgentId(agent_id))
-            if card is not None:
-                name = f" ({card.display_name})" if card.display_name else ""
-                return (
-                    f"Agent Card — {card.agent_id}\n"
-                    f"  Type: MQTT remote peer\n"
-                    f"  Display name: {card.display_name or '(none)'}\n"
-                    f"  Status: {card.status}"
-                )
-
-        return (
-            f"Agent '{agent_id}' not found. "
-            f"Use a2a_list_agents and a2a_list_subagents to see available agents."
-        )
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Messaging
 # ═══════════════════════════════════════════════════════════════════════════
@@ -861,60 +314,201 @@ class A2ANotifyUserTool(Tool):
         return f"Notification sent: [{title}] {message}"
 
 
-class A2ABroadcastTool(Tool):
-    """Broadcast a task to all known agents."""
 
-    name = "a2a_broadcast"
+# ═══════════════════════════════════════════════════════════════════════════
+# Local subagent task routing (native — no MQTT/Mosquitto needed).
+# Remote mesh peers go through the a2a plugin (a2a__* tools), which only
+# exist when the broker (Mosquitto) is running.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _manager_or_hint() -> tuple:
+    """Return (manager, "") or (None, error_hint)."""
+    from slife.subagent.process import get_manager
+
+    manager = get_manager()
+    if manager is None:
+        return None, (
+            "Subagent manager is not running yet — it starts "
+            "automatically when the agent service initializes."
+        )
+    return manager, ""
+
+
+def _not_local_hint(agent_id: str) -> str:
+    return (
+        f"'{agent_id}' is not a local subagent. "
+        "For local subagents use a2a_list_subagents first; for remote mesh "
+        "peers use mqtt__send_task (requires the MQTT broker running)."
+    )
+
+
+class A2ASendTaskTool(Tool):
+    """Send a task to a local subagent and wait for the result."""
+
+    name = "a2a_send_task"
     category = "A2A"
-    _subagent_skip = True  # subagents have no transport to broadcast
     description = (
-        "Broadcast a task to all known agents (local subagents AND remote "
-        "MQTT peers).  Tasks are sent asynchronously (fire-and-forget). "
-        "Returns a list of correlation IDs so you can poll for results "
-        "with a2a_get_task_result.  "
-        "Use this for scatter/gather patterns — send the same question to "
-        "everyone and collect answers."
+        "Send a task to a LOCAL subagent and wait for the result. "
+        "Use a2a_list_subagents first.  For remote mesh peers, use "
+        "mqtt__send_task (requires the MQTT broker running)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "task": {
-                "type": "string",
-                "description": "Self-contained task to broadcast to all agents.",
-            },
+            "agent_id": {"type": "string", "description": "Local subagent id."},
+            "task": {"type": "string", "description": "Self-contained task for the subagent."},
         },
-        "required": ["task"],
+        "required": ["agent_id", "task"],
     }
 
-    async def execute(self, task: str = "", **kwargs) -> str:
-        if not task:
-            return "Error: task is required."
+    async def execute(self, agent_id: str = "", task: str = "", **kwargs) -> str:
+        if err := require_params(agent_id=agent_id, task=task):
+            return err
+        manager, hint = _manager_or_hint()
+        if manager is None:
+            return hint
+        if agent_id not in manager.list():
+            return _not_local_hint(agent_id)
+        try:
+            return await manager.send_task(agent_id, task)
+        except TimeoutError:
+            return f"Error: task to '{agent_id}' timed out."
+        except Exception as e:
+            return f"Error sending task to subagent '{agent_id}': {e}"
 
-        manager, client = _get_transports()
-        all_ids: list[str] = []
 
-        # Broadcast to local subagents
-        if manager is not None:
-            ids = await manager.broadcast(task)
-            all_ids.extend(ids)
+class A2ASendTaskAsyncTool(Tool):
+    """Send a task to a local subagent without waiting."""
 
-        # Broadcast to MQTT peers
-        if client is not None:
-            ids = await client.broadcast(task)
-            all_ids.extend(ids)
+    name = "a2a_send_task_async"
+    category = "A2A"
+    description = (
+        "Send a task to a LOCAL subagent without waiting — returns a task_id. "
+        "Poll with a2a_get_task_result.  For remote mesh peers use "
+        "mqtt__send_task_async."
+    )
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Local subagent id."},
+            "task": {"type": "string", "description": "Self-contained task for the subagent."},
+        },
+        "required": ["agent_id", "task"],
+    }
 
-        if not all_ids:
-            return (
-                "No agents available to broadcast to. "
-                "Use a2a_spawn_subagent to create a local worker, "
-                "or ensure Mosquitto is running with mqtt configured in slife.json5 to join the P2P mesh."
-            )
+    async def execute(self, agent_id: str = "", task: str = "", **kwargs) -> str:
+        if err := require_params(agent_id=agent_id, task=task):
+            return err
+        manager, hint = _manager_or_hint()
+        if manager is None:
+            return hint
+        if agent_id not in manager.list():
+            return _not_local_hint(agent_id)
+        try:
+            rpc_id = await manager.send_task_async(agent_id, task)
+            return f"Task sent to '{agent_id}' (task_id: {rpc_id})."
+        except Exception as e:
+            return f"Error sending task to subagent '{agent_id}': {e}"
 
-        lines = [f"Broadcast sent to {len(all_ids)} agent(s):"]
-        for cid in all_ids:
-            lines.append(f"  - {cid}")
-        lines.append("")
-        lines.append(
-            "Use a2a_get_task_result with each task_id to collect results."
+
+class A2AGetTaskResultTool(Tool):
+    """Return the result of a local subagent async task."""
+
+    name = "a2a_get_task_result"
+    category = "A2A"
+    description = (
+        "Return the result of a LOCAL subagent async task, or 'pending' if "
+        "not ready.  For remote mesh results use a2a__get_task_result."
+    )
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Local subagent id."},
+            "task_id": {"type": "string", "description": "The task_id from a2a_send_task_async."},
+        },
+        "required": ["agent_id", "task_id"],
+    }
+
+    async def execute(self, agent_id: str = "", task_id: str = "", **kwargs) -> str:
+        if err := require_params(agent_id=agent_id, task_id=task_id):
+            return err
+        manager, hint = _manager_or_hint()
+        if manager is None:
+            return hint
+        if agent_id not in manager.list():
+            return _not_local_hint(agent_id)
+        result = manager.get_task_result(agent_id, task_id)
+        return result if result is not None else "pending"
+
+
+class A2ACancelTaskTool(Tool):
+    """Cancel a pending local subagent task (best-effort)."""
+
+    name = "a2a_cancel_task"
+    category = "A2A"
+    description = (
+        "Cancel a pending LOCAL subagent task (best-effort — clears any "
+        "stored result).  For remote mesh tasks use a2a__cancel_task."
+    )
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Local subagent id."},
+            "task_id": {"type": "string", "description": "The task_id to cancel."},
+        },
+        "required": ["agent_id", "task_id"],
+    }
+
+    async def execute(self, agent_id: str = "", task_id: str = "", **kwargs) -> str:
+        if err := require_params(agent_id=agent_id, task_id=task_id):
+            return err
+        manager, hint = _manager_or_hint()
+        if manager is None:
+            return hint
+        if agent_id not in manager.list():
+            return _not_local_hint(agent_id)
+        # Local subagents: best-effort cancel — clear any stored result.
+        if manager.get_task_result(agent_id, task_id) is not None:
+            return f"Task '{task_id}' on agent '{agent_id}' cancelled."
+        return (
+            f"Task '{task_id}' not found on agent '{agent_id}'. "
+            "It may have already completed or the task_id is incorrect."
         )
-        return "\n".join(lines)
+
+
+class A2ASubscribeTaskTool(Tool):
+    """Wait for a local subagent async task to complete."""
+
+    name = "a2a_subscribe_task"
+    category = "A2A"
+    description = (
+        "Wait for a LOCAL subagent async task to complete and return its "
+        "result (with a timeout).  For remote mesh tasks use "
+        "a2a__subscribe_task."
+    )
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Local subagent id."},
+            "task_id": {"type": "string", "description": "The task_id from a2a_send_task_async."},
+            "timeout": {"type": "number", "description": "Seconds to wait.", "default": 120.0},
+        },
+        "required": ["agent_id", "task_id"],
+    }
+
+    async def execute(self, agent_id: str = "", task_id: str = "", timeout: float = 120.0, **kwargs) -> str:
+        if err := require_params(agent_id=agent_id, task_id=task_id):
+            return err
+        manager, hint = _manager_or_hint()
+        if manager is None:
+            return hint
+        if agent_id not in manager.list():
+            return _not_local_hint(agent_id)
+        try:
+            result = await manager.subscribe_task(agent_id, task_id, timeout=timeout)
+            return result if result is not None else "pending"
+        except TimeoutError:
+            return f"Error: task to '{agent_id}' timed out after {timeout}s."
+        except Exception as e:
+            return f"Error waiting for task on '{agent_id}': {e}"

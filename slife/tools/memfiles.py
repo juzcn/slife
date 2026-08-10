@@ -225,7 +225,6 @@ class SaveToMemfilesTool(Tool):
 
     name: ClassVar[str] = "save_content_or_files"
     category: ClassVar[str] = "MemFiles"
-    _subagent_skip: ClassVar[bool] = True  # subagents must not write to the main agent's file store
     description: ClassVar[str] = (
         "Save content to persistent file storage. Provide ONE of: content (markdown "
         "text), url (to download), or path (to a local file). The file is "

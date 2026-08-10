@@ -48,11 +48,17 @@ def clear_manager() -> None:
 class SubagentProcess:
     """Single subagent child process with JSON-RPC 2.0 IPC."""
 
-    def __init__(self, name: str, config: "Config"):
+    def __init__(
+        self, name: str, config: "Config",
+        context_source: str = "pure", context_messages: list[dict] | None = None,
+    ):
         import json as _json
 
         self._name = name
+        self._config = config
         self._config_json = _json.dumps(config.to_dict(), ensure_ascii=False)
+        self._context_source = context_source
+        self._context_messages = context_messages
         self._process: asyncio.subprocess.Process | None = None
         self._running = False
         self._stdout_task: asyncio.Task | None = None
@@ -80,13 +86,26 @@ class SubagentProcess:
         env = dict(os.environ)
         env["SLIFE_SUBAGENT_NAME"] = self._name
         env["SLIFE_CONFIG"] = self._config_json
-        # Subagents share the main agent's MCP tools but don't need
-        # their own memory or wechat connections.
-        env.pop("SLIFE_MEMDB_PORT", None)
-        env.pop("SLIFE_WECHAT_PORT", None)
+        env["SLIFE_SUBAGENT_CONTEXT"] = self._context_source
+        # The mqtt plugin port (SLIFE_MQTT_PORT) is inherited from os.environ
+        # above — the subagent reuses the main agent's mesh channel.  The
+        # mqtt plugin owns the main agent's identity.
+        # Subagents connect to the main agent's shared plugin servers
+        # (MCP / memdb / wechat) via inherited ports — no isolation.
         self._process = await asyncio.create_subprocess_exec(
             *cmd, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
+        # Cloned context rides the stdin JSON-RPC channel (env is limited to
+        # ~32 KB on Windows — too small for a conversation).
+        proc = self._process
+        if self._context_messages and proc is not None and proc.stdin is not None:
+            ctx_msg = json.dumps(
+                {"jsonrpc": "2.0", "method": "context",
+                 "params": {"messages": self._context_messages}, "id": None},
+                ensure_ascii=False,
+            ) + "\n"
+            proc.stdin.write(ctx_msg.encode())
+            await proc.stdin.drain()
         self._running = True
         # Start _read_stdout as the sole stdout reader — it will set
         # self._ready when it receives the "ready" signal.  Do NOT call
@@ -267,8 +286,12 @@ class SubagentProcess:
                                 params.get("pct", "?"),
                             )
                         self._resolve_push(task_id, msg)
-                        if method == "tasks/complete" and task_id:
-                            self._notify_manager_task_done(task_id)
+                        # Do NOT notify the manager on `tasks/complete`: the
+                        # result was already handled when the JSON-RPC response
+                        # arrived (sync waiter resolved; async result stored +
+                        # manager notified).  Firing it here would post a
+                        # spurious "async task completed" message for sync
+                        # tasks and a duplicate for async ones.
         except Exception:
             logger.debug("stdout_read_error name=%s", self._name, exc_info=True)
 
@@ -311,11 +334,17 @@ class SubagentManager:
     @property
     def count(self) -> int: return sum(1 for p in self._subagents.values() if p.is_running)
 
-    async def spawn(self, name: str | None = None) -> str:
+    async def spawn(
+        self, name: str | None = None,
+        context_source: str = "pure", context_messages: list[dict] | None = None,
+    ) -> str:
         if self.count >= self._max: raise RuntimeError(f"Max {self._max} subagents reached")
         if name is None: self._counter += 1; name = f"sub-{self._counter}"
         if name in self._subagents and self._subagents[name].is_running: return name
-        proc = SubagentProcess(name, self._config)
+        proc = SubagentProcess(
+            name, self._config,
+            context_source=context_source, context_messages=context_messages,
+        )
         await proc.start(); self._subagents[name] = proc
         return name
 

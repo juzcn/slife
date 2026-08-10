@@ -145,7 +145,6 @@ class CliAddTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
 
     name = "cli_add_tool"
     category = "CLI"
-    _subagent_skip = True
     description = "Register an external CLI in slife.json5. Does not execute — records for future discovery. Use the language from the CLI's own documentation for the description — don't translate."
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -209,7 +208,6 @@ class CliRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatib
 
     name = "cli_remove_tool"
     category = "CLI"
-    _subagent_skip = True
     description = "Remove a CLI registration from slife.json5. Does not uninstall the command."
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -271,7 +269,6 @@ class CliListToolsTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
 class CliSetTool(_ConfigPathMixin, Tool):
     name = "cli_set_tool"
     category = "CLI"
-    _subagent_skip = True
     description = "Enable or disable a registered CLI tool. Takes effect after restart."
 
     parameters: ClassVar[dict] = {

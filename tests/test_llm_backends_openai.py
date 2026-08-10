@@ -335,6 +335,32 @@ class TestOpenAIResponsesBackend:
             type="function_call", id=item_id, name=name, call_id=call_id, arguments="",
         )
 
+    def test_keeps_meta_params(self):
+        """Harness meta-params are visible on the Responses API too
+        (three-backend consistency, matching Anthropic + OpenAI)."""
+        from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
+
+        tools = [
+            {"type": "function", "function": {
+                "name": "run",
+                "description": "Runs something.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "arg1": {"type": "string"},
+                        "_timeout": {"type": "integer"},
+                        "_async": {"type": "boolean"},
+                    },
+                    "required": ["arg1"],
+                },
+            }},
+        ]
+        result = OpenAIResponsesBackend._oa_tools_to_responses(tools)
+        props = result[0]["parameters"]["properties"]
+        assert "arg1" in props
+        assert "_timeout" in props
+        assert "_async" in props
+
     @pytest.mark.asyncio
     async def test_stream_captures_function_name_from_output_item(self):
         """Tool deltas carry the name/call_id captured on output_item.added."""

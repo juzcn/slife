@@ -333,8 +333,9 @@ class TestSaveToMemfilesToolMeta:
     def test_category(self):
         assert SaveToMemfilesTool.category == "MemFiles"
 
-    def test_subagent_skip(self):
-        assert SaveToMemfilesTool._subagent_skip is True
+    def test_no_subagent_skip(self):
+        """Subagent filtering was removed — no _subagent_skip attribute."""
+        assert not hasattr(SaveToMemfilesTool, "_subagent_skip")
 
     def test_description(self):
         assert "Save content" in SaveToMemfilesTool.description

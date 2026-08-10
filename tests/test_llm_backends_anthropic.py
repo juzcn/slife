@@ -222,7 +222,10 @@ class TestOaToolsToAnthropic:
         assert result[0]["description"] == "Echoes input."
         assert result[0]["input_schema"] == {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
 
-    def test_strips_meta_params(self):
+    def test_keeps_meta_params(self):
+        """Harness meta-params are visible to the model on every backend
+        (three-backend consistency: _timeout/_async/_approve work the same
+        on Anthropic, Responses, and OpenAI-completions)."""
         tools = [
             {"type": "function", "function": {
                 "name": "run",
@@ -241,8 +244,8 @@ class TestOaToolsToAnthropic:
         result = AnthropicBackend._oa_tools_to_anthropic(tools)
         props = result[0]["input_schema"]["properties"]
         assert "arg1" in props
-        assert "_timeout" not in props
-        assert "_async" not in props
+        assert "_timeout" in props
+        assert "_async" in props
 
     def test_empty_tools(self):
         assert AnthropicBackend._oa_tools_to_anthropic([]) == []

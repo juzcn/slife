@@ -266,10 +266,8 @@ class SlifeApp(App):
             lambda: TUIHandler(self, assistant_prefix=self._assistant_prefix)
         )
 
-        self.run_worker(
-            self._start_a2a_safe(),
-            exclusive=False, group="a2a-startup",
-        )
+        # A2A now starts as a plugin via the discovery loop above
+        # (start_plugin_server("mqtt") → start_mqtt, idempotent).
         self.run_worker(
             self.service.start_subagent(),
             exclusive=False, group="subagent-startup",
@@ -307,7 +305,7 @@ class SlifeApp(App):
         # Then kill remaining services in parallel.
         await asyncio.gather(
             _stop_one("subagent", self.service.stop_subagent()),
-            _stop_one("a2a", self.service.stop_a2a()),
+            _stop_one("mqtt", self.service.stop_mqtt()),
             _stop_one("mcp", self.service.stop_mcp()),
             _stop_one("memdb", self.service.stop_memdb()),
             _stop_one("wechat", self.service.stop_wechat()),
@@ -370,26 +368,6 @@ class SlifeApp(App):
                 f"⚠ 插件启动失败 ({name}): {e}", color="#d29922",
             )
 
-    async def _start_a2a_safe(self) -> None:
-        """Start A2A mesh and show status — only notifies on success.
-
-        A2A is not a plugin (it is discovered via broker probe, not
-        ``discover_plugins``), so it gets its own startup helper.
-        When the broker is unreachable we stay silent — that is the
-        expected default when Mosquitto is not running.
-        """
-        try:
-            result = await self.service.start_a2a()
-            if result is True:
-                a2a_cfg = self.service.config.a2a_config
-                agent_id = a2a_cfg.agent_id if a2a_cfg else "slife"
-                self._show_system_message(
-                    f"🔌 多Agent已就绪: {agent_id}", color="#3fb950",
-                )
-        except Exception as e:
-            self._show_system_message(
-                f"⚠ A2A 启动失败: {e}", color="#d29922",
-            )
 
     # ── Input handling ────────────────────────────────────────────
 

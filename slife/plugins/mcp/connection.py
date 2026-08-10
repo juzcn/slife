@@ -71,7 +71,6 @@ class ServerConfig:
     enabled: bool = True  # False = don't auto-connect at startup
     description: str = ""
     active: bool = True  # False = connected but tools not disclosed yet
-    require_approval: bool = False  # True = user must confirm each tool call
     auth: dict | None = None  # OAuth config for device code flow
 
     @property
@@ -815,7 +814,6 @@ class ConnectionPool:
                 "enabled": conn.config.enabled,
                 "disclosure": "eager" if conn.config.active else "lazy",
                 "description": conn.config.description,
-                "require_approval": conn.config.require_approval,
             }
             for name, conn in self._connections.items()
         ]
@@ -833,7 +831,6 @@ class ConnectionPool:
                 "url": conn.config.url,
                 "description": conn.config.description,
                 "active": conn.active,
-                "require_approval": conn.config.require_approval,
             }
             for name, conn in self._connections.items()
         ]

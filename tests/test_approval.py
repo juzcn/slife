@@ -1,54 +1,32 @@
-"""Tests for tool approval (require_approval) — Tool ABC, MCPProxyTool, AgentLoop."""
+"""Tests for model-driven tool approval (`_approve` meta param).
+
+The harness no longer hardcodes approval on any tool (`requires_approval`
+is gone).  The LLM decides per-call by passing `_approve: true` in the
+tool arguments; the loop then asks the user via `on_tool_approval`.
+"""
 
 import pytest; pytestmark = pytest.mark.unit
 
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from slife.tools.base import Tool, NO_PARAMS
 from slife.mcp.tool_adapter import MCPProxyTool, create_proxy_tools
 from slife.agent.loop import AgentLoop, AgentEventHandler, ToolCallInfo
-from slife.agent.llm_client import TokenUsage
 
 
-# ── Tool ABC — requires_approval ──────────────────────────────────────
+# ── Tool ABC no longer carries approval metadata ──────────────────────
 
 
-class TestToolRequiresApproval:
-    def test_default_is_false(self):
-        """All tools default to requires_approval=False."""
-
-        class PlainTool(Tool):
-            name = "plain_tool"
-            description = "A plain tool"
-            parameters = NO_PARAMS
-
-            async def execute(self, **kwargs) -> str:
-                return "ok"
-
-        tool = PlainTool()
-        assert tool.requires_approval is False
-
-    def test_can_set_true(self):
-        """A tool can opt into requiring approval."""
-
-        class GuardedTool(Tool):
-            name = "guarded_tool"
-            description = "A guarded tool"
-            parameters = NO_PARAMS
-            requires_approval = True
-
-            async def execute(self, **kwargs) -> str:
-                return "ok"
-
-        tool = GuardedTool()
-        assert tool.requires_approval is True
+class TestToolNoApprovalMetadata:
+    def test_requires_approval_attribute_removed(self):
+        """Approval is model-decided; tools carry no approval flag."""
+        assert not hasattr(Tool, "requires_approval")
 
 
-# ── MCPProxyTool — require_approval param ─────────────────────────────
+# ── MCPProxyTool — no require_approval param ─────────────────────────
 
 
 def make_mock_mcp_client():
@@ -69,54 +47,39 @@ def make_tool_info(server="test_server", name="test_tool", description="A test t
     }
 
 
-class TestMCPProxyToolRequiresApproval:
-    def test_default_is_false(self):
+class TestMCPProxyToolNoApprovalParam:
+    def test_constructor_has_no_approval_flag(self):
         client = make_mock_mcp_client()
         tool = MCPProxyTool(client, make_tool_info())
-        assert tool.requires_approval is False
+        assert not hasattr(tool, "requires_approval")
 
-    def test_true_from_constructor(self):
-        client = make_mock_mcp_client()
-        tool = MCPProxyTool(client, make_tool_info(), require_approval=True)
-        assert tool.requires_approval is True
-
-    def test_create_proxy_tools_forwards_default(self):
+    def test_create_proxy_tools_has_no_approval_flag(self):
         client = make_mock_mcp_client()
         tools = create_proxy_tools(client, [make_tool_info()])
         assert len(tools) == 1
-        assert tools[0].requires_approval is False
-
-    def test_create_proxy_tools_forwards_true(self):
-        client = make_mock_mcp_client()
-        tools = create_proxy_tools(client, [make_tool_info()], require_approval=True)
-        assert len(tools) == 1
-        assert tools[0].requires_approval is True
+        assert not hasattr(tools[0], "requires_approval")
 
     @pytest.mark.asyncio
-    async def test_execute_still_works_with_approval_true(self):
-        """Setting require_approval doesn't affect execute() — it just stores metadata."""
+    async def test_execute_still_works(self):
         client = make_mock_mcp_client()
         client.call_tool.return_value = "result"
         tool = MCPProxyTool(
             client,
             {**make_tool_info(server="mcp"), "name": "mcp_list_servers"},
-            require_approval=True,
         )
         result = await tool.execute()
         assert result == "result"
-        # execute() still works — approval is checked at AgentLoop level
 
 
-# ── AgentLoop — approval gate in _execute_tools ──────────────────────
+# ── AgentLoop — approval gate driven by _approve ─────────────────────
 
 
-class _ApprovalTool(Tool):
-    """Test tool that tracks whether execute was called."""
+class _TrackingTool(Tool):
+    """Plain test tool that tracks whether execute was called."""
 
     name = "approval_test_tool"
-    description = "A tool that requires approval"
+    description = "A test tool"
     parameters = NO_PARAMS
-    requires_approval = True
 
     def __init__(self):
         self.executed = False
@@ -126,187 +89,137 @@ class _ApprovalTool(Tool):
         return "executed"
 
 
+def _make_loop(registry):
+    return AgentLoop(
+        llm_client=MagicMock(),
+        tool_registry=registry,
+        max_iterations=30,
+    )
+
+
 class TestAgentLoopApproval:
     @pytest.mark.asyncio
-    async def test_approval_denied_skips_execution(self):
-        """When approval is denied, tool execution is skipped."""
-        tool = _ApprovalTool()
+    async def test_approve_true_denied_skips_execution(self):
+        """`_approve: true` + user denies → tool not executed."""
+        tool = _TrackingTool()
         registry = MagicMock()
         registry.get.return_value = tool
         registry.execute = AsyncMock()
 
-        loop = AgentLoop(
-            llm_client=MagicMock(),
-            tool_registry=registry,
-            max_iterations=30,
-        )
-
+        loop = _make_loop(registry)
         handler = MagicMock(spec=AgentEventHandler)
         handler.on_tool_approval = AsyncMock(return_value=False)
         handler.on_tool_call = AsyncMock()
         handler.on_tool_result = AsyncMock()
-
         conversation = MagicMock()
 
-        tc = ToolCallInfo(id="call_1", name="approval_test_tool", arguments={})
-
+        tc = ToolCallInfo(id="call_1", name="approval_test_tool", arguments={"_approve": True})
         await loop._execute_tools([tc], conversation, handler, iteration=1)
 
-        # Tool should NOT have been executed
         assert tool.executed is False
         registry.execute.assert_not_called()
-        # Result should be "denied"
         handler.on_tool_result.assert_called_once()
-        call_args = handler.on_tool_result.call_args
-        assert "denied by user" in call_args[0][1]
+        assert "denied by user" in handler.on_tool_result.call_args[0][1]
 
     @pytest.mark.asyncio
-    async def test_approval_granted_proceeds_normally(self):
-        """When approval is granted, tool executes normally."""
-        tool = _ApprovalTool()
+    async def test_approve_true_granted_proceeds(self):
+        """`_approve: true` + user approves → tool executes."""
+        tool = _TrackingTool()
         registry = MagicMock()
         registry.get.return_value = tool
-        # Simulate registry.execute calling tool.execute
+
         async def _exec(name, **kwargs):
             return await tool.execute(**kwargs)
         registry.execute = _exec
 
-        loop = AgentLoop(
-            llm_client=MagicMock(),
-            tool_registry=registry,
-            max_iterations=30,
-        )
-
+        loop = _make_loop(registry)
         handler = MagicMock(spec=AgentEventHandler)
         handler.on_tool_approval = AsyncMock(return_value=True)
         handler.on_tool_call = AsyncMock()
         handler.on_tool_result = AsyncMock()
-
         conversation = MagicMock()
 
-        tc = ToolCallInfo(id="call_2", name="approval_test_tool", arguments={})
-
+        tc = ToolCallInfo(id="call_2", name="approval_test_tool", arguments={"_approve": True})
         await loop._execute_tools([tc], conversation, handler, iteration=1)
 
-        # Tool should have been executed
         assert tool.executed is True
         handler.on_tool_result.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_no_approval_needed_for_normal_tool(self):
-        """Tools without requires_approval skip the approval gate entirely."""
-
-        class NormalTool(Tool):
-            name = "normal_tool"
-            description = "A normal tool"
-            parameters = NO_PARAMS
-
-            async def execute(self, **kwargs) -> str:
-                return "normal result"
-
-        tool = NormalTool()
+    async def test_no_approve_skips_gate(self):
+        """Without `_approve` the gate is never consulted — pure model judgment."""
+        tool = _TrackingTool()
         registry = MagicMock()
         registry.get.return_value = tool
+
         async def _exec(name, **kwargs):
             return await tool.execute(**kwargs)
         registry.execute = _exec
 
-        loop = AgentLoop(
-            llm_client=MagicMock(),
-            tool_registry=registry,
-            max_iterations=30,
-        )
-
+        loop = _make_loop(registry)
         handler = MagicMock(spec=AgentEventHandler)
         handler.on_tool_call = AsyncMock()
         handler.on_tool_result = AsyncMock()
-
         conversation = MagicMock()
-        tc = ToolCallInfo(id="call_3", name="normal_tool", arguments={})
 
+        tc = ToolCallInfo(id="call_3", name="approval_test_tool", arguments={})
         await loop._execute_tools([tc], conversation, handler, iteration=1)
 
-        # Approval was NOT asked (hasattr check skips the async mock)
-        # Tool executed normally
+        handler.on_tool_approval.assert_not_called()
         handler.on_tool_result.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_no_handler_auto_approves(self):
-        """When handler is None (headless/subagent), tools auto-approve."""
-        tool = _ApprovalTool()
+        """headless/subagent (no handler) → `_approve` auto-approved."""
+        tool = _TrackingTool()
         registry = MagicMock()
         registry.get.return_value = tool
+
         async def _exec(name, **kwargs):
             return await tool.execute(**kwargs)
         registry.execute = _exec
 
-        loop = AgentLoop(
-            llm_client=MagicMock(),
-            tool_registry=registry,
-            max_iterations=30,
-        )
-
+        loop = _make_loop(registry)
         conversation = MagicMock()
-        tc = ToolCallInfo(id="call_4", name="approval_test_tool", arguments={})
-
+        tc = ToolCallInfo(id="call_4", name="approval_test_tool", arguments={"_approve": True})
         await loop._execute_tools([tc], conversation, None, iteration=1)
 
-        # Tool executed (auto-approved since no handler)
         assert tool.executed is True
 
     @pytest.mark.asyncio
-    async def test_multiple_tools_mixed_approval(self):
-        """Batch execution: denied tool skipped, approved tool runs."""
-
-        class ToolA(Tool):
-            name = "tool_a"; description = "A"; parameters = NO_PARAMS
-            requires_approval = True
-            def __init__(self): self.executed = False
-            async def execute(self, **kwargs) -> str:
-                self.executed = True; return "a"
-
-        class ToolB(Tool):
-            name = "tool_b"; description = "B"; parameters = NO_PARAMS
-            requires_approval = True
-            def __init__(self): self.executed = False
-            async def execute(self, **kwargs) -> str:
-                self.executed = True; return "b"
-
-        tool_a, tool_b = ToolA(), ToolB()
-
-        # Approve A, deny B
-        approval_results = {"tool_a": True, "tool_b": False}
+    async def test_mixed_batch_approval(self):
+        """Batch: `_approve` granted runs, `_approve` denied skips, no-flag runs."""
+        tools = {name: _TrackingTool() for name in ("tool_a", "tool_b", "tool_c")}
+        for name, t in tools.items():
+            t.name = name
 
         registry = MagicMock()
+
         def _get(name):
-            return {"tool_a": tool_a, "tool_b": tool_b}[name]
+            return tools[name]
         registry.get = _get
+
         async def _exec(name, **kwargs):
-            tool = {"tool_a": tool_a, "tool_b": tool_b}[name]
-            return await tool.execute(**kwargs)
+            return await tools[name].execute(**kwargs)
         registry.execute = _exec
 
-        loop = AgentLoop(
-            llm_client=MagicMock(),
-            tool_registry=registry,
-            max_iterations=30,
-        )
-
+        loop = _make_loop(registry)
         handler = MagicMock(spec=AgentEventHandler)
 
         async def _approve(tc):
-            return approval_results[tc.name]
+            return tc.id != "deny_me"
         handler.on_tool_approval = _approve
         handler.on_tool_call = AsyncMock()
         handler.on_tool_result = AsyncMock()
-
         conversation = MagicMock()
-        tcs = [
-            ToolCallInfo(id="c1", name="tool_a", arguments={}),
-            ToolCallInfo(id="c2", name="tool_b", arguments={}),
-        ]
 
+        tcs = [
+            ToolCallInfo(id="grant", name="tool_a", arguments={"_approve": True}),
+            ToolCallInfo(id="deny_me", name="tool_b", arguments={"_approve": True}),
+            ToolCallInfo(id="plain", name="tool_c", arguments={}),
+        ]
         await loop._execute_tools(tcs, conversation, handler, iteration=1)
 
-        assert tool_a.executed is True  # approved
-        assert tool_b.executed is False  # denied
+        assert tools["tool_a"].executed is True   # granted
+        assert tools["tool_b"].executed is False  # denied
+        assert tools["tool_c"].executed is True   # no flag → no gate

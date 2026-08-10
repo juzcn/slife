@@ -43,7 +43,7 @@ class TestAgentServiceInit:
         config = sample_config
         service = AgentService(config)
 
-        assert service._a2a_client is None
+        assert service._plugins["mqtt"].process is None
         assert service.a2a_enabled is False
 
 
@@ -192,15 +192,16 @@ class TestAgentServiceA2A:
     """Tests for A2A lifecycle methods."""
 
     @pytest.mark.asyncio
-    async def test_start_a2a_disabled_noop(self, sample_config):
+    async def test_start_mqtt_disabled_noop(self, sample_config):
         service = AgentService(sample_config)
-        await service.start_a2a()
-        assert service._a2a_client is None
+        result = await service.start_mqtt()
+        assert result is False
+        assert service._plugins["mqtt"].process is None
 
     @pytest.mark.asyncio
-    async def test_stop_a2a_noop_when_disabled(self, sample_config):
+    async def test_stop_mqtt_noop_when_disabled(self, sample_config):
         service = AgentService(sample_config)
-        await service.stop_a2a()  # Should not raise
+        await service.stop_mqtt()  # Should not raise
 
 
 # ── AgentService subagent ───────────────────────────────────────────────────

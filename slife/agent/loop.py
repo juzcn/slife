@@ -318,8 +318,10 @@ class AgentLoop:
             and the tool's internal timeout logic takes over.
           - ``_async`` (boolean) — run in background, return task_id
             immediately.
+          - ``_approve`` (boolean) — ask the user to confirm this call
+            (approval dialog) before it runs.
 
-        Both are stripped before dispatch.
+        All are stripped before dispatch.
         """
         for func in functions:
             schema = func.get("function", {}).get("parameters", {})
@@ -333,17 +335,26 @@ class AgentLoop:
                 props["_timeout"] = {
                     "type": "number",
                     "description": (
-                        "可选。本次调用的超时秒数，覆盖全局默认值。"
-                        "用于网络请求、大文件操作等需要更长时间的场景。"
+                        "Optional. Override the timeout (seconds) for this call, "
+                        "replacing the global default. Use for network requests, "
+                        "large-file operations, or other long-running work."
                     ),
                 }
             if "async" not in props and "_async" not in props:
                 props["_async"] = {
                     "type": "boolean",
                     "description": (
-                        "设为 true 时后台异步执行，立即返回 task_id。"
-                        "用于耗时很长的操作——用 check_async 查询结果，"
-                        "用 cancel_async 取消。"
+                        "Set true to run in the background and return a task_id "
+                        "immediately. Use for long-running operations — poll with "
+                        "check_async, cancel with cancel_async."
+                    ),
+                }
+            if "_approve" not in props:
+                props["_approve"] = {
+                    "type": "boolean",
+                    "description": (
+                        "Optional. Set true to show a confirmation dialog to the "
+                        "user before executing. Default false (no dialog)."
                     ),
                 }
         return functions
@@ -429,7 +440,7 @@ class AgentLoop:
         closing assistant message keeps the roles alternating.
         """
         if conversation.messages and conversation.messages[-1]["role"] in ("user", "tool"):
-            conversation.add_assistant_message(content=content or "（本轮无输出）")
+            conversation.add_assistant_message(content=content or "(no output this turn)")
 
     # ── Stream processing ──────────────────────────────────────────
 
@@ -546,13 +557,15 @@ class AgentLoop:
                     max_iterations=self.max_iterations,
                 )
 
-            # ── Dynamic per-call timeout / async ─────────────────
-            # LLM can pass _async (boolean) or _timeout (number) on
-            # ANY tool call.  _async takes priority — if true, the
-            # tool is scheduled in background and we return immediately.
+            # ── Dynamic per-call timeout / async / approval ───────
+            # LLM can pass _async (boolean), _timeout (number), or
+            # _approve (boolean) on ANY tool call.  _async takes
+            # priority — if true, the tool is scheduled in background
+            # and we return immediately.
             actual_args = dict(tc.arguments)
             is_async = actual_args.pop("_async", None)
             inline_timeout = actual_args.pop("_timeout", None)
+            approve_requested = bool(actual_args.pop("_approve", False))
 
             # ── Native timeout mapping ───────────────────────────
             # Tools with a native ``timeout`` parameter (e.g.
@@ -568,8 +581,13 @@ class AgentLoop:
                 if timeout_val > 0:
                     actual_args["timeout"] = timeout_val
 
-            # ── Approval gate (serialised via lock) ─────────────────
-            if getattr(tool, 'requires_approval', False):
+            # ── Approval gate — pure model judgment ────────────────
+            # The LLM decides per-call whether the operation needs user
+            # confirmation by passing `_approve: true` (injected on every
+            # tool schema, like _timeout/_async).  The harness no longer
+            # hardcodes approval on any tool.  Serialised via lock so
+            # concurrent approval dialogs never overlap.
+            if approve_requested:
                 async with _approval_lock:
                     approved = await handler.on_tool_approval(tc) if handler else True
                 if not approved:
@@ -587,11 +605,11 @@ class AgentLoop:
                 coro = self.tool_registry.execute(tc.name, **actual_args)
                 task_id = schedule_async(coro)
                 result = (
-                    f"✓ 异步任务已启动。\n"
+                    f"✓ Async task started.\n"
                     f"  task_id: {task_id}\n"
                     f"  tool: {tc.name}\n"
-                    f"  使用 check_async(task_id=\"{task_id}\") 查询结果。\n"
-                    f"  使用 cancel_async(task_id=\"{task_id}\") 取消任务。"
+                    f"  Poll with check_async(task_id=\"{task_id}\").\n"
+                    f"  Cancel with cancel_async(task_id=\"{task_id}\")."
                 )
                 result = sanitize_secrets(result)
                 if handler:
@@ -652,7 +670,7 @@ class AgentLoop:
             max_chars = self.max_tool_result_chars
             if max_chars > 0 and len(result) > max_chars:
                 original_len = len(result)
-                result = result[:max_chars] + f"\n…（已截断，原文 {original_len} 字符）"
+                result = result[:max_chars] + f"\n… (truncated, original {original_len} chars)"
                 logger.debug("tool_result_truncated name=%s original=%d truncated=%d", tc.name, original_len, max_chars)
             is_error = result.startswith("Error")
 
@@ -702,9 +720,9 @@ class AgentLoop:
         n_imgs = len(images) if images else 0
         if n_imgs > 0 and not self.supports_vision:
             msg = (
-                f"⚠ 当前模型不支持图片输入（supports_vision=false），"
-                f"但收到了 {n_imgs} 张图片。"
-                f"请使用支持视觉的模型，或移除 @path 附件。"
+                f"⚠ Current model does not support image input (supports_vision=false), "
+                f"but {n_imgs} image(s) were received. "
+                f"Use a vision-capable model, or remove the @path attachment."
             )
             logger.warning("vision_unsupported imgs=%d model_vision=%s", n_imgs, self.supports_vision)
             # Add text-only — don't encode images the model can't handle.

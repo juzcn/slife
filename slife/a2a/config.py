@@ -76,7 +76,7 @@ class A2AConfig:
         # A2A enablement is decided at runtime by the Mosquitto TCP probe —
         # the json5 mqtt section never carries an "enabled" field.
         # When data is None (no mqtt section), enabled stays False —
-        # start_a2a() won't even attempt a probe.
+        # start_mqtt() won't even attempt a probe.
         default_enabled = isinstance(data, dict)
 
         transport = (data or {}).get("transport", "mqtt")

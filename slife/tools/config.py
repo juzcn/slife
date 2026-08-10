@@ -88,7 +88,6 @@ def _toggle_native_enabled(raw: dict, name: str, enabled: bool) -> None:
 class ConfigEnvSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_set"
     category: ClassVar[str] = "Config"
-    _subagent_skip = True
     description = "Write an env var to slife.json5. Use ${VAR} refs for secrets — never plaintext."
     parameters = {
         "type": "object",
@@ -160,7 +159,6 @@ class ConfigEnvGetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
 class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_remove"
     category: ClassVar[str] = "Config"
-    _subagent_skip = True
     description = "Remove an env var from slife.json5. Does NOT touch the OS keyring."
     parameters = {
         "type": "object",
@@ -188,7 +186,6 @@ class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportInco
 class NativeToolSet(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "native_tool_set"
     category: ClassVar[str] = "Config"
-    _subagent_skip = True
     description = "Enable or disable a built-in tool. Takes effect after restart."
     parameters = {
         "type": "object",

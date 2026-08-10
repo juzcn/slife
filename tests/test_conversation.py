@@ -26,6 +26,21 @@ class TestConversationConstruction:
         assert conv.messages[0]["role"] == "system"
         assert conv.messages[0]["content"] == "You are helpful."
 
+    def test_from_history_seeds_messages(self):
+        """from_history prepends a fresh system prompt and skips inherited system."""
+        conv = Conversation.from_history(
+            "SUB_SYS",
+            [
+                {"role": "user", "content": "a"},
+                {"role": "assistant", "content": "b"},
+                {"role": "system", "content": "skip me"},
+            ],
+        )
+        assert [m["role"] for m in conv.messages] == ["system", "user", "assistant"]
+        assert conv.messages[0]["content"] == "SUB_SYS"
+        # inherited system message is dropped; source not mutated
+        assert conv.messages[1]["content"] == "a"
+
     def test_none_system_prompt(self):
         """None system prompt results in empty list."""
         conv = Conversation(system_prompt=None)

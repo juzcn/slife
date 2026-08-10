@@ -449,7 +449,7 @@ class Config:
         from slife.tools._config_io import write_config
         write_config(self._path, raw)
 
-    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None, url: str = "", headers: dict[str, str] | None = None, require_approval: bool = False, auth: dict | None = None, enabled: bool = True) -> None:
+    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None, url: str = "", headers: dict[str, str] | None = None, auth: dict | None = None, enabled: bool = True) -> None:
         """Persist an MCP server to the config file.
 
         When *name* already exists in the config, the existing entry is
@@ -481,8 +481,6 @@ class Config:
             server_entry["description"] = description
         if env:
             server_entry["env"] = dict(env)
-        if require_approval:
-            server_entry["require_approval"] = True
         if auth:
             server_entry["auth"] = dict(auth)
         if not enabled:

@@ -57,7 +57,7 @@ class TestSysNote:
     async def test_renders_status_with_kwargs(self):
         reg = _registry()
         out = await reg.execute("_sys_note", context_window=131072, last_context_tokens=50000)
-        assert "上下文占用" in out
+        assert "Context usage" in out
         assert "50,000" in out
         assert "(38.1%)" in out
 
@@ -66,7 +66,7 @@ class TestSysNote:
         """Called without args (LLM disobeying) still returns a valid status."""
         reg = _registry()
         out = await reg.execute("_sys_note")
-        assert "上下文占用" in out
+        assert "Context usage" in out
 
 
 class TestSysTrim:
@@ -93,7 +93,7 @@ class TestSysTrim:
     def _conv(self, turns=12):
         conv = Conversation(system_prompt="SYS")
         for i in range(turns):
-            conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大上下文占用估计。")
+            conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大Context usage估计。")
             conv.add_assistant_message(f"这是第{i}轮的回复，也需要一定长度以参与 token 估算。")
         return conv
 
@@ -101,7 +101,7 @@ class TestSysTrim:
     async def test_trims_oldest_turns_to_floor(self):
         conv = self._conv(12)
         out = await self._tool(conv, self._cfg()).execute(memory_saved=True)
-        assert "已裁剪" in out
+        assert "Trimmed" in out
         assert "memory_search" in out
         # oldest turns removed (each turn carries one user message)
         assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
@@ -110,7 +110,7 @@ class TestSysTrim:
     async def test_no_trim_when_already_below_floor(self):
         conv = self._conv(1)
         out = await self._tool(conv, self._cfg()).execute()
-        assert "无可裁剪" in out
+        assert "No complete turns to trim" in out
         assert len([m for m in conv.messages if m.get("role") == "user"]) == 1
 
 
@@ -134,7 +134,7 @@ class TestTurnTrim:
     def _conv(turns):
         conv = Conversation(system_prompt="SYS")
         for i in range(turns):
-            conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大上下文占用估计。")
+            conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大Context usage估计。")
             conv.add_assistant_message(f"这是第{i}轮的回复，也需要一定长度以参与 token 估算。")
         return conv
 
@@ -233,7 +233,7 @@ class TestConsecutiveUserFix:
         assert last[0]["role"] == "assistant"
         assert last[0]["tool_calls"][0]["function"]["name"] == "_sys_note"
         assert last[1]["role"] == "tool"
-        assert "上下文占用" in last[1]["content"]
+        assert "Context usage" in last[1]["content"]
 
     def test_ensure_turn_closed_appends_assistant(self):
         reg = _registry()
@@ -241,9 +241,9 @@ class TestConsecutiveUserFix:
         conv = Conversation(system_prompt="SYS")
         conv.add_user_message("hi")
         # conversation ends on a user message → close it.
-        loop._ensure_turn_closed(conv, "（本轮无输出）")
+        loop._ensure_turn_closed(conv, "(no output this turn)")
         assert conv.messages[-1]["role"] == "assistant"
-        assert conv.messages[-1]["content"] == "（本轮无输出）"
+        assert conv.messages[-1]["content"] == "(no output this turn)"
 
     def test_ensure_turn_closed_noop_when_assistant(self):
         reg = _registry()

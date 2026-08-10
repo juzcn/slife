@@ -178,7 +178,7 @@ class TestConnectionPoolListConfigured:
         pool = ConnectionPool()
         cfg = ServerConfig(
             name="srv1", command="cmd1", args=["-a"], description="First",
-            active=False, require_approval=True,
+            active=False,
         )
         conn = MCPServerConnection(cfg)
         conn._tools_cache = [{"name": "t1"}, {"name": "t2"}]
@@ -197,7 +197,6 @@ class TestConnectionPoolListConfigured:
         assert s["enabled"] is True
         assert s["disclosure"] == "lazy"  # active=False → lazy
         assert s["description"] == "First"
-        assert s["require_approval"] is True
         # No live state — those belong to list_servers / mcp_connection_status
         assert "status" not in s
         assert "state" not in s

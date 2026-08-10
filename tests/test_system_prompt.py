@@ -32,17 +32,17 @@ class TestBuild:
     def test_starts_with_runtime_context(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert result.startswith("Slife 环境信息")
+        assert result.startswith("Slife Environment")
 
     def test_has_required_sections(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "1. 环境" in result
-        assert "2. 会话历史" in result
-        assert "3. 永久记忆" in result
-        assert "4. 图像与多模态" in result
-        assert "5. 凭证解析链" in result
-        assert "6. 工具与技能" in result
+        assert "1. Environment" in result
+        assert "2. Conversation history" in result
+        assert "3. Persistent memory" in result
+        assert "4. Images & multimodal" in result
+        assert "5. Credential resolution chain" in result
+        assert "6. Tools & skills" in result
 
     def test_agent_name_displayed(self, cfg):
         from slife.agent.system_prompt import build
@@ -58,42 +58,42 @@ class TestBuild:
     def test_context_window_strategy(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "20% 至 80%" in result  # defaults
+        assert "Context floor: 20% / ceiling: 80%" in result  # defaults
         assert "_sys_trim" in result
         assert "memory_search" in result
 
     def test_vision_disabled(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "视觉支持: 未启用" in result
+        assert "Vision support: disabled" in result
 
     def test_vision_enabled(self, cfg):
         from slife.agent.system_prompt import build
         cfg.active_model.supports_vision = True
         result = build(cfg)
-        assert "视觉支持: 已启用" in result
+        assert "Vision support: enabled" in result
 
     def test_credstore_chain(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "os.environ" in result
-        assert "凭证后端" in result
+        assert "credential backend" in result
 
     def test_skills_dir_in_prompt(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "技能目录:" in result
+        assert "Skills:" in result
         assert "skill_use" in result
 
     def test_data_dirs_in_prompt(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "数据根目录:" in result
-        assert "配置文件:" in result
-        assert "日志目录:" in result
-        assert "数据库:" in result
-        assert "技能目录:" in result
-        assert "图片缓存:" in result
+        assert "Data root:" in result
+        assert "Config file:" in result
+        assert "Logs:" in result
+        assert "Database:" in result
+        assert "Skills:" in result
+        assert "Image cache:" in result
 
     def test_mcp_tool_prefix(self, cfg):
         from slife.agent.system_prompt import build
@@ -135,12 +135,53 @@ class TestBuild:
         assert "duckduckgo-search" not in result
         assert "filesystem" not in result
 
-    def test_subagent_section_always_visible(self, cfg):
-        """Subagent section always present — main/subagents both need to know."""
+    def test_subagent_delegation_section_present(self, cfg):
+        """Section 7 tells the main agent how to delegate to subagents."""
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "子代理特性" in result
-        assert "不连接记忆服务器" in result
+        assert "Subagents (delegation)" in result
+        assert "a2a_spawn_subagent" in result
+        assert "a2a_send_task" in result
+        assert "mqtt__send_task" in result
+        assert "conversation is not saved" in result
+        assert "cannot interact" in result
+        assert "it only sends" in result
+
+    def test_subagent_identity_appended_when_is_subagent(self, cfg, monkeypatch):
+        """is_subagent=True appends the subagent identity template."""
+        from slife.agent.system_prompt import build
+        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
+        result = build(cfg, is_subagent=True)
+        assert "Subagent identity" in result
+        assert "You are a subagent named sub-7" in result
+        assert "same capabilities as the main agent" in result
+        assert "may SEND messages" in result
+        assert "all replies and management belong to the main agent" in result
+        assert "conversation is not persisted" in result
+
+    def test_subagent_identity_includes_name(self, cfg, monkeypatch):
+        """SLIFE_SUBAGENT_NAME is rendered into the subagent identity."""
+        from slife.agent.system_prompt import build
+        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
+        result = build(cfg, is_subagent=True)
+        assert "You are a subagent named sub-7" in result
+
+    def test_subagent_context_pure_by_default(self, cfg, monkeypatch):
+        """Context defaults to clean (pure) when SLIFE_SUBAGENT_CONTEXT unset."""
+        from slife.agent.system_prompt import build
+        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
+        monkeypatch.delenv("SLIFE_SUBAGENT_CONTEXT", raising=False)
+        result = build(cfg, is_subagent=True)
+        assert "Context: clean (pure)" in result
+        assert "cloned from the main agent" not in result
+
+    def test_subagent_context_cloned(self, cfg, monkeypatch):
+        """SLIFE_SUBAGENT_CONTEXT=cloned renders the cloned-context identity."""
+        from slife.agent.system_prompt import build
+        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
+        monkeypatch.setenv("SLIFE_SUBAGENT_CONTEXT", "cloned")
+        result = build(cfg, is_subagent=True)
+        assert "Context: cloned from the main agent" in result
 
     def test_a2a_section_when_configured(self, cfg):
         """A2A section visible when a2a is configured."""
@@ -150,15 +191,15 @@ class TestBuild:
         cfg.a2a_config.broker_host = "mqtt.example.com"
         cfg.a2a_config.broker_port = 1883
         result = build(cfg)
-        assert "8. 数据目录" in result
-        assert "9. 多代理通信 (A2A)" in result
+        assert "8. Data directories" in result
+        assert "9. Multi-agent communication (A2A)" in result
         assert "mqtt.example.com:1883" in result
 
     def test_a2a_section_hidden_when_disabled(self, cfg):
         """A2A section hidden when a2a is not enabled."""
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "多代理通信" not in result
+        assert "Multi-agent communication" not in result
 
     def test_environment_facts_present(self, cfg):
         """Platform facts are rendered, not left as template variables."""
@@ -166,14 +207,14 @@ class TestBuild:
         result = build(cfg)
         assert "{{" not in result  # no unrendered Jinja2
         assert "Agent:" in result
-        assert "模型:" in result
+        assert "Model:" in result
         # 工作目录 / 当前时间 are now in the dynamic context_status.j2,
         # not the static system prompt.
 
     def test_hostname_in_prompt(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "主机:" in result
+        assert "Host:" in result
         assert "{{ hostname }}" not in result
 
     def test_arch_in_prompt(self, cfg):
@@ -184,12 +225,12 @@ class TestBuild:
     def test_package_manager_uv(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "包管理工具: uv" in result
+        assert "Package manager: uv" in result
 
     def test_system_info_format(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "系统信息:" in result
+        assert "OS:" in result
 
 
 # ── Helper functions ────────────────────────────────────────────────────
@@ -201,7 +242,7 @@ class TestHelpers:
         """_credstore_backend returns '未知' when get_backend_name raises."""
         from slife.agent.system_prompt import _credstore_backend
         with patch("credstore.get_backend_name", side_effect=RuntimeError("boom")):
-            assert _credstore_backend() == "未知"
+            assert _credstore_backend() == "unknown"
 
     def test_os_name_windows(self):
         from slife.agent.system_prompt import _os_name
@@ -289,7 +330,7 @@ class TestContextStatusPresence:
     def test_renders_section_when_events_present(self):
         from slife.agent.system_prompt import build_context_status
         result = build_context_status(presence_events=self._events())
-        assert "▸ 最近 peer 上线/下线" in result
+        assert "▸ Recent peer online/offline" in result
         assert "⚡ desk-02 (采采) online [idle]" in result
         assert "✗ desk-03 offline" in result
         assert "⏱ desk-04 timed out" in result
@@ -305,9 +346,23 @@ class TestContextStatusPresence:
     def test_no_section_when_no_events(self):
         from slife.agent.system_prompt import build_context_status
         result = build_context_status(presence_events=None)
-        assert "peer 上线/下线" not in result
+        assert "peer online/offline" not in result
         result = build_context_status(presence_events=[])
-        assert "peer 上线/下线" not in result
+        assert "peer online/offline" not in result
+
+    def test_subagent_name_rendered_from_env(self, monkeypatch):
+        """The context footer shows the subagent name when running as one."""
+        from slife.agent.system_prompt import build_context_status
+        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-1")
+        result = build_context_status()
+        assert "Subagent: sub-1" in result
+
+    def test_no_subagent_name_by_default(self, monkeypatch):
+        """Main agent context footer has no subagent line."""
+        from slife.agent.system_prompt import build_context_status
+        monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
+        result = build_context_status()
+        assert "Subagent:" not in result
 
     def test_multiple_events_kept_in_order(self):
         from slife.agent.system_prompt import build_context_status

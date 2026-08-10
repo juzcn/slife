@@ -35,6 +35,22 @@ Tool registration
   ``slife.mcp.tool_adapter.create_proxy_tools``.  Tools with names in
   ``<server>__<tool>`` format are placed in the LLM's tool registry.
 
+Harness-only tools
+  A tool whose name starts with ``_`` (e.g. ``_drain_incoming``) is
+  harness-internal: both registration paths (generic spawn and
+  subagent connect) filter it out by the ``_`` prefix, so it is never
+  exposed to the LLM.  The harness calls it programmatically via
+  ``client.call_tool()``.  The description marker "Harness-only" is
+  optional documentation, not the filter key.
+
+Non-MCP plugins
+  A plugin may legitimately be a plain HTTP server instead of an MCP
+  tool provider (e.g. ``memfiles``, which serves image files for vision
+  APIs).  It still follows the plugin lifecycle (discovery via
+  ``server.py``, ``main()``, parent port signalling) but exposes an HTTP
+  endpoint rather than MCP tools.  The harness starts it via a dedicated
+  branch in ``start_plugin_server``.
+
 Minimal example
   See :file:`slife/plugins/mcp/server.py` (the simplest built-in plugin)::
 

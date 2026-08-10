@@ -136,7 +136,6 @@ class AddModelTool(_ConfigPathMixin, Tool):
 
     name: ClassVar[str] = "model_add"
     category: ClassVar[str] = "Models"
-    _subagent_skip: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Add an LLM model to the configuration. If the provider doesn't exist, "
         "it will be created.  Supported api values: openai-completions, "
@@ -267,7 +266,6 @@ class RemoveModelTool(_ConfigPathMixin, Tool):
 
     name: ClassVar[str] = "model_remove"
     category: ClassVar[str] = "Models"
-    _subagent_skip: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Remove an LLM model from the configuration by its ref "
         "(e.g. 'bailian/qwen3.8-max').  If it's the active model, "
@@ -358,7 +356,6 @@ class SwitchModelTool(_ConfigPathMixin, Tool):
 
     name: ClassVar[str] = "model_switch"
     category: ClassVar[str] = "Models"
-    _subagent_skip: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Switch the active LLM model.  The new model takes effect on the "
         "next turn.  Use model_list to see available models and their refs."

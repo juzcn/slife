@@ -19,7 +19,6 @@ Class contract
   Optional class attrs::
 
       requires_a2a   : bool = False   — only register when MQTT mesh is active
-      _subagent_skip : bool = False   — hide from subagent workers
       from_config()  : classmethod    — factory when tool needs constructor args
 
   Validation happens at class-definition time — a tool that forgets
@@ -168,15 +167,6 @@ class Tool(ABC):
     # Set to True on tools that only work with the MQTT/A2A mesh.
     # The factory skips registration when a2a_config is absent or disabled.
     requires_a2a: ClassVar[bool] = False
-
-    # Set to True on tools that should NOT be available to subagents.
-    # Subagents inherit the main agent's tool set but skip these.
-    _subagent_skip: ClassVar[bool] = False
-
-    # Set to True on tools that require user approval before execution.
-    # Default False — no approval needed.  External MCP server tools
-    # inherit this from the server's ``require_approval`` config.
-    requires_approval: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)

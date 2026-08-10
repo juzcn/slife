@@ -33,11 +33,6 @@ def create_tools_from_config(
     by ``name`` against each tool's ``Tool.name`` to customise
     or disable individual tools.
 
-    When *is_subagent* is True, tools marked with ``_subagent_skip``
-    are excluded — subagents inherit the main agent's tool set but
-    filter out tools that aren't suitable (e.g. spawning more
-    subagents, writing config files).
-
     Example overrides:
         [{name: "execute_shell", timeout: 60}, {name: "skill_list", enabled: false}]
     """
@@ -55,11 +50,6 @@ def create_tools_from_config(
         cfg = override_map.get(tool_cls.name, {})
         if cfg.get("enabled") is False:
             logger.info("tool_disabled name=%s", tool_cls.name)
-            continue
-
-        # Subagent filter — exclude tools marked _subagent_skip.
-        if is_subagent and getattr(tool_cls, "_subagent_skip", False):
-            logger.debug("tool_skipped_subagent name=%s", tool_cls.name)
             continue
 
         # Skip vision tools when the active model doesn't support images.
@@ -88,12 +78,6 @@ def create_tools_from_config(
                 continue
 
         tool = tool_cls.from_config(cfg, config, ctx)
-
-        # Honour per-tool require_approval override from the tools: config
-        # section.  This extends the approval gate (originally MCP-only)
-        # to native tools like execute_shell, install_python_package, etc.
-        if cfg.get("require_approval"):
-            object.__setattr__(tool, "requires_approval", True)
 
         registry.register(tool)
 

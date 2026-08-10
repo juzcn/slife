@@ -1,9 +1,9 @@
-"""Skill tools — 自然语言操作手册的渐进式披露.
+"""Skill tools — progressive disclosure of natural-language playbooks.
 
-skill_list:   列出所有可用 skill 的名称和描述
-skill_use:     加载指定 skill 的完整文档到上下文
-skill_add:     从远程 URL 安装 skill（拉取文件写入 skills 目录）
-skill_remove:  删除一个 skill 目录及其内容
+skill_list:   list all available skills' names and descriptions
+skill_use:    load a skill's full documentation into context
+skill_add:    install a skill from a remote URL (fetch files into the skills dir)
+skill_remove: delete a skill directory and its contents
 """
 
 import json
@@ -317,7 +317,6 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
 
     name = "skill_add"
     category = "Skills"
-    _subagent_skip = True
     description = "Install or update a skill from files or base64 archive (upsert — idempotent). Immediately discoverable by skill_list. Use the language from the skill's own documentation for the description — don't translate."
     parameters = {
         "type": "object",
@@ -486,7 +485,6 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
 
     name = "skill_remove"
     category = "Skills"
-    _subagent_skip = True
     description = "Delete a skill directory and all its contents."
     parameters = {
         "type": "object",
@@ -545,7 +543,6 @@ class SkillSet(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethod
     name = "skill_set"
     category = "Skills"
     category: ClassVar[str] = "Skills"
-    _subagent_skip = True
     description = "Enable or disable a skill. Takes effect after restart."
     parameters = {
         "type": "object",

@@ -56,6 +56,24 @@ class Conversation:
         else:
             self.messages.insert(0, {"role": "system", "content": full})
 
+    @classmethod
+    def from_history(
+        cls, system_prompt: str, messages: list[dict],
+    ) -> "Conversation":
+        """Build a conversation seeded from an inherited message history.
+
+        Used by subagents with a cloned context: *messages* are the parent
+        agent's conversation (any system message is dropped), and the
+        subagent's own system prompt is prepended.  Messages are copied so
+        the source conversation is never mutated.
+        """
+        conv = cls(system_prompt=system_prompt)
+        for msg in messages:
+            if msg.get("role") == "system":
+                continue
+            conv.messages.append(dict(msg))
+        return conv
+
     def _repair_orphaned_tool_calls(self) -> int:
         """Add synthetic error results for any assistant tool_calls that
         lack corresponding tool result messages.

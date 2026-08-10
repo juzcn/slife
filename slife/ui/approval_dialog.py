@@ -1,8 +1,8 @@
 """Tool approval dialog — Textual ModalScreen for human-in-the-loop confirmation.
 
-Shown when an external MCP server has ``require_approval: true`` and the
-LLM requests one of its tools.  The user must approve or deny before the
-tool executes.
+Shown when the model requests approval for a tool call (``_approve: true``
+on any tool, native or MCP-proxied).  The user must approve or deny before
+the tool executes.
 """
 
 from __future__ import annotations

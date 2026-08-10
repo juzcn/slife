@@ -1,20 +1,23 @@
-▸ 当前状态
-   - 当前时间: {{ current_datetime }} (UTC{{ utc_offset }})
+▸ Current status
+   - Current time: {{ current_datetime }} (UTC{{ utc_offset }})
+{%- if subagent_name %}
+   - Subagent: {{ subagent_name }}
+{%- endif %}
 {%- if context_time_start %}
-   - 上下文覆盖: {{ context_time_start }} ~ 现在
+   - Context covers: {{ context_time_start }} ~ now
 {%- endif %}
 {%- if model_name %}
-   - 已切换模型: {{ model_name }}（上限: {{ context_window }} tokens，输入: {{ input_modalities }}）
+   - Switched model: {{ model_name }} (context: {{ context_window }} tokens, inputs: {{ input_modalities }})
 {%- endif %}
 {%- if cwd %}
-   - 已在新的工作目录: {{ cwd }}
+   - Working directory changed to: {{ cwd }}
 {%- endif %}
 {%- if shell %}
-   - 已切换到 Shell: {{ shell }}
+   - Switched shell: {{ shell }}
 {%- endif %}
-   - 上下文占用: {{ last_context_tokens }} ({{ last_usage_pct }}%)
+   - Context usage: {{ last_context_tokens }} ({{ last_usage_pct }}%)
 {%- if presence_events %}
-▸ 最近 peer 上线/下线
+▸ Recent peer online/offline
 {%- for ev in presence_events %}
    - {{ ev.time }} {{ ev.text }}
 {%- endfor %}

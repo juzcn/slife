@@ -18,10 +18,18 @@ Everything else — reasoning, planning, tool selection, error recovery, coordin
 What Slife deliberately is not:
 
 - **Not a framework** — no agent composition, pipelines, or orchestration abstractions
-- **Not a safety system** — no sandboxing beyond the OS. A single opt-in approval gate exists for external MCP tools (`require_approval` per server), but it is off by default and covers only that one tool class
+- **Not a safety system** — no sandboxing beyond the OS. Approval is model-driven: the LLM sets `_approve: true` on any tool call to push a confirmation dialog, but nothing hardcodes approval on any tool
 - **Not an automation engine** — no scheduled tasks, background workers, or event triggers
 
 It's a chat window with tools. The LLM is in full control.
+
+### Language policy
+
+The model input should read uniformly, so text that Slife authors is English:
+
+- **System prompt** (`system_prompt.j2`, `context_status.j2`): English.
+- **Native tool schemas** — tool `name`, `description`, parameter docs, and result strings: English.
+- **External tools** (MCP servers, skills, third-party commands): keep the language of the external source — do not translate. They are opaque and pass through as-is.
 
 ## Architecture
 
@@ -47,7 +55,7 @@ It's a chat window with tools. The LLM is in full control.
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins (independent child processes, Streamable HTTP)              │
 │  slife-mcp (gateway) · slife-memdb (diary) · slife-wechat            │
-│  slife-memfiles (plain-HTTP file server + ngrok tunnel)              │
+│  slife-mqtt (A2A over MQTT) · slife-memfiles (plain-HTTP file server + ngrok tunnel)              │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
@@ -69,7 +77,7 @@ User Input → Conversation.add_user_message()        (secrets sanitized)
     → LLM stream → thinking/text/tool deltas → handler callbacks
     → tool calls? → ToolRegistry.execute() concurrently (asyncio.gather)
                     → sanitize_secrets() on each result → truncate → loop
-    → approval-required tool? → serialized ApprovalDialog before execution
+    → `_approve: true` on a call? → serialized ApprovalDialog before execution
     → no tool calls? → response text → return
     → save turn to diary (unconditional — even on cancel/error/max-iterations)
 ```
@@ -182,15 +190,13 @@ Model switches fire callbacks that rebuild the LLM client, update loop parameter
 `Tool` (`slife/tools/base.py`) defines `name`, `description`, `parameters` (JSON Schema), `category`, and `async execute(**kwargs) -> str`. Required fields are validated at class-definition time via `__init_subclass__`. Optional class flags:
 
 - `requires_a2a` — register only when the A2A mesh is active
-- `_subagent_skip` — hide from subagent workers
-- `requires_approval` — route through the approval dialog before execution
 - `_skip_auto_register` — excluded from auto-discovery (used by `MCPProxyTool`)
 
 `from_config(cfg, config)` allows per-tool construction from the `tools:` overrides in `slife.json5` (e.g. `execute_shell` reads its default timeout there).
 
 ### Auto-Discovery
 
-`slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, `_subagent_skip` in subagent mode, and `requires_a2a` without a mesh.
+`slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides and `requires_a2a` without a mesh.
 
 ### Tool Categories — 55 native tools
 
@@ -203,7 +209,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Skills | `skill.py` | `skill_list`, `skill_use`, `skill_add`, `skill_remove`, `skill_set`, `skill_check_dir` |
 | CLI | `cli.py` | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |
 | REST API | `rest_api.py` | `rest_api_list`, `rest_api_add`, `rest_api_remove`, `rest_api_set` |
-| A2A | `a2a.py` | 13 tools — `a2a_list_agents`, `a2a_list_subagents`, `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_tasks`, `a2a_subscribe_task`, `a2a_spawn_subagent`, `a2a_stop_subagent`, `a2a_agent_card`, `a2a_notify_user`, `a2a_broadcast` |
+| A2A | `a2a.py` + `mqtt` plugin | native 9 — `a2a_spawn_subagent`, `a2a_list_subagents`, `a2a_stop_subagent`, `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_notify_user`; remote mesh via `mqtt__*` plugin tools (`mqtt__send_task`, `mqtt__list_agents`, `mqtt__broadcast`, …) |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `models.py` | `model_list`, `model_add`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
@@ -224,7 +230,8 @@ All managed tools follow `category_verb[_noun]` order:
 | CLI | `cli_` | `cli_list_tools`, `cli_add_tool` |
 | REST API | `rest_api_` | `rest_api_list`, `rest_api_add` |
 | MCP (built-in) | `mcp_` | `mcp_list_servers`, `mcp_connection_status`, `mcp_add_server` |
-| A2A | `a2a_` | `a2a_list_agents`, `a2a_send_task` |
+| A2A (native) | `a2a_` | `a2a_spawn_subagent`, `a2a_list_subagents` |
+| A2A (plugin) | `mqtt__` | `mqtt__send_task`, `mqtt__list_agents` |
 | Config | `config_env_` | `config_env_set`, `config_env_get` |
 | Credentials | `credential_` | `credential_check`, `credential_inject` |
 
@@ -245,21 +252,9 @@ The MCP client applies no timeout of its own; enforcement stays in one place.
 
 ### Approval Gate
 
-Tools flagged `requires_approval` pause execution and push a modal `ApprovalDialog` (Enter = approve, Esc = deny). Dialogs serialize behind a lock.
+Approval is **model-driven** (pure model judgment). The loop injects an `_approve` boolean meta-parameter on every tool schema (alongside `_timeout`/`_async`, visible on all three backends). When the LLM sets `_approve: true` on a call, execution pauses and pushes a modal `ApprovalDialog` (Enter = approve, Esc = deny). Dialogs serialize behind a lock.
 
-Two ways to enable approval per tool:
-
-1. **External MCP servers** — set `require_approval: true` on the server config in `mcp.servers.<name>`. All tools from that server require approval.
-2. **Native tools** — add `require_approval: true` to the tool's override entry in the `tools:` section of slife.json5:
-
-```json5
-tools: [
-  {name: "execute_shell", require_approval: true},
-  {name: "install_python_package", require_approval: true},
-]
-```
-
-Default is **off** for all tools.
+There is no hardcoded `requires_approval` flag on any tool or MCP server — the model decides per-call whether to ask the user. Headless (subagent) contexts have no handler and auto-approve.
 
 ## Plugin Architecture
 
@@ -402,7 +397,7 @@ On startup, recent turns are read **directly from SQLite** — no MCP transport,
 One tool surface over three transports:
 
 ```
-  a2a_list_agents / a2a_send_task / …
+  mqtt__list_agents / mqtt__send_task / …
          │
   ┌──────┼──────┐
   │      │      │
@@ -417,7 +412,7 @@ One tool surface over three transports:
 | **HTTP Streamable** | `mcp.client.streamable_http` | Skeleton — connect/disconnect only |
 | **Subagent** | `asyncio.create_subprocess_exec`, JSON-RPC 2.0 | Fully implemented, always available |
 
-The unification lives at the **tool level**: each `a2a_*` tool routes to the MQTT client or the `SubagentManager` depending on whether the target is a local subagent. Subagents are not a `TransportAdapter`.
+The A2A thin protocol is split across two tool families: **native `a2a_*` tools** route to the `SubagentManager` (local subagent workers over stdin, always available) and **`mqtt__*` plugin tools** reach remote mesh peers through the `mqtt` plugin (which only starts when the Mosquitto broker is reachable). Subagents are not a `TransportAdapter`.
 
 ### MQTT Mesh
 
@@ -425,8 +420,8 @@ The unification lives at the **tool level**: each `a2a_*` tool routes to the MQT
 - Presence heartbeat every 15 s (configurable); peers silent for 45 s are pruned. LWT publishes `{"status":"offline"}` (QoS 1) so crashes are visible
 - Client id is `<agent_id>-<pid>` to allow multiple processes per agent id
 - Duplicate agent detection: after subscribing, the client listens 1.5 s for an existing presence with the same id and exits with a clear error rather than splitting the identity
-- Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; if the probe fails, A2A is disabled and reported via `system_health`
-- Peer presence **transitions** (online/offline/timeout) reach the LLM context: `AgentService._on_agent_change` appends the TUI-identical line (via `format_presence_line`, which also filters heartbeat-driven `status_change`) to a buffer that `AgentLoop` drains read-once into the `_sys_note` footer each turn. The footer carries only *changes* — the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with stale state
+- Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; if the probe fails, the mqtt plugin is not started (A2A disabled) and this is reported via `system_health`
+- Peer presence **transitions** (online/offline/timeout) reach the LLM context: the mqtt plugin queues them; `AgentService._mqtt_poll_loop` drains them and appends the TUI-identical line (via `format_presence_line`, which also filters heartbeat-driven `status_change`) to a buffer that `AgentLoop` drains read-once into the `_sys_note` footer each turn. The footer carries only *changes* — the current roster stays queryable via `mqtt__list_agents`, so a missed event never leaves the LLM with stale state
 
 ### Unified Inbox
 
@@ -443,7 +438,7 @@ Messages are processed sequentially — only one AgentLoop runs at a time. Human
 
 ### Task Store
 
-Sent/received tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap). The store is **not persisted across restarts** — `a2a_list_tasks` after restart is empty by design.
+Sent/received tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap). The store is **not persisted across restarts** — `mqtt__list_tasks` after restart is empty by design.
 
 ### Subagent Transport
 
@@ -451,8 +446,8 @@ Local child-process workers, always available — no config toggle:
 
 - **headless.py**: Slife without TUI, JSON-RPC 2.0 over stdin/stdout — methods `tasks/send`, `shutdown`; notifications `tasks/complete`, `tasks/progress`; a `{ready: true}` result signals startup
 - **SubagentManager**: spawn/stop/list lifecycle; auto-names `sub-1`, `sub-2`, …; `max_subagents` default 5, `task_timeout` default 120 s
-- **Memory isolation**: `SLIFE_MEMDB_PORT` / `SLIFE_WECHAT_PORT` are removed from the child environment — subagents don't write to the diary (and can't deadlock on the shared server)
-- **Recursion guard**: `SLIFE_SUBAGENT_NAME` in the child environment prevents spawning further subagent managers
+- **Shared plugins**: subagents connect to the main agent's plugin servers (MCP / memdb / wechat / mqtt) via inherited ports — no isolation; they can send but never drain the inbound queue (all replies and management belong to the main agent)
+- **Recursion**: subagents can spawn their own descendants (each level has its own SubagentManager + watchdogs)
 
 ## Image & Memfiles
 

@@ -27,6 +27,10 @@ logger = logging.getLogger("slife_subagent")
 #: Set by ``run_headless`` — log path so callers can find it.
 _log_path: Path | None = None
 
+#: Cloned parent conversation (received via the stdin "context" message),
+#: or None for a pure-context subagent.
+_inherited_context: list[dict] | None = None
+
 
 def _write(result=None, error=None, rpc_id=None) -> None:
     msg = {"jsonrpc": "2.0", "id": rpc_id}
@@ -57,8 +61,11 @@ async def _process(task_text: str, rpc_id, service) -> None:
     from slife.agent.loop import MaxIterationsExceeded
 
     logger.info("task_start id=%s task=%.100s", rpc_id, task_text)
-    conv = Conversation(
-        system_prompt=build_system_prompt(service.config),
+    system_prompt = build_system_prompt(service.config, is_subagent=True)
+    conv = (
+        Conversation.from_history(system_prompt, _inherited_context)
+        if _inherited_context
+        else Conversation(system_prompt=system_prompt)
     )
 
     try:
@@ -140,9 +147,35 @@ async def run_headless() -> None:
         except Exception as e:
             logger.warning("mcp_http_failed port=%s err=%s", _mcp_port, e)
 
-    # Subagents share the main agent's tools via MCP — they do NOT
-    # need their own memory or wechat connections.  Those are only
-    # used by the main agent for session persistence and messaging.
+    # Subagents share the main agent's memory and wechat servers too.
+    _memdb_port = os.environ.get("SLIFE_MEMDB_PORT", "")
+    if _memdb_port and config.memdb_config:
+        try:
+            with elapsed("memdb_connect", logger, level=logging.INFO, port=_memdb_port):
+                await service.connect_memdb_http(int(_memdb_port))
+        except Exception as e:
+            logger.warning("memdb_http_failed port=%s err=%s", _memdb_port, e)
+
+    _wechat_port = os.environ.get("SLIFE_WECHAT_PORT", "")
+    if _wechat_port and config.wechat_config:
+        try:
+            with elapsed("wechat_connect", logger, level=logging.INFO, port=_wechat_port):
+                await service.connect_wechat_http(int(_wechat_port))
+        except Exception as e:
+            logger.warning("wechat_http_failed port=%s err=%s", _wechat_port, e)
+
+    # Reuse the main agent's mqtt plugin (thin client): register the mqtt__*
+    # tools so we can send, but never drain the inbound queue (all replies
+    # and management belong to the main agent).
+    _mqtt_port = os.environ.get("SLIFE_MQTT_PORT", "")
+    if _mqtt_port:
+        try:
+            await service.connect_mqtt_http(int(_mqtt_port))
+        except Exception as e:
+            logger.warning("mqtt_http_failed port=%s err=%s", _mqtt_port, e)
+
+    # Subagents can spawn their own descendants (recursion enabled).
+    await service.start_subagent()
 
     _write(result={"ready": True})
     logger.info("subagent_ready pid=%s", os.getpid())
@@ -188,6 +221,20 @@ async def run_headless() -> None:
             if method == "shutdown":
                 logger.info("subagent_shutdown requested task_count=%d", request_count)
                 break
+            elif method == "context":
+                # Cloned parent context, sent over stdin at spawn time.
+                messages = params.get("messages")
+                if isinstance(messages, list):
+                    global _inherited_context
+                    _inherited_context = messages
+                    logger.info(
+                        "subagent_context_received messages=%d", len(messages),
+                    )
+                else:
+                    logger.warning(
+                        "subagent_context_bad_shape type=%s",
+                        type(messages).__name__,
+                    )
             elif method == "tasks/send":
                 request_count += 1
                 task_text = params.get("task", "")

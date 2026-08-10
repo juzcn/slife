@@ -86,7 +86,6 @@ def get_rest_apis_summary(config_path: Path) -> str:
 class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     name = "rest_api_add"
     category = "REST API"
-    _subagent_skip = True
     description = (
         "Register or update an external REST API from its OpenAPI spec (upsert — idempotent). "
         "Auto-generates typed tools for every endpoint. "
@@ -208,7 +207,6 @@ class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
 class RestApiRemoveTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     name = "rest_api_remove"
     category = "REST API"
-    _subagent_skip = True
     description = "Unregister a REST API. Disconnects and removes from config."
     parameters = {
         "type": "object",
@@ -278,7 +276,6 @@ class RestApiListTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibl
 class RestApiSet(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "rest_api_set"
     category = "REST API"
-    _subagent_skip = True
     description = "Enable or disable a REST API. Connects/disconnects immediately."
     parameters = {
         "type": "object",

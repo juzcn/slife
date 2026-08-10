@@ -129,9 +129,9 @@ class AnthropicBackend:
             fn = t.get("function", {})
             schema = dict(fn.get("parameters", {}))
             schema.setdefault("type", "object")
-            props = schema.get("properties", {})
-            props.pop("_timeout", None)
-            props.pop("_async", None)
+            # Keep harness meta-params (_timeout/_async/_approve): the three
+            # backends expose the same tool schemas to the model, so the LLM
+            # can drive timeouts/async/approval uniformly on every API.
             result.append({
                 "name": fn.get("name", ""),
                 "description": fn.get("description", ""),

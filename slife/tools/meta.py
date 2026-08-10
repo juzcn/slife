@@ -157,11 +157,11 @@ def _pop_task(task_id: str) -> asyncio.Task | None:
 class CheckAsyncTool(Tool):
     name: ClassVar[str] = "check_async"
     category: ClassVar[str] = "Meta"
-    description: ClassVar[str] = "查询异步任务结果。运行中则返回状态，已完成则返回结果。"
+    description: ClassVar[str] = "Query an async task result. Returns status while running, the result when done."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "task_id": {"type": "string", "description": "异步任务返回的 task_id。"},
+            "task_id": {"type": "string", "description": "The task_id returned by the async task."},
         },
         "required": ["task_id"],
     }

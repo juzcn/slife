@@ -83,7 +83,6 @@
           ".",
         ],
         "description": "Local filesystem operations — read, write, list, and search files within allowed directories.",
-        "require_approval": true,
       },
       "serper": {
         "command": "npx",
