@@ -382,6 +382,10 @@ async def restore_session(
 
     # ── Phase 2: Replace conversation messages ────────────────────────
     conversation.messages = all_messages
+    # Load-side invariant: a restored turn may contain an orphaned tool_call
+    # (persisted by a pre-ensure session) — repair it and keep roles
+    # alternating, mirroring the save-side ensure in save_to_memory.
+    conversation._ensure_turn_consistent()
 
     # Prime the context time range so _sys_note shows the LLM
     # what time window its current context covers.  The start date is

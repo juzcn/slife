@@ -1122,6 +1122,11 @@ class AgentService:
 
         conv = conversation if conversation is not None else self.conversation
 
+        # Invariant: never persist an inconsistent turn.  Repair orphaned
+        # tool_calls and close the turn if needed BEFORE extracting — the
+        # same ensure used on load and before each user message.
+        conv._ensure_turn_consistent()
+
         # Extract turn messages: everything after the matching user message.
         # Must handle both plain text (content is a str) and multimodal
         # messages (content is a list of {type, text/image_url} parts).

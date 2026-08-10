@@ -430,18 +430,6 @@ class AgentLoop:
             logger.warning("auto_invoke_error name=%s err=%s", name, e)
         conversation.add_tool_result(tc.id, sanitize_secrets(result))
 
-    def _ensure_turn_closed(self, conversation: Conversation, content: str = "") -> None:
-        """Close a turn that ended on a user-role message.
-
-        Cancelled / errored / max-iteration turns end on a ``user`` or
-        ``tool`` message (a tool result is a ``user`` role on the Anthropic
-        wire), so the next ``add_user_message`` would produce two
-        consecutive user messages — rejected with a 400.  Appending a
-        closing assistant message keeps the roles alternating.
-        """
-        if conversation.messages and conversation.messages[-1]["role"] in ("user", "tool"):
-            conversation.add_assistant_message(content=content or "(no output this turn)")
-
     # ── Stream processing ──────────────────────────────────────────
 
     async def _process_stream(
@@ -831,17 +819,18 @@ class AgentLoop:
 
                 raise MaxIterationsExceeded(self.max_iterations)
             except AgentCancelled:
-                self._ensure_turn_closed(conversation, last_text)
+                conversation._ensure_turn_consistent(last_text)
                 self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except MaxIterationsExceeded:
                 logger.warning("max_iterations_exceeded max=%d", self.max_iterations)
-                self._ensure_turn_closed(conversation, last_text)
+                conversation._ensure_turn_consistent(last_text)
                 self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except Exception:
-                # Close the turn on transient errors too, then re-raise so
-                # the caller (inbox) handles the error as before — but the
-                # conversation no longer ends on a user-role message.
-                self._ensure_turn_closed(conversation, last_text)
+                # Make the turn consistent on transient errors too, then
+                # re-raise so the caller (inbox) handles the error as before
+                # — but the conversation no longer ends on an inconsistent
+                # (orphaned / user-role) message.
+                conversation._ensure_turn_consistent(last_text)
                 raise

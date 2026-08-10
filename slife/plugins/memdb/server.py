@@ -127,44 +127,6 @@ async def _ensure_store() -> SessionStore:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _repair_orphan_tool_results(messages: list[dict]) -> int:
-    """Insert synthetic tool results for orphaned tool_calls.
-
-    Guarantees a persisted turn never contains an assistant ``tool_call``
-    without a matching ``tool`` result — that only happens when a request
-    is interrupted mid-execution (e.g. a hung tool that never returned).
-    Without this, an orphaned call survives in the DB and gets re-repaired
-    on every session restore.
-
-    Position-correct: each synthetic result is inserted immediately after
-    the assistant message that owns the orphaned call.  Returns the number
-    of synthetic results inserted.
-    """
-    if not messages:
-        return 0
-    resulted = {
-        m.get("tool_call_id")
-        for m in messages if m.get("role") == "tool"
-    }
-    repaired = 0
-    out: list[dict] = []
-    for m in messages:
-        out.append(m)
-        if m.get("role") == "assistant" and m.get("tool_calls"):
-            for tc in m["tool_calls"]:
-                tid = tc.get("id")
-                if tid and tid not in resulted:
-                    out.append({
-                        "role": "tool",
-                        "tool_call_id": tid,
-                        "content": "Error: request cancelled by user",
-                    })
-                    repaired += 1
-    if repaired:
-        messages[:] = out
-    return repaired
-
-
 @mcp.tool(name="__memory_save_turn", description="Save a turn. Harness-only.")
 async def __memory_save_turn(
     user_message: str = "",
@@ -176,14 +138,9 @@ async def __memory_save_turn(
 ) -> str:
     store = await _ensure_store()
     try:
-        # Invariant: never persist an orphaned tool_call.  The harness
-        # already repairs its in-memory conversation, but this is the
-        # single persistence choke point — guard regardless of caller.
-        if messages:
-            repaired = _repair_orphan_tool_results(messages)
-            if repaired:
-                logger.info("save_turn_repaired_orphans count=%d", repaired)
-
+        # The harness guarantees a consistent turn (no orphaned tool_calls)
+        # via AgentLoop._ensure_turn_consistent before it ever calls here —
+        # the storage layer persists what it receives.
         rowid = await store.save_turn(
             user_message=user_message, messages=messages,
             token_count=token_count, who_helped=who_helped, what_model=what_model,

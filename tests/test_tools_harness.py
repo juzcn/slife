@@ -5,8 +5,9 @@ Covers:
   history tool names against the declared tools list).
 - _sys_note / _sys_trim execute output.
 - The loop's auto-invoke producing normal tool-call pairs.
-- The _ensure_turn_closed guarantee: a cancelled turn followed by the next
-  user message must still alternate user/assistant on the Anthropic wire.
+- The _ensure_turn_consistent guarantee: an interrupted turn is restored to
+  a consistent state — no orphaned tool_calls, and no consecutive user
+  messages on the Anthropic wire (which rejects them).
 """
 
 import pytest; pytestmark = pytest.mark.unit
@@ -212,7 +213,7 @@ class TestConsecutiveUserFix:
         # Turn 1: user message + harness _sys_note, then cancelled (no reply).
         conv.add_user_message("第一轮：帮我搜一下X")
         await loop._auto_invoke("_sys_note", loop._footer_kwargs(conv, conv.count_tokens()), conv)
-        loop._ensure_turn_closed(conv, "")
+        conv._ensure_turn_consistent("")
 
         # Turn 2: the next user message + fresh _sys_note.
         conv.add_user_message("第二轮：继续")
@@ -235,23 +236,55 @@ class TestConsecutiveUserFix:
         assert last[1]["role"] == "tool"
         assert "Context usage" in last[1]["content"]
 
-    def test_ensure_turn_closed_appends_assistant(self):
+    def test_ensure_turn_consistent_appends_assistant(self):
         reg = _registry()
         loop = _loop(reg)
         conv = Conversation(system_prompt="SYS")
         conv.add_user_message("hi")
         # conversation ends on a user message → close it.
-        loop._ensure_turn_closed(conv, "(no output this turn)")
+        conv._ensure_turn_consistent("(no output this turn)")
         assert conv.messages[-1]["role"] == "assistant"
         assert conv.messages[-1]["content"] == "(no output this turn)"
 
-    def test_ensure_turn_closed_noop_when_assistant(self):
+    def test_ensure_turn_consistent_noop_when_assistant(self):
         reg = _registry()
         loop = _loop(reg)
         conv = Conversation(system_prompt="SYS")
         conv.add_user_message("hi")
         conv.add_assistant_message("reply")
-        loop._ensure_turn_closed(conv, "")
+        conv._ensure_turn_consistent("")
         # No closing message added — already ends on assistant.
         assert conv.messages[-1]["content"] == "reply"
+
+    def test_ensure_turn_consistent_repairs_orphaned_call(self):
+        """An interrupted turn ending on an orphaned tool_call is repaired.
+
+        The orphaned assistant tool_call gets a synthetic tool result, and
+        because that makes the turn end on a tool role (user on the
+        Anthropic wire), a closing assistant is appended too — so the turn
+        is consistent and no consecutive user would reach the API.
+        """
+        reg = _registry()
+        loop = _loop(reg)
+        conv = Conversation(system_prompt="SYS")
+        conv.add_user_message("hi")
+        # Turn interrupted mid-tool-call: assistant tool_call, no result.
+        conv.add_assistant_message(
+            "",
+            tool_calls=[
+                {"id": "orphan1", "type": "function",
+                 "function": {"name": "search", "arguments": "{}"}},
+            ],
+        )
+
+        conv._ensure_turn_consistent("(no output this turn)")
+
+        # system + user + assistant(orphan) + tool(synthetic) + assistant(closing)
+        roles = [m["role"] for m in conv.messages]
+        assert roles == ["system", "user", "assistant", "tool", "assistant"]
+        # synthetic result targets the orphaned call
+        assert conv.messages[3]["tool_call_id"] == "orphan1"
+        assert "cancelled" in conv.messages[3]["content"]
+        # closing assistant keeps roles alternating
+        assert conv.messages[-1]["role"] == "assistant"
 

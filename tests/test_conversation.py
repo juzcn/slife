@@ -261,10 +261,18 @@ class TestRepairOrphanedToolCalls:
             tool_calls=[{"id": "c1", "type": "function", "function": {"name": "search", "arguments": "{}"}}]
         )
         conv.add_tool_result("c1", "results")
-        # Add another message to confirm no orphan repair needed
+        # Add another message to confirm no orphan repair needed, and that a
+        # closing assistant is inserted after the trailing tool result so
+        # roles keep alternating (a tool result is a user on the wire).
         conv.add_user_message("next question")
-        assert len(conv.messages) == 4  # user, assistant, tool, user
-        # No synthetic error messages injected
+        # user, assistant(call), tool(result), assistant(closing), user
+        assert len(conv.messages) == 5
+        assert conv.messages[-2]["role"] == "assistant"
+        # No synthetic tool error injected
+        assert not any(
+            m["role"] == "tool" and "cancelled" in str(m.get("content", "")).lower()
+            for m in conv.messages
+        )
 
     def test_repairs_single_orphan(self):
         """A synthetic error result is added for an orphaned tool call."""
@@ -275,15 +283,17 @@ class TestRepairOrphanedToolCalls:
             tool_calls=[{"id": "orphan1", "type": "function", "function": {"name": "search", "arguments": "{}"}}]
         )
         # No tool result added — orphaned tool call
-        # Next user message triggers repair
+        # Next user message triggers repair (orphan + role closing)
         conv.add_user_message("interrupting question")
 
-        # Should have: user, assistant(orphan), synthetic tool error, user
-        assert len(conv.messages) == 4
+        # user, assistant(orphan), synthetic tool, assistant(closing), user
+        assert len(conv.messages) == 5
         tool_msgs = [m for m in conv.messages if m["role"] == "tool"]
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["tool_call_id"] == "orphan1"
         assert "cancelled" in tool_msgs[0]["content"].lower()
+        # closing assistant keeps the wire alternating
+        assert conv.messages[-2]["role"] == "assistant"
 
     def test_repairs_multiple_orphans(self):
         """Multiple orphaned tool calls each get a synthetic error."""

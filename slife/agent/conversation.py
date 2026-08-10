@@ -129,6 +129,32 @@ class Conversation:
             i -= 1
         return repaired
 
+    def _ensure_turn_consistent(self, content: str = "") -> int:
+        """Restore the conversation to a consistent state before appending.
+
+        Two idempotent invariants for a turn that may have ended early
+        (cancelled / errored / max-iteration, or restored from memory):
+
+        1. **No orphaned tool_calls** — every assistant ``tool_call`` must
+           have a matching ``tool`` result; missing ones get a synthetic
+           ``Error: request cancelled by user`` result inserted right after
+           the owning assistant message.
+        2. **Alternating roles** — a conversation ending on a
+           ``user``/``tool`` message (a tool result is a ``user`` role on
+           the Anthropic wire, which rejects two consecutive users) gets a
+           closing assistant message so roles keep alternating.
+
+        Repair runs first: a dangling call as the last message (role
+        ``"assistant"``) becomes a ``"tool"`` role after repair, so the
+        closing-assistant check below then fires correctly.
+
+        Returns the number of synthetic tool results inserted.
+        """
+        repaired = self._repair_orphaned_tool_calls()
+        if self.messages and self.messages[-1]["role"] in ("user", "tool"):
+            self.add_assistant_message(content=content or "(no output this turn)")
+        return repaired
+
     def add_user_message(
         self, content: str, images: list[str] | None = None
     ) -> None:
@@ -147,9 +173,10 @@ class Conversation:
             images: Optional list of image file paths or URLs to attach.
         """
         # Ensure the conversation is well-formed before adding a user
-        # message.  If a previous request was cancelled during tool
-        # execution, there may be orphaned tool_calls without results.
-        self._repair_orphaned_tool_calls()
+        # message: repair orphaned tool_calls and keep roles alternating
+        # (a restored or interrupted turn may end on an orphaned call or a
+        # user/tool role).
+        self._ensure_turn_consistent()
 
         content = sanitize_secrets(content)
 
