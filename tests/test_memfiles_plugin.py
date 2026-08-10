@@ -12,6 +12,7 @@ import pytest; pytestmark = pytest.mark.unit
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import quote
 
 import slife.plugins.memfiles.server as plugin
 
@@ -341,3 +342,34 @@ class TestShareRoute:
 
         resp = await plugin.handle_share(_request(tok))
         assert resp.headers["Content-Length"] == "10"
+
+    @pytest.mark.asyncio
+    async def test_non_ascii_filename_no_500(self, tmp_path):
+        """A CJK filename must not blow up the Content-Disposition header.
+
+        Regression: HTTP headers are Latin-1 — a non-ASCII filename used to
+        raise UnicodeEncodeError in Starlette's init_headers (HTTP 500).
+        """
+        payload = b"\xe4\xb8\xad\xe6\x96\x87"  # some bytes
+        f = tmp_path / "报告.pdf"      # 报告.pdf
+        f.write_bytes(payload)
+        tok = plugin._register_file(str(f))
+
+        resp = await plugin.handle_share(_request(tok))
+        assert resp.status_code == 200
+        cd = resp.headers["Content-Disposition"]
+        # RFC 5987 percent-encoded form carries the real name
+        assert "filename*=UTF-8''" in cd
+        assert quote("报告.pdf") in cd
+        body = b"".join([c async for c in resp.body_iterator])
+        assert body == payload
+
+    def test_content_disposition_ascii(self):
+        assert plugin._content_disposition("photo.png") == (
+            'inline; filename="photo.png"'
+        )
+
+    def test_content_disposition_non_ascii(self):
+        cd = plugin._content_disposition("报告.pdf")
+        assert 'filename="' in cd
+        assert "filename*=UTF-8''" in cd

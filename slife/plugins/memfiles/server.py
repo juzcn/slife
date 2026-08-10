@@ -35,6 +35,8 @@ from pathlib import Path
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 
+from urllib.parse import quote
+
 from slife.paths import get_memfiles_dir
 from slife.plugins.memfiles.tunnel import (
     is_active,
@@ -146,6 +148,28 @@ def _reset_registry() -> None:
     """Clear all registered tokens (used by tests)."""
     _registry.clear()
     _path_to_token.clear()
+
+
+def _content_disposition(filename: str) -> str:
+    """RFC 5987 content-disposition for (possibly) non-ASCII filenames.
+
+    HTTP header values must be Latin-1.  For a non-Latin-1 filename we
+    emit an ASCII fallback in ``filename=`` plus the real name
+    percent-encoded in ``filename*=UTF-8''...`` — otherwise Starlette
+    raises ``UnicodeEncodeError`` while writing the header (500).
+    """
+    try:
+        filename.encode("latin-1")
+    except UnicodeEncodeError:
+        ascii_fallback = re.sub(r'[^ -~]', "_", filename)
+        ascii_fallback = ascii_fallback.replace('"', "_").replace("\\", "_")
+        ascii_fallback = ascii_fallback[:80] or "file"
+        return (
+            f'inline; filename="{ascii_fallback}"; '
+            f"filename*=UTF-8''{quote(filename)}"
+        )
+    safe = filename.replace('"', "_").replace("\\", "_")
+    return f'inline; filename="{safe}"'
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -263,7 +287,7 @@ async def handle_share(request: Request) -> Response:
         headers={
             "Content-Type": content_type,
             "Content-Length": str(file_size),
-            "Content-Disposition": f'inline; filename="{file_path.name}"',
+            "Content-Disposition": _content_disposition(file_path.name),
             # Suppress the ngrok free-tier interstitial browser-warning page.
             "ngrok-skip-browser-warning": "true",
         },
