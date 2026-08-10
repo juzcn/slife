@@ -6,11 +6,15 @@ import pytest; pytestmark = pytest.mark.unit
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+# Ensure the slife.subagent package is loaded so patch() can resolve the
+# MANAGER_PATH target regardless of test collection order.
+import slife.subagent.process  # noqa: F401
+
 from slife.tools.a2a import (
-    A2AListSubagentsTool,
-    SubagentSpawnTool,
-    SubagentStopTool,
-    A2ANotifyUserTool,
+    ListSubagentsTool,
+    NotifyUserTool,
+    SpawnSubagentTool,
+    StopSubagentTool,
 )
 
 # Patch paths: tools use lazy imports from Slife.a2a.client / Slife.subagent.process
@@ -23,10 +27,10 @@ MANAGER_PATH = "slife.subagent.process.get_manager"
 
 
 TOOLS = [
-    A2AListSubagentsTool,
-    SubagentSpawnTool,
-    SubagentStopTool,
-    A2ANotifyUserTool,
+    ListSubagentsTool,
+    SpawnSubagentTool,
+    StopSubagentTool,
+    NotifyUserTool,
 ]
 
 
@@ -59,11 +63,11 @@ class TestAllToolsMetadata:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestA2AListSubagentsTool:
+class TestListSubagentsTool:
     @pytest.mark.asyncio
     async def test_no_manager(self):
         with patch(MANAGER_PATH, return_value=None):
-            tool = A2AListSubagentsTool()
+            tool = ListSubagentsTool()
             result = await tool.execute()
             assert "not running yet" in result
 
@@ -72,7 +76,7 @@ class TestA2AListSubagentsTool:
         mock_mgr = MagicMock()
         mock_mgr.list = MagicMock(return_value=[])
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = A2AListSubagentsTool()
+            tool = ListSubagentsTool()
             result = await tool.execute()
             assert "No local subagents" in result
 
@@ -88,7 +92,7 @@ class TestA2AListSubagentsTool:
         mock_mgr.get = MagicMock(return_value=mock_proc)
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = A2AListSubagentsTool()
+            tool = ListSubagentsTool()
             result = await tool.execute()
             assert "sub-1" in result
             assert "sub-2" in result
@@ -100,11 +104,11 @@ class TestA2AListSubagentsTool:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestSubagentSpawnTool:
+class TestSpawnSubagentTool:
     @pytest.mark.asyncio
     async def test_no_manager(self):
         with patch(MANAGER_PATH, return_value=None):
-            tool = SubagentSpawnTool()
+            tool = SpawnSubagentTool()
             result = await tool.execute()
             assert "not running yet" in result
 
@@ -114,7 +118,7 @@ class TestSubagentSpawnTool:
         mock_mgr.spawn = AsyncMock(return_value="sub-1")
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = SubagentSpawnTool()
+            tool = SpawnSubagentTool()
             result = await tool.execute(name="worker")
             assert "sub-1" in result
             assert "spawned" in result.lower()
@@ -125,7 +129,7 @@ class TestSubagentSpawnTool:
         mock_mgr.spawn = AsyncMock(return_value="sub-2")
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = SubagentSpawnTool()
+            tool = SpawnSubagentTool()
             result = await tool.execute()
             assert "sub-2" in result
 
@@ -135,7 +139,7 @@ class TestSubagentSpawnTool:
         mock_mgr.spawn = AsyncMock(side_effect=RuntimeError("no memory"))
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = SubagentSpawnTool()
+            tool = SpawnSubagentTool()
             result = await tool.execute()
             assert "Error" in result
 
@@ -146,7 +150,7 @@ class TestSubagentSpawnTool:
         mock_mgr.spawn = AsyncMock(return_value="sub-3")
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = SubagentSpawnTool()
+            tool = SpawnSubagentTool()
             await tool.execute()
 
         kwargs = mock_mgr.spawn.call_args.kwargs
@@ -172,7 +176,7 @@ class TestSubagentSpawnTool:
         mock_mgr = MagicMock()
         mock_mgr.spawn = AsyncMock(return_value="sub-4")
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = SubagentSpawnTool()
+            tool = SpawnSubagentTool()
             object.__setattr__(tool, "_ctx", ToolContext(conversation=conv, config=cfg))
             await tool.execute(context="cloned")
 
@@ -204,21 +208,21 @@ class TestSubagentSpawnTool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SubagentStopTool
+# StopSubagentTool
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestSubagentStopTool:
+class TestStopSubagentTool:
     @pytest.mark.asyncio
     async def test_missing_agent_id(self):
-        tool = SubagentStopTool()
+        tool = StopSubagentTool()
         result = await tool.execute(agent_id="")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_no_manager(self):
         with patch(MANAGER_PATH, return_value=None):
-            tool = SubagentStopTool()
+            tool = StopSubagentTool()
             result = await tool.execute(agent_id="sub-1")
             assert "not running yet" in result
 
@@ -228,7 +232,7 @@ class TestSubagentStopTool:
         mock_mgr.stop = AsyncMock(return_value=True)
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = SubagentStopTool()
+            tool = StopSubagentTool()
             result = await tool.execute(agent_id="sub-1")
             assert "stopped" in result.lower()
 
@@ -238,7 +242,7 @@ class TestSubagentStopTool:
         mock_mgr.stop = AsyncMock(return_value=False)
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = SubagentStopTool()
+            tool = StopSubagentTool()
             result = await tool.execute(agent_id="sub-1")
             assert "not found" in result.lower()
 
@@ -248,16 +252,16 @@ class TestSubagentStopTool:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestA2ANotifyUserTool:
+class TestNotifyUserTool:
     @pytest.mark.asyncio
     async def test_missing_message(self):
-        tool = A2ANotifyUserTool()
+        tool = NotifyUserTool()
         result = await tool.execute(message="")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_notification_sent(self):
-        tool = A2ANotifyUserTool()
+        tool = NotifyUserTool()
         with patch("slife.platform.desktop_notify"):
             result = await tool.execute(title="Test", message="Hello world")
         assert "Notification sent" in result

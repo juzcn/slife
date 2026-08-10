@@ -114,8 +114,8 @@ class TestCreateToolsOverrideEdgeCases:
         # Local subagent task/lifecycle tools are native.
         assert "a2a_send_task" in names
         assert "a2a_send_task_async" in names
-        assert "a2a_spawn_subagent" in names
-        assert "a2a_list_subagents" in names
-        # Pure mesh tools live in the a2a plugin (a2a__*), not native.
-        assert "mqtt_list_agents" not in names
-        assert "mqtt_broadcast" not in names
+        assert "spawn_subagent" in names
+        assert "list_subagents" in names
+        # Mesh tools are native too, with the uniform a2a_ prefix.
+        assert "a2a_list_agents" in names
+        assert "a2a_broadcast" in names

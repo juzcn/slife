@@ -37,48 +37,48 @@ def _fake_client():
 
 class TestPluginTools:
     @pytest.mark.asyncio
-    async def test_send_task(self):
+    async def test__send_task(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            result = await plugin.send_task("peer-1", "hello")
+            result = await getattr(plugin, "__send_task")("peer-1", "hello")
         assert result == "result-text"
         client.send_task.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_send_task_async(self):
+    async def test__send_task_async(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            result = await plugin.send_task_async("peer-1", "hello")
+            result = await getattr(plugin, "__send_task_async")("peer-1", "hello")
         assert result == "corr-1"
 
     @pytest.mark.asyncio
-    async def test_list_agents_serializes_cards(self):
+    async def test__list_agents_serializes_cards(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            result = await plugin.list_agents()
+            result = await getattr(plugin, "__list_agents")()
         data = json.loads(result)
         assert data[0]["agent_id"] == "peer-1"
         assert data[0]["display_name"] == "Peer One"
 
     @pytest.mark.asyncio
-    async def test_broadcast(self):
+    async def test__broadcast(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            result = await plugin.broadcast("task")
+            result = await getattr(plugin, "__broadcast")("task")
         assert "peer-1:corr-1" in result
 
     @pytest.mark.asyncio
-    async def test_get_task_result_pending(self):
+    async def test__get_task_result_pending(self):
         client = _fake_client()
         client.get_task_result = MagicMock(return_value=None)
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            assert await plugin.get_task_result("x") == "pending"
+            assert await getattr(plugin, "__get_task_result")("x") == "pending"
 
     @pytest.mark.asyncio
-    async def test_cancel_task(self):
+    async def test__cancel_task(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            assert await plugin.cancel_task("peer-1", "corr-1") == "cancelled"
+            assert await getattr(plugin, "__cancel_task")("peer-1", "corr-1") == "cancelled"
 
 
 class TestHarnessTools:
@@ -97,7 +97,7 @@ class TestHarnessTools:
             "online",
         )
 
-        out = json.loads(await plugin._mqtt_drain_incoming())
+        out = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
         assert len(out["tasks"]) == 1
         assert out["tasks"][0]["content"] == "do this"
         assert out["tasks"][0]["correlation_id"] == "cid-1"
@@ -111,7 +111,7 @@ class TestHarnessTools:
     async def test_dispatch_result_publishes(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            await plugin._mqtt_dispatch_result("Slife/x/tasks/result", "cid-1", "reply")
+            await getattr(plugin, "__a2a_dispatch_result")("Slife/x/tasks/result", "cid-1", "reply")
         client.publish_message.assert_called_once()
 
     @pytest.mark.asyncio
@@ -119,8 +119,8 @@ class TestHarnessTools:
         """The filter keys off 'harness-only' in the registered description."""
         tools = await plugin.mcp._list_tools()
         by_name = {t.name: t.description for t in tools}
-        assert "harness-only" in by_name["_mqtt_drain_incoming"].lower()
-        assert "harness-only" in by_name["_mqtt_dispatch_result"].lower()
+        assert "harness-only" in by_name["__a2a_drain_incoming"].lower()
+        assert "harness-only" in by_name["__a2a_dispatch_result"].lower()
 
 
 class TestConfig:

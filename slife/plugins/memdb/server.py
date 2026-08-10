@@ -127,8 +127,8 @@ async def _ensure_store() -> SessionStore:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(name="_memory_save_turn", description="Save a turn. Harness-only.")
-async def _memory_save_turn(
+@mcp.tool(name="__memory_save_turn", description="Save a turn. Harness-only.")
+async def __memory_save_turn(
     user_message: str = "",
     messages: list[dict] | None = None,
     token_count: int = 0,
@@ -149,8 +149,8 @@ async def _memory_save_turn(
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(name="_memory_get_recent_turns", description="Load recent turns for restore. Harness-only.")
-async def _memory_get_recent_turns(limit: int = 50) -> str:
+@mcp.tool(name="__memory_get_recent_turns", description="Load recent turns for restore. Harness-only.")
+async def __memory_get_recent_turns(limit: int = 50) -> str:
     store = await _ensure_store()
     try:
         turns = await store.get_recent_turns(limit=limit)
@@ -332,10 +332,8 @@ async def _reinit_store_after_model_change() -> None:
 @mcp.tool(
     name="memory_list_recent",
     description=(
-        "Browse your recent knowledge, newest first. "
-        "Each entry is one turn — a user question and your response. "
-        "Returns rowid, user_message (truncated), summary, tags, created_at. "
-        "Lightweight — use memory_open to load full content."
+        "List recent memories (newest first): rowid, truncated user_message, "
+        "summary, tags, created_at. Use memory_open for full content."
     ),
 )
 async def memory_list_recent(limit: int = 20) -> str:
@@ -355,11 +353,9 @@ async def memory_list_recent(limit: int = 20) -> str:
 @mcp.tool(
     name="memory_count",
     description=(
-        "Count your knowledge. Returns total turns and filtered count.\n"
-        "- No params: total count for the current agent.\n"
-        "- since/until: count in a time range (ISO datetime, e.g. '2026-07-01T00:00:00').\n"
-        "  Use 'since' alone for 'since last month', 'until' for 'before date'.\n"
-        "- query + mode: count turns matching a search (grep/fts5)."
+        "Count memories. No params: total. since/until: count in an ISO time "
+        "range (use 'since' alone for 'since last month'). query+mode: count "
+        "search matches (grep/fts5)."
     ),
 )
 async def memory_count(
@@ -382,9 +378,8 @@ async def memory_count(
 @mcp.tool(
     name="memory_open",
     description=(
-        "Load a turn by rowid. Returns the full messages (OpenAI JSON) "
-        "including thinking, tool calls, and tool results. "
-        "Find rowids via memory_list_recent or memory_search."
+        "Load a memory by rowid: full messages (OpenAI JSON) incl. thinking, "
+        "tool calls, tool results. rowid from memory_list_recent / memory_search."
     ),
 )
 async def memory_open(rowid: int) -> str:
@@ -404,19 +399,12 @@ async def memory_open(rowid: int) -> str:
 @mcp.tool(
     name="memory_search",
     description=(
-        "Search your knowledge — everything you have ever read, written, "
-        "or discussed. Each result is one turn.\n"
-        "\n"
-        "Four modes:\n"
-        "  'grep' — exact substring match (error messages, file paths, code).\n"
-        "  'fts5' — keyword ranking via BM25 (topic search).\n"
-        "  'hybrid' — fts5 + semantic merged with RRF (default).\n"
-        "  'time' — browse by date range, no query needed.\n"
-        "\n"
-        "All modes accept since/until (ISO datetime). "
-        "Convert relative time to ISO: 'yesterday' → compute the date.\n"
-        "\n"
-        "Results are lightweight. Use memory_open to load full turns."
+        "Search memories (each result = one turn). "
+        "Modes: 'grep' exact substring (error messages, file paths, code); "
+        "'fts5' BM25 keyword ranking; 'hybrid' fts5 + semantic (default); "
+        "'time' browse by date range, no query. "
+        "since/until = ISO datetime — convert relative time ('yesterday' → date). "
+        "Use memory_open for full turns."
     ),
 )
 async def memory_search(
@@ -495,10 +483,8 @@ async def memory_search(
 @mcp.tool(
     name="memory_summarize",
     description=(
-        "Write a summary and tags for a specific turn. "
-        "Summary: 1-2 sentences about what this turn accomplished. "
-        "Tags: comma-separated topics (e.g. 'debug,auth,oauth'). "
-        "Both optional. This makes the turn findable via search."
+        "Write a summary (1-2 sentences) and comma-separated tags for a turn, "
+        "making it findable via search. Both optional."
     ),
 )
 async def memory_summarize(
@@ -544,9 +530,8 @@ async def memory_summarize(
 @mcp.tool(
     name="memory_check_embedding",
     description=(
-        "Check embedding backend status and reindex progress. "
-        "Returns backend, model, dimension, available flag, "
-        "unembedded count, and actionable next-step hints."
+        "Embedding backend status + reindex progress: backend, model, dimension, "
+        "available, unembedded count, hints."
     ),
 )
 async def memory_check_embedding() -> str:
@@ -569,12 +554,9 @@ async def memory_check_embedding() -> str:
 @mcp.tool(
     name="memory_set_embedding",
     description=(
-        "Configure the embedding backend for semantic (hybrid) search. "
-        "Re-enable via memory_set_enabled(enabled=true) — reuses existing "
-        "embeddings, no re-index needed. "
-        "On first config or model change, existing turns are auto re-indexed "
-        "in the background; hybrid search works as soon as the first batch "
-        "completes."
+        "Configure the embedding backend (gguf/transformer/api) for hybrid search. "
+        "Existing turns auto-reindex in the background; keyword search stays "
+        "available meanwhile."
     ),
 )
 async def memory_set_embedding(
@@ -658,10 +640,8 @@ async def memory_set_embedding(
 @mcp.tool(
     name="memory_set_enabled",
     description=(
-        "Enable or disable semantic (hybrid) search. "
-        "Disabling preserves embeddings; re-enabling auto re-indexes "
-        "turns saved while disabled. "
-        "Use memory_set_embedding to configure backend/model first."
+        "Enable/disable semantic (hybrid) search. Disabling preserves embeddings; "
+        "re-enabling re-indexes turns saved meanwhile."
     ),
 )
 async def memory_set_enabled(enabled: bool) -> str:

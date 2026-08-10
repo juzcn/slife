@@ -112,21 +112,23 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 
 ### Harness-Only Tool Convention
 
-Tools whose name starts with `_` (underscore) are **harness-owned** — internal machinery the LLM never needs to call. Two shapes:
+Harness tools are internal machinery the LLM never needs to call. Two prefixes encode the visibility tier:
 
-1. **Hidden from the schema** (default) — plugin harness tools are filtered out of `to_openai_functions()` by `PluginLifecycle.spawn()` / `AgentService`.
-2. **Declared but auto-invoked** (the two native exceptions) — `_sys_note` / `_sys_trim` live in `slife/tools/harness.py` and **do** appear in the schema. This is required so the Anthropic / OpenAI-Responses backends accept their tool-call pairs in history (they validate tool names against the declared list — the H3 bug). `AgentLoop._auto_invoke()` calls them on the harness's behalf as normal tool-call pairs; the system prompt forbids the LLM from calling them. `_sys_note` is pure (only reads state); `_sys_trim` genuinely trims to the floor — a legitimate action if the LLM calls it anyway.
+1. **`__` (double underscore) = harness, LLM-invisible.** Plugin harness tools (`__memory_save_turn`, `__a2a_drain_incoming`, `__wechat_drain_incoming`, `__send_task`, …) are filtered out of the schema entirely by `PluginLifecycle.spawn()` / `AgentService` — they never reach `to_openai_functions()`. They are called programmatically via `client.call_tool("__…")`.
+2. **`_` (single underscore) = harness, LLM-visible but reserved.** The native `_sys_note` / `_sys_trim` (in `slife/tools/harness.py`) **do** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept their tool-call pairs in history (they validate tool names against the declared list — the H3 bug). `AgentLoop._auto_invoke()` calls them on the harness's behalf as normal tool-call pairs; the system prompt forbids the LLM from calling them. `_sys_note` is pure (only reads state); `_sys_trim` genuinely trims to the floor — a legitimate action if the LLM calls it anyway.
 
 | Tool | Shape | Purpose |
 |------|-------|---------|
 | `_sys_note` | Native tool, auto-invoked each turn | Reports current context status (time / usage % / tokens / peer events) |
 | `_sys_trim` | Native tool, auto-invoked on trim | Trims the oldest complete turns down to `context_floor` and returns the notification |
-| `_memory_save_turn` | memdb plugin – hidden | Persists a turn to the diary |
-| `_memory_get_recent_turns` | memdb plugin – hidden | Loads recent turns for session restore |
-| `_wechat_drain_incoming` | wechat plugin – hidden | Drains queued incoming WeChat messages |
-| `_wechat_dispatch_reply` | wechat plugin – hidden | Sends a reply and cleans up typing indicator |
+| `__memory_save_turn` | memdb plugin – invisible | Persists a turn to the diary |
+| `__memory_get_recent_turns` | memdb plugin – invisible | Loads recent turns for session restore |
+| `__wechat_drain_incoming` | wechat plugin – invisible | Drains queued incoming WeChat messages |
+| `__wechat_dispatch_reply` | wechat plugin – invisible | Sends a reply and cleans up typing indicator |
+| `__a2a_drain_incoming` | mqtt plugin – invisible | Drains queued inbound A2A tasks + presence events |
+| `__a2a_dispatch_result` | mqtt plugin – invisible | Publishes a task result back to a requester |
 
-The `_` prefix marks harness ownership; hiding from the schema is the default but not the only valid shape — a harness tool is schema-declared when backend history validation requires the name to exist.
+Single `_` = visible-but-forbidden (schema-declared when backend history validation requires the name); double `__` = never in the schema.
 
 ### System Prompt
 
@@ -198,7 +200,7 @@ Model switches fire callbacks that rebuild the LLM client, update loop parameter
 
 `slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides and `requires_a2a` without a mesh.
 
-### Tool Categories — 55 native tools
+### Tool Categories — 59 native tools (57 LLM-visible + 2 harness `_` tools)
 
 All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM sees only function names and schemas.
 
@@ -209,7 +211,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Skills | `skill.py` | `skill_list`, `skill_use`, `skill_add`, `skill_remove`, `skill_set`, `skill_check_dir` |
 | CLI | `cli.py` | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |
 | REST API | `rest_api.py` | `rest_api_list`, `rest_api_add`, `rest_api_remove`, `rest_api_set` |
-| A2A | `a2a.py` + `mqtt` plugin | native 9 — `a2a_spawn_subagent`, `a2a_list_subagents`, `a2a_stop_subagent`, `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_notify_user`; remote mesh via `mqtt__*` plugin tools (`mqtt__send_task`, `mqtt__list_agents`, `mqtt__broadcast`, …) |
+| A2A | `a2a.py` + `mqtt` plugin | native, one uniform `a2a_` prefix — `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task` (A2A standard ops, both transports), `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card` (agent/MQTT only), `a2a_broadcast` (extension); `spawn_subagent`, `list_subagents`, `stop_subagent` (subagent lifecycle, no prefix), `notify_user` (desktop alert, not A2A) |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `models.py` | `model_list`, `model_add`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
@@ -230,8 +232,9 @@ All managed tools follow `category_verb[_noun]` order:
 | CLI | `cli_` | `cli_list_tools`, `cli_add_tool` |
 | REST API | `rest_api_` | `rest_api_list`, `rest_api_add` |
 | MCP (built-in) | `mcp_` | `mcp_list_servers`, `mcp_connection_status`, `mcp_add_server` |
-| A2A (native) | `a2a_` | `a2a_spawn_subagent`, `a2a_list_subagents` |
-| A2A (plugin) | `mqtt__` | `mqtt__send_task`, `mqtt__list_agents` |
+| Subagent (lifecycle) | `subagent` / verb_noun | `spawn_subagent`, `list_subagents`, `stop_subagent` |
+| A2A (standard ops) | `a2a_` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task` (both transports) |
+| A2A (mesh discovery) | `a2a_` | `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` (agent/MQTT only) |
 | Config | `config_env_` | `config_env_set`, `config_env_get` |
 | Credentials | `credential_` | `credential_check`, `credential_inject` |
 
@@ -239,7 +242,7 @@ Core execution tools (`execute_shell`, `install_python_package`, `run_python_scr
 
 ### Registry
 
-`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. A module-level singleton (`get_registry()`) lets meta-tools introspect without circular imports. Dynamic tools — plugin tools (memdb, wechat), MCP wrapper tools, and external MCP server tools — are registered at runtime as `MCPProxyTool` instances named `"{server}__{tool}"` (e.g. `filesystem__read_file`, `memdb__memory_search`). Harness-only plugin tools (prefixed `_`: `_memory_save_turn`, `_wechat_drain_incoming`, etc.) are filtered out before registration.
+`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. A module-level singleton (`get_registry()`) lets meta-tools introspect without circular imports. Dynamic tools — plugin tools (memdb, wechat), MCP wrapper tools, and external MCP server tools — are registered at runtime as `MCPProxyTool` instances named `"{server}__{tool}"` (e.g. `filesystem__read_file`, `memdb__memory_search`). Harness-only plugin tools (prefixed `__`: `__memory_save_turn`, `__wechat_drain_incoming`, etc.) are filtered out before registration.
 
 ### Timeout Architecture
 
@@ -357,7 +360,7 @@ Every turn permanently recorded as an independent row — no session concept, a 
 
 Supporting structures: `diary_fts` (FTS5 content-sync table over message/summary/tags/channel with insert/delete triggers), `diary_semantic` (sqlite-vec `vec0` table: embedding + rowid + chunk index + summary/tags/created_at), and `diary_meta` (key-value store tracking the embedding model identity for migration detection).
 
-Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the harness-only `_memory_save_turn` tool.
+Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the harness-only `__memory_save_turn` tool.
 
 ### Search
 
@@ -397,7 +400,7 @@ On startup, recent turns are read **directly from SQLite** — no MCP transport,
 One tool surface over three transports:
 
 ```
-  mqtt__list_agents / mqtt__send_task / …
+  a2a_send_task / a2a_send_task_async / …   (auto-routes by agent_id)
          │
   ┌──────┼──────┐
   │      │      │
@@ -412,7 +415,7 @@ One tool surface over three transports:
 | **HTTP Streamable** | `mcp.client.streamable_http` | Skeleton — connect/disconnect only |
 | **Subagent** | `asyncio.create_subprocess_exec`, JSON-RPC 2.0 | Fully implemented, always available |
 
-The A2A thin protocol is split across two tool families: **native `a2a_*` tools** route to the `SubagentManager` (local subagent workers over stdin, always available) and **`mqtt__*` plugin tools** reach remote mesh peers through the `mqtt` plugin (which only starts when the Mosquitto broker is reachable). Subagents are not a `TransportAdapter`.
+The A2A thin protocol has **one tool namespace** over two transports, auto-selected from the agent_id: the **task tools** (`a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`) route a local worker (from `list_subagents`) through the `SubagentManager` over stdin, and any other id through the `mqtt` plugin to a remote mesh peer over MQTT. Every A2A tool carries the same uniform `a2a_` prefix; the remote-only mesh features are native `a2a_list_agents` / `a2a_list_tasks` / `a2a_agent_card` / `a2a_broadcast`. The plugin itself only exposes `__`-prefixed (LLM-invisible) harness plumbing, called by the native tools through the mesh MCP client. Subagents are not a `TransportAdapter`.
 
 ### MQTT Mesh
 
@@ -421,7 +424,7 @@ The A2A thin protocol is split across two tool families: **native `a2a_*` tools*
 - Client id is `<agent_id>-<pid>` to allow multiple processes per agent id
 - Duplicate agent detection: after subscribing, the client listens 1.5 s for an existing presence with the same id and exits with a clear error rather than splitting the identity
 - Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; if the probe fails, the mqtt plugin is not started (A2A disabled) and this is reported via `system_health`
-- Peer presence **transitions** (online/offline/timeout) reach the LLM context: the mqtt plugin queues them; `AgentService._mqtt_poll_loop` drains them and appends the TUI-identical line (via `format_presence_line`, which also filters heartbeat-driven `status_change`) to a buffer that `AgentLoop` drains read-once into the `_sys_note` footer each turn. The footer carries only *changes* — the current roster stays queryable via `mqtt__list_agents`, so a missed event never leaves the LLM with stale state
+- Peer presence **transitions** (online/offline/timeout) reach the LLM context: the mqtt plugin queues them; `AgentService._mqtt_poll_loop` drains them and appends the TUI-identical line (via `format_presence_line`, which also filters heartbeat-driven `status_change`) to a buffer that `AgentLoop` drains read-once into the `_sys_note` footer each turn. The footer carries only *changes* — the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with stale state
 
 ### Unified Inbox
 
@@ -438,7 +441,7 @@ Messages are processed sequentially — only one AgentLoop runs at a time. Human
 
 ### Task Store
 
-Sent/received tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap). The store is **not persisted across restarts** — `mqtt__list_tasks` after restart is empty by design.
+Sent/received tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap). The store is **not persisted across restarts** — `a2a_list_tasks` after restart is empty by design.
 
 ### Subagent Transport
 
@@ -615,7 +618,7 @@ slife/
     inbox.py           #   Unified message queue + ConversationStore
     plugins.py         #   Plugin spawn/stop helpers
     multimodal.py      #   Image encoding for vision models
-  tools/               # Native tools (auto-discovered, 54)
+  tools/               # Native tools (auto-discovered, 59)
     base.py            #   Tool ABC
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)

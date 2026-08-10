@@ -289,15 +289,15 @@ class AgentService:
                      [t["name"] for t in plugin_tools])
 
         # Register as proxy tools — filter out harness-only tools.
-        # Canonical marker: a tool whose name starts with ``_`` is
-        # harness-internal (called programmatically via call_tool(), never
-        # exposed to the LLM).  The "harness-only" description is kept as
-        # a secondary safety check — both registration paths use the same
-        # ``_`` prefix rule (see _register_plugin_tools).
+        # Canonical marker: a plugin tool named ``__*`` (double underscore) is
+        # harness-internal — called programmatically via call_tool(), never
+        # exposed to the LLM.  (Single ``_`` = harness but LLM-visible, e.g.
+        # the native `_sys_note`/`_sys_trim`.)  The "harness-only" description
+        # is kept as a secondary safety check.
         tagged = [
             {**t, "server": name}
             for t in plugin_tools
-            if not t.get("name", "").startswith("_")
+            if not t.get("name", "").startswith("__")
             and "harness-only" not in t.get("description", "").lower()
         ]
         if len(tagged) < len(plugin_tools):
@@ -434,12 +434,16 @@ class AgentService:
     async def connect_mqtt_http(self, port: int) -> None:
         """Connect to the main agent's mqtt plugin via Streamable HTTP.
 
-        Used by subagents to reuse the main agent's mesh channel — they
-        register the ``a2a__*`` tools and can send, but never drain the
-        inbound queue (that stays with the main agent).
+        Used by subagents to reuse the main agent's mesh channel.  The plugin
+        exposes only ``_``-prefixed harness tools (the A2A surface is native
+        ``a2a_*`` tools that forward here); subagents can send but never drain
+        the inbound queue (that stays with the main agent).
         """
         await self._connect_plugin_http("mqtt", port)
         await self._register_plugin_tools("mqtt")
+        # Expose the mesh client so the native a2a_* tools can reach remote
+        # mesh peers through it.
+        self._tool_ctx.a2a_mcp_client = self._plugins["mqtt"].client
         logger.info("mqtt_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     # ── MCP private helpers ──────────────────────────────────────────
@@ -465,12 +469,15 @@ class AgentService:
     async def _register_plugin_tools(self, name: str, **kwargs) -> None:
         """Discover and register a connected plugin's tools as proxy tools.
 
-        Tags each tool with the plugin's ``server`` name, filters out
-        harness-only tools (names starting with ``_`` and ``mcp_call_tool``
-        for non-subagents), creates proxy tools, and registers them.
+        Tags each tool with the plugin's ``server`` name (the ``server__tool``
+        prefix), filters out harness-only tools (names starting with ``_`` and
+        ``mcp_call_tool`` for non-subagents), creates proxy tools, and
+        registers them.
 
         Args:
-            name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``).
+            name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``,
+                ``"mqtt"`` — its tools are all ``_``-prefixed, so none are
+                registered here; the A2A surface is the native ``a2a_*`` tools).
             **kwargs: Forwarded to :func:`create_proxy_tools` (e.g.
                 ``on_server_added``, ``on_server_removed``).
         """
@@ -482,13 +489,13 @@ class AgentService:
             [t["name"] for t in tools],
         )
 
-        # Harness-only: ``_`` prefix tools are internal; ``mcp_call_tool``
-        # is excluded for the main agent (subagents need it to call
-        # external MCP tools directly).
+        # Harness-only: ``__`` (double-underscore) plugin tools are internal
+        # and filtered out; ``mcp_call_tool`` is excluded for the main agent
+        # (subagents need it to call external MCP tools directly).
         tagged = [
             {**t, "server": name}
             for t in tools
-            if not t["name"].startswith("_")
+            if not t["name"].startswith("__")
             and (self.is_subagent or t["name"] != "mcp_call_tool")
         ]
 
@@ -1151,7 +1158,7 @@ class AgentService:
                 assert self._plugins["wechat"].client is not None
 
                 result = await self._plugins["wechat"].client.call_tool(
-                    "_wechat_drain_incoming", {},
+                    "__wechat_drain_incoming", {},
                 )
                 data = _json.loads(result)
                 msgs = data.get("messages", [])
@@ -1169,7 +1176,7 @@ class AgentService:
                     async def _reply(reply_text: str,
                                      uid=from_id, tok=ctx_token) -> None:
                         try:
-                            await wc.call_tool("_wechat_dispatch_reply", {
+                            await wc.call_tool("__wechat_dispatch_reply", {
                                 "to_user_id": uid,
                                 "context_token": tok,
                                 "text": reply_text,
@@ -1251,7 +1258,7 @@ class AgentService:
         try:
             await asyncio.wait_for(
                 self._plugins["memdb"].client.call_tool(
-                    "_memory_save_turn",
+                    "__memory_save_turn",
                     {
                         "user_message": user_message,
                         "messages": turn_messages,
@@ -1331,8 +1338,8 @@ class AgentService:
         """Start the A2A mesh as a plugin (thin client: connect + drain).
 
         All A2A/MQTT logic lives in the mqtt plugin process — the harness
-        only spawns it, registers the ``mqtt__*`` tools, and polls
-        ``_mqtt_drain_incoming`` for inbound tasks/presence.  Probes
+        only spawns it, registers the ``a2a__*`` tools, and polls
+        ``__a2a_drain_incoming`` for inbound tasks/presence.  Probes
         Mosquitto first; returns False when the broker is unreachable or
         A2A is not configured.  Idempotent.
         """
@@ -1366,11 +1373,16 @@ class AgentService:
         if not started:
             return False
 
+        # Expose the mesh client so the native a2a_* tools can reach remote
+        # peers (when the plugin is down this stays None → mesh tools report
+        # "not connected", subagent/stdin paths still work).
+        self._tool_ctx.a2a_mcp_client = self._plugins["mqtt"].client
         self._plugins["mqtt"].poll_task = asyncio.create_task(self._mqtt_poll_loop())
 
         # Crash watchdog — respawn the plugin and restart the drain loop.
         async def _restart_mqtt() -> None:
             await self._spawn_plugin_generic("mqtt", "slife.plugins.mqtt.server")
+            self._tool_ctx.a2a_mcp_client = self._plugins["mqtt"].client
             self._plugins["mqtt"].poll_task = asyncio.create_task(self._mqtt_poll_loop())
 
         self._plugins["mqtt"].start_watchdog(restart_cb=_restart_mqtt)
@@ -1388,8 +1400,8 @@ class AgentService:
         """Drain inbound a2a tasks/presence from the plugin into the inbox.
 
         The harness stays a thin client: it only drains the plugin's
-        ``_mqtt_drain_incoming`` and feeds the unified inbox.  Replies are
-        routed back through the plugin via ``_a2a_dispatch_result``.
+        ``__a2a_drain_incoming`` and feeds the unified inbox.  Replies are
+        routed back through the plugin via ``__a2a_dispatch_result``.
         """
         import json as _json
         from slife.a2a.identity import AgentId, AgentMessage
@@ -1402,7 +1414,7 @@ class AgentService:
                 client = self._plugins["mqtt"].client
                 if client is None:
                     break
-                result = await client.call_tool("_a2a_drain_incoming", {})
+                result = await client.call_tool("__a2a_drain_incoming", {})
                 data = _json.loads(result)
 
                 a2a_client = client  # narrowed MCPClient for the reply closure
@@ -1414,7 +1426,7 @@ class AgentService:
                     ) -> None:
                         try:
                             assert a2a_client is not None
-                            await a2a_client.call_tool("_a2a_dispatch_result", {
+                            await a2a_client.call_tool("__a2a_dispatch_result", {
                                 "reply_to": rt, "corr_id": cid, "text": reply_text,
                             })
                         except Exception:

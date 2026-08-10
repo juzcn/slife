@@ -317,7 +317,7 @@ class AddSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
 
     name = "skill_add"
     category = "Skills"
-    description = "Install or update a skill from files or base64 archive (upsert — idempotent). Immediately discoverable by skill_list. Use the language from the skill's own documentation for the description — don't translate."
+    description = "Install/update a skill from [{path, content}] files or a base64 .zip/.tar.gz archive (upsert, idempotent). Use the skill's own language for `description`."
     parameters = {
         "type": "object",
         "properties": {

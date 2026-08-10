@@ -8,4 +8,4 @@ This module is kept for any internal code that still imports from
 ``slife.tools.a2a``.
 """
 
-from slife.tools.a2a import SubagentSpawnTool, SubagentStopTool  # noqa: F401
+from slife.tools.a2a import SpawnSubagentTool, StopSubagentTool  # noqa: F401

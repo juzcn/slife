@@ -2,7 +2,7 @@
 
 Slife (the main process) acts as a thin client: it connects to this
 plugin over Streamable HTTP, registers the ``a2a__*`` tools, and drains
-inbound tasks/presence via the harness-only ``_mqtt_drain_incoming`` tool.
+inbound tasks/presence via the harness-only ``__a2a_drain_incoming`` tool.
 The plugin owns the :class:`A2AClient` (MQTT) with the main agent's
 identity — senders and the mesh cannot tell which slife process sent a
 message, so subagents connect to the same plugin and reuse the channel.
@@ -104,23 +104,36 @@ async def _on_agent_change(card: AgentCard, event: str) -> None:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(name="send_task")
-async def send_task(agent_id: str, task: str) -> str:
+# Remote-peer plumbing — reached through the unified native a2a_* tools
+# (auto-routed to the mesh).  `_` prefix keeps them out of the LLM's tool
+# list; they are still callable via the plugin's MCP client.
+
+@mcp.tool(
+    name="__send_task",
+    description="Send a task to a remote mesh peer and wait. Harness-only (call via a2a_send_task).",
+)
+async def __send_task(agent_id: str, task: str) -> str:
     """Send a task to *agent_id* and wait for the result."""
     client = await _ensure_connected()
     return await client.send_task(AgentId(agent_id), task)
 
 
-@mcp.tool(name="send_task_async")
-async def send_task_async(agent_id: str, task: str) -> str:
+@mcp.tool(
+    name="__send_task_async",
+    description="Send a task to a remote mesh peer without waiting. Harness-only (call via a2a_send_task_async).",
+)
+async def __send_task_async(agent_id: str, task: str) -> str:
     """Send a task without waiting — returns the correlation id."""
     client = await _ensure_connected()
     return await client.send_task_async(AgentId(agent_id), task)
 
 
-@mcp.tool(name="list_agents")
-async def list_agents() -> str:
-    """List known online mesh peers as JSON agent cards."""
+@mcp.tool(
+    name="__list_agents",
+    description="List known online A2A mesh peers as JSON agent cards. Harness-only (call via a2a_list_agents).",
+)
+async def __list_agents() -> str:
+    """List known online A2A mesh peers as JSON agent cards."""
     client = await _ensure_connected()
     cards = await client.list_agents()
     return json.dumps(
@@ -130,25 +143,34 @@ async def list_agents() -> str:
     )
 
 
-@mcp.tool(name="get_task_result")
-async def get_task_result(corr_id: str) -> str:
+@mcp.tool(
+    name="__get_task_result",
+    description="Return a remote async task's result, or 'pending'. Harness-only (call via a2a_get_task_result).",
+)
+async def __get_task_result(corr_id: str) -> str:
     """Return the result of an async task, or 'pending' if not ready."""
     client = await _ensure_connected()
     result = client.get_task_result(corr_id)
     return result if result is not None else "pending"
 
 
-@mcp.tool(name="cancel_task")
-async def cancel_task(agent_id: str, corr_id: str) -> str:
+@mcp.tool(
+    name="__cancel_task",
+    description="Cancel a pending or async task on a remote mesh peer. Harness-only (call via a2a_cancel_task).",
+)
+async def __cancel_task(agent_id: str, corr_id: str) -> str:
     """Cancel a pending or async task on *agent_id*."""
     client = await _ensure_connected()
     cancelled = await client.cancel_task(AgentId(agent_id), corr_id)
     return "cancelled" if cancelled else "not_found"
 
 
-@mcp.tool(name="list_tasks")
-async def list_tasks(agent_id: str = "", status: str = "") -> str:
-    """List tasks from the task store (filterable by agent/status)."""
+@mcp.tool(
+    name="__list_tasks",
+    description="List A2A task-store entries (filterable by agent/status). Harness-only (call via a2a_list_tasks).",
+)
+async def __list_tasks(agent_id: str = "", status: str = "") -> str:
+    """List A2A task-store entries (filterable by agent/status)."""
     client = await _ensure_connected()
     return json.dumps(
         client.list_tasks(agent_id=agent_id or None, status=status or None),
@@ -156,17 +178,23 @@ async def list_tasks(agent_id: str = "", status: str = "") -> str:
     )
 
 
-@mcp.tool(name="subscribe_task")
-async def subscribe_task(corr_id: str, timeout: float = 120.0) -> str:
+@mcp.tool(
+    name="__subscribe_task",
+    description="Wait for a remote async task to complete. Harness-only (call via a2a_subscribe_task).",
+)
+async def __subscribe_task(corr_id: str, timeout: float = 120.0) -> str:
     """Wait for an async task to complete and return its result."""
     client = await _ensure_connected()
     result = await client.subscribe_task(corr_id, timeout=timeout)
     return result if result is not None else "pending"
 
 
-@mcp.tool(name="agent_card")
-async def agent_card(agent_id: str) -> str:
-    """Return the AgentCard for a known peer, or 'unknown'."""
+@mcp.tool(
+    name="__agent_card",
+    description="Return a mesh peer's card (agent_id, display_name, status), or 'unknown'. Harness-only (call via a2a_agent_card).",
+)
+async def __agent_card(agent_id: str) -> str:
+    """Return a mesh peer's card (agent_id, display_name, status), or 'unknown'."""
     client = await _ensure_connected()
     card = client.get_agent_card(AgentId(agent_id))
     if card is None:
@@ -177,9 +205,12 @@ async def agent_card(agent_id: str) -> str:
     )
 
 
-@mcp.tool(name="broadcast")
-async def broadcast(task: str) -> str:
-    """Send *task* to every known peer (fire-and-forget)."""
+@mcp.tool(
+    name="__broadcast",
+    description="Send a task to every known A2A mesh peer (fire-and-forget). Harness-only (call via a2a_broadcast).",
+)
+async def __broadcast(task: str) -> str:
+    """Send *task* to every known A2A mesh peer (fire-and-forget)."""
     client = await _ensure_connected()
     corr_ids = await client.broadcast(task)
     return "\n".join(corr_ids) if corr_ids else "no_peers"
@@ -191,10 +222,10 @@ async def broadcast(task: str) -> str:
 
 
 @mcp.tool(
-    name="_mqtt_drain_incoming",
+    name="__a2a_drain_incoming",
     description="Drain queued inbound A2A tasks + presence events. Harness-only.",
 )
-async def _mqtt_drain_incoming() -> str:
+async def __a2a_drain_incoming() -> str:
     """Drain queued inbound tasks + presence events (harness only)."""
     tasks = list(_inbound_tasks)
     _inbound_tasks.clear()
@@ -206,10 +237,10 @@ async def _mqtt_drain_incoming() -> str:
 
 
 @mcp.tool(
-    name="_mqtt_dispatch_result",
+    name="__a2a_dispatch_result",
     description="Publish a task result to a requester's result topic. Harness-only.",
 )
-async def _mqtt_dispatch_result(
+async def __a2a_dispatch_result(
     reply_to: str, corr_id: str = "", text: str = "",
 ) -> str:
     """Publish a task result to the requester's result topic (harness only)."""

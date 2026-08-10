@@ -131,7 +131,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Skills | `list_skills`, `use_skill`, `add_skill`, `remove_skill`, `skill_set`, `check_skills_dir` |
 | CLI | `cli_list_tools`, `cli_add_tool`, `cli_remove_tool`, `cli_set_tool`, `cli_check_installed` |
 | REST API | `rest_api_list`, `rest_api_add`, `rest_api_remove`, `rest_api_set` |
-| A2A | native 9 (subagent lifecycle + local task routing) + `mqtt__*` plugin tools (remote mesh: send, list, broadcast) |
+| A2A | native, uniform `a2a_*` — task routing (auto-routed local ↔ remote) + mesh discovery (`a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`) + subagent lifecycle (`spawn_subagent`, `list_subagents`, `stop_subagent`) |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
 | Credentials | `credential_check`, `inject_credential`, `uninject_credential` |
@@ -188,9 +188,10 @@ All plugins run with a **watchdog** that auto-restarts them on crash (exponentia
 
 ### A2A — Agent-to-Agent
 
-The A2A thin protocol is spoken over two transports, exposed as two tool families:
-- **Native `a2a_*` tools** — local subagent workers over JSON-RPC/stdin, always available without a broker (`a2a_spawn_subagent`, `a2a_send_task`, `a2a_send_task_async`, …).
-- **`mqtt__*` plugin tools** — remote mesh peers over a Mosquitto broker (presence, heartbeat, task routing), registered by the `mqtt` plugin, which only starts when the broker is reachable.
+The A2A thin protocol has **one tool namespace (`a2a_`) over two transports**, auto-selected from the agent_id:
+- **Task tools** (`a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`) route a local worker over JSON-RPC/stdin (always available) or, for any other id, a remote mesh peer through the `mqtt` plugin (which only starts when the broker is reachable).
+- **Mesh discovery** (`a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`) — remote-only, agent/MQTT transport.
+- **Subagent lifecycle** (`spawn_subagent`, `list_subagents`, `stop_subagent`) — local only, no A2A prefix.
 
 An experimental HTTP Streamable transport exists as well. All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
 

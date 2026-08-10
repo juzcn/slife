@@ -51,28 +51,15 @@ def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
 @mcp.tool(
     name="mcp_add_server",
     description=(
-        "Add, update, or reconnect an external MCP server (upsert — idempotent). "
-        "Three transports are supported:\n"
-        "- stdio: provide `command` and `args` to spawn a local process.\n"
-        "- http (SSE): provide `url` pointing to the server's SSE endpoint "
-        "(e.g. http://host:port/sse). The gateway auto-detects SSE vs "
-        "streamable HTTP.\n"
-        "- http (streamable): provide `url` for a stateless MCP endpoint.\n"
-        "Research the server's docs first. "
-        "Use the language from the server's own documentation / source "
-        "for `description` — don't translate. "
-        "For `command`: use the binary name directly (npx, uvx, bunx, python, etc.). "
-        "On WSL/Linux/macOS (platform type ≠ native-Windows), do NOT wrap in `cmd /c` — "
-        "cmd.exe only exists on native Windows. The platform info is in the system prompt. "
-        "For the `env` parameter: use ${VAR} references for secrets "
-        "(e.g. SERPER_API_KEY: '${SERPER_API_KEY}'). NEVER pass plaintext "
-        "API keys or tokens — tell the user to run 'credstore set <KEY>' "
-        "in their terminal first, then use the ${VAR} reference here. "
-        "Set activate=false to connect without loading tools (lazy disclosure). "
-        "Returns the list of discovered tools on success; on failure the error "
-        "includes the server's stderr. "
-        "Include source provenance when the server is installed from a known "
-        "registry — helps track where tools came from for future maintenance."
+        "Add/update an external MCP server (upsert). "
+        "stdio: `command` + `args` (use the binary name — npx, uvx, python; "
+        "do NOT wrap in `cmd /c` unless the platform type is native-Windows). "
+        "http: `url` (SSE or streamable, auto-detected). "
+        "`env`/`headers`: use ${VAR} refs for secrets, never plaintext — run "
+        "'credstore set <KEY>' first. "
+        "activate=false connects without loading tools (lazy). "
+        "Write `description` in the server's own language — don't translate. "
+        "Add `source` provenance when from a known registry."
     ),
 )
 async def mcp_add_server(
@@ -158,8 +145,7 @@ async def mcp_add_server(
 @mcp.tool(
     name="mcp_remove_server",
     description=(
-        "Remove an MCP server: stop its process, unregister all its tools, "
-        "and persist the removal to config so it won't auto-connect next startup."
+        "Remove an MCP server: stop process, unregister tools, persist removal to config."
     ),
 )
 async def mcp_remove_server(name: str) -> str:
@@ -179,10 +165,8 @@ async def mcp_remove_server(name: str) -> str:
 @mcp.tool(
     name="mcp_list_servers",
     description=(
-        "List configured external MCP servers — static configuration only: "
-        "name, transport (stdio/http), command/args or url, enabled/disabled, "
-        "disclosure mode (eager/lazy), description. Does NOT report live "
-        "connection status; use mcp_connection_status for connectivity diagnosis."
+        "List configured MCP servers (static config: transport, command/url, "
+        "enabled, disclosure). For live status use mcp_connection_status."
     ),
 )
 async def mcp_list_servers() -> str:
@@ -194,9 +178,8 @@ async def mcp_list_servers() -> str:
 @mcp.tool(
     name="mcp_connection_status",
     description=(
-        "Report live connection status of external MCP servers: running/stopped, "
-        "tool counts, error messages, disclosure mode. Use for diagnosis — "
-        "mcp_list_servers only lists the configured servers, not their status."
+        "Live connection status of MCP servers: running/stopped, tool counts, "
+        "errors, disclosure mode."
     ),
 )
 async def mcp_connection_status() -> str:
@@ -208,9 +191,7 @@ async def mcp_connection_status() -> str:
 @mcp.tool(
     name="mcp_list_tools",
     description=(
-        "List all tools an MCP server provides, even if the server is inactive. "
-        "Browse tools before deciding whether to activate the server. "
-        "Each tool name includes the server prefix (e.g. 'filesystem__read_file')."
+        "List an MCP server's tools (even if inactive). Names are prefixed server__tool."
     ),
 )
 async def mcp_list_tools(server: str) -> str:
@@ -234,9 +215,7 @@ async def mcp_list_tools(server: str) -> str:
 @mcp.tool(
     name="mcp_call_tool",
     description=(
-        "Call a tool on a connected MCP server. "
-        "Use mcp_list_tools first to discover available tools and their names. "
-        "Arguments should be passed as a JSON object string."
+        "Call a tool on a connected MCP server. arguments = JSON object string."
     ),
 )
 async def mcp_call_tool(
@@ -265,12 +244,8 @@ async def mcp_call_tool(
 @mcp.tool(
     name="mcp_set_server",
     description=(
-        "Enable, disable, or set disclosure mode for an MCP server. "
-        "When enabled, connects to the server and returns discovered tools. "
-        "When disabled, disconnects and marks it for skip on next startup. "
-        "Use disclosure=\"lazy\" to keep the server connected but unload its "
-        "tools from context (switch back with disclosure=\"eager\"). "
-        "The server config is preserved either way."
+        "Enable/disable an MCP server or set disclosure mode (eager = tools loaded; "
+        "lazy = connected but tools unloaded). Config preserved."
     ),
 )
 async def mcp_set_server(

@@ -83,8 +83,9 @@ class TestShowImageToolMetadata:
     def test_category(self):
         assert ShowImageTool.category == "Display"
 
-    def test_requires_vision(self):
-        assert ShowImageTool._requires_vision is True
+    def test_not_vision_gated(self):
+        """Pure UI display — always registered, independent of model vision."""
+        assert getattr(ShowImageTool, "_requires_vision", False) is False
 
     def test_parameters_schema_type(self):
         assert ShowImageTool.parameters["type"] == "object"

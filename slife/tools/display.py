@@ -19,10 +19,11 @@ class ShowImageTool(Tool):
 
     name: ClassVar[str] = "show_image"
     category: ClassVar[str] = "Display"
-    _requires_vision: ClassVar[bool] = True
+    # Pure UI tool: renders the image in the terminal via the `[image: <path>]`
+    # marker — the LLM never sees the pixels.  No vision required.
     description: ClassVar[str] = (
         "Display an image in the terminal. Accepts a local file path or "
-        "an http(s) URL. Use this when the user asks to see an image."
+        "an http(s) URL."
     )
     parameters: ClassVar[dict] = {
         "type": "object",

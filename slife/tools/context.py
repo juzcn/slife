@@ -39,6 +39,11 @@ class ToolContext:
     """The MCP client for REST API auto-connect (needed by
     ``rest_api_add`` / ``rest_api_remove`` / ``rest_api_set``)."""
 
+    a2a_mcp_client: object | None = None
+    """The mqtt plugin's MCP client — the A2A remote-mesh transport
+    (needed by the unified ``a2a_*`` tools to reach remote peers via
+    MQTT; local subagents go through the SubagentManager instead)."""
+
     conversation: Conversation | None = None
     """The active :class:`Conversation` (needed by ``clear_context``,
     ``save_content_or_files``)."""

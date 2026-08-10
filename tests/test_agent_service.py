@@ -512,7 +512,7 @@ class TestAgentServiceWeChat:
         call_count = [0]
 
         async def mock_call_tool(tool_name, _):
-            if tool_name == "_wechat_drain_incoming":
+            if tool_name == "__wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
                     return _json.dumps({"messages": [{
@@ -553,7 +553,7 @@ class TestAgentServiceWeChat:
         call_count = [0]
 
         async def mock_call_tool(tool_name, _):
-            if tool_name == "_wechat_drain_incoming":
+            if tool_name == "__wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
                     return _json.dumps({"messages": [
@@ -589,7 +589,7 @@ class TestAgentServiceWeChat:
         call_count = [0]
 
         async def mock_call_tool(tool_name, _):
-            if tool_name == "_wechat_drain_incoming":
+            if tool_name == "__wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
                     return _json.dumps({"messages": [{
@@ -626,7 +626,7 @@ class TestAgentServiceWeChat:
         # Verify wechat_dispatch_reply was called with correct params
         send_calls = [
             c for c in mock_wc.call_tool.call_args_list
-            if c[0][0] == "_wechat_dispatch_reply"
+            if c[0][0] == "__wechat_dispatch_reply"
         ]
         assert len(send_calls) == 1
         _, send_args = send_calls[0][0]
@@ -645,7 +645,7 @@ class TestAgentServiceWeChat:
         call_count = [0]
 
         async def mock_call_tool(tool_name, _):
-            if tool_name == "_wechat_drain_incoming":
+            if tool_name == "__wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
                     return _json.dumps({"messages": [{
@@ -685,7 +685,7 @@ class TestAgentServiceWeChat:
         call_count = [0]
 
         async def mock_call_tool(tool_name, _):
-            if tool_name == "_wechat_drain_incoming":
+            if tool_name == "__wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
                     raise Exception("network error")

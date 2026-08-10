@@ -15,7 +15,7 @@ auto-discovered at startup and use module-level transport references.
 """
 
 from slife.subagent.process import SubagentManager, SubagentProcess
-from slife.subagent.tools import SubagentSpawnTool, SubagentStopTool
+from slife.subagent.tools import SpawnSubagentTool, StopSubagentTool
 
 # NOTE: run_headless is NOT imported here to avoid a RuntimeWarning
 # from Python's runpy when the module is executed via -m.
@@ -30,6 +30,6 @@ from slife.subagent.tools import SubagentSpawnTool, SubagentStopTool
 __all__ = [
     "SubagentManager",
     "SubagentProcess",
-    "SubagentSpawnTool",
-    "SubagentStopTool",
+    "SpawnSubagentTool",
+    "StopSubagentTool",
 ]

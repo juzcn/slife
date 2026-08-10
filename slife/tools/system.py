@@ -538,7 +538,7 @@ class SystemHealthTool(Tool):
 
     name = "system_health"
     category: ClassVar[str] = "System"
-    description = "Unified health report: startup records + OS/shell/workspace/embedding/WeChat/MCP, with healthy flag and summary."
+    description = "Unified health report: startup records + MemDB/WeChat/tunnel/MCP/watchdog checks, with healthy flag and summary."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:

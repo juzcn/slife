@@ -140,9 +140,9 @@ class TestBuild:
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "Subagents (delegation)" in result
-        assert "a2a_spawn_subagent" in result
+        assert "spawn_subagent" in result
         assert "a2a_send_task" in result
-        assert "mqtt__send_task" in result
+        assert "a2a_list_agents" in result
         assert "conversation is not saved" in result
         assert "cannot interact" in result
         assert "it only sends" in result

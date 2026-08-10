@@ -244,7 +244,7 @@ class TestExposeFileTool:
 
     def test_description(self):
         assert "Expose a local file" in ExposeFileTool.description
-        assert "ngrok tunnel" in ExposeFileTool.description
+        assert "tunnel" in ExposeFileTool.description
 
     def test_parameters_schema(self):
         params = ExposeFileTool.parameters

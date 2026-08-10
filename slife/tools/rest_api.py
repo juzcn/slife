@@ -87,11 +87,9 @@ class RestApiAddTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
     name = "rest_api_add"
     category = "REST API"
     description = (
-        "Register or update an external REST API from its OpenAPI spec (upsert — idempotent). "
-        "Auto-generates typed tools for every endpoint. "
-        "For authenticated APIs pass the credential variable name "
-        "(e.g. 'GITHUB_TOKEN') — set via credstore first. "
-        "Use the language from the API's own documentation for the description — don't translate."
+        "Register/update an external REST API from its OpenAPI spec; generates "
+        "typed tools per endpoint. For auth, pass the credential var name "
+        "(e.g. GITHUB_TOKEN) via credstore. Use the API's own language for `description`."
     )
     parameters = {
         "type": "object",

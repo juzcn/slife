@@ -76,10 +76,8 @@ class ListModelsTool(_ConfigPathMixin, Tool):
     name: ClassVar[str] = "model_list"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
-        "List all configured LLM models grouped by provider. "
-        "Shows each model's ref, display name, API type, context window, "
-        "max tokens, thinking support, and vision support. "
-        "The active model is marked with ★."
+        "List configured LLM models grouped by provider (ref, name, API, context, "
+        "max tokens, thinking/vision support). Active model marked ★."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -357,8 +355,7 @@ class SwitchModelTool(_ConfigPathMixin, Tool):
     name: ClassVar[str] = "model_switch"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
-        "Switch the active LLM model.  The new model takes effect on the "
-        "next turn.  Use model_list to see available models and their refs."
+        "Switch the active LLM model (takes effect next turn). ref from model_list."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -451,12 +448,9 @@ class SwitchToNvidiaFreeTool(Tool):
     name: ClassVar[str] = "switch_to_nvidia_free"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
-        "Switch to a free NVIDIA NIM model **in-memory only** "
-        "(no config file changes).  Queries the nvidia-nim MCP server "
-        "for currently available models, classifies them by type via "
-        "nim_get_model_capabilities.  "
-        "Use ``list_only=True`` to browse models grouped by type.  "
-        "model_type: chat (default), vlm, code, image, embed, or all."
+        "Switch to a free NVIDIA NIM model in-memory only (no config file change). "
+        "Queries the nvidia-nim MCP server for available models; "
+        "list_only=True to browse. Requires the nvidia-nim MCP server + NVAPI_KEY."
     )
     parameters: ClassVar[dict] = make_params(
         model_type={

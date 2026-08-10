@@ -16,25 +16,24 @@ from slife.a2a.identity import AgentId, AgentMessage, HUMAN, SUBAGENT
 from slife.a2a.mqtt import MQTTAdapter
 from slife.a2a.transport import TransportAdapter, TransportMessage
 from slife.tools.a2a import (  # noqa: F401 — re-export for slife.a2a namespace
-    A2AListSubagentsTool,
-    A2ANotifyUserTool,
-    SubagentSpawnTool,
-    SubagentStopTool,
+    ListSubagentsTool,
+    NotifyUserTool,
+    SpawnSubagentTool,
+    StopSubagentTool,
 )
 
 __all__ = [
     "A2AClient",
     "A2AConfig",
-    "A2AListSubagentsTool",
-    "A2ANotifyUserTool",
     "AgentCard",
     "AgentId",
     "AgentMessage",
     "HUMAN",
+    "ListSubagentsTool",
     "MQTTAdapter",
+    "SpawnSubagentTool",
+    "StopSubagentTool",
     "SUBAGENT",
-    "SubagentSpawnTool",
-    "SubagentStopTool",
     "TransportAdapter",
     "TransportMessage",
 ]

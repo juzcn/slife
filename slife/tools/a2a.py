@@ -1,31 +1,49 @@
-"""Subagent lifecycle tools — local subagent management (native).
+"""A2A task tools — one namespace, two transports.
 
-Local subagent workers are stdin/stdout processes managed by the
-:class:`SubagentManager` — they need no MQTT broker.  Remote mesh peers
-go through the a2a plugin (``a2a__*`` tools), which only exists when the
-broker (Mosquitto) is running.
+A2A is a single tool family over two transports, auto-selected from the
+agent_id:
 
-Tool inventory (9 tools)
-------------------------
-a2a_spawn_subagent       spawn a local worker
-a2a_list_subagents       list local workers
-a2a_stop_subagent        stop a local worker
-a2a_send_task            send a task to a local worker (sync)
-a2a_send_task_async      send a task to a local worker (fire-and-forget)
-a2a_get_task_result      poll a local worker's async result
-a2a_cancel_task          cancel a local worker's pending task
-a2a_subscribe_task       wait for a local worker's task to complete
-a2a_notify_user          desktop alert
+  - a local worker (listed by ``list_subagents``) is routed over stdin
+    (stdin/JSON-RPC via the :class:`SubagentManager`).  Always available.
+  - any other id is routed to the remote mesh over MQTT (the mqtt plugin;
+    only when the broker is running).
+
+Local subagent lifecycle (``spawn_subagent`` / ``list_subagents`` /
+``stop_subagent``) carries no prefix.  All A2A tools share one uniform
+``a2a_`` prefix — task routing (both transports) and mesh discovery
+(``a2a_list_agents``, ``a2a_list_tasks``, ``a2a_agent_card``,
+``a2a_broadcast``, agent/MQTT only).
+
+Tool inventory
+--------------
+spawn_subagent            spawn a local worker
+list_subagents            list local workers
+stop_subagent             stop a local worker
+a2a_send_task             send a task (subagent or remote peer) + wait
+a2a_send_task_async       send a task without waiting
+a2a_get_task_result       poll an async result
+a2a_cancel_task           cancel a pending task
+a2a_subscribe_task        wait for an async task to complete
+a2a_list_agents           list remote mesh peers (agent/MQTT)
+a2a_list_tasks            list the A2A task store (agent/MQTT)
+a2a_agent_card            fetch a peer's agent card (agent/MQTT)
+a2a_broadcast             send to every peer (agent/MQTT, extension)
+notify_user               desktop alert (not A2A)
 """
 
 from __future__ import annotations
 
 import logging
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from slife.tools.base import Tool, require_params
+from slife.tools.base import NO_PARAMS, Tool, make_params, require_params
 
 logger = logging.getLogger(__name__)
+
+#: A2A transport-support annotation — every ``a2a_*`` tool's schema must state
+#: which transports are wired: subagent (stdin) and/or agent (MQTT).
+_TRANSPORT_BOTH = "Transport support: subagent (stdin) + agent (MQTT) — both."
+_TRANSPORT_AGENT_ONLY = "Transport support: agent (MQTT) only."
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -33,16 +51,14 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class A2AListSubagentsTool(Tool):
+class ListSubagentsTool(Tool):
     """List local subagents spawned by this instance."""
 
-    name = "a2a_list_subagents"
-    category = "A2A"
+    name = "list_subagents"
+    category = "Subagent"
     description = (
-        "List locally-spawned subagent workers (stdin/stdout IPC). "
-        "Shows agent_id, PID, and readiness. "
-        "Use a2a_list_agents for remote MQTT peers. "
-        "Use before delegating tasks via a2a_send_task or a2a_send_task_async."
+        "List local subagent workers (agent_id, PID, readiness). "
+        "For remote mesh peers use a2a_list_agents."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -70,7 +86,7 @@ class A2AListSubagentsTool(Tool):
         if not agent_ids:
             return (
                 "No local subagents running. "
-                "Use a2a_spawn_subagent to create one."
+                "Use spawn_subagent to create one."
             )
 
         lines = [f"Local subagents ({len(agent_ids)}):"]
@@ -122,17 +138,14 @@ def _serialize_cloned_context(ctx) -> list[dict] | None:
     return [m for m in conversation.messages if m.get("role") != "system"]
 
 
-class SubagentSpawnTool(Tool):
+class SpawnSubagentTool(Tool):
     """Spawn a new local subagent worker process."""
 
-    name = "a2a_spawn_subagent"
-    category = "A2A"
+    name = "spawn_subagent"
+    category = "Subagent"
     description = (
-        "Spawn a new local subagent — a copy of the current agent running "
-        "in its own process with the same LLM config and tools. "
-        "Use this to parallelize work: spawn multiple subagents, then send "
-        "each a different task via a2a_send_task or a2a_send_task_async. "
-        "Use a2a_list_subagents to see running workers."
+        "Spawn a local subagent worker (same LLM config and tools) to "
+        "parallelize work; then delegate via a2a_send_task / a2a_send_task_async."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -195,7 +208,7 @@ class SubagentSpawnTool(Tool):
                 f"Subagent spawned successfully.\n"
                 f"  Agent ID: {agent_id}\n"
                 f"  Context: {context_source}\n"
-                f"  Use a2a_list_subagents to see all local workers.\n"
+                f"  Use list_subagents to see all local workers.\n"
                 f'  Use a2a_send_task with agent_id="{agent_id}" to delegate work.'
             )
         except Exception as e:
@@ -203,15 +216,13 @@ class SubagentSpawnTool(Tool):
             return f"Error spawning subagent: {e}"
 
 
-class SubagentStopTool(Tool):
+class StopSubagentTool(Tool):
     """Stop a locally-managed subagent process."""
 
-    name = "a2a_stop_subagent"
-    category = "A2A"
+    name = "stop_subagent"
+    category = "Subagent"
     description = (
-        "Stop a locally-managed subagent process. "
-        "Only subagents spawned by this instance can be stopped. "
-        "Use a2a_list_subagents to see which agents are local subagents."
+        "Stop a locally-spawned subagent process. id from list_subagents."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -250,12 +261,12 @@ class SubagentStopTool(Tool):
         if ok:
             return (
                 f"Subagent '{agent_id}' stopped successfully. "
-                f"Use a2a_list_subagents to verify."
+                f"Use list_subagents to verify."
             )
         else:
             return (
                 f"Subagent '{agent_id}' not found. "
-                f"Use a2a_list_subagents to see managed subagents. "
+                f"Use list_subagents to see managed subagents. "
                 f"Only locally-managed subagents can be stopped."
             )
 
@@ -270,18 +281,17 @@ class SubagentStopTool(Tool):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class A2ANotifyUserTool(Tool):
-    """Push a desktop notification to the human operator."""
+class NotifyUserTool(Tool):
+    """Push a desktop notification to the human operator.
 
-    name = "a2a_notify_user"
-    category = "A2A"
+    Not part of the A2A protocol standard — no ``a2a`` prefix.
+    """
+
+    name = "notify_user"
+    category = "System"
     description = (
-        "Send a desktop notification to the human user. "
-        "Use this when a subagent or remote agent needs to alert the human "
-        "operator — e.g. a long-running task completed, an error occurred, "
-        "or attention is needed.  "
-        "This is the primary way background agents communicate results to "
-        "the user."
+        "Send a desktop notification to the human user (e.g. task done, "
+        "attention needed)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -316,9 +326,10 @@ class A2ANotifyUserTool(Tool):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Local subagent task routing (native — no MQTT/Mosquitto needed).
-# Remote mesh peers go through the a2a plugin (a2a__* tools), which only
-# exist when the broker (Mosquitto) is running.
+# Unified task routing — one tool per action, `target` picks the transport:
+#   "subagent" → local worker over stdin (SubagentManager, always available)
+#   "agent"    → remote mesh peer over MQTT (mqtt plugin, broker must be up)
+#   "auto"     → local worker wins if the id matches, else the mesh
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -335,180 +346,319 @@ def _manager_or_hint() -> tuple:
     return manager, ""
 
 
-def _not_local_hint(agent_id: str) -> str:
-    return (
-        f"'{agent_id}' is not a local subagent. "
-        "For local subagents use a2a_list_subagents first; for remote mesh "
-        "peers use mqtt__send_task (requires the MQTT broker running)."
-    )
+def _mesh_client(ctx) -> object | None:
+    """Return the mqtt plugin's MCP client (remote-mesh transport), or None."""
+    return getattr(ctx, "a2a_mcp_client", None) if ctx is not None else None
+
+
+def _resolve_backend(agent_id: str, ctx) -> tuple[str, Any]:
+    """Resolve which A2A transport handles *agent_id* — automatic.
+
+    A local worker (in ``list_subagents``) goes over stdin; any other id
+    goes to the remote mesh when it is connected (``a2a_list_agents``).
+    Returns ``("subagent", manager)``, ``("agent", mcp_client)``, or
+    ``("error", reason)``.  The backend is ``Any`` — the two transports
+    have disjoint interfaces (SubagentManager vs MCPClient), used on
+    separate branches.
+    """
+    manager, hint = _manager_or_hint()
+    if manager is not None and agent_id in manager.list():
+        return "subagent", manager
+    client = _mesh_client(ctx)
+    if client is not None:
+        return "agent", client
+    if manager is not None:
+        return "error", (
+            f"'{agent_id}' is neither a local subagent (list_subagents) nor a "
+            f"remote mesh peer (a2a_list_agents)."
+        )
+    return "error", hint
 
 
 class A2ASendTaskTool(Tool):
-    """Send a task to a local subagent and wait for the result."""
+    """Send a task to a subagent or remote agent and wait for the result."""
 
     name = "a2a_send_task"
     category = "A2A"
     description = (
-        "Send a task to a LOCAL subagent and wait for the result. "
-        "Use a2a_list_subagents first.  For remote mesh peers, use "
-        "mqtt__send_task (requires the MQTT broker running)."
+        "Send a task and wait for the result (A2A message/send). Auto-routes by "
+        "agent_id: a local subagent (list_subagents) over stdin, else a remote "
+        "mesh peer (a2a_list_agents) over MQTT. "
+        + _TRANSPORT_BOTH
     )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {"type": "string", "description": "Local subagent id."},
-            "task": {"type": "string", "description": "Self-contained task for the subagent."},
-        },
-        "required": ["agent_id", "task"],
-    }
+    parameters: ClassVar[dict] = make_params(
+        agent_id={"type": "string", "description": "agent_id of a local subagent or remote mesh peer."},
+        task={"type": "string", "description": "Self-contained task for the recipient."},
+    )
 
     async def execute(self, agent_id: str = "", task: str = "", **kwargs) -> str:
         if err := require_params(agent_id=agent_id, task=task):
             return err
-        manager, hint = _manager_or_hint()
-        if manager is None:
-            return hint
-        if agent_id not in manager.list():
-            return _not_local_hint(agent_id)
+        kind, backend = _resolve_backend(agent_id, getattr(self, "_ctx", None))
+        if kind == "error":
+            return backend
+        if kind == "subagent":
+            try:
+                return await backend.send_task(agent_id, task)
+            except TimeoutError:
+                return f"Error: task to '{agent_id}' timed out."
+            except Exception as e:
+                return f"Error sending task to subagent '{agent_id}': {e}"
         try:
-            return await manager.send_task(agent_id, task)
-        except TimeoutError:
-            return f"Error: task to '{agent_id}' timed out."
+            return await backend.call_tool("__send_task", {"agent_id": agent_id, "task": task})
         except Exception as e:
-            return f"Error sending task to subagent '{agent_id}': {e}"
+            return f"Error sending task to remote agent '{agent_id}': {e}"
 
 
 class A2ASendTaskAsyncTool(Tool):
-    """Send a task to a local subagent without waiting."""
+    """Send a task to a subagent or remote agent without waiting."""
 
     name = "a2a_send_task_async"
     category = "A2A"
     description = (
-        "Send a task to a LOCAL subagent without waiting — returns a task_id. "
-        "Poll with a2a_get_task_result.  For remote mesh peers use "
-        "mqtt__send_task_async."
+        "Send a task without waiting — returns a task_id (a correlation id for "
+        "remote peers). Poll with a2a_get_task_result. Auto-routes by agent_id. "
+        + _TRANSPORT_BOTH
     )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {"type": "string", "description": "Local subagent id."},
-            "task": {"type": "string", "description": "Self-contained task for the subagent."},
-        },
-        "required": ["agent_id", "task"],
-    }
+    parameters: ClassVar[dict] = make_params(
+        agent_id={"type": "string", "description": "agent_id of a local subagent or remote mesh peer."},
+        task={"type": "string", "description": "Self-contained task for the recipient."},
+    )
 
     async def execute(self, agent_id: str = "", task: str = "", **kwargs) -> str:
         if err := require_params(agent_id=agent_id, task=task):
             return err
-        manager, hint = _manager_or_hint()
-        if manager is None:
-            return hint
-        if agent_id not in manager.list():
-            return _not_local_hint(agent_id)
+        kind, backend = _resolve_backend(agent_id, getattr(self, "_ctx", None))
+        if kind == "error":
+            return backend
+        if kind == "subagent":
+            try:
+                rpc_id = await backend.send_task_async(agent_id, task)
+                return f"Task sent to '{agent_id}' (task_id: {rpc_id})."
+            except Exception as e:
+                return f"Error sending task to subagent '{agent_id}': {e}"
         try:
-            rpc_id = await manager.send_task_async(agent_id, task)
-            return f"Task sent to '{agent_id}' (task_id: {rpc_id})."
+            return await backend.call_tool("__send_task_async", {"agent_id": agent_id, "task": task})
         except Exception as e:
-            return f"Error sending task to subagent '{agent_id}': {e}"
+            return f"Error sending task to remote agent '{agent_id}': {e}"
 
 
 class A2AGetTaskResultTool(Tool):
-    """Return the result of a local subagent async task."""
+    """Return the result of an async task, or 'pending'."""
 
     name = "a2a_get_task_result"
     category = "A2A"
     description = (
-        "Return the result of a LOCAL subagent async task, or 'pending' if "
-        "not ready.  For remote mesh results use a2a__get_task_result."
+        "Return an async task's result, or 'pending' if not ready (A2A tasks/get). "
+        "task_id comes from a2a_send_task_async (a correlation id for remote peers). "
+        "Auto-routes by agent_id. "
+        + _TRANSPORT_BOTH
     )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {"type": "string", "description": "Local subagent id."},
-            "task_id": {"type": "string", "description": "The task_id from a2a_send_task_async."},
-        },
-        "required": ["agent_id", "task_id"],
-    }
+    parameters: ClassVar[dict] = make_params(
+        agent_id={"type": "string", "description": "agent_id of a local subagent or remote mesh peer."},
+        task_id={"type": "string", "description": "task_id / correlation id from a2a_send_task_async."},
+    )
 
     async def execute(self, agent_id: str = "", task_id: str = "", **kwargs) -> str:
         if err := require_params(agent_id=agent_id, task_id=task_id):
             return err
-        manager, hint = _manager_or_hint()
-        if manager is None:
-            return hint
-        if agent_id not in manager.list():
-            return _not_local_hint(agent_id)
-        result = manager.get_task_result(agent_id, task_id)
-        return result if result is not None else "pending"
+        kind, backend = _resolve_backend(agent_id, getattr(self, "_ctx", None))
+        if kind == "error":
+            return backend
+        if kind == "subagent":
+            result = backend.get_task_result(agent_id, task_id)
+            return result if result is not None else "pending"
+        try:
+            return await backend.call_tool("__get_task_result", {"corr_id": task_id})
+        except Exception as e:
+            return f"Error getting result for task '{task_id}': {e}"
 
 
 class A2ACancelTaskTool(Tool):
-    """Cancel a pending local subagent task (best-effort)."""
+    """Cancel a pending task (best-effort)."""
 
     name = "a2a_cancel_task"
     category = "A2A"
     description = (
-        "Cancel a pending LOCAL subagent task (best-effort — clears any "
-        "stored result).  For remote mesh tasks use a2a__cancel_task."
+        "Cancel a pending task (best-effort — clears any stored result; A2A "
+        "tasks/cancel). Auto-routes by agent_id. "
+        + _TRANSPORT_BOTH
     )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {"type": "string", "description": "Local subagent id."},
-            "task_id": {"type": "string", "description": "The task_id to cancel."},
-        },
-        "required": ["agent_id", "task_id"],
-    }
+    parameters: ClassVar[dict] = make_params(
+        agent_id={"type": "string", "description": "agent_id of a local subagent or remote mesh peer."},
+        task_id={"type": "string", "description": "task_id / correlation id to cancel."},
+    )
 
     async def execute(self, agent_id: str = "", task_id: str = "", **kwargs) -> str:
         if err := require_params(agent_id=agent_id, task_id=task_id):
             return err
-        manager, hint = _manager_or_hint()
-        if manager is None:
-            return hint
-        if agent_id not in manager.list():
-            return _not_local_hint(agent_id)
-        # Local subagents: best-effort cancel — clear any stored result.
-        if manager.get_task_result(agent_id, task_id) is not None:
-            return f"Task '{task_id}' on agent '{agent_id}' cancelled."
-        return (
-            f"Task '{task_id}' not found on agent '{agent_id}'. "
-            "It may have already completed or the task_id is incorrect."
-        )
+        kind, backend = _resolve_backend(agent_id, getattr(self, "_ctx", None))
+        if kind == "error":
+            return backend
+        if kind == "subagent":
+            if backend.get_task_result(agent_id, task_id) is not None:
+                return f"Task '{task_id}' on agent '{agent_id}' cancelled."
+            return (
+                f"Task '{task_id}' not found on agent '{agent_id}'. "
+                "It may have already completed or the task_id is incorrect."
+            )
+        try:
+            return await backend.call_tool("__cancel_task", {"agent_id": agent_id, "corr_id": task_id})
+        except Exception as e:
+            return f"Error cancelling task '{task_id}' on '{agent_id}': {e}"
 
 
 class A2ASubscribeTaskTool(Tool):
-    """Wait for a local subagent async task to complete."""
+    """Wait for an async task to complete and return its result."""
 
     name = "a2a_subscribe_task"
     category = "A2A"
     description = (
-        "Wait for a LOCAL subagent async task to complete and return its "
-        "result (with a timeout).  For remote mesh tasks use "
-        "a2a__subscribe_task."
+        "Wait for an async task to complete and return its result (A2A "
+        "tasks/subscribe). timeout in seconds. Auto-routes by agent_id. "
+        + _TRANSPORT_BOTH
     )
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {"type": "string", "description": "Local subagent id."},
-            "task_id": {"type": "string", "description": "The task_id from a2a_send_task_async."},
-            "timeout": {"type": "number", "description": "Seconds to wait.", "default": 120.0},
-        },
-        "required": ["agent_id", "task_id"],
-    }
+    parameters: ClassVar[dict] = make_params(
+        agent_id={"type": "string", "description": "agent_id of a local subagent or remote mesh peer."},
+        task_id={"type": "string", "description": "task_id / correlation id from a2a_send_task_async."},
+        timeout={"type": "number", "description": "Seconds to wait.", "default": 120.0},
+    )
 
     async def execute(self, agent_id: str = "", task_id: str = "", timeout: float = 120.0, **kwargs) -> str:
         if err := require_params(agent_id=agent_id, task_id=task_id):
             return err
-        manager, hint = _manager_or_hint()
-        if manager is None:
-            return hint
-        if agent_id not in manager.list():
-            return _not_local_hint(agent_id)
+        kind, backend = _resolve_backend(agent_id, getattr(self, "_ctx", None))
+        if kind == "error":
+            return backend
+        if kind == "subagent":
+            try:
+                result = await backend.subscribe_task(agent_id, task_id, timeout=timeout)
+                return result if result is not None else "pending"
+            except TimeoutError:
+                return f"Error: task to '{agent_id}' timed out after {timeout}s."
+            except Exception as e:
+                return f"Error waiting for task on '{agent_id}': {e}"
         try:
-            result = await manager.subscribe_task(agent_id, task_id, timeout=timeout)
-            return result if result is not None else "pending"
-        except TimeoutError:
-            return f"Error: task to '{agent_id}' timed out after {timeout}s."
+            return await backend.call_tool("__subscribe_task", {"corr_id": task_id, "timeout": timeout})
         except Exception as e:
-            return f"Error waiting for task on '{agent_id}': {e}"
+            return f"Error waiting for task '{task_id}': {e}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Mesh discovery — native A2A tools forwarding to the mqtt plugin (agent/MQTT
+# transport).  One uniform ``a2a_`` prefix across the whole A2A tool surface.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _mesh_client_or_hint(ctx) -> tuple[Any, str]:
+    """Return (mqtt-plugin MCP client, "") or (None, error_hint)."""
+    client = getattr(ctx, "a2a_mcp_client", None) if ctx is not None else None
+    if client is None:
+        return None, (
+            "A2A mesh not connected — requires the MQTT broker running. "
+            "Local subagent tools (list_subagents, a2a_send_task) are always available."
+        )
+    return client, ""
+
+
+class ListAgentsTool(Tool):
+    """List known A2A mesh peers (agent discovery)."""
+
+    name = "a2a_list_agents"
+    category = "A2A"
+    description = (
+        "List known online A2A mesh peers as JSON agent cards (A2A agent-card "
+        "discovery). "
+        + _TRANSPORT_AGENT_ONLY
+    )
+    parameters: ClassVar[dict] = NO_PARAMS
+
+    async def execute(self, **kwargs) -> str:
+        client, hint = _mesh_client_or_hint(getattr(self, "_ctx", None))
+        if client is None:
+            return hint
+        try:
+            return await client.call_tool("__list_agents", {})
+        except Exception as e:
+            return f"Error listing mesh agents: {e}"
+
+
+class ListTasksTool(Tool):
+    """List A2A task-store entries."""
+
+    name = "a2a_list_tasks"
+    category = "A2A"
+    description = (
+        "List A2A task-store entries (filterable by agent/status; A2A tasks/list). "
+        + _TRANSPORT_AGENT_ONLY
+    )
+    parameters: ClassVar[dict] = make_params(
+        agent_id={"type": "string", "description": "Optional agent_id to filter on.", "default": ""},
+        status={"type": "string", "description": "Optional task status to filter on.", "default": ""},
+    )
+
+    async def execute(self, agent_id: str = "", status: str = "", **kwargs) -> str:
+        client, hint = _mesh_client_or_hint(getattr(self, "_ctx", None))
+        if client is None:
+            return hint
+        try:
+            args: dict[str, str] = {}
+            if agent_id:
+                args["agent_id"] = agent_id
+            if status:
+                args["status"] = status
+            return await client.call_tool("__list_tasks", args)
+        except Exception as e:
+            return f"Error listing tasks: {e}"
+
+
+class AgentCardTool(Tool):
+    """Return a mesh peer's agent card."""
+
+    name = "a2a_agent_card"
+    category = "A2A"
+    description = (
+        "Return a mesh peer's card (agent_id, display_name, status), or 'unknown' "
+        "(A2A agent-card discovery). "
+        + _TRANSPORT_AGENT_ONLY
+    )
+    parameters: ClassVar[dict] = make_params(
+        agent_id={"type": "string", "description": "Mesh peer agent_id."},
+    )
+
+    async def execute(self, agent_id: str = "", **kwargs) -> str:
+        if err := require_params(agent_id=agent_id):
+            return err
+        client, hint = _mesh_client_or_hint(getattr(self, "_ctx", None))
+        if client is None:
+            return hint
+        try:
+            return await client.call_tool("__agent_card", {"agent_id": agent_id})
+        except Exception as e:
+            return f"Error fetching agent card: {e}"
+
+
+class BroadcastTool(Tool):
+    """Send a task to every known mesh peer."""
+
+    name = "a2a_broadcast"
+    category = "A2A"
+    description = (
+        "Send a task to every known A2A mesh peer (fire-and-forget). "
+        "Extension — not in the A2A protocol standard. "
+        + _TRANSPORT_AGENT_ONLY
+    )
+    parameters: ClassVar[dict] = make_params(
+        task={"type": "string", "description": "Task text to broadcast to all peers."},
+    )
+
+    async def execute(self, task: str = "", **kwargs) -> str:
+        if err := require_params(task=task):
+            return err
+        client, hint = _mesh_client_or_hint(getattr(self, "_ctx", None))
+        if client is None:
+            return hint
+        try:
+            return await client.call_tool("__broadcast", {"task": task})
+        except Exception as e:
+            return f"Error broadcasting: {e}"

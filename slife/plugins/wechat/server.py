@@ -262,10 +262,10 @@ def _stop_typing_keepalive(from_id: str) -> None:
 
 
 @mcp.tool(
-    name="_wechat_drain_incoming",
+    name="__wechat_drain_incoming",
     description="Drain queued incoming WeChat messages. Harness-only.",
 )
-async def _wechat_drain_incoming() -> str:
+async def __wechat_drain_incoming() -> str:
     """Return all queued incoming messages and auto-start typing for each.
 
     Called by the AgentService poll loop.  Each returned message gets
@@ -303,10 +303,10 @@ async def _wechat_drain_incoming() -> str:
 
 
 @mcp.tool(
-    name="_wechat_dispatch_reply",
+    name="__wechat_dispatch_reply",
     description="Send a reply and clean up typing indicator. Harness-only.",
 )
-async def _wechat_dispatch_reply(
+async def __wechat_dispatch_reply(
     to_user_id: str = "",
     context_token: str = "",
     text: str = "",
@@ -433,10 +433,9 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
 @mcp.tool(
     name="login",
     description=(
-        "Generate a WeChat login QR code.  You MUST copy every line of "
-        "the tool output (the ASCII QR block) into your reply verbatim — "
-        "the user cannot see tool output, only your message.  "
-        "Then poll check_status until login completes (~23h session)."
+        "Generate a WeChat login QR code. Copy the ASCII QR block verbatim "
+        "into your reply — the user cannot see tool output. Then poll "
+        "check_status until login completes."
     ),
 )
 async def wechat_login() -> str:
@@ -481,11 +480,8 @@ async def wechat_login() -> str:
 @mcp.tool(
     name="send_message",
     description=(
-        "Send a text message to the logged-in WeChat user. "
-        "Get the to_user_id and context_token from check_status.last_contact. "
-        "Example: call check_status → copy to_user_id → "
-        "call send_message(to_user_id='...', text='你好'). "
-        "The context_token can be empty for the first message."
+        "Send a text message to the logged-in WeChat user. to_user_id/context_token "
+        "from check_status.last_contact; context_token may be empty for the first message."
     ),
 )
 async def wechat_send_message(
@@ -522,10 +518,8 @@ async def wechat_send_message(
 @mcp.tool(
     name="send_typing",
     description=(
-        "Show or hide the typing indicator on the WeChat user's phone. "
-        "Call with status=1 BEFORE processing a WeChat message to show "
-        "'typing…', and status=2 AFTER sending the reply to hide it. "
-        "This gives the WeChat user visual feedback that the agent is working."
+        "Show (status=1) or hide (status=2) the typing indicator on the "
+        "WeChat user's phone."
     ),
 )
 async def wechat_send_typing(
@@ -564,12 +558,8 @@ async def wechat_send_typing(
 @mcp.tool(
     name="check_messages",
     description=(
-        "Check for new incoming WeChat messages. "
-        "Returns queued messages that have arrived since the last check. "
-        "Each message includes from_user_id and context_token — save these "
-        "to reply with send_message. "
-        "Call this periodically to see if anyone has sent a WeChat message "
-        "to the agent. Messages are consumed (not returned again)."
+        "Check for new incoming WeChat messages (consumed on read). Each has "
+        "from_user_id + context_token for replying with send_message."
     ),
 )
 async def wechat_check_messages() -> str:
@@ -608,10 +598,8 @@ async def wechat_check_messages() -> str:
 @mcp.tool(
     name="check_status",
     description=(
-        "Check the current WeChat connection status. "
-        "Returns whether logged in, session age, remaining time (~23h max), "
-        "and whether background polling is active. "
-        "Call this before send_message or when the user asks about WeChat."
+        "WeChat connection status: logged in?, session age, time remaining, "
+        "polling active, last_contact."
     ),
 )
 async def wechat_check_status() -> str:
@@ -727,10 +715,8 @@ async def wechat_check_status() -> str:
 @mcp.tool(
     name="logout",
     description=(
-        "Log out of WeChat and clear the saved session. "
-        "Stops background message polling. "
-        "After this, login must be called again to reconnect. "
-        "Use when switching accounts or troubleshooting."
+        "Log out of WeChat, clear the saved session, stop polling. "
+        "Call login to reconnect."
     ),
 )
 async def wechat_logout() -> str:
