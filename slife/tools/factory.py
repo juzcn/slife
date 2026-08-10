@@ -68,14 +68,9 @@ def create_tools_from_config(
                 logger.debug("tool_skipped_no_a2a_config name=%s", tool_cls.name)
                 continue
 
-        # Skip tools that require the ngrok tunnel when it's offline.
-        # expose_file is the only such tool — it is registered dynamically
-        # later if/when the tunnel comes up (see AgentService.start_memfiles).
-        if getattr(tool_cls, "_requires_tunnel", False):
-            from slife.memfiles.tunnel import is_active
-            if not is_active():
-                logger.info("tool_skipped_no_tunnel name=%s", tool_cls.name)
-                continue
+        # Note: expose_file / save_content_or_files live in the memfiles
+        # plugin (registered as memfiles__* proxy tools), not here — so
+        # there is no tunnel-gating needed at native-tool load time.
 
         tool = tool_cls.from_config(cfg, config, ctx)
 

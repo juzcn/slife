@@ -135,7 +135,8 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
 | Credentials | `credential_check`, `inject_credential`, `uninject_credential` |
-| MemFiles | `save_content_or_files`, `expose_file` (tunnel active only), `include_image` |
+| MemFiles | `memfiles__save_content_or_files`, `memfiles__expose_file` (plugin tools) |
+| Vision | `include_image` (injects a local image or URL into the conversation) |
 | Display | `show_image` |
 | Harness | `_sys_note` (context status), `_sys_trim` (context trim) — auto-invoked, not for LLM use |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
@@ -169,7 +170,7 @@ Attach images with `@path` / `@url` syntax (quotes supported for paths with spac
 Check this screenshot @D:\Downloads\error.png
 ```
 
-Two-tier rendering: **Sixel** (full-colour on Windows Terminal / WezTerm / iTerm2 / Kitty) → **HalfcellImage** (coloured Unicode half-blocks on any true-colour terminal) → text placeholder. Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `include_image` tool lets the agent attach images mid-conversation, and `expose_file` publishes any local file as a public HTTPS link via the ngrok tunnel (only available when the tunnel is active).
+Two-tier rendering: **Sixel** (full-colour on Windows Terminal / WezTerm / iTerm2 / Kitty) → **HalfcellImage** (coloured Unicode half-blocks on any true-colour terminal) → text placeholder. Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `include_image` tool lets the agent attach images mid-conversation, and `memfiles__expose_file` publishes any local file as a public HTTPS link via the ngrok tunnel (returns a graceful error while the tunnel is offline).
 
 ### Plugins
 
@@ -180,7 +181,7 @@ Four built-in plugins as independent child processes:
 | **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) |
 | **slife-memdb** | Diary database with hybrid search |
 | **slife-wechat** | Bidirectional WeChat messaging |
-| **slife-memfiles** | File server + ngrok tunnel (free tier: 1 agent — only the first agent gets the tunnel) |
+| **slife-memfiles** | File cabinet + public file sharing over Streamable HTTP (`/share` route on the same port; ngrok tunnel owned by the plugin) |
 
 External MCP servers configured in `slife.json5` → `mcp.servers`. Any stdio or HTTP MCP server works — no Slife SDK required. Per-server option `require_approval: true` adds a human approval gate before each of its tool calls.
 

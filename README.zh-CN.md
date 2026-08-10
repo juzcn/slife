@@ -133,7 +133,8 @@ active_model: "deepseek/deepseek-v4-pro",
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
 | Credentials | `credential_check`, `inject_credential`, `uninject_credential` |
-| MemFiles | `save_content_or_files`, `expose_file`（隧道在线时可用）, `include_image` |
+| MemFiles | `memfiles__save_content_or_files`, `memfiles__expose_file`（插件工具） |
+| Vision | `include_image`（把本地图片或 URL 注入对话） |
 | Display | `show_image` |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
@@ -164,7 +165,7 @@ active_model: "deepseek/deepseek-v4-pro",
 看看这张截图 @D:\Downloads\error.png
 ```
 
-两级渲染：**Sixel**（全彩，Windows Terminal / WezTerm / iTerm2 / Kitty）→ **HalfcellImage**（彩色 Unicode 半块字符，任何真彩终端）→ 文本占位符。支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 直接透传；`include_image` 工具允许智能体在对话中途附加图片，`expose_file` 则通过 ngrok 隧道把任意本地文件发布为公开 HTTPS 链接（仅在隧道在线时可用）。
+两级渲染：**Sixel**（全彩，Windows Terminal / WezTerm / iTerm2 / Kitty）→ **HalfcellImage**（彩色 Unicode 半块字符，任何真彩终端）→ 文本占位符。支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 直接透传；`include_image` 工具允许智能体在对话中途附加图片，`memfiles__expose_file` 则通过 ngrok 隧道把任意本地文件发布为公开 HTTPS 链接（隧道离线时返回优雅错误）。
 
 ### 插件
 
@@ -175,7 +176,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | **slife-mcp** | 外部 MCP 服务器网关（stdio + HTTP） |
 | **slife-memdb** | 日记数据库 + 混合搜索 |
 | **slife-wechat** | 双向微信消息 |
-| **slife-memfiles** | 文件服务器 + ngrok 隧道（免费版仅限 1 个 agent——只有最先启动的 agent 获得隧道） |
+| **slife-memfiles** | 文件柜 + 公开文件分享（Streamable HTTP 插件，`/share` 路由在同一端口；ngrok 隧道由插件自持） |
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置。任何 stdio 或 HTTP MCP 服务器均可接入——无需 Slife SDK。按服务器配置 `require_approval: true` 可为其工具调用添加人工审批关卡。
 

@@ -44,6 +44,10 @@ class ToolContext:
     (needed by the unified ``a2a_*`` tools to reach remote peers via
     MQTT; local subagents go through the SubagentManager instead)."""
 
+    memfiles_client: object | None = None
+    """The memfiles plugin's MCP client — used by ``check_memfiles`` to
+    query the file-sharing tunnel status via the plugin's harness tool."""
+
     conversation: Conversation | None = None
     """The active :class:`Conversation` (needed by ``clear_context``,
     ``save_content_or_files``)."""

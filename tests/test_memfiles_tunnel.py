@@ -1,4 +1,4 @@
-"""Tests for slife.memfiles.tunnel — ngrok tunnel lifecycle management."""
+"""Tests for slife.plugins.memfiles.tunnel — ngrok tunnel lifecycle management."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from slife.memfiles import tunnel as tmod
-from slife.memfiles.tunnel import NgrokTunnel, _read_auth_token
+from slife.plugins.memfiles import tunnel as tmod
+from slife.plugins.memfiles.tunnel import NgrokTunnel, _read_auth_token
 
 
 # ── NgrokTunnel ───────────────────────────────────────────────────────────────
@@ -300,7 +300,7 @@ class TestReadAuthToken:
         with patch(
             "credstore.get_credential", side_effect=OSError("mock")
         ) as mock_get, patch(
-            "slife.memfiles.tunnel.logger"
+            "slife.plugins.memfiles.tunnel.logger"
         ) as mock_logger:
             result = _read_auth_token()
         assert result == "env-token-123"

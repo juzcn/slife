@@ -244,9 +244,20 @@ class AgentService:
         if name == "wechat":
             return await self.start_wechat()
 
-        # ── Memfiles: plain HTTP server, exposed via ngrok tunnel ──────
+        # ── Memfiles: fully generic plugin — spawn, connect, register.
+        # The plugin owns the ngrok tunnel and file serving; the harness
+        # only exposes the plugin's MCP client for health checks.
         if name == "memfiles":
-            return await self.start_memfiles()
+            started = await self._spawn_plugin_generic(name, module)
+            if started:
+                self._tool_ctx.memfiles_client = self._plugins["memfiles"].client
+                # Publish the port so subagents can inherit it and reuse
+                # the main agent's memfiles plugin (no second ngrok tunnel).
+                os.environ["SLIFE_MEMFILES_PORT"] = str(self._plugins["memfiles"].port)
+                self._start_generic_watchdog(name, module)
+            return (
+                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
+            )
 
         # ── A2A: mesh channel plugin — probe + config env + poll loop ──
         if name == "mqtt":
@@ -434,6 +445,19 @@ class AgentService:
         await self._connect_plugin_http("wechat", port)
         await self._register_plugin_tools("wechat")
         logger.info("wechat_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
+
+    async def connect_memfiles_http(self, port: int) -> None:
+        """Connect to the main agent's memfiles plugin via Streamable HTTP.
+
+        Used by subagents to reuse the main agent's file-cabinet plugin
+        instead of spawning their own (which would also fight over the
+        single free-tier ngrok tunnel).  Registers the ``memfiles__*``
+        tools and exposes the client for health checks.
+        """
+        await self._connect_plugin_http("memfiles", port)
+        await self._register_plugin_tools("memfiles")
+        self._tool_ctx.memfiles_client = self._plugins["memfiles"].client
+        logger.info("memfiles_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_mqtt_http(self, port: int) -> None:
         """Connect to the main agent's mqtt plugin via Streamable HTTP.
@@ -819,15 +843,11 @@ class AgentService:
         await self._stop_plugin("wechat", has_poll_task=True)
 
     async def stop_memfiles(self) -> None:
-        """Stop the ngrok tunnel and memfiles server."""
-        fs = self._plugins["memfiles"]
-        if fs.tunnel_task is not None and not fs.tunnel_task.done():
-            fs.tunnel_task.cancel()
-        from slife.memfiles.tunnel import stop_monitor, stop_tunnel
-        from slife.memfiles.token import cleanup_registry
-        stop_monitor()
-        stop_tunnel()
-        cleanup_registry()
+        """Stop the memfiles plugin.
+
+        The plugin's own lifespan disconnects the ngrok tunnel on shutdown,
+        so the harness only stops the child process.
+        """
         await self._stop_plugin("memfiles")
 
     def kill_child_processes(self) -> None:
@@ -944,115 +964,6 @@ class AgentService:
                      "Turn storage and search are unavailable.",
             )
             return False
-
-    # ── Sharing lifecycle ──────────────────────────────────────────────
-
-    async def start_memfiles(self) -> PluginStartStatus:
-        """Start the memfiles server and ngrok tunnel.
-
-        The memfiles server serves image files via plain HTTP.  The ngrok
-        tunnel exposes them to the public internet so LLM vision APIs can
-        fetch images by HTTPS URL instead of inline base64.
-
-        Returns ``STARTED`` on success, ``FAILED`` on start error.
-        """
-        import os
-
-        from slife.mcp.process import MCPWrapperProcess
-        from slife.memfiles.tunnel import start_tunnel
-
-        logger.info("memfiles_init_start")
-        try:
-            # Create the token→path registry file that the memfiles
-            # server subprocess uses to resolve share tokens.
-            # init_registry() creates the file and sets the
-            # SLIFE_MEMFILES_REGISTRY env var for the subprocess.
-            from slife.memfiles.token import init_registry
-            init_registry()
-
-            process = MCPWrapperProcess(
-                command=sys.executable,
-                args=["-m", "slife.plugins.memfiles.server"],
-            )
-            await process.start()
-
-            self._plugins["memfiles"].process = process
-            self._plugins["memfiles"].port = process.port
-            os.environ["SLIFE_MEMFILES_PORT"] = str(process.port)
-
-            # Tunnel handshake (~3-5s) — run in executor so startup isn't blocked.
-            # On success, dynamically register expose_file (the only tool that
-            # depends on the tunnel).  On failure, expose_file stays unregistered.
-            async def _start_tunnel_and_register(port: int) -> None:
-                from slife.threads import run_daemon
-                try:
-                    await run_daemon(start_tunnel, port, name="ngrok-tunnel")
-                except Exception as e:
-                    logger.info(
-                        "tunnel_init_failed port=%s err=%s",
-                        port, e,
-                    )
-                    return
-                self._maybe_register_expose_file()
-
-            self._plugins["memfiles"].tunnel_task = asyncio.ensure_future(
-                _start_tunnel_and_register(process.port),
-            )
-            # Background health monitor — one-shot retry if the executor failed.
-            # Passes a callback to register expose_file on monitor retry success.
-            from slife.memfiles.tunnel import start_monitor
-            start_monitor(process.port, on_tunnel_up=self._maybe_register_expose_file)
-
-            # Process watchdog — respawn the file server on unexpected exit.
-            # ngrok failures do NOT crash the server (the tunnel retries with
-            # its own bounded backoff), so this never loops on ngrok limits.
-            async def _restart_memfiles() -> None:
-                from slife.memfiles.token import init_registry
-                init_registry()
-                await self._spawn_and_register_plugin(
-                    "memfiles", "slife.plugins.memfiles.server",
-                )
-                port = self._plugins["memfiles"].port
-                if port:
-                    os.environ["SLIFE_MEMFILES_PORT"] = str(port)
-                    async def _tunnel_restart() -> None:
-                        try:
-                            from slife.threads import run_daemon
-                            from slife.memfiles.tunnel import start_tunnel
-                            await run_daemon(
-                                start_tunnel, port, name="ngrok-tunnel-restart",
-                            )
-                            self._maybe_register_expose_file()
-                        except Exception:
-                            pass
-                    self._plugins["memfiles"].tunnel_task = asyncio.ensure_future(
-                        _tunnel_restart(),
-                    )
-
-            self._plugins["memfiles"].start_watchdog(restart_cb=_restart_memfiles)
-
-            logger.info("memfiles_init_done port=%s", process.port)
-            return PluginStartStatus.STARTED
-        except Exception as e:
-            logger.warning("memfiles_init_failed err=%s fallback=continue_without_memfiles", e)
-            return PluginStartStatus.FAILED
-
-    def _maybe_register_expose_file(self) -> None:
-        """Register expose_file tool if the tunnel is active and it's not already registered.
-
-        Called when the ngrok tunnel comes up (initial start or monitor retry).
-        expose_file is the only tool that depends on the tunnel — without it,
-        file sharing is a no-op, so we keep the tool hidden from the LLM.
-        """
-        from slife.memfiles.tunnel import is_active
-        if not is_active():
-            return
-        if self.tool_registry.get("expose_file") is not None:
-            return
-        from slife.tools.memfiles import ExposeFileTool
-        tool = ExposeFileTool.from_config({}, self.config, self._tool_ctx)
-        self.tool_registry.register(tool)
-        logger.info("expose_file_registered")
 
     # ── WeChat lifecycle ───────────────────────────────────────────────
 

@@ -174,6 +174,16 @@ async def run_headless() -> None:
         except Exception as e:
             logger.warning("mqtt_http_failed port=%s err=%s", _mqtt_port, e)
 
+    # Share the main agent's memfiles plugin (file cabinet + public URLs)
+    # instead of spawning a second instance that would fight over the
+    # single free-tier ngrok tunnel.
+    _memfiles_port = os.environ.get("SLIFE_MEMFILES_PORT", "")
+    if _memfiles_port:
+        try:
+            await service.connect_memfiles_http(int(_memfiles_port))
+        except Exception as e:
+            logger.warning("memfiles_http_failed port=%s err=%s", _memfiles_port, e)
+
     # Subagents can spawn their own descendants (recursion enabled).
     await service.start_subagent()
 

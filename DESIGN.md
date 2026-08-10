@@ -55,7 +55,7 @@ The model input should read uniformly, so text that Slife authors is English:
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins (independent child processes, Streamable HTTP)              │
 │  slife-mcp (gateway) · slife-memdb (diary) · slife-wechat            │
-│  slife-mqtt (A2A over MQTT) · slife-memfiles (plain-HTTP file server + ngrok tunnel)              │
+│  slife-mqtt (A2A over MQTT) · slife-memfiles (file sharing: /mcp + /share)                        │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
@@ -215,7 +215,8 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
-| MemFiles | `memfiles.py` | `save_content_or_files`, `expose_file` (tunnel active only), `include_image` |
+| MemFiles | `memfiles` plugin | `memfiles__save_content_or_files`, `memfiles__expose_file` (plugin MCP tools) |
+| Vision | `vision.py` | `include_image` (native — injects image blocks into the conversation) |
 | Display | `display.py` | `show_image` |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
@@ -261,7 +262,7 @@ There is no hardcoded `requires_approval` flag on any tool or MCP server — the
 
 ## Plugin Architecture
 
-Four built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) or **plain HTTP** (memfiles).
+Four built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) for all of them — the memfiles plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`), but its control surface is pure MCP.
 
 **WSL note:** Custom env vars set via `create_subprocess_exec(env=…)` are NOT forwarded to Windows `.exe` processes through WSL interop. `WSLENV` is only read by the WSL `/init` at session start, not by child processes. Therefore, **all MCP server runtimes on WSL must be Linux-native binaries** — the install script enforces this by detecting `/mnt/*` paths and installing native versions.
 
@@ -269,8 +270,8 @@ Four built-in plugins run as independent child processes. Communication is via *
 
 1. Bind a free port: `bind_free_port()` pre-binds `127.0.0.1:0` and keeps the socket — no race between port discovery and server start
 2. Signal the parent: `signal_port(port)` writes `{"port": N}` to stdout and closes it
-3. Start FastMCP on Streamable HTTP with the pre-bound socket (or aiohttp for memfiles)
-4. Define `@mcp.tool` functions (or HTTP routes for memfiles)
+3. Start FastMCP on Streamable HTTP with the pre-bound socket
+4. Define `@mcp.tool` functions; optionally serve plain-HTTP endpoints on the same port via `@mcp.custom_route(path, methods=[...])` (e.g. memfiles `GET /share/{token}`)
 5. Be importable: `python -m <module>.server`
 
 No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. The parent reads the port line with a 30 s timeout; initial client connection retries 30× at 0.1 s.
@@ -297,8 +298,7 @@ Processes communicate through environment variables:
 | `SLIFE_SESSION_ID` / `SLIFE_AGENT_ID` | Log correlation, agent identity |
 | `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` | Directory overrides |
 | `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES) |
-| `SLIFE_MEMFILES_REGISTRY` | JSON token-registry file path for the memfiles server |
-| `SLIFE_MEMFILES_URL` | Public ngrok URL |
+| `SLIFE_MEMFILES_URL` | Public ngrok URL (set inside the memfiles plugin process) |
 
 ### Built-in Plugins
 
@@ -307,7 +307,7 @@ Processes communicate through environment variables:
 | **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio + HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config. |
 | **slife-memdb** | Streamable HTTP | Diary database. Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
-| **slife-memfiles** | Plain HTTP | Serves local files through an ngrok tunnel (`GET /share/{token}`). File-backed JSON token registry shared with the parent. |
+| **slife-memfiles** | Streamable HTTP + `/share` route | File cabinet + public sharing. MCP tools (`expose_file`, `save_content_or_files`), harness tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel and in-process token registry. |
 
 ### slife-mcp — External MCP Gateway
 
@@ -468,18 +468,20 @@ Three-tier rendering in the terminal: **Sixel** (full-colour; whitelisted termin
 
 ### Memfiles — File Serving
 
-A lightweight plain-HTTP server (`slife/plugins/memfiles/server.py`) streams local files through an ngrok tunnel:
+A standard Streamable HTTP plugin (`slife/plugins/memfiles/server.py`) — self-contained and replaceable exactly like memdb / mqtt.  The harness is a thin MCP client: it spawns the plugin, registers the `memfiles__*` tools, and never touches file-serving state directly.
 
-1. `expose_file(path)` → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`.  This tool is **dynamically registered** — it only appears in the tool list when the ngrok tunnel is active.  If the tunnel fails to start (no token, free-tier limit reached), the tool is hidden from the LLM entirely rather than returning errors at runtime.
-2. `GET /share/{token}` streams the file in 64 KB chunks (403 unknown token, 404 file gone)
+The plugin owns everything — the in-process token registry, the ngrok tunnel, and serving the file bytes on the **same port** via a custom HTTP route (one port, two protocols: `/mcp` for Streamable HTTP, `/share/{token}` for plain HTTP):
 
-No BLOBs, no database, no HMAC — token→path mappings live in a JSON registry file (atomic writes) whose path is passed to the server subprocess via `SLIFE_MEMFILES_REGISTRY`. `save_content_or_files` persists content/URL/files under `<agent>.files/` with an `index.json` and returns share URLs when the tunnel is active; when offline, files are still saved locally and the result notes "(sharing offline)".
+1. `expose_file(path)` (MCP) → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`.  Always registered — when the tunnel is offline the tool returns a graceful error rather than being hidden.
+2. `GET /share/{token}` streams the file in 64 KB chunks (403 unknown token, 404 file gone).
+
+No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file). `save_content_or_files` persists content/URL/files under `<agent>.files/` with an `index.json` and returns share URLs when the tunnel is active; when offline, files are still saved locally and the result notes "(sharing offline)". `include_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/vision.py`) that injects image blocks into the main-process conversation.
 
 ### Ngrok Tunnel
 
-Started at session init via the official ngrok Python SDK (embedded agent — no external binary). Authtoken resolution: credstore `NGROK_AUTHTOKEN` → environment. Uses **endpoint pooling** (`pooling_enabled=True`) so multiple slife instances (WSL + Windows, sub-agents on different machines) share the same dev domain — ngrok load-balances across all online agents. Initial start retries up to 3 times with linear backoff (2/4 s); a background monitor performs one follow-up retry if the first start failed.
+Started **by the memfiles plugin** (eagerly in its lifespan, non-blocking; graceful failure) via the official ngrok Python SDK (embedded agent — no external binary). Authtoken resolution: credstore `NGROK_AUTHTOKEN` → environment. Uses **endpoint pooling** (`pooling_enabled=True`) so multiple slife instances (WSL + Windows, sub-agents on different machines) share the same dev domain — ngrok load-balances across all online agents. Initial start retries up to 3 times with linear backoff (2/4 s); a background monitor performs one follow-up retry if the first start failed; share tools fall back to an on-demand start.
 
-ngrok free tier limits: **1 online agent** (one tunnel per token — only the first agent to start gets the memfiles tunnel; subsequent agents fail to bind), 1 GB transfer/month, 20k HTTP requests/month. Endpoint pooling requires no paid plan.
+ngrok free tier limits: **1 online agent** (one tunnel per token — only the first agent to start gets the memfiles tunnel; subsequent agents fail to bind), 1 GB transfer/month, 20k HTTP requests/month. Endpoint pooling requires no paid plan. Subagents reuse the main agent's memfiles plugin via Streamable HTTP (`SLIFE_MEMFILES_PORT`) instead of spawning a second tunnel.
 
 ## UI
 
@@ -629,18 +631,17 @@ slife/
     models.py          #   Model management (list/add/remove/switch)
     config.py          #   Config env var + native tool toggles
     credentials.py     #   Credential check/inject/uninject
-    memfiles.py        #   File save / expose / include_image
+    vision.py          #   include_image — vision helper (native, conversation-scoped)
     display.py         #   Inline image display
     meta.py            #   list_tools, check_async, cancel_async, clear_context
     _config_io.py      #   JSON5 read/write helpers
-  memfiles/            # File serving infra
-    token.py           #   File-backed JSON token registry (atomic writes)
-    tunnel.py          #   Ngrok tunnel lifecycle (official SDK, embedded agent)
   plugins/             # Built-in plugins (auto-discovered server.py packages)
     mcp/               #   External MCP gateway (raw JSON-RPC: stdio/SSE/streamable)
     memdb/             #   Diary database (store, search, embeddings, schema.sql)
     wechat/            #   WeChat messaging (iLink ClawBot client)
-    memfiles/          #   Plain-HTTP file server
+    memfiles/          #   Standard plugin: file cabinet + sharing
+      server.py        #   MCP tools + /share route + lifespan (owns tunnel + registry)
+      tunnel.py        #   Ngrok tunnel lifecycle (official SDK, embedded agent)
   mcp/                 # MCP client infra
     client.py          #   Streamable HTTP client
     tool_adapter.py    #   MCPProxyTool (bridges MCP → Tool ABC)

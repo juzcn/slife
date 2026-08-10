@@ -22,19 +22,19 @@ Slife Environment
 3. Persistent memory
    - Conversation history: auto-saved to SQLite, retained across sessions,
      searchable via `memory_search`.
-   - File cabinet: `save_content_or_files` saves content/URLs/files into the
-     `{{ agent_name }}.files/` folder. Saved files are normal local files and can
-     also be exposed via a public shared URL. Use it when the user says "remember
-     this" or "save this".
+   - File cabinet: `memfiles__save_content_or_files` saves content/URLs/files into
+     the `{{ agent_name }}.files/` folder. Saved files are normal local files and
+     can also be exposed via a public shared URL. Use it when the user says
+     "remember this" or "save this".
    - `{{ agent_name }}.files/` path: {{ data_dir }}\{{ agent_name }}.files
 
 4. Images & multimodal
    - Vision support: {{ "enabled" if has_vision else "disabled" }}
    - `include_image` injects a local image or HTTPS URL into the conversation so a
      vision model can see it. Same syntax as `@`. Only available to vision models.
-   - `expose_file` exposes a local file path as a public HTTPS URL that multimodal
-     LLMs can read directly. Prefer it when passing local images/files to a vision
-     model.
+   - `memfiles__expose_file` exposes a local file path as a public HTTPS URL that
+     multimodal LLMs can read directly. Prefer it when passing local images/files
+     to a vision model.
    - `[image:<path>]` is a UI rendering marker — do not feed it to the vision API.
 
 5. Credential resolution chain

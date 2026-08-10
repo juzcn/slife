@@ -64,7 +64,6 @@ class PluginLifecycle:
         self.process = None     # MCPWrapperProcess
         self.port: int = 0
         self.poll_task: asyncio.Task | None = None
-        self.tunnel_task: "asyncio.Future | None" = None  # memfiles plugin: ngrok connect
 
         # ── Watchdog state ──────────────────────────────────────────
         self._watchdog_task: asyncio.Task | None = None
@@ -313,10 +312,10 @@ class PluginLifecycle:
                 if not self._stopping:
                     await asyncio.sleep(backoff)
 
-    # ── connect via HTTP (subagent memfiles) ──────────────────────────────
+    # ── connect via HTTP (subagents share the main agent's plugins) ───────
 
     async def connect_http(self, port: int) -> None:
-        """Connect to an already-running plugin via HTTP (subagent memfiles)."""
+        """Connect to an already-running plugin via Streamable HTTP (subagents)."""
         client = MCPClient(tool_timeout=self._service.config.tool_timeout)
         await client.connect(f"http://127.0.0.1:{port}/mcp")
         self.client = client

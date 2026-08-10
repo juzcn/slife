@@ -209,20 +209,33 @@ class CheckWechatTool(Tool):
 # check_memfiles
 # ═══════════════════════════════════════════════════════════════════════
 
-def check_memfiles() -> list[dict]:
-    """Return file-sharing tunnel status."""
-    from slife.memfiles.tunnel import is_active as _tunnel_active, public_url as _tunnel_url
+async def check_memfiles(client=None) -> list[dict]:
+    """Return file-sharing tunnel status (queried from the memfiles plugin).
 
-    if _tunnel_active():
-        url = _tunnel_url() or "?"
-        return [{"component": "memfiles", "level": "ok", "key": "tunnel",
-                 "value": url,
-                 "hint": "File sharing tunnel is online."}]
-    return [{"component": "memfiles", "level": "warning", "key": "tunnel",
-             "value": "offline",
-             "hint": "File sharing tunnel unavailable. "
-                     "Check NGROK_AUTHTOKEN credential or ngrok account limits "
-                     "(free tier: 1 online agent — one tunnel per token)."}]
+    The tunnel now lives inside the memfiles plugin process, so this check
+    asks the plugin's harness tool ``__tunnel_status`` through its MCP
+    client (from ``ToolContext.memfiles_client``).  When the plugin is not
+    connected, a warning is reported.
+    """
+    try:
+        if client is None:
+            return [{"component": "memfiles", "level": "warning", "key": "tunnel",
+                     "value": "plugin_offline",
+                     "hint": "memfiles plugin not connected — file sharing unavailable."}]
+        raw = await client.call_tool("__tunnel_status")
+        data = json.loads(raw)
+        if data.get("active"):
+            return [{"component": "memfiles", "level": "ok", "key": "tunnel",
+                     "value": data.get("url", "?"),
+                     "hint": "File sharing tunnel is online."}]
+        return [{"component": "memfiles", "level": "warning", "key": "tunnel",
+                 "value": "offline",
+                 "hint": data.get("hint") or "File sharing tunnel unavailable."}]
+    except Exception as e:
+        logger.warning("memfiles_check_failed err=%s", e)
+        return [{"component": "memfiles", "level": "warning", "key": "tunnel",
+                 "value": "offline",
+                 "hint": f"File sharing tunnel status unavailable: {e}"}]
 
 
 class CheckMemfilesTool(Tool):
@@ -234,7 +247,9 @@ class CheckMemfilesTool(Tool):
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
-        return json.dumps(check_memfiles(), ensure_ascii=False, indent=2)
+        ctx = getattr(self, "_ctx", None)
+        client = getattr(ctx, "memfiles_client", None) if ctx is not None else None
+        return json.dumps(await check_memfiles(client=client), ensure_ascii=False, indent=2)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -465,9 +480,15 @@ async def _run_checks(ctx=None) -> list[dict]:
     for func_name in _CHECK_FUNCTIONS:
         try:
             fn = getattr(_mod, func_name)
-            if func_name == "check_mcp":
-                # check_mcp needs the wrapper client to reach live state.
-                client = getattr(ctx, "mcp_client", None) if ctx is not None else None
+            if func_name in ("check_mcp", "check_memfiles"):
+                # check_mcp needs the wrapper client; check_memfiles needs
+                # the memfiles plugin client — both reach live state via the
+                # plugin's MCP client from ToolContext.
+                client = (
+                    getattr(ctx, "mcp_client", None)
+                    if func_name == "check_mcp" else
+                    getattr(ctx, "memfiles_client", None)
+                ) if ctx is not None else None
                 if _inspect.iscoroutinefunction(fn):
                     entries = await fn(client=client)
                 else:

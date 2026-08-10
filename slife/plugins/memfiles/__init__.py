@@ -1,13 +1,11 @@
-"""Memfiles plugin — serves local files via short random hex tokens.
+"""Memfiles plugin — file cabinet + public file sharing, as a standard plugin.
 
-A lightweight aiohttp server handling ``GET /share/{file_id}``.
-Files are served directly from disk — no database, no BLOBs, no crypto.
-File IDs are random hex tokens (``secrets.token_hex(15)``, 30 chars)
-with a file-backed JSON registry so the server subprocess can resolve
-paths without IPC.  Designed to be exposed to the internet via ngrok so
-LLMs and users can access shared files via HTTPS.
+A self-contained, replaceable Streamable HTTP plugin (same contract as
+memdb / mqtt): the harness spawns ``server.py``, connects via MCP, and
+registers the ``memfiles__*`` tools.  The plugin owns the in-process
+token registry, the ngrok tunnel, and serves file bytes on the same port
+via a custom HTTP route (``GET /share/{file_id}``).
 
-Auto-discovered by ``discover_plugins()`` and started like any other
-plugin — the only difference is that after port discovery the harness
-opens an ngrok tunnel instead of an MCP Streamable HTTP connection.
+LLM-visible tools: ``expose_file``, ``save_content_or_files``.
+Harness-only tools: ``__tunnel_status``, ``__register_file``.
 """

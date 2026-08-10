@@ -43,13 +43,16 @@ Harness-only tools
   ``client.call_tool()``.  The description marker "Harness-only" is
   optional documentation, not the filter key.
 
-Non-MCP plugins
-  A plugin may legitimately be a plain HTTP server instead of an MCP
-  tool provider (e.g. ``memfiles``, which serves image files for vision
-  APIs).  It still follows the plugin lifecycle (discovery via
-  ``server.py``, ``main()``, parent port signalling) but exposes an HTTP
-  endpoint rather than MCP tools.  The harness starts it via a dedicated
-  branch in ``start_plugin_server``.
+Non-MCP endpoints on an MCP plugin
+  A plugin may serve plain HTTP endpoints *in addition to* MCP tools on
+  the same port — register them with ``@mcp.custom_route(path, methods=...)``
+  and FastMCP mounts them on the same uvicorn app as the Streamable HTTP
+  endpoint.  ``memfiles`` does exactly this: MCP tools (``expose_file``,
+  ``save_content_or_files``) plus ``GET /share/{file_id}`` for serving the
+  actual file bytes — one port, two protocols.  Such a plugin binds its
+  own port in ``main()`` (when it must know the port, e.g. to point the
+  ngrok tunnel at it) and passes the pre-bound socket to
+  :func:`run_plugin_server(mcp, sockets=[sock])`.
 
 Minimal example
   See :file:`slife/plugins/mcp/server.py` (the simplest built-in plugin)::
@@ -284,6 +287,7 @@ def run_plugin_server(
     port: int = 0,
     host: str = "127.0.0.1",
     show_banner: bool = False,
+    sockets: "list[socket.socket] | None" = None,
 ) -> None:
     """Start a Slife plugin server on Streamable HTTP transport.
 
@@ -301,12 +305,25 @@ def run_plugin_server(
             are never exposed to the network.
         show_banner: Pass ``True`` only when debugging; FastMCP's ASCII
             art banner is suppressed in normal use.
+        sockets: Optional pre-bound sockets to serve on.  A plugin that
+            must know its own port *before* serving (e.g. memfiles, which
+            owns the ngrok tunnel) binds and signals the port itself in
+            ``main()``, then passes the socket here to skip re-binding.
 
     This call blocks until the server shuts down.  Set up any module-level
     global state (e.g. ``_db_path``) BEFORE calling.
     """
     try:
-        if port:
+        if sockets:
+            logger.info("plugin_ready transport=streamable-http sockets=%d",
+                        len(sockets))
+            mcp_server.run(
+                transport="streamable-http", host=host, sockets=sockets,
+                show_banner=show_banner,
+                json_response=True,
+                uvicorn_config={"log_config": None},
+            )
+        elif port:
             logger.info("plugin_ready transport=streamable-http port=%s", port)
             mcp_server.run(
                 transport="streamable-http", host=host, port=port,

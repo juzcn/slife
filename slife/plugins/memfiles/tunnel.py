@@ -1,8 +1,9 @@
-"""Ngrok tunnel lifecycle management.
+"""Ngrok tunnel lifecycle management — owned by the memfiles plugin.
 
-Starts an ngrok HTTP tunnel to a local port so the memfiles service is
-reachable from the public internet.  LLM APIs (OpenAI, Anthropic, etc.)
-can then fetch images via HTTPS URLs instead of inline base64 data URIs.
+The plugin (not the slife harness) starts the ngrok tunnel to its own
+local port so the memfiles service is reachable from the public internet.
+LLM APIs (OpenAI, Anthropic, etc.) can then fetch images via HTTPS URLs
+instead of inline base64 data URIs.
 
 Uses the official ngrok Python SDK (``ngrok`` on PyPI), which embeds
 the ngrok agent as a native extension — no external binary required.
@@ -269,7 +270,7 @@ def _read_auth_token() -> str | None:
 _tunnel = NgrokTunnel()
 
 
-# ── Module-level API (backward-compatible) ─────────────────────────────
+# ── Module-level API (used by the memfiles plugin server) ──────────────
 
 
 def share_url_for(file_id: str) -> str | None:
