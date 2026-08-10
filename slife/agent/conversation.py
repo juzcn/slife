@@ -107,7 +107,9 @@ class Conversation:
                         pending_ids.remove(pid)
                 missing = expected - matched
                 for tc_id in missing:
-                    logger.warning(
+                    # Routine self-heal — keep it out of the terminal (console
+                    # is WARNING+); INFO still lands in the session log file.
+                    logger.info(
                         "conv_orphan_repair tool_call_id=%s", tc_id,
                     )
                     # Insert synthetic error tool result right after the
