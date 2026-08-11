@@ -542,7 +542,14 @@ class MCPServerConnection:
                 return msg.get("result", {})
 
     async def _request_http(self, request: dict) -> dict:
-        """Send JSON-RPC via HTTP POST and parse the response."""
+        """Send JSON-RPC via HTTP POST and parse the response.
+
+        Handles both response shapes the MCP Streamable HTTP spec allows:
+        a single ``application/json`` body, or an SSE stream
+        (``text/event-stream``) whose first message is the JSON-RPC
+        response and whose later messages are server-initiated
+        notifications (dropped — this connection is request/response).
+        """
         assert self._http_client is not None
 
         headers = {}
@@ -565,18 +572,59 @@ class MCPServerConnection:
         if sid and not self._session_id:
             self._session_id = sid
 
-        try:
-            response = resp.json()
-        except ValueError as e:
-            raise ConnectionError(
-                f"Invalid JSON from '{self.config.name}': {e}"
-            ) from e
+        if "text/event-stream" in resp.headers.get("content-type", ""):
+            response = await self._read_streamable_sse_response(
+                resp, request["id"],
+            )
+        else:
+            try:
+                response = resp.json()
+            except ValueError as e:
+                raise ConnectionError(
+                    f"Invalid JSON from '{self.config.name}': {e}"
+                ) from e
 
         if "error" in response:
             raise Exception(
                 f"MCP error from '{self.config.name}': {response['error']}"
             )
         return response.get("result", {})
+
+    async def _read_streamable_sse_response(
+        self, response, req_id: int,
+    ) -> dict:
+        """Extract the JSON-RPC response from a streamable SSE response.
+
+        A Streamable HTTP server may stream the POST response as
+        ``text/event-stream``.  The first ``data:`` event whose JSON-RPC
+        message carries ``req_id`` is the response; other events
+        (notifications, non-matching messages) are skipped.  Owns
+        ``response`` — closed here in all cases.
+        """
+        data_buffer = ""
+        try:
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    data_buffer = line[6:]
+                    continue
+                if line == "" and data_buffer:
+                    try:
+                        msg = json.loads(data_buffer)
+                    except ValueError:
+                        data_buffer = ""  # non-JSON data event — skip
+                        continue
+                    if isinstance(msg, dict) and msg.get("id") == req_id:
+                        return msg
+                    data_buffer = ""  # notification / other event — drop
+            raise ConnectionError(
+                f"Streamable SSE response from '{self.config.name}' "
+                f"carried no response for id={req_id}"
+            )
+        finally:
+            try:
+                await response.aclose()
+            except Exception:
+                pass
 
     def _notify(self, method: str, params: dict) -> None:
         """Send a JSON-RPC notification (no response expected)."""

@@ -432,6 +432,93 @@ class TestMCPServerConnectionHTTP:
             })
 
     @pytest.mark.asyncio
+    async def test_request_http_sse_stream_response(self):
+        """A streamable server streaming text/event-stream is parsed."""
+        import httpx
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+
+        async def _sse_lines():
+            yield "event: message"
+            yield 'data: {"jsonrpc": "2.0", "id": 1, "result": "ok"}'
+            yield ""
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        resp = MagicMock()
+        resp.headers = {"content-type": "text/event-stream"}
+        resp.raise_for_status = MagicMock()
+        resp.aiter_lines = _sse_lines
+        resp.aclose = AsyncMock()
+        mock_client.post = AsyncMock(return_value=resp)
+        conn._http_client = mock_client
+
+        result = await conn._request_http({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
+        })
+
+        assert result == "ok"
+        # The stream is owned by the reader and closed once the response
+        # is consumed (same contract as _read_sse_stream, REVIEW H1).
+        resp.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_request_http_sse_stream_jsonrpc_error(self):
+        """An SSE-streamed response carrying a JSON-RPC error is raised."""
+        import httpx
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+
+        async def _sse_lines():
+            yield (
+                'data: {"jsonrpc": "2.0", "id": 1, '
+                '"error": {"code": -32601, "message": "Method not found"}}'
+            )
+            yield ""
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        resp = MagicMock()
+        resp.headers = {"content-type": "text/event-stream"}
+        resp.raise_for_status = MagicMock()
+        resp.aiter_lines = _sse_lines
+        resp.aclose = AsyncMock()
+        mock_client.post = AsyncMock(return_value=resp)
+        conn._http_client = mock_client
+
+        with pytest.raises(Exception, match="MCP error"):
+            await conn._request_http({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
+            })
+
+    @pytest.mark.asyncio
+    async def test_request_http_sse_stream_no_matching_id(self):
+        """An SSE stream without a matching response id raises ConnectionError."""
+        import httpx
+
+        cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
+        conn = MCPServerConnection(cfg)
+
+        async def _sse_lines():
+            # Only a server-initiated notification arrives, then EOF.
+            yield 'data: {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}'
+            yield ""
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        resp = MagicMock()
+        resp.headers = {"content-type": "text/event-stream"}
+        resp.raise_for_status = MagicMock()
+        resp.aiter_lines = _sse_lines
+        resp.aclose = AsyncMock()
+        mock_client.post = AsyncMock(return_value=resp)
+        conn._http_client = mock_client
+
+        with pytest.raises(ConnectionError, match="no response"):
+            await conn._request_http({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {},
+            })
+
+    @pytest.mark.asyncio
     async def test_notify_http_fire_and_forget(self):
         """HTTP notify creates a background POST task."""
         import httpx

@@ -1,9 +1,8 @@
 """A2A transport abstraction — protocol-agnostic message bus.
 
-Defines the :class:`TransportAdapter` ABC that all A2A transports
-(MQTT, HTTP Streamable, etc.) must implement.  The interface is
-topic-based pub/sub — MQTT's native model, which HTTP Streamable
-emulates by mapping topics to HTTP endpoint paths.
+Defines the :class:`TransportAdapter` ABC that A2A transports
+(MQTT, stdin/stdout subagents, etc.) must implement.  The interface is
+topic-based pub/sub — MQTT's native model.
 """
 
 from __future__ import annotations
@@ -32,8 +31,6 @@ class TransportAdapter(ABC):
 
     Implementations:
         * :class:`~slife.a2a.mqtt.MQTTAdapter` — MQTT (paho-mqtt)
-        * :class:`~slife.a2a.http.HttpStreamableTransport` —
-          HTTP Streamable (``mcp`` library ``streamablehttp_client``)
 
     Lifecycle::
 

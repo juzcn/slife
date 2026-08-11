@@ -4,7 +4,7 @@
 
 **Method:** parallel subsystem audits, every finding re-verified against source, then high-value fixes applied and re-tested; README/DESIGN/README.zh-CN rewritten to match the current code.
 
-**Current state:** full suite **1636 passed** (re-confirmed after this pass's fixes). This pass fixed: memdb Chinese→English, `_sys_trim` targeting the wrong conversation, plugin-tool double-prefix naming, `rest_api_set_enabled(false)` ignored at startup, `cli_set_enabled` not persisting, the harness `__` filter inconsistency, memfiles health pointer not refreshed on watchdog restart, and the worst unredacted log call sites.
+**Current state:** full suite **1640 passed** (re-confirmed after this pass's fixes). This pass fixed: memdb Chinese→English, `_sys_trim` targeting the wrong conversation, plugin-tool double-prefix naming, `rest_api_set_enabled(false)` ignored at startup, `cli_set_enabled` not persisting, the harness `__` filter inconsistency, memfiles health pointer not refreshed on watchdog restart, the worst unredacted log call sites, **C1** (A2A `transport:"http"` no longer crashes startup — non-`"mqtt"` transports disable A2A with a warning; the dead `HttpStreamableTransport` stub was removed), and **C9** (streamable-http `_request_http` now reads SSE-streamed responses).
 
 **Verdict:** the architecture remains coherent — one loop, one registry, one serial inbox, uniform tool surface. The conformance audit found the surface rules (language policy, tool naming, harness tiers, log format) were documented but not uniformly enforced; the docs had drifted further than the code. The code changes above restore the documented contracts; what remains is hardening (a couple of HIGH wire-format suspicions, MCP health/reconnect, config-write serialization, dead code) and test/CI coverage.
 
@@ -20,7 +20,6 @@ No new open security findings beyond the logging hygiene items in §2.1. Prior: 
 
 | # | Finding | Status | Where |
 |----|---------|--------|-------|
-| C1 (HIGH) | A2A `transport:"http"` **crashes startup** (uncaught `ValueError` in `A2AConfig.from_dict`); `HttpStreamableTransport` stub raises `NotImplementedError` for publish/subscribe/messages | OPEN | `a2a/config.py:82-89`, `a2a/http.py` |
 | C2 | External MCP servers have **no health-check/reconnect** — `MCPClient.ping()` defined, never scheduled; a died or hung stdio server stays `CONNECTED` | OPEN | `mcp/client.py:255`, `plugins/mcp/connection.py:700` |
 | W1 (HIGH, unverified) | **Anthropic backend** may emit consecutive `user` messages for a multi-tool-result batch (each `tool` msg → its own `user` block); strict-alternation endpoints (Bedrock / Bailian/Qwen) 400 | OPEN | `agent/llm_backends/anthropic.py:107-115` |
 | W2 (HIGH, unverified) | **OpenAI-Responses backend** converts history to a Chat-Completions shape (`role:"tool"`, `tool_calls` on assistant) the Responses API likely rejects (wants `function_call` / `function_call_output` items) — would break multi-turn tool conversations | OPEN | `agent/llm_backends/openai_responses.py:72-91` |
@@ -48,6 +47,8 @@ No new open security findings beyond the logging hygiene items in §2.1. Prior: 
 | **F-filter** | Harness `__` filter differed across the 3 registration paths (`plugins.py` filtered `_`, others `__`) | Unified on the canonical `__` rule (`agent/plugins.py`) |
 | **F-memfiles** | memfiles watchdog restart left `ToolContext.memfiles_client` pointing at the dead client — health checks reported a healthy plugin offline | Restart callback re-points `_tool_ctx.memfiles_client` (`agent/service.py`) |
 | **F-logs** | Hot-path logs unredacted: tool-call args (`tool_timeout args=`), raw user input (`req_start`, `conv_user`), MCP wrapper stderr relay | `sanitize_secrets` in `_truncate_args`, `req_start`, and the `[wrapper]` relay (`agent/loop.py`, `mcp/process.py`) |
+| **C1** | A2A `transport:"http"` crashed startup (`ValueError` in `A2AConfig.from_dict`); `HttpStreamableTransport` was a dead stub | Non-`"mqtt"` transport values disable A2A with a warning (`a2a_transport_unsupported`) at config load + in `start_mqtt`; removed the never-imported `a2a/http.py` stub; tests + README/DESIGN updated |
+| **C9** | Streamable-http `_request_http` only parsed single-JSON responses — a Streamable HTTP server streaming its POST response as `text/event-stream` (allowed by the MCP spec) broke `resp.json()` | Detect the `text/event-stream` content-type and read the first matching JSON-RPC message via new `_read_streamable_sse_response` (owns/closes the response, REVIEW H1 contract); 3 tests added (`plugins/mcp/connection.py`) |
 
 ### 1.4 Prior fixed (carried forward)
 
@@ -67,7 +68,6 @@ Pass-2: **H1** SSE transport · **H2** skill zip-slip/traversal · **H4** Respon
 
 ### 2.2 Correctness
 
-- **C1** — catch the `A2AConfig` `transport:"http"` `ValueError` and disable A2A with a warning instead of crashing startup; implement or remove `HttpStreamableTransport`.
 - **W1 / W2** — verify the Anthropic consecutive-user and OpenAI-Responses wire shapes against real endpoints; fix the conversions (merge multi-`tool` blocks into one `user` message; emit `function_call_output` items).
 - **C2** — schedule `MCPClient.ping()` as a background health-check; mark hung/dead servers `DISCONNECTED` and trigger lazy reconnect.
 - **C5** — make `a2a_cancel_task` send a real cancel RPC to the subagent (or at least not mislabel a completed result "cancelled").
@@ -116,7 +116,6 @@ Two tiers by prefix: `_` = LLM-visible-but-reserved (`_sys_note`/`_sys_trim`, sc
 ### 3.5 Over-engineering
 
 - **Dead mechanisms:** `requires_a2a` (`base.py:169`), subagent `set_push_notification`/`_push_futures`/`wait_for_task` (no callers, `subagent/process.py:210-225,452-506`), `update_context_footer` (called only with `""`, `conversation.py:44-57`).
-- **Stubs:** `HttpStreamableTransport` (`a2a/http.py`) — connect/disconnect only.
 - **Redundancy:** three plugin registration paths (now one filter rule), two stderr relays (`logfmt.drain_stderr` + the hand-rolled `[wrapper]`), `ok_json`/`error_json` back-compat re-export in `server_utils.py:352`, `_classify`/`_PLUGIN_LABELS` fallback in `meta.py` that almost never runs.
 - **Good:** `_ensure_turn_consistent` is exactly the right kind of single-point invariant; the watchdog/backoff/unregistration machinery is genuine; `run_daemon` convention is clean.
 

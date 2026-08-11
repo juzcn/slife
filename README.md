@@ -187,13 +187,13 @@ Five built-in plugins as independent child processes:
 
 | Plugin | Role |
 |--------|------|
-| **slife-mcp** | Gateway for external MCP servers (stdio + HTTP) |
+| **slife-mcp** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) |
 | **slife-memdb** | Diary database with hybrid search |
 | **slife-wechat** | Bidirectional WeChat messaging |
 | **slife-memfiles** | File cabinet + public file sharing over Streamable HTTP (`/share` route on the same port; ngrok tunnel owned by the plugin) |
 | **slife-mqtt** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
 
-External MCP servers configured in `slife.json5` → `mcp.servers`. Any stdio or HTTP MCP server works — no Slife SDK required.
+External MCP servers configured in `slife.json5` → `mcp.servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled).
 
 All plugins run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
 
@@ -204,7 +204,7 @@ The A2A thin protocol has **one tool namespace (`a2a_`) over two transports**, a
 - **Mesh discovery** (`a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`) — remote-only, MQTT transport.
 - **Subagent lifecycle** (`spawn_subagent`, `list_subagents`, `stop_subagent`) — local only, no A2A prefix.
 
-An experimental HTTP Streamable transport exists as a skeleton (connect/disconnect only). All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
+A2A's only implemented transport is MQTT — setting `transport` to any other value (e.g. the removed `"http"` skeleton) disables A2A with a warning instead of crashing startup. All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
 
 ## Keyboard Shortcuts
 

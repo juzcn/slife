@@ -3,6 +3,7 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
+import logging
 import platform
 
 import pytest
@@ -122,10 +123,22 @@ class TestA2AConfigFromDict:
         assert cfg.broker_host == "localhost"
         assert cfg.broker_port == 1883
 
-    def test_http_transport_rejected(self):
-        """transport 'http' raises ValueError with a clear message."""
-        with pytest.raises(ValueError, match="not yet implemented"):
-            A2AConfig.from_dict({"transport": "http"}, agent_id="agent-1")
+    def test_http_transport_disables_a2a(self, caplog):
+        """transport 'http' no longer crashes — A2A is disabled with a warning."""
+        with caplog.at_level(logging.WARNING, logger="slife.a2a.config"):
+            cfg = A2AConfig.from_dict({"transport": "http"}, agent_id="agent-1")
+        assert cfg.transport == "http"
+        assert cfg.enabled is False
+        assert any(
+            "a2a_transport_unsupported" in r.message for r in caplog.records
+        )
+
+    def test_unknown_transport_disables_a2a(self, caplog):
+        """An unknown transport value is treated like 'http': disable + warn."""
+        with caplog.at_level(logging.WARNING, logger="slife.a2a.config"):
+            cfg = A2AConfig.from_dict({"transport": "carrier-pigeon"}, agent_id="agent-1")
+        assert cfg.transport == "carrier-pigeon"
+        assert cfg.enabled is False
 
     def test_mqtt_transport_accepted(self):
         """transport 'mqtt' is the default and passes through."""

@@ -309,7 +309,7 @@ Processes communicate through environment variables:
 
 | Plugin | Transport | Role |
 |--------|-----------|------|
-| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio + HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config. |
+| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config. |
 | **slife-memdb** | Streamable HTTP | Diary database. Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
 | **slife-memfiles** | Streamable HTTP + `/share` route | File cabinet + public sharing. MCP tools (`expose_file`, `save_content_or_files`), harness tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel and in-process token registry. |
@@ -323,7 +323,9 @@ Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` 
 |-----------|-----------|-----|
 | **stdio** | Spawn subprocess, JSON-RPC over pipes | Local MCP servers (npx/uvx/bunx) |
 | **http (SSE)** | GET with `Accept: text/event-stream`, POST to message endpoint | Remote SSE endpoints (tried first for URLs) |
-| **http (streamable)** | POST JSON-RPC directly, `mcp-session-id` header | Remote Streamable HTTP endpoints (fallback) |
+| **http (streamable)** | POST JSON-RPC + `mcp-session-id` header; single-JSON **or SSE-streamed** responses | Remote Streamable HTTP endpoints (fallback) |
+
+For `url`-configured servers the gateway probes with `GET + Accept: text/event-stream`: a `text/event-stream` reply switches to **SSE** mode (the `endpoint` event yields the POST message URL); otherwise the same client falls through to **Streamable HTTP**. A Streamable response may be a single JSON body or an SSE stream — both are parsed (the first matching JSON-RPC message; later events are server-initiated notifications and are dropped). (REVIEW C9.)
 
 Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`). Live status is reported by `check_mcp` via the harness `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is a harness tool — LLM-invisible, invoked only by the `server__tool` proxies.
 
@@ -418,7 +420,8 @@ One tool namespace over two transports, auto-selected from the agent_id:
 |-----------|---------|--------|
 | **MQTT** | `slife-mqtt` plugin (paho-mqtt MQTTv5 → asyncio.Queue, LWT) | Fully implemented |
 | **Subagent** | `asyncio.create_subprocess_exec`, JSON-RPC 2.0 | Fully implemented, always available |
-| **HTTP Streamable** | `slife/a2a/http.py` (`HttpStreamableTransport`) | Skeleton — connect/disconnect only; publish/subscribe/messages raise `NotImplementedError`. **`transport:"http"` crashes startup** — catch the config error and disable A2A instead (see REVIEW.md, C1) |
+
+Only MQTT is implemented — the HTTP Streamable transport skeleton was removed.  A `transport` other than `"mqtt"` in the `mqtt` section (e.g. the removed `"http"`) disables A2A with a warning at config load instead of crashing startup (REVIEW C1).
 
 The A2A thin protocol has **one tool namespace** over the two implemented transports: the **task tools** (`a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`) route a local worker (from `list_subagents`) through the `SubagentManager` over stdin, and any other id through the `mqtt` plugin to a remote mesh peer over MQTT. Every A2A tool carries the same uniform `a2a_` prefix; the remote-only mesh features are native `a2a_list_agents` / `a2a_list_tasks` / `a2a_agent_card` / `a2a_broadcast`. The `mqtt` plugin itself only exposes `__`-prefixed (LLM-invisible) harness plumbing, called by the native tools through the mesh MCP client. Subagents are not a `TransportAdapter`.
 
@@ -674,7 +677,6 @@ slife/
   a2a/                 # Agent-to-Agent protocol
     transport.py       #   Abstract transport + TransportMessage
     mqtt.py            #   MQTT adapter (paho-mqtt, MQTTv5, LWT)
-    http.py            #   HTTP Streamable transport (skeleton)
     client.py          #   A2A client (presence, heartbeat, task routing)
     broker.py          #   Broker TCP probe
     task_store.py      #   In-memory task records
@@ -725,7 +727,8 @@ skills/                # On-demand SKILL.md skills (seeded to ~/.slife/skills/)
 
 The latest audit, open correctness items, and test/CI gaps are tracked in **[REVIEW.md](REVIEW.md)**. Highlights:
 
-- **C1** — `a2a transport:"http"` crashes startup; `HttpStreamableTransport` is a stub.
+- **C1** — `a2a transport:"http"` now disables A2A with a warning instead of crashing startup; the `HttpStreamableTransport` stub was removed.
+- **C9 remainder** — a Streamable HTTP server that answers the SSE-detection GET with a live notification channel but no `endpoint` event is still misrouted to legacy-SSE mode (times out awaiting the endpoint event); servers that reject the GET fall through to Streamable HTTP correctly.
 - **C2** — external MCP servers have no background health-check/reconnect; a died server stays `CONNECTED`.
 - **C5** — `a2a_cancel_task` can't cancel an in-flight subagent task.
 - **C6** — WeChat dedup key can drop real messages.

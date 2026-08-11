@@ -1,7 +1,6 @@
 """A2A (Agent-to-Agent) — two transports, one protocol.
 
-MQTT for remote instances, HTTP Streamable for local/remote HTTP,
-stdin/stdout for local subagents.
+MQTT for remote instances, stdin/stdout for local subagents.
 The LLM sees one agent pool via the unified A2A toolset in
 :mod:`slife.tools.a2a`.
 

@@ -1259,6 +1259,17 @@ class AgentService:
             logger.debug("a2a_disabled")
             return PluginStartStatus.SKIPPED
 
+        # Only the MQTT transport is implemented.  A config that somehow
+        # carries a different transport (e.g. the removed "http" skeleton)
+        # must not silently run MQTT — skip with a warning (REVIEW C1).
+        if a2a_cfg.transport != "mqtt":
+            logger.warning(
+                "a2a_transport_unsupported transport=%s action=a2a_disabled "
+                "supported=('mqtt',)",
+                a2a_cfg.transport,
+            )
+            return PluginStartStatus.SKIPPED
+
         from slife.a2a.broker import probe_broker
         if not await probe_broker(a2a_cfg.broker_host, a2a_cfg.broker_port):
             logger.info(

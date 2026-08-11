@@ -5,9 +5,13 @@ Follows the same pattern as ``MCPConfig`` (slife/config.py:92-152).
 
 from __future__ import annotations
 
+import logging
 import platform
 import os
 from dataclasses import dataclass, field
+
+
+logger = logging.getLogger(__name__)
 
 
 def _default_agent_id() -> str:
@@ -30,7 +34,9 @@ class A2AConfig:
     """Optional human-readable display name."""
 
     transport: str = "mqtt"
-    """Transport type: ``"mqtt"`` (default) or ``"http"`` (Streamable HTTP)."""
+    """Transport type.  Only ``"mqtt"`` (default) is implemented — any other
+    value (e.g. the removed ``"http"`` skeleton) disables A2A with a warning
+    at config load instead of crashing startup."""
 
     broker_host: str = "localhost"
     broker_port: int = 1883
@@ -65,6 +71,11 @@ class A2AConfig:
             data: The ``mqtt`` dict from the JSON5 config, or ``None``.
             agent_id: The ``--agent`` value (defaults to ``"slife"``).
                       Used as the MQTT client id / agent identity.
+
+        Note:
+            A ``transport`` other than ``"mqtt"`` (e.g. the removed
+            ``"http"`` skeleton) disables A2A (``enabled=False``) and
+            logs a warning — it never crashes startup.
         """
         broker = {}
         agent_name = ""
@@ -80,16 +91,20 @@ class A2AConfig:
         default_enabled = isinstance(data, dict)
 
         transport = (data or {}).get("transport", "mqtt")
-        if transport == "http":
-            raise ValueError(
-                "A2A transport 'http' is not yet implemented. "
-                "Use transport 'mqtt' (the default) for A2A pub/sub messaging. "
-                "The HTTP transport skeleton (connect/disconnect only) "
-                "will be completed when the A2A HTTP server side is built."
+        enabled = default_enabled
+        if transport != "mqtt":
+            # Only MQTT is implemented.  A config requesting any other
+            # transport must not crash startup — parse the section,
+            # disable A2A, and surface a warning (REVIEW C1).
+            logger.warning(
+                "a2a_transport_unsupported transport=%s action=a2a_disabled "
+                "supported=('mqtt',)",
+                transport,
             )
+            enabled = False
 
         return cls(
-            enabled=default_enabled,  # downgraded at runtime on probe failure
+            enabled=enabled,  # downgraded at runtime on probe failure
             agent_id=agent_id,
             agent_name=agent_name,
             transport=transport,
