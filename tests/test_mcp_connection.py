@@ -715,3 +715,214 @@ class TestMCPServerConnectionHTTP:
         conn._sse_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await conn._sse_task
+
+
+# ── Health check / reconnect (REVIEW C2) ──────────────────────────────────
+
+
+class TestMCPServerConnectionPing:
+    """Tests for ping()."""
+
+    @pytest.mark.asyncio
+    async def test_ping_false_when_not_connected(self):
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        assert await conn.ping() is False
+
+    @pytest.mark.asyncio
+    async def test_ping_success(self):
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.CONNECTED
+        conn._request = AsyncMock(return_value={})
+        assert await conn.ping() is True
+        conn._request.assert_called_once_with("ping", {})
+
+    @pytest.mark.asyncio
+    async def test_ping_transport_error(self):
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.CONNECTED
+        conn._request = AsyncMock(side_effect=ConnectionError("server died"))
+        assert await conn.ping() is False
+
+    @pytest.mark.asyncio
+    async def test_ping_hung_server_times_out(self):
+        """A hung server (no ping answer) makes ping() False, not hang."""
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.CONNECTED
+
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(3600)
+
+        conn._request = _hang
+        assert await conn.ping(timeout=0.01) is False
+
+
+class TestMCPServerConnectionHealthMonitor:
+    """Tests for the background health monitor."""
+
+    @pytest.mark.asyncio
+    async def test_reconnects_a_dead_server(self):
+        """CONNECTED + unresponsive → marked DISCONNECTED, then reconnected."""
+        from slife.plugins.mcp import connection as conn_mod
+
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.CONNECTED
+        conn._error = None
+
+        calls = {"n": 0}
+
+        async def fake_ping():
+            calls["n"] += 1
+            return calls["n"] > 1  # first ping fails (server died), then recovers
+
+        async def fake_connect():
+            conn._status = ServerStatus.CONNECTED
+            conn._error = None
+
+        conn.ping = fake_ping
+        conn.connect = fake_connect
+
+        with patch.object(conn_mod, "_HEALTH_CHECK_INTERVAL", 0.01):
+            task = asyncio.create_task(conn._health_monitor())
+            await asyncio.sleep(0.1)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert calls["n"] >= 2
+        assert conn.status == ServerStatus.CONNECTED
+
+    @pytest.mark.asyncio
+    async def test_exits_when_server_disabled(self):
+        """A deliberately-disabled server stops the monitor, no reconnect."""
+        from slife.plugins.mcp import connection as conn_mod
+
+        cfg = ServerConfig(name="test", command="echo", enabled=False)
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.CONNECTED
+        conn.ping = AsyncMock(return_value=True)
+        conn.connect = AsyncMock()
+
+        with patch.object(conn_mod, "_HEALTH_CHECK_INTERVAL", 0.01):
+            await conn._health_monitor()
+
+        conn.connect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_retries_a_failed_initial_connect(self):
+        """A server in FAILED state is retried (with backoff) until it recovers."""
+        from slife.plugins.mcp import connection as conn_mod
+
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.FAILED
+        conn._error = "boom"
+        conn.ping = AsyncMock(return_value=True)
+
+        calls = {"n": 0}
+
+        async def fake_connect():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionError("still down")
+            conn._status = ServerStatus.CONNECTED
+            conn._error = None
+
+        conn.connect = fake_connect
+
+        with patch.object(conn_mod, "_HEALTH_CHECK_INTERVAL", 0.01), \
+                patch.object(conn_mod, "_RECONNECT_BACKOFF_INITIAL", 0.01):
+            task = asyncio.create_task(conn._health_monitor())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert calls["n"] >= 2
+        assert conn.status == ServerStatus.CONNECTED
+
+    @pytest.mark.asyncio
+    async def test_connect_failure_starts_monitor(self):
+        """A failed initial connect still spawns the health monitor."""
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        conn._connect_stdio = AsyncMock(side_effect=ConnectionError("down"))
+
+        await conn.connect()
+
+        assert conn.status == ServerStatus.FAILED
+        assert conn._health_task is not None and not conn._health_task.done()
+
+        conn._health_task.cancel()
+        try:
+            await conn._health_task
+        except asyncio.CancelledError:
+            pass
+        conn._health_task = None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_health_monitor(self):
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.CONNECTED
+        cancelled = {"done": False}
+
+        async def fake_monitor():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cancelled["done"] = True
+                raise
+
+        conn._health_task = asyncio.create_task(fake_monitor())
+        await asyncio.sleep(0)  # let the task start
+
+        await conn.disconnect()
+
+        assert cancelled["done"] is True
+        assert conn._health_task is None
+
+
+class TestMCPServerConnectionLazyReconnect:
+    """Tests for call_tool's lazy reconnect of a DISCONNECTED server."""
+
+    @pytest.mark.asyncio
+    async def test_call_tool_reconnects_disconnected_server(self):
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.DISCONNECTED
+        reconnected = {"done": False}
+
+        async def fake_connect():
+            reconnected["done"] = True
+            conn._status = ServerStatus.CONNECTED
+
+        async def fake_request(_method, _params):
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+        conn.connect = fake_connect
+        conn._request = fake_request
+
+        result = await conn.call_tool("echo", {"m": "x"})
+        assert result == "ok"
+        assert reconnected["done"] is True
+
+    @pytest.mark.asyncio
+    async def test_call_tool_does_not_reconnect_disabled(self):
+        cfg = ServerConfig(name="test", command="echo", enabled=False)
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.DISCONNECTED
+        conn.connect = AsyncMock()
+
+        with pytest.raises(ValueError, match="not connected"):
+            await conn.call_tool("echo", {})
+
+        conn.connect.assert_not_called()

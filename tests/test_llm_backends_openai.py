@@ -413,3 +413,65 @@ class TestOpenAIResponsesBackend:
         assert [td["index"] for td in tool_deltas] == [0, 1]
         assert [td["function"]["name"] for td in tool_deltas] == ["tool_a", "tool_b"]
         assert [td["id"] for td in tool_deltas] == ["call_a", "call_b"]
+
+    def test_tool_history_uses_function_call_items(self):
+        """REVIEW W2 — tool turns use the Responses API's native items
+        (function_call / function_call_output), not the Chat-Completions
+        role:tool / tool_calls-on-assistant shape."""
+        from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
+
+        messages = [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "call two tools"},
+            {"role": "assistant", "content": "On it.", "tool_calls": [
+                {"id": "call_a", "type": "function",
+                 "function": {"name": "tool_a", "arguments": '{"x":1}'}},
+                {"id": "call_b", "type": "function",
+                 "function": {"name": "tool_b", "arguments": '{"y":2}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_a", "content": "A done"},
+            {"role": "tool", "tool_call_id": "call_b", "content": "B done"},
+        ]
+        instructions, items = OpenAIResponsesBackend._oa_msgs_to_responses(messages)
+
+        assert instructions == "Be brief."
+        # Flat item list; no Chat-Completions shapes leak through.
+        assert all("tool_calls" not in item for item in items)
+        assert all(item.get("role") != "tool" for item in items)
+
+        types = [item.get("type", item.get("role")) for item in items]
+        assert types == [
+            "user", "assistant",
+            "function_call", "function_call",
+            "function_call_output", "function_call_output",
+        ]
+
+        fcs = [i for i in items if i.get("type") == "function_call"]
+        assert fcs[0] == {"type": "function_call", "call_id": "call_a",
+                          "name": "tool_a", "arguments": '{"x":1}'}
+        assert fcs[1] == {"type": "function_call", "call_id": "call_b",
+                          "name": "tool_b", "arguments": '{"y":2}'}
+
+        outputs = [i for i in items if i.get("type") == "function_call_output"]
+        assert outputs[0] == {"type": "function_call_output", "call_id": "call_a",
+                              "output": "A done"}
+        assert outputs[1] == {"type": "function_call_output", "call_id": "call_b",
+                              "output": "B done"}
+
+    def test_assistant_tool_calls_without_text_emit_only_function_calls(self):
+        """REVIEW W2 — empty assistant content is dropped; each tool call is
+        still a standalone function_call item."""
+        from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
+
+        messages = [
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "t", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+        instructions, items = OpenAIResponsesBackend._oa_msgs_to_responses(messages)
+        assert items == [
+            {"type": "function_call", "call_id": "call_1", "name": "t", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+        ]

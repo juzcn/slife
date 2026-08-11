@@ -201,6 +201,68 @@ class TestOaMsgsToAnthropic:
         assert converted[1]["role"] == "assistant"
         assert converted[2]["role"] == "user"  # tool result
 
+    def test_multi_tool_results_coalesced_into_one_user(self):
+        """REVIEW W1 — two tool results become ONE user block, not two
+        consecutive ``user`` messages (strict-alternation endpoints 400)."""
+        messages = [
+            {"role": "user", "content": "run both"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "tc1", "type": "function",
+                 "function": {"name": "a", "arguments": "{}"}},
+                {"id": "tc2", "type": "function",
+                 "function": {"name": "b", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "result 1"},
+            {"role": "tool", "tool_call_id": "tc2", "content": "result 2"},
+        ]
+        system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        roles = [m["role"] for m in converted]
+        assert roles == ["user", "assistant", "user"]  # strict alternation
+        tool_user = converted[2]
+        assert tool_user["role"] == "user"
+        results = tool_user["content"]
+        assert [r["type"] for r in results] == ["tool_result", "tool_result"]
+        assert results[0]["tool_use_id"] == "tc1"
+        assert results[0]["content"] == "result 1"
+        assert results[1]["tool_use_id"] == "tc2"
+        assert results[1]["content"] == "result 2"
+
+    def test_tool_result_then_user_text_merged(self):
+        """REVIEW W1 — a user text message right after tool results is
+        merged into the same user block (still one user message)."""
+        messages = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "tc1", "type": "function",
+                 "function": {"name": "a", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "done"},
+            {"role": "user", "content": "then what?"},
+        ]
+        system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        roles = [m["role"] for m in converted]
+        assert roles == ["user", "assistant", "user"]  # 3, not 4 — merged
+        blocks = converted[2]["content"]
+        assert blocks[0]["type"] == "tool_result"
+        assert blocks[1] == {"type": "text", "text": "then what?"}
+
+    def test_tool_results_followed_by_assistant_still_alternate(self):
+        """REVIEW W1 — tool results flushed before a following assistant
+        message keep user/assistant alternation."""
+        messages = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "tc1", "type": "function",
+                 "function": {"name": "a", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "r"},
+            {"role": "assistant", "content": "done."},
+        ]
+        system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        roles = [m["role"] for m in converted]
+        assert roles == ["user", "assistant", "user", "assistant"]
+        assert converted[2]["content"][0]["type"] == "tool_result"
+
 
 # ── Tool Adaptation ───────────────────────────────────────────────────
 

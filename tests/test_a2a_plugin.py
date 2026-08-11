@@ -26,7 +26,7 @@ def _fake_client():
         MagicMock(agent_id="peer-1", display_name="Peer One", status="idle"),
     ])
     client.get_task_result = MagicMock(return_value="done")
-    client.cancel_task = AsyncMock(return_value=True)
+    client.cancel_task = AsyncMock(return_value="cancelled")
     client.broadcast = AsyncMock(return_value=["peer-1:corr-1"])
     client.subscribe_task = AsyncMock(return_value="sub-result")
     client.get_agent_card = MagicMock(return_value=MagicMock(
@@ -81,6 +81,68 @@ class TestPluginTools:
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
             assert await getattr(plugin, "a2a_cancel_task")("peer-1", "corr-1") == "cancelled"
+
+
+class TestIncomingCancel:
+    """REVIEW C5 — inbound CancelTask drops the queued task (replying a
+    CANCELLED result) and queues a cancel for the harness."""
+
+    @pytest.mark.asyncio
+    async def test_drops_queued_task_and_replies_cancelled(self):
+        plugin._inbound_tasks.clear()
+        plugin._cancellations.clear()
+        plugin._inbound_tasks.append({
+            "type": "task", "source": "peer-1", "content": "do X",
+            "reply_to": "Slife/peer-1/tasks/result", "correlation_id": "cid-1",
+        })
+        client = _fake_client()
+        plugin._client = client
+        try:
+            await plugin._on_incoming_cancel("cid-1")
+        finally:
+            plugin._client = None
+
+        assert plugin._inbound_tasks == []  # dropped, never reaches the loop
+        assert plugin._cancellations == [{"type": "cancel", "corr_id": "cid-1"}]
+        # A CANCELLED result was published back to the waiting sender.
+        args = client.publish_message.call_args
+        assert args.args[0] == "Slife/peer-1/tasks/result"
+        env = json.loads(args.args[1])
+        assert env["result"]["task"]["status"]["state"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_queues_cancel_when_task_already_drained(self):
+        plugin._inbound_tasks.clear()
+        plugin._cancellations.clear()
+        plugin._client = None
+
+        await plugin._on_incoming_cancel("cid-already-running")
+
+        assert plugin._cancellations == [
+            {"type": "cancel", "corr_id": "cid-already-running"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_drain_includes_cancellations(self):
+        plugin._inbound_tasks.clear()
+        plugin._presence_events.clear()
+        plugin._cancellations.clear()
+        plugin._cancellations.append({"type": "cancel", "corr_id": "cid-1"})
+
+        out = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
+
+        assert out["cancellations"] == [{"type": "cancel", "corr_id": "cid-1"}]
+        assert plugin._cancellations == []  # drained
+
+    @pytest.mark.asyncio
+    async def test_dispatch_result_cancelled(self):
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            await getattr(plugin, "__a2a_dispatch_result")(
+                "topic", "cid-1", "partial", cancelled=True,
+            )
+        env = json.loads(client.publish_message.call_args.args[1])
+        assert env["result"]["task"]["status"]["state"] == "cancelled"
 
 
 class TestHarnessTools:

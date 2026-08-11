@@ -55,6 +55,9 @@ class Inbox:
         self._queue: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._runner_task: asyncio.Task | None = None
         self._processing: bool = False
+        #: correlation_id of the message currently being processed (remote
+        #: A2A/subagent tasks), used by :meth:`cancel_correlation`.
+        self._current_corr: str | None = None
 
     # ── Cancel ────────────────────────────────────────────────────────
 
@@ -64,6 +67,32 @@ class Inbox:
         Safe to call when nothing is running — does nothing.
         """
         self._agent_loop.cancel()
+
+    def cancel_correlation(self, corr_id: str) -> None:
+        """Cancel the task carrying *corr_id* — Esc-equivalent for a remote
+        A2A / subagent task (REVIEW C5).
+
+        Drops the message if it is still queued (never runs); otherwise, if
+        it is the message currently being processed, stops the running agent
+        loop at the next safe point — the same mechanism as the TUI Esc
+        binding.  Unknown corr_ids are a no-op.
+        """
+        if not corr_id:
+            return
+        # Remove a queued-but-not-yet-started message with this corr_id.
+        rest: list[AgentMessage] = []
+        while not self._queue.empty():
+            item = self._queue.get_nowait()
+            if item.correlation_id == corr_id:
+                logger.info("inbox_queued_task_cancelled corr_id=%s", corr_id)
+                continue
+            rest.append(item)
+        for item in rest:
+            self._queue.put_nowait(item)
+        # Stop the loop if this corr_id is the message being processed now.
+        if self._current_corr == corr_id:
+            logger.info("inbox_active_task_cancelled corr_id=%s", corr_id)
+            self.cancel()
 
     # ── Post ──────────────────────────────────────────────────────────
 
@@ -134,6 +163,7 @@ class Inbox:
         if self._a2a_client:
             await self._a2a_client.update_status("busy")
         self._processing = True
+        self._current_corr = msg.correlation_id or None
 
         conversation = None
         handler = None
@@ -188,10 +218,16 @@ class Inbox:
             if msg.reply_to and self._a2a_client:
                 await self._publish_reply(msg.reply_to, msg.correlation_id, result)
 
-            # Route reply to originating channel (WeChat, etc.)
+            # Route reply to originating channel (WeChat, etc.).  Pass the
+            # cancelled flag so the channel can signal cancellation to the
+            # sender (REVIEW C5); callbacks with the older text-only
+            # signature fall back gracefully.
             if msg.on_reply is not None:
                 reply_text = result.text if hasattr(result, "text") else str(result)
+                cancelled = bool(getattr(result, "cancelled", False))
                 try:
+                    await msg.on_reply(reply_text, cancelled=cancelled)
+                except TypeError:
                     await msg.on_reply(reply_text)
                 except Exception as e:
                     logger.debug("on_reply_error channel=%s err=%s",
@@ -268,6 +304,7 @@ class Inbox:
 
             # Return to idle
             self._processing = False
+            self._current_corr = None
             if self._a2a_client:
                 await self._a2a_client.update_status("idle")
 

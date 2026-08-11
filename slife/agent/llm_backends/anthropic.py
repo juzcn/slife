@@ -53,9 +53,26 @@ class AnthropicBackend:
         ``cache_control: {"type": "ephemeral"}`` so the stable system
         prompt acts as a prompt-cache breakpoint (everything before it is
         cached across turns).
+
+        *anthropic_messages* strictly alternates ``user`` / ``assistant``
+        (REVIEW W1).  The Anthropic API requires this: an OpenAI-format
+        batch emits one ``tool`` message per tool call, and each must not
+        become its own ``user`` block (consecutive ``user`` messages 400 on
+        strict-alternation endpoints such as Bedrock / Bailian/Qwen).  All
+        tool results of one batch are coalesced into a single ``user``
+        message, and a user text message directly after tool results is
+        merged into that same block.
         """
         system_parts: list[str] = []
         converted: list[dict] = []
+        pending_tool_results: list[dict] = []
+
+        def _flush_tool_results() -> None:
+            if pending_tool_results:
+                # Copy — the list is stored in the message, then cleared so
+                # the next batch starts fresh.
+                converted.append({"role": "user", "content": list(pending_tool_results)})
+                pending_tool_results.clear()
 
         for msg in messages:
             role = msg.get("role", "")
@@ -84,10 +101,24 @@ class AnthropicBackend:
                                 })
                         else:
                             blocks.append(part)
-                    converted.append({"role": "user", "content": blocks})
+                    user_content = blocks
                 else:
-                    converted.append({"role": "user", "content": str(content)})
+                    user_content = str(content)
+                if pending_tool_results:
+                    # Tool results + this user text form ONE user message —
+                    # a user block may carry both tool_result and text
+                    # content, and separate blocks would break alternation.
+                    if not isinstance(user_content, list):
+                        user_content = [{"type": "text", "text": user_content}]
+                    converted.append({
+                        "role": "user",
+                        "content": pending_tool_results + user_content,
+                    })
+                    pending_tool_results.clear()
+                else:
+                    converted.append({"role": "user", "content": user_content})
             elif role == "assistant":
+                _flush_tool_results()
                 blocks: list[dict] = []
                 if content and str(content).strip():
                     blocks.append({"type": "text", "text": str(content)})
@@ -105,14 +136,12 @@ class AnthropicBackend:
                     })
                 converted.append({"role": "assistant", "content": blocks})
             elif role == "tool":
-                converted.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": msg.get("tool_call_id", ""),
-                        "content": str(content),
-                    }],
+                pending_tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": msg.get("tool_call_id", ""),
+                    "content": str(content),
                 })
+        _flush_tool_results()
 
         system_blocks: list[dict] | None = None
         if system_parts:

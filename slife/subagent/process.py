@@ -245,13 +245,14 @@ class SubagentProcess:
         return self._async_results.pop(rpc_id, None)
 
     async def cancel_task(self, task_id: str) -> bool:
-        """Cancel a pending/queued worker task (best-effort).
+        """Cancel a worker task — drops it if queued, preempts it if running.
 
         Cleans up the local waiter (sync future / async result), marks the
-        task record ``cancelled``, and notifies the child so a still-queued
-        task is skipped.  A task already running on the child is **not**
-        preempted — its late result is simply discarded by
-        :meth:`_read_stdout` (the id is in :attr:`_cancelled`).
+        task record ``cancelled``, and notifies the child (``worker/cancel``),
+        which drops a still-queued task or stops the running agent loop at the
+        next safe point — the same Esc mechanism as the main agent.  Any late
+        result is discarded by :meth:`_read_stdout` (the id is in
+        :attr:`_cancelled`).
         """
         rec = self._task_records.get(task_id)
         if rec is None:
@@ -325,69 +326,107 @@ class SubagentProcess:
             while self._running:
                 line = await reader.readline()
                 if not line: break
-                try: msg = json.loads(line.decode("utf-8", errors="replace"))
-                except json.JSONDecodeError: continue
-                rpc_id = msg.get("id")
-                # Late response for a cancelled task — discard it (the local
-                # waiter was already cleaned up by cancel_task).
-                if rpc_id and rpc_id in self._cancelled:
-                    self._cancelled.discard(rpc_id)
-                    logger.debug(
-                        "subagent_cancelled_result_discarded task=%s", rpc_id,
-                    )
+                try:
+                    msg = json.loads(line.decode("utf-8", errors="replace"))
+                except json.JSONDecodeError:
                     continue
-                if rpc_id and rpc_id in self._pending:
-                    # Sync waiter — resolve the pending future
-                    f = self._pending.pop(rpc_id, None)
-                    if self._inflight > 0: self._inflight -= 1
-                    if not f or f.done(): continue
-                    if "error" in msg:
-                        err = msg["error"].get("message", "Unknown")
-                        f.set_exception(RuntimeError(err))
-                        self._record_update(rpc_id, "failed", f"Error: {err}")
-                    else:
-                        result_text = str(msg.get("result", ""))
-                        f.set_result(result_text)
-                        self._record_update(rpc_id, "completed", result_text)
-                elif rpc_id:
-                    # No synchronous waiter — store for async retrieval
-                    if self._inflight > 0: self._inflight -= 1
-                    if "error" in msg:
-                        err = msg["error"].get("message", "Unknown")
-                        self._async_results[rpc_id] = f"Error: {err}"
-                        self._record_update(rpc_id, "failed", f"Error: {err}")
-                    else:
-                        result_text = str(msg.get("result", ""))
-                        self._async_results[rpc_id] = result_text
-                        self._record_update(rpc_id, "completed", result_text)
-                    # Notify the manager so it can auto-push the result to the user.
-                    self._notify_manager_task_done(rpc_id)
-                elif rpc_id is None:
-                    # JSON-RPC notification or ready signal (no id)
-                    if "result" in msg and msg["result"].get("ready"):
-                        self._ready.set()
-                    elif "method" in msg:
-                        method = msg["method"]
-                        params = msg.get("params", {})
-                        task_id = params.get("task_id", "")
-                        if method == "worker/complete":
-                            # The result was already handled by the JSON-RPC
-                            # response path above (sync waiter resolved; async
-                            # result stored + manager notified).  The
-                            # notification only carries a task_id — no result —
-                            # so there is nothing further to record.
-                            logger.debug(
-                                "subagent_complete name=%s task=%s",
-                                self._name, task_id,
-                            )
-                        elif method == "worker/progress":
-                            logger.debug(
-                                "subagent_progress name=%s task=%s pct=%s",
-                                self._name, task_id,
-                                params.get("pct", "?"),
-                            )
+                try:
+                    self._dispatch_message(msg)
+                except Exception:
+                    # A malformed/unhandled message must not kill the reader —
+                    # that would strand the _pending sync futures until
+                    # send_task's own timeout (REVIEW C4).  Log and move on.
+                    logger.warning(
+                        "subagent_msg_error name=%s line=%.200s",
+                        self._name, line, exc_info=True,
+                    )
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            logger.debug("stdout_read_error name=%s", self._name, exc_info=True)
+            logger.warning(
+                "subagent_stdout_read_error name=%s", self._name, exc_info=True,
+            )
+        finally:
+            # The reader is done (stop / EOF / error) — resolve any leftover
+            # sync waiters so send_task fails fast instead of hanging until
+            # its own timeout.
+            for rpc_id, f in list(self._pending.items()):
+                if not f.done():
+                    f.set_exception(RuntimeError(
+                        f"Subagent '{self._name}' closed before task "
+                        f"'{rpc_id}' was resolved"
+                    ))
+            self._pending.clear()
+
+    def _dispatch_message(self, msg: dict) -> None:
+        """Handle one decoded JSON-RPC line from the worker's stdout.
+
+        Resolves sync waiters, stores async results, honours the ready
+        signal, and drops late responses for cancelled tasks.  Raises on a
+        structurally-bad message — :meth:`_read_stdout` catches it and keeps
+        the reader alive.
+        """
+        rpc_id = msg.get("id")
+        # Late response for a cancelled task — discard it (the local waiter
+        # was already cleaned up by cancel_task).
+        if rpc_id and rpc_id in self._cancelled:
+            self._cancelled.discard(rpc_id)
+            logger.debug(
+                "subagent_cancelled_result_discarded task=%s", rpc_id,
+            )
+            return
+        if rpc_id and rpc_id in self._pending:
+            # Sync waiter — resolve the pending future
+            f = self._pending.pop(rpc_id, None)
+            if self._inflight > 0: self._inflight -= 1
+            if not f or f.done(): return
+            if "error" in msg:
+                err = msg["error"].get("message", "Unknown")
+                f.set_exception(RuntimeError(err))
+                self._record_update(rpc_id, "failed", f"Error: {err}")
+            else:
+                result_text = str(msg.get("result", ""))
+                f.set_result(result_text)
+                self._record_update(rpc_id, "completed", result_text)
+        elif rpc_id:
+            # No synchronous waiter — store for async retrieval
+            if self._inflight > 0: self._inflight -= 1
+            if "error" in msg:
+                err = msg["error"].get("message", "Unknown")
+                self._async_results[rpc_id] = f"Error: {err}"
+                self._record_update(rpc_id, "failed", f"Error: {err}")
+            else:
+                result_text = str(msg.get("result", ""))
+                self._async_results[rpc_id] = result_text
+                self._record_update(rpc_id, "completed", result_text)
+            # Notify the manager so it can auto-push the result to the user.
+            self._notify_manager_task_done(rpc_id)
+        elif rpc_id is None:
+            # JSON-RPC notification or ready signal (no id)
+            if isinstance(msg.get("result"), dict) and msg["result"].get("ready"):
+                self._ready.set()
+            elif "method" in msg:
+                method = msg["method"]
+                params = (
+                    msg.get("params", {})
+                    if isinstance(msg.get("params"), dict) else {}
+                )
+                task_id = params.get("task_id", "")
+                if method == "worker/complete":
+                    # The result was already handled by the JSON-RPC response
+                    # path above (sync waiter resolved; async result stored +
+                    # manager notified).  The notification only carries a
+                    # task_id — no result — so nothing further to record.
+                    logger.debug(
+                        "subagent_complete name=%s task=%s",
+                        self._name, task_id,
+                    )
+                elif method == "worker/progress":
+                    logger.debug(
+                        "subagent_progress name=%s task=%s pct=%s",
+                        self._name, task_id,
+                        params.get("pct", "?"),
+                    )
 
     async def _read_stderr(self) -> None:
         from slife.logfmt import drain_stderr

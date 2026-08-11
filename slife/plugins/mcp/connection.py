@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 import re as _re
 _ENV_REF = _re.compile(r"\$\{(\w+)\}")
 
+# ── Health check / reconnect ────────────────────────────────────────────
+_HEALTH_CHECK_INTERVAL = 30.0      # seconds between health pings
+_HEALTH_PING_TIMEOUT = 5.0         # a ping must answer within this window
+_RECONNECT_BACKOFF_INITIAL = 5.0   # first reconnect retry delay (s)
+_RECONNECT_BACKOFF_MAX = 60.0      # cap on exponential backoff (s)
+_RECONNECT_BACKOFF_MULTIPLIER = 2.0
+
 
 def _is_env_ref(value: str) -> bool:
     """True if value is a pure ``${VAR}`` reference (no surrounding text)."""
@@ -105,6 +112,9 @@ class MCPServerConnection:
         self._sse_message_url: str = ""
         self._sse_queue: "asyncio.Queue[dict] | None" = None
         self._sse_task: "asyncio.Task | None" = None
+        # Background health monitor (ping + reconnect) — started on first
+        # successful connect, cancelled by disconnect()/remove_server().
+        self._health_task: "asyncio.Task | None" = None
 
     @property
     def status(self) -> ServerStatus:
@@ -214,6 +224,11 @@ class MCPServerConnection:
                 self.config.name, len(self._tools_cache), elapsed,
             )
 
+            # Start the health monitor once per connection object — a running
+            # monitor is reused across reconnects, so never spawn a second.
+            if self._health_task is None or self._health_task.done():
+                self._health_task = asyncio.create_task(self._health_monitor())
+
             # Run post-connect setup (best-effort, never blocks on failure)
             await self._post_connect_setup()
 
@@ -226,6 +241,15 @@ class MCPServerConnection:
                 self._error = str(e)
             logger.exception("mcp_connect_failed server=%s err=%s", self.config.name, e)
             await self._cleanup_resources()
+            # Start the health monitor even on a failed initial connect so a
+            # server that was down at startup is retried in the background
+            # (the monitor's DISCONNECTED/FAILED branch handles it).  When
+            # connect() was called by the monitor itself, this is a no-op —
+            # the running monitor is still current.
+            if self.config.enabled and (
+                self._health_task is None or self._health_task.done()
+            ):
+                self._health_task = asyncio.create_task(self._health_monitor())
 
     async def _connect_stdio(self) -> None:
         """Spawn server as subprocess and set up pipe I/O."""
@@ -675,8 +699,19 @@ class MCPServerConnection:
 
     async def disconnect(self) -> None:
         logger.info("mcp_disconnect server=%s", self.config.name)
-        await self._cleanup_resources()
         self._status = ServerStatus.DISCONNECTED
+        # Stop the health monitor first — it must not keep pinging a
+        # deliberately-disconnected server.  The monitor is the only task
+        # that reconnects, so cancelling it here (and only here) prevents
+        # self-cancellation from ``_cleanup_resources``.
+        if self._health_task is not None and not self._health_task.done():
+            self._health_task.cancel()
+            try:
+                await self._health_task
+            except asyncio.CancelledError:
+                pass
+            self._health_task = None
+        await self._cleanup_resources()
         self._tools_cache = []
         self._session_id = None
         logger.info("mcp_disconnected server=%s", self.config.name)
@@ -732,11 +767,97 @@ class MCPServerConnection:
     def list_tools(self) -> list[dict]:
         return list(self._tools_cache)
 
+    async def ping(self, timeout: float = _HEALTH_PING_TIMEOUT) -> bool:
+        """Return True if the server answers a JSON-RPC ping.
+
+        Used by the background health monitor.  A died or hung server (stdio
+        process that stopped answering, or an HTTP/SSE endpoint that times
+        out) makes this return False — the monitor then marks it DISCONNECTED
+        and reconnects.
+        """
+        if self._status != ServerStatus.CONNECTED:
+            return False
+        try:
+            await asyncio.wait_for(self._request("ping", {}), timeout=timeout)
+            return True
+        except Exception:
+            return False
+
+    async def _health_monitor(self) -> None:
+        """Background health check: ping the server and reconnect when dead.
+
+        Covers both failure modes:
+          - CONNECTED but unresponsive (process died or hung): mark
+            DISCONNECTED, tear down the transport, and reconnect.
+          - DISCONNECTED/FAILED (e.g. a prior connect attempt failed): keep
+            retrying with exponential backoff while the server is enabled.
+
+        Runs for the connection object's lifetime — cancelled by
+        ``disconnect()``/``remove_server()``.  Reconnect attempts are paced by
+        backoff (5s → … → 60s) so a server that is down for a while isn't
+        hammered.
+        """
+        backoff = _RECONNECT_BACKOFF_INITIAL
+        try:
+            while True:
+                await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
+                if not self.config.enabled:
+                    return
+                if self._status == ServerStatus.CONNECTING:
+                    continue  # a manual connect is already in progress
+                if self._status == ServerStatus.CONNECTED:
+                    if self._lock.locked():
+                        continue  # a request is in flight — don't interrupt it
+                    if await self.ping():
+                        backoff = _RECONNECT_BACKOFF_INITIAL
+                        continue
+                    # Died or hung — mark disconnected and fall through to
+                    # the reconnect below.
+                    logger.warning(
+                        "mcp_health_check_failed server=%s action=reconnect",
+                        self.config.name,
+                    )
+                    self._status = ServerStatus.DISCONNECTED
+                    self._error = (
+                        "Health check failed — server not responding to ping."
+                    )
+                    await self._cleanup_resources()
+                # Fall through: DISCONNECTED or FAILED → (re)connect.
+                try:
+                    await self.connect()
+                    backoff = _RECONNECT_BACKOFF_INITIAL
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    self._status = ServerStatus.DISCONNECTED
+                    self._error = f"Reconnect failed: {e}"
+                    logger.warning(
+                        "mcp_health_reconnect_failed server=%s backoff=%.1fs err=%s",
+                        self.config.name, backoff, e,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(
+                        backoff * _RECONNECT_BACKOFF_MULTIPLIER,
+                        _RECONNECT_BACKOFF_MAX,
+                    )
+        except asyncio.CancelledError:
+            pass
+
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         if self._status != ServerStatus.CONNECTED:
-            raise ValueError(
-                f"Server '{self.config.name}' is not connected (status: {self._status.value})"
-            )
+            # The health monitor marks a dead/hung server DISCONNECTED.  If
+            # the server is enabled, try a lazy reconnect first — it may have
+            # recovered while the monitor's reconnect backoff was counting
+            # down.
+            if self.config.enabled and self._status == ServerStatus.DISCONNECTED:
+                try:
+                    await self.connect()
+                except Exception:
+                    pass
+            if self._status != ServerStatus.CONNECTED:
+                raise ValueError(
+                    f"Server '{self.config.name}' is not connected (status: {self._status.value})"
+                )
 
         logger.debug("mcp_tool_call server=%s tool=%s", self.config.name, tool_name)
 

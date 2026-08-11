@@ -5,7 +5,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, Mock, Mock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch, PropertyMock
 
 import pytest
 
@@ -173,6 +173,93 @@ class TestSubagentProcessCancelTask:
         assert fut.done()
         with pytest.raises(RuntimeError):
             fut.result()
+
+
+# ── _dispatch_message / _read_stdout (REVIEW C4) ─────────────────────────
+
+
+class TestSubagentProcessReadStdout:
+    """_dispatch_message routing + _read_stdout resilience.
+
+    A malformed message must not kill the reader (it would strand the
+    _pending sync futures until send_task's timeout), and when the reader
+    ends, leftover waiters must be resolved so send_task fails fast.
+    """
+
+    def _proc(self):
+        return SubagentProcess("test", _mock_config())
+
+    @pytest.mark.asyncio
+    async def test_dispatch_resolves_sync_waiter(self):
+        proc = self._proc()
+        proc._record_send("rpc-1", "do X", mode="sync")
+        fut = asyncio.get_event_loop().create_future()
+        proc._pending["rpc-1"] = fut
+        proc._inflight = 1
+
+        proc._dispatch_message({"id": "rpc-1", "result": "the answer"})
+
+        assert fut.done()
+        assert fut.result() == "the answer"
+        assert proc._inflight == 0
+        assert proc._task_records["rpc-1"]["status"] == "completed"
+        assert "rpc-1" not in proc._pending
+
+    @pytest.mark.asyncio
+    async def test_dispatch_stores_async_result(self):
+        proc = self._proc()
+        proc._record_send("rpc-1", "do X", mode="async")
+        proc._inflight = 1
+
+        proc._dispatch_message({"id": "rpc-1", "result": "done"})
+
+        assert proc._async_results["rpc-1"] == "done"
+        assert proc._task_records["rpc-1"]["status"] == "completed"
+        assert proc._inflight == 0
+
+    @pytest.mark.asyncio
+    async def test_dispatch_ignores_late_result_for_cancelled_task(self):
+        proc = self._proc()
+        proc._record_send("rpc-1", "do X", mode="async")
+        proc._cancelled.add("rpc-1")
+
+        proc._dispatch_message({"id": "rpc-1", "result": "late"})
+
+        assert "rpc-1" not in proc._async_results
+        assert "rpc-1" not in proc._pending
+        assert proc._cancelled == set()  # late result consumed the cancel marker
+
+    @pytest.mark.asyncio
+    async def test_dispatch_tolerates_malformed_notification(self):
+        """A non-dict result/params must not raise (REVIEW C4)."""
+        proc = self._proc()
+        proc._dispatch_message({
+            "jsonrpc": "2.0", "result": "ready",
+            "params": "x", "method": "worker/complete",
+        })
+        assert proc._ready.is_set() is False  # string result is not the ready signal
+
+    @pytest.mark.asyncio
+    async def test_read_stdout_resolves_leftover_pending_on_eof(self):
+        proc = self._proc()
+        proc._running = True
+        proc._process = MagicMock()
+        proc._process.stdout = MagicMock()
+
+        async def _eof():
+            return b""
+
+        proc._process.stdout.readline = _eof
+
+        fut = asyncio.get_event_loop().create_future()
+        proc._pending["rpc-1"] = fut
+
+        await proc._read_stdout()
+
+        assert fut.done()
+        with pytest.raises(RuntimeError, match="closed before"):
+            fut.result()
+        assert proc._pending == {}
 
 
 # ── SubagentManager ─────────────────────────────────────────────────────────

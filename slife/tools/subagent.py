@@ -378,10 +378,9 @@ class SubagentCancelTaskTool(Tool):
     name = "subagent_cancel_task"
     category = "Subagent"
     description = (
-        "Cancel a pending/queued subagent task (task_id from "
-        "subagent_send_task_async). A task already running on the worker is "
-        "not preempted, but its result is discarded; a still-queued task is "
-        "skipped."
+        "Cancel a subagent task (task_id from subagent_send_task_async). "
+        "Preempts a running task at the next safe point (like Esc) and "
+        "drops a still-queued task; the worker moves on to the next task."
     )
     parameters: ClassVar[dict] = make_params(
         agent_id={"type": "string", "description": "agent_id of the local subagent worker."},

@@ -4,9 +4,9 @@
 
 **Method:** parallel subsystem audits, every finding re-verified against source, then high-value fixes applied and re-tested; README/DESIGN/README.zh-CN rewritten to match the current code.
 
-**Current state:** full suite **1640 passed** (re-confirmed after this pass's fixes). This pass fixed: memdb Chinese→English, `_sys_trim` targeting the wrong conversation, plugin-tool double-prefix naming, `rest_api_set_enabled(false)` ignored at startup, `cli_set_enabled` not persisting, the harness `__` filter inconsistency, memfiles health pointer not refreshed on watchdog restart, the worst unredacted log call sites, **C1** (A2A `transport:"http"` no longer crashes startup — non-`"mqtt"` transports disable A2A with a warning; the dead `HttpStreamableTransport` stub was removed), and **C9** (streamable-http `_request_http` now reads SSE-streamed responses).
+**Current state:** full suite **1742 passed** (re-confirmed after this pass's fixes). This pass fixed: memdb Chinese→English, `_sys_trim` targeting the wrong conversation, plugin-tool double-prefix naming, `rest_api_set_enabled(false)` ignored at startup, `cli_set_enabled` not persisting, the harness `__` filter inconsistency, memfiles health pointer not refreshed on watchdog restart, the worst unredacted log call sites, **C1** (A2A `transport:"http"` no longer crashes startup — non-`"mqtt"` transports disable A2A with a warning; the dead `HttpStreamableTransport` stub was removed), **C9** (streamable-http `_request_http` now reads SSE-streamed responses), **C2** (external MCP servers now get a background health-check — a died or hung server is marked `DISCONNECTED` and reconnected with backoff instead of staying `CONNECTED`), **W1/W2** (Anthropic and OpenAI-Responses backends now emit their own wire formats — Anthropic coalesces a multi-tool-result batch into one `user` message so messages strictly alternate; Responses emits `function_call`/`function_call_output` items instead of the Chat-Completions `role:"tool"`/`tool_calls` shape), and **C4/C5** (subagent `_read_stdout` no longer strands pending futures on a malformed message; A2A `CancelTask` and subagent `worker/cancel` now truly preempt the running agent loop via the same Esc mechanism — and the mesh `a2a_cancel_task` never mislabels a completed result as cancelled).
 
-**Verdict:** the architecture remains coherent — one loop, one registry, one serial inbox, uniform tool surface. The conformance audit found the surface rules (language policy, tool naming, harness tiers, log format) were documented but not uniformly enforced; the docs had drifted further than the code. The code changes above restore the documented contracts; what remains is hardening (a couple of HIGH wire-format suspicions, MCP health/reconnect, config-write serialization, dead code) and test/CI coverage.
+**Verdict:** the architecture remains coherent — one loop, one registry, one serial inbox, uniform tool surface. The conformance audit found the surface rules (language policy, tool naming, harness tiers, log format) were documented but not uniformly enforced; the docs had drifted further than the code. The code changes above restore the documented contracts; what remains is hardening (config-write serialization, dead code) and test/CI coverage.
 
 ---
 
@@ -20,11 +20,6 @@ No new open security findings beyond the logging hygiene items in §2.1. Prior: 
 
 | # | Finding | Status | Where |
 |----|---------|--------|-------|
-| C2 | External MCP servers have **no health-check/reconnect** — `MCPClient.ping()` defined, never scheduled; a died or hung stdio server stays `CONNECTED` | OPEN | `mcp/client.py:255`, `plugins/mcp/connection.py:700` |
-| W1 (HIGH, unverified) | **Anthropic backend** may emit consecutive `user` messages for a multi-tool-result batch (each `tool` msg → its own `user` block); strict-alternation endpoints (Bedrock / Bailian/Qwen) 400 | OPEN | `agent/llm_backends/anthropic.py:107-115` |
-| W2 (HIGH, unverified) | **OpenAI-Responses backend** converts history to a Chat-Completions shape (`role:"tool"`, `tool_calls` on assistant) the Responses API likely rejects (wants `function_call` / `function_call_output` items) — would break multi-turn tool conversations | OPEN | `agent/llm_backends/openai_responses.py:72-91` |
-| C4 | Subagent `_stop_process` leaves `_push_futures` dangling; `_read_stdout` swallows real errors. (Push path is currently dead code — `set_push_notification` has no callers — so the dangle is latent) | OPEN | `subagent/process.py:130-136,295-296` |
-| C5 | `a2a_cancel_task` can't cancel an in-flight subagent task; a completed async result is mislabelled "cancelled" | OPEN | `tools/a2a.py:498-504` |
 | C6 | WeChat dedup key (`from_user_id + context_token`) can **drop real messages** (per-conversation token; non-text items burn the key) | OPEN | `plugins/wechat/server.py:110-134` |
 | C7 | Approval dialog "Deny (Esc)" intercepted by the App's priority `escape → cancel` binding — modal's deny never fires, loop cancels, modal sticks | OPEN | `ui/app.py:186`, `ui/approval_dialog.py:129-136` |
 | C8 | MCP dispatch keyed on raw server name; `mcp`/`memdb`/`wechat`/`memfiles` not reserved — a colliding external server name misroutes | OPEN | `mcp/tool_adapter.py:224-236` |
@@ -49,6 +44,11 @@ No new open security findings beyond the logging hygiene items in §2.1. Prior: 
 | **F-logs** | Hot-path logs unredacted: tool-call args (`tool_timeout args=`), raw user input (`req_start`, `conv_user`), MCP wrapper stderr relay | `sanitize_secrets` in `_truncate_args`, `req_start`, and the `[wrapper]` relay (`agent/loop.py`, `mcp/process.py`) |
 | **C1** | A2A `transport:"http"` crashed startup (`ValueError` in `A2AConfig.from_dict`); `HttpStreamableTransport` was a dead stub | Non-`"mqtt"` transport values disable A2A with a warning (`a2a_transport_unsupported`) at config load + in `start_a2a`; removed the never-imported `a2a/http.py` stub; tests + README/DESIGN updated |
 | **C9** | Streamable-http `_request_http` only parsed single-JSON responses — a Streamable HTTP server streaming its POST response as `text/event-stream` (allowed by the MCP spec) broke `resp.json()` | Detect the `text/event-stream` content-type and read the first matching JSON-RPC message via new `_read_streamable_sse_response` (owns/closes the response, REVIEW H1 contract); 3 tests added (`plugins/mcp/connection.py`) |
+| **C2** | External MCP servers had **no health-check/reconnect** — `MCPClient.ping()` was defined but never scheduled, and `MCPServerConnection` stayed `CONNECTED` after the stdio process died or an HTTP/SSE endpoint hung until a tool happened to be called | `MCPServerConnection.ping()` + a per-connection `_health_monitor` task pings every 30s, marks dead/hung servers `DISCONNECTED`, tears down the transport, and reconnects with 5s→60s exponential backoff; the monitor is cancelled by `disconnect()`/`remove_server()`, and `call_tool` lazy-reconnects a DISCONNECTED enabled server; 11 tests added (`plugins/mcp/connection.py`) |
+| **W1** | **Anthropic backend** emitted consecutive `user` messages for a multi-tool-result batch (each internal `tool` msg → its own `user` block); strict-alternation endpoints (Bedrock / Bailian/Qwen) 400 | `_oa_msgs_to_anthropic` coalesces all tool results of one batch into a single `user` message and merges a user text message directly after tool results into that same block, so `messages` strictly alternate `user`/`assistant`; 3 tests added (`agent/llm_backends/anthropic.py`) |
+| **W2** | **OpenAI-Responses backend** converted history to a Chat-Completions shape (`role:"tool"`, `tool_calls` on assistant) the Responses API rejects (wants `function_call` / `function_call_output` items) — would break multi-turn tool conversations | `_oa_msgs_to_responses` emits the Responses API's native items: standalone `{"type":"function_call"}` per tool call and `{"type":"function_call_output"}` per tool result, empty assistant text dropped; 2 tests added (`agent/llm_backends/openai_responses.py`) |
+| **C4** | Subagent `_read_stdout` swallowed real errors and a malformed message killed the reader, stranding `_pending` sync futures until `send_task`'s timeout. (The `_push_futures` dangle was resolved earlier — the dead push machinery was deleted in the subagent-as-worker refactor; `_stop_process` already resolves `_pending` futures) | Extracted `_dispatch_message`, added non-dict `result`/`params` guards, per-message try/except (warning + keep reading), and a `finally` that resolves leftover `_pending` futures when the reader exits so `send_task` fails fast; 5 tests added (`subagent/process.py`) |
+| **C5** | A2A `CancelTask` and subagent `worker/cancel` did **not** truly cancel: the receiver only acknowledged/logged, so a running agent or subagent kept going to completion. `a2a_cancel_task` also mislabelled a completed async result as "cancelled" (discarding it) | Both paths now **preempt the running agent loop — the same Esc mechanism** (`agent_loop.cancel()` via `Inbox.cancel_correlation`): A2A — the plugin drops a still-queued task (replying `Task.cancelled`), queues a cancel for the harness, which routes it to `inbox.cancel_correlation(corr_id)`; the cancelled run's reply carries the flag so the sender records the task cancelled. Subagent — the child now runs its tasks through the **same unified `Inbox`** (headless + no `save_turn` only), so `worker/cancel` → `inbox.cancel_correlation(rpc_id)` preempts the running loop. `A2AClient.cancel_task` returns `cancelled`/`completed`/`failed`/`not_found` and never consumes a completed result; 15 tests added (`a2a/{client,wire}.py`, `plugins/a2a/server.py`, `agent/inbox.py`, `subagent/headless.py`) |
 
 ### 1.4 Prior fixed (carried forward)
 
@@ -68,14 +68,10 @@ Pass-2: **H1** SSE transport · **H2** skill zip-slip/traversal · **H4** Respon
 
 ### 2.2 Correctness
 
-- **W1 / W2** — verify the Anthropic consecutive-user and OpenAI-Responses wire shapes against real endpoints; fix the conversions (merge multi-`tool` blocks into one `user` message; emit `function_call_output` items).
-- **C2** — schedule `MCPClient.ping()` as a background health-check; mark hung/dead servers `DISCONNECTED` and trigger lazy reconnect.
-- **C5** — make `a2a_cancel_task` send a real cancel RPC to the subagent (or at least not mislabel a completed result "cancelled").
 - **C6** — dedup on `from_user_id + context_token + text`, or drop `_seen_keys` (the cursor already prevents server-side dups); don't burn the key on non-text items.
 - **C7** — give the approval modal a real deny path that beats the App's priority `escape → cancel`.
 - **M2/M3/M4** — watchdog restart must not block on a live child; plugin lifespan should shut down pools/clients; MCP stdio teardown should kill the tree (`_kill_process_tree`).
 - **M5/M6/M7** — memdb: add `ESCAPE '\'`; honor `since`/`until` in fts5 count; clamp `limit`; bound the reindex loop.
-- **C4** — cancel/resolve `_push_futures` in `_stop_process` (or delete the dead push machinery — see §3.5) and surface `_read_stdout` failures.
 - **C8** — reserve built-in server names in `mcp_set` / config load.
 - **M1 remainder** — `install_python_package` timeout/cancel orphans the `uv` child (`tools/exec.py:237-242`) — add the same tree-kill as `execute_shell`.
 
@@ -91,7 +87,7 @@ Pass-2: **H1** SSE transport · **H2** skill zip-slip/traversal · **H4** Respon
 
 ### 2.4 Tests & CI (see §5)
 
-Real subagent-process tests, end-to-end backend wire tests (W1/W2 would be invisible again), CI that exercises the built wheel + install scripts, coverage gate.
+Real subagent-process tests, end-to-end backend wire tests (the W1/W2 conversion shapes are unit-tested now, but never exercised against a real endpoint), CI that exercises the built wheel + install scripts, coverage gate.
 
 ---
 
@@ -115,7 +111,7 @@ Two tiers by prefix: `_` = LLM-visible-but-reserved (`_sys_note`/`_sys_trim`, sc
 
 ### 3.5 Over-engineering
 
-- **Dead mechanisms:** `requires_a2a` (`base.py:169`), subagent `set_push_notification`/`_push_futures`/`wait_for_task` (no callers, `subagent/process.py:210-225,452-506`), `update_context_footer` (called only with `""`, `conversation.py:44-57`).
+- **Dead mechanisms:** `requires_a2a` (`base.py:169`), `update_context_footer` (called only with `""`, `conversation.py:44-57`). (The subagent push machinery — `set_push_notification`/`_push_futures`/`wait_for_task` — was deleted in the subagent-as-worker refactor.)
 - **Redundancy:** three plugin registration paths (now one filter rule), two stderr relays (`logfmt.drain_stderr` + the hand-rolled `[wrapper]`), `ok_json`/`error_json` back-compat re-export in `server_utils.py:352`, `_classify`/`_PLUGIN_LABELS` fallback in `meta.py` that almost never runs.
 - **Good:** `_ensure_turn_consistent` is exactly the right kind of single-point invariant; the watchdog/backoff/unregistration machinery is genuine; `run_daemon` convention is clean.
 
@@ -123,11 +119,11 @@ Two tiers by prefix: `_` = LLM-visible-but-reserved (`_sys_note`/`_sys_trim`, sc
 
 ## 4. Tests & CI
 
-**Current:** **1636 pass in ~25s** (regression tests added for H1–H8, M1 in prior passes; this pass only test-assertion updates for the memdb translation).
+**Current:** **1742 pass in ~23s** (regression tests added for H1–H8, M1 in prior passes; this pass added 11 health-check/reconnect tests for C2, 5 backend wire-format tests for W1/W2, 5 subagent `_read_stdout`/`_dispatch_message` tests for C4, and for C5 4 mesh `cancel_task` tests + 15 true-cancellation tests across inbox/a2a/subagent, plus test-assertion updates for the memdb translation).
 
 **Gaps:**
-- **Highest-risk path untested:** `tests/test_subagent_process.py` is entirely mock-based — the JSON-RPC ready handshake, response routing, shutdown ordering, and `send_task` future resolution are never exercised against a real subprocess.
-- **Backends' wire format untested end-to-end** — W1/W2 (Anthropic consecutive-user, Responses `role:"tool"`) are invisible because tests mock streams with well-formed shapes. H3 is covered by `tests/test_tools_harness.py`; H4 by streaming tests.
+- **Highest-risk path untested:** the subagent child now runs its tasks through the unified inbox (`subagent/headless.py`), but no test spawns a real subprocess — the JSON-RPC ready handshake, `worker/cancel` preemption of a running loop, response routing, and shutdown ordering are never exercised end-to-end (`test_subagent_process.py` / `test_inbox.py` are mock-based).
+- **Backends' wire format not exercised against a real endpoint** — the W1/W2 conversion fixes are unit-tested (`test_llm_backends_anthropic.py`, `test_llm_backends_openai.py`), but no test calls a live Anthropic/Responses/Bedrock endpoint to confirm the shapes are accepted. H3 is covered by `tests/test_tools_harness.py`; H4 by streaming tests.
 - `tests/test_tools_shell.py:143` — `assert "�" in result or result` is tautological.
 - `ci.yml:34-38` builds a wheel but `uv run pytest` re-syncs from pyproject → tests run against source, the **wheel is never exercised**; `pytest-cov`/`pytest-xdist` installed but unused; integration/slow/e2e markers run on every PR with no deselect and no coverage gate.
 - **No CI job exercises the install scripts** (no shellcheck / PSScriptAnalyzer / smoke run); `publish.yml` installs an unpinned `twine`.

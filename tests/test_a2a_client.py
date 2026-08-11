@@ -92,6 +92,124 @@ class TestSendTaskWire:
         assert env["params"]["message"]["content"][0]["text"] == "do X"
 
 
+class TestCancelTask:
+    """REVIEW C5 — cancel_task returns a status string and never mislabels
+    a completed result as cancelled or discards it."""
+
+    def _client(self):
+        cfg = A2AConfig(enabled=True, agent_id="jack")
+        return A2AClient(cfg, transport=_RecordingAdapter())
+
+    def setup_method(self):
+        from slife.a2a.task_store import clear_store
+        clear_store()
+
+    @pytest.mark.asyncio
+    async def test_cancel_completed_async_result_not_consumed(self):
+        from slife.a2a.task_store import get_store
+
+        client = self._client()
+        get_store().record_send("cid-1", "peer-1", "do X", "mqtt")
+        get_store().record_result("cid-1", "the answer")
+        client._completed_tasks["cid-1"] = "the answer"
+
+        status = await client.cancel_task(AgentId("peer-1"), "cid-1")
+
+        assert status == "completed"
+        # Result stays retrievable — not consumed, not marked cancelled.
+        assert client.get_task_result("cid-1") == "the answer"
+        assert get_store().get("cid-1").status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_cancel_pending_sync_waiter(self):
+        from slife.a2a.task_store import get_store
+
+        client = self._client()
+        get_store().record_send("cid-1", "peer-1", "do X", "mqtt")
+        fut = asyncio.get_event_loop().create_future()
+        client._pending_tasks["cid-1"] = fut
+
+        status = await client.cancel_task(AgentId("peer-1"), "cid-1")
+
+        assert status == "cancelled"
+        assert fut.cancelled()
+        assert get_store().get("cid-1").status == "cancelled"
+        # The official CancelTask request went to the target's inbox.
+        topic, payload = client._adapter.published[0]
+        assert topic == "Slife/peer-1/tasks/inbox"
+        assert json.loads(payload)["method"] == "CancelTask"
+
+    @pytest.mark.asyncio
+    async def test_cancel_failed_task_is_terminal(self):
+        from slife.a2a.task_store import get_store
+
+        client = self._client()
+        get_store().record_send("cid-1", "peer-1", "do X", "mqtt")
+        get_store().record_error("cid-1", "timeout")
+
+        status = await client.cancel_task(AgentId("peer-1"), "cid-1")
+
+        assert status == "failed"
+        assert get_store().get("cid-1").status == "failed"
+
+    @pytest.mark.asyncio
+    async def test_cancel_unknown_task_still_dispatches_notice(self):
+        client = self._client()
+
+        status = await client.cancel_task(AgentId("peer-1"), "cid-unknown")
+
+        assert status == "not_found"
+        assert len(client._adapter.published) == 1  # best-effort notice sent
+
+
+class TestIncomingCancel:
+    """REVIEW C5 — inbound CancelTask routing and cancelled-result recording."""
+
+    def _client(self):
+        cfg = A2AConfig(enabled=True, agent_id="jack")
+        return A2AClient(cfg, transport=_RecordingAdapter())
+
+    def setup_method(self):
+        from slife.a2a.task_store import clear_store
+        clear_store()
+
+    @pytest.mark.asyncio
+    async def test_canceltask_invokes_callback(self):
+        from slife.a2a import wire
+
+        client = self._client()
+        got: list[str] = []
+
+        async def _cb(corr_id: str):
+            got.append(corr_id)
+
+        client.on_incoming_cancel(_cb)
+
+        payload = json.dumps(wire.cancel_task_envelope("cid-1", "peer-1"))
+        await client._handle_incoming_task(
+            TransportMessage(topic="Slife/jack/tasks/inbox", payload=payload),
+        )
+
+        assert got == ["cid-1"]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_result_recorded_as_cancelled(self):
+        from slife.a2a import wire
+        from slife.a2a.task_store import get_store
+
+        client = self._client()
+        get_store().record_send("cid-1", "peer-1", "do X", "mqtt")
+
+        task = wire.Task.cancelled("cid-1", "stopped by peer")
+        payload = json.dumps(wire.task_result_envelope("cid-1", task))
+        await client._handle_result(
+            TransportMessage(topic="Slife/jack/tasks/result", payload=payload),
+        )
+
+        assert get_store().get("cid-1").status == "cancelled"
+        assert client.get_task_result("cid-1") == "stopped by peer"
+
+
 class _EchoThenBlockAdapter:
     """Adapter that yields our own presence echo once, then blocks."""
 

@@ -32,11 +32,6 @@ logger = logging.getLogger("slife_subagent")
 #: Set by ``run_headless`` — log path so callers can find it.
 _log_path: Path | None = None
 
-#: task_ids the parent has cancelled — a still-queued ``worker/send`` whose id
-#: is here is skipped (never started).  A task already running is not
-#: preempted; its result is discarded by the parent.
-_cancelled: set[str] = set()
-
 #: Cloned parent conversation (received via the stdin "context" message),
 #: or None for a pure-context subagent.
 _inherited_context: list[dict] | None = None
@@ -63,43 +58,6 @@ def _notify(method: str, params: dict | None = None) -> None:
         msg["params"] = params
     sys.stdout.buffer.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
     sys.stdout.buffer.flush()
-
-
-async def _process(task_text: str, rpc_id, service) -> None:
-    from slife.agent.conversation import Conversation
-    from slife.agent.system_prompt import build as build_system_prompt
-    from slife.agent.loop import MaxIterationsExceeded
-
-    logger.info("task_start id=%s task=%.100s", rpc_id, task_text)
-    system_prompt = build_system_prompt(service.config, is_subagent=True)
-    conv = (
-        Conversation.from_history(system_prompt, _inherited_context)
-        if _inherited_context
-        else Conversation(system_prompt=system_prompt)
-    )
-
-    try:
-        with elapsed("task_loop", logger, level=logging.INFO, rpc_id=rpc_id):
-            result = await service.agent_loop.run(
-                user_input=task_text, conversation=conv, handler=None,
-            )
-        _write(result=result.text, rpc_id=rpc_id)
-        _notify("worker/complete", {"task_id": str(rpc_id)})
-        logger.info(
-            "task_done id=%s tok_p=%s tok_c=%s tok_t=%s",
-            rpc_id,
-            result.usage.prompt_tokens,
-            result.usage.completion_tokens,
-            result.usage.total_tokens,
-        )
-    except MaxIterationsExceeded as e:
-        logger.warning("task_loop_exceeded id=%s err=%s", rpc_id, e)
-        _write(error={"code": -32000, "message": str(e)}, rpc_id=rpc_id)
-        _notify("worker/complete", {"task_id": str(rpc_id)})
-    except Exception as e:
-        logger.exception("task_error id=%s err=%s", rpc_id, e)
-        _write(error={"code": -32000, "message": str(e)}, rpc_id=rpc_id)
-        _notify("worker/complete", {"task_id": str(rpc_id)})
 
 
 async def run_headless() -> None:
@@ -223,6 +181,38 @@ async def run_headless() -> None:
 
     threading.Thread(target=_feed_stdin, daemon=True).start()
 
+    # ── Unified inbox (the same machinery as the main agent) ──────────
+    # The subagent is a headless agent worker: identical loop, identical
+    # Esc-equivalent cancel.  The only differences are no TUI handler and
+    # no turn persistence (REVIEW C5).  worker/send → inbox.post; the
+    # reader stays live while a task runs, so worker/cancel can preempt
+    # the running loop via inbox.cancel_correlation (→ agent_loop.cancel).
+    from slife.agent.conversation import Conversation
+    from slife.agent.inbox import ConversationStore
+    from slife.agent.system_prompt import build as build_system_prompt
+    from slife.a2a.identity import AgentId, AgentMessage
+
+    # Subagents never save turns to memory, even when sharing the main
+    # agent's memdb plugin (which would make memdb_enabled True).
+    service.inbox._on_turn_complete = None
+
+    class _WorkerConversationStore(ConversationStore):
+        """Fresh one-shot conversation per task, seeded with the cloned
+        parent context (mirrors the main agent's remote-message model)."""
+
+        def get_or_create(self, source: AgentId) -> Conversation:
+            if _inherited_context:
+                return Conversation.from_history(
+                    self._system_prompt, _inherited_context,
+                )
+            return Conversation(system_prompt=self._system_prompt)
+
+    service.inbox._conversations = _WorkerConversationStore(
+        system_prompt=build_system_prompt(service.config, is_subagent=True),
+    )
+    await service.start_inbox()
+    _source = AgentId(_name or "worker")
+
     request_count = 0
     try:
         while True:
@@ -256,11 +246,12 @@ async def run_headless() -> None:
                         type(messages).__name__,
                     )
             elif method == "worker/cancel":
-                # Parent cancelled a task — skip it if still queued.
+                # True cancellation: drop it if still queued, or preempt the
+                # running loop (same Esc mechanism as the main agent).
                 task_id = str(params.get("task_id", ""))
                 if task_id:
-                    _cancelled.add(task_id)
                     logger.info("subagent_cancel_received task=%s", task_id)
+                    service.inbox.cancel_correlation(task_id)
             elif method == "worker/send":
                 request_count += 1
                 task_text = params.get("task", "")
@@ -270,19 +261,28 @@ async def run_headless() -> None:
                         rpc_id=rpc_id,
                     )
                     continue
-                if rpc_id and str(rpc_id) in _cancelled:
-                    logger.info(
-                        "subagent_task_skipped_cancelled task=%s", rpc_id,
-                    )
-                    _cancelled.discard(str(rpc_id))
-                    continue
-                await _process(task_text, rpc_id, service)
+
+                async def _reply(
+                    reply_text: str, cancelled: bool = False, rid=rpc_id,
+                ) -> None:
+                    # The parent may already have discarded this task (it
+                    # cancelled it) — writing the late result is harmless.
+                    _write(result=reply_text, rpc_id=rid)
+                    _notify("worker/complete", {"task_id": str(rid)})
+
+                await service.inbox.post(AgentMessage(
+                    source=_source,
+                    content=task_text,
+                    correlation_id=str(rpc_id) if rpc_id else "",
+                    on_reply=_reply,
+                ))
             else:
                 _write(
                     error={"code": -32601, "message": f"Method not found: {method}"},
                     rpc_id=rpc_id,
                 )
     finally:
+        await service.stop_inbox()
         logger.info(
             "subagent_stop task_count=%d tok_p=%s tok_c=%s tok_t=%s",
             request_count,

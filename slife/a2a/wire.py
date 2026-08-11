@@ -175,6 +175,24 @@ class Task:
             ],
         )
 
+    @classmethod
+    def cancelled(cls, task_id: str, result_text: str = "") -> "Task":
+        """Build a cancelled task (state=CANCELLED) carrying *result_text*.
+
+        Used by the receiver of a ``CancelTask`` to tell a waiting sender
+        the task was cancelled rather than completed (REVIEW C5).
+        """
+        return cls(
+            id=task_id,
+            status=TaskStatus(
+                state=TaskState.CANCELLED.value,
+                message=Message.text_message(result_text, role="agent"),
+            ),
+            artifacts=[
+                {"name": "result", "parts": [Part(type="text", text=result_text).to_dict()]},
+            ] if result_text else [],
+        )
+
     def to_dict(self) -> dict:
         d: dict = {
             "id": self.id,

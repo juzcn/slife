@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from slife.subagent.headless import _write, _process, main
+from slife.subagent.headless import _write, _notify, main
 
 
 class TestWrite:
@@ -96,65 +96,38 @@ class TestWrite:
             assert b"jsonrpc" in output
 
 
-class TestProcess:
-    """Tests for _process() — task processing handler."""
+class TestNotify:
+    """Tests for _notify() — JSON-RPC 2.0 notification writer.
 
-    @pytest.mark.asyncio
-    async def test_process_success(self):
-        mock_service = MagicMock()
-        mock_result = MagicMock()
-        mock_result.text = "The answer is 42."
-        mock_result.usage.prompt_tokens = 50
-        mock_result.usage.completion_tokens = 50
-        mock_result.usage.total_tokens = 100
-        mock_service.agent_loop.run = AsyncMock(return_value=mock_result)
+    The reply path (inbox on_reply → _reply) writes a result envelope then
+    notifies ``worker/complete``, so the parent's task record is closed.
+    """
 
-        with patch("slife.subagent.headless._write") as mock_write:
-            with patch("slife.subagent.headless.elapsed") as mock_elapsed:
-                with patch("slife.agent.system_prompt.build", return_value="Mock system prompt"):
-                    # elapsed is used as a context manager
-                    mock_elapsed.return_value.__enter__ = MagicMock()
-                    mock_elapsed.return_value.__exit__ = MagicMock()
-                    await _process("What is the answer?", "task-1", mock_service)
+    def test_notify_with_params(self):
+        buf = BytesIO()
+        mock_stdout = MagicMock()
+        mock_stdout.buffer = buf
 
-        mock_write.assert_called_once()
-        call_args = mock_write.call_args
-        assert call_args[1]["result"] == "The answer is 42."
-        assert call_args[1]["rpc_id"] == "task-1"
+        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+            _notify("worker/complete", {"task_id": "task-1"})
 
-    @pytest.mark.asyncio
-    async def test_process_max_iterations(self):
-        from slife.agent.loop import MaxIterationsExceeded
+        output = json.loads(buf.getvalue().decode("utf-8"))
+        assert output["jsonrpc"] == "2.0"
+        assert output["method"] == "worker/complete"
+        assert output["params"]["task_id"] == "task-1"
+        assert "id" not in output
 
-        mock_service = MagicMock()
-        mock_service.agent_loop.run = AsyncMock(
-            side_effect=MaxIterationsExceeded("Too many iterations")  # type: ignore[arg-type]
-        )
+    def test_notify_no_params(self):
+        buf = BytesIO()
+        mock_stdout = MagicMock()
+        mock_stdout.buffer = buf
 
-        with patch("slife.subagent.headless._write") as mock_write:
-            with patch("slife.agent.system_prompt.build", return_value="Mock system prompt"):
-                await _process("Complex task", "task-2", mock_service)
+        with patch("slife.subagent.headless.sys.stdout", mock_stdout):
+            _notify("shutdown")
 
-        mock_write.assert_called_once()
-        call_kwargs = mock_write.call_args[1]
-        assert call_kwargs["error"]["code"] == -32000
-        assert "Too many iterations" in call_kwargs["error"]["message"]
-
-    @pytest.mark.asyncio
-    async def test_process_general_exception(self):
-        mock_service = MagicMock()
-        mock_service.agent_loop.run = AsyncMock(
-            side_effect=RuntimeError("Unexpected failure")
-        )
-
-        with patch("slife.subagent.headless._write") as mock_write:
-            with patch("slife.agent.system_prompt.build", return_value="Mock system prompt"):
-                await _process("Broken task", "task-3", mock_service)
-
-        mock_write.assert_called_once()
-        call_kwargs = mock_write.call_args[1]
-        assert call_kwargs["error"]["code"] == -32000
-        assert "Unexpected failure" in call_kwargs["error"]["message"]
+        output = json.loads(buf.getvalue().decode("utf-8"))
+        assert output["method"] == "shutdown"
+        assert "params" not in output
 
 
 class TestMain:

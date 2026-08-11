@@ -72,6 +72,7 @@ _client: A2AClient | None = None
 _connect_lock = asyncio.Lock()
 _inbound_tasks: list[dict] = []
 _presence_events: list[dict] = []
+_cancellations: list[dict] = []
 _MAX_QUEUED = 500
 
 
@@ -94,6 +95,7 @@ async def _ensure_connected() -> A2AClient:
             )
         client = A2AClient(cfg)
         client.on_incoming_task(_on_incoming_task)
+        client.on_incoming_cancel(_on_incoming_cancel)
         client.on_agent_change(_on_agent_change)
         await client.connect()
         _client = client
@@ -114,6 +116,34 @@ async def _on_incoming_task(msg: AgentMessage) -> None:
         "reply_to": msg.reply_to or "",
         "correlation_id": msg.correlation_id or "",
     })
+
+
+async def _on_incoming_cancel(corr_id: str) -> None:
+    """A peer cancelled a task.  Drop it if still queued here (replying with
+    a CANCELLED result so a waiting sender resolves), and always queue the
+    cancel for the harness — the task may already have been drained to the
+    agent loop, which needs to preempt it (Esc-equivalent, REVIEW C5).
+    """
+    if corr_id:
+        for i, t in enumerate(_inbound_tasks):
+            if t.get("correlation_id") == corr_id:
+                entry = _inbound_tasks.pop(i)
+                logger.info("a2a_queued_task_cancelled corr=%s", corr_id)
+                reply_to = entry.get("reply_to", "")
+                if reply_to and _client is not None:
+                    try:
+                        task = wire.Task.cancelled(corr_id, "cancelled by peer")
+                        payload = json.dumps(
+                            wire.task_result_envelope(corr_id, task),
+                            ensure_ascii=False,
+                        )
+                        await _client.publish_message(reply_to, payload, qos=1)
+                    except Exception:
+                        pass
+                break
+    if len(_cancellations) >= _MAX_QUEUED:
+        _cancellations.pop(0)
+    _cancellations.append({"type": "cancel", "corr_id": corr_id})
 
 
 async def _on_agent_change(card: AgentCard, event: str) -> None:
@@ -193,14 +223,19 @@ async def a2a_get_task_result(agent_id: str, task_id: str) -> str:
 
 @mcp.tool(
     name="a2a_cancel_task",
-    description="Cancel a pending or async task on a remote A2A mesh peer. "
+    description="Cancel a pending or async task on a remote A2A mesh peer. Returns "
+    "the task's resulting status: 'cancelled', 'completed', 'failed', or 'not_found'. "
     "Requires the A2A mesh (MQTT broker).",
 )
 async def a2a_cancel_task(agent_id: str, task_id: str) -> str:
-    """Cancel a pending or async task on *agent_id*."""
+    """Cancel a pending or async task on *agent_id*.
+
+    Returns the task's resulting status — a task that already finished is
+    reported as ``completed``/``failed`` (never ``cancelled``) and its result
+    stays retrievable (REVIEW C5).
+    """
     client = await _ensure_connected()
-    cancelled = await client.cancel_task(AgentId(agent_id), task_id)
-    return "cancelled" if cancelled else "not_found"
+    return await client.cancel_task(AgentId(agent_id), task_id)
 
 
 @mcp.tool(
@@ -267,16 +302,20 @@ async def a2a_broadcast(task: str) -> str:
 
 @mcp.tool(
     name="__a2a_drain_incoming",
-    description="Drain queued inbound A2A tasks + presence events. Harness-only.",
+    description="Drain queued inbound A2A tasks + presence events + cancellations. "
+    "Harness-only.",
 )
 async def __a2a_drain_incoming() -> str:
-    """Drain queued inbound tasks + presence events (harness only)."""
+    """Drain queued inbound tasks + presence events + cancellations (harness only)."""
     tasks = list(_inbound_tasks)
     _inbound_tasks.clear()
     presence = list(_presence_events)
     _presence_events.clear()
+    cancellations = list(_cancellations)
+    _cancellations.clear()
     return json.dumps(
-        {"tasks": tasks, "presence": presence}, ensure_ascii=False,
+        {"tasks": tasks, "presence": presence, "cancellations": cancellations},
+        ensure_ascii=False,
     )
 
 
@@ -285,15 +324,19 @@ async def __a2a_drain_incoming() -> str:
     description="Publish a task result to a requester's result topic. Harness-only.",
 )
 async def __a2a_dispatch_result(
-    reply_to: str, corr_id: str = "", text: str = "",
+    reply_to: str, corr_id: str = "", text: str = "", cancelled: bool = False,
 ) -> str:
     """Publish a task result to the requester's result topic (harness only).
 
     The payload is the official JSON-RPC response envelope carrying a
-    completed :class:`Task`.
+    completed :class:`Task`, or a CANCELLED one when *cancelled* is true
+    (REVIEW C5).
     """
     client = await _ensure_connected()
-    task = wire.Task.completed(corr_id, text)
+    task = (
+        wire.Task.cancelled(corr_id, text)
+        if cancelled else wire.Task.completed(corr_id, text)
+    )
     payload = json.dumps(
         wire.task_result_envelope(corr_id, task), ensure_ascii=False,
     )

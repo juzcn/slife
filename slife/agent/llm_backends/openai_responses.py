@@ -42,6 +42,14 @@ class OpenAIResponsesBackend:
         """Adapt OpenAI-format messages → Responses API ``input`` format.
 
         Returns (instructions, input_items).
+
+        The Responses API ``input`` is a flat list of items; a tool turn
+        uses the API's native item shapes (REVIEW W2), NOT the
+        Chat-Completions ``role:"tool"`` / ``tool_calls``-on-assistant
+        shape:
+          - assistant text → ``{"role": "assistant", "content": ...}``
+          - tool calls     → standalone ``{"type": "function_call", ...}``
+          - tool results   → ``{"type": "function_call_output", ...}``
         """
         instructions: str | None = None
         converted: list[dict] = []
@@ -70,24 +78,22 @@ class OpenAIResponsesBackend:
                 else:
                     converted.append({"role": "user", "content": str(content)})
             elif role == "assistant":
-                item: dict = {"role": "assistant", "content": content or ""}
-                tool_calls = msg.get("tool_calls", [])
-                if tool_calls:
-                    item["tool_calls"] = [
-                        {
-                            "type": "function_call",
-                            "call_id": tc["id"],
-                            "name": tc.get("function", {}).get("name", ""),
-                            "arguments": tc.get("function", {}).get("arguments", "{}"),
-                        }
-                        for tc in tool_calls
-                    ]
-                converted.append(item)
+                if content and str(content).strip():
+                    converted.append({"role": "assistant", "content": content})
+                # Each tool call becomes its own top-level function_call item —
+                # assistant items in the Responses API carry no ``tool_calls``.
+                for tc in msg.get("tool_calls", []):
+                    converted.append({
+                        "type": "function_call",
+                        "call_id": tc.get("id", ""),
+                        "name": tc.get("function", {}).get("name", ""),
+                        "arguments": tc.get("function", {}).get("arguments", "{}"),
+                    })
             elif role == "tool":
                 converted.append({
-                    "role": "tool",
+                    "type": "function_call_output",
                     "call_id": msg.get("tool_call_id", ""),
-                    "content": str(content),
+                    "output": str(content),
                 })
         return instructions, converted
 

@@ -69,6 +69,9 @@ where *event* is ``"online"``, ``"offline"``, or ``"timeout"``."""
 IncomingTaskCallback = Callable[[AgentMessage], Awaitable[None]]
 """Callback for inbound A2A tasks."""
 
+IncomingCancelCallback = Callable[[str], Awaitable[None]]
+"""Callback for inbound A2A cancel requests — receives the task corr_id."""
+
 
 class A2AClient:
     """P2P A2A client — each Slife instance has one."""
@@ -89,6 +92,7 @@ class A2AClient:
         # Callbacks
         self._agent_change_callbacks: list[AgentChangeCallback] = []
         self._incoming_task_callback: IncomingTaskCallback | None = None
+        self._incoming_cancel_callback: IncomingCancelCallback | None = None
 
         # Heartbeat / watchdog tasks
         self._heartbeat_task: asyncio.Task | None = None
@@ -188,7 +192,7 @@ class A2AClient:
         await self._publish_presence("offline")
 
         # Resolve pending tasks as failed
-        for corr_id, future in self._pending_tasks.items():
+        for future in self._pending_tasks.values():
             if not future.done():
                 future.set_exception(RuntimeError("A2A client disconnected"))
         self._pending_tasks.clear()
@@ -231,6 +235,10 @@ class A2AClient:
     def on_incoming_task(self, callback: IncomingTaskCallback) -> None:
         """Register a callback for inbound A2A tasks."""
         self._incoming_task_callback = callback
+
+    def on_incoming_cancel(self, callback: IncomingCancelCallback) -> None:
+        """Register a callback fired when a peer cancels one of our tasks."""
+        self._incoming_cancel_callback = callback
 
     # ── Task routing ──────────────────────────────────────────────────
 
@@ -322,28 +330,35 @@ class A2AClient:
         """
         return self._completed_tasks.pop(corr_id, None)
 
-    async def cancel_task(self, target: AgentId, corr_id: str) -> bool:
-        """Cancel a pending or async task.
+    async def cancel_task(self, target: AgentId, corr_id: str) -> str:
+        """Cancel a pending or async task, returning its resulting status.
 
-        Removes the local future (synchronous) or completed result (async),
-        and sends a cancellation notice to *target*.
+        Returns ``"cancelled"``, ``"completed"``, ``"failed"``, or
+        ``"not_found"``.  A task that already finished (completed/failed) is
+        **never** reported as cancelled and its result is never discarded —
+        it stays retrievable via :meth:`get_task_result` (REVIEW C5).  A
+        still-pending task's local waiter is cancelled, the store record is
+        marked cancelled, and a ``CancelTask`` request is published to
+        *target* (the peer decides whether to honour it).
         """
-        cancelled = False
-
         from slife.a2a.task_store import get_store
 
-        # Cancel synchronous waiter
+        store = get_store()
+        rec = store.get(corr_id)
+
+        # Cancel the synchronous waiter, if one is still waiting.
         future = self._pending_tasks.pop(corr_id, None)
         if future is not None and not future.done():
             future.cancel()
-            cancelled = True
 
-        # Remove async result if present
-        if self._completed_tasks.pop(corr_id, None) is not None:
-            cancelled = True
-
-        if cancelled:
-            get_store().record_cancel(corr_id)
+        if rec is not None:
+            if rec.status in ("completed", "failed"):
+                # Terminal — not cancelable; leave the result retrievable.
+                return rec.status
+            if rec.status == "cancelled":
+                return "cancelled"
+            # pending → cancelled
+            store.record_cancel(corr_id)
 
         # Notify the target agent with the official CancelTask request.
         cancel_payload = json.dumps(
@@ -357,7 +372,7 @@ class A2AClient:
         except Exception:
             pass
 
-        return cancelled
+        return "cancelled" if rec is not None else "not_found"
 
     async def broadcast(self, task: str) -> list[str]:
         """Send *task* to every known peer (fire-and-forget).
@@ -592,8 +607,10 @@ class A2AClient:
     async def _handle_incoming_task(self, msg: TransportMessage) -> None:
         """Process an incoming task request (official ``SendMessage``).
 
-        ``CancelTask`` requests are acknowledged (logged) but not delivered
-        as tasks.  Slife routing fields ride in the ``_slife`` extension.
+        ``CancelTask`` requests are routed to the ``on_incoming_cancel``
+        callback (the receiver drops/preempts the task) rather than being
+        delivered as tasks.  Slife routing fields ride in the ``_slife``
+        extension.
         """
         try:
             data = json.loads(msg.payload)
@@ -607,6 +624,8 @@ class A2AClient:
 
         if method == "CancelTask":
             logger.info("a2a_incoming_cancel source=%s task_id=%s", source, data.get("id"))
+            if self._incoming_cancel_callback is not None:
+                await self._incoming_cancel_callback(str(data.get("id", "")))
             return
 
         # SendMessage — extract the task text from the Message's first part.
@@ -650,18 +669,30 @@ class A2AClient:
             corr_id = str(slife.get("correlation_id", ""))
         result_block = data.get("result", {}) if isinstance(data.get("result"), dict) else {}
         result_text = wire.task_result_text(result_block.get("task", {}))
+        # A peer that honoured a CancelTask returns a CANCELLED task — record
+        # the store status accordingly (REVIEW C5).
+        task_state = (
+            (result_block.get("task") or {}).get("status") or {}
+        ).get("state", "")
+        cancelled = task_state == wire.TaskState.CANCELLED.value
         future = self._pending_tasks.pop(corr_id, None)
 
         from slife.a2a.task_store import get_store
 
         if future and not future.done():
             future.set_result(result_text)
-            get_store().record_result(corr_id, result_text)
+            if cancelled:
+                get_store().record_cancel(corr_id)
+            else:
+                get_store().record_result(corr_id, result_text)
             logger.debug("a2a_result_resolved corr_id=%s", corr_id)
         else:
             # Store for async retrieval — no synchronous waiter
             self._completed_tasks[corr_id] = result_text
-            get_store().record_result(corr_id, result_text)
+            if cancelled:
+                get_store().record_cancel(corr_id)
+            else:
+                get_store().record_result(corr_id, result_text)
             logger.debug("a2a_result_stored_async corr_id=%s", corr_id)
 
     # ── Notify ─────────────────────────────────────────────────────────

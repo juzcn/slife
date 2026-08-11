@@ -167,6 +167,70 @@ class TestInboxConstruction:
         assert inbox.pending == 2
 
 
+# ── Inbox — cancel_correlation (REVIEW C5) ──────────────────────────────
+
+
+class TestInboxCancelCorrelation:
+    """cancel_correlation drops a queued task or preempts the running one
+    (Esc-equivalent) — used by A2A CancelTask and subagent worker/cancel."""
+
+    @pytest.fixture
+    def mock_loop(self):
+        return MagicMock()
+
+    @pytest.fixture
+    def mock_store(self):
+        return MagicMock(spec=ConversationStore)
+
+    @staticmethod
+    def _drain(inbox):
+        rest = []
+        while not inbox._queue.empty():
+            rest.append(inbox._queue.get_nowait())
+        return rest
+
+    @pytest.mark.asyncio
+    async def test_drops_queued_matching_message(self, mock_loop, mock_store):
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+        await inbox.post(AgentMessage(source=AgentId("peer"), content="a", correlation_id="cid-a"))
+        await inbox.post(AgentMessage(source=AgentId("peer"), content="b", correlation_id="cid-b"))
+
+        inbox.cancel_correlation("cid-a")
+
+        assert [m.correlation_id for m in self._drain(inbox)] == ["cid-b"]
+        mock_loop.cancel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_preempts_active_message(self, mock_loop, mock_store):
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+        inbox._current_corr = "cid-active"
+
+        inbox.cancel_correlation("cid-active")
+
+        mock_loop.cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_non_matching_corr_is_noop(self, mock_loop, mock_store):
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+        inbox._current_corr = "cid-active"
+
+        inbox.cancel_correlation("cid-other")
+
+        mock_loop.cancel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_corr_is_noop(self, mock_loop, mock_store):
+        from slife.agent.inbox import Inbox
+        inbox = Inbox(mock_loop, mock_store)
+
+        inbox.cancel_correlation("")
+
+        mock_loop.cancel.assert_not_called()
+
+
 # ── Inbox — _process_one ──────────────────────────────────────────────
 
 
@@ -323,13 +387,34 @@ class TestInboxProcessOne:
         mock_result = MagicMock()
         mock_result.text = "Here is the answer."
         mock_result.usage.total_tokens = 10
+        mock_result.cancelled = False
         mock_loop.run = AsyncMock(return_value=mock_result)
         mock_store.get_or_create.return_value = MagicMock()
 
         msg = self._make_msg(content="question", on_reply=on_reply)
         await inbox._process_one(msg)
 
-        on_reply.assert_awaited_once_with("Here is the answer.")
+        on_reply.assert_awaited_once_with("Here is the answer.", cancelled=False)
+
+    @pytest.mark.asyncio
+    async def test_process_passes_cancelled_flag_to_on_reply(self, mock_loop, mock_store):
+        """REVIEW C5 — a cancelled run tells the channel so it can signal the
+        sender (e.g. A2A CancelTask)."""
+        from slife.agent.inbox import Inbox
+        on_reply = AsyncMock()
+        inbox = Inbox(mock_loop, mock_store)
+
+        mock_result = MagicMock()
+        mock_result.text = "partial"
+        mock_result.usage.total_tokens = 5
+        mock_result.cancelled = True
+        mock_loop.run = AsyncMock(return_value=mock_result)
+        mock_store.get_or_create.return_value = MagicMock()
+
+        msg = self._make_msg(content="question", on_reply=on_reply)
+        await inbox._process_one(msg)
+
+        on_reply.assert_awaited_once_with("partial", cancelled=True)
 
     @pytest.mark.asyncio
     async def test_process_on_reply_error_swallowed(self, mock_loop, mock_store):

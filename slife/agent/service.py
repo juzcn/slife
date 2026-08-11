@@ -1334,10 +1334,18 @@ class AgentService:
                 result = await client.call_tool("__a2a_drain_incoming", {})
                 data = _json.loads(result)
 
+                # A peer cancelled a task — drop it if still queued, or stop
+                # the running loop if it is the message being processed
+                # (Esc-equivalent, REVIEW C5).
+                for cev in data.get("cancellations", []):
+                    cid = cev.get("corr_id", "")
+                    if cid:
+                        self.inbox.cancel_correlation(cid)
+
                 a2a_client = client  # narrowed MCPClient for the reply closure
                 for ev in data.get("tasks", []):
                     async def _reply(
-                        reply_text: str,
+                        reply_text: str, cancelled: bool = False,
                         rt=ev.get("reply_to", ""),
                         cid=ev.get("correlation_id", ""),
                     ) -> None:
@@ -1345,6 +1353,7 @@ class AgentService:
                             assert a2a_client is not None
                             await a2a_client.call_tool("__a2a_dispatch_result", {
                                 "reply_to": rt, "corr_id": cid, "text": reply_text,
+                                "cancelled": cancelled,
                             })
                         except Exception:
                             pass

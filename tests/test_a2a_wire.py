@@ -56,6 +56,20 @@ class TestTask:
     def test_from_dict_none(self):
         assert wire.Task.from_dict(None) is None
 
+    def test_cancelled_shape(self):
+        """REVIEW C5 — a cancelled task carries CANCELLED state + text."""
+        task = wire.Task.cancelled("cid-1", "stopped")
+        d = task.to_dict()
+        assert d["id"] == "cid-1"
+        assert d["status"]["state"] == "cancelled"
+        assert d["artifacts"][0]["parts"][0]["text"] == "stopped"
+
+    def test_cancelled_empty_text(self):
+        task = wire.Task.cancelled("cid-1")
+        d = task.to_dict()
+        assert d["status"]["state"] == "cancelled"
+        assert d["artifacts"] == []
+
 
 class TestMessage:
     def test_text_message(self):
