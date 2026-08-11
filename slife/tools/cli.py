@@ -300,6 +300,7 @@ class CliSetEnabledTool(_ConfigPathMixin, Tool):
                 description=entry.get("description", ""),
                 install=entry.get("install", ""),
                 source=entry.get("source"),
+                enabled=enabled,
             )
         else:
             raw = read_config(self._config_path)

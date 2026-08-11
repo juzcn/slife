@@ -284,6 +284,11 @@ class AgentService:
 
         async def _restart() -> None:
             await self._spawn_plugin_generic(name, module)
+            if name == "memfiles":
+                # _spawn_plugin_generic replaced self._plugins["memfiles"].client,
+                # but the harness's ToolContext still points at the dead client —
+                # re-point it or check_memfiles reports the restarted plugin offline.
+                self._tool_ctx.memfiles_client = self._plugins[name].client
 
         self._plugins[name].start_watchdog(restart_cb=_restart)
 
@@ -649,6 +654,9 @@ class AgentService:
 
         async def _connect_one(name: str, cfg: dict) -> None:
             try:
+                if cfg.get("enabled") is False:
+                    logger.debug("rest_api_skipped name=%s reason=disabled", name)
+                    return
                 spec_url = cfg.get("spec_url", "")
                 base_url = cfg.get("base_url", "")
                 api_key = cfg.get("api_key", "")

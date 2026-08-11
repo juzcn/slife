@@ -121,12 +121,16 @@ class PluginLifecycle:
             [t["name"] for t in plugin_tools],
         )
 
-        # Harness-only tools are prefixed with _ (convention).
+        # Harness-only tools are prefixed with __ (convention) — filtered out
+        # of the schema entirely.  (Single ``_`` = harness but LLM-visible,
+        # e.g. the native `_sys_note`/`_sys_trim`.)  Same predicate as the
+        # generic spawn path in service.py, so a plugin's harness tools are
+        # hidden identically whichever registration path ran.
         # The deprecated harness_tools set is also respected.
         tagged = [
             {**t, "server": self.name}
             for t in plugin_tools
-            if not t["name"].startswith("_")
+            if not t["name"].startswith("__")
             and (harness_tools is None or t["name"] not in harness_tools)
         ]
 

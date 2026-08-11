@@ -614,6 +614,7 @@ class Config:
         description: str = "",
         install: str = "",
         source: dict | None = None,
+        enabled: bool | None = None,
     ) -> bool:
         """Persist a CLI tool entry. Returns True if persisted to file.
 
@@ -622,6 +623,8 @@ class Config:
         entry: dict = {"command": command, "description": description, "install": install}
         if source:
             entry["source"] = source
+        if enabled is not None:
+            entry["enabled"] = enabled
         # Always update in-memory snapshot
         self.cli_tools[name] = entry
 

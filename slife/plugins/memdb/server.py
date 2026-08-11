@@ -42,27 +42,28 @@ _reindex_task: asyncio.Task | None = None  # type: ignore[valid-type]
 def _hybrid_fallback_reason() -> str:
     """Return a human-readable reason why hybrid search fell back to FTS5."""
     if _embedder is None:
-        return "hybrid 降级为 fts5 — embedding 后端未初始化"
+        return "hybrid degraded to fts5 — embedding backend not initialized"
     if not _embedder.available:
         cfg = _embedder._backend
         if cfg == "gguf":
             if _embedder._gguf_path:
                 if Path(_embedder._gguf_path).exists():
-                    return ("hybrid 降级为 fts5 — llama-cpp-python 未安装。"
-                            "运行: uv pip install llama-cpp-python")
-                return ("hybrid 降级为 fts5 — GGUF 文件未找到。"
-                        "下载模型后使用 memory_set_embedding 配置路径")
-            return "hybrid 降级为 fts5 — 未配置 GGUF 模型路径"
+                    return ("hybrid degraded to fts5 — llama-cpp-python not installed. "
+                            "Run: uv pip install llama-cpp-python")
+                return ("hybrid degraded to fts5 — GGUF file not found. "
+                        "Download the model and set its path with memory_set_embedding")
+            return "hybrid degraded to fts5 — no GGUF model path configured"
         if cfg == "api":
-            return ("hybrid 降级为 fts5 — API key 为未解析的 ${VAR} 占位符或缺失。"
-                    "使用 memory_set_embedding backend=api 配置真实 API key，"
-                    "或改用本地模型: memory_set_embedding backend=gguf")
-        return ("hybrid 降级为 fts5 — embedding 后端不可用。"
-                "使用 memory_check_embedding 查看详情，"
-                "使用 memory_set_embedding 配置嵌入后端")
+            return ("hybrid degraded to fts5 — API key is an unresolved ${VAR} "
+                    "placeholder or missing. Configure a real API key with "
+                    "memory_set_embedding backend=api, or switch to a local model: "
+                    "memory_set_embedding backend=gguf")
+        return ("hybrid degraded to fts5 — embedding backend unavailable. "
+                "Run memory_check_embedding for details; configure with "
+                "memory_set_embedding")
     # embedder.available is True but embed_one() returned None
-    return ("hybrid 降级为 fts5 — 查询嵌入生成失败（API 调用异常或超时）。"
-            "检查 API key 是否正确，或切换为本地模型")
+    return ("hybrid degraded to fts5 — query embedding generation failed "
+            "(API error or timeout). Check the API key, or switch to a local model")
 
 
 def _get_db_path() -> Path:
@@ -391,7 +392,7 @@ async def memory_open(rowid: int) -> str:
         turn = await store.get_turn(rowid=rowid)
         if turn is None:
             return json.dumps(
-                {"error": f"未找到 turn rowid={rowid}"}, ensure_ascii=False,
+                {"error": f"turn not found rowid={rowid}"}, ensure_ascii=False,
             )
         return json.dumps(turn, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -432,21 +433,21 @@ async def memory_search(
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     if not query.strip():
-        return json.dumps({"error": "query 不能为空（time 模式不需要 query）"}, ensure_ascii=False)
+        return json.dumps({"error": "query must not be empty (time mode needs no query)"}, ensure_ascii=False)
 
     try:
         if mode == "grep":
             hits = await store.search_grep(pattern=query, limit=limit,
                                              since=since, until=until)
             return json.dumps({"mode": "grep", "query": query, "results": hits,
-                               "hint": "" if hits else f"未找到包含 '{query}' 的记忆"},
+                               "hint": "" if hits else f"no memories contain '{query}'"},
                               ensure_ascii=False, indent=2)
 
         if mode == "fts5":
             hits = await store.search_keyword(query=query, limit=limit,
                                                 since=since, until=until)
             return json.dumps({"mode": "fts5", "query": query, "results": hits,
-                               "hint": "" if hits else f"未找到与 '{query}' 相关的记忆"},
+                               "hint": "" if hits else f"no memories related to '{query}'"},
                               ensure_ascii=False, indent=2)
 
         # hybrid
@@ -470,7 +471,7 @@ async def memory_search(
             if not semantic_available:
                 hint = _hybrid_fallback_reason()
         else:
-            hint = "没有找到相关的记忆"
+            hint = "no matching memories found"
 
         return json.dumps({
             "mode": "hybrid" if semantic_available else "fts5",
@@ -519,7 +520,7 @@ async def memory_summarize(
             except Exception as e:
                 logger.debug("embedding_upsert_skipped err=%s", e)
 
-        return json.dumps({"status": "已更新", "rowid": rowid}, ensure_ascii=False, indent=2)
+        return json.dumps({"status": "updated", "rowid": rowid}, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("summarize_failed rowid=%s", rowid)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -546,7 +547,7 @@ async def memory_check_embedding() -> str:
         if unembedded > 0 and report.get("available"):
             report["hint"] = (
                 report.get("hint", "") +
-                f" 后台索引进行中 — {unembedded} 条 turn 待嵌入。"
+                f" Background indexing in progress — {unembedded} turns pending embedding."
             ).strip()
         return json.dumps(report, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -587,16 +588,16 @@ async def memory_set_embedding(
     backend = backend.lower().strip()
     if backend not in ("gguf", "transformer", "api"):
         return json.dumps(
-            {"error": f"不支持的后端 '{backend}'。可选: 'gguf'、'transformer' 或 'api'"},
+            {"error": f"unsupported backend '{backend}'. Options: 'gguf', 'transformer', or 'api'"},
             ensure_ascii=False, indent=2,
         )
     cfg: dict = {"model": model, "backend": backend, "enabled": True}
     if backend == "gguf":
         if not gguf_path:
-            return json.dumps({"error": "GGUF 后端需要 gguf_path 参数"}, ensure_ascii=False, indent=2)
+            return json.dumps({"error": "GGUF backend requires a gguf_path parameter"}, ensure_ascii=False, indent=2)
         ok, msg = validate_gguf_path(gguf_path)
         if not ok:
-            return json.dumps({"error": f"GGUF 文件校验失败: {msg}"}, ensure_ascii=False, indent=2)
+            return json.dumps({"error": f"GGUF file validation failed: {msg}"}, ensure_ascii=False, indent=2)
         cfg["gguf_path"] = msg
         if dim > 0:
             cfg["dim"] = dim
@@ -608,7 +609,7 @@ async def memory_set_embedding(
             cfg["device"] = device
     elif backend == "api":
         if not get_first_provider_api_key():
-            return json.dumps({"error": "API 后端需要 api_key"}, ensure_ascii=False, indent=2)
+            return json.dumps({"error": "API backend requires an api_key"}, ensure_ascii=False, indent=2)
         if dim > 0:
             cfg["dim"] = dim
     try:
@@ -630,8 +631,9 @@ async def memory_set_embedding(
         _reindex_task = asyncio.create_task(_reinit_store_after_model_change())
         logger.info("background_reinit_and_reindex_started")
         status["hint"] = (
-            "后台正在迁移向量表并重建索引，关键词搜索正常可用，"
-            "语义搜索将在索引完成后恢复。"
+            "Background: migrating the vector table and rebuilding the index. "
+            "Keyword search remains available; semantic search resumes when "
+            "indexing finishes."
         )
 
         return json.dumps(status, ensure_ascii=False, indent=2)
@@ -653,7 +655,7 @@ async def memory_set_enabled(enabled: bool) -> str:
         ok = set_embedding_enabled(enabled)
         if not ok:
             return json.dumps(
-                {"error": "没有已配置的 embedding。先使用 memory_set_embedding 配置。"},
+                {"error": "No embedding configured. Run memory_set_embedding first."},
                 ensure_ascii=False,
             )
         status = await reload_embedder()

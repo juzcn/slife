@@ -1,117 +1,134 @@
 # Slife Code Review
 
-**Review date:** 2026-08-08 · **Original pass:** 2026-08-06 (B1–B10, D1–D10) · **Scope:** full codebase (~45k lines: `slife/`, `credstore/`, `skills/`, install scripts, 90 test files) · **Method:** 7 parallel subsystem audits cross-checked against README/DESIGN claims; every HIGH finding re-verified against source; fixes applied in order and re-tested after each.
+**Review date:** 2026-08-11 · **This pass:** conformance audit (plugins / native tools / harness tools / logging / over-engineering) + targeted fixes + README/DESIGN rewrite · **Prior passes:** 2026-08-06 (B/D items), 2026-08-08 (H1–H8, M1, S2/S5/S6), 2026-08-09 (H3) · **Scope:** full codebase (~24.5k lines `slife/`, `credstore/`, 71 test files ~21.6k lines, install scripts).
 
-**Current state:** full suite **1726 passed**. All pass-2 high-severity bugs (H1–H8, M1) are **fixed**; pass-1 is mostly fixed. H3 was resolved on 2026-08-09 (see §4).
+**Method:** parallel subsystem audits, every finding re-verified against source, then high-value fixes applied and re-tested; README/DESIGN/README.zh-CN rewritten to match the current code.
 
-**Verdict:** the architecture is coherent — one loop, one registry, one serial inbox, uniform tool surface. The Aug-6 pass was largely actioned; the Aug-8 pass found and fixed a cluster of latent defects in non-default paths (SSE transport, Responses backend, plugin watchdog, MQTT reconnect, OAuth device flow, subprocess leaks). What remains is hardening: security (§2.1), a few correctness gaps (§2.2), config-write serialization, test/CI coverage, and naming/doc cleanup.
+**Current state:** full suite **1636 passed** (re-confirmed after this pass's fixes). This pass fixed: memdb Chinese→English, `_sys_trim` targeting the wrong conversation, plugin-tool double-prefix naming, `rest_api_set_enabled(false)` ignored at startup, `cli_set_enabled` not persisting, the harness `__` filter inconsistency, memfiles health pointer not refreshed on watchdog restart, and the worst unredacted log call sites.
+
+**Verdict:** the architecture remains coherent — one loop, one registry, one serial inbox, uniform tool surface. The conformance audit found the surface rules (language policy, tool naming, harness tiers, log format) were documented but not uniformly enforced; the docs had drifted further than the code. The code changes above restore the documented contracts; what remains is hardening (a couple of HIGH wire-format suspicions, MCP health/reconnect, config-write serialization, dead code) and test/CI coverage.
 
 ---
 
 ## 1. Status at a Glance
 
-### 1.1 Security — all resolved ✅
+### 1.1 Security — all prior items resolved/accepted ✅
 
-> **Resolved 2026-08-08** — **S1** accepted (ngrok free session ~8h bounds `expose_file` exposure). **S3** accepted (WeChat `bot_token` ~24h TTL). **S5** `install.ps1` auto-kill **removed** — the installer only warns (precise `uv\tools\slife` match) and the user closes slife themselves. **S2** REST spec/base URL now validated as http(s) before the npx spawn. **S6** OAuth refresh no longer deletes tokens on transient transport errors (only on 4xx); RFC 8628 terminal poll errors (`access_denied` etc.) abort immediately. **S4** accepted by decision — the subagent `SLIFE_CONFIG` env var *does* carry the resolved `api_key` (config inheritance is how the subagent gets the model config, and the key isn't always in `os.environ`), but it's a same-user process, Windows has no `/proc/…/environ`, and a normal config stays far under the 32KB env-block limit.
+No new open security findings beyond the logging hygiene items in §2.1. Prior: **S1** accepted (ngrok ~8h session bounds `expose_file`), **S3** accepted (WeChat `bot_token` ~24h TTL), **S4** accepted (subagent `SLIFE_CONFIG` carries the resolved key), **S2** REST URL validated http(s), **S5** installer no longer auto-kills, **S6** OAuth refresh never deletes on transient errors.
 
-### 1.2 Open / Partial — Correctness & Design (§2.2 for detail)
+### 1.2 Correctness — open
 
 | # | Finding | Status | Where |
 |----|---------|--------|-------|
-| C1 (B1) | A2A `transport:"http"` **hard-crashes startup** (uncaught `ValueError`); `start_a2a` http branch is dead code; `HttpStreamableTransport` still raises `NotImplementedError` | OPEN | `a2a/config.py:82-89`, `service.py:1285-1295` |
-| C2 (B3½) | External MCP servers have **no health-check/reconnect** — `MCPClient.ping()` defined, never scheduled; a died stdio server stays `CONNECTED` until a tool call fails | OPEN | `mcp/client.py:255`, `connection.py` |
-| ~~C3~~ ✅ | `save_to_memory` raw-vs-sanitized match — **accepted 2026-08-08**: real user messages don't contain secret-shaped strings, so the stored (sanitized) content matches in practice | ACCEPTED | `service.py:1148-1167` |
-| C4 | Subagent `_stop_process` leaves `_push_futures` dangling (spurious 120s timeouts); `_read_stdout` swallows real errors while `_running` stays `True` | OPEN | `subagent/process.py:114-130,272` |
-| C5 | A2A `cancel_task` is a no-op for subagents and mis-routes subagent ids into MQTT; MQTT async-task tool descriptions promise inbox push that never happens | OPEN | `tools/a2a.py:439-451`, `client.py:596-621` |
-| C6 | WeChat dedup key (`from_user_id + context_token`) can **drop real messages** (`context_token` is per-conversation, so 2nd+ messages share the key) | OPEN | `plugins/wechat/server.py:110-134` |
-| C7 | Approval dialog "Deny (Esc)" is intercepted by the App's priority `escape → cancel` binding — the modal's `on_key` never fires | OPEN | `ui/approval_dialog.py:129-136`, `ui/app.py:184` |
-| C8 (D2) | MCP dispatch centralized behind `ProxyRoute` but still **keyed on the raw server name**; nothing reserves `"mcp"`/`"memdb"`/`"wechat"`, so an external server with that name misroutes | PARTIAL | `mcp/tool_adapter.py:253-265` |
-| C9 (D4) | Harness-only tool filtering uses **inconsistent mechanisms** (`_`-prefix, `__`-prefix, a `"harness-only"` description marker); the hardcoded `mcp_call_tool` exception was removed 2026-08-10 (now a `__`-prefixed harness tool, filtered for all agents) | PARTIAL | `plugins.py:130`, `service.py:308,505` |
-| N1 (D3) | Config **write race** persists — no file lock, two writers (Config methods + raw `read/write_config`), concurrent `asyncio.gather` tools clobber the file and stale the in-memory snapshot | PARTIAL | `tools/_config_io.py`, `config.py` |
-| ~~N2 (D6)~~ ✅ | Tool naming unified 2026-08-10: all categories use `X_list` / `X_set` (upsert = add+update) / `X_remove` (+ `X_set_enabled` for toggles); `add` removed; README aligned | FIXED | `tools/`, `plugins/mcp/` |
-| N3 (D7) | `switch_to_nvidia_free` **always errors out of the box** (hardcodes provider `"nvidia"` + `nim_*` tool names not re-verified against `nvidia-nim-mcp v2.1.2`); docs/installers still say `bunx`, config runs `npx` | OPEN | `tools/models.py:571,593,668` |
-| N4 (B5) | Secret sanitizer is a known-shape allowlist — **no exact-match denylist** from credstore for the user's real secrets | OPEN | `logfmt.py` |
-| ~~N5 (B9)~~ ✅ | Residual Chinese in tool output — translated to English (also the 3 sibling memdb status strings) | FIXED | — |
-| ~~N6 (B7)~~ ✅ | Stale HMAC docstring + dead `# ═══ include_image` stub — docstring corrected, stub + unused `Config` import removed | FIXED | — |
-| ~~N7 (D9)~~ ✅ | `a2a_list_tasks` description now warns the store is **in-memory and empty after restart** | FIXED | `tools/a2a.py:471-478` |
+| C1 (HIGH) | A2A `transport:"http"` **crashes startup** (uncaught `ValueError` in `A2AConfig.from_dict`); `HttpStreamableTransport` stub raises `NotImplementedError` for publish/subscribe/messages | OPEN | `a2a/config.py:82-89`, `a2a/http.py` |
+| C2 | External MCP servers have **no health-check/reconnect** — `MCPClient.ping()` defined, never scheduled; a died or hung stdio server stays `CONNECTED` | OPEN | `mcp/client.py:255`, `plugins/mcp/connection.py:700` |
+| W1 (HIGH, unverified) | **Anthropic backend** may emit consecutive `user` messages for a multi-tool-result batch (each `tool` msg → its own `user` block); strict-alternation endpoints (Bedrock / Bailian/Qwen) 400 | OPEN | `agent/llm_backends/anthropic.py:107-115` |
+| W2 (HIGH, unverified) | **OpenAI-Responses backend** converts history to a Chat-Completions shape (`role:"tool"`, `tool_calls` on assistant) the Responses API likely rejects (wants `function_call` / `function_call_output` items) — would break multi-turn tool conversations | OPEN | `agent/llm_backends/openai_responses.py:72-91` |
+| C4 | Subagent `_stop_process` leaves `_push_futures` dangling; `_read_stdout` swallows real errors. (Push path is currently dead code — `set_push_notification` has no callers — so the dangle is latent) | OPEN | `subagent/process.py:130-136,295-296` |
+| C5 | `a2a_cancel_task` can't cancel an in-flight subagent task; a completed async result is mislabelled "cancelled" | OPEN | `tools/a2a.py:498-504` |
+| C6 | WeChat dedup key (`from_user_id + context_token`) can **drop real messages** (per-conversation token; non-text items burn the key) | OPEN | `plugins/wechat/server.py:110-134` |
+| C7 | Approval dialog "Deny (Esc)" intercepted by the App's priority `escape → cancel` binding — modal's deny never fires, loop cancels, modal sticks | OPEN | `ui/app.py:186`, `ui/approval_dialog.py:129-136` |
+| C8 | MCP dispatch keyed on raw server name; `mcp`/`memdb`/`wechat`/`memfiles` not reserved — a colliding external server name misroutes | OPEN | `mcp/tool_adapter.py:224-236` |
+| M2 | Watchdog restart can stall on a live-but-unconnected child (process assigned before `create_client`); backoff defeated | OPEN | `agent/plugins.py:107-115`, `service.py:479-495` |
+| M3 | mcp/mqtt plugin lifespan never shuts down `ConnectionPool` / A2A client; HTTP/SSE external servers leak on exit | OPEN | `plugins/mcp/server.py:290-299`, `connection.py:846-850` |
+| M4 | External MCP stdio teardown kills only the direct child (`terminate_process`), not the tree — npx/uvx grandchildren survive on Windows | OPEN | `plugins/mcp/connection.py:653-655` |
+| M5 | memdb `search_grep` LIKE-escaping is a no-op (no `ESCAPE '\'` clause) — `%`/`_` queries return nothing | OPEN | `plugins/memdb/store.py:522-523,541` |
+| M6 | memdb `memory_count` fts5 mode ignores `since`/`until`; search `limit` unclamped (negative → unlimited) | OPEN | `plugins/memdb/store.py:326-335`, `server.py:342,415` |
+| M7 | memdb background reindex can spin forever on a persistently failing embedder | OPEN | `plugins/memdb/server.py:267-274` |
 
-### 1.3 Deferred (§4)
+### 1.3 Fixed this pass
 
-| H3 | Synthetic `_sys_note` / `_sys_trim` tool calls break the Anthropic & OpenAI-Responses backends | ✅ **RESOLVED 2026-08-09** — both became real schema-declared tools, auto-invoked by the loop (see §4) |
+| ID | Finding | Fix |
+|----|---------|-----|
+| **F-lang** | memdb plugin returned LLM-visible strings in Chinese (regression of N5) | Translated `server.py` + `embedding_config.py` to English; updated 3 test assertions |
+| **F-trim** | `_sys_trim` always trimmed the human conversation (`ctx.conversation`), even when the loop was processing a WeChat / remote-agent turn | `_auto_invoke` swaps `tool._ctx.conversation` to the active conversation for the call, then restores (`agent/loop.py`) |
+| **F-prefix** | Plugin proxy names doubled the server prefix: `mcp__mcp_set`, `wechat__wechat_login` | `MCPProxyTool` registers a tool as-is when it already starts with `{server}_` (`mcp/tool_adapter.py`); docs updated |
+| **F-rest** | `rest_api_set_enabled(false)` reconnected on restart | `_auto_connect_rest_apis` skips `enabled is False` (`agent/service.py`) |
+| **F-cli** | `cli_set_enabled` changed `enabled` then `save_cli_tool` dropped it (no-op) | `save_cli_tool` accepts/persists `enabled` (`config.py`, `tools/cli.py`) |
+| **F-filter** | Harness `__` filter differed across the 3 registration paths (`plugins.py` filtered `_`, others `__`) | Unified on the canonical `__` rule (`agent/plugins.py`) |
+| **F-memfiles** | memfiles watchdog restart left `ToolContext.memfiles_client` pointing at the dead client — health checks reported a healthy plugin offline | Restart callback re-points `_tool_ctx.memfiles_client` (`agent/service.py`) |
+| **F-logs** | Hot-path logs unredacted: tool-call args (`tool_timeout args=`), raw user input (`req_start`, `conv_user`), MCP wrapper stderr relay | `sanitize_secrets` in `_truncate_args`, `req_start`, and the `[wrapper]` relay (`agent/loop.py`, `mcp/process.py`) |
 
-### 1.4 Fixed (§3)
+### 1.4 Prior fixed (carried forward)
 
-Pass-2: **H1** SSE transport · **H2** skill path-traversal/zip-slip · **H4** Responses streaming name · **H5** memdb watchdog + retry-on-failure (+ 5 broken log formats) · **H6** MQTT reconnection recovery · **H7** OAuth device-flow stdout crash · **H8** `_read_stderr_tail` hang · **M1** exec timeout orphaned process trees.
-
-Pass-1: **B2** image-attachment feedback · **B4** subagent channel attribution · **B6** subagent error message · **B8** dead code (`trim_context`, `a2a/tools.py`) · **B9** (client error paths) · **D5** native-tool approval gate · **D10** ngrok endpoint pooling.
+Pass-2: **H1** SSE transport · **H2** skill zip-slip/traversal · **H4** Responses streaming name · **H5** watchdog restart + 5 log formats · **H6** MQTT reconnection · **H7** OAuth stdout crash · **H8** stderr-tail hang · **M1** exec timeout orphaned trees. **H3** (2026-08-09) `_sys_note`/`_sys_trim` became real schema-declared tools auto-invoked by the loop.
 
 ---
 
 ## 2. What's Left to Do
 
-### 2.1 Security
+### 2.1 Security & Logging
 
-**All security items resolved/accepted as of 2026-08-08** — see the §1.1 note (S1/S3/S4 accepted, S2/S5/S6 fixed). No open security findings.
+- **Unredacted log sites** — several structured call sites still log user/tool/task content without `sanitize_secrets` (the hot paths are fixed; remaining: `conv_user text=`, `inbox_post content=`, `wechat_in text=`, `shell_exec cmd=`, A2A `task=%s`, WeChat `qrcode=`/`context_token=`/HTTP bodies, memfiles `token=`, `save_turn_failed user_msg=`). Sweep all of them — secret-shaped values can land in `~/.slife/logs/*.log`.
+- **N4** — let `credstore` supply exact-match secret values as a denylist complement to the known-shape allowlist (`logfmt.py`).
+- **`config_env_get`** returns resolved secret values verbatim to the LLM (`tools/config.py:43-70`) — masked only by the shape allowlist. Restrict or mask by design.
+- **`desktop_notify`** single-quote injection into the PowerShell one-liner (`platform.py:232-243`) — escape or avoid shell interpolation.
+- **memfiles `_save_url`** is an unauthenticated GET to an arbitrary URL (SSRF surface) — restrict to http(s) + non-local targets or require explicit opt-in.
 
 ### 2.2 Correctness
 
-- **C1 (B1)** — catch the `A2AConfig` `transport:"http"` `ValueError` and **disable A2A with a warning** instead of crashing startup; delete the dead http branch and either implement or remove `HttpStreamableTransport`.
-- **C2 (B3½)** — schedule `MCPClient.ping()` as a background health-check for external stdio servers; on failure, mark `DISCONNECTED` and trigger the existing lazy reconnect.
-- ~~**C3**~~ — **accepted 2026-08-08**, no fix: the conversation holds no secret-shaped strings by save time, so the raw↔sanitized match holds in practice.
-- **C4** — resolve/cancel `_push_futures` in `_stop_process`; distinguish EOF from real failure in `_read_stdout` and surface the error instead of swallowing.
-- **C5** — make `a2a_cancel_task` actually cancel the running subagent task (not just pop a stored result); either wire MQTT async results into the inbox or correct the tool descriptions.
-- **C6** — dedup on `from_user_id + context_token + text` (or drop the redundant `_seen_keys` — the cursor already prevents server-side dups).
-- **C7** — add a Screen-level `escape` binding to the approval modal (or block the App's priority binding while a modal is active).
+- **C1** — catch the `A2AConfig` `transport:"http"` `ValueError` and disable A2A with a warning instead of crashing startup; implement or remove `HttpStreamableTransport`.
+- **W1 / W2** — verify the Anthropic consecutive-user and OpenAI-Responses wire shapes against real endpoints; fix the conversions (merge multi-`tool` blocks into one `user` message; emit `function_call_output` items).
+- **C2** — schedule `MCPClient.ping()` as a background health-check; mark hung/dead servers `DISCONNECTED` and trigger lazy reconnect.
+- **C5** — make `a2a_cancel_task` send a real cancel RPC to the subagent (or at least not mislabel a completed result "cancelled").
+- **C6** — dedup on `from_user_id + context_token + text`, or drop `_seen_keys` (the cursor already prevents server-side dups); don't burn the key on non-text items.
+- **C7** — give the approval modal a real deny path that beats the App's priority `escape → cancel`.
+- **M2/M3/M4** — watchdog restart must not block on a live child; plugin lifespan should shut down pools/clients; MCP stdio teardown should kill the tree (`_kill_process_tree`).
+- **M5/M6/M7** — memdb: add `ESCAPE '\'`; honor `since`/`until` in fts5 count; clamp `limit`; bound the reindex loop.
+- **C4** — cancel/resolve `_push_futures` in `_stop_process` (or delete the dead push machinery — see §3.5) and surface `_read_stdout` failures.
+- **C8** — reserve built-in server names in `mcp_set` / config load.
+- **M1 remainder** — `install_python_package` timeout/cancel orphans the `uv` child (`tools/exec.py:237-242`) — add the same tree-kill as `execute_shell`.
 
-### 2.3 Naming / Config / Docs
+### 2.3 Conformance / Naming / Config / Docs
 
-- **N1 (D3)** — funnel all config writes through one locked writer; refresh the in-memory snapshot after raw-file writes.
-- **N2 (D6)** — standardize tool names on `prefix_verb_noun` at the next breaking release.
-- **N3 (D7)** — fix `switch_to_nvidia_free` against the shipped `nvidia-nim-mcp` tool names or move it to a skill; reconcile `bunx`→`npx` in DESIGN/health/installers.
-- **N4 (B5)** — let `credstore` supply exact-match secret values as a denylist complement.
-- ~~**N5/N6/N7**~~ — done 2026-08-08 (Chinese strings → English incl. the sibling memdb status strings; memfiles HMAC docstring corrected; meta.py stub + unused `Config` import removed; `a2a_list_tasks` notes the in-memory store).
+- **P4** — third-party plugins (not in the hardcoded `_plugins` set) get no watchdog; a crash is permanent until restart. Extend the watchdog to auto-discovered plugins.
+- **N1** — config writes are non-atomic (`write_config` = bare `write_text`) and un-locked; the live race is cross-process (subagents write the same `slife.json5`). Funnel through one locked, atomic writer and refresh the in-memory snapshot after raw writes.
+- **N3** — `switch_to_nvidia_free` tool names unverified against `nvidia-nim-mcp v2.1.2`; reconcile the `bunx`/`npx` mismatch (config uses `npx`, `health.py:139` + installers say `bunx`).
+- **skill_set_enabled** — dead: nothing persists a `skills:` config section (`tools/skill.py:506-520`). Decide the enable/disable store or remove the tool.
+- **`execute_shell`** docstring says "disabled by default" — it's enabled (`tools/exec.py:4`).
+- **`list_tools`** surfaces `_sys_note`/`_sys_trim` without a harness marker (`tools/meta.py:79-89`).
+- **doc drift fixed this pass** — README/DESIGN/zh-CN now match the code (5 plugins, 56 tools/14 categories, `model_list` etc., `_`/`__` harness tiers, plugin naming rule). `plugins/__init__.py` docstring still says "built-in: memdb, mcp, wechat" and links a non-existent `docs/plugins.md`; `schema.sql` and UI messages are Chinese (deliberate for the TUI; comments fine, LLM-facing strings not).
 
 ### 2.4 Tests & CI (see §5)
 
-Real subagent-process tests, end-to-end backend tests, CI that exercises the built wheel + install scripts, coverage gate.
+Real subagent-process tests, end-to-end backend wire tests (W1/W2 would be invisible again), CI that exercises the built wheel + install scripts, coverage gate.
 
 ---
 
-## 3. Fixed — Log
+## 3. Conformance Audit (§ this pass)
 
-| ID | What | Fix (one line) | Tests added |
-|----|------|----------------|-------------|
-| H1 | SSE transport broken by construction | `_connect_http` hands the response to `_read_sse_stream` (owns + closes it); endpoint accepts bare path or JSON `{uri}`; SSE client carries user headers | `test_sse_connect_stream_stays_open`, `test_sse_connect_bare_path_endpoint` |
-| H2 | Skill path traversal / zip-slip / rmtree | `_ensure_within()` on name + file paths + remove; `_extract_zip_safely()` manual member validation (zipfile has no `filter=` param) | `TestSkillSecurity` (4) |
-| H4 | Responses streaming never got the tool name; id used item-id not call-id | record `{name, call_id}` on `output_item.{added,done}`; deterministic index; emit `call_id` | `TestOpenAIResponsesBackend` (2) |
-| H5 | memdb watchdog could never restart; one failed restart killed it | loop alternates wait/restart; failed restart backs off & retries; fallback spawn drops `_harness_tools` guard; + 5 broken log formats | `TestWatchdogRestart` (2) |
-| H6 | MQTT no reconnection recovery | `_on_connect` restores `_connected`, re-subscribes, fires `on_reconnect` (re-announce presence); `messages()` gated on `_closed`; `_connect_event` created in `__init__` | `TestMQTTAdapterReconnect` (4) |
-| H7 | OAuth device flow crashed on closed stdout | instructions → stderr with `[OAUTH]`/`[OAUTH-ACTION]` markers; parent surfaces at WARNING + desktop notification | `test_emit_user_message…`, closed-stdout completion, marker protocol (3) |
-| H8 | `_read_stderr_tail` hung on a live-but-silent child | bounded read: ≤40 lines, each with 1s `wait_for` | `TestMCPWrapperProcessStderrTail` (2) |
-| M1 | `execute_shell`/`run_python_script` timeouts orphaned the process tree | `_kill_process_tree()` — `taskkill /F /T` on Windows, `killpg` on POSIX (`start_new_session=True`) | `TestKillProcessTree` (2) |
-| B2/B4/B6/B8/B9/D5/D10 | pass-1 items | see §1.4 | — |
+### 3.1 Plugins
+
+Five built-in plugins (`mcp`, `memdb`, `wechat`, `memfiles`, `mqtt`), all Streamable HTTP, all `create_plugin_server` + `run_plugin_server`. **Fixed this pass:** double-prefix naming (F-prefix), memdb Chinese (F-lang), memfiles health pointer (F-memfiles). **Remaining:** watchdog gap for third-party plugins (P4), mcp/mqtt lifespan shutdown (M3), `plugins/__init__.py` stale docstring, and the mqtt plugin's poll loop leaks on restart (`service.py:1283-1367` — the old loop keeps draining after a crash+restart).
+
+### 3.2 Native tools
+
+56 classes / 14 categories, verified against the runtime registry. Naming is uniform where it counts (`X_list/X_set/X_remove/X_set_enabled` for Skills/CLI/REST API; `model_*`; `credential_*`); the exceptions are documented (Config has no `config_list`; Models substitutes `model_switch`). README now matches the real names. **Fixed this pass:** `cli_set_enabled` no-op, `rest_api_set_enabled(false)` ignored. **Remaining:** `skill_set_enabled` dead; `base.py` category docstring lists only 9 of the 14 categories; `requires_a2a` is dead (`factory.py:65-69` — no tool sets it `True`); `config_env_get` leaks raw secrets.
+
+### 3.3 Harness tools
+
+Two tiers by prefix: `_` = LLM-visible-but-reserved (`_sys_note`/`_sys_trim`, schema-declared, auto-invoked, prompt-forbidden); `__` = LLM-invisible plugin plumbing (mcp ×2, memdb ×2, wechat ×2, memfiles ×2, mqtt ×11). **Fixed this pass:** the three registration paths now share the `__` predicate (F-filter), and `_sys_trim` targets the active conversation (F-trim). **Remaining:** `list_tools` shows the `_` tools without a marker; the "Harness-only" description marker is inconsistent (mcp/memdb have it, wechat/memfiles/mqtt don't).
+
+### 3.4 Logging
+
+~250 call sites, ≈75–80% conform to `event_name key=value`. **Fixed this pass:** the worst unredacted sites (F-logs). **Remaining systemic:** (1) unsanitized user/tool/task content in otherwise-structured logs; (2) format drift (prose in `config.py`, freeform in `__init__.py`, the `[wrapper]` relay — now sanitized but still not `key=value`); (3) level misuse (`req_start`/`inbox_process`/`tool_error` at info; `mcp_wrapper_init_failed` at error instead of exception). No CJK in log messages; no `print()` misuse.
+
+### 3.5 Over-engineering
+
+- **Dead mechanisms:** `requires_a2a` (`base.py:169`), subagent `set_push_notification`/`_push_futures`/`wait_for_task` (no callers, `subagent/process.py:210-225,452-506`), `update_context_footer` (called only with `""`, `conversation.py:44-57`).
+- **Stubs:** `HttpStreamableTransport` (`a2a/http.py`) — connect/disconnect only.
+- **Redundancy:** three plugin registration paths (now one filter rule), two stderr relays (`logfmt.drain_stderr` + the hand-rolled `[wrapper]`), `ok_json`/`error_json` back-compat re-export in `server_utils.py:352`, `_classify`/`_PLUGIN_LABELS` fallback in `meta.py` that almost never runs.
+- **Good:** `_ensure_turn_consistent` is exactly the right kind of single-point invariant; the watchdog/backoff/unregistration machinery is genuine; `run_daemon` convention is clean.
 
 ---
 
-## 4. Resolved — H3
+## 4. Tests & CI
 
-Synthetic `_sys_note` / `_sys_trim` tool calls broke the Anthropic & OpenAI-Responses backends (both validate history tool names against the declared `tools` list → 400 on the first turn).
-
-**Resolved 2026-08-09** — the fix went further than the agreed fold-to-text: instead of hiding the synthetic pairs at serialization time, `_sys_note` / `_sys_trim` became **real, schema-declared native tools** (`slife/tools/harness.py`), auto-invoked by `AgentLoop._auto_invoke()` through the same execution path as LLM-requested tools. Because their names are now in the declared `tools` list, history validation passes on every backend; no backend serialization special-casing is needed, and DeepSeek (which never validated) is untouched.
-
-- **Design preserved.** The static system prompt stays byte-identical (prompt-cache hits survive); the dynamic status is a message-stream tool pair, never a second `system` message or injected assistant text (no false author attribution).
-- **New constraints kept the design honest.** The system prompt §6 forbids the LLM from calling `_`-prefixed tools; `_sys_note` is pure (reads state), `_sys_trim` genuinely trims to the floor (a legitimate action if the LLM calls it anyway).
-- **Related fix.** The harness tool-call pairs — and every turn — must alternate user/assistant on the wire, so cancelled/errored turns close with an assistant message (`_ensure_turn_closed`) and restored history is normalized (`Conversation.ensure_alternation()`). This also closes a latent consecutive-user 400.
-
----
-
-## 5. Tests & CI
-
-**Current:** **1691 tests pass in ~19s** (was 1670 at review start; +21 regression tests from the fixes).
+**Current:** **1636 pass in ~25s** (regression tests added for H1–H8, M1 in prior passes; this pass only test-assertion updates for the memdb translation).
 
 **Gaps:**
-- **Highest-risk path untested:** `tests/test_subagent_process.py` is entirely mock-based — the JSON-RPC ready handshake, response routing, shutdown ordering, and `send_task` future resolution are never exercised against a real subprocess (and C4 above is real).
-- **Backends' wire format untested end-to-end** — H3 and H4 were invisible because tests mock streams with well-formed shapes (`conftest.py:209-211`). H4 now has streaming tests; H3 is covered by `tests/test_tools_harness.py` (schema declaration + Anthropic wire alternation).
+- **Highest-risk path untested:** `tests/test_subagent_process.py` is entirely mock-based — the JSON-RPC ready handshake, response routing, shutdown ordering, and `send_task` future resolution are never exercised against a real subprocess.
+- **Backends' wire format untested end-to-end** — W1/W2 (Anthropic consecutive-user, Responses `role:"tool"`) are invisible because tests mock streams with well-formed shapes. H3 is covered by `tests/test_tools_harness.py`; H4 by streaming tests.
 - `tests/test_tools_shell.py:143` — `assert "�" in result or result` is tautological.
 - `ci.yml:34-38` builds a wheel but `uv run pytest` re-syncs from pyproject → tests run against source, the **wheel is never exercised**; `pytest-cov`/`pytest-xdist` installed but unused; integration/slow/e2e markers run on every PR with no deselect and no coverage gate.
 - **No CI job exercises the install scripts** (no shellcheck / PSScriptAnalyzer / smoke run); `publish.yml` installs an unpinned `twine`.
@@ -119,18 +136,20 @@ Synthetic `_sys_note` / `_sys_trim` tool calls broke the Anthropic & OpenAI-Resp
 
 ---
 
-## 6. What's Good
+## 5. What's Good
 
-- `slife/threads.py:run_daemon` is exactly the documented convention (daemon thread + `call_soon_threadsafe`, closed-loop guard); no `run_in_executor` remains anywhere in `slife/` — the exit-hang fix is clean and the OAuth notification reuses it.
-- Secret sanitization is a disciplined known-shape allowlist threaded through `drain_stderr`; `SessionFormatter` + contextvars is async-safe.
-- Atomic registry writes (mkstemp + `Path.replace`) in `memfiles/token.py`; registry-based path resolution means no user-controlled path construction in the memfiles server.
-- Watchdog infrastructure (backoff, tool unregistration by `{name}__`, health records, `_stopping` guard) is genuinely present and now actually restarts every plugin (H5).
-- Serial inbox with unconditional turn persistence in `finally` — memory survives cancel/error/max-iterations, matching DESIGN.
-- `terminate_process` escalating force + `_close_pipe_transports` shows careful Windows ProactorEventLoop handling; the subagent stderr write bypasses the Windows GBK codec crash correctly.
+- `slife/threads.py:run_daemon` is exactly the documented convention; no `run_in_executor` remains anywhere in `slife/`.
+- Secret sanitization is a disciplined known-shape allowlist threaded through the loop, conversation, and stderr drains; `SessionFormatter` + contextvars is async-safe.
+- `_ensure_turn_consistent` enforces the no-orphan + alternation invariants at every save/load/append point — the memdb persistence layer can rely on the harness's guarantee.
+- Watchdog infrastructure (backoff, tool unregistration by `{name}__`, health records, `_stopping` guard) is genuine and now actually restarts every built-in plugin.
+- Serial inbox with unconditional turn persistence in `finally` — memory survives cancel/error/max-iterations.
+- `terminate_process` escalating force + `_close_pipe_transports` shows careful Windows ProactorEventLoop handling; the subagent stderr write bypasses the GBK codec crash correctly.
 - `exec.py` uses `create_subprocess_exec` (no shell) for the non-shell tools; `credentials.py` never echoes secret values.
+- The memfiles RFC 5987 `Content-Disposition` fix and the memdb turn-invariant persistence are both correct in the source.
 
 ---
 
-## 7. Repo Hygiene
+## 6. Repo Hygiene
 
-- `.VSCodeCounter/` is regenerating and untracked (commit `4cef127` removed it) — the only untracked file in `git status`, and `.gitignore` doesn't cover it. Add it (`logs/` and `.coverage` are already ignored).
+- `Jack.db` / `slife.db` (with `-wal`/`-shm`) are untracked local data — already gitignored/untracked; keep them out of commits (commit `bd05fc3` untracked a DB backup).
+- `.coverage` and `logs/` are ignored. No stray `.VSCodeCounter/` regeneration was seen this pass.

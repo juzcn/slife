@@ -253,10 +253,14 @@ class AgentLoop:
 
     @staticmethod
     def _truncate_args(args: dict, max_len: int = 80) -> dict:
-        """Truncate long argument values for readable log output."""
+        """Truncate (and mask) long argument values for readable log output.
+
+        Tool-call arguments can carry secrets the LLM passes through — mask
+        before the values reach the session log.
+        """
         result = {}
         for k, v in args.items():
-            s = str(v)
+            s = sanitize_secrets(str(v))
             if len(s) > max_len:
                 s = s[:max_len] + "…"
             result[k] = s
@@ -424,7 +428,22 @@ class AgentLoop:
             content=None, tool_calls=self._serialize_tool_calls([tc]),
         )
         try:
-            result = await tool.execute(**args)
+            # Run the tool against the conversation the loop is currently
+            # processing.  `_ctx.conversation` is set once at startup to the
+            # human conversation, but harness tools are invoked per-source
+            # (WeChat / remote-agent turns have their own Conversation) — a
+            # trim must target the active one, not always the human diary.
+            # Swap for the duration of the call and restore afterwards.
+            ctx = getattr(tool, "_ctx", None)
+            prev_conversation = None
+            if ctx is not None:
+                prev_conversation = ctx.conversation
+                ctx.conversation = conversation
+            try:
+                result = await tool.execute(**args)
+            finally:
+                if ctx is not None:
+                    ctx.conversation = prev_conversation
         except Exception as e:
             result = f"Error: Tool '{name}' failed: {type(e).__name__}: {e}."
             logger.warning("auto_invoke_error name=%s err=%s", name, e)
@@ -725,7 +744,7 @@ class AgentLoop:
         t_request = _time.monotonic()
         last_text = ""
 
-        logger.info("req_start msg=%.100s imgs=%d", user_input, n_imgs)
+        logger.info("req_start msg=%.100s imgs=%d", sanitize_secrets(user_input), n_imgs)
 
         with request_scope(user_input[:50]):
             try:

@@ -222,19 +222,19 @@ class TestValidateGGufPath:
     def test_file_not_found(self, tmp_path):
         ok, msg = validate_gguf_path(str(tmp_path / "nonexistent.gguf"))
         assert ok is False
-        assert "不存在" in msg
+        assert "file does not exist" in msg
 
     def test_not_a_file(self, tmp_path):
         ok, msg = validate_gguf_path(str(tmp_path))
         assert ok is False
-        assert "不是文件" in msg
+        assert "not a file" in msg
 
     def test_wrong_suffix(self, tmp_path):
         p = tmp_path / "model.txt"
         p.write_text("dummy")
         ok, msg = validate_gguf_path(str(p))
         assert ok is False
-        assert "后缀" in msg
+        assert "file suffix is not" in msg
 
     def test_expands_user(self, tmp_path):
         """Tilde expansion works for home directory."""

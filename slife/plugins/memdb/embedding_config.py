@@ -1,7 +1,7 @@
 """Embedding configuration helpers — read, write, validate, reload.
 
 Used by the memory_set_embedding / memory_check_embedding /
-memory_disable_embedding MCP tools to manage the ``memdb.embedding``
+memory_set_enabled MCP tools to manage the ``memdb.embedding``
 section of ``slife.json5`` at runtime.
 """
 
@@ -97,11 +97,11 @@ def validate_gguf_path(path: str) -> tuple[bool, str]:
     """
     p = Path(path).expanduser()
     if not p.exists():
-        return False, f"文件不存在: {p}"
+        return False, f"file does not exist: {p}"
     if not p.is_file():
-        return False, f"不是文件: {p}"
-    if not p.suffix.lower() in (".gguf", ".bin", ".ggml"):
-        return False, f"文件后缀不是 .gguf / .bin / .ggml: {p}"
+        return False, f"not a file: {p}"
+    if p.suffix.lower() not in (".gguf", ".bin", ".ggml"):
+        return False, f"file suffix is not .gguf / .bin / .ggml: {p}"
     return True, str(p)
 
 
@@ -141,7 +141,7 @@ async def reload_embedder() -> dict:
             "model": e._model,
             "dimension": e.dimension,
             "available": True,
-            "message": f"已启用 {e.backend} 后端: {e._model} (dim={e.dimension})",
+            "message": f"enabled {e.backend} backend: {e._model} (dim={e.dimension})",
         }
     else:
         logger.info("embedder_reloaded state=disabled")
@@ -152,8 +152,9 @@ async def reload_embedder() -> dict:
             "dimension": e.dimension,
             "available": False,
             "message": (
-                "Embedding 未配置 — 语义搜索不可用，关键词搜索 (FTS5) 仍可正常工作。"
-                "使用 memory_set_embedding 配置: gguf / transformer / api。"
+                "Embedding not configured — semantic search unavailable, "
+                "keyword search (FTS5) still works. Configure with "
+                "memory_set_embedding: gguf / transformer / api."
             ),
         }
 
@@ -170,12 +171,12 @@ def make_check_report() -> dict:
             "dimension": 1024,
             "available": False,
             "hint": (
-                "未配置 embedding。语义搜索 (hybrid 模式) 不可用。"
-                "关键词搜索 (grep / fts5 / time) 仍可正常工作。"
-                "使用 memory_set_embedding 配置: "
-                "GGUF 本地模型: backend=gguf model=bge-m3 gguf_path=... "
-                "或 Transformer 本地模型: backend=transformer model=BAAI/bge-m3 "
-                "或 OpenAI API: backend=api model=text-embedding-3-small"
+                "No embedding configured. Semantic search (hybrid mode) is "
+                "unavailable. Keyword search (grep / fts5 / time) still works. "
+                "Configure with memory_set_embedding: "
+                "GGUF local model: backend=gguf model=bge-m3 gguf_path=... "
+                "or Transformer local model: backend=transformer model=BAAI/bge-m3 "
+                "or OpenAI API: backend=api model=text-embedding-3-small"
             ),
         }
 
@@ -209,15 +210,15 @@ def make_check_report() -> dict:
         # All good — add a confirmation hint.
         if backend == "gguf":
             result["hint"] = (
-                f"GGUF 嵌入模型已就绪: {model} (dim={dim}, path={gguf_path})"
+                f"GGUF embedding model ready: {model} (dim={dim}, path={gguf_path})"
             )
         elif backend == "transformer":
             result["hint"] = (
-                f"Transformer 嵌入模型已就绪: {model} (dim={dim})"
+                f"Transformer embedding model ready: {model} (dim={dim})"
             )
         else:
             result["hint"] = (
-                f"API 嵌入已就绪: {model} (dim={dim})"
+                f"API embedding ready: {model} (dim={dim})"
             )
     else:
         # Diagnose WHY it's unavailable — file missing vs package missing
@@ -226,44 +227,47 @@ def make_check_report() -> dict:
             if not file_ok:
                 result["gguf_error"] = file_msg
                 result["hint"] = (
-                    f"GGUF 文件不可用: {file_msg}。"
-                    "下载模型文件或使用 memory_set_embedding 切换到 transformer / API 后端。"
+                    f"GGUF file unavailable: {file_msg}. Download the model file "
+                    "or switch to the transformer / API backend with "
+                    "memory_set_embedding."
                 )
             elif not _check_runtime("gguf"):
                 result["hint"] = (
-                    f"GGUF 文件存在 ({gguf_path})，但 llama-cpp-python 未安装。"
-                    "运行: uv pip install llama-cpp-python。"
-                    "在此之前语义搜索 (hybrid 模式) 不可用；"
-                    "关键词搜索 (grep/fts5/time) 仍可正常工作。"
+                    f"GGUF file exists ({gguf_path}) but llama-cpp-python is not "
+                    "installed. Run: uv pip install llama-cpp-python. "
+                    "Until then semantic search (hybrid mode) is unavailable; "
+                    "keyword search (grep/fts5/time) still works."
                 )
             else:
                 result["hint"] = (
-                    f"GGUF 后端不可用，原因未知。文件: {gguf_path}"
+                    f"GGUF backend unavailable for an unknown reason. File: {gguf_path}"
                 )
         elif backend == "transformer":
             if not _check_runtime("transformer"):
                 result["hint"] = (
-                    f"Transformer 模型已配置 ({model})，但 sentence-transformers 未安装。"
-                    "运行: uv pip install sentence-transformers。"
-                    "在此之前语义搜索 (hybrid 模式) 不可用；"
-                    "关键词搜索 (grep/fts5/time) 仍可正常工作。"
+                    f"Transformer model configured ({model}) but "
+                    "sentence-transformers is not installed. Run: "
+                    "uv pip install sentence-transformers. Until then semantic "
+                    "search (hybrid mode) is unavailable; keyword search "
+                    "(grep/fts5/time) still works."
                 )
             else:
                 result["hint"] = (
-                    f"Transformer 后端不可用，原因未知。模型: {model}"
+                    f"Transformer backend unavailable for an unknown reason. Model: {model}"
                 )
         else:  # api
             if not _check_runtime("api"):
                 result["hint"] = (
-                    "API key 已配置，但 openai 包未安装。"
-                    "运行: uv pip install openai。"
-                    "在此之前语义搜索 (hybrid 模式) 不可用；"
-                    "关键词搜索 (grep/fts5/time) 仍可正常工作。"
+                    "API key configured but the openai package is not installed. "
+                    "Run: uv pip install openai. Until then semantic search "
+                    "(hybrid mode) is unavailable; keyword search "
+                    "(grep/fts5/time) still works."
                 )
             else:
                 result["hint"] = (
-                    "API backend 缺少 api_key。确认 models.providers 中配置了 api_key，"
-                    "或改用 GGUF / transformer 本地模型: memory_set_embedding backend=gguf 或 backend=transformer"
+                    "API backend is missing an api_key. Confirm api_key is set in "
+                    "models.providers, or switch to a local model: "
+                    "memory_set_embedding backend=gguf or backend=transformer"
                 )
 
     return result

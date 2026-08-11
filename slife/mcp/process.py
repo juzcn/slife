@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from slife.mcp.client import MCPClient
 
-from slife.logfmt import get_session_id
+from slife.logfmt import get_session_id, sanitize_secrets
 from slife.platform import IS_WINDOWS, terminate_process
 
 logger = logging.getLogger(__name__)
@@ -341,5 +341,7 @@ class MCPWrapperProcess:
                 continue
 
             # Only relay lines that don't match any filter.
-            # All at DEBUG — never reaches the terminal.
-            logger.debug("[wrapper] %s", text)
+            # All at DEBUG — never reaches the terminal.  The wrapper's stderr
+            # can echo config/env values, so mask secrets before logging
+            # (this relay bypasses logfmt.drain_stderr's sanitizer).
+            logger.debug("[wrapper] %s", sanitize_secrets(text))

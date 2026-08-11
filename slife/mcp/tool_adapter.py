@@ -89,8 +89,16 @@ class MCPProxyTool(Tool):
         self._on_server_removed = on_server_removed
         self._on_server_updated = on_server_updated
 
-        # Namespaced tool name: "server__toolname"
-        full_name = f"{self._server}__{self._tool_name}"
+        # Namespaced tool name: "server__toolname".  Built-in plugin tools
+        # that already carry their server as a name prefix (e.g. the mcp
+        # plugin's "mcp_set", the wechat plugin's "wechat_login") would
+        # otherwise become the redundant "mcp__mcp_set" / "wechat__wechat_login"
+        # — drop the duplicated prefix and register them as-is.  External
+        # server tools keep the full "{server}__{tool}" namespace.
+        if self._tool_name.startswith(f"{self._server}_"):
+            full_name = self._tool_name
+        else:
+            full_name = f"{self._server}__{self._tool_name}"
 
         # Override class-level attrs at instance level with real values
         object.__setattr__(self, "name", full_name)

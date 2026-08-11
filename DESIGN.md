@@ -29,6 +29,7 @@ The model input should read uniformly, so text that Slife authors is English:
 
 - **System prompt** (`system_prompt.j2`, `context_status.j2`): English.
 - **Native tool schemas** — tool `name`, `description`, parameter docs, and result strings: English.
+- **Plugin tool schemas and result strings**: English (same policy as native tools — they are model-visible). Known gap: the memdb plugin still returns some Chinese strings; see REVIEW.md.
 - **External tools** (MCP servers, skills, third-party commands): keep the language of the external source — do not translate. They are opaque and pass through as-is.
 
 ## Architecture
@@ -41,7 +42,7 @@ The model input should read uniformly, so text that Slife authors is English:
 ├──────────────────────────────────────────────────────────────────────┤
 │  Agent Service                                                       │
 │  slife/agent/service.py — wires client + tools + loop + plugins      │
-│  Manages MCP, MemDB, A2A/MQTT, WeChat, and subagent lifecycles       │
+│  Manages MCP, MemDB, A2A/MQTT, WeChat, MemFiles, subagent lifecycles │
 │  Unified inbox serializes human + WeChat + MQTT + subagent messages  │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Agent Loop                              │  MCP Client                │
@@ -51,7 +52,7 @@ The model input should read uniformly, so text that Slife authors is English:
 │  Reasoning (thinking) support            │                            │
 ├──────────────────────────────────────────┴───────────────────────────┤
 │  Tool Registry — unified OpenAI function definitions for all tools   │
-│  Native · MemDB · Skills · MCP Proxy · CLI · REST API · A2A          │
+│  Native · MemDB · MCP Proxy · Skills · CLI · REST API · A2A          │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins (independent child processes, Streamable HTTP)              │
 │  slife-mcp (gateway) · slife-memdb (diary) · slife-wechat            │
@@ -72,8 +73,8 @@ Single function-calling loop. Every tool is registered as an OpenAI function def
 User Input → Conversation.add_user_message()        (secrets sanitized)
   → loop (max_iterations):
     → cancel check
-    → _maybe_trim_context()                          (> ceiling → trim to floor)
-    → insert _sys_note (context status)
+    → auto-invoke _sys_note (context status)        (usage computed once)
+    → usage ≥ ceiling? → auto-invoke _sys_trim      (trim to floor)
     → LLM stream → thinking/text/tool deltas → handler callbacks
     → tool calls? → ToolRegistry.execute() concurrently (asyncio.gather)
                     → sanitize_secrets() on each result → truncate → loop
@@ -114,25 +115,25 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 - **Restore**: on startup, recent turns are loaded directly from SQLite within the `context_floor` token budget
 - **Tool result cap**: a single tool result is truncated at `tool_result_ceiling × context_window × 3` characters (default 20% of the window; ~3 chars/token heuristic)
 
-### Harness-Only Tool Convention
+### Harness Tools — Visibility Tiers
 
-Harness tools are internal machinery the LLM never needs to call. Two prefixes encode the visibility tier:
+Harness tools are internal machinery the loop invokes on the agent's behalf. Two prefixes encode the visibility tier:
 
-1. **`__` (double underscore) = harness, LLM-invisible.** Plugin harness tools (`__memory_save_turn`, `__a2a_drain_incoming`, `__wechat_drain_incoming`, `__send_task`, `__mcp_call_tool`, …) are filtered out of the schema entirely by `PluginLifecycle.spawn()` / `AgentService` — they never reach `to_openai_functions()`. They are called programmatically via `client.call_tool("__…")`.
-2. **`_` (single underscore) = harness, LLM-visible but reserved.** The native `_sys_note` / `_sys_trim` (in `slife/tools/harness.py`) **do** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept their tool-call pairs in history (they validate tool names against the declared list — the H3 bug). `AgentLoop._auto_invoke()` calls them on the harness's behalf as normal tool-call pairs; the system prompt forbids the LLM from calling them. `_sys_note` is pure (only reads state); `_sys_trim` genuinely trims to the floor — a legitimate action if the LLM calls it anyway.
+1. **`_` (single underscore) = harness, LLM-visible but reserved.** The native `_sys_note` / `_sys_trim` (in `slife/tools/harness.py`) **do** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept their tool-call pairs in history. `AgentLoop._auto_invoke()` calls them as normal tool-call pairs; the system prompt forbids the LLM from calling them. `_sys_note` is pure (only reads state); `_sys_trim` genuinely trims to the floor — a legitimate action if the LLM calls it anyway.
+2. **`__` (double underscore) = harness, LLM-invisible.** Plugin harness tools (`__memory_save_turn`, `__a2a_drain_incoming`, `__wechat_drain_incoming`, `__mcp_call_tool`, …) are filtered out of the schema before registration — they never reach `to_openai_functions()`. They are called programmatically via `client.call_tool("__…")`.
 
-| Tool | Shape | Purpose |
-|------|-------|---------|
-| `_sys_note` | Native tool, auto-invoked each turn | Reports current context status (time / usage % / tokens / peer events) |
-| `_sys_trim` | Native tool, auto-invoked on trim | Trims the oldest complete turns down to `context_floor` and returns the notification |
-| `__memory_save_turn` | memdb plugin – invisible | Persists a turn to the diary |
-| `__memory_get_recent_turns` | memdb plugin – invisible | Loads recent turns for session restore |
-| `__wechat_drain_incoming` | wechat plugin – invisible | Drains queued incoming WeChat messages |
-| `__wechat_dispatch_reply` | wechat plugin – invisible | Sends a reply and cleans up typing indicator |
-| `__a2a_drain_incoming` | mqtt plugin – invisible | Drains queued inbound A2A tasks + presence events |
-| `__a2a_dispatch_result` | mqtt plugin – invisible | Publishes a task result back to a requester |
+| Tool | Shape | Visibility |
+|------|-------|------------|
+| `_sys_note` | Native tool, auto-invoked each turn | `_` — visible-but-forbidden |
+| `_sys_trim` | Native tool, auto-invoked on trim | `_` — visible-but-forbidden |
+| `__memory_save_turn` / `__memory_get_recent_turns` | memdb plugin | `__` — invisible |
+| `__wechat_drain_incoming` / `__wechat_dispatch_reply` | wechat plugin | `__` — invisible |
+| `__a2a_drain_incoming` / `__a2a_dispatch_result` | mqtt plugin | `__` — invisible |
+| `__send_task`, `__send_task_async`, `__list_agents`, … | mqtt plugin (mesh ops) | `__` — invisible |
+| `__mcp_connection_status` / `__mcp_call_tool` | mcp plugin | `__` — invisible |
+| `__tunnel_status` / `__register_file` | memfiles plugin | `__` — invisible |
 
-Single `_` = visible-but-forbidden (schema-declared when backend history validation requires the name); double `__` = never in the schema.
+Known gap: the filter that removes `__` tools is applied by three slightly different predicates (see REVIEW.md) — today every plugin harness tool uses `__`, so nothing leaks, but the rule should be one shared predicate.
 
 ### System Prompt
 
@@ -173,7 +174,9 @@ Reasoning ("thinking") support is per-backend:
 
 **Prompt caching (Anthropic system blocks):** `AnthropicBackend._oa_msgs_to_anthropic` emits each OpenAI `system` message as an Anthropic system content block and tags the **last** one with `cache_control: {type: "ephemeral"}` — the static base prompt becomes the cache breakpoint, so only the dynamic `_sys_note` status (a message-stream tool pair, never a second `system` message) changes per turn. Guarded by `_use_system_cache_control()`: on by default for `api.anthropic.com`, off for Anthropic-compatible providers (Bailian/Qwen) that may reject the field, overridable per model via `compat.cacheControl`.
 
-**History validation (H3, resolved):** Anthropic and OpenAI-Responses reject tool calls in history whose names aren't in the declared `tools` list. `_sys_note` / `_sys_trim` are therefore **declared native tools** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not conversation-layer fabrications — so their pairs validate. The system prompt forbids the LLM from calling them (see §6 of `system_prompt.j2`), and both are side-effect free if it does. No backend serialization special-casing is needed; DeepSeek (Chat Completions) doesn't validate and is unaffected.
+**History validation (H3, resolved):** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_sys_note` / `_sys_trim` are therefore **declared native tools** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not conversation-layer fabrications — so their pairs validate. The system prompt forbids the LLM from calling them (see §6 of `system_prompt.j2`), and both are side-effect free if it does. DeepSeek (Chat Completions) doesn't validate and is unaffected.
+
+> **Open question (HIGH, unverified):** `OpenAIResponsesBackend._oa_msgs_to_responses` converts history to a Chat-Completions-shaped input (`{"role": "tool", "call_id": …}` and `tool_calls` embedded in the assistant message). The Responses API expects `function_call` / `function_call_output` items instead. If confirmed against a live endpoint, the `openai-responses` backend rejects multi-turn tool conversations out of the box. Tracked in REVIEW.md.
 
 ### Model Management
 
@@ -185,7 +188,7 @@ Runtime model management via native tools — no config editing needed:
 | `model_set` | Add/update a model (creates provider if new) |
 | `model_remove` | Remove by ref; auto-switches if it was active |
 | `model_switch` | Switch active model by ref — persists to config and rebuilds the client live |
-| `switch_to_nvidia_free` | In-memory-only switch to a free NVIDIA NIM model via the nvidia-nim MCP server |
+| `switch_to_nvidia_free` | In-memory-only switch to a free NVIDIA NIM model via the nvidia-nim MCP server (known gap: tool names not re-verified against the shipped nvidia-nim-mcp; see REVIEW.md) |
 
 Model switches fire callbacks that rebuild the LLM client, update loop parameters (vision, context window, modalities), and re-render the system prompt.
 
@@ -193,65 +196,59 @@ Model switches fire callbacks that rebuild the LLM client, update loop parameter
 
 ### Tool ABC
 
-`Tool` (`slife/tools/base.py`) defines `name`, `description`, `parameters` (JSON Schema), `category`, and `async execute(**kwargs) -> str`. Required fields are validated at class-definition time via `__init_subclass__`. Optional class flags:
+`Tool` (`slife/tools/base.py`) defines `name`, `description`, `parameters` (JSON Schema), `category`, and `async execute(**kwargs) -> str`. Required fields are validated at class-definition time via `__init_subclass__`. `from_config(cfg, config, ctx)` allows per-tool construction from the `tools:` overrides in `slife.json5` (e.g. `execute_shell` reads its default timeout there); `ctx` carries runtime references (registry, config, MCP client, conversation) as `self._ctx`.
 
-- `requires_a2a` — register only when the A2A mesh is active
-- `_skip_auto_register` — excluded from auto-discovery (used by `MCPProxyTool`)
+Categories in use (14): `System`, `Execution`, `Skills`, `CLI`, `REST API`, `A2A`, `Subagent`, `Config`, `Models`, `Credentials`, `Vision`, `Display`, `Harness`, `Meta`. The docstring in `base.py` lists only a subset — treat it as illustrative, not enforced.
 
-`from_config(cfg, config)` allows per-tool construction from the `tools:` overrides in `slife.json5` (e.g. `execute_shell` reads its default timeout there).
+> `requires_a2a` is vestigial: no tool sets it `True` today (the A2A tools self-guard at runtime) and it is no longer the registration gate. See REVIEW.md.
 
 ### Auto-Discovery
 
-`slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides and `requires_a2a` without a mesh.
+`slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, skips vision tools when the active model can't see images, and skips `_skip_auto_register` classes (e.g. `MCPProxyTool`, created per-instance at runtime).
 
-### Tool Categories — 59 native tools (57 LLM-visible + 2 harness `_` tools)
+### Tool Categories — 56 native tools (up to 54 LLM-visible + 2 harness `_` tools)
+
+`include_image` is dropped when the active model has no vision; `install_python_package` is disabled by default in the shipped config.
 
 All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM sees only function names and schemas.
 
 | Category | File | Tools |
 |----------|------|-------|
-| System | `system.py` | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
+| System | `system.py` (+`a2a.py`) | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog`, `notify_user` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill.py` | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli.py` | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled`, `cli_check_installed` |
 | REST API | `rest_api.py` | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
-| A2A | `a2a.py` + `mqtt` plugin | native, one uniform `a2a_` prefix — `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task` (A2A standard ops, both transports), `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card` (agent/MQTT only), `a2a_broadcast` (extension); `spawn_subagent`, `list_subagents`, `stop_subagent` (subagent lifecycle, no prefix), `notify_user` (desktop alert, not A2A) |
+| A2A | `a2a.py` + `mqtt` plugin | one uniform `a2a_` prefix — `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task` (both transports), `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` (MQTT-only) |
+| Subagent | `a2a.py` | `spawn_subagent`, `list_subagents`, `stop_subagent` (no prefix) |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
-| MemFiles | `memfiles` plugin | `memfiles__save_content_or_files`, `memfiles__expose_file` (plugin MCP tools) |
-| Vision | `vision.py` | `include_image` (native — injects image blocks into the conversation) |
+| Vision | `vision.py` | `include_image` (native — injects image blocks into the conversation; gated on a vision-capable model) |
 | Display | `display.py` | `show_image` |
+| Harness | `harness.py` | `_sys_note`, `_sys_trim` (visible-but-reserved, see above) |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
-**Five managed categories** (MCP / Skills / CLI / REST API / Models) support a standard **list / set / remove** surface (plus `X_set_enabled` where an enable/disable toggle applies). `X_set` is an idempotent upsert — add + update in one call.
+Plus **plugin tools** — registered at runtime as `{server}__{tool}` proxies via `create_proxy_tools`:
 
-#### Tool Naming Convention
+| Server | LLM-visible tools |
+|--------|-------------------|
+| `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
+| `memdb` | `memdb__memory_list_recent`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_summarize`, `memdb__memory_count`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
+| `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
+| `memfiles` | `memfiles__expose_file`, `memfiles__save_content_or_files` |
 
-All managed tools follow `category_verb[_noun]` order:
+Naming rule: a plugin tool already carrying its server as a name prefix (`mcp_set`, `wechat_login`) is registered as-is (avoids the redundant `mcp__mcp_set` / `wechat__wechat_login`); otherwise the proxy adds `{server}__`. External MCP servers always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
 
-| Category | Prefix | Examples |
-|----------|--------|----------|
-| Models | `model_` | `model_list`, `model_set`, `model_switch` |
-| Skills | `skill_` | `skill_list`, `skill_use` |
-| CLI | `cli_` | `cli_list`, `cli_set` |
-| REST API | `rest_api_` | `rest_api_list`, `rest_api_set` |
-| MCP (built-in) | `mcp_` | `mcp_set`, `mcp_list`, `mcp_list_tools` |
-| Subagent (lifecycle) | `subagent` / verb_noun | `spawn_subagent`, `list_subagents`, `stop_subagent` |
-| A2A (standard ops) | `a2a_` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task` (both transports) |
-| A2A (mesh discovery) | `a2a_` | `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` (agent/MQTT only) |
-| Config | `config_env_` | `config_env_set`, `config_env_get` |
-| Credentials | `credential_` | `credential_check`, `credential_inject` |
-
-Core execution tools (`execute_shell`, `install_python_package`, `run_python_script`) and meta tools (`list_tools`, `clear_context`) use `verb_noun` without a category prefix — they are singleton tools, not categories.
+**Managed categories** (Skills / CLI / REST API / Models / MCP) support a standard **`X_list` / `X_set` / `X_remove`** surface (plus `X_set_enabled` where an enable/disable toggle applies). `X_set` is an idempotent upsert — add + update in one call. Config uses the `config_env_*` prefix (no `config_list`); Models substitutes `model_switch` for `X_set_enabled`.
 
 ### Registry
 
-`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. A module-level singleton (`get_registry()`) lets meta-tools introspect without circular imports. Dynamic tools — plugin tools (memdb, wechat), MCP wrapper tools, and external MCP server tools — are registered at runtime as `MCPProxyTool` instances named `"{server}__{tool}"` (e.g. `filesystem__read_file`, `memdb__memory_search`). Harness-only plugin tools (prefixed `__`: `__memory_save_turn`, `__wechat_drain_incoming`, etc.) are filtered out before registration.
+`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. A module-level singleton (`get_registry()`) lets meta-tools introspect without circular imports. Dynamic tools — plugin tools, MCP wrapper tools, and external MCP server tools — are registered at runtime as `MCPProxyTool` instances named `"{server}__{tool}"`. Harness-only plugin tools (prefixed `__`) are filtered out before registration.
 
 ### Timeout Architecture
 
-Single enforcement point at the Agent Loop level. `_inject_meta_params()` adds `_timeout` (number) and `_async` (boolean) to **every** function definition sent to the LLM:
+Single enforcement point at the Agent Loop level. `_inject_meta_params()` adds `_timeout` (number), `_async` (boolean), and `_approve` (boolean) to **every** function definition sent to the LLM:
 
 - Tools **without** a native `timeout` parameter → `asyncio.wait_for(timeout=…)`
 - Tools **with** a native `timeout` (`execute_shell`) → mapped to the native argument, no double-wrap
@@ -264,9 +261,11 @@ Approval is **model-driven** (pure model judgment). The loop injects an `_approv
 
 There is no hardcoded `requires_approval` flag on any tool or MCP server — the model decides per-call whether to ask the user. Headless (subagent) contexts have no handler and auto-approve.
 
+> Known gap: Esc on the approval dialog is intercepted by the App's priority `escape → cancel` binding, so the modal's deny never fires — the whole agent loop is cancelled instead, leaving the modal stuck (see REVIEW.md, C7).
+
 ## Plugin Architecture
 
-Four built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) for all of them — the memfiles plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`), but its control surface is pure MCP.
+Five built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) for all of them — the memfiles plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`), but its control surface is pure MCP.
 
 **WSL note:** Custom env vars set via `create_subprocess_exec(env=…)` are NOT forwarded to Windows `.exe` processes through WSL interop. `WSLENV` is only read by the WSL `/init` at session start, not by child processes. Therefore, **all MCP server runtimes on WSL must be Linux-native binaries** — the install script enforces this by detecting `/mnt/*` paths and installing native versions.
 
@@ -278,7 +277,7 @@ Four built-in plugins run as independent child processes. Communication is via *
 4. Define `@mcp.tool` functions; optionally serve plain-HTTP endpoints on the same port via `@mcp.custom_route(path, methods=[...])` (e.g. memfiles `GET /share/{token}`)
 5. Be importable: `python -m <module>.server`
 
-No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. The parent reads the port line with a 30 s timeout; initial client connection retries 30× at 0.1 s.
+No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s timeout; initial client connection retries 30× at 0.1 s.
 
 ### Watchdog (Auto-Restart)
 
@@ -287,11 +286,13 @@ Each plugin runs with a **watchdog** background task that monitors the child pro
 | Feature | Detail |
 |---------|--------|
 | Detection | `await subprocess.wait()` — blocks until the child exits |
-| On crash | Unregisters the plugin's proxy tools, then restarts the process |
+| On crash | Unregisters the plugin's proxy tools (`unregister_by_prefix("{name}__")`), then restarts the process |
 | Backoff | Exponential: 1 s → 2 s → 4 s → … → 30 s max |
-| Max restarts | 3 consecutive failures → watchdog gives up and logs an error |
+| Max restarts | 5 consecutive failures → watchdog gives up and logs an error |
 | Success reset | A successful restart resets the backoff and retry counter |
-| Scope | **mcp** (respawns wrapper + reconnects external servers), **memdb**, **wechat** (restores poll loop) |
+| Scope | **mcp** (respawns wrapper + reconnects external servers), **memdb**, **wechat** (restores poll loop), **memfiles**, **mqtt** |
+
+> Known gap: plugins not in the hardcoded `_plugins` set (third-party packages dropped into `slife/plugins/`) start but get **no** watchdog — a crash is permanent until restart. See REVIEW.md.
 
 Subagents do **not** have their own watchdog — they connect to the main agent's plugin processes via HTTP, so a subagent crash only kills the subagent, not the shared infrastructure.
 
@@ -301,7 +302,7 @@ Processes communicate through environment variables:
 |----------|---------|
 | `SLIFE_SESSION_ID` / `SLIFE_AGENT_ID` | Log correlation, agent identity |
 | `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` | Directory overrides |
-| `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES) |
+| `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES / MQTT) |
 | `SLIFE_MEMFILES_URL` | Public ngrok URL (set inside the memfiles plugin process) |
 
 ### Built-in Plugins
@@ -312,6 +313,7 @@ Processes communicate through environment variables:
 | **slife-memdb** | Streamable HTTP | Diary database. Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
 | **slife-memfiles** | Streamable HTTP + `/share` route | File cabinet + public sharing. MCP tools (`expose_file`, `save_content_or_files`), harness tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel and in-process token registry. |
+| **slife-mqtt** | Streamable HTTP | A2A mesh channel over MQTT (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). All its tools are `__`-prefixed harness plumbing; the LLM-facing surface is the native `a2a_*` tools. |
 
 ### slife-mcp — External MCP Gateway
 
@@ -323,7 +325,7 @@ Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` 
 | **http (SSE)** | GET with `Accept: text/event-stream`, POST to message endpoint | Remote SSE endpoints (tried first for URLs) |
 | **http (streamable)** | POST JSON-RPC directly, `mcp-session-id` header | Remote Streamable HTTP endpoints (fallback) |
 
-Exposed management tools: `mcp_set` (configure: add/update a server, idempotent), `mcp_set_enabled` (toggle enable/disable), `mcp_remove`, `mcp_list` (config view), `mcp_list_tools`. Live status is reported by `check_mcp` via the harness `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is a harness tool — LLM-invisible, invoked only by the `server__tool` proxies.
+Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`). Live status is reported by `check_mcp` via the harness `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is a harness tool — LLM-invisible, invoked only by the `server__tool` proxies.
 
 `mcp_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp` (a standalone tool, also run by `system_health`) calls the harness `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
 
@@ -362,7 +364,7 @@ Every turn permanently recorded as an independent row — no session concept, a 
 
 Supporting structures: `diary_fts` (FTS5 content-sync table over message/summary/tags/channel with insert/delete triggers), `diary_semantic` (sqlite-vec `vec0` table: embedding + rowid + chunk index + summary/tags/created_at), and `diary_meta` (key-value store tracking the embedding model identity for migration detection).
 
-Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the harness-only `__memory_save_turn` tool.
+Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the harness-only `__memory_save_turn` tool. The save-side invariant is enforced by the harness: a turn with an orphaned `tool_call` is repaired (`_ensure_turn_consistent`) before it reaches the plugin, so the diary never persists an incomplete pair.
 
 ### Search
 
@@ -376,6 +378,8 @@ Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN), B-tree on `c
 | `time` | Browse by date |
 
 Hybrid mode uses Reciprocal Rank Fusion (RRF, k=60). Without an embedding backend, hybrid degrades to FTS5-only gracefully.
+
+> Known gaps (see REVIEW.md): `grep` LIKE-escaping is a no-op without an `ESCAPE '\'` clause, so `%`/`_` queries return nothing; `memory_count` in fts5 mode ignores `since`/`until`; search `limit` is unclamped (negative → unlimited); the background reindex loop can spin forever on a persistently failing embedder.
 
 ### Embedding
 
@@ -399,25 +403,24 @@ On startup, recent turns are read **directly from SQLite** — no MCP transport,
 
 ## A2A — Agent-to-Agent
 
-One tool surface over three transports:
+One tool namespace over two transports, auto-selected from the agent_id:
 
 ```
   a2a_send_task / a2a_send_task_async / …   (auto-routes by agent_id)
          │
-  ┌──────┼──────┐
-  │      │      │
- MQTT   HTTP   Subagent
-(paho) (mcp)  (JSON-RPC stdin/stdout)
- complete skeleton complete
+  ┌──────┴──────┐
+ MQTT          Subagent
+(paho, plugin) (JSON-RPC stdin/stdout)
+ implemented   implemented, always available
 ```
 
 | Transport | Backend | Status |
 |-----------|---------|--------|
-| **MQTT** | paho-mqtt (MQTTv5) → asyncio.Queue, LWT | Fully implemented |
-| **HTTP Streamable** | `mcp.client.streamable_http` | Skeleton — connect/disconnect only |
+| **MQTT** | `slife-mqtt` plugin (paho-mqtt MQTTv5 → asyncio.Queue, LWT) | Fully implemented |
 | **Subagent** | `asyncio.create_subprocess_exec`, JSON-RPC 2.0 | Fully implemented, always available |
+| **HTTP Streamable** | `slife/a2a/http.py` (`HttpStreamableTransport`) | Skeleton — connect/disconnect only; publish/subscribe/messages raise `NotImplementedError`. **`transport:"http"` crashes startup** — catch the config error and disable A2A instead (see REVIEW.md, C1) |
 
-The A2A thin protocol has **one tool namespace** over two transports, auto-selected from the agent_id: the **task tools** (`a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`) route a local worker (from `list_subagents`) through the `SubagentManager` over stdin, and any other id through the `mqtt` plugin to a remote mesh peer over MQTT. Every A2A tool carries the same uniform `a2a_` prefix; the remote-only mesh features are native `a2a_list_agents` / `a2a_list_tasks` / `a2a_agent_card` / `a2a_broadcast`. The plugin itself only exposes `__`-prefixed (LLM-invisible) harness plumbing, called by the native tools through the mesh MCP client. Subagents are not a `TransportAdapter`.
+The A2A thin protocol has **one tool namespace** over the two implemented transports: the **task tools** (`a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`) route a local worker (from `list_subagents`) through the `SubagentManager` over stdin, and any other id through the `mqtt` plugin to a remote mesh peer over MQTT. Every A2A tool carries the same uniform `a2a_` prefix; the remote-only mesh features are native `a2a_list_agents` / `a2a_list_tasks` / `a2a_agent_card` / `a2a_broadcast`. The `mqtt` plugin itself only exposes `__`-prefixed (LLM-invisible) harness plumbing, called by the native tools through the mesh MCP client. Subagents are not a `TransportAdapter`.
 
 ### MQTT Mesh
 
@@ -426,6 +429,7 @@ The A2A thin protocol has **one tool namespace** over two transports, auto-selec
 - Client id is `<agent_id>-<pid>` to allow multiple processes per agent id
 - Duplicate agent detection: after subscribing, the client listens 1.5 s for an existing presence with the same id and exits with a clear error rather than splitting the identity
 - Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; if the probe fails, the mqtt plugin is not started (A2A disabled) and this is reported via `system_health`
+- The mesh connects **eagerly** when the plugin starts (lifespan hook) so presence is announced at launch; a failed eager connect is tolerated and mesh tools attempt a lazy connect on demand
 - Peer presence **transitions** (online/offline/timeout) reach the LLM context: the mqtt plugin queues them; `AgentService._mqtt_poll_loop` drains them and appends the TUI-identical line (via `format_presence_line`, which also filters heartbeat-driven `status_change`) to a buffer that `AgentLoop` drains read-once into the `_sys_note` footer each turn. The footer carries only *changes* — the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with stale state
 
 ### Unified Inbox
@@ -443,7 +447,7 @@ Messages are processed sequentially — only one AgentLoop runs at a time. Human
 
 ### Task Store
 
-Sent/received tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap). The store is **not persisted across restarts** — `a2a_list_tasks` after restart is empty by design.
+Sent/received tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap). The store is **not persisted across restarts** — `a2a_list_tasks` after restart is empty by design. (The tool description no longer warns about this — restore the caveat; see REVIEW.md, N7.)
 
 ### Subagent Transport
 
@@ -451,8 +455,10 @@ Local child-process workers, always available — no config toggle:
 
 - **headless.py**: Slife without TUI, JSON-RPC 2.0 over stdin/stdout — methods `tasks/send`, `shutdown`; notifications `tasks/complete`, `tasks/progress`; a `{ready: true}` result signals startup
 - **SubagentManager**: spawn/stop/list lifecycle; auto-names `sub-1`, `sub-2`, …; `max_subagents` default 5, `task_timeout` default 120 s
-- **Shared plugins**: subagents connect to the main agent's plugin servers (MCP / memdb / wechat / mqtt) via inherited ports — no isolation; they can send but never drain the inbound queue (all replies and management belong to the main agent)
+- **Shared plugins**: subagents connect to the main agent's plugin servers (MCP / memdb / wechat / mqtt / memfiles) via inherited ports — no isolation; they can send but never drain the inbound queue (all replies and management belong to the main agent)
 - **Recursion**: subagents can spawn their own descendants (each level has its own SubagentManager + watchdogs)
+
+> Known gap: `a2a_cancel_task` cannot cancel an in-flight subagent task (it only pops a stored async result, mislabelled "cancelled"). See REVIEW.md, C5.
 
 ## Image & Memfiles
 
@@ -498,7 +504,7 @@ Textual TUI with minimal chrome:
 - **AssistantMessage** — streaming text with collapsible thinking blocks (Enter/Space toggle)
 - **ToolCallWidget** — collapsible amber headers: status icon, label, primary-arg preview, iteration counter; Ctrl+Y copies the result
 - **StatusBar** — model name, thinking indicator, inbox state, token count
-- **ApprovalDialog** — modal approve/deny for `requires_approval` tools
+- **ApprovalDialog** — modal approve/deny for `_approve: true` tool calls
 - **Auto-restore** — rebuilds last session's UI from the diary on startup
 
 All user-supplied text is rendered with `markup=False` to prevent `MarkupError` injection.
@@ -520,7 +526,7 @@ Not all tools are in every request. Several categories use lightweight summaries
 
 | Category | Browse | Load |
 |----------|--------|------|
-| MemDB | `memory_search` | `memory_open` |
+| MemDB | `memdb__memory_search` | `memdb__memory_open` |
 | Skills | `skill_list` | `skill_use` |
 | MCP | `mcp_list` / `mcp_list_tools` | `mcp_set_enabled(name, enabled=True)` |
 
@@ -542,7 +548,7 @@ Not all tools are in every request. Several categories use lightweight summaries
 └──────────────────────────────────────────────┘
 ```
 
-`${VAR:-default}` fallbacks supported; resolution is recursive over strings/lists/dicts.
+`${VAR:-default}` fallbacks supported; resolution is recursive over strings/lists/dicts. Known gap: `${VAR:-default}` resolves from the shell env only and never consults credstore, so the fallback beats a credstore-held key for that form (see REVIEW.md).
 
 ### Credstore Backend Matrix
 
@@ -563,7 +569,7 @@ Three chokepoints, single pattern-masking engine (`logfmt.sanitize_secrets`):
 2. **Tool arguments** — `Conversation.add_assistant_message()` on tool_call arguments
 3. **Outbound** — `AgentLoop._execute_tools()` on every tool result
 
-Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bearer` tokens, and credential-named `key=value` pairs are masked with `<MASKED>`. This is a pattern-based best effort, not a guarantee (see REVIEW.md).
+Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bearer` tokens, and credential-named `key=value` pairs are masked with `<MASKED>`. This is a pattern-based best effort, not a guarantee — there is no exact-match denylist from credstore, and several log call sites bypass it (see REVIEW.md §logging).
 
 ### Config Sections
 
@@ -576,7 +582,7 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 | `active_model` | Currently active model ref (`provider/model`) |
 | `agent` | `max_iterations`, `tool_timeout`, `context_floor`, `context_ceiling`, `tool_result_ceiling` |
 | `tools` | Per-tool overrides (timeout, enabled) |
-| `mcp.servers` | External MCP server configs (incl. `require_approval`) |
+| `mcp.servers` | External MCP server configs |
 | `memdb.embedding` | Embedding backend config (backend, model, dim, gguf_path) |
 | `wechat` | `enabled` toggle |
 | `mqtt` | A2A config (transport, broker host/port, heartbeat, task_timeout) |
@@ -594,7 +600,7 @@ Health checks fall into two categories. `system_health` runs all of them togethe
 |------------|-----|
 | **node** | Readability.js article extraction (fetch MCP fallback) |
 | **npm** | npx-based MCP servers |
-| **bun** | nvidia-nim MCP server (bunx) |
+| **bun** | JS/TS MCP servers via bunx (e.g. nvidia-nim; note the shipped config runs `npx` — see REVIEW.md N3) |
 | **uv** | uvx-based MCP servers |
 
 **Dynamic runtime checks** — each query inspects current application state:
@@ -609,51 +615,63 @@ Health checks fall into two categories. `system_health` runs all of them togethe
 
 The watchdog only monitors processes — it does not introspect application state. Each plugin owns its own runtime health check. Missing deps are recorded as warnings — Slife still starts; affected MCP servers won't work.
 
+## Logging Convention
+
+Structured log lines: `event_name key1=value1 key2=value2 …` (see `slife/logfmt.py`).
+
+- Event name: snake_case, past-tense for completions (`tool_done`), present-tense for state (`mcp_connected`)
+- Levels: `debug` = per-request detail, `info` = lifecycle milestones, `warning` = recoverable, `error`/`exception` = hard failure (use `exception()` to keep the traceback)
+- Every line that could contain user input, tool args, tool output, or subprocess stderr passes `sanitize_secrets()` before logging
+- Plugins inherit the session id and write to per-session files via `setup_server_logging`; their stderr is relayed by the parent at DEBUG
+- No diagnostics on stdout (reserved for the TUI and the plugin port signal)
+
+Known gaps (see REVIEW.md): several call sites log raw user/tool/task content without sanitization, a few use prose instead of `key=value`, and the MCP wrapper stderr relay re-implements `drain_stderr` without masking.
+
 ## Project Structure
 
 ```
 slife/
   agent/               # LLM interaction
-    loop.py            #   Function-calling loop (streaming, concurrent tool execution, trim)
+    loop.py            #   Function-calling loop (streaming, concurrent tool execution, harness auto-invoke)
     service.py         #   Lifecycle manager (plugins, inbox, model switching)
-    conversation.py    #   Message storage + history (OpenAI-format, sanitization, repair)
+    conversation.py    #   Message storage + history (OpenAI-format, sanitization, _ensure_turn_consistent)
     llm_client.py      #   Backend router + StreamChunk
     system_prompt.py   #   Prompt rendering (static + dynamic Jinja2)
     templates/         #   system_prompt.j2, context_status.j2
     llm_backends/      #   API backends: openai.py, anthropic.py, openai_responses.py
     inbox.py           #   Unified message queue + ConversationStore
-    plugins.py         #   Plugin spawn/stop helpers
+    plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle)
     multimodal.py      #   Image encoding for vision models
-  tools/               # Native tools (auto-discovered, 59)
-    base.py            #   Tool ABC
+  tools/               # Native tools (auto-discovered, 56)
+    base.py            #   Tool ABC + make_params/NO_PARAMS/require_params
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
-    system.py          #   System health, embedding/wechat checks
-    exec.py            #   Shell, Python, package install
+    _config_io.py      #   JSON5 read/write helpers
+    harness.py         #   _sys_note / _sys_trim (visible-but-reserved harness tools)
+    system.py          #   system_health + per-plugin checks
+    exec.py            #   Shell, Python, package install (+ _kill_process_tree)
     skill.py           #   Skill management (SKILL.md)
     cli.py             #   External CLI tool management
     rest_api.py        #   REST API tool management (OpenAPI → MCP)
-    a2a.py             #   Agent-to-agent tools (13)
-    models.py          #   Model management (list/add/remove/switch)
+    a2a.py             #   A2A + subagent lifecycle tools (13)
+    models.py          #   Model management (model_list/set/remove/switch)
     config.py          #   Config env var + native tool toggles
     credentials.py     #   Credential check/inject/uninject
     vision.py          #   include_image — vision helper (native, conversation-scoped)
     display.py         #   Inline image display
     meta.py            #   list_tools, check_async, cancel_async, clear_context
-    _config_io.py      #   JSON5 read/write helpers
   plugins/             # Built-in plugins (auto-discovered server.py packages)
     mcp/               #   External MCP gateway (raw JSON-RPC: stdio/SSE/streamable)
     memdb/             #   Diary database (store, search, embeddings, schema.sql)
     wechat/            #   WeChat messaging (iLink ClawBot client)
-    memfiles/          #   Standard plugin: file cabinet + sharing
-      server.py        #   MCP tools + /share route + lifespan (owns tunnel + registry)
-      tunnel.py        #   Ngrok tunnel lifecycle (official SDK, embedded agent)
+    memfiles/          #   File cabinet + sharing (server.py owns tunnel + registry, tunnel.py = ngrok)
+    mqtt/              #   A2A/MQTT mesh channel (all __ harness tools)
   mcp/                 # MCP client infra
     client.py          #   Streamable HTTP client
-    tool_adapter.py    #   MCPProxyTool (bridges MCP → Tool ABC)
+    tool_adapter.py    #   MCPProxyTool (bridges MCP → Tool ABC, ProxyRoute dispatch)
     process.py         #   MCPWrapperProcess (spawn, port handshake)
     oauth.py           #   OAuth 2.0 device-code flow
-  a2a/                 # Agent-to-Agent
+  a2a/                 # Agent-to-Agent protocol
     transport.py       #   Abstract transport + TransportMessage
     mqtt.py            #   MQTT adapter (paho-mqtt, MQTTv5, LWT)
     http.py            #   HTTP Streamable transport (skeleton)
@@ -661,9 +679,8 @@ slife/
     broker.py          #   Broker TCP probe
     task_store.py      #   In-memory task records
     card.py            #   AgentCard + format_presence_line (TUI/context shared)
-    config.py          #   A2A config
+    config.py          #   A2A config (transport validation)
     identity.py        #   AgentId, HUMAN/WECHAT sentinels, AgentMessage
-    tools.py           #   Back-compat re-export of slife.tools.a2a
   subagent/            # Local workers
     headless.py        #   Headless JSON-RPC 2.0 process
     process.py         #   SubagentProcess + SubagentManager
@@ -680,7 +697,7 @@ slife/
   paths.py             # Filesystem paths (dev vs prod, data dir, DB, memfiles)
   platform.py          # OS detection, shell detection, process lifecycle, notifications
   logfmt.py            # Structured logging + secret sanitization
-  server_utils.py      # Plugin lifecycle: port binding, signal, FastMCP helpers
+  server_utils.py      # Plugin contract: create_plugin_server, run_plugin_server, port/signal
   bootstrap.py         # Logging setup, skill seeding, console restore
   health.py            # External dependency checks (node, npm, bun, uv)
   env.py               # ${VAR} environment resolution
@@ -703,6 +720,22 @@ credstore/
 
 skills/                # On-demand SKILL.md skills (seeded to ~/.slife/skills/)
 ```
+
+## Known Gaps & Open Items
+
+The latest audit, open correctness items, and test/CI gaps are tracked in **[REVIEW.md](REVIEW.md)**. Highlights:
+
+- **C1** — `a2a transport:"http"` crashes startup; `HttpStreamableTransport` is a stub.
+- **C2** — external MCP servers have no background health-check/reconnect; a died server stays `CONNECTED`.
+- **C5** — `a2a_cancel_task` can't cancel an in-flight subagent task.
+- **C6** — WeChat dedup key can drop real messages.
+- **C7** — approval-dialog Esc is intercepted by the App's priority binding.
+- **N1** — config writes are non-atomic and un-locked (cross-process race with subagents).
+- **N3** — `switch_to_nvidia_free` tool names unverified against `nvidia-nim-mcp`; `bunx` vs `npx` mismatch in `health.py`.
+- **N4** — no exact-match secret denylist from credstore.
+- **Logging** — several unredacted call sites; memdb plugin still returns Chinese strings.
+- **Harness filtering** — three inconsistent `__`-filter predicates (C9).
+- **Tests/CI** — subagent process and backend wire formats untested end-to-end; wheel never exercised; install scripts unexercised.
 
 ## License
 

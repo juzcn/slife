@@ -9,7 +9,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: 54 native tools in 12 categories, external MCP servers, always-on memory with hybrid search, inline images, runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: up to 54 native tools in 14 categories (plus 2 harness tools), five built-in plugin services, always-on memory with hybrid search, inline images, runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -112,7 +112,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | `anthropic-messages` | Claude / Bailian (Qwen) | Messages |
 | `openai-responses` | OpenAI | Responses |
 
-Switch at runtime: `list_models` → `switch_model(ref="bailian/qwen3.8-max")`.
+Switch at runtime: `model_list` → `model_switch(ref="bailian/qwen3.8-max")`.
 
 **Secrets never reach the LLM.** User input, tool-call arguments, and every tool result pass through a pattern-based sanitizer before entering the conversation — API key shapes (`sk-*`, `ghp_*`, Bearer tokens, …) are auto-masked.
 
@@ -120,34 +120,43 @@ Switch at runtime: `list_models` → `switch_model(ref="bailian/qwen3.8-max")`.
 
 ### Tools
 
-All unified as OpenAI function definitions. The LLM sees no difference between native and MCP tools.
+All unified as OpenAI function definitions. The LLM sees no difference between native, plugin, and external MCP tools.
 
-**55 native tools in 13 categories** — auto-discovered from `slife/tools/`:
+**56 native tools in 14 categories** — auto-discovered from `slife/tools/` (up to 54 LLM-visible + 2 harness; `include_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
 
 | Category | Tools |
 |----------|-------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog`, `notify_user` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled`, `cli_check_installed` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
-| A2A | native, uniform `a2a_*` — task routing (auto-routed local ↔ remote) + mesh discovery (`a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`) + subagent lifecycle (`spawn_subagent`, `list_subagents`, `stop_subagent`) |
+| A2A | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
+| Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `list_models`, `add_model`, `remove_model`, `switch_model`, `switch_to_nvidia_free` |
-| Credentials | `credential_check`, `inject_credential`, `uninject_credential` |
-| MemFiles | `memfiles__save_content_or_files`, `memfiles__expose_file` (plugin tools) |
+| Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
+| Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `include_image` (injects a local image or URL into the conversation) |
 | Display | `show_image` |
 | Harness | `_sys_note` (context status), `_sys_trim` (context trim) — auto-invoked, not for LLM use |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
-Every tool additionally accepts two harness meta-parameters: `_timeout` (per-call override) and `_async` (run in background, poll with `check_async`).
+Every tool additionally accepts three harness meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (push a confirmation dialog).
 
-**Harness tools** (`_`-prefixed, e.g. `_sys_note` / `_sys_trim`) are system-internal: the agent loop auto-invokes them each turn to maintain context state (report usage %, trim old turns when over the ceiling). They are declared in the tool schema — required so the Anthropic / OpenAI-Responses backends accept their call pairs — but the system prompt forbids the LLM from calling them, and both are harmless if it does anyway.
+**Harness tools** come in two tiers. `_`-prefixed native tools (`_sys_note` / `_sys_trim`) are **LLM-visible but reserved**: the agent loop auto-invokes them each turn to maintain context state (report usage %, trim old turns when over the ceiling); they are schema-declared (so the Anthropic / OpenAI-Responses backends accept their call pairs) but the system prompt forbids the LLM from calling them, and both are harmless if it does anyway. `__`-prefixed plugin tools (`__memory_save_turn`, `__mcp_call_tool`, …) are **LLM-invisible** — filtered out of the schema entirely and called programmatically via `client.call_tool()`.
 
-**Five managed categories** (MCP / Skills / CLI / REST API / Models) support `list` / `add` / `remove` / `set` — all `add` tools are idempotent upserts.
+**Five managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts.
 
-Plus built-in **MemDB** tools: `memory_search`, `memory_open`, `memory_summarize`, `memory_count`, `memory_list_recent`, `memory_check_embedding`, `memory_set_embedding`, `memory_set_enabled`.
+**Plugin tools** — registered at runtime as `{server}__{tool}` proxies:
+
+| Server | LLM-visible tools |
+|--------|-------------------|
+| `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
+| `memdb` | `memdb__memory_list_recent`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_summarize`, `memdb__memory_count`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
+| `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
+| `memfiles` | `memfiles__expose_file`, `memfiles__save_content_or_files` |
+
+Built-in plugin tools that already carry their server as a name prefix (`mcp_set`, `wechat_login`) are registered as-is; the rest are namespaced `{server}__{tool}`. External MCP servers configured in `slife.json5` → `mcp.servers` always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
 
 ### Memory — Always On
 
@@ -174,7 +183,7 @@ Two-tier rendering: **Sixel** (full-colour on Windows Terminal / WezTerm / iTerm
 
 ### Plugins
 
-Four built-in plugins as independent child processes:
+Five built-in plugins as independent child processes:
 
 | Plugin | Role |
 |--------|------|
@@ -182,19 +191,20 @@ Four built-in plugins as independent child processes:
 | **slife-memdb** | Diary database with hybrid search |
 | **slife-wechat** | Bidirectional WeChat messaging |
 | **slife-memfiles** | File cabinet + public file sharing over Streamable HTTP (`/share` route on the same port; ngrok tunnel owned by the plugin) |
+| **slife-mqtt** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
 
-External MCP servers configured in `slife.json5` → `mcp.servers`. Any stdio or HTTP MCP server works — no Slife SDK required. Per-server option `require_approval: true` adds a human approval gate before each of its tool calls.
+External MCP servers configured in `slife.json5` → `mcp.servers`. Any stdio or HTTP MCP server works — no Slife SDK required.
 
-All plugins run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 3 retries). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
+All plugins run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
 
 ### A2A — Agent-to-Agent
 
 The A2A thin protocol has **one tool namespace (`a2a_`) over two transports**, auto-selected from the agent_id:
-- **Task tools** (`a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`) route a local worker over JSON-RPC/stdin (always available) or, for any other id, a remote mesh peer through the `mqtt` plugin (which only starts when the broker is reachable).
-- **Mesh discovery** (`a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`) — remote-only, agent/MQTT transport.
+- **Task tools** (`a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`) route a local worker (subagent) over JSON-RPC/stdin (always available) or, for any other id, a remote mesh peer through the `mqtt` plugin (which only starts when the broker is reachable).
+- **Mesh discovery** (`a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`) — remote-only, MQTT transport.
 - **Subagent lifecycle** (`spawn_subagent`, `list_subagents`, `stop_subagent`) — local only, no A2A prefix.
 
-An experimental HTTP Streamable transport exists as well. All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
+An experimental HTTP Streamable transport exists as a skeleton (connect/disconnect only). All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
 
 ## Keyboard Shortcuts
 
