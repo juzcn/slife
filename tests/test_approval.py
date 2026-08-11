@@ -8,7 +8,7 @@ tool arguments; the loop then asks the user via `on_tool_approval`.
 import pytest; pytestmark = pytest.mark.unit
 
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -120,6 +120,9 @@ class TestAgentLoopApproval:
         registry.execute.assert_not_called()
         handler.on_tool_result.assert_called_once()
         assert "denied by user" in handler.on_tool_result.call_args[0][1]
+        # A denied call must never surface a tool widget — the approval
+        # prompt itself carries the "denied" state.
+        handler.on_tool_call.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_approve_true_granted_proceeds(self):
@@ -144,6 +147,8 @@ class TestAgentLoopApproval:
 
         assert tool.executed is True
         handler.on_tool_result.assert_called_once()
+        # Approved → the tool widget is mounted (runs) after the prompt.
+        handler.on_tool_call.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_no_approve_skips_gate(self):
@@ -225,75 +230,57 @@ class TestAgentLoopApproval:
         assert tools["tool_c"].executed is True   # no flag → no gate
 
 
-# ── ApprovalDialog — keyboard deny beats the App's priority cancel (C7) ──
+# ── ApprovalPrompt — inline row, Y/N/Esc decide (priority, REVIEW C7) ──
 
 
-class TestApprovalDialog:
-    """The modal's priority bindings let Esc really deny, instead of being
-    stolen by the App's ``escape -> cancel`` priority binding (REVIEW C7)."""
+class TestApprovalPrompt:
+    """The inline approval row's priority bindings let Y/N/Esc really decide,
+    instead of being stolen by the App's ``escape -> cancel`` binding or the
+    ChatView printable-key redirect (REVIEW C7)."""
 
     def _make(self):
         import asyncio
 
-        from slife.ui.approval_dialog import ApprovalDialog
+        from slife.ui.approval_prompt import ApprovalPrompt
 
         tool_call = ToolCallInfo(id="call_1", name="test_tool", arguments={"a": 1})
         future = asyncio.Future()
-        return ApprovalDialog(tool_call, future), future
-
-    @pytest.mark.asyncio
-    async def test_escape_deny_binding_is_priority(self):
-        dlg, _ = self._make()
-        assert any(
-            b.key == "escape" and b.action == "deny" and b.priority
-            for b in dlg.BINDINGS
-        )
-
-    @pytest.mark.asyncio
-    async def test_enter_approve_binding_is_priority(self):
-        dlg, _ = self._make()
-        assert any(
-            b.key == "enter" and b.action == "approve" and b.priority
-            for b in dlg.BINDINGS
-        )
-
-    @pytest.mark.asyncio
-    async def test_action_deny_sets_false(self):
-        dlg, future = self._make()
-        with patch.object(dlg, "dismiss"):
-            dlg.action_deny()
-        assert future.result() is False
+        return ApprovalPrompt(tool_call, future), future
 
     @pytest.mark.asyncio
     async def test_action_approve_sets_true(self):
-        dlg, future = self._make()
-        with patch.object(dlg, "dismiss"):
-            dlg.action_approve()
+        prompt, future = self._make()
+        prompt.action_approve()
         assert future.result() is True
+        assert prompt._decided == "approved"
 
     @pytest.mark.asyncio
-    async def test_button_pressed_routes(self):
-        dlg, future = self._make()
-        with patch.object(dlg, "dismiss"):
-            approve_evt = MagicMock()
-            approve_evt.button.id = "approve-btn"
-            dlg.on_button_pressed(approve_evt)
+    async def test_action_deny_sets_false(self):
+        prompt, future = self._make()
+        prompt.action_deny()
+        assert future.result() is False
+        assert prompt._decided == "denied"
+
+    @pytest.mark.asyncio
+    async def test_second_keypress_ignored(self):
+        prompt, future = self._make()
+        prompt.action_approve()
+        prompt.action_deny()  # repeat press must not override the decision
         assert future.result() is True
+        assert prompt._decided == "approved"
 
-        dlg2, future2 = self._make()
-        with patch.object(dlg2, "dismiss"):
-            deny_evt = MagicMock()
-            deny_evt.button.id = "deny-btn"
-            dlg2.on_button_pressed(deny_evt)
-        assert future2.result() is False
+    @pytest.mark.asyncio
+    async def test_bindings_map_y_n_escape_priority(self):
+        prompt, _ = self._make()
+        keys = {b.key: b for b in prompt.BINDINGS}
+        assert keys["y"].action == "approve" and keys["y"].priority
+        assert keys["n"].action == "deny" and keys["n"].priority
+        assert keys["escape"].action == "deny" and keys["escape"].priority
 
-    # ── Regression: the App's escape binding must not steal Esc from the
-    # modal's priority deny. Textual's priority pass iterates the binding
-    # chain REVERSED (App first), so a priority escape→cancel on the App
-    # fires before the modal's deny and cancels the loop instead (REVIEW C7,
-    # re-opened this pass). The prior fix only declared the modal binding
-    # priority and its tests only checked the BINDINGS list — the binding
-    # chain was never exercised.
+    # ── Regression (C7): the App's escape binding must not steal Esc from
+    # the inline prompt's priority deny.  Textual's priority pass iterates
+    # the binding chain REVERSED (App first), so a priority escape→cancel on
+    # the App would fire before the prompt's deny and cancel the loop instead.
 
     def test_app_escape_binding_is_not_priority(self):
         from slife.ui.app import SlifeApp
@@ -302,36 +289,74 @@ class TestApprovalDialog:
         assert len(esc) == 1
         assert not esc[0].priority, (
             "App escape→cancel must not be priority: Textual's priority pass "
-            "checks the App first, stealing Esc from the approval dialog's deny."
+            "checks the App first, stealing Esc from the approval prompt's deny."
         )
 
-    def test_priority_pass_resolves_escape_to_modal_deny(self):
+    def test_priority_pass_resolves_keys_to_prompt(self):
         """Reproduce Textual's priority-pass resolution over the real binding
-        declarations and assert the modal wins Esc.
+        declarations and assert the prompt wins Y/N/Esc.
 
         Textual 8.x `App._check_bindings(key, priority=True)` iterates
-        ``reversed(screen._binding_chain)`` — the App is checked first. Only
-        bindings whose ``priority`` flag equals the pass run. So the App's
-        escape→cancel must be non-priority for the modal's priority deny to
-        win, and with a modal active the App is excluded from the modal chain
-        entirely (so its escape can't fire in the normal pass either).
+        ``reversed(screen._binding_chain)`` — the App is checked first, and
+        only bindings whose ``priority`` flag equals the pass run.  So the
+        App's escape→cancel (non-priority) never fires in the priority pass,
+        and the prompt's priority y/n/escape all resolve to it.
         """
         from slife.ui.app import SlifeApp
-        from slife.ui.approval_dialog import ApprovalDialog
+        from slife.ui.approval_prompt import ApprovalPrompt
 
-        def _resolve_priority_pass(bindings_by_node: list[tuple[str, list]]) -> str | None:
-            for ns, bindings in reversed(bindings_by_node):  # App → ... → modal
+        def _resolve_priority_pass(
+            bindings_by_node: list[tuple[str, list]]
+        ) -> list[tuple[str, str, str]]:
+            resolved: list[tuple[str, str, str]] = []
+            for ns, bindings in reversed(bindings_by_node):  # App → ... → prompt
                 for b in bindings:
-                    if b.key == "escape" and b.priority:
-                        return ns
-            return None
+                    if b.priority:
+                        resolved.append((ns, b.key, b.action))
+            return resolved
 
-        # Full chain: App first, then the modal screen.
-        full_chain = [("app", SlifeApp.BINDINGS), ("modal", ApprovalDialog.BINDINGS)]
-        assert _resolve_priority_pass(full_chain) == "modal"
+        full_chain = [("app", SlifeApp.BINDINGS), ("prompt", ApprovalPrompt.BINDINGS)]
+        resolved = _resolve_priority_pass(full_chain)
 
-        # With a modal active Textual's normal pass uses the *modal* binding
-        # chain (everything up to the first modal node), which excludes the
-        # App — so a non-priority App escape can't fire while denying.
-        modal_chain = [("modal", ApprovalDialog.BINDINGS)]
-        assert _resolve_priority_pass(modal_chain) == "modal"
+        # The prompt's Y/N/Esc win the priority pass…
+        assert ("prompt", "y", "approve") in resolved
+        assert ("prompt", "n", "deny") in resolved
+        assert ("prompt", "escape", "deny") in resolved
+        # …and the App's non-priority escape→cancel never fires there.
+        assert not any(ns == "app" and key == "escape" for ns, key, _ in resolved)
+
+    @pytest.mark.asyncio
+    async def test_pilot_keys_resolve_through_real_dispatch(self):
+        """End-to-end through Textual's real key dispatch (priority pass):
+        Y resolves the future True, Esc resolves it False, and markup-hazardous
+        args render literally (no MarkupError)."""
+        import asyncio
+
+        from textual.app import App
+
+        from slife.ui.approval_prompt import ApprovalPrompt
+
+        app = App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            tool_call = ToolCallInfo(
+                id="call_1",
+                name="test_tool",
+                arguments={"q": "a & [b] 'c'", "n": 1},
+            )
+
+            future = asyncio.Future()
+            prompt = ApprovalPrompt(tool_call, future)
+            await app.mount(prompt)
+            prompt.focus()
+            await pilot.pause()
+            assert "a & [b] 'c'" in str(prompt.render())
+            await pilot.press("y")
+            assert future.result() is True
+
+            future2 = asyncio.Future()
+            prompt2 = ApprovalPrompt(tool_call, future2)
+            await app.mount(prompt2)
+            prompt2.focus()
+            await pilot.pause()
+            await pilot.press("escape")
+            assert future2.result() is False

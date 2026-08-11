@@ -574,19 +574,13 @@ class AgentLoop:
             _prev_conv = _ctx.conversation
             _ctx.conversation = conversation
 
-        # Serialize approval dialogs — concurrent modals would overlap
+        # Serialize approval prompts — concurrent prompts would overlap
         _approval_lock = asyncio.Lock()
 
         async def _run_one(tc: ToolCallInfo) -> None:
             """Execute a single tool call with timeout, sanitization, and
             handler notifications.  Safe to run concurrently."""
             logger.debug("tool_start name=%s", tc.name)
-            if handler:
-                await handler.on_tool_call(
-                    tc,
-                    iteration=iteration,
-                    max_iterations=self.max_iterations,
-                )
 
             # ── Dynamic per-call timeout / async / approval ───────
             # LLM can pass _async (boolean), _timeout (number), or
@@ -628,6 +622,18 @@ class AgentLoop:
                         await handler.on_tool_result(tc.id, result, is_error=True)
                     conversation.add_tool_result(tc.id, result)
                     return
+
+            # ── Handler notification — after the approval gate ────
+            # The tool call is only surfaced once approved (or when no
+            # approval was requested): a denied call returns above and
+            # never mounts a tool widget — the approval prompt itself
+            # carries the "denied" state.
+            if handler:
+                await handler.on_tool_call(
+                    tc,
+                    iteration=iteration,
+                    max_iterations=self.max_iterations,
+                )
 
             if is_async:
                 # ── Async: schedule background task ─────────────

@@ -71,6 +71,23 @@ ChatView {
     overflow: hidden;
 }
 
+/* ── Tool approval prompt (inline, Claude Code style) ─────────── */
+
+.approval-prompt {
+    margin: 0 1 1 2;
+    padding: 0 1;
+    border: solid #d29922;
+    background: #161b22;
+    color: #e6edf3;
+    height: auto;
+    min-height: 1;
+}
+
+.approval-prompt:focus {
+    border: solid #f0c040;
+    background: #1c2128;
+}
+
 /* ── Input (bottom docked) ────────────────────────────────────── */
 
 /* HARDISSUES #1 — box is exactly border (1) + text (1) + spare (1).

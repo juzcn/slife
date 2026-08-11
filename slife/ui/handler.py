@@ -111,16 +111,30 @@ class TUIHandler:
         self._app._tool_widgets[tool_call.id] = widget
 
     async def on_tool_approval(self, tool_call: ToolCallInfo) -> bool:
-        """Ask user to approve an external MCP tool before execution.
+        """Ask user to approve a tool call before execution.
 
-        Pushes a modal dialog and waits for the user's decision.
-        Returns True (approved) or False (denied).
+        Claude Code style: an inline row in the chat stream (no modal
+        overlay).  The row takes focus and waits for Y / N / Esc; focus
+        returns to the input bar once the user decides.  Returns True
+        (approved) or False (denied).
         """
-        from slife.ui.approval_dialog import ApprovalDialog
+        from slife.ui.approval_prompt import ApprovalPrompt
 
         future: asyncio.Future[bool] = asyncio.Future()
-        self._app.push_screen(ApprovalDialog(tool_call, future))
-        return await future
+        prompt = ApprovalPrompt(tool_call, future)
+        self._chat_view.mount(prompt)
+        self._chat_view.scroll_end(animate=False)
+        prompt.focus()
+        approved = await future
+        self._refocus_input()
+        return approved
+
+    def _refocus_input(self) -> None:
+        """Return focus to the user input bar after an inline decision."""
+        try:
+            self._app.query_one("#user-input").focus()
+        except Exception:
+            pass  # input missing (e.g. app tearing down) — nothing to restore
 
     async def on_tool_result(
         self, tool_call_id: str, result: str, is_error: bool

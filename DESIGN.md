@@ -38,7 +38,7 @@ The model input should read uniformly, so text that Slife authors is English:
 ┌──────────────────────────────────────────────────────────────────────┐
 │  UI (Textual TUI)                                                    │
 │  slife/ui/app.py, chat.py, handler.py, tool_display.py,              │
-│  image_utils.py, restore.py, approval_dialog.py                      │
+│  image_utils.py, restore.py, approval_prompt.py                      │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Agent Service                                                       │
 │  slife/agent/service.py — wires client + tools + loop + plugins      │
@@ -78,7 +78,7 @@ User Input → Conversation.add_user_message()        (secrets sanitized)
     → LLM stream → thinking/text/tool deltas → handler callbacks
     → tool calls? → ToolRegistry.execute() concurrently (asyncio.gather)
                     → sanitize_secrets() on each result → truncate → loop
-    → `_approve: true` on a call? → serialized ApprovalDialog before execution
+    → `_approve: true` on a call? → serialized ApprovalPrompt before execution
     → no tool calls? → response text → return
     → save turn to diary (unconditional — even on cancel/error/max-iterations)
 ```
@@ -253,7 +253,7 @@ The MCP client applies no timeout of its own; enforcement stays in one place.
 
 ### Approval Gate
 
-Approval is **model-driven** (pure model judgment). The loop injects an `_approve` boolean meta-parameter on every tool schema (alongside `_timeout`/`_async`, visible on all three backends). When the LLM sets `_approve: true` on a call, execution pauses and pushes a modal `ApprovalDialog` (Enter = approve, Esc = deny). Dialogs serialize behind a lock.
+Approval is **model-driven** (pure model judgment). The loop injects an `_approve` boolean meta-parameter on every tool schema (alongside `_timeout`/`_async`, visible on all three backends). When the LLM sets `_approve: true` on a call, the tool call is only surfaced to the UI once approved — execution pauses and an inline `ApprovalPrompt` row is mounted in the chat stream (Claude Code style, no modal: Y = approve, N / Esc = deny). Prompts serialize behind a lock. A denied call never mounts a `ToolCallWidget`; the prompt row itself carries the rejection state.
 
 There is no hardcoded `requires_approval` flag on any tool or MCP server — the model decides per-call whether to ask the user. Headless (subagent) contexts have no handler and auto-approve.
 
@@ -502,7 +502,7 @@ Textual TUI with minimal chrome:
 - **AssistantMessage** — streaming text with collapsible thinking blocks (Enter/Space toggle)
 - **ToolCallWidget** — collapsible amber headers: status icon, label, primary-arg preview, iteration counter; Ctrl+Y copies the result
 - **StatusBar** — model name, thinking indicator, inbox state, token count
-- **ApprovalDialog** — modal approve/deny for `_approve: true` tool calls
+- **ApprovalPrompt** — inline approve/deny row for `_approve: true` tool calls (Y / N / Esc), re-renders to ✓ Approved / ✗ Denied
 - **Auto-restore** — rebuilds last session's UI from the diary on startup
 
 All user-supplied text is rendered with `markup=False` to prevent `MarkupError` injection.
@@ -697,7 +697,7 @@ slife/
     tool_display.py    #   ToolCallWidget + display helpers
     image_utils.py     #   Image rendering (Sixel/Halfcell/fallback)
     restore.py         #   Session restore (rebuilds UI from diary)
-    approval_dialog.py #   Tool approval modal
+    approval_prompt.py #   Inline tool approval (Y/N/Esc, no modal)
     slife.tcss         #   Textual CSS
   config.py            # JSON5 config parsing (models, env, plugins, A2A, subagent)
   paths.py             # Filesystem paths (dev vs prod, data dir, DB, memfiles)
