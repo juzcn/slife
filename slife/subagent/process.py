@@ -214,7 +214,18 @@ class SubagentProcess:
             return result
         except asyncio.TimeoutError:
             self._pending.pop(rpc_id, None)
+            # Release the in-flight slot and mark the record failed — otherwise
+            # a worker whose task never resolves stays busy forever, every
+            # later send auto-queues async, and records pile up (REVIEW §1-8).
+            if self._inflight > 0:
+                self._inflight -= 1
+            self._record_update(rpc_id, "failed", "Error: timed out")
             raise TimeoutError(f"Task to '{self._name}' timed out after {timeout}s")
+        except asyncio.CancelledError:
+            self._pending.pop(rpc_id, None)
+            if self._inflight > 0:
+                self._inflight -= 1
+            raise
 
     async def send_task_async(self, task: str) -> str:
         """Send a task without waiting for the result — returns *rpc_id*.
@@ -497,21 +508,6 @@ class SubagentManager:
         if (proc := self._subagents.get(agent_id)) is None:
             return None
         return proc.get_task_result(rpc_id)
-
-    async def broadcast(self, task: str) -> list[str]:
-        """Send *task* to every running subagent (fire-and-forget).
-
-        Returns a list of ``"agent_id:rpc_id"`` entries.
-        """
-        ids: list[str] = []
-        for aid in self.list():
-            try:
-                rpc_id = await self.send_task_async(aid, task)
-                ids.append(f"{aid}:{rpc_id}")
-            except Exception as e:
-                logger.warning("subagent_broadcast_skip agent=%s err=%s", aid, e)
-        logger.info("subagent_broadcast agents=%d task=%.80s", len(ids), task)
-        return ids
 
     def list_tasks(
         self, agent_id: str | None = None, status: str | None = None,

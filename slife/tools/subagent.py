@@ -14,8 +14,9 @@ This module is fully decoupled from A2A:
 
 There is deliberately no ``subagent_subscribe_task`` — async results are
 auto-subscribed: when a worker finishes, the result is pushed to the
-parent's conversation automatically.  There is no ``subagent_cancel_task``
-(cancelling an in-flight worker task was never implemented — REVIEW C5).
+parent's conversation automatically.  ``subagent_cancel_task`` cancels a
+queued or running worker task (drops the queued task, preempts the running
+agent loop via the unified inbox).
 """
 
 from __future__ import annotations
@@ -34,12 +35,9 @@ def _manager_or_hint() -> tuple:
 
     manager = get_manager()
     if manager is None:
-        import os as _os
-        if _os.environ.get("SLIFE_SUBAGENT_NAME"):
-            return None, (
-                "Subagent operations are not available inside a subagent "
-                "process (recursion guard)."
-            )
+        # Subagents are full-fidelity workers and may spawn their own
+        # descendants (each level has its own manager) — no subagent-specific
+        # gate here. The manager only appears uninitialised mid-startup.
         return None, (
             "Subagent manager is not running yet — it starts automatically "
             "when the agent service initializes."

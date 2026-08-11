@@ -117,10 +117,18 @@ class TaskStore:
         return rec
 
     def record_result(self, task_id: str, result: str) -> TaskRecord | None:
-        """Mark a task as completed and store its result."""
+        """Mark a task as completed and store its result.
+
+        A task that was already cancelled stays cancelled — a result arriving
+        from a peer that ignored the CancelTask must not flip the record back
+        to completed and contradict the cancel the caller was told about
+        (REVIEW §1-12).
+        """
         rec = self._records.get(task_id)
         if rec is None:
             return None
+        if rec.status == "cancelled":
+            return rec
         rec.status = "completed"
         rec.completed_at = _time.monotonic()
         rec.result = result[: self.MAX_RESULT_LEN]
@@ -186,16 +194,21 @@ class TaskStore:
         self._records.clear()
 
     def _maybe_prune(self) -> None:
-        """Drop oldest completed/cancelled/failed entries when over max."""
+        """Drop oldest entries when over max — terminal status first, then the
+        oldest pending so a burst of async sends to slow/hung peers can't grow
+        the in-memory store past the cap (REVIEW §1-12)."""
         if len(self._records) <= self.MAX_RECORDS:
             return
-        # Sort by age (oldest first), preferring terminal-status entries
-        terminal = [
-            r for r in self._records.values()
-            if r.status in ("completed", "cancelled", "failed")
-        ]
-        terminal.sort(key=lambda r: r.created_at)
-        to_remove = terminal[: len(self._records) - self.MAX_RECORDS + 50]
+        excess = len(self._records) - self.MAX_RECORDS + 50
+        # Oldest first; terminal-status entries preferred for removal.
+        ordered = sorted(
+            self._records.values(),
+            key=lambda r: (
+                r.status not in ("completed", "cancelled", "failed"),
+                r.created_at,
+            ),
+        )
+        to_remove = ordered[:excess]
         for r in to_remove:
             self._records.pop(r.task_id, None)
 

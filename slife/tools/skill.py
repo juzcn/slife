@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 from typing import ClassVar
 
-from slife.tools._config_io import _ConfigPathMixin, format_source_info, read_config, with_fetched_at, write_config
+from slife.tools._config_io import format_source_info, read_config, with_fetched_at, write_config
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -114,19 +114,45 @@ def _extract_zip_safely(zf: zipfile.ZipFile, dest: Path) -> None:
             shutil.copyfileobj(src, dst)
 
 
-def get_skills_summary(skills_dir: str | Path = "skills") -> str:
+def _disabled_skill_names(config_path: Path | None) -> set[str]:
+    """Return skill names disabled via ``skill_set_enabled`` — the ``skills:``
+    config section entries with ``enabled: false``. Empty set when nothing is
+    disabled or the config is unreadable."""
+    if config_path is None:
+        return set()
+    try:
+        raw = read_config(config_path)
+    except Exception:
+        return set()
+    skills = raw.get("skills", {})
+    if not isinstance(skills, dict):
+        return set()
+    return {
+        n for n, e in skills.items()
+        if isinstance(e, dict) and e.get("enabled") is False
+    }
+
+
+def get_skills_summary(
+    skills_dir: str | Path = "skills",
+    disabled: set[str] | None = None,
+) -> str:
     """Scan skills_dir and return name + description for each skill.
 
     Only directories containing a SKILL.md are considered valid skills.
+    *disabled* names (from skill_set_enabled) are omitted.
     Returns empty string if no skills are found.
     """
     skills = _iter_skills(Path(skills_dir))
     if not skills:
         return ""
+    disabled = disabled or set()
 
     lines = [f"> **Skills root:** `{Path(skills_dir).resolve()}` — use this path for skill scripts.\n"]
     for d, fm, _body in skills:
         name = fm.get("name", d.name)
+        if name in disabled:
+            continue
         desc = fm.get("description", "(no description)")
         line = f"- **{name}**: {desc}"
         # Read source from _meta.json if present
@@ -227,7 +253,11 @@ class ListSkillsTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibl
     }
 
     async def execute(self, **kwargs) -> str:
-        result = get_skills_summary(self.skills_dir)
+        ctx = getattr(self, "_ctx", None)
+        config = ctx.config if ctx is not None else None
+        config_path = config._path if config is not None else None
+        disabled = _disabled_skill_names(config_path)
+        result = get_skills_summary(self.skills_dir, disabled=disabled)
         return result if result else "No skills available."
 
 
@@ -247,6 +277,15 @@ class UseSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
 
     async def execute(self, **kwargs) -> str:
         skill_name: str = kwargs["skill_name"]
+        ctx = getattr(self, "_ctx", None)
+        config = ctx.config if ctx is not None else None
+        config_path = config._path if config is not None else None
+        disabled = _disabled_skill_names(config_path)
+        if skill_name in disabled:
+            return (
+                f"Skill '{skill_name}' is disabled. "
+                f"Use skill_set_enabled(name=\"{skill_name}\", enabled=true) to re-enable."
+            )
         return _read_skill(self.skills_dir, skill_name)
 
 
@@ -333,8 +372,14 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             self._write_meta_json(skill_dir, source)
             return result
         except Exception as e:
-            import shutil
-            shutil.rmtree(skill_dir, ignore_errors=True)
+            if not is_update:
+                # A fresh install failed — remove the partial directory.
+                import shutil
+                shutil.rmtree(skill_dir, ignore_errors=True)
+            else:
+                # Updating an existing skill failed — keep the previous
+                # version intact instead of destroying it (REVIEW §1-13).
+                logger.warning("skill_update_failed name=%s err=%s", name, e)
             logger.exception("skill_install_failed name=%s", name)
             return f"[FAIL] Error installing skill '{name}': {e}"
 
@@ -489,11 +534,12 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
 # skill_set_enabled
 # ═══════════════════════════════════════════════════════════════════════
 
-class SkillSetEnabledTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
+class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     name = "skill_set_enabled"
     category = "Skills"
     category: ClassVar[str] = "Skills"
-    description = "Enable or disable a skill. Takes effect after restart."
+    description = ("Enable or disable a skill. Takes effect immediately: skill_list "
+                   "hides disabled skills and skill_use refuses them.")
     parameters = {
         "type": "object",
         "properties": {
@@ -506,15 +552,33 @@ class SkillSetEnabledTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompa
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
         enabled: bool = kwargs["enabled"]
-        raw = read_config(self._config_path)
-        entries = raw.get("skills", {})
-        if not isinstance(entries, dict) or name not in entries:
-            return f"'{name}' not found in skills."
-        entry = entries[name]
+
+        # The skill must exist on disk (frontmatter name or directory name) —
+        # the toggle records into the ``skills:`` config section, which
+        # skill_list / skill_use read (REVIEW §1-4).
+        exists = any(
+            fm.get("name") == name or d.name == name
+            for d, fm, _ in _iter_skills(self.skills_dir)
+        )
+        if not exists:
+            return f"'{name}' not found. skill_list shows available skills."
+
+        ctx = getattr(self, "_ctx", None)
+        config = ctx.config if ctx is not None else None
+        config_path = config._path if config is not None else None
+        if config_path is None:
+            return "Error: config path unavailable — cannot persist the toggle."
+        raw = read_config(config_path)
+        entries = raw.get("skills")
+        if not isinstance(entries, dict):
+            entries = {}
+            raw["skills"] = entries
+        entry = entries.get(name)
         if not isinstance(entry, dict):
-            return f"'{name}' in skills is malformed."
+            entry = {}
+            entries[name] = entry
         entry["enabled"] = enabled
-        write_config(self._config_path, raw)
+        write_config(config_path, raw)
         state = "enabled" if enabled else "disabled"
         logger.info("skill_set_enabled name=%s enabled=%s", name, enabled)
-        return f"[OK] Skill '{name}' {state}. Restart for the change to take effect."
+        return f"[OK] Skill '{name}' {state}."

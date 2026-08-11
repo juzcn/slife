@@ -531,7 +531,7 @@ class TestMCPServerConnectionHTTP:
         mock_client.post = AsyncMock(return_value=MagicMock())
         conn._http_client = mock_client
 
-        conn._notify("notifications/initialized", {})
+        await conn._notify("notifications/initialized", {})
         # Let the background task run
         await asyncio.sleep(0)
 

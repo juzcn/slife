@@ -103,6 +103,8 @@ class MCPServerConnection:
         self._session_id: str | None = None
         self._next_id: int = 0
         self._lock = asyncio.Lock()
+        self._connect_lock = asyncio.Lock()  # serializes connect() (REVIEW §1-6)
+        self._notify_tasks: "set[asyncio.Task]" = set()  # fire-and-forget _notify posts
         self._tools_cache: list[dict] = []
         self._error: str | None = None
         self._stderr_task: asyncio.Task | None = None
@@ -167,94 +169,107 @@ class MCPServerConnection:
             logger.info("mcp_already_connected server=%s", self.config.name)
             return
 
-        self._status = ServerStatus.CONNECTING
-        self._error = None
-        self._stderr_buffer.clear()
-        # A fresh transport must initialize with no session id — a stale one
-        # from the previous connection (only cleared here; _cleanup_resources
-        # intentionally doesn't) would be sent on the new initialize and a
-        # session-enforcing server would reject every reconnect (REVIEW C2).
-        self._session_id = None
+        # Serialize connects — the health monitor, call_tool's lazy reconnect,
+        # and mcp_set_enabled can otherwise each spawn their own transport,
+        # orphaning the loser (and starting duplicate monitors) (REVIEW §1-6).
+        async with self._connect_lock:
+            self._status = ServerStatus.CONNECTING
+            self._error = None
+            self._stderr_buffer.clear()
+            # A fresh transport must initialize with no session id — a stale one
+            # from the previous connection (only cleared here; _cleanup_resources
+            # intentionally doesn't) would be sent on the new initialize and a
+            # session-enforcing server would reject every reconnect (REVIEW C2).
+            self._session_id = None
 
-        # ── OAuth pre-check ───────────────────────────────────────
-        if self.config.auth and self.config.auth.get("type") == "oauth":
-            await self._ensure_oauth_token()
+            # ── OAuth pre-check ───────────────────────────────────────
+            if self.config.auth and self.config.auth.get("type") == "oauth":
+                await self._ensure_oauth_token()
 
-        t0 = _time.monotonic()
-        transport = self.config.transport
-        logger.info(
-            "mcp_connect server=%s transport=%s",
-            self.config.name, transport,
-        )
-
-        try:
-            if transport == "stdio":
-                await self._connect_stdio()
-            else:
-                await self._connect_http()
-
-            # MCP initialize handshake (transport-agnostic)
-            init_result = await self._request("initialize", {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "slife-mcp", "version": "0.1.0"},
-            })
-
-            server_info = init_result.get("serverInfo", {})
-            logger.debug(
-                "mcp_initialized server=%s remote=%s ver=%s",
-                self.config.name,
-                server_info.get("name", "unknown"),
-                server_info.get("version", ""),
-            )
-
-            # Send initialized notification
-            self._notify("notifications/initialized", {})
-
-            # Discover tools
-            tools_result = await self._request("tools/list", {})
-            self._tools_cache = [
-                {
-                    "name": t.get("name", ""),
-                    "description": t.get("description", ""),
-                    "inputSchema": t.get("inputSchema", {"type": "object", "properties": {}}),
-                }
-                for t in tools_result.get("tools", [])
-            ]
-
-            self._status = ServerStatus.CONNECTED
-            elapsed = (_time.monotonic() - t0) * 1000
+            t0 = _time.monotonic()
+            transport = self.config.transport
             logger.info(
-                "mcp_connected server=%s tools=%d took_ms=%.0f",
-                self.config.name, len(self._tools_cache), elapsed,
+                "mcp_connect server=%s transport=%s",
+                self.config.name, transport,
             )
 
-            # Start the health monitor once per connection object — a running
-            # monitor is reused across reconnects, so never spawn a second.
-            if self._health_task is None or self._health_task.done():
-                self._health_task = asyncio.create_task(self._health_monitor())
+            try:
+                if transport == "stdio":
+                    await self._connect_stdio()
+                else:
+                    await self._connect_http()
 
-            # Run post-connect setup (best-effort, never blocks on failure)
-            await self._post_connect_setup()
+                # MCP initialize handshake (transport-agnostic)
+                init_result = await self._request("initialize", {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "slife-mcp", "version": "0.1.0"},
+                })
 
-        except Exception as e:
-            self._status = ServerStatus.FAILED
-            stderr_tail = "".join(self._stderr_buffer[-20:]).strip()
-            if stderr_tail:
-                self._error = f"{e}\n\n[server stderr]\n{stderr_tail}"
-            else:
-                self._error = str(e)
-            logger.exception("mcp_connect_failed server=%s err=%s", self.config.name, e)
-            await self._cleanup_resources()
-            # Start the health monitor even on a failed initial connect so a
-            # server that was down at startup is retried in the background
-            # (the monitor's DISCONNECTED/FAILED branch handles it).  When
-            # connect() was called by the monitor itself, this is a no-op —
-            # the running monitor is still current.
-            if self.config.enabled and (
-                self._health_task is None or self._health_task.done()
-            ):
-                self._health_task = asyncio.create_task(self._health_monitor())
+                server_info = init_result.get("serverInfo", {})
+                logger.debug(
+                    "mcp_initialized server=%s remote=%s ver=%s",
+                    self.config.name,
+                    server_info.get("name", "unknown"),
+                    server_info.get("version", ""),
+                )
+
+                # Send initialized notification
+                await self._notify("notifications/initialized", {})
+
+                # Discover tools
+                tools_result = await self._request("tools/list", {})
+                self._tools_cache = [
+                    {
+                        "name": t.get("name", ""),
+                        "description": t.get("description", ""),
+                        "inputSchema": t.get("inputSchema", {"type": "object", "properties": {}}),
+                    }
+                    for t in tools_result.get("tools", [])
+                ]
+
+                self._status = ServerStatus.CONNECTED
+                elapsed = (_time.monotonic() - t0) * 1000
+                logger.info(
+                    "mcp_connected server=%s tools=%d took_ms=%.0f",
+                    self.config.name, len(self._tools_cache), elapsed,
+                )
+
+                # Start the health monitor once per connection object — a running
+                # monitor is reused across reconnects, so never spawn a second.
+                if self._health_task is None or self._health_task.done():
+                    self._health_task = asyncio.create_task(self._health_monitor())
+
+                # Run post-connect setup (best-effort, never blocks on failure)
+                await self._post_connect_setup()
+
+            except asyncio.CancelledError:
+                # A cancelled connect must not leave the status stuck in
+                # CONNECTING — the monitor would skip it forever and call_tool
+                # would raise "not connected (connecting)" with no recovery.
+                # Reset to DISCONNECTED so both paths retry (REVIEW §1-6).
+                if self._status == ServerStatus.CONNECTING:
+                    self._status = ServerStatus.DISCONNECTED
+                raise
+
+            except Exception as e:
+                self._status = ServerStatus.FAILED
+                stderr_tail = "".join(self._stderr_buffer[-20:]).strip()
+                if stderr_tail:
+                    self._error = f"{e}\n\n[server stderr]\n{stderr_tail}"
+                else:
+                    self._error = str(e)
+                logger.exception("mcp_connect_failed server=%s err=%s", self.config.name, e)
+                await self._cleanup_resources()
+                # Start the health monitor even on a failed initial connect so a
+                # server that was down at startup is retried in the background
+                # (the monitor's DISCONNECTED/FAILED branch handles it).  When
+                # connect() was called by the monitor itself, this is a no-op —
+                # the running monitor is still current.
+                if self.config.enabled and (
+                    self._health_task is None or self._health_task.done()
+                ):
+                    self._health_task = asyncio.create_task(self._health_monitor())
 
     async def _connect_stdio(self) -> None:
         """Spawn server as subprocess and set up pipe I/O."""
@@ -299,9 +314,15 @@ class MCPServerConnection:
                 {k: _resolve_embedded_refs(v) for k, v in self.config.headers.items()}
             )
 
+        # No read/write timeout of our own — enforcement lives in the agent
+        # loop's tool_timeout (per the timeout architecture).  A fixed 30s
+        # here would abort a legitimately slow external tool call and spuriously
+        # trigger the reconnect path.  Only connect/pool are bounded so a dead
+        # endpoint can't hang the handshake (REVIEW §1-7); ping carries its own
+        # 5s wait_for.
         self._http_client = httpx.AsyncClient(
             headers=headers,
-            timeout=httpx.Timeout(30.0),
+            timeout=httpx.Timeout(connect=10.0, read=None, write=None, pool=10.0),
         )
 
         # Detect SSE: send GET with Accept: text/event-stream
@@ -506,25 +527,35 @@ class MCPServerConnection:
         data_buffer = ""
         try:
             async for line in response.aiter_lines():
-                if line.startswith("event: "):
-                    event_type = line[7:]
-                    continue
-                if line.startswith("data: "):
-                    data_buffer = line[6:]
-                    continue
-                if line == "" and data_buffer:
-                    # End of event — dispatch
-                    try:
-                        msg = _json.loads(data_buffer)
-                    except ValueError:
-                        # Non-JSON payload (e.g. a bare endpoint URL) —
-                        # pass through the raw text.
-                        msg = data_buffer
-                    entry = {"type": event_type, "data": data_buffer, "msg": msg}
-                    if self._sse_queue:
-                        await self._sse_queue.put(entry)
+                if line == "":
+                    # Blank line ends the current event.
+                    if data_buffer:
+                        try:
+                            msg = _json.loads(data_buffer)
+                        except ValueError:
+                            # Non-JSON payload (e.g. a bare endpoint URL) —
+                            # pass through the raw text.
+                            msg = data_buffer
+                        entry = {"type": event_type, "data": data_buffer, "msg": msg}
+                        if self._sse_queue:
+                            await self._sse_queue.put(entry)
                     event_type = ""
                     data_buffer = ""
+                    continue
+                if line.startswith(":"):
+                    continue  # SSE comment
+                # Accept both "field: value" and "field:value" (the space after
+                # the colon is optional per the SSE spec); multi-line data
+                # joins with a newline (REVIEW §1-11).
+                if ":" in line:
+                    field, _, value = line.partition(":")
+                    value = value.lstrip()
+                else:
+                    field, value = line, ""
+                if field == "event":
+                    event_type = value
+                elif field == "data":
+                    data_buffer = f"{data_buffer}\n{value}" if data_buffer else value
         except Exception as e:
             logger.debug("sse_stream_closed server=%s err=%s", self.config.name, e)
             if self._sse_queue:
@@ -633,18 +664,29 @@ class MCPServerConnection:
         data_buffer = ""
         try:
             async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    data_buffer = line[6:]
-                    continue
-                if line == "" and data_buffer:
-                    try:
-                        msg = json.loads(data_buffer)
-                    except ValueError:
-                        data_buffer = ""  # non-JSON data event — skip
-                        continue
-                    if isinstance(msg, dict) and msg.get("id") == req_id:
-                        return msg
+                if line == "":
+                    # Blank line ends the current event.
+                    if data_buffer:
+                        try:
+                            msg = json.loads(data_buffer)
+                        except ValueError:
+                            data_buffer = ""  # non-JSON data event — skip
+                            continue
+                        if isinstance(msg, dict) and msg.get("id") == req_id:
+                            return msg
                     data_buffer = ""  # notification / other event — drop
+                    continue
+                if line.startswith(":"):
+                    continue  # SSE comment
+                # Accept "data: value" and "data:value"; join multi-line data
+                # with a newline (REVIEW §1-11).
+                if ":" in line:
+                    field, _, value = line.partition(":")
+                    value = value.lstrip()
+                else:
+                    field, value = line, ""
+                if field == "data":
+                    data_buffer = f"{data_buffer}\n{value}" if data_buffer else value
             raise ConnectionError(
                 f"Streamable SSE response from '{self.config.name}' "
                 f"carried no response for id={req_id}"
@@ -655,7 +697,7 @@ class MCPServerConnection:
             except Exception:
                 pass
 
-    def _notify(self, method: str, params: dict) -> None:
+    async def _notify(self, method: str, params: dict) -> None:
         """Send a JSON-RPC notification (no response expected)."""
         notification = {
             "jsonrpc": "2.0",
@@ -666,26 +708,33 @@ class MCPServerConnection:
             assert self._process and self._process.stdin
             line = json.dumps(notification, ensure_ascii=False) + "\n"
             self._process.stdin.write(line.encode("utf-8"))
+            await self._process.stdin.drain()
         elif self._sse_mode:
             assert self._http_client is not None
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._http_client.post(
                     self._sse_message_url,
                     json=notification,
                     headers={"Content-Type": "application/json"},
                 )
             )
+            # Track so teardown cancels them — a closed client would otherwise
+            # surface unretrieved task exceptions (REVIEW §1-11).
+            self._notify_tasks.add(task)
+            task.add_done_callback(self._notify_tasks.discard)
         else:
             assert self._http_client is not None
             headers: dict[str, str] = {}
             if self._session_id:
                 headers["mcp-session-id"] = self._session_id
             url = getattr(self, '_resolved_url', self.config.url)
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._http_client.post(
                     url, json=notification, headers=headers,
                 )
             )
+            self._notify_tasks.add(task)
+            task.add_done_callback(self._notify_tasks.discard)
 
     async def _drain_stderr(self) -> None:
         assert self._process and self._process.stderr
@@ -761,6 +810,11 @@ class MCPServerConnection:
         self._sse_mode = False
 
         # -- http cleanup --
+        # Cancel in-flight fire-and-forget notifications before closing the
+        # client — a closed client would surface unretrieved task exceptions.
+        for task in list(self._notify_tasks):
+            task.cancel()
+        self._notify_tasks.clear()
         if self._http_client is not None:
             # Best-effort session termination
             if self._session_id:
@@ -809,48 +863,69 @@ class MCPServerConnection:
         hammered.
         """
         backoff = _RECONNECT_BACKOFF_INITIAL
+
+        async def _try_reconnect() -> bool:
+            """Attempt a reconnect; returns True on success. On failure the
+            backoff is NOT advanced here — the caller advances it after
+            deciding the wait."""
+            nonlocal backoff
+            try:
+                await self.connect()
+                backoff = _RECONNECT_BACKOFF_INITIAL
+                return True
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self._status = ServerStatus.DISCONNECTED
+                self._error = f"Reconnect failed: {e}"
+                logger.warning(
+                    "mcp_health_reconnect_failed server=%s backoff=%.1fs err=%s",
+                    self.config.name, backoff, e,
+                )
+                return False
+
         try:
             while True:
-                await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
+                # Healthy paths wait the full check interval; a failed
+                # reconnect sleeps ONLY its backoff (5s→60s) instead of
+                # interval + backoff, so a down server isn't polled ~30s
+                # later than the documented backoff promises (REVIEW §1-11).
+                wait = _HEALTH_CHECK_INTERVAL
                 if not self.config.enabled:
                     return
                 if self._status == ServerStatus.CONNECTING:
-                    continue  # a manual connect is already in progress
-                if self._status == ServerStatus.CONNECTED:
+                    pass  # a manual connect is already in progress — wait
+                elif self._status == ServerStatus.CONNECTED:
                     if self._lock.locked():
-                        continue  # a request is in flight — don't interrupt it
-                    if await self.ping():
+                        pass  # a request is in flight — don't interrupt it
+                    elif await self.ping():
                         backoff = _RECONNECT_BACKOFF_INITIAL
-                        continue
-                    # Died or hung — mark disconnected and fall through to
-                    # the reconnect below.
-                    logger.warning(
-                        "mcp_health_check_failed server=%s action=reconnect",
-                        self.config.name,
-                    )
-                    self._status = ServerStatus.DISCONNECTED
-                    self._error = (
-                        "Health check failed — server not responding to ping."
-                    )
-                    await self._cleanup_resources()
-                # Fall through: DISCONNECTED or FAILED → (re)connect.
-                try:
-                    await self.connect()
-                    backoff = _RECONNECT_BACKOFF_INITIAL
-                except asyncio.CancelledError:
-                    return
-                except Exception as e:
-                    self._status = ServerStatus.DISCONNECTED
-                    self._error = f"Reconnect failed: {e}"
-                    logger.warning(
-                        "mcp_health_reconnect_failed server=%s backoff=%.1fs err=%s",
-                        self.config.name, backoff, e,
-                    )
-                    await asyncio.sleep(backoff)
-                    backoff = min(
-                        backoff * _RECONNECT_BACKOFF_MULTIPLIER,
-                        _RECONNECT_BACKOFF_MAX,
-                    )
+                    else:
+                        # Died or hung — mark disconnected, tear down, reconnect.
+                        logger.warning(
+                            "mcp_health_check_failed server=%s action=reconnect",
+                            self.config.name,
+                        )
+                        self._status = ServerStatus.DISCONNECTED
+                        self._error = (
+                            "Health check failed — server not responding to ping."
+                        )
+                        await self._cleanup_resources()
+                        if not await _try_reconnect():
+                            wait = backoff
+                            backoff = min(
+                                backoff * _RECONNECT_BACKOFF_MULTIPLIER,
+                                _RECONNECT_BACKOFF_MAX,
+                            )
+                else:
+                    # DISCONNECTED or FAILED → (re)connect with backoff pacing.
+                    if not await _try_reconnect():
+                        wait = backoff
+                        backoff = min(
+                            backoff * _RECONNECT_BACKOFF_MULTIPLIER,
+                            _RECONNECT_BACKOFF_MAX,
+                        )
+                await asyncio.sleep(wait)
         except asyncio.CancelledError:
             pass
 

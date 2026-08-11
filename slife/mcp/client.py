@@ -112,12 +112,17 @@ class MCPClient:
                 ConnectionError,
                 OSError,
                 asyncio.TimeoutError,
-                asyncio.CancelledError,
             ) as e:
                 last_err = e
                 await self._cleanup()
                 if attempt < _CONNECT_RETRY_ATTEMPTS - 1:
                     await asyncio.sleep(_CONNECT_RETRY_DELAY)
+            except asyncio.CancelledError:
+                # Cancellation is a control-flow signal, not a retryable
+                # transport error — clean up and propagate so the caller's
+                # wait_for can actually cancel the connect (REVIEW §1-6).
+                await self._cleanup()
+                raise
             except Exception:
                 await self._cleanup()
                 raise

@@ -182,19 +182,28 @@ class CliSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
         
         if config is not None and config._path is not None:
             is_update = name in config.cli_tools
+            old = config.cli_tools.get(name)
+            old_enabled = old.get("enabled") if isinstance(old, dict) else None
             config.save_cli_tool(
                 name=name, command=command, description=description,
-                install=install, source=source,
+                install=install, source=source, enabled=old_enabled,
             )
         else:
             raw = read_config(self._config_path)
             cli_tools = _cli_section(raw)
             is_update = name in cli_tools
+            old = cli_tools.get(name)
+            old_enabled = old.get("enabled") if isinstance(old, dict) else None
             entry: dict = {"command": command, "description": description}
             if install:
                 entry["install"] = install
             if source:
                 entry["source"] = source
+            if old_enabled is not None:
+                # Preserve the enable/disable flag across an update — the
+                # "idempotent upsert" contract must not silently re-enable a
+                # deliberately-disabled tool (REVIEW §1-13).
+                entry["enabled"] = old_enabled
             cli_tools[name] = entry
             write_config(self._config_path, raw)
 

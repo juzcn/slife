@@ -106,7 +106,8 @@ class ListToolsTool(Tool):
                 items = native_groups[cat]
                 lines.append(f"### {cat} ({len(items)})")
                 for name, desc in items:
-                    lines.append(f"- **`{name}`** — {desc}")
+                    marker = " — harness, auto-invoked" if name.startswith("_") else ""
+                    lines.append(f"- **`{name}`**{marker} — {desc}")
                 lines.append("")
 
         if show_mcp and mcp_proxies:
@@ -130,11 +131,29 @@ class ListToolsTool(Tool):
 
 _tasks: dict[str, asyncio.Task] = {}
 
+#: Bound on ``_tasks`` — an ``_async: true`` call the LLM never polls would
+#: otherwise keep its finished task in the dict (holding tool resources) for
+#: the whole session (REVIEW §1-13).
+_MAX_ASYNC_TASKS = 100
+
+
+def _prune_old_done() -> None:
+    """Drop the oldest completed tasks while over the cap; running tasks stay."""
+    if len(_tasks) <= _MAX_ASYNC_TASKS:
+        return
+    for tid in list(_tasks.keys()):  # insertion order = oldest first
+        if len(_tasks) <= _MAX_ASYNC_TASKS:
+            break
+        task = _tasks[tid]
+        if task.done():
+            _tasks.pop(tid, None)
+
 
 def schedule(coro) -> str:
     task_id = uuid.uuid4().hex[:8]
     task = asyncio.create_task(_runner(coro, task_id))
     _tasks[task_id] = task
+    _prune_old_done()
     logger.info("async_task_scheduled id=%s", task_id)
     return task_id
 

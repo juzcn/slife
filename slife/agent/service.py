@@ -97,7 +97,6 @@ class AgentService:
             max_tool_result_chars=max_tool_result_chars,
             tool_timeout=config.tool_timeout,
             context_window=config.active_model.context_window,
-            context_floor=config.context_floor,
             context_ceiling=config.context_ceiling,
             memdb_enabled=not is_subagent,
             supports_vision=config.active_model.supports_vision,
@@ -182,11 +181,9 @@ class AgentService:
         self.agent_loop.context_window = model.context_window
 
         # Rebuild system prompt with updated model info
-        self.conversation.update_context_footer("")
         new_system = build_system_prompt(self.config)
         if self.conversation.messages and self.conversation.messages[0]["role"] == "system":
             self.conversation.messages[0]["content"] = new_system
-            self.conversation._base_system_prompt = new_system
 
     @property
     def mcp_enabled(self) -> bool:
@@ -273,10 +270,12 @@ class AgentService:
     def _start_generic_watchdog(self, name: str, module: str) -> None:
         """Attach a crash watchdog to a generically-spawned plugin.
 
-        Only for plugins managed via ``self._plugins`` (built-ins like
-        ``a2a``).  The restart callback re-invokes the generic spawn —
-        ``_spawn_plugin_generic`` itself never starts a watchdog, so a
-        restart never stacks a second monitor.
+        Covers both the built-ins and auto-discovered third-party plugins —
+        ``_spawn_plugin_generic`` creates a ``PluginLifecycle`` for the latter,
+        so every plugin is managed via ``self._plugins`` (REVIEW §1-1).  The
+        restart callback re-invokes the generic spawn; ``_spawn_plugin_generic``
+        itself never starts a watchdog, so a restart never stacks a second
+        monitor.
         """
         if name not in self._plugins:
             return
@@ -296,6 +295,13 @@ class AgentService:
         from slife.mcp.process import MCPWrapperProcess
 
         logger.info("plugin_spawn name=%s module=%s", name, module)
+
+        # Auto-discovered third-party plugins get a PluginLifecycle too, so the
+        # crash watchdog and shutdown manage them exactly like the built-ins
+        # (REVIEW §1-1).
+        if name not in self._plugins:
+            from slife.agent.plugins import PluginLifecycle
+            self._plugins[name] = PluginLifecycle(name, self)
 
         process = MCPWrapperProcess(
             command=sys.executable,
@@ -335,15 +341,11 @@ class AgentService:
             logger.info("plugin_ready name=%s tools=%d",
                          name, len(self.tool_registry.list_tools()))
 
-            # Store for cleanup — use PluginLifecycle for known plugins, setattr for auto-discovered
-            if name in self._plugins:
-                self._plugins[name].client = client
-                self._plugins[name].process = process
-                self._plugins[name].port = process.port
-            else:
-                setattr(self, f"_{name}_client", client)
-                setattr(self, f"_{name}_process", process)
-                setattr(self, f"_{name}_port", process.port)
+            # Store for cleanup/watchdog — PluginLifecycle for all plugins
+            # (built-in or auto-discovered third-party).
+            self._plugins[name].client = client
+            self._plugins[name].process = process
+            self._plugins[name].port = process.port
             os.environ[f"SLIFE_{name.upper()}_PORT"] = str(process.port)
 
             return True
@@ -351,14 +353,9 @@ class AgentService:
             # A failed spawn must not leave the lifecycle pointing at a
             # live-but-unconnected child (watchdog stall) or an orphaned
             # process (leak) — reset and stop it before re-raising (REVIEW M2).
-            if name in self._plugins:
-                self._plugins[name].process = None
-                self._plugins[name].client = None
-                self._plugins[name].port = 0
-            else:
-                setattr(self, f"_{name}_process", None)
-                setattr(self, f"_{name}_client", None)
-                setattr(self, f"_{name}_port", 0)
+            self._plugins[name].process = None
+            self._plugins[name].client = None
+            self._plugins[name].port = 0
             try:
                 await process.stop()
             except Exception:
@@ -1037,6 +1034,7 @@ class AgentService:
 
             # Watchdog: on crash, respawn + restore poll loop
             async def _restart_wechat():
+                self._cancel_plugin_task("wechat")
                 await self._spawn_and_register_plugin(
                     "wechat",
                     "slife.plugins.wechat.server",
@@ -1329,6 +1327,7 @@ class AgentService:
 
         # Crash watchdog — respawn the plugin and restart the drain loop.
         async def _restart_a2a() -> None:
+            self._cancel_plugin_task("a2a")
             await self._spawn_plugin_generic("a2a", "slife.plugins.a2a.server")
             self._tool_ctx.a2a_mcp_client = self._plugins["a2a"].client
             self._plugins["a2a"].poll_task = asyncio.create_task(self._a2a_poll_loop())
@@ -1343,6 +1342,19 @@ class AgentService:
         )
         logger.info("a2a_plugin_started")
         return PluginStartStatus.STARTED
+
+    def _cancel_plugin_task(self, name: str, attr: str = "poll_task") -> None:
+        """Cancel and clear a plugin's background task (e.g. the WeChat/A2A
+        poll loop) so a watchdog restart never stacks a second concurrent
+        loop. Cancellation is safe: both poll loops catch ``CancelledError``
+        and exit (REVIEW §1-4)."""
+        plugin = self._plugins.get(name)
+        if plugin is None:
+            return
+        task = getattr(plugin, attr, None)
+        if task is not None and not task.done():
+            task.cancel()
+        setattr(plugin, attr, None)
 
     async def _a2a_poll_loop(self, interval: float = 1.0) -> None:
         """Drain inbound a2a tasks/presence from the plugin into the inbox.

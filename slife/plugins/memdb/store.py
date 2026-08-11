@@ -333,9 +333,17 @@ class SessionStore:
         if query and query.strip():
             mode = mode.lower()
             if mode == "grep":
-                safe = query.replace("%", r"\%").replace("_", r"\_")
+                # Escape LIKE metacharacters so a pattern containing %/_ matches
+                # them literally; the ESCAPE '\' clause is required or the
+                # escapes are a no-op. Backslashes must be doubled first — the
+                # same rules as search_grep (REVIEW M5).
+                safe = (
+                    query.replace("\\", r"\\")
+                         .replace("%", r"\%")
+                         .replace("_", r"\_")
+                )
                 like_pattern = f"%{safe}%"
-                where = "user_message LIKE ? OR messages LIKE ?"
+                where = "user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\'"
                 params: list = [like_pattern, like_pattern]
             else:
                 fts_query = _to_fts5_query(query)
@@ -487,7 +495,13 @@ class SessionStore:
         # Fetch extra rows to account for duplicate diary_rowid entries
         # (one turn → multiple chunks).  Dedup in Python: vec0 KNN does
         # not allow GROUP BY.
-        fetch_limit = (limit * 4) if (since or until) else (limit * 2)
+        #
+        # With a since/until window, use a larger pool: vec0 KNN is global
+        # nearest-neighbour — it cannot constrain the search inside the time
+        # window — so the window is filtered in Python afterwards.  The wider
+        # pool reduces the chance that the in-window turns are all outside the
+        # fetched KNN results (REVIEW §1-10).
+        fetch_limit = (limit * 8) if (since or until) else (limit * 2)
         cursor = await self._c.execute(
             """SELECT ds.diary_rowid AS rowid, d.user_message,
                       ds.summary, ds.tags, ds.created_at, ds.distance

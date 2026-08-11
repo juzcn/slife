@@ -187,7 +187,7 @@ Runtime model management via native tools — no config editing needed:
 | `model_set` | Add/update a model (creates provider if new) |
 | `model_remove` | Remove by ref; auto-switches if it was active |
 | `model_switch` | Switch active model by ref — persists to config and rebuilds the client live |
-| `switch_to_nvidia_free` | In-memory-only switch to a free NVIDIA NIM model via the nvidia-nim MCP server (known gap: tool names not re-verified against the shipped nvidia-nim-mcp; see REVIEW.md) |
+| `switch_to_nvidia_free` | In-memory-only switch to a free NVIDIA NIM model via the nvidia-nim MCP server (calls its `list_models` / `get_model_info` tools, verified against nvidia-nim-mcp v2.1.2) |
 
 Model switches fire callbacks that rebuild the LLM client, update loop parameters (vision, context window, modalities), and re-render the system prompt.
 
@@ -198,8 +198,6 @@ Model switches fire callbacks that rebuild the LLM client, update loop parameter
 `Tool` (`slife/tools/base.py`) defines `name`, `description`, `parameters` (JSON Schema), `category`, and `async execute(**kwargs) -> str`. Required fields are validated at class-definition time via `__init_subclass__`. `from_config(cfg, config, ctx)` allows per-tool construction from the `tools:` overrides in `slife.json5` (e.g. `execute_shell` reads its default timeout there); `ctx` carries runtime references (registry, config, MCP client, conversation) as `self._ctx`.
 
 Categories in use (14): `System`, `Execution`, `Skills`, `CLI`, `REST API`, `A2A`, `Subagent`, `Config`, `Models`, `Credentials`, `Vision`, `Display`, `Harness`, `Meta`. The docstring in `base.py` lists only a subset — treat it as illustrative, not enforced.
-
-> `requires_a2a` is vestigial: no tool sets it `True` today (the A2A tools self-guard at runtime) and it is no longer the registration gate. See REVIEW.md.
 
 ### Auto-Discovery
 
@@ -291,7 +289,7 @@ Each plugin runs with a **watchdog** background task that monitors the child pro
 | Success reset | A successful restart resets the backoff and retry counter |
 | Scope | **mcp** (respawns wrapper + reconnects external servers), **memdb**, **wechat** (restores poll loop), **memfiles**, **a2a** |
 
-> Known gap: plugins not in the hardcoded `_plugins` set (third-party packages dropped into `slife/plugins/`) start but get **no** watchdog — a crash is permanent until restart. See REVIEW.md.
+Auto-discovered third-party plugins get the same watchdog: `_spawn_plugin_generic` creates a `PluginLifecycle` for any plugin not in the built-in set, so a crash restarts it with the same backoff as the built-ins.
 
 Subagents do **not** have their own watchdog — they connect to the main agent's plugin processes via HTTP, so a subagent crash only kills the subagent, not the shared infrastructure.
 
@@ -563,12 +561,18 @@ Auto-selected by priority — no configuration needed. `credstore set` dual-writ
 
 ### Secret Sanitization
 
-Three chokepoints, single pattern-masking engine (`logfmt.sanitize_secrets`):
-1. **Inbound** — `Conversation.add_user_message()` on every external message
-2. **Tool arguments** — `Conversation.add_assistant_message()` on tool_call arguments
-3. **Outbound** — `AgentLoop._execute_tools()` on every tool result
+**The input and output gates are the authoritative trust boundary.** A secret may appear as plaintext anywhere *inside* the process (tool internals, `conn.error`, log lines) — that is **not** a vulnerability by itself. Judge any finding by two questions:
 
-Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bearer` tokens, and credential-named `key=value` pairs are masked with `<MASKED>`. This is a pattern-based best effort, not a guarantee — there is no exact-match denylist from credstore, and several log call sites bypass it (see REVIEW.md §logging).
+1. **Does the secret reach the LLM context / conversation as plaintext?** → blocked by the gates below.
+2. **Does the secret cross the machine trust boundary as plaintext?** — network egress, a file published publicly (`/share`), anything readable outside the running user. → this is a real security finding.
+
+Everything else — including plaintext in `~/.slife/logs/` (readable only by the running user) — is hygiene, not a security issue. Do not report a plaintext string that the gates will mask, or a local log line, as a security finding.
+
+Two gates, single pattern-masking engine (`logfmt.sanitize_secrets`):
+1. **Inbound** — `Conversation.add_user_message()` on every external message
+2. **Outbound** — `AgentLoop._execute_tools()` runs `sanitize_secrets` on **every** tool result before it enters the conversation (tool-call arguments are also masked at `Conversation.add_assistant_message`). So even a tool that returns a secret verbatim (e.g. a config/env lookup) never puts a known-shaped value into the LLM context.
+
+Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bearer` tokens, and credential-named `key=value` pairs are masked with `<MASKED>`. The engine is pattern-based, so a value that matches no known shape is **not** masked at the gates either — the honest boundary is "known-shaped secrets never reach the LLM"; an exact-match denylist from credstore remains a possible hardening (see REVIEW.md).
 
 ### Config Sections
 
@@ -599,7 +603,7 @@ Health checks fall into two categories. `system_health` runs all of them togethe
 |------------|-----|
 | **node** | Readability.js article extraction (fetch MCP fallback) |
 | **npm** | npx-based MCP servers |
-| **bun** | JS/TS MCP servers via bunx (e.g. nvidia-nim; note the shipped config runs `npx` — see REVIEW.md N3) |
+| **bun** | JS/TS MCP servers (optional — the shipped config runs them via `npx`) |
 | **uv** | uvx-based MCP servers |
 
 **Dynamic runtime checks** — each query inspects current application state:
@@ -727,14 +731,9 @@ The full audit, this round's fixes, and every open item are tracked in **[REVIEW
 
 - **C9 remainder** — a Streamable HTTP server that answers the SSE-detection GET with a live notification channel but no `endpoint` event is misrouted: after a 5 s wait for the endpoint event it falls through to Streamable HTTP, which a legacy-SSE-only server usually rejects. Servers that reject the GET fall through correctly.
 - **M5 remainder** — `memory_count(query, mode="grep")` still lacks the `ESCAPE '\'` clause that `memory_search(grep)` now has.
-- **N1** — config writes are non-atomic and un-locked (cross-process race: subagents write the same `slife.json5`).
-- **N3** — `switch_to_nvidia_free` tool names unverified against `nvidia-nim-mcp v2.1.2`; config runs `npx` while `health.py` hints `bunx`.
-- **N4** — no exact-match secret denylist from credstore (only the known-shape allowlist).
-- **Security** — `config_env_get` returns resolved secret values verbatim; `desktop_notify` single-quote-injects into a PowerShell one-liner; memfiles `_save_url` fetches an arbitrary URL (SSRF surface).
-- **Logging** — residual unredacted call sites (user/tool/task content) and level misuse; see REVIEW.md §2.2.
 - **Tests/CI** — subagent process and backend wire formats untested end-to-end; the built wheel is never exercised; install scripts are never smoke-run; no coverage gate.
 
-**Resolved in the 2026-08-11 refactor/fix round** (all regression-tested; see REVIEW.md): C1 non-`"mqtt"` transport, C2 external-server health-check/reconnect + stale session-id, C4 subagent reader guards, C5 true cancel (mesh + worker via the unified inbox), C6 WeChat dedup (key now includes text), C7 approval-dialog Esc, C8 reserved plugin names, C9 SSE-streamed Streamable responses, W1/W2 wire formats, M2–M7, plus the F-* conformance fixes (memdb English, `_sys_trim` active-conversation targeting, unified `__` filter, `rest_api_set_enabled`/`cli_set_enabled`, memfiles health-pointer refresh, worst unredacted log sites).
+**Resolved in the 2026-08-11 refactor/fix round** (all regression-tested; see REVIEW.md): C1 non-`"mqtt"` transport, C2 external-server health-check/reconnect + stale session-id, C4 subagent reader guards, C5 true cancel (mesh + worker via the unified inbox), C6 WeChat dedup (key now includes text), C7 approval-dialog Esc, C8 reserved plugin names, C9 SSE-streamed Streamable responses, W1/W2 wire formats, M2–M7, memfiles `_save_url` restricted to publicly reachable http(s) URLs, **watchdog extended to third-party plugins**, **config writes now atomic** (`os.replace` + in-process lock), **`switch_to_nvidia_free` tool names verified** (`list_models`/`get_model_info` on nvidia-nim-mcp v2.1.2, npx/bunx reconciled), **`skill_set_enabled` actually works** (persists to `skills:` config; `skill_list` hides and `skill_use` refuses disabled skills), plus the F-* conformance fixes (memdb English, `_sys_trim` active-conversation targeting, unified `__` filter, `rest_api_set_enabled`/`cli_set_enabled`, memfiles health-pointer refresh, worst unredacted log sites).
 
 ## License
 

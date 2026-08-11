@@ -145,11 +145,16 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
             raw = read_config(self._config_path)
             section = _rest_api_section(raw)
             is_update = name in section
+            old = section.get(name)
+            old_enabled = old.get("enabled") if isinstance(old, dict) else None
             entry: dict = {"spec_url": spec_url, "base_url": base_url}
             if api_key:
                 entry["api_key"] = api_key
             if description:
                 entry["description"] = description
+            if old_enabled is not None:
+                # Preserve the enable/disable flag across an update (REVIEW §1-13).
+                entry["enabled"] = old_enabled
             section[name] = entry
             write_config(self._config_path, raw)
 

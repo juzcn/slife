@@ -222,10 +222,29 @@ class OpenAIResponsesBackend:
                     ):
                         # Record name + call_id; argument deltas for this
                         # item reference it by item_id.
-                        _tool_meta[getattr(item, "id", "")] = {
-                            "name": getattr(item, "name", ""),
-                            "call_id": getattr(item, "call_id", ""),
-                        }
+                        item_id = getattr(item, "id", "")
+                        meta = _tool_meta.get(item_id, {})
+                        meta.setdefault("name", getattr(item, "name", ""))
+                        meta.setdefault("call_id", getattr(item, "call_id", ""))
+                        _tool_meta[item_id] = meta
+                        # A function call that never emits an arguments.delta
+                        # (empty/auto-filled args) would otherwise be dropped —
+                        # emit it with empty arguments when its item completes
+                        # without having been indexed (REVIEW §1-14).
+                        if (
+                            etype == "response.output_item.done"
+                            and item_id not in _tool_index
+                        ):
+                            _tool_index[item_id] = _next_index
+                            _next_index += 1
+                            yield StreamChunk(tool_deltas=[{
+                                "index": _tool_index[item_id],
+                                "id": meta.get("call_id") or item_id,
+                                "function": {
+                                    "name": meta.get("name", ""),
+                                    "arguments": "",
+                                },
+                            }])
                 elif etype == "response.function_call_arguments.delta":
                     item_id = getattr(event, "item_id", "")
                     if item_id not in _tool_index:

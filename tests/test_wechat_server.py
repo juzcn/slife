@@ -89,11 +89,23 @@ class TestPollLoopDedup:
         assert ws._seen_keys == {"u1::ctx1::hello"}
 
     @pytest.mark.asyncio
-    async def test_exact_duplicate_still_deduped(self):
-        """True re-delivery (same sender + conversation + text) is still dropped."""
-        queued = await self._run([[
-            _msg("u1", "ctx1", "hello"),
-            _msg("u1", "ctx1", "hello"),  # re-delivery
-        ]])
+    async def test_cross_poll_redelivery_still_deduped(self):
+        """A true re-delivery ACROSS polls (same sender + conversation + text)
+        is still dropped — the key is only deduped per poll (REVIEW §1-9)."""
+        queued = await self._run([
+            [_msg("u1", "ctx1", "hello")],
+            [_msg("u1", "ctx1", "hello")],  # same message returned again
+        ])
         assert [q["text"] for q in queued] == ["hello"]
         assert len(ws._seen_keys) == 1
+
+    @pytest.mark.asyncio
+    async def test_same_text_twice_in_one_poll_both_queued(self):
+        """Two genuine same-text messages in ONE poll both get through — a user
+        sending 'ok' twice in a row must not have the second dropped."""
+        queued = await self._run([[
+            _msg("u1", "ctx1", "hello"),
+            _msg("u1", "ctx1", "hello"),
+        ]])
+        assert [q["text"] for q in queued] == ["hello", "hello"]
+        assert len(ws._seen_keys) == 1  # one distinct key for both

@@ -57,7 +57,6 @@ def _find_json5_refs(raw: dict, key: str) -> list[str]:
 class CredentialCheckTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "credential_check"
     category: ClassVar[str] = "Credentials"
-    requires_a2a = False
     description = "Check credential in shell, slife.json5, and OS keyring. Values always masked."
     parameters = {
         "type": "object",
@@ -84,7 +83,6 @@ class CredentialCheckTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportInco
 class InjectCredentialTool(Tool):
     name = "credential_inject"
     category: ClassVar[str] = "Credentials"
-    requires_a2a = False
     description = "Load a secret from OS keyring into os.environ. Temporary, this process only."
     parameters = {
         "type": "object",
@@ -108,7 +106,6 @@ class InjectCredentialTool(Tool):
 class UninjectCredentialTool(Tool):
     name = "credential_uninject"
     category: ClassVar[str] = "Credentials"
-    requires_a2a = False
     description = "Remove an env var from os.environ. Keyring secret remains stored."
     parameters = {
         "type": "object",

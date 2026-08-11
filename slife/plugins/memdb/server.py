@@ -13,13 +13,37 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from slife.paths import get_data_dir
-from slife.plugins.memdb.store import SessionStore
+from slife.plugins.memdb.store import SessionStore, _clamp_limit
 from slife.plugins.memdb.embeddings import EmbeddingClient
 from slife.plugins.memdb.search import merge_hybrid
 from slife.server_utils import create_plugin_server
+
+@asynccontextmanager
+async def _memdb_lifespan(_app):
+    """Graceful shutdown: close the lazy store and stop a background reindex.
+
+    The store/embedder are created lazily on first use, so these may all be
+    None here — guard accordingly (REVIEW §1-10).
+    """
+    try:
+        yield
+    finally:
+        global _store, _reindex_task
+        if _reindex_task is not None and not _reindex_task.done():
+            _reindex_task.cancel()
+            try:
+                await _reindex_task
+            except asyncio.CancelledError:
+                pass
+            _reindex_task = None
+        if _store is not None:
+            await _store.close()
+            _store = None
+
 
 mcp, _log_path, logger = create_plugin_server(
     "slife-memdb",
@@ -30,6 +54,7 @@ mcp, _log_path, logger = create_plugin_server(
         "memory_open, memory_summarize, memory_check/set/remove_embedding. "
         "All data is automatically scoped to the current agent."
     ),
+    lifespan=_memdb_lifespan,
 )
 
 _store: SessionStore | None = None
@@ -110,6 +135,12 @@ async def _ensure_store() -> SessionStore:
 
         with elapsed("embedder_init", logger, level=logging.INFO):
             _embedder = EmbeddingClient.from_config()
+            # Load a transformer model up front so its REAL output dimension
+            # is known before the vec0 table is created — a guessed dimension
+            # (default 1024) silently drops every embedding of a different
+            # width (REVIEW §1-10). No-op for gguf/api backends.
+            if _embedder.available:
+                await _embedder.ensure_loaded()
         _store = SessionStore(_db_path)
         with elapsed("store_setup", logger, level=logging.INFO, db=str(_db_path)):
             model_id = f"{_embedder.backend}:{_embedder._model}" if _embedder.available else ""
@@ -447,6 +478,11 @@ async def memory_search(
     mode = mode.lower()
     if mode not in ("grep", "fts5", "hybrid", "time"):
         mode = "hybrid"
+    # Clamp before use — the store methods clamp internally, but the hybrid
+    # final slice (`merged[:limit]`) and time mode use the raw LLM value, so a
+    # limit of 0 (→ []) or a negative (→ slices from the tail) would slip
+    # through (REVIEW §1-10).
+    limit = _clamp_limit(limit)
 
     if mode == "time":
         try:

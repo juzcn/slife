@@ -6,6 +6,9 @@ json5 read/write logic across tool modules.
 
 import json5
 import logging
+import os
+import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,9 +67,30 @@ def read_config(path: Path) -> dict:
         return {}
 
 
+_write_lock = threading.Lock()
+
+
 def write_config(path: Path, raw: dict) -> None:
-    """Write a dict to a JSON5 config file with indent=2 formatting."""
-    path.write_text(json5.dumps(raw, indent=2, trailing_commas=False, ensure_ascii=False), encoding="utf-8")
+    """Atomically write a dict to a JSON5 config file.
+
+    Writes to a temp file in the same directory then ``os.replace()`` — a
+    reader never sees a truncated/interleaved file and a crash mid-write
+    can't corrupt the config (REVIEW §1-2).  The lock serializes writers in
+    this process; atomic replace is the cross-process guarantee.
+    """
+    text = json5.dumps(raw, indent=2, trailing_commas=False, ensure_ascii=False)
+    with _write_lock:
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def format_source_info(source: object) -> str:

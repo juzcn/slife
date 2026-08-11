@@ -555,12 +555,12 @@ class SwitchToNvidiaFreeTool(Tool):
     # ── MCP tool callers ────────────────────────────────────────────
 
     async def _list_nim_models(self) -> list[str] | None:
-        """Call nvidia-nim__nim_model_list."""
+        """Call nvidia-nim__list_models (nvidia-nim-mcp v2.1.2)."""
         ctx = getattr(self, "_ctx", None)
         registry = ctx.registry if ctx is not None else None
         if registry is None:
             return None
-        tool = registry.get("nvidia-nim__nim_model_list")
+        tool = registry.get("nvidia-nim__list_models")
         if tool is None:
             return None
         try:
@@ -573,7 +573,8 @@ class SwitchToNvidiaFreeTool(Tool):
         return [l.strip() for l in result.split("\n") if l.strip()]
 
     async def _get_capabilities(self, model_id: str) -> dict | None:
-        """Call nvidia-nim__nim_get_model_capabilities for one model.
+        """Call nvidia-nim__get_model_info for one model (nvidia-nim-mcp
+        v2.1.2; the tool takes ``model_id``).
 
         The MCP tool returns JSON like:
           {"type": "chat", "vision": false, "tools": true, "context": 131072, "notes": "..."}
@@ -582,7 +583,7 @@ class SwitchToNvidiaFreeTool(Tool):
         registry = ctx.registry if ctx is not None else None
         if registry is None:
             return None
-        tool = registry.get("nvidia-nim__nim_get_model_capabilities")
+        tool = registry.get("nvidia-nim__get_model_info")
         if tool is None:
             return None
         try:

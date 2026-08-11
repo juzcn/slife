@@ -233,9 +233,14 @@ class PluginLifecycle:
                 )
 
                 # ── Clean up dead tools ──────────────────────────────
+                # "{name}_" matches BOTH the namespaced "{name}__tool" tools and
+                # the as-is registered plugin tools that already carry the
+                # server prefix ("mcp_set", "wechat_*", "a2a_*") — the latter
+                # never had a "__", so "{name}__" alone left them registered,
+                # pointing at the dead client (REVIEW §1-3).
                 try:
                     removed = self._service.tool_registry.unregister_by_prefix(
-                        f"{self.name}__",
+                        f"{self.name}_",
                     )
                     if removed:
                         logger.info(

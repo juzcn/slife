@@ -59,15 +59,6 @@ def create_tools_from_config(
                 logger.info("tool_skipped_no_vision name=%s", tool_cls.name)
                 continue
 
-        # Skip tools that require the MQTT/A2A mesh when MQTT is not
-        # configured or not enabled.  A2AConfig always exists (defaults
-        # to enabled=False), so check the enabled flag, not just presence.
-        if getattr(tool_cls, "requires_a2a", False):
-            a2a_cfg = getattr(config, "a2a_config", None) if config else None
-            if a2a_cfg is None or not a2a_cfg.enabled:
-                logger.debug("tool_skipped_no_a2a_config name=%s", tool_cls.name)
-                continue
-
         # Note: expose_file / save_content_or_files live in the memfiles
         # plugin (registered as memfiles__* proxy tools), not here — so
         # there is no tunnel-gating needed at native-tool load time.

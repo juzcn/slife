@@ -343,10 +343,3 @@ def run_plugin_server(
             )
     finally:
         logger.info("plugin_shutdown port=%s", port)
-
-
-# ── JSON response helpers (re-exported from logfmt) ────────────────────
-# These were moved to slife.logfmt for better cohesion.
-# Kept here for backward compatibility.
-
-from slife.logfmt import ok_json, error_json  # noqa: F401

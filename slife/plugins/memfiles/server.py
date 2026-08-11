@@ -432,6 +432,49 @@ def _save_content(content: str, title: str, tags: list[str], mem_dir: Path) -> s
     return _build_result(filepath, display_title, tags, "content")
 
 
+def _reject_non_public_url(url: str) -> str | None:
+    """Return an error message if *url* is not a publicly reachable http(s)
+    URL, else None.
+
+    SSRF guard for ``_save_url``: this plugin process fetches *url*, so a
+    loopback / LAN / cloud-metadata target (``169.254.169.254`` etc.) would
+    let the LLM read addresses the user's browser can't reach — and with the
+    ngrok tunnel up, the response would be published as a public file. The
+    host is validated as an IP literal or via DNS resolution; **every**
+    resolved address must be globally routable. (Redirect chains are not
+    re-checked per hop.)
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return f"only http(s) URLs are supported (got '{parsed.scheme or 'none'}')"
+    host = parsed.hostname
+    if not host:
+        return "URL has no host"
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as e:
+        return f"cannot resolve host '{host}': {e}"
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return f"refusing non-public host '{host}' ({ip})"
+    return None
+
+
 async def _save_url(url: str, title: str, tags: list[str], mem_dir: Path) -> str:
     import aiohttp
     from urllib.parse import urlparse
@@ -439,6 +482,14 @@ async def _save_url(url: str, title: str, tags: list[str], mem_dir: Path) -> str
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc:
         return f"Error: invalid URL — {url}"
+
+    # SSRF guard — only publicly reachable http(s) URLs may be fetched.
+    # DNS resolution runs on a daemon thread (threads.py convention).
+    from slife.threads import run_daemon
+
+    err = await run_daemon(_reject_non_public_url, url)
+    if err:
+        return f"Error: refusing URL — {err}"
 
     try:
         async with aiohttp.ClientSession() as session:

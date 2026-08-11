@@ -18,7 +18,6 @@ Class contract
 
   Optional class attrs::
 
-      requires_a2a   : bool = False   — only register when MQTT mesh is active
       from_config()  : classmethod    — factory when tool needs constructor args
 
   Validation happens at class-definition time — a tool that forgets
@@ -162,11 +161,6 @@ class Tool(ABC):
     # Must be one of: System, Execution, Skills, CLI, REST API,
     # A2A, Config, Credentials, Meta.
     category: ClassVar[str] = ""
-
-
-    # Set to True on tools that only work with the MQTT/A2A mesh.
-    # The factory skips registration when a2a_config is absent or disabled.
-    requires_a2a: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)

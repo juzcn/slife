@@ -284,6 +284,46 @@ class EmbeddingClient:
         """Max tokens the model accepts for a single embedding."""
         return _guess_max_tokens(self._model)
 
+    async def ensure_loaded(self) -> int:
+        """Ensure the backend model is loaded and ``self._dim`` reflects its
+        real output dimension; return the dimension.
+
+        Only the transformer backend needs this — its dimension is only known
+        once the model loads, whereas gguf/api dimensions are known up front.
+        Call before the vec0 table is created so the schema uses the real
+        width: a guessed dimension silently drops every embedding of a
+        different width (REVIEW §1-10).
+        """
+        if self._backend == "transformer" and self._client is None:
+            try:
+                from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
+            except ImportError:
+                return self._dim
+
+            from slife.threads import run_daemon
+
+            logger.info(
+                "loading_transformer model=%s device=%s",
+                self._model, self._device or "auto",
+            )
+            device = self._device or None  # None = auto-detect
+            # SentenceTransformer can block on first load (download + warm-up);
+            # run it on a daemon thread so a hung load can never hang the
+            # plugin's interpreter shutdown (threads.py convention).
+            self._client = await run_daemon(
+                lambda: SentenceTransformer(self._model, device=device),
+                name="transformer-load",
+            )
+            actual_dim = self._client.get_sentence_embedding_dimension()
+            if actual_dim and actual_dim != self._dim:
+                logger.info(
+                    "transformer_dim_override configured=%d actual=%d",
+                    self._dim, actual_dim,
+                )
+                self._dim = actual_dim
+            logger.info("transformer_loaded model=%s dim=%d", self._model, self._dim)
+        return self._dim
+
     async def embed(self, texts: list[str]) -> list[list[float]] | None:
         """Generate embeddings for a list of texts.
 
@@ -354,47 +394,28 @@ class EmbeddingClient:
     async def _call_transformer(self, texts: list[str]) -> list[list[float]] | None:
         """Generate embeddings using a local HuggingFace model via
         sentence-transformers."""
-        try:
-            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
-        except ImportError:
+        if self._client is None:
+            # Loads the model (and corrects _dim to its real width).
+            # Returns without loading if sentence-transformers is absent.
+            await self.ensure_loaded()
+        if self._client is None:
             logger.warning(
                 "embeddings_unavailable backend=transformer reason=sentence_transformers_not_installed "
                 "hint='uv pip install sentence-transformers'"
             )
             return None
 
-        if self._client is None:
-            logger.info(
-                "loading_transformer model=%s device=%s",
-                self._model, self._device or "auto",
-            )
-            # SentenceTransformer can block on first load (model download +
-            # warm-up).  Run in a thread to avoid blocking the event loop.
-            import asyncio
-            device = self._device or None  # None = auto-detect
-            self._client = await asyncio.to_thread(
-                SentenceTransformer,
-                self._model,
-                device=device,
-            )
-            # Sniff the real output dimension
-            actual_dim = self._client.get_sentence_embedding_dimension()
-            if actual_dim and actual_dim != self._dim:
-                logger.info(
-                    "transformer_dim_override configured=%d actual=%d",
-                    self._dim, actual_dim,
-                )
-                self._dim = actual_dim
-            logger.info("transformer_loaded model=%s dim=%d", self._model, self._dim)
+        # encode() is synchronous; run it on a daemon thread (threads.py
+        # convention — a blocked encode must never hang shutdown).
+        from slife.threads import run_daemon
 
-        # encode() is synchronous but fast for small batches;
-        # run in thread to stay async-safe.
-        import asyncio as _asyncio
-        embeddings = await _asyncio.to_thread(
-            self._client.encode,
-            texts,
-            normalize_embeddings=True,
-            show_progress_bar=False,
+        embeddings = await run_daemon(
+            lambda: self._client.encode(
+                texts,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            ),
+            name="transformer-encode",
         )
         return [emb.tolist() for emb in embeddings]
 

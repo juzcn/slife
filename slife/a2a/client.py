@@ -292,6 +292,12 @@ class A2AClient:
             raise TimeoutError(
                 f"Task to '{target}' timed out after {timeout}s"
             )
+        except asyncio.CancelledError:
+            # A cancelled wait (loop tool_timeout, or a2a_cancel_task cancelling
+            # the waiter) must not leak the pending future — drop it so a late
+            # peer result can't resolve a future nobody awaits (REVIEW §1-8).
+            self._pending_tasks.pop(corr_id, None)
+            raise
 
     # ── Async task routing ────────────────────────────────────────────
 

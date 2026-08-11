@@ -1,7 +1,7 @@
 """Code execution tools.
 
 Tools:
-    execute_shell          — run shell commands (disabled by default)
+    execute_shell          — run shell commands (default timeout 30s)
     run_python_script      — run Python scripts with JSON arguments
     install_python_package — install PyPI packages into slife's environment
 """
@@ -242,8 +242,19 @@ class InstallPythonPackageTool(Tool):
             "uv", "pip", "install", "--python", sys.executable, *packages,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own process group so timeout/cancel can kill the whole tree —
+            # otherwise a mid-install uv process survives as an orphan.
+            start_new_session=True,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            await _kill_process_tree(proc)
+            logger.warning("pip_install_timeout packages=%s", packages)
+            return f"Error: pip install timed out after 120s"
+        except asyncio.CancelledError:
+            await _kill_process_tree(proc)
+            raise
         out = stdout.decode("utf-8", errors="replace").strip()
         err = stderr.decode("utf-8", errors="replace").strip()
 

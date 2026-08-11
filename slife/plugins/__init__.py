@@ -6,14 +6,15 @@ via ``pkgutil.iter_modules`` — no config entry needed.
 
 Third-party plugin
   Drop a package into ``slife/plugins/my_plugin/`` with a ``server.py``
-  that follows the :doc:`plugin spec </docs/plugins>`.  It will be
-  discovered and started automatically on next launch.
+  that follows the plugin contract (DESIGN.md → "The Plugin Contract").
+  It will be discovered and started automatically on next launch.
 
 Built-in plugins
-  ``memdb``, ``mcp``, and ``wechat`` are discovered the same way.
-  They each have a small amount of harness-side post‑connect logic
-  (memory restore, MCP auto‑connect, WeChat poll loop) that is
-  triggered by plugin name rather than by special registration.
+  ``mcp``, ``memdb``, ``wechat``, ``memfiles``, and ``a2a`` are discovered
+  the same way.  Each has a small amount of harness-side post‑connect logic
+  (MCP auto‑connect, memory restore, WeChat poll loop, memfiles client
+  wiring, A2A mesh) that is triggered by plugin name rather than by special
+  registration.
 
 External (non‑Python) MCP servers
   npm‑/uvx‑based servers (filesystem, fetch, serper, etc.) are NOT
@@ -52,12 +53,12 @@ def discover_plugins() -> list[tuple[str, str]]:
         short_name = name.split(".")[-1]
         server_module = name + ".server"
 
-        # Check that server.py exists — use the loader to avoid
-        # importing the module (it contains FastMCP setup that must
-        # run in the child process, not here).
+        # Check that server.py exists — use find_spec to avoid importing the
+        # module (it contains FastMCP setup that must run in the child
+        # process, not here). pkgutil.find_loader was deprecated in 3.12.
         try:
-            loader = pkgutil.find_loader(server_module)
-            if loader is None:
+            import importlib.util as _util
+            if _util.find_spec(server_module) is None:
                 continue
             plugins.append((short_name, server_module))
         except Exception:

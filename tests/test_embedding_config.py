@@ -23,20 +23,40 @@ from slife.plugins.memdb.embedding_config import (
 # ── Fixtures ─────────────────────────────────────────────────────────
 
 
+class _ConfigFile:
+    """Dict-like view over a config file; ``["content"]`` reads/writes it."""
+
+    def __init__(self, path: Path):
+        self._path = path
+
+    def __getitem__(self, key: str) -> str:
+        if key != "content":
+            raise KeyError(key)
+        return self._path.read_text(encoding="utf-8")
+
+    def __setitem__(self, key: str, value: str) -> None:
+        if key != "content":
+            raise KeyError(key)
+        self._path.write_text(value, encoding="utf-8")
+
+
 @pytest.fixture
-def mock_config_file():
-    """Mock Path.read_text and Path.write_text for slife.json5."""
-    _state = {"content": "{}"}
+def mock_config_file(tmp_path):
+    """Redirect embedding_config to a throwaway config file.
 
-    def _read_text(self, encoding="utf-8"):
-        return _state["content"]
+    ``_config_io.write_config`` now writes atomically via a temp file +
+    ``os.replace`` directly on the filesystem, so mocking ``Path.write_text``
+    would silently bypass it — and these tests would write the REAL
+    slife.json5 (get_config_path() resolves to the working tree in dev mode).
+    Patching ``embedding_config._CONFIG_PATH`` to a temp file keeps the tests
+    isolated and makes that failure impossible.
+    """
+    import slife.plugins.memdb.embedding_config as embedding_config
 
-    def _write_text(self, text, encoding="utf-8"):
-        _state["content"] = text
-
-    with patch.object(Path, "read_text", _read_text), \
-         patch.object(Path, "write_text", _write_text):
-        yield _state
+    cfg_file = tmp_path / "slife.json5"
+    cfg_file.write_text("{}", encoding="utf-8")
+    with patch.object(embedding_config, "_CONFIG_PATH", cfg_file):
+        yield _ConfigFile(cfg_file)
 
 
 # ── read_embedding_config ─────────────────────────────────────────────

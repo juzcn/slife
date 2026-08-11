@@ -17,6 +17,7 @@ import logging
 import os
 import time
 from collections import deque
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from slife.plugins.wechat.client import WechatClawbotClient, BASE_URL
@@ -30,6 +31,23 @@ from slife.logfmt import ok_json, error_json
 
 SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
 
+@asynccontextmanager
+async def _wechat_lifespan(_app):
+    """Graceful shutdown: stop the poll / QR / typing background tasks
+    (REVIEW §1-10)."""
+    try:
+        yield
+    finally:
+        global _poll_task, _qr_task, _typing_tasks
+        for t in list(_typing_tasks.values()):
+            t.cancel()
+        _typing_tasks.clear()
+        if _qr_task is not None and not _qr_task.done():
+            _qr_task.cancel()
+        if _poll_task is not None and not _poll_task.done():
+            _poll_task.cancel()
+
+
 mcp, _log_path, logger = create_plugin_server(
     "slife-wechat",
     instructions=(
@@ -37,6 +55,7 @@ mcp, _log_path, logger = create_plugin_server(
         "LLM tools: login (QR scan), send_message (reply), "
         "check_messages (incoming), check_status, logout."
     ),
+    lifespan=_wechat_lifespan,
 )
 
 # ── QR code rendering ────────────────────────────────────────────────────
@@ -135,6 +154,10 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
             msgs = await _client.poll_updates()
             _flush_logs()  # ensure POST debug lines hit disk
             new_count = 0
+            # Keys seen in THIS poll — two genuine same-text messages in one
+            # poll must both be delivered (a user sending "ok" twice in a row),
+            # so only re-deliveries across polls are deduped (REVIEW §1-9).
+            batch_seen: set[str] = set()
             for m in msgs:
                 text = ""
                 item_list = m.get("item_list", [])
@@ -149,8 +172,9 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
                     continue
 
                 key = _msg_key(m, text)
-                if key in _seen_keys:
-                    continue
+                if key in _seen_keys and key not in batch_seen:
+                    continue  # true re-delivery seen in an earlier poll
+                batch_seen.add(key)
                 _seen_keys.add(key)
 
                 from_id = m.get("from_user_id", "")

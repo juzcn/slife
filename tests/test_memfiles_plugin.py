@@ -228,8 +228,10 @@ class TestSaveContentOrFiles:
 
         with patch.object(plugin, "get_memfiles_dir", return_value=mem_dir), _active_tunnel(), \
              patch("aiohttp.ClientSession", _fake_aiohttp):
+            # Public IP literal — no DNS dependency (the SSRF guard resolves
+            # the host before the (mocked) fetch).
             result = await plugin.save_content_or_files(
-                url="https://example.com/slides.html",
+                url="https://8.8.8.8/slides.html",
             )
         files = [f for f in mem_dir.iterdir() if f.name != "index.json"]
         assert len(files) == 1
@@ -256,6 +258,48 @@ class TestSaveContentOrFiles:
         result = await plugin.save_content_or_files(content="   ")
         assert result.startswith("Error:")
         assert "content is empty" in result
+
+
+# ── SSRF guard for _save_url ───────────────────────────────────────────
+
+
+class TestSaveUrlPublicGuard:
+    """_save_url only fetches publicly reachable http(s) URLs — loopback /
+    LAN / cloud-metadata targets are refused (REVIEW §1-1)."""
+
+    def test_allows_public_http(self):
+        assert plugin._reject_non_public_url("http://8.8.8.8/x") is None
+        assert plugin._reject_non_public_url("https://1.1.1.1") is None
+
+    def test_rejects_non_http_schemes(self):
+        assert plugin._reject_non_public_url("ftp://example.com/x")
+        assert plugin._reject_non_public_url("file:///etc/passwd")
+        assert plugin._reject_non_public_url("gopher://localhost/1")
+
+    def test_rejects_loopback(self):
+        assert plugin._reject_non_public_url("http://127.0.0.1:8080/admin")
+        assert plugin._reject_non_public_url("http://[::1]/x")
+        assert plugin._reject_non_public_url("http://localhost/admin")
+
+    def test_rejects_cloud_metadata(self):
+        assert plugin._reject_non_public_url(
+            "http://169.254.169.254/latest/meta-data/"
+        )
+
+    def test_rejects_private_and_link_local(self):
+        assert plugin._reject_non_public_url("http://10.0.0.1/")
+        assert plugin._reject_non_public_url("http://192.168.1.1/")
+        assert plugin._reject_non_public_url("http://172.16.0.1/")
+
+    @pytest.mark.asyncio
+    async def test_save_url_refuses_non_public(self, tmp_path):
+        mem_dir = tmp_path / "files"
+        mem_dir.mkdir()
+        with patch.object(plugin, "get_memfiles_dir", return_value=mem_dir):
+            result = await plugin.save_content_or_files(
+                url="http://169.254.169.254/latest/meta-data/"
+            )
+        assert result.startswith("Error: refusing URL")
 
 
 # ═══════════════════════════════════════════════════════════════════════

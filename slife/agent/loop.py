@@ -206,7 +206,6 @@ class AgentLoop:
         max_tool_result_chars: int = 0,
         tool_timeout: float = 60.0,
         context_window: int = 0,
-        context_floor: float = 0.2,
         context_ceiling: float = 0.8,
         memdb_enabled: bool = True,
         supports_vision: bool = False,
@@ -220,7 +219,7 @@ class AgentLoop:
         self.max_tool_result_chars = max_tool_result_chars
         self.tool_timeout = tool_timeout
         self.context_window = context_window
-        self.context_floor = context_floor
+        # context_floor is consumed by _sys_trim via config.context_floor, not here.
         self.context_ceiling = context_ceiling
         self.memdb_enabled = memdb_enabled
         self.supports_vision = supports_vision
@@ -394,8 +393,9 @@ class AgentLoop:
             self._last_shell = shell_now
         if self._context_time_start:
             kwargs["context_time_start"] = self._context_time_start
-        if self._presence_provider is not None:
-            kwargs["presence_events"] = self._presence_provider()
+        # presence_events are NOT drained here — _auto_invoke reads them only
+        # when the note is actually recorded, so a cancelled turn doesn't lose
+        # them (REVIEW §1-12).
         return kwargs
 
     async def _auto_invoke(
@@ -415,6 +415,12 @@ class AgentLoop:
         """
         if self._cancel_event.is_set():
             return
+        if name == "_sys_note" and self._presence_provider is not None:
+            # Drain pending peer-presence events only now that the note will
+            # actually be recorded — draining them in the _footer_kwargs args
+            # expression while cancelled would lose them (REVIEW §1-12).
+            args = dict(args)
+            args["presence_events"] = self._presence_provider()
         tool = self.tool_registry.get(name)
         if tool is None:
             logger.warning("auto_invoke_tool_missing name=%s", name)
@@ -549,6 +555,24 @@ class AgentLoop:
         if self._cancel_event.is_set():
             logger.info("agent_cancelled phase=before_batch iter=%d", iteration)
             return
+
+        # Any tool that reads ctx.conversation (include_image, clear_context)
+        # must see the conversation this loop is processing — not the startup
+        # human conversation — while a WeChat/remote-agent turn is running.
+        # All native tools share one ToolContext, so a single swap covers the
+        # concurrent batch; it is restored in the finally below (REVIEW §1-5).
+        _ctx = None
+        for _tc in tool_calls:
+            _t = self.tool_registry.get(_tc.name)
+            if _t is None:
+                continue
+            _ctx = getattr(_t, "_ctx", None)
+            if _ctx is not None:
+                break
+        _prev_conv = None
+        if _ctx is not None:
+            _prev_conv = _ctx.conversation
+            _ctx.conversation = conversation
 
         # Serialize approval dialogs — concurrent modals would overlap
         _approval_lock = asyncio.Lock()
@@ -696,7 +720,11 @@ class AgentLoop:
 
             conversation.add_tool_result(tc.id, result)
 
-        await asyncio.gather(*(_run_one(tc) for tc in tool_calls))
+        try:
+            await asyncio.gather(*(_run_one(tc) for tc in tool_calls))
+        finally:
+            if _ctx is not None:
+                _ctx.conversation = _prev_conv
 
     # ── Main loop ──────────────────────────────────────────────────
 

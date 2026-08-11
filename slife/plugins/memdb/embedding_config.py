@@ -189,9 +189,12 @@ def make_check_report() -> dict:
     dim = cfg.get("dim", 1024)
     gguf_path = cfg.get("gguf_path")
 
-    # Check actual availability
+    # Check actual availability — read the SAME config path the rest of this
+    # module uses (embedding_config._CONFIG_PATH), not get_config_path(), so
+    # the availability probe and the section read can't disagree and tests can
+    # isolate it.
     from slife.plugins.memdb.embeddings import EmbeddingClient, _check_runtime
-    client = EmbeddingClient.from_config(quiet=True)
+    client = EmbeddingClient.from_config(config_path=str(_CONFIG_PATH), quiet=True)
 
     result: dict = {
         "configured": True,
