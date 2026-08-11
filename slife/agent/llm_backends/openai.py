@@ -120,6 +120,20 @@ class OpenAIBackend:
                     logger.debug("openai_stream_cancelled")
                     await stream.close()
                     return
+                # The include_usage final chunk has `choices=[]`, so the usage
+                # block must come BEFORE the choices guard — otherwise the
+                # OpenAI/DeepSeek/Ollama backend never emits a usage chunk and
+                # context accounting collapses to the chars/3 estimate with
+                # token_count=0 persisted (REVIEW NEW-H3).
+                if hasattr(event, "usage") and event.usage:
+                    usage = self._usage_from_response(event.usage)
+                    elapsed = (_time.monotonic() - t0) * 1000
+                    logger.debug(
+                        "openai_stream_done prompt=%d completion=%d total=%d took_ms=%.0f",
+                        usage.prompt_tokens, usage.completion_tokens,
+                        usage.total_tokens, elapsed,
+                    )
+                    yield StreamChunk(usage=usage)
                 if not event.choices:
                     continue
                 delta = event.choices[0].delta
@@ -138,15 +152,6 @@ class OpenAIBackend:
                          }}
                         for tc in delta.tool_calls
                     ])
-                if hasattr(event, "usage") and event.usage:
-                    usage = self._usage_from_response(event.usage)
-                    elapsed = (_time.monotonic() - t0) * 1000
-                    logger.debug(
-                        "openai_stream_done prompt=%d completion=%d total=%d took_ms=%.0f",
-                        usage.prompt_tokens, usage.completion_tokens,
-                        usage.total_tokens, elapsed,
-                    )
-                    yield StreamChunk(usage=usage)
         finally:
             from slife.agent.llm_client import _safe_close_stream
             await _safe_close_stream(stream)

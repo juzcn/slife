@@ -20,7 +20,6 @@ import time as _time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config

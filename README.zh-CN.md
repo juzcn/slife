@@ -9,7 +9,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：14 个类别最多 54 个原生工具（另有 2 个 harness 工具）、五个内置插件服务、始终开启的混合搜索记忆、终端内联图片、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：14 个类别最多 50 个原生工具（另有 2 个 harness 工具）、五个内置插件服务、始终开启的混合搜索记忆、终端内联图片、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -120,22 +120,22 @@ active_model: "deepseek/deepseek-v4-pro",
 
 统一为 OpenAI 函数定义。LLM 看不出原生、插件与外部 MCP 工具的区别。
 
-**14 个类别共 56 个原生工具** — 从 `slife/tools/` 自动发现（最多 54 个 LLM 可见 + 2 个 harness；`include_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
+**14 个类别共 52 个原生工具** — 从 `slife/tools/` 自动发现（最多 50 个 LLM 可见 + 2 个 harness；`include_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
 
 | 类别 | 工具 |
 |------|------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog`, `notify_user` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled`, `cli_check_installed` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | A2A | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
-| Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent` |
+| Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `include_image`（把本地图片或 URL 注入对话） |
-| Display | `show_image` |
+| Display | `show_image`, `notify_user` |
 | Harness | `_sys_note`（上下文状态）、`_sys_trim`（上下文裁剪）——自主调用，LLM 不可用 |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 

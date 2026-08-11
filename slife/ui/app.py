@@ -183,7 +183,13 @@ class SlifeApp(App):
 
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit"),
-        Binding("escape", "cancel", "Cancel agent loop", priority=True),
+        # NOTE: NOT priority — Textual's priority pass checks the App before
+        # the screen (reversed binding chain), so a priority escape here would
+        # steal Esc from the ApprovalDialog's priority deny binding and the
+        # loop would cancel instead of denying, leaving the modal stuck (C7).
+        # With a modal active the App is excluded from the modal binding chain,
+        # so a normal-priority escape still cancels when no modal is up.
+        Binding("escape", "cancel", "Cancel agent loop"),
         Binding("ctrl+l", "focus_input", "Focus Input"),
         Binding("home", "scroll_home", "Scroll to top", priority=True),
         Binding("end", "scroll_end", "Scroll to bottom", priority=True),

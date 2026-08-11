@@ -91,12 +91,19 @@ class MCPProxyTool(Tool):
         self._on_server_updated = on_server_updated
 
         # Namespaced tool name: "server__toolname".  Built-in plugin tools
-        # that already carry their server as a name prefix (e.g. the mcp
-        # plugin's "mcp_set", the wechat plugin's "wechat_login") would
-        # otherwise become the redundant "mcp__mcp_set" / "wechat__wechat_login"
-        # — drop the duplicated prefix and register them as-is.  External
-        # server tools keep the full "{server}__{tool}" namespace.
-        if self._tool_name.startswith(f"{self._server}_"):
+        # (DIRECT/WRAPPER) that already carry their server as a name prefix
+        # (e.g. the mcp plugin's "mcp_set", the wechat plugin's "wechat_login")
+        # would otherwise become the redundant "mcp__mcp_set" /
+        # "wechat__wechat_login" — drop the duplicated prefix and register them
+        # as-is.  External server tools ALWAYS keep the full "{server}__{tool}"
+        # namespace: applying the as-is rule to them let a server-supplied
+        # tool shadow a native tool (e.g. an external server named `check`
+        # advertising `check_mcp`) and broke `{name}__` unregistration
+        # (REVIEW NEW-H4).
+        if (
+            self._route != ProxyRoute.EXTERNAL
+            and self._tool_name.startswith(f"{self._server}_")
+        ):
             full_name = self._tool_name
         else:
             full_name = f"{self._server}__{self._tool_name}"

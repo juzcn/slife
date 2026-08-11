@@ -286,3 +286,52 @@ class TestApprovalDialog:
             deny_evt.button.id = "deny-btn"
             dlg2.on_button_pressed(deny_evt)
         assert future2.result() is False
+
+    # ── Regression: the App's escape binding must not steal Esc from the
+    # modal's priority deny. Textual's priority pass iterates the binding
+    # chain REVERSED (App first), so a priority escape→cancel on the App
+    # fires before the modal's deny and cancels the loop instead (REVIEW C7,
+    # re-opened this pass). The prior fix only declared the modal binding
+    # priority and its tests only checked the BINDINGS list — the binding
+    # chain was never exercised.
+
+    def test_app_escape_binding_is_not_priority(self):
+        from slife.ui.app import SlifeApp
+
+        esc = [b for b in SlifeApp.BINDINGS if b.key == "escape"]
+        assert len(esc) == 1
+        assert not esc[0].priority, (
+            "App escape→cancel must not be priority: Textual's priority pass "
+            "checks the App first, stealing Esc from the approval dialog's deny."
+        )
+
+    def test_priority_pass_resolves_escape_to_modal_deny(self):
+        """Reproduce Textual's priority-pass resolution over the real binding
+        declarations and assert the modal wins Esc.
+
+        Textual 8.x `App._check_bindings(key, priority=True)` iterates
+        ``reversed(screen._binding_chain)`` — the App is checked first. Only
+        bindings whose ``priority`` flag equals the pass run. So the App's
+        escape→cancel must be non-priority for the modal's priority deny to
+        win, and with a modal active the App is excluded from the modal chain
+        entirely (so its escape can't fire in the normal pass either).
+        """
+        from slife.ui.app import SlifeApp
+        from slife.ui.approval_dialog import ApprovalDialog
+
+        def _resolve_priority_pass(bindings_by_node: list[tuple[str, list]]) -> str | None:
+            for ns, bindings in reversed(bindings_by_node):  # App → ... → modal
+                for b in bindings:
+                    if b.key == "escape" and b.priority:
+                        return ns
+            return None
+
+        # Full chain: App first, then the modal screen.
+        full_chain = [("app", SlifeApp.BINDINGS), ("modal", ApprovalDialog.BINDINGS)]
+        assert _resolve_priority_pass(full_chain) == "modal"
+
+        # With a modal active Textual's normal pass uses the *modal* binding
+        # chain (everything up to the first modal node), which excludes the
+        # App — so a non-priority App escape can't fire while denying.
+        modal_chain = [("modal", ApprovalDialog.BINDINGS)]
+        assert _resolve_priority_pass(modal_chain) == "modal"

@@ -205,6 +205,31 @@ class TestChatStream:
         assert usages[0].total_tokens == 15
 
     @pytest.mark.asyncio
+    async def test_stream_emits_usage_only_final_chunk(self, sample_model_config):
+        """The ``include_usage`` final chunk has ``choices=[]`` and must still
+        report usage — previously the ``if not event.choices: continue`` guard
+        skipped it, so the OpenAI/DeepSeek/Ollama backend never emitted a usage
+        chunk and context accounting stayed at the chars/3 estimate with
+        token_count=0 persisted (REVIEW NEW-H3)."""
+        backend = OpenAIBackend(sample_model_config)
+        events = make_async_iter([
+            _MockStreamEvent(delta=_MockDelta(content="Hello")),
+            _MockStreamEvent(delta=None, usage=_MockUsage(10, 5, 15)),
+        ])
+        mock_create = AsyncMock(return_value=events)
+        backend.client.chat.completions.create = mock_create
+
+        chunks = []
+        async for chunk in backend.chat_stream([{"role": "user", "content": "hi"}]):
+            chunks.append(chunk)
+
+        usages = [c.usage for c in chunks if c.usage]
+        assert len(usages) == 1
+        assert usages[0].prompt_tokens == 10
+        assert usages[0].completion_tokens == 5
+        assert usages[0].total_tokens == 15
+
+    @pytest.mark.asyncio
     async def test_stream_thinking_chunks(self, thinking_model_config):
         backend = OpenAIBackend(thinking_model_config)
         events = make_async_iter([

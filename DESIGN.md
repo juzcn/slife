@@ -29,7 +29,7 @@ The model input should read uniformly, so text that Slife authors is English:
 
 - **System prompt** (`system_prompt.j2`, `context_status.j2`): English.
 - **Native tool schemas** — tool `name`, `description`, parameter docs, and result strings: English.
-- **Plugin tool schemas and result strings**: English (same policy as native tools — they are model-visible). Known gap: the memdb plugin still returns some Chinese strings; see REVIEW.md.
+- **Plugin tool schemas and result strings**: English (same policy as native tools — they are model-visible).
 - **External tools** (MCP servers, skills, third-party commands): keep the language of the external source — do not translate. They are opaque and pass through as-is.
 
 ## Architecture
@@ -132,7 +132,7 @@ Harness tools are internal machinery the loop invokes on the agent's behalf. Two
 | `__mcp_connection_status` / `__mcp_call_tool` | mcp plugin | `__` — invisible |
 | `__tunnel_status` / `__register_file` | memfiles plugin | `__` — invisible |
 
-Known gap: the filter that removes `__` tools is applied by three slightly different predicates (see REVIEW.md) — today every plugin harness tool uses `__`, so nothing leaks, but the rule should be one shared predicate.
+The three registration paths share one `__` predicate (`agent/plugins.py`) — no harness tool leaks into the schema.
 
 ### System Prompt
 
@@ -175,7 +175,7 @@ Reasoning ("thinking") support is per-backend:
 
 **History validation (H3, resolved):** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_sys_note` / `_sys_trim` are therefore **declared native tools** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not conversation-layer fabrications — so their pairs validate. The system prompt forbids the LLM from calling them (see §6 of `system_prompt.j2`), and both are side-effect free if it does. DeepSeek (Chat Completions) doesn't validate and is unaffected.
 
-> **Open question (HIGH, unverified):** `OpenAIResponsesBackend._oa_msgs_to_responses` converts history to a Chat-Completions-shaped input (`{"role": "tool", "call_id": …}` and `tool_calls` embedded in the assistant message). The Responses API expects `function_call` / `function_call_output` items instead. If confirmed against a live endpoint, the `openai-responses` backend rejects multi-turn tool conversations out of the box. Tracked in REVIEW.md.
+**History wire shape (W2, resolved):** `OpenAIResponsesBackend._oa_msgs_to_responses` emits the Responses API's native `function_call` / `function_call_output` items for tool history — not the Chat-Completions `role:"tool"` / `tool_calls` shape. Multi-turn tool conversations are accepted by the Responses API (unit-tested; not yet exercised against a live endpoint).
 
 ### Model Management
 
@@ -205,7 +205,7 @@ Categories in use (14): `System`, `Execution`, `Skills`, `CLI`, `REST API`, `A2A
 
 `slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, skips vision tools when the active model can't see images, and skips `_skip_auto_register` classes (e.g. `MCPProxyTool`, created per-instance at runtime).
 
-### Tool Categories — 56 native tools (up to 54 LLM-visible + 2 harness `_` tools)
+### Tool Categories — 52 native tools (up to 50 LLM-visible + 2 harness `_` tools)
 
 `include_image` is dropped when the active model has no vision; `install_python_package` is disabled by default in the shipped config.
 
@@ -225,7 +225,6 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `vision.py` | `include_image` (native — injects image blocks into the conversation; gated on a vision-capable model) |
-| Display | `display.py` | `show_image` |
 | Harness | `harness.py` | `_sys_note`, `_sys_trim` (visible-but-reserved, see above) |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
@@ -261,7 +260,7 @@ Approval is **model-driven** (pure model judgment). The loop injects an `_approv
 
 There is no hardcoded `requires_approval` flag on any tool or MCP server — the model decides per-call whether to ask the user. Headless (subagent) contexts have no handler and auto-approve.
 
-> Known gap: Esc on the approval dialog is intercepted by the App's priority `escape → cancel` binding, so the modal's deny never fires — the whole agent loop is cancelled instead, leaving the modal stuck (see REVIEW.md, C7).
+The modal declares its own `enter → approve` / `escape → deny` bindings at `priority=True`; the App's `escape → cancel` is deliberately *not* priority so Textual's priority pass (which resolves the App before the screen) cannot steal Esc — Esc on an approval always denies (REVIEW C7).
 
 ## Plugin Architecture
 
@@ -381,7 +380,7 @@ Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN), B-tree on `c
 
 Hybrid mode uses Reciprocal Rank Fusion (RRF, k=60). Without an embedding backend, hybrid degrades to FTS5-only gracefully.
 
-> Known gaps (see REVIEW.md): `grep` LIKE-escaping is a no-op without an `ESCAPE '\'` clause, so `%`/`_` queries return nothing; `memory_count` in fts5 mode ignores `since`/`until`; search `limit` is unclamped (negative → unlimited); the background reindex loop can spin forever on a persistently failing embedder.
+Search hardening (REVIEW M5–M7): `search_grep` escapes `%`/`_` with `ESCAPE '\'`; `memory_count` honors `since`/`until` in fts5 mode; LLM-facing search clamps `limit` to `[1, 200]`; the background reindex counts only stored embeddings so it gives up on a persistently failing embedder instead of spinning. Known remainder: the `memory_count` grep branch still emits `LIKE ?` without the `ESCAPE` clause (see REVIEW.md).
 
 ### Embedding
 
@@ -625,7 +624,7 @@ Structured log lines: `event_name key1=value1 key2=value2 …` (see `slife/logfm
 - Plugins inherit the session id and write to per-session files via `setup_server_logging`; their stderr is relayed by the parent at DEBUG
 - No diagnostics on stdout (reserved for the TUI and the plugin port signal)
 
-Known gaps (see REVIEW.md): several call sites log raw user/tool/task content without sanitization, a few use prose instead of `key=value`, and the MCP wrapper stderr relay re-implements `drain_stderr` without masking.
+Known gaps (see REVIEW.md): several call sites log raw user/tool/task content without sanitization, a few use prose instead of `key=value`, and the MCP wrapper stderr relay re-implements `drain_stderr` (it masks via `sanitize_secrets`, but the duplication remains).
 
 ## Project Structure
 
@@ -642,7 +641,7 @@ slife/
     inbox.py           #   Unified message queue + ConversationStore
     plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle)
     multimodal.py      #   Image encoding for vision models
-  tools/               # Native tools (auto-discovered, 56)
+  tools/               # Native tools (auto-discovered, 52)
     base.py            #   Tool ABC + make_params/NO_PARAMS/require_params
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
@@ -724,20 +723,18 @@ skills/                # On-demand SKILL.md skills (seeded to ~/.slife/skills/)
 
 ## Known Gaps & Open Items
 
-The latest audit, open correctness items, and test/CI gaps are tracked in **[REVIEW.md](REVIEW.md)**. Highlights:
+The full audit, this round's fixes, and every open item are tracked in **[REVIEW.md](REVIEW.md)**. Highlights of what is **still open**:
 
-- **C1** — `a2a transport:"http"` now disables A2A with a warning instead of crashing startup; the `HttpStreamableTransport` stub was removed.
-- **C9 remainder** — a Streamable HTTP server that answers the SSE-detection GET with a live notification channel but no `endpoint` event is still misrouted to legacy-SSE mode (times out awaiting the endpoint event); servers that reject the GET fall through to Streamable HTTP correctly.
-- **C2** — external MCP servers have no background health-check/reconnect; a died server stays `CONNECTED`.
-- **C5** — `a2a_cancel_task` can't cancel an in-flight subagent task.
-- **C6** — WeChat dedup key can drop real messages.
-- **C7** — approval-dialog Esc is intercepted by the App's priority binding.
-- **N1** — config writes are non-atomic and un-locked (cross-process race with subagents).
-- **N3** — `switch_to_nvidia_free` tool names unverified against `nvidia-nim-mcp`; `bunx` vs `npx` mismatch in `health.py`.
-- **N4** — no exact-match secret denylist from credstore.
-- **Logging** — several unredacted call sites; memdb plugin still returns Chinese strings.
-- **Harness filtering** — three inconsistent `__`-filter predicates (C9).
-- **Tests/CI** — subagent process and backend wire formats untested end-to-end; wheel never exercised; install scripts unexercised.
+- **C9 remainder** — a Streamable HTTP server that answers the SSE-detection GET with a live notification channel but no `endpoint` event is misrouted: after a 5 s wait for the endpoint event it falls through to Streamable HTTP, which a legacy-SSE-only server usually rejects. Servers that reject the GET fall through correctly.
+- **M5 remainder** — `memory_count(query, mode="grep")` still lacks the `ESCAPE '\'` clause that `memory_search(grep)` now has.
+- **N1** — config writes are non-atomic and un-locked (cross-process race: subagents write the same `slife.json5`).
+- **N3** — `switch_to_nvidia_free` tool names unverified against `nvidia-nim-mcp v2.1.2`; config runs `npx` while `health.py` hints `bunx`.
+- **N4** — no exact-match secret denylist from credstore (only the known-shape allowlist).
+- **Security** — `config_env_get` returns resolved secret values verbatim; `desktop_notify` single-quote-injects into a PowerShell one-liner; memfiles `_save_url` fetches an arbitrary URL (SSRF surface).
+- **Logging** — residual unredacted call sites (user/tool/task content) and level misuse; see REVIEW.md §2.2.
+- **Tests/CI** — subagent process and backend wire formats untested end-to-end; the built wheel is never exercised; install scripts are never smoke-run; no coverage gate.
+
+**Resolved in the 2026-08-11 refactor/fix round** (all regression-tested; see REVIEW.md): C1 non-`"mqtt"` transport, C2 external-server health-check/reconnect + stale session-id, C4 subagent reader guards, C5 true cancel (mesh + worker via the unified inbox), C6 WeChat dedup (key now includes text), C7 approval-dialog Esc, C8 reserved plugin names, C9 SSE-streamed Streamable responses, W1/W2 wire formats, M2–M7, plus the F-* conformance fixes (memdb English, `_sys_trim` active-conversation targeting, unified `__` filter, `rest_api_set_enabled`/`cli_set_enabled`, memfiles health-pointer refresh, worst unredacted log sites).
 
 ## License
 

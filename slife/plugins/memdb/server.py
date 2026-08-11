@@ -234,6 +234,7 @@ async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
                 if valid:
                     embeddings = await _embedder.embed(valid)
                     if embeddings:
+                        stored = 0
                         for idx, emb in enumerate(embeddings):
                             if emb:
                                 await store.upsert_embedding(
@@ -242,7 +243,13 @@ async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
                                     created_at=turn["created_at"],
                                     turn_embedding=emb,
                                 )
-            indexed += 1
+                                stored += 1
+                        # Count only turns that actually stored embeddings.
+                        # embed() swallows backend errors and returns None, so
+                        # counting attempts here would keep `indexed` non-zero
+                        # and the M7 no-progress bound would never trip.
+                        if stored:
+                            indexed += 1
         except Exception as e:
             logger.debug("reindex_skip rowid=%s err=%s", turn["rowid"], e)
 

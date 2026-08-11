@@ -170,6 +170,11 @@ class MCPServerConnection:
         self._status = ServerStatus.CONNECTING
         self._error = None
         self._stderr_buffer.clear()
+        # A fresh transport must initialize with no session id — a stale one
+        # from the previous connection (only cleared here; _cleanup_resources
+        # intentionally doesn't) would be sent on the new initialize and a
+        # session-enforcing server would reject every reconnect (REVIEW C2).
+        self._session_id = None
 
         # ── OAuth pre-check ───────────────────────────────────────
         if self.config.auth and self.config.auth.get("type") == "oauth":

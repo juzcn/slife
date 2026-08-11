@@ -7,7 +7,7 @@ import importlib
 import logging
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -70,3 +70,63 @@ class TestBackgroundReindex:
             await srv._background_reindex()
 
         assert calls[0] == 2  # completed on the second batch
+
+    @pytest.mark.asyncio
+    async def test_reindex_impl_counts_only_stored(self, restore_root_logger):
+        """_reindex_impl must count turns that STORED embeddings, not attempts.
+
+        embed() swallows backend errors and returns None, so a failing
+        embedder yields indexed=0 — which is what makes the background loop's
+        no-progress bound trip. Previously indexed incremented per attempt,
+        defeating the M7 bound (REVIEW re-opening)."""
+        srv = _import_memdb_server()
+
+        store = AsyncMock()
+        store.get_unembedded_turns.return_value = [
+            {"rowid": 1, "user_message": "hello world", "messages": "[]",
+             "created_at": "2026-01-01T00:00:00+00:00"},
+        ]
+        store.count_unembedded.return_value = 1
+        store.upsert_embedding = AsyncMock()
+
+        failing = MagicMock()
+        failing.available = True
+        failing.max_tokens = 1000
+        failing.embed = AsyncMock(return_value=None)  # backend failure → None
+
+        srv._embedder = failing
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            result = await srv._reindex_impl(reset=False, batch_limit=5)
+
+        assert result["indexed"] == 0
+        assert result["remaining"] == 1
+        assert result["complete"] is False
+        store.upsert_embedding.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reindex_impl_counts_stored_embeddings(self, restore_root_logger):
+        """A healthy embedder that returns vectors IS counted as indexed."""
+        srv = _import_memdb_server()
+
+        store = AsyncMock()
+        store.get_unembedded_turns.return_value = [
+            {"rowid": 2, "user_message": "hello world", "messages": "[]",
+             "created_at": "2026-01-01T00:00:00+00:00"},
+        ]
+        # 1 unembedded turn before processing, 0 after.
+        store.count_unembedded = AsyncMock(side_effect=[1, 0])
+        store.upsert_embedding = AsyncMock()
+
+        healthy = MagicMock()
+        healthy.available = True
+        healthy.max_tokens = 1000
+        healthy.embed = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
+
+        srv._embedder = healthy
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            result = await srv._reindex_impl(reset=False, batch_limit=5)
+
+        assert result["indexed"] == 1
+        assert result["remaining"] == 0
+        assert result["complete"] is True
+        store.upsert_embedding.assert_awaited_once()

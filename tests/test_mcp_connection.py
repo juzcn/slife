@@ -565,6 +565,29 @@ class TestMCPServerConnectionHTTP:
         assert conn._http_client is None
 
     @pytest.mark.asyncio
+    async def test_connect_resets_stale_session_id(self):
+        """A reconnect must start a fresh initialize — a stale mcp-session-id
+        from the previous transport must not be sent (REVIEW C2 re-opening).
+
+        The health monitor and call_tool reconnect through ``connect()`` after
+        ``_cleanup_resources()``, which never clears the session id; only a
+        fresh ``connect()`` can guarantee the initialize carries none.
+        """
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        conn._status = ServerStatus.DISCONNECTED
+        conn._session_id = "stale-from-previous-transport"
+
+        async def boom():
+            raise RuntimeError("transport failed")
+
+        conn._connect_stdio = boom
+        await conn.connect()  # connect() swallows transport errors → FAILED
+
+        assert conn._session_id is None
+        assert conn.status == ServerStatus.FAILED
+
+    @pytest.mark.asyncio
     async def test_call_tool_allows_http_connection(self):
         """call_tool works for HTTP transport (no _process needed)."""
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")

@@ -9,7 +9,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: up to 54 native tools in 14 categories (plus 2 harness tools), five built-in plugin services, always-on memory with hybrid search, inline images, runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: up to 50 native tools in 14 categories (plus 2 harness tools), five built-in plugin services, always-on memory with hybrid search, inline images, runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -122,22 +122,22 @@ Switch at runtime: `model_list` → `model_switch(ref="bailian/qwen3.8-max")`.
 
 All unified as OpenAI function definitions. The LLM sees no difference between native, plugin, and external MCP tools.
 
-**56 native tools in 14 categories** — auto-discovered from `slife/tools/` (up to 54 LLM-visible + 2 harness; `include_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
+**52 native tools in 14 categories** — auto-discovered from `slife/tools/` (up to 50 LLM-visible + 2 harness; `include_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
 
 | Category | Tools |
 |----------|-------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog`, `notify_user` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled`, `cli_check_installed` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | A2A | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
-| Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent` |
+| Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `include_image` (injects a local image or URL into the conversation) |
-| Display | `show_image` |
+| Display | `show_image`, `notify_user` |
 | Harness | `_sys_note` (context status), `_sys_trim` (context trim) — auto-invoked, not for LLM use |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 

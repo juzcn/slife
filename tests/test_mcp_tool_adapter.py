@@ -51,6 +51,26 @@ class TestMCPProxyToolConstruction:
 
         assert tool.name == "filesystem__read_file"
 
+    def test_external_server_tool_cannot_shadow_native(self):
+        """An external server whose tool happens to start with the server name
+        still gets the ``{server}__{tool}`` namespace — never registered as-is,
+        which would shadow a native tool and break ``{name}__`` unregistration
+        (REVIEW NEW-H4)."""
+        info = make_tool_info(server="check", name="check_mcp")
+        client = make_mock_mcp_client()
+        tool = MCPProxyTool(client, info)  # default route = EXTERNAL
+
+        assert tool.name == "check__check_mcp"
+
+    def test_direct_server_keeps_as_is_name(self):
+        """Built-in plugin tools that already carry their server prefix keep it
+        as-is — no redundant ``wechat__wechat_login`` (REVIEW F-prefix)."""
+        info = make_tool_info(server="wechat", name="wechat_login")
+        client = make_mock_mcp_client()
+        tool = MCPProxyTool(client, info, route=ProxyRoute.DIRECT)
+
+        assert tool.name == "wechat_login"
+
     def test_description_prefixed_with_server(self):
         info = make_tool_info(server="memdb", name="save", description="Save data")
         client = make_mock_mcp_client()
