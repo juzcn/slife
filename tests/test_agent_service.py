@@ -44,7 +44,7 @@ class TestAgentServiceInit:
         config = sample_config
         service = AgentService(config)
 
-        assert service._plugins["mqtt"].process is None
+        assert service._plugins["a2a"].process is None
         assert service.a2a_enabled is False
 
 
@@ -217,14 +217,14 @@ class TestAgentServiceA2A:
     """Tests for A2A lifecycle methods."""
 
     @pytest.mark.asyncio
-    async def test_start_mqtt_disabled_noop(self, sample_config):
+    async def test_start_a2a_disabled_noop(self, sample_config):
         service = AgentService(sample_config)
-        result = await service.start_mqtt()
+        result = await service.start_a2a()
         assert result is PluginStartStatus.SKIPPED
-        assert service._plugins["mqtt"].process is None
+        assert service._plugins["a2a"].process is None
 
     @pytest.mark.asyncio
-    async def test_start_mqtt_broker_unreachable_skips(self, sample_config):
+    async def test_start_a2a_broker_unreachable_skips(self, sample_config):
         """A2A enabled but no broker on the port → SKIPPED, not a failure.
 
         This is the "mosquitto 未启动" case: the plugin is expected to be
@@ -238,15 +238,15 @@ class TestAgentServiceA2A:
         with patch(
             "slife.a2a.broker.probe_broker", AsyncMock(return_value=False),
         ):
-            result = await service.start_mqtt()
+            result = await service.start_a2a()
         assert result is PluginStartStatus.SKIPPED
-        assert service._plugins["mqtt"].process is None
+        assert service._plugins["a2a"].process is None
         assert service.config.a2a_config.enabled is False  # downgraded
 
     @pytest.mark.asyncio
-    async def test_stop_mqtt_noop_when_disabled(self, sample_config):
+    async def test_stop_a2a_noop_when_disabled(self, sample_config):
         service = AgentService(sample_config)
-        await service.stop_mqtt()  # Should not raise
+        await service.stop_a2a()  # Should not raise
 
 
 # ── AgentService subagent ───────────────────────────────────────────────────

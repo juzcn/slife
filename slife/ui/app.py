@@ -268,7 +268,7 @@ class SlifeApp(App):
         )
 
         # A2A now starts as a plugin via the discovery loop above
-        # (start_plugin_server("mqtt") → start_mqtt, idempotent).
+        # (start_plugin_server("a2a") → start_a2a, idempotent).
         self.run_worker(
             self.service.start_subagent(),
             exclusive=False, group="subagent-startup",
@@ -306,7 +306,7 @@ class SlifeApp(App):
         # Then kill remaining services in parallel.
         await asyncio.gather(
             _stop_one("subagent", self.service.stop_subagent()),
-            _stop_one("mqtt", self.service.stop_mqtt()),
+            _stop_one("a2a", self.service.stop_a2a()),
             _stop_one("mcp", self.service.stop_mcp()),
             _stop_one("memdb", self.service.stop_memdb()),
             _stop_one("wechat", self.service.stop_wechat()),

@@ -111,11 +111,15 @@ class TestCreateToolsOverrideEdgeCases:
         """Local subagent ops are native (no broker); pure mesh tools are plugin."""
         registry = create_tools_from_config(None, config=None)
         names = {t.name for t in registry.list_tools()}
-        # Local subagent task/lifecycle tools are native.
-        assert "a2a_send_task" in names
-        assert "a2a_send_task_async" in names
+        # Local subagent worker/lifecycle tools are native and always present.
         assert "spawn_subagent" in names
         assert "list_subagents" in names
-        # Mesh tools are native too, with the uniform a2a_ prefix.
-        assert "a2a_list_agents" in names
-        assert "a2a_broadcast" in names
+        assert "stop_subagent" in names
+        assert "subagent_send_task" in names
+        assert "subagent_send_task_async" in names
+        assert "subagent_get_task_result" in names
+        # Pure mesh tools are NOT native — they live in the a2a plugin and
+        # only register when the MQTT broker is up.
+        assert "a2a_send_task" not in names
+        assert "a2a_list_agents" not in names
+        assert "a2a_broadcast" not in names

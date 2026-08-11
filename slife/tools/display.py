@@ -1,4 +1,9 @@
-"""Display tools — show images in the terminal."""
+"""Display tools — pure UI surfaces for the human operator.
+
+``show_image`` renders an image in the terminal; ``notify_user`` raises a
+desktop notification.  Both are general UI tools: the LLM never sees the
+rendered output, it just triggers the display.
+"""
 
 from __future__ import annotations
 
@@ -118,4 +123,48 @@ class ShowImageTool(Tool):
         )
 
 
+class NotifyUserTool(Tool):
+    """Push a desktop notification to the human operator.
 
+    A pure UI tool — like :class:`ShowImageTool`, it only triggers the
+    display; the LLM never sees the notification itself.
+    """
+
+    name: ClassVar[str] = "notify_user"
+    category: ClassVar[str] = "Display"
+    description: ClassVar[str] = (
+        "Send a desktop notification to the human user (e.g. task done, "
+        "attention needed)."
+    )
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Short notification title (e.g. 'Task Complete', 'Alert').",
+            },
+            "message": {
+                "type": "string",
+                "description": "The notification body — be concise (one sentence).",
+            },
+        },
+        "required": ["message"],
+    }
+
+    async def execute(self, title: str = "slife", message: str = "", **kwargs) -> str:
+        if not message:
+            return "Error: message is required."
+
+        # Log prominently
+        import logging
+        logging.getLogger(__name__).warning(
+            "USER_NOTIFICATION title=%s message=%s", title, message,
+        )
+
+        # Fire desktop notification (best-effort, non-blocking).
+        # Daemon thread: a hung notify backend must never block shutdown.
+        from slife.platform import desktop_notify
+        from slife.threads import run_daemon
+        run_daemon(desktop_notify, title, message, name="desktop-notify")
+
+        return f"Notification sent: [{title}] {message}"

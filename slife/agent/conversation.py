@@ -74,71 +74,19 @@ class Conversation:
             conv.messages.append(dict(msg))
         return conv
 
-    def _repair_orphaned_tool_calls(self) -> int:
-        """Add synthetic error results for any assistant tool_calls that
-        lack corresponding tool result messages.
-
-        When a user interrupts a running request (e.g. by sending a new
-        message), the conversation may end with an ``assistant(tool_calls=…)``
-        message that has no follow-up tool result.  The OpenAI API rejects
-        this with a 400 error.  This method repairs the history so it is
-        always well-formed before any new message is appended.
-
-        Returns:
-            Number of synthetic tool results added.
-        """
-        repaired = 0
-        # Walk backwards: for each assistant message with tool_calls,
-        # check that the next message(s) are tool results with matching ids.
-        i = len(self.messages) - 1
-        pending_ids: list[str] = []
-        while i >= 0:
-            msg = self.messages[i]
-            role = msg.get("role", "")
-            if role == "assistant" and msg.get("tool_calls"):
-                # Collect expected tool_call_ids
-                expected = {tc["id"] for tc in msg["tool_calls"]}
-                # Check if the following messages (which we already scanned)
-                # provide results for all of them
-                matched = set()
-                for pid in list(pending_ids):
-                    if pid in expected:
-                        matched.add(pid)
-                        pending_ids.remove(pid)
-                missing = expected - matched
-                for tc_id in missing:
-                    # Routine self-heal — keep it out of the terminal (console
-                    # is WARNING+); INFO still lands in the session log file.
-                    logger.info(
-                        "conv_orphan_repair tool_call_id=%s", tc_id,
-                    )
-                    # Insert synthetic error tool result right after the
-                    # assistant message (before whatever comes next).
-                    insert_at = i + 1
-                    self.messages.insert(
-                        insert_at,
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc_id,
-                            "content": "Error: request cancelled by user",
-                        },
-                    )
-                    repaired += 1
-            elif role == "tool":
-                pending_ids.append(msg.get("tool_call_id", ""))
-            i -= 1
-        return repaired
-
     def _ensure_turn_consistent(self, content: str = "") -> int:
-        """Restore the conversation to a consistent state before appending.
+        """Restore the conversation to a consistent state.
 
         Two idempotent invariants for a turn that may have ended early
         (cancelled / errored / max-iteration, or restored from memory):
 
         1. **No orphaned tool_calls** — every assistant ``tool_call`` must
-           have a matching ``tool`` result; missing ones get a synthetic
-           ``Error: request cancelled by user`` result inserted right after
-           the owning assistant message.
+           have a matching ``tool`` result.  When a request is interrupted
+           the conversation may end with an ``assistant(tool_calls=…)`` that
+           has no follow-up tool result; the OpenAI API rejects this with a
+           400.  Missing results get a synthetic ``Error: request cancelled
+           by user`` result inserted right after the owning assistant
+           message.
         2. **Alternating roles** — a conversation ending on a
            ``user``/``tool`` message (a tool result is a ``user`` role on
            the Anthropic wire, which rejects two consecutive users) gets a
@@ -150,7 +98,42 @@ class Conversation:
 
         Returns the number of synthetic tool results inserted.
         """
-        repaired = self._repair_orphaned_tool_calls()
+        repaired = 0
+        # Walk backwards: for each assistant message with tool_calls, check
+        # that the following messages (already scanned) provide results for
+        # all of its tool_call_ids.  Walking backwards lets a deeper assistant
+        # message's results be consumed before an earlier one is checked.
+        i = len(self.messages) - 1
+        pending_ids: list[str] = []
+        while i >= 0:
+            msg = self.messages[i]
+            role = msg.get("role", "")
+            if role == "assistant" and msg.get("tool_calls"):
+                expected = {tc["id"] for tc in msg["tool_calls"]}
+                matched = set()
+                for pid in list(pending_ids):
+                    if pid in expected:
+                        matched.add(pid)
+                        pending_ids.remove(pid)
+                for tc_id in expected - matched:
+                    # Routine self-heal — keep it out of the terminal (console
+                    # is WARNING+); INFO still lands in the session log file.
+                    logger.info("conv_orphan_repair tool_call_id=%s", tc_id)
+                    # Insert synthetic error tool result right after the
+                    # assistant message (before whatever comes next).
+                    self.messages.insert(
+                        i + 1,
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": "Error: request cancelled by user",
+                        },
+                    )
+                    repaired += 1
+            elif role == "tool":
+                pending_ids.append(msg.get("tool_call_id", ""))
+            i -= 1
+
         if self.messages and self.messages[-1]["role"] in ("user", "tool"):
             self.add_assistant_message(content=content or "(no output this turn)")
         return repaired
@@ -172,12 +155,10 @@ class Conversation:
             content: The user's text input.
             images: Optional list of image file paths or URLs to attach.
         """
-        # Ensure the conversation is well-formed before adding a user
-        # message: repair orphaned tool_calls and keep roles alternating
-        # (a restored or interrupted turn may end on an orphaned call or a
-        # user/tool role).
-        self._ensure_turn_consistent()
-
+        # Turn consistency is enforced at the single save point
+        # (save_to_memory, which runs unconditionally after every turn) and on
+        # TUI restore — so by the time a new user message is appended the
+        # conversation is already well-formed.
         content = sanitize_secrets(content)
 
         if images:

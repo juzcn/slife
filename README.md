@@ -191,20 +191,19 @@ Five built-in plugins as independent child processes:
 | **slife-memdb** | Diary database with hybrid search |
 | **slife-wechat** | Bidirectional WeChat messaging |
 | **slife-memfiles** | File cabinet + public file sharing over Streamable HTTP (`/share` route on the same port; ngrok tunnel owned by the plugin) |
-| **slife-mqtt** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
+| **slife-a2a** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
 
 External MCP servers configured in `slife.json5` → `mcp.servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled).
 
 All plugins run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
 
-### A2A — Agent-to-Agent
+### A2A — Agent-to-Agent (mesh)
 
-The A2A thin protocol has **one tool namespace (`a2a_`) over two transports**, auto-selected from the agent_id:
-- **Task tools** (`a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`) route a local worker (subagent) over JSON-RPC/stdin (always available) or, for any other id, a remote mesh peer through the `mqtt` plugin (which only starts when the broker is reachable).
-- **Mesh discovery** (`a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`) — remote-only, MQTT transport.
-- **Subagent lifecycle** (`spawn_subagent`, `list_subagents`, `stop_subagent`) — local only, no A2A prefix.
+The A2A protocol (JSON-RPC operations and Message/Task/AgentCard data shapes mirroring the official a2a-python reference interface) runs over a pluggable transport **binding** — currently MQTT. The **`a2a` plugin** hosts the LLM-visible tools and the `A2AClient`, and only starts when the broker is reachable:
+- **Mesh tools** (one uniform `a2a_` prefix): `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`.
+- **Local workers** are NOT A2A: `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task`. A worker runs one task at a time; a sync send to a busy worker is auto-queued as async (task_id returned) and reported.
 
-A2A's only implemented transport is MQTT — setting `transport` to any other value (e.g. the removed `"http"` skeleton) disables A2A with a warning instead of crashing startup. All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
+A2A's only implemented transport binding is MQTT — setting `transport` to any other value disables A2A with a warning instead of crashing startup. All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
 
 ## Keyboard Shortcuts
 

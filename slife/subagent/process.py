@@ -1,7 +1,9 @@
-"""Subagent process management — JSON-RPC 2.0 over stdin/stdout.
+"""Subagent (agent worker) process management — worker-scoped JSON-RPC.
 
 Follows ``MCPWrapperProcess`` pattern: asyncio subprocess + pipe bridging.
-Protocol is JSON-RPC 2.0 per A2A specification §9.
+The stdin/stdout protocol is a local worker control channel (``worker/*``
+methods) — deliberately **not** A2A.  A subagent is a local worker, not an
+A2A peer.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # ── Module-level current-manager reference ───────────────────────────
 # Set by AgentService.start_subagent() / stop_subagent() so that native
-# tools (Slife.tools.a2a) can look up the live SubagentManager.
+# tools (Slife.tools.subagent) can look up the live SubagentManager.
 _current_manager: "SubagentManager | None" = None
 
 
@@ -67,8 +69,16 @@ class SubagentProcess:
         self._pending: dict[str, asyncio.Future[str]] = {}
         self._async_results: dict[str, str] = {}
         self._ready = asyncio.Event()
-        self._push_futures: dict[str, asyncio.Future[dict]] = {}
-        """task_id → Future: resolved on next progress/result for that task."""
+        # Local worker task records — rpc_id → {task_id, agent_id, preview,
+        # status, result}.  Kept separate from the A2A task store: worker
+        # tasks are not mesh tasks.
+        self._task_records: dict[str, dict] = {}
+        # In-flight worker tasks (sent but not yet resolved).  The child
+        # processes tasks serially, so this is both "busy" and "queued".
+        self._inflight = 0
+        # task_ids the parent has cancelled — the child skips them if still
+        # queued; any late response is ignored.
+        self._cancelled: set[str] = set()
 
     @property
     def name(self) -> str: return self._name
@@ -78,6 +88,32 @@ class SubagentProcess:
     def is_running(self) -> bool: return self._running and self._process is not None and self._process.returncode is None
     @property
     def is_ready(self) -> bool: return self._ready.is_set()
+    @property
+    def is_busy(self) -> bool:
+        """True while a task is in flight (the child processes tasks serially)."""
+        return self._inflight > 0
+    @property
+    def queued(self) -> int:
+        """Number of tasks sent but not yet resolved (in-flight + queued)."""
+        return self._inflight
+    @property
+    def context_source(self) -> str:
+        """How this worker's context was built: ``"pure"`` or ``"cloned"``."""
+        return self._context_source
+    @property
+    def pending_async_count(self) -> int:
+        """Number of async tasks sent but not yet completed."""
+        return sum(
+            1 for r in self._task_records.values()
+            if r.get("mode") == "async" and r.get("status") == "pending"
+        )
+    @property
+    def pending_async_ids(self) -> list[str]:
+        """task_ids of async tasks sent but not yet completed."""
+        return [
+            r["task_id"] for r in self._task_records.values()
+            if r.get("mode") == "async" and r.get("status") == "pending"
+        ]
 
     async def start(self) -> None:
         if self._running: return
@@ -87,9 +123,9 @@ class SubagentProcess:
         env["SLIFE_SUBAGENT_NAME"] = self._name
         env["SLIFE_CONFIG"] = self._config_json
         env["SLIFE_SUBAGENT_CONTEXT"] = self._context_source
-        # The mqtt plugin port (SLIFE_MQTT_PORT) is inherited from os.environ
+        # The a2a plugin port (SLIFE_A2A_PORT) is inherited from os.environ
         # above — the subagent reuses the main agent's mesh channel.  The
-        # mqtt plugin owns the main agent's identity.
+        # a2a plugin owns the main agent's identity.
         # Subagents connect to the main agent's shared plugin servers
         # (MCP / memdb / wechat) via inherited ports — no isolation.
         self._process = await asyncio.create_subprocess_exec(
@@ -134,6 +170,11 @@ class SubagentProcess:
             if not f.done(): f.set_exception(RuntimeError(f"Subagent '{self._name}' stopped"))
         self._pending.clear()
         self._async_results.clear()
+        # Mark any in-flight worker tasks as failed and reset the counter.
+        for rpc_id in list(self._task_records):
+            if self._task_records[rpc_id].get("status") == "pending":
+                self._record_update(rpc_id, "failed", "Error: worker stopped")
+        self._inflight = 0
         stdout_task = self._stdout_task
         stderr_task = self._stderr_task
         for t in (stdout_task, stderr_task):
@@ -161,21 +202,18 @@ class SubagentProcess:
             raise RuntimeError(f"Subagent '{self._name}' not ready")
         rpc_id = uuid.uuid4().hex[:12]
 
-        from slife.a2a.task_store import get_store
-        get_store().record_send(rpc_id, self._name, task, "subagent")
-
+        self._record_send(rpc_id, task)
+        self._inflight += 1
         future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
         self._pending[rpc_id] = future
-        req = json.dumps({"jsonrpc":"2.0","method":"tasks/send","params":{"task":task},"id":rpc_id}, ensure_ascii=False)
+        req = json.dumps({"jsonrpc":"2.0","method":"worker/send","params":{"task":task},"id":rpc_id}, ensure_ascii=False)
         async with self._stdin_lock:
             self._process.stdin.write((req + "\n").encode()); await self._process.stdin.drain()
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
-            get_store().record_result(rpc_id, result)
             return result
         except asyncio.TimeoutError:
             self._pending.pop(rpc_id, None)
-            get_store().record_error(rpc_id, "timeout")
             raise TimeoutError(f"Task to '{self._name}' timed out after {timeout}s")
 
     async def send_task_async(self, task: str) -> str:
@@ -189,11 +227,10 @@ class SubagentProcess:
             raise RuntimeError(f"Subagent '{self._name}' not ready")
         rpc_id = uuid.uuid4().hex[:12]
 
-        from slife.a2a.task_store import get_store
-        get_store().record_send(rpc_id, self._name, task, "subagent")
-
+        self._record_send(rpc_id, task, mode="async")
+        self._inflight += 1
         req = json.dumps(
-            {"jsonrpc": "2.0", "method": "tasks/send",
+            {"jsonrpc": "2.0", "method": "worker/send",
              "params": {"task": task}, "id": rpc_id},
             ensure_ascii=False,
         )
@@ -207,22 +244,78 @@ class SubagentProcess:
         """Return the result of an async task, or ``None`` if not yet complete."""
         return self._async_results.pop(rpc_id, None)
 
-    def wait_for_task(self, task_id: str) -> asyncio.Future[dict]:
-        """Register a Future that resolves on the next update for *task_id*.
+    async def cancel_task(self, task_id: str) -> bool:
+        """Cancel a pending/queued worker task (best-effort).
 
-        The Future receives the raw JSON-RPC message (result, error, or
-        notification) so the caller can decide how to handle it.
+        Cleans up the local waiter (sync future / async result), marks the
+        task record ``cancelled``, and notifies the child so a still-queued
+        task is skipped.  A task already running on the child is **not**
+        preempted — its late result is simply discarded by
+        :meth:`_read_stdout` (the id is in :attr:`_cancelled`).
         """
-        fut: asyncio.Future[dict] = asyncio.get_event_loop().create_future()
-        self._push_futures[task_id] = fut
-        return fut
+        rec = self._task_records.get(task_id)
+        if rec is None:
+            return False
+        if rec.get("status") != "pending":
+            return False
 
-    def _resolve_push(self, task_id: str | None, msg: dict) -> None:
-        """Resolve any registered push future for *task_id*."""
-        if task_id and task_id in self._push_futures:
-            fut = self._push_futures.pop(task_id)
-            if not fut.done():
-                fut.set_result(msg)
+        # Cancel a synchronous waiter, if one is still waiting.
+        fut = self._pending.pop(task_id, None)
+        if fut is not None and not fut.done():
+            fut.set_exception(RuntimeError(f"Task '{task_id}' cancelled"))
+        # Drop any stored async result.
+        self._async_results.pop(task_id, None)
+
+        rec["status"] = "cancelled"
+        rec["result"] = "Cancelled by parent"
+        self._cancelled.add(task_id)
+        if self._inflight > 0:
+            self._inflight -= 1
+
+        # Notify the child so it skips a still-queued task (best-effort).
+        try:
+            if self._process is not None and self._process.stdin is not None:
+                req = json.dumps(
+                    {"jsonrpc": "2.0", "method": "worker/cancel",
+                     "params": {"task_id": task_id}, "id": None},
+                ) + "\n"
+                async with self._stdin_lock:
+                    self._process.stdin.write(req.encode())
+                    await self._process.stdin.drain()
+        except Exception:
+            pass
+        return True
+
+    def list_task_records(self) -> list[dict]:
+        """Return this worker's task records, newest first."""
+        recs = list(self._task_records.values())
+        recs.sort(key=lambda r: r.get("created_at", 0), reverse=True)
+        return recs
+
+    def _record_send(self, rpc_id: str, task: str, mode: str = "sync") -> None:
+        """Record a newly-sent worker task (status pending).
+
+        *mode* is ``"sync"`` (a caller waits) or ``"async"`` (fire-and-forget,
+        result auto-pushed).
+        """
+        self._task_records[rpc_id] = {
+            "task_id": rpc_id,
+            "agent_id": self._name,
+            "preview": task[:200],
+            "status": "pending",
+            "mode": mode,
+            "result": None,
+            "created_at": asyncio.get_event_loop().time(),
+        }
+
+    def _record_update(self, rpc_id: str, status: str, result: str | None) -> None:
+        """Update a worker task record on completion / failure."""
+        rec = self._task_records.get(rpc_id)
+        if rec is None:
+            return
+        rec["status"] = status
+        if result is not None:
+            rec["result"] = result[:2000]
 
     async def _read_stdout(self) -> None:
         if not self._process or not self._process.stdout: return
@@ -235,30 +328,39 @@ class SubagentProcess:
                 try: msg = json.loads(line.decode("utf-8", errors="replace"))
                 except json.JSONDecodeError: continue
                 rpc_id = msg.get("id")
-                from slife.a2a.task_store import get_store
+                # Late response for a cancelled task — discard it (the local
+                # waiter was already cleaned up by cancel_task).
+                if rpc_id and rpc_id in self._cancelled:
+                    self._cancelled.discard(rpc_id)
+                    logger.debug(
+                        "subagent_cancelled_result_discarded task=%s", rpc_id,
+                    )
+                    continue
                 if rpc_id and rpc_id in self._pending:
                     # Sync waiter — resolve the pending future
                     f = self._pending.pop(rpc_id, None)
+                    if self._inflight > 0: self._inflight -= 1
                     if not f or f.done(): continue
                     if "error" in msg:
-                        f.set_exception(RuntimeError(msg["error"].get("message","Unknown")))
-                        get_store().record_error(rpc_id, msg["error"].get("message","Unknown"))
+                        err = msg["error"].get("message", "Unknown")
+                        f.set_exception(RuntimeError(err))
+                        self._record_update(rpc_id, "failed", f"Error: {err}")
                     else:
                         result_text = str(msg.get("result", ""))
                         f.set_result(result_text)
-                        get_store().record_result(rpc_id, result_text)
-                    self._resolve_push(rpc_id, msg)
+                        self._record_update(rpc_id, "completed", result_text)
                 elif rpc_id:
                     # No synchronous waiter — store for async retrieval
+                    if self._inflight > 0: self._inflight -= 1
                     if "error" in msg:
-                        self._async_results[rpc_id] = f"Error: {msg['error'].get('message', 'Unknown')}"
-                        get_store().record_error(rpc_id, msg["error"].get("message","Unknown"))
+                        err = msg["error"].get("message", "Unknown")
+                        self._async_results[rpc_id] = f"Error: {err}"
+                        self._record_update(rpc_id, "failed", f"Error: {err}")
                     else:
                         result_text = str(msg.get("result", ""))
                         self._async_results[rpc_id] = result_text
-                        get_store().record_result(rpc_id, result_text)
-                    self._resolve_push(rpc_id, msg)
-                    # Notify the manager so it can push the result to the user.
+                        self._record_update(rpc_id, "completed", result_text)
+                    # Notify the manager so it can auto-push the result to the user.
                     self._notify_manager_task_done(rpc_id)
                 elif rpc_id is None:
                     # JSON-RPC notification or ready signal (no id)
@@ -268,30 +370,22 @@ class SubagentProcess:
                         method = msg["method"]
                         params = msg.get("params", {})
                         task_id = params.get("task_id", "")
-                        if method == "tasks/complete":
-                            # The result was already stored by the JSON-RPC response
-                            # handler (line 240).  The notification only carries a
-                            # task_id — no result — so calling record_result here
-                            # would overwrite the stored result with an empty string.
-                            # Only update if the notification actually carries a result.
-                            notify_result = params.get("result", "")
-                            if notify_result:
-                                get_store().record_result(
-                                    task_id, str(notify_result),
-                                )
-                        elif method == "tasks/progress":
+                        if method == "worker/complete":
+                            # The result was already handled by the JSON-RPC
+                            # response path above (sync waiter resolved; async
+                            # result stored + manager notified).  The
+                            # notification only carries a task_id — no result —
+                            # so there is nothing further to record.
+                            logger.debug(
+                                "subagent_complete name=%s task=%s",
+                                self._name, task_id,
+                            )
+                        elif method == "worker/progress":
                             logger.debug(
                                 "subagent_progress name=%s task=%s pct=%s",
                                 self._name, task_id,
                                 params.get("pct", "?"),
                             )
-                        self._resolve_push(task_id, msg)
-                        # Do NOT notify the manager on `tasks/complete`: the
-                        # result was already handled when the JSON-RPC response
-                        # arrived (sync waiter resolved; async result stored +
-                        # manager notified).  Firing it here would post a
-                        # spurious "async task completed" message for sync
-                        # tasks and a duplicate for async ones.
         except Exception:
             logger.debug("stdout_read_error name=%s", self._name, exc_info=True)
 
@@ -382,128 +476,21 @@ class SubagentManager:
 
     def list_tasks(
         self, agent_id: str | None = None, status: str | None = None,
-    ) -> list:
-        """List subagent tasks from the shared :class:`TaskStore`."""
-        from slife.a2a.task_store import get_store
-        return get_store().list_tasks(
-            agent_id=agent_id, status=status, transport="subagent",
-        )
+    ) -> list[dict]:
+        """List worker task records across all subagents (local store).
 
-    async def subscribe_task(
-        self, agent_id: str, task_id: str, timeout: float = 120.0,
-    ) -> str | None:
-        """Wait for a subagent task to complete.
-
-        If a push future was registered (via :meth:`set_push_notification`),
-        awaits it event-driven.  Otherwise falls back to polling
-        :meth:`get_task_result`.
+        Not an A2A listing — worker tasks are tracked locally in each
+        :class:`SubagentProcess`, independent of the mesh task store.
         """
-        import asyncio as _asyncio, time as _t
-
-        proc = self._subagents.get(agent_id)
-        if proc is None:
-            raise ValueError(f"Subagent '{agent_id}' not found")
-
-        # Check if result is already available
-        result = proc.get_task_result(task_id)
-        if result is not None:
-            return result
-
-        # If a push future was registered, await it (event-driven)
-        if task_id in proc._push_futures:
-            fut = proc._push_futures[task_id]
-            try:
-                msg = await _asyncio.wait_for(fut, timeout=timeout)
-            except _asyncio.TimeoutError:
-                from slife.a2a.task_store import get_store
-                get_store().record_error(task_id, "timeout")
-                raise TimeoutError(
-                    f"Subscribe to task '{task_id}' on '{agent_id}' "
-                    f"timed out after {timeout}s"
-                )
-            # Extract result from the raw message
-            if "error" in msg:
-                err = msg["error"].get("message", "Unknown")
-                return f"Error: {err}"
-            if "result" in msg:
-                return str(msg["result"])
-            # Progress notification — check store for final result
-            from slife.a2a.task_store import get_store
-            rec = get_store().get(task_id)
-            if rec is not None and rec.result is not None:
-                return rec.result
-            return None
-
-        # Fallback: poll get_task_result
-        deadline = _t.monotonic() + timeout
-        while _t.monotonic() < deadline:
-            result = proc.get_task_result(task_id)
-            if result is not None:
-                return result
-            await _asyncio.sleep(0.5)
-
-        from slife.a2a.task_store import get_store
-        get_store().record_error(task_id, "timeout")
-        raise TimeoutError(
-            f"Subscribe to task '{task_id}' on '{agent_id}' "
-            f"timed out after {timeout}s"
-        )
-
-    async def set_push_notification(
-        self, agent_id: str, task_id: str, notify_topic: str,
-    ) -> bool:
-        """Register event-driven push for *task_id* on *agent_id*.
-
-        Creates a Future that resolves on the next message (progress or
-        result) from the subagent, so :meth:`subscribe_task` can wait
-        without polling.
-
-        If the MQTT client is active, also bridges progress/results to
-        *notify_topic* so remote callers can subscribe.
-        """
-        proc = self._subagents.get(agent_id)
-        if proc is None:
-            return False
-
-        # Verify the task exists
-        from slife.a2a.task_store import get_store
-        rec = get_store().get(task_id)
-        if rec is None:
-            return False
-
-        # Register a push future for event-driven subscribe_task
-        proc.wait_for_task(task_id)
-
-        # Bridge to MQTT if available (allows remote callers to subscribe)
-        from slife.a2a.client import get_client
-        client = get_client()
-        if client is not None:
-            try:
-                import json as _json
-                await client.subscribe_topic(notify_topic)
-                logger.info(
-                    "subagent_push_mqtt_bridge task=%s agent=%s topic=%s",
-                    task_id, agent_id, notify_topic,
-                )
-                # Publish a setup message so the parent's own notification
-                # machinery knows to forward subagent results
-                setup = _json.dumps({
-                    "correlation_id": task_id,
-                    "source": agent_id,
-                    "action": "set_push_notification",
-                    "notify_topic": notify_topic,
-                })
-                await client.publish_message(
-                    f"Slife/{agent_id}/tasks/inbox", setup, qos=1,
-                )
-            except Exception as e:
-                logger.debug("subagent_push_mqtt_bridge_failed err=%s", e)
-
-        logger.info(
-            "subagent_push_notification_set task=%s agent=%s topic=%s",
-            task_id, agent_id, notify_topic,
-        )
-        return True
+        records: list[dict] = []
+        for aid, proc in self._subagents.items():
+            if agent_id is not None and aid != agent_id:
+                continue
+            records.extend(proc.list_task_records())
+        if status is not None:
+            records = [r for r in records if r.get("status") == status]
+        records.sort(key=lambda r: r.get("created_at", 0), reverse=True)
+        return records[:50]
 
     async def stop(self, agent_id: str) -> bool:
         if (proc := self._subagents.get(agent_id)) is None: return False
@@ -520,3 +507,20 @@ class SubagentManager:
 
     def get(self, agent_id: str) -> SubagentProcess | None:
         return self._subagents.get(agent_id)
+
+    def is_busy(self, agent_id: str) -> bool:
+        """True if *agent_id* has a task in flight (serially processed)."""
+        proc = self._subagents.get(agent_id)
+        return bool(proc and proc.is_busy)
+
+    def queued_count(self, agent_id: str) -> int:
+        """Return the number of in-flight/queued tasks for *agent_id*."""
+        proc = self._subagents.get(agent_id)
+        return proc.queued if proc else 0
+
+    async def cancel_task(self, agent_id: str, task_id: str) -> bool:
+        """Cancel a pending/queued worker task on *agent_id* (best-effort)."""
+        proc = self._subagents.get(agent_id)
+        if proc is None:
+            return False
+        return await proc.cancel_task(task_id)

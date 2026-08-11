@@ -961,8 +961,17 @@ class Config:
                 agent_id,
             )
 
-        # A2A/MQTT — always parse config; enabled at runtime after mosquitto probe
-        a2a_config = A2AConfig.from_dict(raw.get("mqtt"), agent_id=agent_id)
+        # A2A — always parse config; enabled at runtime after mosquitto probe.
+        # The json5 section was renamed "mqtt" → "a2a"; accept the old key as
+        # a deprecated alias so existing configs keep working (REVIEW compat).
+        a2a_raw = raw.get("a2a")
+        if a2a_raw is None and "mqtt" in raw:
+            logger.warning(
+                "config_key_deprecated key=mqtt use=a2a "
+                "(renamed: plugin is a2a, mqtt is the transport binding)",
+            )
+            a2a_raw = raw.get("mqtt")
+        a2a_config = A2AConfig.from_dict(a2a_raw, agent_id=agent_id)
         if a2a_config.enabled:
             logger.debug(
                 "a2a_config id=%s broker=%s:%d",

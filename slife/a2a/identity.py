@@ -18,12 +18,6 @@ HUMAN = AgentId("human")
 WECHAT = AgentId("wechat")
 """WeChat user — peer terminal, same processing pipeline as human."""
 
-SUBAGENT = AgentId("subagent")
-"""Subagent completion — result posted by the subagent manager when
-an async subagent task finishes.  Routed to the human conversation
-so the user sees the output, but persisted with channel ``"subagent"``
-so it is distinguishable from actual human turns in memory search."""
-
 
 @dataclass
 class AgentMessage:

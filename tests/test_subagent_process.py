@@ -127,6 +127,54 @@ class TestSubagentProcessProperties:
         assert not proc.is_running
 
 
+class TestSubagentProcessCancelTask:
+    """Tests for SubagentProcess.cancel_task (best-effort cancellation)."""
+
+    def _proc(self, **overrides):
+        cfg = _mock_config()
+        return SubagentProcess("test", cfg)
+
+    @pytest.mark.asyncio
+    async def test_cancel_unknown_task(self):
+        proc = self._proc()
+        assert await proc.cancel_task("does-not-exist") is False
+
+    @pytest.mark.asyncio
+    async def test_cancel_pending_async_task(self):
+        proc = self._proc()
+        proc._record_send("rpc-1", "do X", mode="async")
+        proc._inflight = 1
+        proc._async_results["rpc-1"] = "old"
+
+        assert await proc.cancel_task("rpc-1") is True
+        assert proc._task_records["rpc-1"]["status"] == "cancelled"
+        assert proc._inflight == 0
+        assert "rpc-1" in proc._cancelled
+        # Async result dropped.
+        assert "rpc-1" not in proc._async_results
+
+    @pytest.mark.asyncio
+    async def test_cancel_already_completed(self):
+        proc = self._proc()
+        proc._record_send("rpc-1", "do X", mode="async")
+        proc._record_update("rpc-1", "completed", "done")
+
+        assert await proc.cancel_task("rpc-1") is False
+        assert proc._task_records["rpc-1"]["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_cancel_sync_waiter_gets_exception(self):
+        proc = self._proc()
+        proc._record_send("rpc-1", "do X", mode="sync")
+        fut = asyncio.get_event_loop().create_future()
+        proc._pending["rpc-1"] = fut
+
+        assert await proc.cancel_task("rpc-1") is True
+        assert fut.done()
+        with pytest.raises(RuntimeError):
+            fut.result()
+
+
 # ── SubagentManager ─────────────────────────────────────────────────────────
 
 

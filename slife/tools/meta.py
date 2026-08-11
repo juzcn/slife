@@ -31,6 +31,8 @@ _PLUGIN_LABELS: dict[str, str] = {
 def _classify(name: str) -> str:
     if name.startswith("a2a_"):
         return "Agent Communication (A2A)"
+    if name.startswith("subagent_"):
+        return "Subagent (local workers)"
     if name.startswith("cli_"):
         return "CLI"
     if name.startswith("rest_api_"):

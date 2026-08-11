@@ -1,25 +1,20 @@
-"""A2A (Agent-to-Agent) — two transports, one protocol.
+"""A2A (Agent-to-Agent) — one protocol, pluggable transports.
 
-MQTT for remote instances, stdin/stdout for local subagents.
-The LLM sees one agent pool via the unified A2A toolset in
-:mod:`slife.tools.a2a`.
+The A2A protocol operations and data model (mirroring the official
+a2a-python reference interface) with a custom transport binding (MQTT).
+The LLM-facing ``a2a_*`` tools live in the a2a plugin
+(:mod:`slife.plugins.a2a`), not here.
 
-All tools are proper :class:`Tool` subclasses, auto-discovered at startup.
-They use module-level transport references set by :class:`AgentService`.
+Subagents are **not** part of A2A — they are local workers (see
+:mod:`slife.tools.subagent`).
 """
 
 from slife.a2a.card import AgentCard
 from slife.a2a.client import A2AClient
 from slife.a2a.config import A2AConfig
-from slife.a2a.identity import AgentId, AgentMessage, HUMAN, SUBAGENT
+from slife.a2a.identity import AgentId, AgentMessage, HUMAN
 from slife.a2a.mqtt import MQTTAdapter
 from slife.a2a.transport import TransportAdapter, TransportMessage
-from slife.tools.a2a import (  # noqa: F401 — re-export for slife.a2a namespace
-    ListSubagentsTool,
-    NotifyUserTool,
-    SpawnSubagentTool,
-    StopSubagentTool,
-)
 
 __all__ = [
     "A2AClient",
@@ -28,11 +23,7 @@ __all__ = [
     "AgentId",
     "AgentMessage",
     "HUMAN",
-    "ListSubagentsTool",
     "MQTTAdapter",
-    "SpawnSubagentTool",
-    "StopSubagentTool",
-    "SUBAGENT",
     "TransportAdapter",
     "TransportMessage",
 ]

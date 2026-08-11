@@ -246,11 +246,16 @@ class TestClear:
         assert conv.messages[0]["content"] == "S"
 
 
-# ── _repair_orphaned_tool_calls ──────────────────────────────────────
+# ── _ensure_turn_consistent (orphan repair + role closing) ─────────────
 
 
 class TestRepairOrphanedToolCalls:
-    """Tests for orphaned tool call repair on add_user_message."""
+    """Tests for Conversation._ensure_turn_consistent (repair + role closing).
+
+    `add_user_message` no longer repairs — consistency is enforced at the
+    single save point (`save_to_memory`) and on TUI restore, so these tests
+    exercise `_ensure_turn_consistent` directly.
+    """
 
     def test_no_orphans_when_complete(self):
         """No repair needed when tool calls have matching results."""
@@ -261,13 +266,12 @@ class TestRepairOrphanedToolCalls:
             tool_calls=[{"id": "c1", "type": "function", "function": {"name": "search", "arguments": "{}"}}]
         )
         conv.add_tool_result("c1", "results")
-        # Add another message to confirm no orphan repair needed, and that a
-        # closing assistant is inserted after the trailing tool result so
-        # roles keep alternating (a tool result is a user on the wire).
-        conv.add_user_message("next question")
-        # user, assistant(call), tool(result), assistant(closing), user
-        assert len(conv.messages) == 5
-        assert conv.messages[-2]["role"] == "assistant"
+        # Ensure still inserts a closing assistant after the trailing tool
+        # result so roles keep alternating (a tool result is a user on the wire).
+        conv._ensure_turn_consistent()
+        # user, assistant(call), tool(result), assistant(closing)
+        assert len(conv.messages) == 4
+        assert conv.messages[-1]["role"] == "assistant"
         # No synthetic tool error injected
         assert not any(
             m["role"] == "tool" and "cancelled" in str(m.get("content", "")).lower()
@@ -283,17 +287,16 @@ class TestRepairOrphanedToolCalls:
             tool_calls=[{"id": "orphan1", "type": "function", "function": {"name": "search", "arguments": "{}"}}]
         )
         # No tool result added — orphaned tool call
-        # Next user message triggers repair (orphan + role closing)
-        conv.add_user_message("interrupting question")
+        conv._ensure_turn_consistent()
 
-        # user, assistant(orphan), synthetic tool, assistant(closing), user
-        assert len(conv.messages) == 5
+        # user, assistant(orphan), synthetic tool, assistant(closing)
+        assert len(conv.messages) == 4
         tool_msgs = [m for m in conv.messages if m["role"] == "tool"]
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["tool_call_id"] == "orphan1"
         assert "cancelled" in tool_msgs[0]["content"].lower()
         # closing assistant keeps the wire alternating
-        assert conv.messages[-2]["role"] == "assistant"
+        assert conv.messages[-1]["role"] == "assistant"
 
     def test_repairs_multiple_orphans(self):
         """Multiple orphaned tool calls each get a synthetic error."""
@@ -307,7 +310,7 @@ class TestRepairOrphanedToolCalls:
             ]
         )
         # No tool results for either — both orphaned
-        conv.add_user_message("interrupt")
+        conv._ensure_turn_consistent()
 
         orphans = [m for m in conv.messages if m["role"] == "tool"]
         assert len(orphans) == 2
@@ -327,7 +330,7 @@ class TestRepairOrphanedToolCalls:
         )
         conv.add_tool_result("c1", "result for c1")
         # c2 is orphaned
-        conv.add_user_message("next")
+        conv._ensure_turn_consistent()
 
         tool_msgs = [m for m in conv.messages if m["role"] == "tool"]
         # Should have c1's real result plus c2's synthetic error
@@ -345,7 +348,7 @@ class TestRepairOrphanedToolCalls:
             None,
             tool_calls=[{"id": "a1", "type": "function", "function": {"name": "x", "arguments": "{}"}}]
         )
-        # Orphan a1
+        # Orphan a1 (add_user_message no longer auto-repairs)
         conv.add_user_message("q2")
         conv.add_assistant_message(
             None,
@@ -353,6 +356,7 @@ class TestRepairOrphanedToolCalls:
         )
         # Orphan a2
         conv.add_user_message("q3")
+        conv._ensure_turn_consistent()
 
         synthetic = [m for m in conv.messages if m["role"] == "tool"]
         assert len(synthetic) == 2

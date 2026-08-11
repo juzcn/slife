@@ -19,6 +19,79 @@ from slife.a2a.card import AgentCard
 from slife.a2a.transport import TransportMessage
 
 
+class _RecordingAdapter:
+    """Adapter stub that records published (topic, payload) pairs."""
+
+    def __init__(self):
+        self.is_connected = True
+        self.published: list[tuple[str, str]] = []
+
+    async def publish(self, topic, payload, qos=1, retain=False):
+        self.published.append((topic, payload))
+
+    async def connect(self, *a, **k):  # pragma: no cover
+        pass
+
+    async def disconnect(self):  # pragma: no cover
+        pass
+
+    async def subscribe(self, *a, **k):  # pragma: no cover
+        pass
+
+    def messages(self, topic_filter):  # pragma: no cover
+        async def gen():
+            yield TransportMessage(topic=topic_filter, payload="{}")
+            await asyncio.Event().wait()
+        return gen()
+
+
+class TestSendTaskWire:
+    def _client(self):
+        cfg = A2AConfig(enabled=True, agent_id="jack")
+        return A2AClient(cfg, transport=_RecordingAdapter())
+
+    @pytest.mark.asyncio
+    async def test_send_task_publishes_sendmessage_envelope(self):
+        """The outbound task is the official SendMessage JSON-RPC request."""
+        client = self._client()
+        adapter = client._adapter
+
+        async def _publish(topic, payload, qos=1, retain=False):
+            adapter.published.append((topic, payload))
+            # Resolve the pending future for the corr_id carried in the payload.
+            cid = json.loads(payload).get("id")
+            fut = client._pending_tasks.get(cid)
+            if fut and not fut.done():
+                fut.set_result("the result")
+
+        adapter.publish = _publish
+
+        result = await client.send_task(AgentId("peer-1"), "do X", timeout=5)
+        assert result == "the result"
+
+        topic, payload = adapter.published[0]
+        assert topic == "Slife/peer-1/tasks/inbox"
+        env = json.loads(payload)
+        assert env["method"] == "SendMessage"
+        assert env["_slife"]["source"] == "jack"
+        assert env["_slife"]["reply_to"] == "Slife/jack/tasks/result"
+        assert env["params"]["message"]["content"][0]["text"] == "do X"
+        assert env["params"]["message"]["role"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_send_task_async_publishes_sendmessage_envelope(self):
+        client = self._client()
+        adapter = client._adapter
+
+        corr_id = await client.send_task_async(AgentId("peer-1"), "do X")
+        assert corr_id
+        topic, payload = adapter.published[0]
+        assert topic == "Slife/peer-1/tasks/inbox"
+        env = json.loads(payload)
+        assert env["id"] == corr_id
+        assert env["params"]["message"]["content"][0]["text"] == "do X"
+
+
 class _EchoThenBlockAdapter:
     """Adapter that yields our own presence echo once, then blocks."""
 

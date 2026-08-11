@@ -60,22 +60,22 @@ class A2AConfig:
     def from_dict(
         cls, data: dict | None, agent_id: str = "slife",
     ) -> "A2AConfig":
-        """Parse the ``mqtt`` section from slife.json5.
+        """Parse the ``a2a`` section from slife.json5.
 
         A2A over MQTT is enabled **at runtime** when Mosquitto is detected
-        on ``broker_host:broker_port``.  The json5 ``mqtt`` section always
+        on ``broker_host:broker_port``.  The json5 ``a2a`` section always
         provides connection details — ``enabled`` is set to ``True`` only
         after a successful TCP probe.
 
         Args:
-            data: The ``mqtt`` dict from the JSON5 config, or ``None``.
+            data: The ``a2a`` dict from the JSON5 config, or ``None``.
             agent_id: The ``--agent`` value (defaults to ``"slife"``).
                       Used as the MQTT client id / agent identity.
 
         Note:
-            A ``transport`` other than ``"mqtt"`` (e.g. the removed
-            ``"http"`` skeleton) disables A2A (``enabled=False``) and
-            logs a warning — it never crashes startup.
+            A ``transport`` other than ``"mqtt"`` (e.g. a future gRPC/HTTP
+            binding) disables A2A (``enabled=False``) and logs a warning —
+            it never crashes startup.
         """
         broker = {}
         agent_name = ""
@@ -83,11 +83,11 @@ class A2AConfig:
             broker = data.get("broker", {}) if isinstance(data.get("broker"), dict) else {}
             agent_name = data.get("agent_name", "")
 
-        # The mqtt section provides connection details only.
+        # The a2a section provides connection details only.
         # A2A enablement is decided at runtime by the Mosquitto TCP probe —
-        # the json5 mqtt section never carries an "enabled" field.
-        # When data is None (no mqtt section), enabled stays False —
-        # start_mqtt() won't even attempt a probe.
+        # the json5 a2a section never carries an "enabled" field.
+        # When data is None (no a2a section), enabled stays False —
+        # start_a2a() won't even attempt a probe.
         default_enabled = isinstance(data, dict)
 
         transport = (data or {}).get("transport", "mqtt")

@@ -11,7 +11,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import slife.plugins.mqtt.server as plugin
+import slife.plugins.a2a.server as plugin
 
 
 def _fake_client():
@@ -39,48 +39,48 @@ def _fake_client():
 
 class TestPluginTools:
     @pytest.mark.asyncio
-    async def test__send_task(self):
+    async def test_a2a_send_task(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            result = await getattr(plugin, "__send_task")("peer-1", "hello")
+            result = await getattr(plugin, "a2a_send_task")("peer-1", "hello")
         assert result == "result-text"
         client.send_task.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test__send_task_async(self):
+    async def test_a2a_send_task_async(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            result = await getattr(plugin, "__send_task_async")("peer-1", "hello")
+            result = await getattr(plugin, "a2a_send_task_async")("peer-1", "hello")
         assert result == "corr-1"
 
     @pytest.mark.asyncio
-    async def test__list_agents_serializes_cards(self):
+    async def test_a2a_list_agents_serializes_cards(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            result = await getattr(plugin, "__list_agents")()
+            result = await getattr(plugin, "a2a_list_agents")()
         data = json.loads(result)
         assert data[0]["agent_id"] == "peer-1"
         assert data[0]["display_name"] == "Peer One"
 
     @pytest.mark.asyncio
-    async def test__broadcast(self):
+    async def test_a2a_broadcast(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            result = await getattr(plugin, "__broadcast")("task")
+            result = await getattr(plugin, "a2a_broadcast")("task")
         assert "peer-1:corr-1" in result
 
     @pytest.mark.asyncio
-    async def test__get_task_result_pending(self):
+    async def test_a2a_get_task_result_pending(self):
         client = _fake_client()
         client.get_task_result = MagicMock(return_value=None)
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            assert await getattr(plugin, "__get_task_result")("x") == "pending"
+            assert await getattr(plugin, "a2a_get_task_result")("peer-1", "x") == "pending"
 
     @pytest.mark.asyncio
-    async def test__cancel_task(self):
+    async def test_a2a_cancel_task(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
-            assert await getattr(plugin, "__cancel_task")("peer-1", "corr-1") == "cancelled"
+            assert await getattr(plugin, "a2a_cancel_task")("peer-1", "corr-1") == "cancelled"
 
 
 class TestHarnessTools:
@@ -117,6 +117,52 @@ class TestHarnessTools:
         client.publish_message.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_dispatch_result_publishes_official_envelope(self):
+        """The dispatched result is the official JSON-RPC Task envelope."""
+        client = _fake_client()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            await getattr(plugin, "__a2a_dispatch_result")(
+                "Slife/x/tasks/result", "cid-1", "the result",
+            )
+        topic, payload = client.publish_message.call_args.args
+        assert topic == "Slife/x/tasks/result"
+        env = json.loads(payload)
+        assert env["id"] == "cid-1"
+        assert env["_slife"]["correlation_id"] == "cid-1"
+        task = env["result"]["task"]
+        assert task["id"] == "cid-1"
+        assert task["status"]["state"] == "completed"
+        assert task["artifacts"][0]["parts"][0]["text"] == "the result"
+
+    @pytest.mark.asyncio
+    async def test_a2a_list_tasks_returns_official_task_shape(self):
+        """a2a_list_tasks serializes TaskRecords as official Task dicts."""
+        from slife.a2a.task_store import TaskRecord, get_store, clear_store
+        clear_store()
+        get_store()._records["t1"] = TaskRecord(
+            task_id="t1", agent_id="peer-1", task_preview="do x",
+            status="completed", transport="mqtt", result="done",
+        )
+        client = _fake_client()
+        client.list_tasks = MagicMock(
+            return_value=[
+                TaskRecord(
+                    task_id="t1", agent_id="peer-1", task_preview="do x",
+                    status="completed", transport="mqtt", result="done",
+                ).to_task(),
+            ],
+        )
+        try:
+            with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+                result = await getattr(plugin, "a2a_list_tasks")()
+            data = json.loads(result)
+            assert data[0]["id"] == "t1"
+            assert data[0]["status"]["state"] == "completed"
+            assert data[0]["artifacts"][0]["parts"][0]["text"] == "done"
+        finally:
+            clear_store()
+
+    @pytest.mark.asyncio
     async def test_harness_tools_marked_harness_only(self):
         """The filter keys off 'harness-only' in the registered description."""
         tools = await plugin.mcp._list_tools()
@@ -124,13 +170,26 @@ class TestHarnessTools:
         assert "harness-only" in by_name["__a2a_drain_incoming"].lower()
         assert "harness-only" in by_name["__a2a_dispatch_result"].lower()
 
+    @pytest.mark.asyncio
+    async def test_a2a_tools_exposed_without_harness_marker(self):
+        """The a2a_* mesh tools are LLM-visible: no '__' prefix, no 'harness-only'."""
+        tools = await plugin.mcp._list_tools()
+        by_name = {t.name: t.description for t in tools}
+        for name in (
+            "a2a_send_task", "a2a_send_task_async", "a2a_list_agents",
+            "a2a_get_task_result", "a2a_cancel_task", "a2a_list_tasks",
+            "a2a_subscribe_task", "a2a_agent_card", "a2a_broadcast",
+        ):
+            assert name in by_name, f"{name} missing from plugin tools"
+            assert "harness-only" not in by_name[name].lower(), name
+
 
 class TestConfig:
     def test_load_config_from_env(self, monkeypatch):
         import json as _json
         from slife.a2a.config import A2AConfig
         cfg = A2AConfig(enabled=True, agent_id="slife", broker_host="localhost", broker_port=1883)
-        monkeypatch.setenv("SLIFE_MQTT_CONFIG", _json.dumps({
+        monkeypatch.setenv("SLIFE_A2A_CONFIG", _json.dumps({
             "enabled": True, "agent_id": "slife", "agent_name": "",
             "transport": "mqtt", "broker_host": "localhost", "broker_port": 1883,
             "http_host": "127.0.0.1", "http_port": 0,
@@ -159,7 +218,7 @@ class TestEagerConnect:
         """Entering the lifespan eagerly calls _ensure_connected."""
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)) as mock_conn:
-            async with plugin._mqtt_lifespan(None):
+            async with plugin._a2a_lifespan(None):
                 mock_conn.assert_awaited_once()
         # The mock didn't set plugin._client — nothing to disconnect on exit.
 
@@ -169,7 +228,7 @@ class TestEagerConnect:
         client = _fake_client()
         plugin._client = client
         with patch.object(plugin, "_ensure_connected", AsyncMock()):
-            async with plugin._mqtt_lifespan(None):
+            async with plugin._a2a_lifespan(None):
                 pass
         client.disconnect.assert_awaited_once()
 
@@ -180,14 +239,14 @@ class TestEagerConnect:
             plugin, "_ensure_connected",
             AsyncMock(side_effect=RuntimeError("broker down")),
         ):
-            async with plugin._mqtt_lifespan(None):
+            async with plugin._a2a_lifespan(None):
                 pass  # no raise
 
     @pytest.mark.asyncio
     async def test_ensure_connected_creates_and_connects_client(self, monkeypatch):
         """_ensure_connected builds an A2AClient, connects it, and caches it."""
         import json as _json
-        monkeypatch.setenv("SLIFE_MQTT_CONFIG", _json.dumps({
+        monkeypatch.setenv("SLIFE_A2A_CONFIG", _json.dumps({
             "enabled": True, "agent_id": "slife", "agent_name": "",
             "transport": "mqtt", "broker_host": "localhost", "broker_port": 1883,
             "http_host": "127.0.0.1", "http_port": 0,

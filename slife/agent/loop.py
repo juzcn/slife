@@ -742,7 +742,6 @@ class AgentLoop:
         conversation.add_user_message(user_input, images=images)
         total_usage = TokenUsage()
         t_request = _time.monotonic()
-        last_text = ""
 
         logger.info("req_start msg=%.100s imgs=%d", sanitize_secrets(user_input), n_imgs)
 
@@ -786,7 +785,6 @@ class AgentLoop:
 
                     with elapsed("iter", logger, iter=i + 1):
                         result = await self._process_stream(conversation, handler)
-                        last_text = result.content or last_text
 
                         # Capture usage even when cancelled — the API call
                         # already consumed tokens regardless of outcome.
@@ -838,18 +836,16 @@ class AgentLoop:
 
                 raise MaxIterationsExceeded(self.max_iterations)
             except AgentCancelled:
-                conversation._ensure_turn_consistent(last_text)
+                # Turn consistency is enforced at the single save point
+                # (save_to_memory runs unconditionally after every turn) —
+                # the conversation is repaired there, not here.
                 self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except MaxIterationsExceeded:
                 logger.warning("max_iterations_exceeded max=%d", self.max_iterations)
-                conversation._ensure_turn_consistent(last_text)
                 self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except Exception:
-                # Make the turn consistent on transient errors too, then
-                # re-raise so the caller (inbox) handles the error as before
-                # — but the conversation no longer ends on an inconsistent
-                # (orphaned / user-role) message.
-                conversation._ensure_turn_consistent(last_text)
+                # Re-raise so the caller (inbox) handles the error as before;
+                # the conversation is repaired at the save point.
                 raise

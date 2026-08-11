@@ -1,4 +1,4 @@
-"""Task store — shared task-lifecycle tracking for both transports.
+"""Task store — shared A2A task-lifecycle tracking.
 
 Every A2A operation (send, result, cancel) records metadata here so that
 ``a2a_list_tasks`` and ``a2a_get_task_result`` can return structured
@@ -9,10 +9,8 @@ from __future__ import annotations
 
 import time as _time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from slife.a2a.identity import AgentId
+from slife.a2a.wire import Message, TaskState, iso_now
 
 # ── Task record ─────────────────────────────────────────────────────────
 
@@ -34,12 +32,55 @@ class TaskRecord:
     """One of ``"pending"``, ``"completed"``, ``"failed"``, ``"cancelled"``."""
 
     transport: str
-    """``"mqtt"`` or ``"subagent"``."""
+    """Transport binding that produced the task (currently ``"mqtt"``)."""
 
     created_at: float = field(default_factory=_time.monotonic)
     completed_at: float | None = None
     result: str | None = None
     """Result text (first 2000 chars).  ``None`` while pending."""
+
+    created_iso: str = field(default_factory=iso_now)
+    """Wall-clock ISO-8601 creation time (for the official Task wire shape)."""
+
+    def to_task(self) -> dict:
+        """Serialize as an official A2A ``Task`` dict (mirrors ``a2a_pb2``).
+
+        The internal status strings map onto :class:`TaskState` values; the
+        result becomes the task's primary artifact.
+        """
+        state = {
+            "pending": TaskState.SUBMITTED.value,
+            "completed": TaskState.COMPLETED.value,
+            "failed": TaskState.FAILED.value,
+            "cancelled": TaskState.CANCELLED.value,
+        }.get(self.status, TaskState.SUBMITTED.value)
+
+        status = TaskStatus_dict(state, self.created_iso, self.result)
+        artifacts: list[dict] = []
+        if self.result is not None:
+            artifacts.append({
+                "name": "result",
+                "parts": [{"type": "text", "text": self.result}],
+            })
+        return {
+            "id": self.task_id,
+            "status": status,
+            "artifacts": artifacts,
+            "history": [],
+            "metadata": {
+                "target": self.agent_id,
+                "preview": self.task_preview,
+                "transport": self.transport,
+            },
+        }
+
+
+def TaskStatus_dict(state: str, timestamp: str, result: str | None) -> dict:
+    """Build an official ``TaskStatus`` dict."""
+    d: dict = {"state": state, "timestamp": timestamp}
+    if result is not None:
+        d["message"] = Message.text_message(result, role="agent").to_dict()
+    return d
 
 
 # ── Task store ──────────────────────────────────────────────────────────

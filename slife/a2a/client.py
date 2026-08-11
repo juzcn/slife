@@ -30,6 +30,7 @@ from slife.a2a.config import A2AConfig
 from slife.a2a.identity import AgentId, AgentMessage
 from slife.a2a.mqtt import MQTTAdapter
 from slife.a2a.transport import TransportAdapter, TransportMessage
+from slife.a2a import wire
 
 
 class DuplicateAgentError(RuntimeError):
@@ -39,7 +40,7 @@ class DuplicateAgentError(RuntimeError):
 logger = logging.getLogger(__name__)
 
 # ── Module-level current-client reference ────────────────────────────
-# Set by AgentService.start_mqtt() / stop_mqtt() so that native tools
+# Set by AgentService.start_a2a() / stop_a2a() so that native tools
 # (Slife.tools.a2a) can look up the live transport without closures.
 _current_client: "A2AClient | None" = None
 
@@ -50,13 +51,13 @@ def get_client() -> "A2AClient | None":
 
 
 def set_client(client: "A2AClient") -> None:
-    """Set the current A2AClient (called by AgentService.start_mqtt)."""
+    """Set the current A2AClient (called by AgentService.start_a2a)."""
     global _current_client
     _current_client = client
 
 
 def clear_client() -> None:
-    """Clear the current A2AClient (called by AgentService.stop_mqtt)."""
+    """Clear the current A2AClient (called by AgentService.stop_a2a)."""
     global _current_client
     _current_client = None
 
@@ -238,8 +239,9 @@ class A2AClient:
     ) -> str:
         """Send a task to *target* and wait for the result.
 
-        Publishes to ``slife/<target>/tasks/inbox`` with a unique
-        correlation id, then waits for a response on our own result topic.
+        Publishes an official ``SendMessage`` JSON-RPC request to
+        ``slife/<target>/tasks/inbox`` (task text wrapped in a
+        ``Message``), then waits for the result on our own result topic.
         """
         if timeout is None:
             timeout = self._config.task_timeout
@@ -249,12 +251,15 @@ class A2AClient:
         from slife.a2a.task_store import get_store
         get_store().record_send(corr_id, str(target), task, "mqtt")
 
-        payload = json.dumps({
-            "correlation_id": corr_id,
-            "source": self._agent_id,
-            "task": task,
-            "reply_to": f"Slife/{self._agent_id}/tasks/result",
-        })
+        payload = json.dumps(
+            wire.send_message_envelope(
+                corr_id=corr_id,
+                source=str(self._agent_id),
+                task=task,
+                reply_to=f"Slife/{self._agent_id}/tasks/result",
+            ),
+            ensure_ascii=False,
+        )
 
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._pending_tasks[corr_id] = future
@@ -292,12 +297,15 @@ class A2AClient:
         from slife.a2a.task_store import get_store
         get_store().record_send(corr_id, str(target), task, "mqtt")
 
-        payload = json.dumps({
-            "correlation_id": corr_id,
-            "source": self._agent_id,
-            "task": task,
-            "reply_to": f"Slife/{self._agent_id}/tasks/result",
-        })
+        payload = json.dumps(
+            wire.send_message_envelope(
+                corr_id=corr_id,
+                source=str(self._agent_id),
+                task=task,
+                reply_to=f"Slife/{self._agent_id}/tasks/result",
+            ),
+            ensure_ascii=False,
+        )
         logger.debug(
             "a2a_send_task_async target=%s corr_id=%s task=%.80s",
             target, corr_id, task,
@@ -337,12 +345,11 @@ class A2AClient:
         if cancelled:
             get_store().record_cancel(corr_id)
 
-        # Notify the target agent
-        cancel_payload = json.dumps({
-            "correlation_id": corr_id,
-            "source": self._agent_id,
-            "action": "cancel",
-        })
+        # Notify the target agent with the official CancelTask request.
+        cancel_payload = json.dumps(
+            wire.cancel_task_envelope(corr_id, str(self._agent_id)),
+            ensure_ascii=False,
+        )
         try:
             await self._adapter.publish(
                 f"Slife/{target}/tasks/inbox", cancel_payload, qos=1,
@@ -376,12 +383,18 @@ class A2AClient:
 
     def list_tasks(
         self, agent_id: str | None = None, status: str | None = None,
-    ) -> list:
-        """List MQTT tasks from the shared :class:`TaskStore`."""
+    ) -> list[dict]:
+        """List mesh tasks from the shared :class:`TaskStore`.
+
+        Each record is serialized as an official A2A ``Task`` dict.
+        """
         from slife.a2a.task_store import get_store
-        return get_store().list_tasks(
-            agent_id=agent_id, status=status, transport="mqtt",
-        )
+        return [
+            rec.to_task()
+            for rec in get_store().list_tasks(
+                agent_id=agent_id, status=status, transport="mqtt",
+            )
+        ]
 
     async def subscribe_task(
         self, task_id: str, timeout: float = 120.0,
@@ -431,17 +444,18 @@ class A2AClient:
         raise TimeoutError(f"Subscribe to task '{task_id}' timed out after {timeout}s")
 
     async def _publish_presence(self, status_override: str | None = None) -> None:
-        """Publish our presence (called on connect, heartbeat, status change)."""
+        """Publish our presence (called on connect, heartbeat, status change).
+
+        The payload carries the official ``AgentCard`` fields plus the slife
+        extensions (``agent_id``/``display_name``/``status``) read by the
+        peer watchdog.
+        """
         card = AgentCard(
             agent_id=self._agent_id,
             display_name=self._config.agent_name,
             status=status_override if status_override in ("offline",) else self._status,
         )
-        payload = json.dumps({
-            "agent_id": card.agent_id,
-            "display_name": card.display_name,
-            "status": card.status,
-        })
+        payload = json.dumps(card.to_dict(), ensure_ascii=False)
         await self._adapter.publish(
             f"Slife/{self._agent_id}/presence", payload, qos=1, retain=False,
         )
@@ -471,26 +485,24 @@ class A2AClient:
             # never marked offline, because prune only ran on the peer path.
             await self._prune_stale_peers(timeout)
 
-            peer_id = AgentId(data.get("agent_id", ""))
+            card = AgentCard.from_dict(data)
+            peer_id = card.agent_id
             if not peer_id or peer_id == self._agent_id:
                 continue
 
-            status = data.get("status", "online")
-            display_name = data.get("display_name", peer_id)
+            status = card.status
+            display_name = card.display_name
 
             was_known = peer_id in self._peers
 
             if status == "offline":
                 if was_known:
-                    card, _ = self._peers.pop(peer_id)
+                    old_card, _ = self._peers.pop(peer_id)
                     logger.info("a2a_agent_offline id=%s", peer_id)
-                    await self._notify_agent_change(card, "offline")
+                    await self._notify_agent_change(old_card, "offline")
                 continue
 
             # Online / heartbeat
-            card = AgentCard(
-                agent_id=peer_id, display_name=display_name, status=status,
-            )
             self._peers[peer_id] = (card, _time.monotonic())
 
             if not was_known:
@@ -578,17 +590,33 @@ class A2AClient:
             f_result.cancel()
 
     async def _handle_incoming_task(self, msg: TransportMessage) -> None:
-        """Process an incoming task request."""
+        """Process an incoming task request (official ``SendMessage``).
+
+        ``CancelTask`` requests are acknowledged (logged) but not delivered
+        as tasks.  Slife routing fields ride in the ``_slife`` extension.
+        """
         try:
             data = json.loads(msg.payload)
         except json.JSONDecodeError:
             logger.warning("a2a_invalid_task_payload topic=%s", msg.topic)
             return
 
-        source = AgentId(data.get("source", "unknown"))
-        task = data.get("task", "")
-        reply_to = data.get("reply_to", "")
-        corr_id = data.get("correlation_id", "")
+        method = data.get("method", "")
+        slife = data.get("_slife", {}) if isinstance(data.get("_slife"), dict) else {}
+        source = AgentId(slife.get("source", "unknown"))
+
+        if method == "CancelTask":
+            logger.info("a2a_incoming_cancel source=%s task_id=%s", source, data.get("id"))
+            return
+
+        # SendMessage — extract the task text from the Message's first part.
+        params = data.get("params", {}) if isinstance(data.get("params"), dict) else {}
+        message = wire.Message.from_dict(params.get("message"))
+        task = ""
+        if message is not None and message.content:
+            task = message.content[0].text
+        reply_to = slife.get("reply_to", "")
+        corr_id = str(data.get("id", ""))
 
         logger.info(
             "a2a_incoming_task source=%s corr_id=%s task=%.80s",
@@ -605,7 +633,7 @@ class A2AClient:
             await self._incoming_task_callback(agent_msg)
 
     async def _handle_result(self, msg: TransportMessage) -> None:
-        """Process a task result (correlation_id match).
+        """Process a task result (official ``result.task`` envelope).
 
         Resolves synchronous waiters; stores async results for later
         retrieval via :meth:`get_task_result`.
@@ -615,8 +643,13 @@ class A2AClient:
         except json.JSONDecodeError:
             return
 
-        corr_id = data.get("correlation_id", "")
-        result_text = data.get("result", "")
+        # The JSON-RPC id is the correlation id; the result carries a Task.
+        corr_id = str(data.get("id", ""))
+        slife = data.get("_slife", {}) if isinstance(data.get("_slife"), dict) else {}
+        if not corr_id:
+            corr_id = str(slife.get("correlation_id", ""))
+        result_block = data.get("result", {}) if isinstance(data.get("result"), dict) else {}
+        result_text = wire.task_result_text(result_block.get("task", {}))
         future = self._pending_tasks.pop(corr_id, None)
 
         from slife.a2a.task_store import get_store

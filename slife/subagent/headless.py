@@ -1,9 +1,14 @@
-"""Headless Slife — JSON-RPC 2.0 over stdin/stdout (A2A spec §9).
+"""Headless Slife — worker-scoped JSON-RPC 2.0 over stdin/stdout.
+
+A subagent is an *agent worker*: a local child process that runs a full
+agent loop.  The control channel is a worker protocol (``worker/*``), not
+A2A.  The subagent keeps no independent network identity — when it reaches
+the mesh it sends as the parent via the shared a2a plugin.
 
 Protocol::
 
     ← {"jsonrpc":"2.0","result":{"ready":true},"id":null}
-    → {"jsonrpc":"2.0","method":"tasks/send","params":{"task":"…"},"id":"x"}
+    → {"jsonrpc":"2.0","method":"worker/send","params":{"task":"…"},"id":"x"}
     ← {"jsonrpc":"2.0","result":"…","id":"x"}
     ← {"jsonrpc":"2.0","error":{"code":-32000,"message":"…"},"id":"x"}
     → {"jsonrpc":"2.0","method":"shutdown","id":null}
@@ -26,6 +31,11 @@ logger = logging.getLogger("slife_subagent")
 
 #: Set by ``run_headless`` — log path so callers can find it.
 _log_path: Path | None = None
+
+#: task_ids the parent has cancelled — a still-queued ``worker/send`` whose id
+#: is here is skipped (never started).  A task already running is not
+#: preempted; its result is discarded by the parent.
+_cancelled: set[str] = set()
 
 #: Cloned parent conversation (received via the stdin "context" message),
 #: or None for a pure-context subagent.
@@ -74,7 +84,7 @@ async def _process(task_text: str, rpc_id, service) -> None:
                 user_input=task_text, conversation=conv, handler=None,
             )
         _write(result=result.text, rpc_id=rpc_id)
-        _notify("tasks/complete", {"task_id": str(rpc_id)})
+        _notify("worker/complete", {"task_id": str(rpc_id)})
         logger.info(
             "task_done id=%s tok_p=%s tok_c=%s tok_t=%s",
             rpc_id,
@@ -85,11 +95,11 @@ async def _process(task_text: str, rpc_id, service) -> None:
     except MaxIterationsExceeded as e:
         logger.warning("task_loop_exceeded id=%s err=%s", rpc_id, e)
         _write(error={"code": -32000, "message": str(e)}, rpc_id=rpc_id)
-        _notify("tasks/complete", {"task_id": str(rpc_id)})
+        _notify("worker/complete", {"task_id": str(rpc_id)})
     except Exception as e:
         logger.exception("task_error id=%s err=%s", rpc_id, e)
         _write(error={"code": -32000, "message": str(e)}, rpc_id=rpc_id)
-        _notify("tasks/complete", {"task_id": str(rpc_id)})
+        _notify("worker/complete", {"task_id": str(rpc_id)})
 
 
 async def run_headless() -> None:
@@ -164,15 +174,15 @@ async def run_headless() -> None:
         except Exception as e:
             logger.warning("wechat_http_failed port=%s err=%s", _wechat_port, e)
 
-    # Reuse the parent agent's mqtt plugin (thin client): register the a2a__*
-    # tools so we can send, but never drain the inbound queue (all replies
-    # and management belong to the parent agent).
-    _mqtt_port = os.environ.get("SLIFE_MQTT_PORT", "")
-    if _mqtt_port:
+    # Reuse the parent agent's a2a plugin (thin client): register the a2a_*
+    # tools so we can send as the parent, but never drain the inbound queue
+    # (all replies and management belong to the parent agent).
+    _a2a_port = os.environ.get("SLIFE_A2A_PORT", "")
+    if _a2a_port:
         try:
-            await service.connect_mqtt_http(int(_mqtt_port))
+            await service.connect_a2a_http(int(_a2a_port))
         except Exception as e:
-            logger.warning("mqtt_http_failed port=%s err=%s", _mqtt_port, e)
+            logger.warning("a2a_http_failed port=%s err=%s", _a2a_port, e)
 
     # Share the main agent's memfiles plugin (file cabinet + public URLs)
     # instead of spawning a second instance that would fight over the
@@ -245,7 +255,13 @@ async def run_headless() -> None:
                         "subagent_context_bad_shape type=%s",
                         type(messages).__name__,
                     )
-            elif method == "tasks/send":
+            elif method == "worker/cancel":
+                # Parent cancelled a task — skip it if still queued.
+                task_id = str(params.get("task_id", ""))
+                if task_id:
+                    _cancelled.add(task_id)
+                    logger.info("subagent_cancel_received task=%s", task_id)
+            elif method == "worker/send":
                 request_count += 1
                 task_text = params.get("task", "")
                 if not task_text:
@@ -253,6 +269,12 @@ async def run_headless() -> None:
                         error={"code": -32602, "message": "Invalid params: task required"},
                         rpc_id=rpc_id,
                     )
+                    continue
+                if rpc_id and str(rpc_id) in _cancelled:
+                    logger.info(
+                        "subagent_task_skipped_cancelled task=%s", rpc_id,
+                    )
+                    _cancelled.discard(str(rpc_id))
                     continue
                 await _process(task_text, rpc_id, service)
             else:

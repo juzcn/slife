@@ -32,6 +32,11 @@ class TestClassify:
         assert _classify("a2a_send_task") == "Agent Communication (A2A)"
         assert _classify("a2a_broadcast") == "Agent Communication (A2A)"
 
+    def test_subagent_tools(self):
+        assert _classify("subagent_send_task") == "Subagent (local workers)"
+        assert _classify("subagent_send_task_async") == "Subagent (local workers)"
+        assert _classify("subagent_get_task_result") == "Subagent (local workers)"
+
     def test_cli_tools(self):
         assert _classify("cli_set") == "CLI"
         assert _classify("cli_list") == "CLI"

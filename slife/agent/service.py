@@ -135,7 +135,7 @@ class AgentService:
             "memdb": PluginLifecycle("memdb", self),
             "wechat": PluginLifecycle("wechat", self),
             "memfiles": PluginLifecycle("memfiles", self),
-            "mqtt": PluginLifecycle("mqtt", self),
+            "a2a": PluginLifecycle("a2a", self),
         }
 
         # A2A integration state
@@ -197,8 +197,8 @@ class AgentService:
 
     @property
     def a2a_enabled(self) -> bool:
-        """Whether the A2A P2P mesh is active (mqtt plugin connected)."""
-        client = self._plugins["mqtt"].client
+        """Whether the A2A P2P mesh is active (a2a plugin connected)."""
+        client = self._plugins["a2a"].client
         return client is not None and client.is_connected
 
     @property
@@ -225,9 +225,9 @@ class AgentService:
         Dispatches internally for MCP (configurable wrapper command) and
         WeChat (poll loop); everything else uses the generic spawn path.
         Returns ``PluginStartStatus.STARTED`` on success, ``SKIPPED`` for
-        expected no-ops (not configured / dependency absent — e.g. mqtt
-        without a running broker), ``FAILED`` on controlled failure, and
-        raises on unexpected errors.
+        expected no-ops (not configured / dependency absent — e.g. a2a
+        without a running MQTT broker), ``FAILED`` on controlled failure,
+        and raises on unexpected errors.
         """
         # ── MCP wrapper: custom command, auto-connects external servers ──
         if name == "mcp":
@@ -260,8 +260,8 @@ class AgentService:
             )
 
         # ── A2A: mesh channel plugin — probe + config env + poll loop ──
-        if name == "mqtt":
-            return await self.start_mqtt()
+        if name == "a2a":
+            return await self.start_a2a()
 
         # ── Generic: spawn python -m <module>, connect, register tools ──
         started = await self._spawn_plugin_generic(name, module)
@@ -464,20 +464,19 @@ class AgentService:
         self._tool_ctx.memfiles_client = self._plugins["memfiles"].client
         logger.info("memfiles_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
-    async def connect_mqtt_http(self, port: int) -> None:
-        """Connect to the main agent's mqtt plugin via Streamable HTTP.
+    async def connect_a2a_http(self, port: int) -> None:
+        """Connect to the main agent's a2a plugin via Streamable HTTP.
 
-        Used by subagents to reuse the main agent's mesh channel.  The plugin
-        exposes only ``_``-prefixed harness tools (the A2A surface is native
-        ``a2a_*`` tools that forward here); subagents can send but never drain
-        the inbound queue (that stays with the main agent).
+        Used by subagents to reuse the main agent's mesh channel.  Subagents
+        register the plugin's ``a2a_*`` tools (so they can send as the main
+        agent) but never drain the inbound queue (that stays with the main
+        agent).
         """
-        await self._connect_plugin_http("mqtt", port)
-        await self._register_plugin_tools("mqtt")
-        # Expose the mesh client so the native a2a_* tools can reach remote
-        # mesh peers through it.
-        self._tool_ctx.a2a_mcp_client = self._plugins["mqtt"].client
-        logger.info("mqtt_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
+        await self._connect_plugin_http("a2a", port)
+        await self._register_plugin_tools("a2a")
+        # Expose the mesh client for harness drain/dispatch plumbing.
+        self._tool_ctx.a2a_mcp_client = self._plugins["a2a"].client
+        logger.info("a2a_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     # ── MCP private helpers ──────────────────────────────────────────
 
@@ -508,8 +507,8 @@ class AgentService:
 
         Args:
             name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``,
-                ``"mqtt"`` — its tools are all ``_``-prefixed, so none are
-                registered here; the A2A surface is the native ``a2a_*`` tools).
+                ``"a2a"`` — harness-only tools are ``_``-prefixed and filtered;
+                the ``a2a_*`` mesh tools register as proxy tools).
             **kwargs: Forwarded to :func:`create_proxy_tools` (e.g.
                 ``on_server_added``, ``on_server_removed``).
         """
@@ -1241,17 +1240,17 @@ class AgentService:
 
     # ── A2A lifecycle ──────────────────────────────────────────────────
 
-    async def start_mqtt(self) -> PluginStartStatus:
+    async def start_a2a(self) -> PluginStartStatus:
         """Start the A2A mesh as a plugin (thin client: connect + drain).
 
-        All A2A/MQTT logic lives in the mqtt plugin process — the harness
-        only spawns it, registers the ``a2a__*`` tools, and polls
+        All A2A logic lives in the a2a plugin process (MQTT binding) — the
+        harness only spawns it, registers the ``a2a_*`` tools, and polls
         ``__a2a_drain_incoming`` for inbound tasks/presence.  Probes
         Mosquitto first; returns ``SKIPPED`` when the broker is
         unreachable or A2A is not configured (expected, not an error).
         Idempotent.
         """
-        if self._plugins["mqtt"].process is not None:
+        if self._plugins["a2a"].process is not None:
             return PluginStartStatus.STARTED  # already started
 
         a2a_cfg = self.config.a2a_config
@@ -1259,9 +1258,9 @@ class AgentService:
             logger.debug("a2a_disabled")
             return PluginStartStatus.SKIPPED
 
-        # Only the MQTT transport is implemented.  A config that somehow
-        # carries a different transport (e.g. the removed "http" skeleton)
-        # must not silently run MQTT — skip with a warning (REVIEW C1).
+        # Only the MQTT transport binding is implemented.  A config that
+        # somehow carries a different transport (e.g. a future gRPC/HTTP
+        # binding) must not silently run MQTT — skip with a warning.
         if a2a_cfg.transport != "mqtt":
             logger.warning(
                 "a2a_transport_unsupported transport=%s action=a2a_disabled "
@@ -1282,29 +1281,28 @@ class AgentService:
 
         # Pass the a2a config to the plugin process via env.
         from dataclasses import asdict
-        os.environ["SLIFE_MQTT_CONFIG"] = json.dumps(
+        os.environ["SLIFE_A2A_CONFIG"] = json.dumps(
             asdict(a2a_cfg), ensure_ascii=False,
         )
 
         started = await self._spawn_plugin_generic(
-            "mqtt", "slife.plugins.mqtt.server",
+            "a2a", "slife.plugins.a2a.server",
         )
         if not started:
             return PluginStartStatus.FAILED
 
-        # Expose the mesh client so the native a2a_* tools can reach remote
-        # peers (when the plugin is down this stays None → mesh tools report
-        # "not connected", subagent/stdin paths still work).
-        self._tool_ctx.a2a_mcp_client = self._plugins["mqtt"].client
-        self._plugins["mqtt"].poll_task = asyncio.create_task(self._mqtt_poll_loop())
+        # Expose the mesh client for harness drain/dispatch plumbing (when the
+        # plugin is down this stays None).
+        self._tool_ctx.a2a_mcp_client = self._plugins["a2a"].client
+        self._plugins["a2a"].poll_task = asyncio.create_task(self._a2a_poll_loop())
 
         # Crash watchdog — respawn the plugin and restart the drain loop.
-        async def _restart_mqtt() -> None:
-            await self._spawn_plugin_generic("mqtt", "slife.plugins.mqtt.server")
-            self._tool_ctx.a2a_mcp_client = self._plugins["mqtt"].client
-            self._plugins["mqtt"].poll_task = asyncio.create_task(self._mqtt_poll_loop())
+        async def _restart_a2a() -> None:
+            await self._spawn_plugin_generic("a2a", "slife.plugins.a2a.server")
+            self._tool_ctx.a2a_mcp_client = self._plugins["a2a"].client
+            self._plugins["a2a"].poll_task = asyncio.create_task(self._a2a_poll_loop())
 
-        self._plugins["mqtt"].start_watchdog(restart_cb=_restart_mqtt)
+        self._plugins["a2a"].start_watchdog(restart_cb=_restart_a2a)
 
         from slife.health import record
         record(
@@ -1312,10 +1310,10 @@ class AgentService:
             key="status", value="connected",
             hint="A2A P2P mesh connected (plugin).",
         )
-        logger.info("mqtt_plugin_started")
+        logger.info("a2a_plugin_started")
         return PluginStartStatus.STARTED
 
-    async def _mqtt_poll_loop(self, interval: float = 1.0) -> None:
+    async def _a2a_poll_loop(self, interval: float = 1.0) -> None:
         """Drain inbound a2a tasks/presence from the plugin into the inbox.
 
         The harness stays a thin client: it only drains the plugin's
@@ -1330,7 +1328,7 @@ class AgentService:
 
         while True:
             try:
-                client = self._plugins["mqtt"].client
+                client = self._plugins["a2a"].client
                 if client is None:
                     break
                 result = await client.call_tool("__a2a_drain_incoming", {})
@@ -1397,7 +1395,7 @@ class AgentService:
 
         logger.info("a2a_init_done tools=%d", len(self.tool_registry.list_tools()))
 
-    async def stop_mqtt(self) -> None:
+    async def stop_a2a(self) -> None:
         """Leave the P2P mesh — stop the drain loop and the a2a plugin.
 
         Does NOT stop the inbox — the queue is independent of A2A
@@ -1405,7 +1403,7 @@ class AgentService:
         """
         # PluginLifecycle.stop() sets _stopping first so the watchdog does
         # not spuriously restart the plugin on a graceful shutdown.
-        await self._stop_plugin("mqtt", has_poll_task=True)
+        await self._stop_plugin("a2a", has_poll_task=True)
 
         # Clear inbox a2a references
         if self.inbox is not None:
@@ -1433,13 +1431,14 @@ class AgentService:
         self._subagent_manager = SubagentManager(self.config)
 
         # Set module-level transport reference so native subagent tools
-        # (Slife.tools.a2a) can access the live manager at call time.
+        # (Slife.tools.subagent) can access the live manager at call time.
         set_manager(self._subagent_manager)
 
         # When a subagent completes an async task, push the result into
         # the inbox so the user sees it without having to poll.
         async def _on_subagent_done(agent_id: str, task_id: str, result: str) -> None:
-            from slife.a2a.identity import AgentMessage, SUBAGENT
+            from slife.a2a.identity import AgentMessage
+            from slife.subagent.identity import SUBAGENT
             msg = AgentMessage(
                 source=SUBAGENT,
                 content=(

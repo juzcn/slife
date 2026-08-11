@@ -37,13 +37,43 @@ class TestTaskRecord:
             agent_id="a2",
             task_preview="run tests",
             status="completed",
-            transport="subagent",
+            transport="mqtt",
             completed_at=100.0,
             result="All tests passed",
         )
         assert rec.status == "completed"
         assert rec.completed_at == 100.0
         assert rec.result == "All tests passed"
+
+    def test_to_task_official_shape(self):
+        """to_task() serializes as an official A2A Task dict."""
+        rec = TaskRecord(
+            task_id="t9",
+            agent_id="agent-1",
+            task_preview="do thing",
+            status="completed",
+            transport="mqtt",
+            result="the answer",
+        )
+        task = rec.to_task()
+        assert task["id"] == "t9"
+        assert task["status"]["state"] == "completed"
+        assert task["status"]["timestamp"]  # ISO-8601 string present
+        assert task["artifacts"][0]["name"] == "result"
+        assert task["artifacts"][0]["parts"][0]["text"] == "the answer"
+        assert task["metadata"]["target"] == "agent-1"
+
+    def test_to_task_pending_maps_to_submitted(self):
+        rec = TaskRecord(
+            task_id="t10",
+            agent_id="agent-1",
+            task_preview="",
+            status="pending",
+            transport="mqtt",
+        )
+        task = rec.to_task()
+        assert task["status"]["state"] == "submitted"
+        assert task["artifacts"] == []
 
 
 # ── TaskStore — writes ──────────────────────────────────────────────────
@@ -114,7 +144,7 @@ class TestTaskStoreReads:
     def store(self):
         s = TaskStore()
         s.record_send("t1", "agent-1", "task one", "mqtt")
-        s.record_send("t2", "agent-2", "task two", "subagent")
+        s.record_send("t2", "agent-2", "task two", "mqtt")
         s.record_send("t3", "agent-1", "task three", "mqtt")
         s.record_result("t1", "done one")
         s.record_error("t2", "failed two")
@@ -145,9 +175,12 @@ class TestTaskStoreReads:
         assert records[0].task_id == "t3"
 
     def test_list_tasks_filter_transport(self, store):
-        records = store.list_tasks(transport="subagent")
-        assert len(records) == 1
-        assert records[0].task_id == "t2"
+        records = store.list_tasks(transport="mqtt")
+        assert len(records) == 3
+        assert {r.task_id for r in records} == {"t1", "t2", "t3"}
+
+    def test_list_tasks_filter_transport_no_match(self, store):
+        assert store.list_tasks(transport="nonexistent-binding") == []
 
     def test_list_tasks_combined_filters(self, store):
         records = store.list_tasks(agent_id="agent-1", status="completed")

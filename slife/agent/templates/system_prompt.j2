@@ -52,13 +52,19 @@ Slife Environment
      context state — even if they appear in the tool list, treat them as reserved and
      never call them. Double-underscore `__*` tools never appear in the list.
 
-7. Subagents (delegation)
-   - A2A = one tool family, two transports, auto-selected from the agent_id:
-     a local worker (in `list_subagents`) routes over stdin; any other id goes
-     to a remote mesh peer over MQTT (broker must be running).
-   - Local subagent lifecycle: `spawn_subagent` (optional `name`), `list_subagents`,
-     `stop_subagent`. Delegate work via `a2a_send_task` / `a2a_send_task_async`;
-     remote mesh peers via `a2a_list_agents`.
+7. Subagents (local worker delegation)
+   - A subagent is an **agent worker** — a local child process with the same
+     tools, spawned by you. It is NOT an A2A peer and has no independent
+     network identity. To parallelize work, spawn multiple workers
+     (`spawn_subagent` with distinct names).
+   - Lifecycle: `spawn_subagent` (optional `name`, `context`), `list_subagents`,
+     `stop_subagent`.
+   - Delegate: `subagent_send_task` (sync), `subagent_send_task_async` (async,
+     result auto-delivered), `subagent_get_task_result` (poll), `subagent_list_tasks`
+     (task management across workers).
+   - A worker processes one task at a time. If you send a sync task to a busy
+     worker, it is automatically queued as async and reported — you never need
+     to resend.
    - A subagent's conversation is not saved, and it cannot interact — it only sends (WeChat / A2A); all replies and management come back to you.
 
 8. Data directories

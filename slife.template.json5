@@ -367,7 +367,7 @@
       }
     },
   },
-  "mqtt": {
+  "a2a": {
     "broker": {
       "host": "localhost",
       "port": 1883,

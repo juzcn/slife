@@ -136,13 +136,17 @@ class TestBuild:
         assert "filesystem" not in result
 
     def test_subagent_delegation_section_present(self, cfg):
-        """Section 7 tells the main agent how to delegate to subagents."""
+        """Section 7 tells the main agent how to delegate to local workers."""
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "Subagents (delegation)" in result
+        assert "Subagents (local worker delegation)" in result
         assert "spawn_subagent" in result
-        assert "a2a_send_task" in result
-        assert "a2a_list_agents" in result
+        assert "subagent_send_task" in result
+        assert "subagent_send_task_async" in result
+        assert "subagent_get_task_result" in result
+        assert "subagent_list_tasks" in result
+        # Subagents are workers, not A2A peers — mesh tools live in section 9.
+        assert "A2A = one tool family, two transports" not in result
         assert "conversation is not saved" in result
         assert "cannot interact" in result
         assert "it only sends" in result

@@ -56,7 +56,7 @@ The model input should read uniformly, so text that Slife authors is English:
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins (independent child processes, Streamable HTTP)              │
 │  slife-mcp (gateway) · slife-memdb (diary) · slife-wechat            │
-│  slife-mqtt (A2A over MQTT) · slife-memfiles (file sharing: /mcp + /share)                        │
+│  slife-a2a (A2A over MQTT) · slife-memfiles (file sharing: /mcp + /share)                         │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
@@ -90,11 +90,11 @@ User Input → Conversation.add_user_message()        (secrets sanitized)
 - **Background execution**: per-call `_async: true` schedules the tool as a background task and returns a task id immediately; poll with `check_async`, cancel with `cancel_async`
 - **Iteration limit**: `max_iterations` (default 30) prevents infinite loops
 - **Cancellation**: `Esc` sets a cancel event; checked before each iteration, after each stream, and before each tool batch
-- **Turn consistency**: one function — `Conversation._ensure_turn_consistent()` — enforces two idempotent invariants on every conversation before it reaches the wire, the DB, or a new user message:
+- **Turn consistency**: one function — `Conversation._ensure_turn_consistent()` — enforces two idempotent invariants before a conversation is persisted (and again on load), so it is always well-formed when it next reaches the wire:
   1. **No orphaned tool_calls** — an assistant `tool_call` whose result never arrived (an interrupted turn, e.g. a hung tool) gets a synthetic `Error: request cancelled by user` result inserted right after it; otherwise the orphan is persisted and re-repaired on every restore.
   2. **Alternating roles** — a conversation ending on a `user`/`tool` message (a tool result is a `user` role on the Anthropic wire, which rejects two consecutive users with a 400) gets a closing assistant message.
 
-  It is called at **every point a turn can become inconsistent**: `add_user_message` (before appending), the agent loop's cancel / max-iterations / transient-error handlers, `save_to_memory` (before persisting — the save-side guarantee), and `restore_session` (after loading from memory — the load-side guarantee). Each turn also opens with an auto-invoked `_sys_note` assistant+tool pair, so a user message is always sandwiched between assistant messages.
+  It has exactly **two call sites**: `save_to_memory` (before persisting — the save-side guarantee, which runs unconditionally after every turn via the inbox `finally`), and `restore_session` (after loading from memory — the load-side guarantee). Because every turn is saved unconditionally, the conversation is always left consistent before the next user message is appended. Each turn also opens with an auto-invoked `_sys_note` assistant+tool pair, so a user message is always sandwiched between assistant messages.
 - **Context tracking**: `_last_context_tokens` (actual `prompt_tokens` from the last API call) drives trim decisions
 
 ### Context Window Management
@@ -128,8 +128,7 @@ Harness tools are internal machinery the loop invokes on the agent's behalf. Two
 | `_sys_trim` | Native tool, auto-invoked on trim | `_` — visible-but-forbidden |
 | `__memory_save_turn` / `__memory_get_recent_turns` | memdb plugin | `__` — invisible |
 | `__wechat_drain_incoming` / `__wechat_dispatch_reply` | wechat plugin | `__` — invisible |
-| `__a2a_drain_incoming` / `__a2a_dispatch_result` | mqtt plugin | `__` — invisible |
-| `__send_task`, `__send_task_async`, `__list_agents`, … | mqtt plugin (mesh ops) | `__` — invisible |
+| `__a2a_drain_incoming` / `__a2a_dispatch_result` | a2a plugin | `__` — invisible |
 | `__mcp_connection_status` / `__mcp_call_tool` | mcp plugin | `__` — invisible |
 | `__tunnel_status` / `__register_file` | memfiles plugin | `__` — invisible |
 
@@ -214,13 +213,14 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 
 | Category | File | Tools |
 |----------|------|-------|
-| System | `system.py` (+`a2a.py`) | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog`, `notify_user` |
+| System | `system.py` | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
+| Display | `display.py` | `show_image`, `notify_user` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill.py` | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli.py` | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled`, `cli_check_installed` |
 | REST API | `rest_api.py` | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
-| A2A | `a2a.py` + `mqtt` plugin | one uniform `a2a_` prefix — `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task` (both transports), `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` (MQTT-only) |
-| Subagent | `a2a.py` | `spawn_subagent`, `list_subagents`, `stop_subagent` (no prefix) |
+| A2A | `a2a` plugin | one uniform `a2a_` prefix (hosted in the plugin, mesh-only) — `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
+| Subagent | `subagent.py` | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` (no prefix; local workers, not A2A) |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
@@ -290,7 +290,7 @@ Each plugin runs with a **watchdog** background task that monitors the child pro
 | Backoff | Exponential: 1 s → 2 s → 4 s → … → 30 s max |
 | Max restarts | 5 consecutive failures → watchdog gives up and logs an error |
 | Success reset | A successful restart resets the backoff and retry counter |
-| Scope | **mcp** (respawns wrapper + reconnects external servers), **memdb**, **wechat** (restores poll loop), **memfiles**, **mqtt** |
+| Scope | **mcp** (respawns wrapper + reconnects external servers), **memdb**, **wechat** (restores poll loop), **memfiles**, **a2a** |
 
 > Known gap: plugins not in the hardcoded `_plugins` set (third-party packages dropped into `slife/plugins/`) start but get **no** watchdog — a crash is permanent until restart. See REVIEW.md.
 
@@ -313,7 +313,7 @@ Processes communicate through environment variables:
 | **slife-memdb** | Streamable HTTP | Diary database. Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
 | **slife-memfiles** | Streamable HTTP + `/share` route | File cabinet + public sharing. MCP tools (`expose_file`, `save_content_or_files`), harness tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel and in-process token registry. |
-| **slife-mqtt** | Streamable HTTP | A2A mesh channel over MQTT (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). All its tools are `__`-prefixed harness plumbing; the LLM-facing surface is the native `a2a_*` tools. |
+| **slife-a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools; only the drain/dispatch harness tools (`__a2a_*`) stay `__`-prefixed. |
 
 ### slife-mcp — External MCP Gateway
 
@@ -403,27 +403,25 @@ On startup, recent turns are read **directly from SQLite** — no MCP transport,
 
 `--agent alice` uses `~/.slife/alice.db` — isolation is at the database-file level. Each agent has its own diary, FTS, and vector indexes; nothing is shared between agents.
 
-## A2A — Agent-to-Agent
+## A2A — Agent-to-Agent (mesh)
 
-One tool namespace over two transports, auto-selected from the agent_id:
+The A2A protocol (JSON-RPC operations `SendMessage` / `GetTask` / `CancelTask` / `SubscribeToTask`, and Message/Task/AgentCard data shapes mirroring the official a2a-python reference interface) runs over a pluggable transport **binding** — currently MQTT.  The **`a2a` plugin** owns the mesh: it hosts the LLM-facing `a2a_*` tools and the `A2AClient`.
 
 ```
-  a2a_send_task / a2a_send_task_async / …   (auto-routes by agent_id)
+  a2a_send_task / a2a_list_agents / …   (LLM tools, hosted in the a2a plugin)
          │
-  ┌──────┴──────┐
- MQTT          Subagent
-(paho, plugin) (JSON-RPC stdin/stdout)
- implemented   implemented, always available
+   a2a plugin (slife.plugins.a2a)
+         │  A2AClient (official operations + data model)
+   MQTT binding (paho, LWT) — the transport
 ```
 
-| Transport | Backend | Status |
-|-----------|---------|--------|
-| **MQTT** | `slife-mqtt` plugin (paho-mqtt MQTTv5 → asyncio.Queue, LWT) | Fully implemented |
-| **Subagent** | `asyncio.create_subprocess_exec`, JSON-RPC 2.0 | Fully implemented, always available |
+| Binding | Backend | Status |
+|---------|---------|--------|
+| **MQTT** | `slife.plugins.a2a` (paho-mqtt MQTTv5 → asyncio.Queue, LWT) | Fully implemented |
 
-Only MQTT is implemented — the HTTP Streamable transport skeleton was removed.  A `transport` other than `"mqtt"` in the `mqtt` section (e.g. the removed `"http"`) disables A2A with a warning at config load instead of crashing startup (REVIEW C1).
+Only MQTT is implemented.  A `transport` other than `"mqtt"` in the `a2a` config section disables A2A with a warning at config load instead of crashing startup (REVIEW C1).
 
-The A2A thin protocol has **one tool namespace** over the two implemented transports: the **task tools** (`a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`) route a local worker (from `list_subagents`) through the `SubagentManager` over stdin, and any other id through the `mqtt` plugin to a remote mesh peer over MQTT. Every A2A tool carries the same uniform `a2a_` prefix; the remote-only mesh features are native `a2a_list_agents` / `a2a_list_tasks` / `a2a_agent_card` / `a2a_broadcast`. The `mqtt` plugin itself only exposes `__`-prefixed (LLM-invisible) harness plumbing, called by the native tools through the mesh MCP client. Subagents are not a `TransportAdapter`.
+The LLM-facing `a2a_*` tools live in the a2a plugin (one uniform prefix; the MCP proxy keeps the exact names).  Subagents are **not** part of A2A — they are local workers (see "Subagent Workers" below).
 
 ### MQTT Mesh
 
@@ -431,9 +429,9 @@ The A2A thin protocol has **one tool namespace** over the two implemented transp
 - Presence heartbeat every 15 s (configurable); peers silent for 45 s are pruned. LWT publishes `{"status":"offline"}` (QoS 1) so crashes are visible
 - Client id is `<agent_id>-<pid>` to allow multiple processes per agent id
 - Duplicate agent detection: after subscribing, the client listens 1.5 s for an existing presence with the same id and exits with a clear error rather than splitting the identity
-- Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; if the probe fails, the mqtt plugin is not started (A2A disabled) and this is reported via `system_health`
+- Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; if the probe fails, the a2a plugin is not started (A2A disabled) and this is reported via `system_health`
 - The mesh connects **eagerly** when the plugin starts (lifespan hook) so presence is announced at launch; a failed eager connect is tolerated and mesh tools attempt a lazy connect on demand
-- Peer presence **transitions** (online/offline/timeout) reach the LLM context: the mqtt plugin queues them; `AgentService._mqtt_poll_loop` drains them and appends the TUI-identical line (via `format_presence_line`, which also filters heartbeat-driven `status_change`) to a buffer that `AgentLoop` drains read-once into the `_sys_note` footer each turn. The footer carries only *changes* — the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with stale state
+- Peer presence **transitions** (online/offline/timeout) reach the LLM context: the a2a plugin queues them; `AgentService._a2a_poll_loop` drains them and appends the TUI-identical line (via `format_presence_line`, which also filters heartbeat-driven `status_change`) to a buffer that `AgentLoop` drains read-once into the `_sys_note` footer each turn. The footer carries only *changes* — the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with stale state
 
 ### Unified Inbox
 
@@ -450,18 +448,17 @@ Messages are processed sequentially — only one AgentLoop runs at a time. Human
 
 ### Task Store
 
-Sent/received tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap). The store is **not persisted across restarts** — `a2a_list_tasks` after restart is empty by design. (The tool description no longer warns about this — restore the caveat; see REVIEW.md, N7.)
+Mesh tasks are tracked in memory (`TaskRecord`: id, agent, preview, status, transport, timings, result capped at 2000 chars; 500-record soft cap). The store is **not persisted across restarts** — `a2a_list_tasks` after restart is empty by design. Worker (subagent) tasks are **not** in this store — they live in per-worker local records (`SubagentProcess._task_records`).
 
-### Subagent Transport
+### Subagent Workers
 
-Local child-process workers, always available — no config toggle:
+Local child-process workers, always available — no config toggle.  A subagent (agent worker) is **not** an A2A peer: no network identity, no presence, and no mesh tooling of its own — when it reaches the mesh it sends as the parent via the shared a2a plugin.
 
-- **headless.py**: Slife without TUI, JSON-RPC 2.0 over stdin/stdout — methods `tasks/send`, `shutdown`; notifications `tasks/complete`, `tasks/progress`; a `{ready: true}` result signals startup
+- **headless.py**: Slife without TUI, worker-scoped JSON-RPC 2.0 over stdin/stdout — methods `worker/send`, `shutdown`; notifications `worker/complete`, `worker/progress`; a `{ready: true}` result signals startup
 - **SubagentManager**: spawn/stop/list lifecycle; auto-names `sub-1`, `sub-2`, …; `max_subagents` default 5, `task_timeout` default 120 s
-- **Shared plugins**: subagents connect to the main agent's plugin servers (MCP / memdb / wechat / mqtt / memfiles) via inherited ports — no isolation; they can send but never drain the inbound queue (all replies and management belong to the main agent)
+- **Serial processing + visibility**: a worker runs one task at a time. `SubagentProcess` tracks the in-flight count (`is_busy` / `queued`); a sync `subagent_send_task` to a busy worker is automatically queued as async and reported (never a silent timeout, never a resend). `subagent_list_tasks` lists worker tasks across workers.
+- **Shared plugins**: subagents connect to the main agent's plugin servers (MCP / memdb / wechat / a2a / memfiles) via inherited ports — no isolation; they can send but never drain the inbound queue (all replies and management belong to the main agent)
 - **Recursion**: subagents can spawn their own descendants (each level has its own SubagentManager + watchdogs)
-
-> Known gap: `a2a_cancel_task` cannot cancel an in-flight subagent task (it only pops a stored async result, mislabelled "cancelled"). See REVIEW.md, C5.
 
 ## Image & Memfiles
 
@@ -588,7 +585,7 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 | `mcp.servers` | External MCP server configs |
 | `memdb.embedding` | Embedding backend config (backend, model, dim, gguf_path) |
 | `wechat` | `enabled` toggle |
-| `mqtt` | A2A config (transport, broker host/port, heartbeat, task_timeout) |
+| `a2a` | A2A config (transport binding, broker host/port, heartbeat, task_timeout) |
 | `subagent` | `max_subagents`, `task_timeout` |
 | `cli_tools` | External CLI tool definitions (read by the CLI tools directly) |
 | `rest_apis` | REST API registrations (read by the REST API tools directly) |
@@ -656,19 +653,19 @@ slife/
     skill.py           #   Skill management (SKILL.md)
     cli.py             #   External CLI tool management
     rest_api.py        #   REST API tool management (OpenAPI → MCP)
-    a2a.py             #   A2A + subagent lifecycle tools (13)
+    subagent.py        #   Local worker tools (spawn/list/stop + delegation + task mgmt)
     models.py          #   Model management (model_list/set/remove/switch)
     config.py          #   Config env var + native tool toggles
     credentials.py     #   Credential check/inject/uninject
     vision.py          #   include_image — vision helper (native, conversation-scoped)
-    display.py         #   Inline image display
+    display.py         #   show_image + notify_user (pure UI)
     meta.py            #   list_tools, check_async, cancel_async, clear_context
   plugins/             # Built-in plugins (auto-discovered server.py packages)
     mcp/               #   External MCP gateway (raw JSON-RPC: stdio/SSE/streamable)
     memdb/             #   Diary database (store, search, embeddings, schema.sql)
     wechat/            #   WeChat messaging (iLink ClawBot client)
     memfiles/          #   File cabinet + sharing (server.py owns tunnel + registry, tunnel.py = ngrok)
-    mqtt/              #   A2A/MQTT mesh channel (all __ harness tools)
+    a2a/               #   A2A mesh (a2a_* tools + A2AClient, MQTT binding)
   mcp/                 # MCP client infra
     client.py          #   Streamable HTTP client
     tool_adapter.py    #   MCPProxyTool (bridges MCP → Tool ABC, ProxyRoute dispatch)
@@ -676,15 +673,17 @@ slife/
     oauth.py           #   OAuth 2.0 device-code flow
   a2a/                 # Agent-to-Agent protocol
     transport.py       #   Abstract transport + TransportMessage
+    wire.py            #   Official-shape wire contract (Message/Task/TaskState/envelopes)
     mqtt.py            #   MQTT adapter (paho-mqtt, MQTTv5, LWT)
     client.py          #   A2A client (presence, heartbeat, task routing)
     broker.py          #   Broker TCP probe
-    task_store.py      #   In-memory task records
+    task_store.py      #   In-memory mesh task records
     card.py            #   AgentCard + format_presence_line (TUI/context shared)
     config.py          #   A2A config (transport validation)
     identity.py        #   AgentId, HUMAN/WECHAT sentinels, AgentMessage
-  subagent/            # Local workers
-    headless.py        #   Headless JSON-RPC 2.0 process
+  subagent/            # Local workers (agent workers, not A2A)
+    headless.py        #   Headless worker-scoped JSON-RPC process
+    identity.py        #   SUBAGENT unified-inbox source sentinel
     process.py         #   SubagentProcess + SubagentManager
   ui/                  # Textual TUI
     app.py             #   Textual App, bindings, HistoryInput, StatusBar

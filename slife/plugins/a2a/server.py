@@ -1,4 +1,4 @@
-"""slife-mqtt server — the A2A protocol over MQTT, as a replaceable plugin.
+"""slife-a2a server — the A2A protocol over MQTT, as a replaceable plugin.
 
 Slife (the main process) acts as a thin client: it connects to this
 plugin over Streamable HTTP, registers the ``a2a__*`` tools, and drains
@@ -7,12 +7,12 @@ The plugin owns the :class:`A2AClient` (MQTT) with the main agent's
 identity — senders and the mesh cannot tell which slife process sent a
 message, so subagents connect to the same plugin and reuse the channel.
 
-Config arrives via ``SLIFE_MQTT_CONFIG`` (a JSON serialization of
+Config arrives via ``SLIFE_A2A_CONFIG`` (a JSON serialization of
 ``A2AConfig``).  The parent spawns this process only when A2A is enabled
 (the Mosquitto probe already succeeded), so ``enabled`` is True here.
 
 Usage:
-    uv run python -m slife.plugins.mqtt.server
+    uv run python -m slife.plugins.a2a.server
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import json
 import os
 from contextlib import asynccontextmanager
 
+from slife.a2a import wire
 from slife.a2a.card import AgentCard
 from slife.a2a.client import A2AClient
 from slife.a2a.config import A2AConfig
@@ -30,7 +31,7 @@ from slife.server_utils import create_plugin_server, run_plugin_server
 
 
 @asynccontextmanager
-async def _mqtt_lifespan(_app):
+async def _a2a_lifespan(_app):
     """Connect the mesh eagerly on plugin startup.
 
     Restores the pre-pluginization behavior (``AgentService.start_a2a``)
@@ -44,7 +45,7 @@ async def _mqtt_lifespan(_app):
     try:
         await _ensure_connected()
     except Exception as e:
-        logger.warning("mqtt_plugin_eager_connect_failed err=%s", e)
+        logger.warning("a2a_plugin_eager_connect_failed err=%s", e)
     try:
         yield
     finally:
@@ -53,17 +54,17 @@ async def _mqtt_lifespan(_app):
             try:
                 await client.disconnect()
             except Exception as e:
-                logger.debug("mqtt_plugin_disconnect_error err=%s", e)
+                logger.debug("a2a_plugin_disconnect_error err=%s", e)
 
 
 mcp, _log_path, logger = create_plugin_server(
-    "slife-mqtt",
+    "slife-a2a",
     instructions=(
-        "slife-mqtt — A2A/MQTT mesh channel. Send tasks to peers "
-        "(send_task / send_task_async), discover agents (list_agents), "
-        "broadcast, cancel tasks, and query agent cards."
+        "slife-a2a — A2A mesh channel (MQTT binding). Send tasks to "
+        "peers (a2a_send_task / a2a_send_task_async), discover agents "
+        "(a2a_list_agents), broadcast, cancel tasks, and query agent cards."
     ),
-    lifespan=_mqtt_lifespan,
+    lifespan=_a2a_lifespan,
 )
 
 # ── Lazy client init (FastMCP lazy-init rule) ──────────────────────
@@ -75,7 +76,7 @@ _MAX_QUEUED = 500
 
 
 def _load_config() -> A2AConfig:
-    raw = os.environ.get("SLIFE_MQTT_CONFIG", "{}")
+    raw = os.environ.get("SLIFE_A2A_CONFIG", "{}")
     return A2AConfig(**json.loads(raw))
 
 
@@ -89,14 +90,14 @@ async def _ensure_connected() -> A2AClient:
         cfg = _load_config()
         if not cfg.enabled:
             raise RuntimeError(
-                "A2A is not enabled (mqtt not configured or broker unreachable)"
+                "A2A is not enabled (a2a not configured or broker unreachable)"
             )
         client = A2AClient(cfg)
         client.on_incoming_task(_on_incoming_task)
         client.on_agent_change(_on_agent_change)
         await client.connect()
         _client = client
-        logger.info("mqtt_plugin_client_connected id=%s", client.agent_id)
+        logger.info("a2a_plugin_client_connected id=%s", client.agent_id)
     return _client
 
 
@@ -130,39 +131,44 @@ async def _on_agent_change(card: AgentCard, event: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Mesh tools (registered as a2a__<name>)
+# A2A mesh tools (LLM-visible, uniform a2a_ prefix)
 # ═══════════════════════════════════════════════════════════════════════
+#
+# These are the LLM-facing A2A tools.  The harness registers them with the
+# server name ``a2a``; because every tool already starts with ``a2a_``, the
+# proxy keeps the exact name (no ``a2a__a2a_`` duplication).  The MQTT
+# transport is an internal binding — the tool surface is transport-agnostic
+# (an HTTP/gRPC binding would plug in behind the same tools).
 
-
-# Remote-peer plumbing — reached through the unified native a2a_* tools
-# (auto-routed to the mesh).  `_` prefix keeps them out of the LLM's tool
-# list; they are still callable via the plugin's MCP client.
 
 @mcp.tool(
-    name="__send_task",
-    description="Send a task to a remote mesh peer and wait. Harness-only (call via a2a_send_task).",
+    name="a2a_send_task",
+    description="Send a task to a remote A2A mesh peer and wait for the result. "
+    "Requires the A2A mesh (MQTT broker running).",
 )
-async def __send_task(agent_id: str, task: str) -> str:
+async def a2a_send_task(agent_id: str, task: str) -> str:
     """Send a task to *agent_id* and wait for the result."""
     client = await _ensure_connected()
     return await client.send_task(AgentId(agent_id), task)
 
 
 @mcp.tool(
-    name="__send_task_async",
-    description="Send a task to a remote mesh peer without waiting. Harness-only (call via a2a_send_task_async).",
+    name="a2a_send_task_async",
+    description="Send a task to a remote A2A mesh peer without waiting — returns a "
+    "task_id. Poll with a2a_get_task_result. Requires the A2A mesh (MQTT broker).",
 )
-async def __send_task_async(agent_id: str, task: str) -> str:
-    """Send a task without waiting — returns the correlation id."""
+async def a2a_send_task_async(agent_id: str, task: str) -> str:
+    """Send a task without waiting — returns the correlation/task id."""
     client = await _ensure_connected()
     return await client.send_task_async(AgentId(agent_id), task)
 
 
 @mcp.tool(
-    name="__list_agents",
-    description="List known online A2A mesh peers as JSON agent cards. Harness-only (call via a2a_list_agents).",
+    name="a2a_list_agents",
+    description="List known online A2A mesh peers as JSON agent cards. "
+    "Requires the A2A mesh (MQTT broker).",
 )
-async def __list_agents() -> str:
+async def a2a_list_agents() -> str:
     """List known online A2A mesh peers as JSON agent cards."""
     client = await _ensure_connected()
     cards = await client.list_agents()
@@ -174,32 +180,35 @@ async def __list_agents() -> str:
 
 
 @mcp.tool(
-    name="__get_task_result",
-    description="Return a remote async task's result, or 'pending'. Harness-only (call via a2a_get_task_result).",
+    name="a2a_get_task_result",
+    description="Return a remote async task's result, or 'pending' if not ready. "
+    "Requires the A2A mesh (MQTT broker).",
 )
-async def __get_task_result(corr_id: str) -> str:
+async def a2a_get_task_result(agent_id: str, task_id: str) -> str:
     """Return the result of an async task, or 'pending' if not ready."""
     client = await _ensure_connected()
-    result = client.get_task_result(corr_id)
+    result = client.get_task_result(task_id)
     return result if result is not None else "pending"
 
 
 @mcp.tool(
-    name="__cancel_task",
-    description="Cancel a pending or async task on a remote mesh peer. Harness-only (call via a2a_cancel_task).",
+    name="a2a_cancel_task",
+    description="Cancel a pending or async task on a remote A2A mesh peer. "
+    "Requires the A2A mesh (MQTT broker).",
 )
-async def __cancel_task(agent_id: str, corr_id: str) -> str:
+async def a2a_cancel_task(agent_id: str, task_id: str) -> str:
     """Cancel a pending or async task on *agent_id*."""
     client = await _ensure_connected()
-    cancelled = await client.cancel_task(AgentId(agent_id), corr_id)
+    cancelled = await client.cancel_task(AgentId(agent_id), task_id)
     return "cancelled" if cancelled else "not_found"
 
 
 @mcp.tool(
-    name="__list_tasks",
-    description="List A2A task-store entries (filterable by agent/status). Harness-only (call via a2a_list_tasks).",
+    name="a2a_list_tasks",
+    description="List A2A mesh task-store entries (filterable by agent/status). "
+    "Requires the A2A mesh (MQTT broker).",
 )
-async def __list_tasks(agent_id: str = "", status: str = "") -> str:
+async def a2a_list_tasks(agent_id: str = "", status: str = "") -> str:
     """List A2A task-store entries (filterable by agent/status)."""
     client = await _ensure_connected()
     return json.dumps(
@@ -209,21 +218,25 @@ async def __list_tasks(agent_id: str = "", status: str = "") -> str:
 
 
 @mcp.tool(
-    name="__subscribe_task",
-    description="Wait for a remote async task to complete. Harness-only (call via a2a_subscribe_task).",
+    name="a2a_subscribe_task",
+    description="Wait for a remote async task to complete and return its result. "
+    "Requires the A2A mesh (MQTT broker).",
 )
-async def __subscribe_task(corr_id: str, timeout: float = 120.0) -> str:
+async def a2a_subscribe_task(
+    agent_id: str, task_id: str, timeout: float = 120.0,
+) -> str:
     """Wait for an async task to complete and return its result."""
     client = await _ensure_connected()
-    result = await client.subscribe_task(corr_id, timeout=timeout)
+    result = await client.subscribe_task(task_id, timeout=timeout)
     return result if result is not None else "pending"
 
 
 @mcp.tool(
-    name="__agent_card",
-    description="Return a mesh peer's card (agent_id, display_name, status), or 'unknown'. Harness-only (call via a2a_agent_card).",
+    name="a2a_agent_card",
+    description="Return a mesh peer's card (agent_id, display_name, status), or "
+    "'unknown'. Requires the A2A mesh (MQTT broker).",
 )
-async def __agent_card(agent_id: str) -> str:
+async def a2a_agent_card(agent_id: str) -> str:
     """Return a mesh peer's card (agent_id, display_name, status), or 'unknown'."""
     client = await _ensure_connected()
     card = client.get_agent_card(AgentId(agent_id))
@@ -236,10 +249,11 @@ async def __agent_card(agent_id: str) -> str:
 
 
 @mcp.tool(
-    name="__broadcast",
-    description="Send a task to every known A2A mesh peer (fire-and-forget). Harness-only (call via a2a_broadcast).",
+    name="a2a_broadcast",
+    description="Send a task to every known A2A mesh peer (fire-and-forget). "
+    "Requires the A2A mesh (MQTT broker).",
 )
-async def __broadcast(task: str) -> str:
+async def a2a_broadcast(task: str) -> str:
     """Send *task* to every known A2A mesh peer (fire-and-forget)."""
     client = await _ensure_connected()
     corr_ids = await client.broadcast(task)
@@ -273,10 +287,15 @@ async def __a2a_drain_incoming() -> str:
 async def __a2a_dispatch_result(
     reply_to: str, corr_id: str = "", text: str = "",
 ) -> str:
-    """Publish a task result to the requester's result topic (harness only)."""
+    """Publish a task result to the requester's result topic (harness only).
+
+    The payload is the official JSON-RPC response envelope carrying a
+    completed :class:`Task`.
+    """
     client = await _ensure_connected()
+    task = wire.Task.completed(corr_id, text)
     payload = json.dumps(
-        {"correlation_id": corr_id, "result": text}, ensure_ascii=False,
+        wire.task_result_envelope(corr_id, task), ensure_ascii=False,
     )
     await client.publish_message(reply_to, payload, qos=1)
     return "ok"

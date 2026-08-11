@@ -189,20 +189,19 @@ active_model: "deepseek/deepseek-v4-pro",
 | **slife-memdb** | 日记数据库 + 混合搜索 |
 | **slife-wechat** | 双向微信消息 |
 | **slife-memfiles** | 文件柜 + 公开文件分享（Streamable HTTP 插件，`/share` 路由在同一端口；ngrok 隧道由插件自持） |
-| **slife-mqtt** | A2A 网格通道（MQTT；仅在 broker 可达时启动） |
+| **slife-a2a** | A2A 网格通道（MQTT binding；仅在 broker 可达时启动） |
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。
 
 所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_mcp`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
 
-### A2A — 智能体间通信
+### A2A — 智能体间通信（网格）
 
-A2A 薄协议是 **一个工具命名空间（`a2a_`）承载两条传输**，按 agent_id 自动选择：
-- **任务工具**（`a2a_send_task`、`a2a_send_task_async`、`a2a_get_task_result`、`a2a_cancel_task`、`a2a_subscribe_task`）把本地 worker（子智能体）路由到 JSON-RPC/stdin（始终可用），或把其他任何 id 路由到经 `mqtt` 插件（仅 broker 可达时启动）的远端网格对等体。
-- **网格发现**（`a2a_list_agents`、`a2a_list_tasks`、`a2a_agent_card`、`a2a_broadcast`）——仅远端，MQTT 传输。
-- **子智能体生命周期**（`spawn_subagent`、`list_subagents`、`stop_subagent`）——仅本地，无 A2A 前缀。
+A2A 协议（JSON-RPC 操作与 Message/Task/AgentCard 数据形状，镜像官方 a2a-python 参考接口）运行在可插拔的传输 **binding** 上——当前为 MQTT。**`a2a` 插件**承载 LLM 可见工具与 `A2AClient`，仅在 broker 可达时启动：
+- **网格工具**（统一 `a2a_` 前缀）：`a2a_send_task`、`a2a_send_task_async`、`a2a_get_task_result`、`a2a_cancel_task`、`a2a_subscribe_task`、`a2a_list_agents`、`a2a_list_tasks`、`a2a_agent_card`、`a2a_broadcast`。
+- **本地 worker 不是 A2A**：`spawn_subagent`、`list_subagents`、`stop_subagent`、`subagent_send_task`、`subagent_send_task_async`、`subagent_get_task_result`、`subagent_list_tasks`、`subagent_cancel_task`。一个 worker 一次处理一个任务；对忙碌 worker 的同步发送会自动转异步入队（返回 task_id）并告知。
 
-A2A 唯一已实现的传输是 MQTT——把 `transport` 设为任何其他值（例如已被移除的 `"http"` 骨架）会禁用 A2A 并打印警告，而不是导致启动崩溃。所有消息——人类输入、微信、MQTT、子智能体结果——通过单一收件箱队列逐个处理。
+A2A 唯一已实现的传输 binding 是 MQTT——把 `transport` 设为任何其他值会禁用 A2A 并打印警告，而不是导致启动崩溃。所有消息——人类输入、微信、MQTT、子智能体结果——通过单一收件箱队列逐个处理。
 
 ## 键盘快捷键
 
