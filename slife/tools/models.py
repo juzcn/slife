@@ -2,7 +2,7 @@
 
 model_list            — list all configured models grouped by provider
 model_set              — add or update a model (creates provider if new)
-model_remove           — remove a model by ref; auto-switches if it was active
+model_remove           — remove a model by ref (cannot remove the active model)
 model_switch           — switch the active model (instant, no restart)
 """
 
@@ -36,16 +36,19 @@ def _providers_section(raw: dict) -> dict:
     return providers
 
 
-def _find_first_ref(providers: dict) -> str | None:
-    """Find the first model ref across all providers."""
-    for pid, pcfg in providers.items():
-        if isinstance(pcfg, dict):
-            for m in pcfg.get("models", []):
-                if isinstance(m, dict):
-                    mid = m.get("model", m.get("id", ""))
-                    if mid:
-                        return f"{pid}/{mid}"
-    return None
+def _sync_in_memory_models(config, raw: dict) -> None:
+    """Rebuild the live Config's model registry from *raw* — as if the
+    config file were re-read.
+
+    ``model_set`` / ``model_remove`` persist to disk; this keeps the
+    in-memory ``config.models`` in sync so additions/removals take effect
+    in the running session without a restart.  No-op when there is no live
+    Config (headless, or tools constructed directly in tests).
+    """
+    if config is None:
+        return
+    from slife.config import Config
+    config.models, _ = Config._parse_models_section(raw.get(_MODELS_KEY, {}))
 
 
 # ── List Models ──────────────────────────────────────────────────────
@@ -119,7 +122,8 @@ class SetModelTool(_ConfigPathMixin, Tool):
         "Add/update an LLM model in the configuration (upsert, idempotent — add "
         "+ update in one call). If the provider doesn't exist, it will be created. "
         "Supported api values: openai-completions, "
-        "anthropic-messages, openai-responses."
+        "anthropic-messages, openai-responses. "
+        "Takes effect immediately — the running session's model registry is synced."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -169,6 +173,17 @@ class SetModelTool(_ConfigPathMixin, Tool):
         },
         "required": ["provider", "model", "name"],
     }
+
+    def __init__(self, config_path=None, config=None):
+        super().__init__(config_path=config_path)
+        self._config: "Config | None" = config
+
+    @classmethod
+    def from_config(cls, cfg: dict, config: "Config | None", ctx=None):  # noqa: ARG003
+        tool = cls(config_path=config._path if config else None, config=config)
+        if ctx is not None:
+            object.__setattr__(tool, "_ctx", ctx)
+        return tool
 
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
@@ -234,6 +249,9 @@ class SetModelTool(_ConfigPathMixin, Tool):
         write_config(self._config_path, raw)
         ref = f"{pid}/{model_id}"
         action = "Updated" if replaced else "Added"
+        # Keep the running session's model registry in sync (as-if re-read),
+        # so the new/updated model is immediately available to model_switch.
+        _sync_in_memory_models(self._config, raw)
         logger.info("model_%s ref=%s", action.lower(), ref)
         return f"[OK] {action} model `{ref}` ({name})"
 
@@ -248,8 +266,9 @@ class RemoveModelTool(_ConfigPathMixin, Tool):
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
         "Remove an LLM model from the configuration by its ref "
-        "(e.g. 'bailian/qwen3.8-max').  If it's the active model, "
-        "you will need to switch to another model afterwards."
+        "(e.g. 'bailian/qwen3.8-max').  Takes effect immediately — the running "
+        "session's model registry is synced.  Cannot remove the active model; "
+        "switch to another model first (model_switch)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -261,6 +280,17 @@ class RemoveModelTool(_ConfigPathMixin, Tool):
         },
         "required": ["ref"],
     }
+
+    def __init__(self, config_path=None, config=None):
+        super().__init__(config_path=config_path)
+        self._config: "Config | None" = config
+
+    @classmethod
+    def from_config(cls, cfg: dict, config: "Config | None", ctx=None):  # noqa: ARG003
+        tool = cls(config_path=config._path if config else None, config=config)
+        if ctx is not None:
+            object.__setattr__(tool, "_ctx", ctx)
+        return tool
 
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
@@ -284,6 +314,13 @@ class RemoveModelTool(_ConfigPathMixin, Tool):
         if not isinstance(models, list):
             return f"Error: no models in provider '{pid}'."
 
+        # The active model cannot be removed — switch away first.
+        if raw.get(_ACTIVE_KEY, "") == ref:
+            return (
+                f"Error: cannot remove the active model `{ref}`. "
+                f"Switch to another model first with model_switch, then remove it."
+            )
+
         removed = False
         for i, m in enumerate(models):
             if isinstance(m, dict) and (m.get("model") == model_id or m.get("id") == model_id):
@@ -298,27 +335,9 @@ class RemoveModelTool(_ConfigPathMixin, Tool):
         if not models:
             del providers[pid]
 
-        # If removed model was active, warn
-        active = raw.get(_ACTIVE_KEY, "")
-        if active == ref:
-            remaining = _find_first_ref(providers)
-            if remaining:
-                raw[_ACTIVE_KEY] = remaining
-                write_config(self._config_path, raw)
-                logger.info("model_removed_active ref=%s new_active=%s", ref, remaining)
-                return (
-                    f"[OK] Removed `{ref}` (was active). "
-                    f"Switched active model to `{remaining}`."
-                )
-            else:
-                raw[_ACTIVE_KEY] = ""
-                write_config(self._config_path, raw)
-                return (
-                    f"[OK] Removed `{ref}` (was active). No models remaining. "
-                    f"Add a model with model_set before continuing."
-                )
-
         write_config(self._config_path, raw)
+        # Keep the running session's registry in sync (as-if re-read).
+        _sync_in_memory_models(self._config, raw)
         logger.info("model_removed ref=%s", ref)
         return f"[OK] Removed `{ref}`."
 

@@ -153,18 +153,21 @@ class TestRemoveModelTool:
         assert any(m["model"] == "test-model" for m in models)
 
     @pytest.mark.asyncio
-    async def test_remove_active_model_auto_switches(self, tmp_path):
+    async def test_cannot_remove_active_model(self, tmp_path):
         p = _make_path(tmp_path)
         tool = RemoveModelTool(config_path=p)
         result = await tool.execute(ref="test/test-model")
-        assert "Switched" in result
-        assert "test/test-model-2" in result
+        assert "cannot remove the active model" in result
 
+        # model + active unchanged
         raw = _read_config(p)
-        assert raw["active_model"] == "test/test-model-2"
+        assert raw["active_model"] == "test/test-model"
+        models = raw["models"]["providers"]["test"]["models"]
+        assert any(m["model"] == "test-model" for m in models)
 
     @pytest.mark.asyncio
-    async def test_remove_last_model_clears_provider(self, tmp_path):
+    async def test_cannot_remove_only_model(self, tmp_path):
+        """The only model is also the active one → refused."""
         p = tmp_path / "single.json5"
         _write_config(p, {
             "models": {"providers": {"only": {"api_key": "k", "models": [{"model": "one", "name": "One"}]}}},
@@ -172,7 +175,11 @@ class TestRemoveModelTool:
         })
         tool = RemoveModelTool(config_path=p)
         result = await tool.execute(ref="only/one")
-        assert "No models remaining" in result
+        assert "cannot remove the active model" in result
+
+        raw = _read_config(p)
+        assert raw["active_model"] == "only/one"
+        assert any(m["model"] == "one" for m in raw["models"]["providers"]["only"]["models"])
 
     @pytest.mark.asyncio
     async def test_invalid_ref(self, tmp_path):
@@ -231,3 +238,78 @@ class TestSwitchModelTool:
         tool = SwitchModelTool(config_path=p)
         result = await tool.execute(ref="badref")
         assert "Error" in result
+
+
+# ── In-memory registry sync ───────────────────────────────────────────
+
+
+class TestModelRegistrySync:
+    """model_set / model_remove persist to disk AND sync the live Config's
+    model registry — as if the config were re-read (takes effect without
+    a restart)."""
+
+    @staticmethod
+    def _live_config(path: Path):
+        from slife.config import Config
+        return Config.from_json5(path)
+
+    @pytest.mark.asyncio
+    async def test_model_set_adds_to_live_registry(self, tmp_path):
+        p = _make_path(tmp_path)
+        config = self._live_config(p)
+        tool = SetModelTool(config_path=p, config=config)
+
+        result = await tool.execute(
+            provider="test", model="new-model", name="New Model",
+            reasoning=True, context_window=100000,
+        )
+
+        assert "new-model" in result
+        # persisted to file
+        raw = _read_config(p)
+        models = raw["models"]["providers"]["test"]["models"]
+        assert any(m.get("model") == "new-model" for m in models)
+        # and injected into the live registry
+        assert any(m.ref == "test/new-model" for m in config.models)
+        # model_set never changes the active model — a new model stays inactive
+        assert config.active_model_ref == "test/test-model"
+        assert config.active_model_ref != "test/new-model"
+
+    @pytest.mark.asyncio
+    async def test_model_set_without_live_config_persists_only(self, tmp_path):
+        """No live Config (tool built directly) → file persist still works."""
+        p = _make_path(tmp_path)
+        tool = SetModelTool(config_path=p)  # config=None
+
+        result = await tool.execute(
+            provider="test", model="new-model", name="New Model",
+        )
+        assert "new-model" in result
+        raw = _read_config(p)
+        models = raw["models"]["providers"]["test"]["models"]
+        assert any(m.get("model") == "new-model" for m in models)
+
+    @pytest.mark.asyncio
+    async def test_model_remove_drops_from_live_registry(self, tmp_path):
+        p = _make_path(tmp_path)
+        config = self._live_config(p)
+        tool = RemoveModelTool(config_path=p, config=config)
+
+        result = await tool.execute(ref="test/test-model-2")
+
+        assert "test-model-2" in result
+        assert config.active_model_ref == "test/test-model"  # active unchanged
+        assert all(m.ref != "test/test-model-2" for m in config.models)
+
+    @pytest.mark.asyncio
+    async def test_model_remove_active_refused_live(self, tmp_path):
+        """Removing the active model is refused; live registry untouched."""
+        p = _make_path(tmp_path)
+        config = self._live_config(p)
+        tool = RemoveModelTool(config_path=p, config=config)
+
+        result = await tool.execute(ref="test/test-model")
+
+        assert "cannot remove the active model" in result
+        assert config.active_model_ref == "test/test-model"  # unchanged
+        assert any(m.ref == "test/test-model" for m in config.models)  # still present
