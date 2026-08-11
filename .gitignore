@@ -10,6 +10,9 @@ wechat_*.json5
 # Runtime logs
 logs/
 
+# User-saved files (memfiles plugin storage — per-agent runtime data)
+*.files/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

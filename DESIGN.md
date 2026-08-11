@@ -269,12 +269,14 @@ Five built-in plugins run as independent child processes. Communication is via *
 ### The Plugin Contract
 
 1. Bind a free port: `bind_free_port()` pre-binds `127.0.0.1:0` and keeps the socket — no race between port discovery and server start
-2. Signal the parent: `signal_port(port)` writes `{"port": N}` to stdout and closes it
+2. Signal the parent **once ready**: `run_plugin_server` wraps the server's lifespan and emits `signal_port(port)` (`{"port": N}` on stdout, then closes stdout) only **after** the app is ready to serve MCP — i.e. after the plugin's lifespan (if any) completes. The signal means *"ready to serve MCP on this port"*, aligning with the MCP startup handshake: the parent's first `initialize` always lands on a ready server. Plugins must **not** signal early themselves
 3. Start FastMCP on Streamable HTTP with the pre-bound socket
 4. Define `@mcp.tool` functions; optionally serve plain-HTTP endpoints on the same port via `@mcp.custom_route(path, methods=[...])` (e.g. memfiles `GET /share/{token}`)
 5. Be importable: `python -m <module>.server`
 
-No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s timeout; initial client connection retries 30× at 0.1 s.
+No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. memfiles' ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal.
+
+The MCP client keeps bounded retry (6 attempts, 0.5 s apart, each attempt time-boxed at 10 s including transport setup) as **defense-in-depth**: a plugin that signals early (violating the contract) still loads instead of hanging.
 
 ### Watchdog (Auto-Restart)
 

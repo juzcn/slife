@@ -23,6 +23,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import re
@@ -52,7 +53,6 @@ from slife.server_utils import (
     create_plugin_server,
     run_plugin_server,
     shutdown_server_logging,
-    signal_port,
 )
 
 # ── Own port — bound by main() so the tunnel can forward to it ────────
@@ -70,13 +70,23 @@ async def _memfiles_lifespan(_app):
     plugin connects the mesh eagerly).  A failed start is tolerated — the
     tunnel retries with its own bounded backoff, and the share tools fall
     back to an on-demand start.  On shutdown the tunnel is disconnected.
+
+    The tunnel is started on a background task and never awaited here, so the
+    app serves immediately and the plugin loads fast (the port signal fires as
+    soon as the app is ready; the tunnel keeps coming up in the background).
+    Blocking app startup on the ~2s ngrok session creation would only delay
+    loading — under the plugin loading contract the signal is deferred until
+    the app is ready either way, so this is a startup-speed optimization.
     """
     if _PLUGIN_PORT:
-        try:
-            from slife.threads import run_daemon
-            await run_daemon(start_tunnel, _PLUGIN_PORT, name="ngrok-tunnel")
-        except Exception as e:
-            logger.warning("memfiles_tunnel_eager_failed err=%s", e)
+        async def _eager_tunnel() -> None:
+            try:
+                from slife.threads import run_daemon
+                await run_daemon(start_tunnel, _PLUGIN_PORT, name="ngrok-tunnel")
+            except Exception as e:
+                logger.warning("memfiles_tunnel_eager_failed err=%s", e)
+
+        asyncio.create_task(_eager_tunnel())
         # Background monitor — one-shot retry if the eager start failed.
         start_monitor(_PLUGIN_PORT)
     try:
@@ -548,8 +558,10 @@ def main() -> None:
     """Run the memfiles plugin on Streamable HTTP.
 
     Binds its own port first (the plugin owns the ngrok tunnel and must
-    know its port to forward to), signals it to the parent, then serves
-    MCP on ``/mcp`` and file bytes on ``/share/{file_id}`` — same port.
+    know its port to forward to), then serves MCP on ``/mcp`` and file
+    bytes on ``/share/{file_id}`` — same port.  ``run_plugin_server`` emits
+    the port signal to the parent once the app is ready (the plugin loading
+    contract) — this plugin does not signal early.
     """
     import os
 
@@ -557,7 +569,6 @@ def main() -> None:
     sock, port = bind_free_port()
     _PLUGIN_PORT = port
     os.environ["SLIFE_MEMFILES_PORT"] = str(port)
-    signal_port(port)
 
     logger.info("memfiles_start log=%s port=%s", _log_path, port)
 

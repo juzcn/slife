@@ -50,6 +50,29 @@ class TestMCPClientDisconnect:
         await client.disconnect()
         assert not client.is_connected
 
+    @pytest.mark.asyncio
+    async def test_cleanup_bounded_when_aclose_hangs(self):
+        """_cleanup must return promptly even if the SDK transport's aclose
+        never resolves — the connect retry loop depends on it (a request hung
+        against a not-yet-ready server can keep teardown from completing)."""
+        client = MCPClient()
+        hang = asyncio.Event()
+
+        async def _hang_close():
+            await hang.wait()
+
+        stack = MagicMock()
+        stack.aclose = _hang_close
+        client._exit_stack = stack
+        client._session = object()
+
+        with patch("slife.mcp.client._CLEANUP_TIMEOUT", 0.2):
+            await client._cleanup()
+
+        # The hung stack was abandoned; state cleared for the next attempt.
+        assert client._exit_stack is None
+        assert client._session is None
+
 
 class TestMCPClientEnsureConnected:
     """Tests for _ensure_connected."""
@@ -263,3 +286,57 @@ class TestMCPClientConnect:
                     await client.connect("http://127.0.0.1:1234/mcp")
 
                 assert client.is_connected is True
+
+    @pytest.mark.asyncio
+    async def test_connect_hanging_transport_enter_is_bounded_and_retried(self):
+        """A transport ``__aenter__`` that never resolves must be bounded by the
+        attempt timeout and retried, not left pending forever.
+
+        Regression: memfiles' eager ngrok tunnel delayed the app past the port
+        signal; under load the ``streamable_http_client`` enter could hang, and
+        only ``initialize()`` was wrapped in a timeout — so ``connect()`` (and
+        the plugin spawn) hung indefinitely.
+        """
+        client = MCPClient()
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        hang_forever = asyncio.Event()
+
+        async def _hang_enter(*_a):
+            await hang_forever.wait()
+
+        hang_ctx = MagicMock()
+        hang_ctx.__aenter__ = _hang_enter
+        hang_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        def _make_ctx():
+            mock_read = MagicMock()
+            mock_write = MagicMock()
+            mock_info = MagicMock()
+            mock_ctx = MagicMock()
+            mock_ctx.__aenter__ = AsyncMock(
+                return_value=(mock_read, mock_write, mock_info),
+            )
+            mock_ctx.__aexit__ = AsyncMock(return_value=None)
+            return mock_ctx
+
+        with patch("slife.mcp.client.streamable_http_client") as mock_transport:
+            mock_transport.side_effect = [hang_ctx, _make_ctx()]
+
+            with patch("slife.mcp.client.ClientSession") as mock_sc:
+                mock_sc_ctx = MagicMock()
+                mock_sc_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+                mock_sc_ctx.__aexit__ = AsyncMock(return_value=None)
+                mock_sc.return_value = mock_sc_ctx
+
+                with (
+                    patch("slife.mcp.client._CONNECT_ATTEMPT_TIMEOUT", 0.2),
+                    patch("slife.mcp.client._CONNECT_RETRY_DELAY", 0.01),
+                    patch("slife.mcp.client.asyncio.sleep", AsyncMock()),
+                ):
+                    await client.connect("http://127.0.0.1:1234/mcp")
+
+                # The hung attempt timed out, then the next attempt succeeded.
+                assert client.is_connected is True
+                assert mock_transport.call_count == 2

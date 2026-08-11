@@ -3,14 +3,23 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
+import asyncio
 import logging
 import os
+import socket
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
-from slife.server_utils import setup_server_logging, shutdown_server_logging
+import slife.server_utils as server_utils
+from slife.server_utils import (
+    create_plugin_server,
+    run_plugin_server,
+    setup_server_logging,
+    shutdown_server_logging,
+)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────
@@ -193,3 +202,88 @@ class TestShutdownServerLogging:
 
         shutdown_server_logging(extra_logger_names=("test_extra_cleanup",))
         assert len(child.handlers) == 0
+
+
+# ── Plugin loading contract: signal AFTER the app is ready ──────────────
+
+
+class TestPluginReadySignal:
+    """The port signal means *ready to serve MCP* — emitted only after the
+    server's lifespan completes (slow init such as ngrok / MQTT), so the
+    parent's first ``initialize`` always lands on a ready server."""
+
+    def test_wrapped_lifespan_signals_after_inner_lifespan(self):
+        """_ready_callback fires after the inner lifespan (slow init) enters,
+        before the app serves."""
+        order = []
+
+        @asynccontextmanager
+        async def inner(app):
+            order.append("inner-enter")
+            yield
+            order.append("inner-exit")
+
+        with patch("slife.server_utils._ready_callback",
+                   lambda: order.append("signal")):
+            created, _, _ = create_plugin_server(
+                "slife-test", "test", lifespan=inner,
+            )
+
+            async def _serve():
+                async with created._lifespan(object()):
+                    order.append("serving")
+
+            asyncio.run(_serve())
+
+        assert order == ["inner-enter", "signal", "serving", "inner-exit"]
+
+    def test_wrapped_lifespan_signals_without_inner(self):
+        """A plugin with no lifespan still signals (no slow work to wait for)."""
+        order = []
+
+        with patch("slife.server_utils._ready_callback",
+                   lambda: order.append("signal")):
+            created, _, _ = create_plugin_server("slife-test", "test")
+
+            async def _serve():
+                async with created._lifespan(object()):
+                    order.append("serving")
+
+            asyncio.run(_serve())
+
+        assert order == ["signal", "serving"]
+
+    def test_run_plugin_server_signals_port_via_ready_callback(self):
+        """run_plugin_server wires _ready_callback to signal_port(port); the
+        callback is cleared after the server shuts down."""
+        mock_server = MagicMock()
+        captured = {}
+
+        def fake_run(**kwargs):
+            captured["cb"] = server_utils._ready_callback
+
+        mock_server.run.side_effect = fake_run
+        with patch("slife.server_utils.signal_port") as mock_signal:
+            run_plugin_server(mock_server, port=4321)
+            captured["cb"]()
+            mock_signal.assert_called_once_with(4321)
+        assert server_utils._ready_callback is None
+
+    def test_run_plugin_server_sockets_branch_signals_socket_port(self):
+        """A pre-bound socket (memfiles) derives the port from the socket."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        mock_server = MagicMock()
+        captured = {}
+        mock_server.run.side_effect = lambda **kw: captured.update(
+            cb=server_utils._ready_callback,
+        )
+        try:
+            with patch("slife.server_utils.signal_port") as mock_signal:
+                run_plugin_server(mock_server, sockets=[sock])
+                captured["cb"]()
+                mock_signal.assert_called_once_with(port)
+        finally:
+            sock.close()
+        assert server_utils._ready_callback is None

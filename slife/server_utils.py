@@ -26,8 +26,11 @@ Lazy-init rule (CRITICAL)
 
 Entry point
   :func:`run_plugin_server(mcp) <.run_plugin_server>` is the single,
-  one-line call that starts the server.  It handles port binding, parent
-  signalling, and FastMCP startup correctly.
+  one-line call that starts the server.  It handles port binding, FastMCP
+  startup, and — after the app is ready (its lifespan completed) — the
+  parent port signal.  The signal means *"ready to serve MCP"*, so the
+  harness's first ``initialize`` always lands on a ready server (see
+  :func:`signal_port`).
 
 Tool registration
   The harness connects to the plugin via Streamable HTTP, calls
@@ -89,6 +92,7 @@ import logging
 import os
 import socket
 import sys
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -215,12 +219,23 @@ def signal_port(port: int) -> None:
     """Write the port to stdout as a JSON line and close stdout.
 
     The parent ``MCPWrapperProcess`` reads this line to discover the
-    dynamically-assigned port before connecting via Streamable HTTP.
+    dynamically-assigned port, then connects via Streamable HTTP.
+
+    Per the plugin loading contract, the signal is emitted only AFTER the
+    MCP application is ready to serve (its lifespan has completed) — so the
+    parent's first ``initialize`` handshake always succeeds.  The signal
+    means *"ready to serve MCP on this port"*, not just *"port allocated"*.
     """
     line = json.dumps({"port": port}, ensure_ascii=False)
     sys.stdout.buffer.write((line + "\n").encode("utf-8"))
     sys.stdout.buffer.flush()
     sys.stdout.close()
+
+
+# Set by ``run_plugin_server`` just before serving; invoked by the wrapped
+# lifespan in ``create_plugin_server`` once the app is ready.  Module-level is
+# safe: every plugin runs in its own process.
+_ready_callback: "Callable[[], None] | None" = None
 
 
 # ── Plugin factory & runner ────────────────────────────────────────────
@@ -261,7 +276,8 @@ def create_plugin_server(
         lifespan: Optional ``@asynccontextmanager`` startup/shutdown hook
             (FastMCP ``lifespan=`` argument).  Runs on the server's event
             loop — enter before serving, exit on shutdown.  Defaults to
-            ``None`` (no-op).
+            ``None`` (no-op).  The hook may do slow initialization (network,
+            DB); the port signal is deferred until it completes.
 
     Returns:
         ``(mcp, log_path, logger)`` — the FastMCP instance ready for
@@ -276,7 +292,28 @@ def create_plugin_server(
 
     log_path = setup_server_logging(service_suffix)
     plogger = logging.getLogger(logger_name)
-    server = FastMCP(name, instructions=instructions, lifespan=lifespan)
+
+    # Wrap the plugin's lifespan so the port signal is emitted only after the
+    # app is ready to serve MCP (the contract: signal = "ready", see
+    # ``signal_port``).  The parent connects the moment it reads the signal,
+    # so its first ``initialize`` must always succeed — signalling before the
+    # lifespan finished (e.g. ngrok / MQTT startup) raced the handshake and
+    # hung the plugin load.
+    @asynccontextmanager
+    async def _ready_wrapped(app):
+        if lifespan is not None:
+            async with lifespan(app):
+                cb = _ready_callback
+                if cb is not None:
+                    cb()
+                yield
+        else:
+            cb = _ready_callback
+            if cb is not None:
+                cb()
+            yield
+
+    server = FastMCP(name, instructions=instructions, lifespan=_ready_wrapped)
 
     return server, log_path, plogger
 
@@ -307,12 +344,27 @@ def run_plugin_server(
             art banner is suppressed in normal use.
         sockets: Optional pre-bound sockets to serve on.  A plugin that
             must know its own port *before* serving (e.g. memfiles, which
-            owns the ngrok tunnel) binds and signals the port itself in
-            ``main()``, then passes the socket here to skip re-binding.
+            owns the ngrok tunnel) binds it itself in ``main()`` and passes
+            the socket here to skip re-binding.
 
     This call blocks until the server shuts down.  Set up any module-level
     global state (e.g. ``_db_path``) BEFORE calling.
+
+    The port signal (``{"port": N}`` on stdout) is emitted by the server's
+    lifespan once the app is ready to serve MCP — not here, before startup —
+    so the parent's connection handshake always lands on a ready server
+    (the plugin loading contract, see ``create_plugin_server`` / ``signal_port``).
     """
+    global _ready_callback
+
+    # Resolve the serving port up front so the ready callback can signal it.
+    if sockets:
+        port = sockets[0].getsockname()[1]
+    elif not port:
+        sock, port = bind_free_port()
+        sockets = [sock]
+
+    _ready_callback = lambda: signal_port(port)
     try:
         if sockets:
             logger.info("plugin_ready transport=streamable-http sockets=%d",
@@ -323,7 +375,7 @@ def run_plugin_server(
                 json_response=True,
                 uvicorn_config={"log_config": None},
             )
-        elif port:
+        else:
             logger.info("plugin_ready transport=streamable-http port=%s", port)
             mcp_server.run(
                 transport="streamable-http", host=host, port=port,
@@ -331,15 +383,6 @@ def run_plugin_server(
                 json_response=True,
                 uvicorn_config={"log_config": None},
             )
-        else:
-            sock, port = bind_free_port()
-            logger.info("plugin_ready transport=streamable-http port=%s", port)
-            signal_port(port)
-            mcp_server.run(
-                transport="streamable-http", host=host, port=port, sockets=[sock],
-                show_banner=show_banner,
-                json_response=True,
-                uvicorn_config={"log_config": None},
-            )
     finally:
+        _ready_callback = None
         logger.info("plugin_shutdown port=%s", port)

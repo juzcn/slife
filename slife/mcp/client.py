@@ -18,11 +18,21 @@ from mcp.client.streamable_http import streamable_http_client
 
 logger = logging.getLogger(__name__)
 
-_MCP_INIT_TIMEOUT = 10.0
-# Retry window: server prints port signal BEFORE uvicorn starts listening,
-# so the client may need a few attempts before the socket accepts.
-_CONNECT_RETRY_DELAY = 0.1
-_CONNECT_RETRY_ATTEMPTS = 30  # 3 seconds total
+# Bounds one full connect attempt — transport setup (the SDK's
+# streamable_http_client context) AND the initialize handshake.  Previously
+# only initialize() was wrapped, so a hang in transport setup (e.g. memfiles'
+# eager ngrok tunnel delaying the app past the port signal) left the spawn
+# pending forever.
+_CONNECT_ATTEMPT_TIMEOUT = 10.0
+# Max time to wait for the SDK transport to tear down after a failed attempt.
+# A request hung against a not-yet-ready server may keep aclose() from
+# returning promptly; the connect retry must progress rather than block on it.
+_CLEANUP_TIMEOUT = 2.0
+# Retry window: server prints port signal BEFORE uvicorn starts listening
+# (and memfiles' eager ngrok tunnel can delay readiness by another ~2s), so
+# the client may need a few attempts before the socket accepts and responds.
+_CONNECT_RETRY_DELAY = 0.5
+_CONNECT_RETRY_ATTEMPTS = 6  # covers ~a few seconds of slow-start plugins
 
 
 # ── Binary → temp file helper ──────────────────────────────────────
@@ -68,6 +78,28 @@ def _try_save_image_bytes(data: bytes) -> str | None:
         return None
 
 
+def _is_retryable_connect_error(exc: BaseException) -> bool:
+    """True if *exc* is a transient connection/transport failure worth retrying.
+
+    The MCP SDK surfaces connection failures either directly or wrapped in an
+    ``ExceptionGroup``/``BaseExceptionGroup`` during task-group teardown, so we
+    look inside groups.  httpx transport/timeout errors (the SDK's HTTP layer)
+    are retryable too — the plugin may still be starting up after signaling its
+    port.
+    """
+    if isinstance(exc, (ConnectionError, OSError, asyncio.TimeoutError)):
+        return True
+    try:
+        import httpx
+    except ImportError:
+        httpx = None
+    if httpx is not None and isinstance(exc, httpx.HTTPError):
+        return True
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_is_retryable_connect_error(e) for e in exc.exceptions)
+    return False
+
+
 class MCPClient:
     """MCP client for connecting to Slife plugin servers via Streamable HTTP."""
 
@@ -97,35 +129,34 @@ class MCPClient:
         attempt: int = -1
         for attempt in range(_CONNECT_RETRY_ATTEMPTS):
             try:
-                self._exit_stack = AsyncExitStack()
-                read_stream, write_stream, _ = await self._exit_stack.enter_async_context(
-                    streamable_http_client(url),
-                )
-                self._session = await self._exit_stack.enter_async_context(
-                    ClientSession(read_stream, write_stream),
-                )
-                await asyncio.wait_for(
-                    self._session.initialize(), timeout=_MCP_INIT_TIMEOUT,
-                )
+                # Bound the WHOLE attempt — transport setup included.  A
+                # plugin whose app isn't serving yet (memfiles' eager ngrok
+                # tunnel delays lifespan startup) would otherwise leave the
+                # streamable_http_client enter pending forever, with no
+                # timeout to surface it into the retry loop.
+                async with asyncio.timeout(_CONNECT_ATTEMPT_TIMEOUT):
+                    self._exit_stack = AsyncExitStack()
+                    read_stream, write_stream, _ = await self._exit_stack.enter_async_context(
+                        streamable_http_client(url),
+                    )
+                    self._session = await self._exit_stack.enter_async_context(
+                        ClientSession(read_stream, write_stream),
+                    )
+                    await self._session.initialize()
                 break  # success
-            except (
-                ConnectionError,
-                OSError,
-                asyncio.TimeoutError,
-            ) as e:
-                last_err = e
-                await self._cleanup()
-                if attempt < _CONNECT_RETRY_ATTEMPTS - 1:
-                    await asyncio.sleep(_CONNECT_RETRY_DELAY)
             except asyncio.CancelledError:
                 # Cancellation is a control-flow signal, not a retryable
                 # transport error — clean up and propagate so the caller's
                 # wait_for can actually cancel the connect (REVIEW §1-6).
                 await self._cleanup()
                 raise
-            except Exception:
+            except Exception as e:
+                last_err = e
                 await self._cleanup()
-                raise
+                if not _is_retryable_connect_error(e):
+                    raise
+                if attempt < _CONNECT_RETRY_ATTEMPTS - 1:
+                    await asyncio.sleep(_CONNECT_RETRY_DELAY)
 
         if not self._session:
             raise ConnectionError(
@@ -161,7 +192,16 @@ class MCPClient:
         """
         if self._exit_stack:
             try:
-                await self._exit_stack.aclose()
+                # Bounded teardown: a request hung against a not-yet-ready
+                # server can keep the SDK transport's aclose from returning
+                # promptly.  Time it out so the connect retry loop always
+                # makes progress; the abandoned stack is reclaimed by GC and
+                # the next attempt builds a fresh one.
+                await asyncio.wait_for(
+                    self._exit_stack.aclose(), timeout=_CLEANUP_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.debug("cleanup_aclose_timeout abandoning stack")
             except RuntimeError as e:
                 if "cancel scope" in str(e):
                     logger.debug("cleanup_cancel_scope_suppressed err=%s", e)
