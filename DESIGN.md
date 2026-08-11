@@ -187,7 +187,6 @@ Runtime model management via native tools — no config editing needed:
 | `model_set` | Add/update a model (creates provider if new) |
 | `model_remove` | Remove by ref; auto-switches if it was active |
 | `model_switch` | Switch active model by ref — persists to config and rebuilds the client live |
-| `switch_to_nvidia_free` | In-memory-only switch to a free NVIDIA NIM model via the nvidia-nim MCP server (calls its `list_models` / `get_model_info` tools, verified against nvidia-nim-mcp v2.1.2) |
 
 Model switches fire callbacks that rebuild the LLM client, update loop parameters (vision, context window, modalities), and re-render the system prompt.
 
@@ -211,16 +210,16 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 
 | Category | File | Tools |
 |----------|------|-------|
-| System | `system.py` | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
+| System | `system.py` | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_a2a`, `check_watchdog` |
 | Display | `display.py` | `show_image`, `notify_user` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill.py` | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
-| CLI | `cli.py` | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled`, `cli_check_installed` |
+| CLI | `cli.py` | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api.py` | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | A2A | `a2a` plugin | one uniform `a2a_` prefix (hosted in the plugin, mesh-only) — `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | Subagent | `subagent.py` | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` (no prefix; local workers, not A2A) |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
+| Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `vision.py` | `include_image` (native — injects image blocks into the conversation; gated on a vision-capable model) |
 | Harness | `harness.py` | `_sys_note`, `_sys_trim` (visible-but-reserved, see above) |
@@ -597,7 +596,7 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 
 ## Health Checks
 
-Health checks fall into two categories. `system_health` runs all of them together, and every dynamic check is also exposed as a standalone native tool (`check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog`) so the LLM can probe a single subsystem directly without the full report. `check_mcp` additionally takes an optional `server` argument (default: all) to diagnose just one external server.
+Health checks fall into two categories. `system_health` runs all of them together, and every dynamic check is also exposed as a standalone native tool (`check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_a2a`, `check_watchdog`) so the LLM can probe a single subsystem directly without the full report. `check_mcp` additionally takes an optional `server` argument (default: all) to diagnose just one external server.
 
 **Static startup checks** — `check_external_deps()` probes system tooling once at startup; results are recorded via `slife.health.record()` and appear in `system_health`'s report:
 
@@ -616,6 +615,7 @@ Health checks fall into two categories. `system_health` runs all of them togethe
 | `check_wechat` | Login status, session age, QR expiry | Application state (wechat plugin) |
 | `check_memfiles` | File-sharing tunnel online? ngrok URL? | Application state (memfiles plugin) |
 | `check_mcp` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, hints) | Application state (MCP wrapper + external servers) |
+| `check_a2a` | A2A mesh connection + peer status (via the a2a plugin's `__a2a_status` harness tool) | Application state (a2a plugin) |
 | `check_watchdog` | Auto-restart status per plugin, deduplicated from health records (latest record per plugin) | Process layer |
 
 The watchdog only monitors processes — it does not introspect application state. Each plugin owns its own runtime health check. Missing deps are recorded as warnings — Slife still starts; affected MCP servers won't work.

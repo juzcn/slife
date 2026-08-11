@@ -122,19 +122,19 @@ Switch at runtime: `model_list` → `model_switch(ref="bailian/qwen3.8-max")`.
 
 All unified as OpenAI function definitions. The LLM sees no difference between native, plugin, and external MCP tools.
 
-**52 native tools in 14 categories** — auto-discovered from `slife/tools/` (up to 50 LLM-visible + 2 harness; `include_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
+**51 native tools in 14 categories** — auto-discovered from `slife/tools/` (up to 49 LLM-visible + 2 harness; `include_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
 
 | Category | Tools |
 |----------|-------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_a2a`, `check_watchdog` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
-| CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled`, `cli_check_installed` |
+| CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | A2A | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
+| Models | `model_list`, `model_set`, `model_remove`, `model_switch` |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `include_image` (injects a local image or URL into the conversation) |
 | Display | `show_image`, `notify_user` |
@@ -195,7 +195,7 @@ Five built-in plugins as independent child processes:
 
 External MCP servers configured in `slife.json5` → `mcp.servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled).
 
-All plugins — built-in and auto-discovered third-party alike — run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
+All plugins — built-in and auto-discovered third-party alike — run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_a2a`, `check_watchdog` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
 
 ### A2A — Agent-to-Agent (mesh)
 

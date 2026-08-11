@@ -6,7 +6,8 @@ Tools:
     check_watchdog           — plugin watchdog (auto-restart) status
     system_health            — orchestrate checks + startup records
     list_tools               — enumerate native vs MCP-proxied tools (with category filter)
-    check_mcp        — MCP server connection status
+    check_mcp                — MCP server connection status
+    check_a2a                — A2A mesh (MQTT) connection + peer status
 
 OS name, architecture, Python path/version, current shell, CWD,
 environment mode, and package manager are in the system prompt.
@@ -451,6 +452,69 @@ class CheckMcpTool(Tool):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# check_a2a
+# ═══════════════════════════════════════════════════════════════════════
+
+async def check_a2a(client=None) -> list[dict]:
+    """Return A2A mesh status (queried from the a2a plugin).
+
+    The A2A mesh transport (MQTT binding) lives inside the a2a plugin
+    process, so this check asks the plugin's harness tool ``__a2a_status``
+    through its MCP client (from ``ToolContext.a2a_mcp_client``).  When the
+    mesh is unreachable — mosquitto not running (no active MQTT port), or
+    the connection dropped — a warning is reported.
+    """
+    try:
+        if client is None:
+            return [{"component": "a2a", "level": "warning", "key": "status",
+                     "value": "unavailable",
+                     "hint": "没有活跃的mqtt端口，a2a不可用。启动 mosquitto 后重启 slife 即可启用 A2A 网格。"}]
+
+        raw = await client.call_tool("__a2a_status")
+        data = json.loads(raw)
+
+        if not data.get("connected"):
+            broker = data.get("broker", "")
+            where = f" (broker {broker})" if broker else ""
+            return [{"component": "a2a", "level": "warning", "key": "status",
+                     "value": "unavailable",
+                     "hint": f"没有活跃的mqtt端口，a2a不可用{where}。启动 mosquitto 后插件会自动重连。"}]
+
+        peers = data.get("peers", [])
+        peer_names = ", ".join(
+            (p.get("display_name") or p.get("agent_id") or "?") for p in peers
+        ) or "none"
+        broker = data.get("broker", "")
+        return [{
+            "component": "a2a", "level": "ok", "key": "status",
+            "value": "connected",
+            "peers": peers,
+            "hint": (f"A2A mesh online (broker {broker}). Agent: "
+                     f"{data.get('agent_id', '?')} ({data.get('status', '?')}), "
+                     f"{len(peers)} peer(s): {peer_names}."),
+        }]
+    except Exception as e:
+        logger.warning("a2a_check_failed err=%s", e)
+        return [{"component": "a2a", "level": "warning", "key": "status",
+                 "value": "unavailable",
+                 "hint": f"A2A mesh status unavailable: {e}"}]
+
+
+class CheckA2aTool(Tool):
+    """Check A2A mesh (MQTT) connection and peer status."""
+
+    name = "check_a2a"
+    category: ClassVar[str] = "System"
+    description = "A2A mesh status: connected / unavailable (no active MQTT port), agent id, status, online peers."
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs) -> str:
+        ctx = getattr(self, "_ctx", None)
+        client = getattr(ctx, "a2a_mcp_client", None) if ctx is not None else None
+        return json.dumps(await check_a2a(client=client), ensure_ascii=False, indent=2)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # system_health orchestrator
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -459,8 +523,18 @@ _CHECK_FUNCTIONS: list[str] = [
     "check_wechat",
     "check_memfiles",
     "check_mcp",
+    "check_a2a",
     "check_watchdog",
 ]
+
+#: check_* functions that reach live plugin state via a ToolContext client.
+#: ``check_mcp`` uses the slife-mcp wrapper client; ``check_memfiles`` and
+#: ``check_a2a`` use their respective plugin clients.
+_CLIENT_FIELD: dict[str, str] = {
+    "check_mcp": "mcp_client",
+    "check_memfiles": "memfiles_client",
+    "check_a2a": "a2a_mcp_client",
+}
 
 
 async def _run_checks(ctx=None) -> list[dict]:
@@ -480,15 +554,11 @@ async def _run_checks(ctx=None) -> list[dict]:
     for func_name in _CHECK_FUNCTIONS:
         try:
             fn = getattr(_mod, func_name)
-            if func_name in ("check_mcp", "check_memfiles"):
-                # check_mcp needs the wrapper client; check_memfiles needs
-                # the memfiles plugin client — both reach live state via the
-                # plugin's MCP client from ToolContext.
-                client = (
-                    getattr(ctx, "mcp_client", None)
-                    if func_name == "check_mcp" else
-                    getattr(ctx, "memfiles_client", None)
-                ) if ctx is not None else None
+            field = _CLIENT_FIELD.get(func_name)
+            if field is not None:
+                # Plugin-backed checks reach live state via their plugin's
+                # MCP client from ToolContext.
+                client = getattr(ctx, field, None) if ctx is not None else None
                 if _inspect.iscoroutinefunction(fn):
                     entries = await fn(client=client)
                 else:

@@ -120,19 +120,19 @@ active_model: "deepseek/deepseek-v4-pro",
 
 统一为 OpenAI 函数定义。LLM 看不出原生、插件与外部 MCP 工具的区别。
 
-**14 个类别共 52 个原生工具** — 从 `slife/tools/` 自动发现（最多 50 个 LLM 可见 + 2 个 harness；`include_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
+**14 个类别共 51 个原生工具** — 从 `slife/tools/` 自动发现（最多 49 个 LLM 可见 + 2 个 harness；`include_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
 
 | 类别 | 工具 |
 |------|------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_watchdog` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_a2a`, `check_watchdog` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
-| CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled`, `cli_check_installed` |
+| CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | A2A | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `switch_to_nvidia_free` |
+| Models | `model_list`, `model_set`, `model_remove`, `model_switch` |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `include_image`（把本地图片或 URL 注入对话） |
 | Display | `show_image`, `notify_user` |
@@ -193,7 +193,7 @@ active_model: "deepseek/deepseek-v4-pro",
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。
 
-所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_mcp`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
+所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_mcp`、`check_a2a`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
 
 ### A2A — 智能体间通信（网格）
 

@@ -37,7 +37,7 @@ def _classify(name: str) -> str:
         return "CLI"
     if name.startswith("rest_api_"):
         return "REST API"
-    if name.startswith("model_") or name == "switch_to_nvidia_free":
+    if name.startswith("model_"):
         return "Models"
     if name.startswith("config_env") or name == "native_tool_set":
         return "Config"

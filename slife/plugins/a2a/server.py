@@ -320,6 +320,52 @@ async def __a2a_drain_incoming() -> str:
 
 
 @mcp.tool(
+    name="__a2a_status",
+    description="A2A mesh status as JSON. Harness-only.",
+)
+async def __a2a_status() -> str:
+    """Return mesh connection + peer status for the harness health check.
+
+    Reads the current client state WITHOUT triggering a connect — a status
+    probe must never side-effect a connection (that would defeat the check
+    and mask a genuinely offline mesh).  Peers come from the client's
+    presence cache, and queued inbound task/presence/cancel counts report
+    how much work the harness drain loop still has buffered.
+    """
+    cfg = _load_config()
+    client = _client
+    connected = client is not None and client.is_connected
+    agent_id = ""
+    status = ""
+    peers: list[dict] = []
+    if client is not None and client.is_connected:
+        agent_id = str(client.agent_id)
+        status = str(client.status)
+        try:
+            for card in await client.list_agents():
+                peers.append({
+                    "agent_id": str(card.agent_id),
+                    "display_name": card.display_name,
+                    "status": card.status,
+                })
+        except Exception as e:
+            logger.warning("a2a_status_list_agents_failed err=%s", e)
+    return json.dumps({
+        "enabled": cfg.enabled,
+        "connected": connected,
+        "agent_id": agent_id,
+        "status": status,
+        "broker": f"{cfg.broker_host}:{cfg.broker_port}",
+        "peers": peers,
+        "queued": {
+            "tasks": len(_inbound_tasks),
+            "presence": len(_presence_events),
+            "cancellations": len(_cancellations),
+        },
+    }, ensure_ascii=False)
+
+
+@mcp.tool(
     name="__a2a_dispatch_result",
     description="Publish a task result to a requester's result topic. Harness-only.",
 )

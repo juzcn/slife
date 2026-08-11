@@ -231,6 +231,7 @@ class TestHarnessTools:
         by_name = {t.name: t.description for t in tools}
         assert "harness-only" in by_name["__a2a_drain_incoming"].lower()
         assert "harness-only" in by_name["__a2a_dispatch_result"].lower()
+        assert "harness-only" in by_name["__a2a_status"].lower()
 
     @pytest.mark.asyncio
     async def test_a2a_tools_exposed_without_harness_marker(self):
@@ -321,3 +322,69 @@ class TestEagerConnect:
         fake_client.connect.assert_awaited_once()
         assert result is fake_client
         assert plugin._client is fake_client
+
+
+class TestA2aStatusTool:
+    """Tests for the __a2a_status harness tool (health-check probe)."""
+
+    _CONFIG = json.dumps({
+        "enabled": True, "agent_id": "slife", "agent_name": "",
+        "transport": "mqtt", "broker_host": "localhost", "broker_port": 1883,
+        "http_host": "127.0.0.1", "http_port": 0,
+        "heartbeat_interval": 15, "heartbeat_timeout": 45, "task_timeout": 120,
+    })
+
+    @pytest.fixture(autouse=True)
+    def _reset_state(self, monkeypatch):
+        plugin._client = None
+        plugin._inbound_tasks.clear()
+        plugin._presence_events.clear()
+        plugin._cancellations.clear()
+        monkeypatch.setenv("SLIFE_A2A_CONFIG", self._CONFIG)
+        yield
+        plugin._client = None
+        plugin._inbound_tasks.clear()
+        plugin._presence_events.clear()
+        plugin._cancellations.clear()
+
+    @pytest.mark.asyncio
+    async def test_disconnected_when_client_none(self):
+        """No live client → connected=False, empty peers (broker down at startup)."""
+        out = json.loads(await getattr(plugin, "__a2a_status")())
+        assert out["enabled"] is True
+        assert out["connected"] is False
+        assert out["agent_id"] == ""
+        assert out["status"] == ""
+        assert out["peers"] == []
+        assert out["broker"] == "localhost:1883"
+
+    @pytest.mark.asyncio
+    async def test_connected_with_peers(self):
+        client = _fake_client()
+        client.agent_id = "slife"
+        client.status = "idle"
+        plugin._client = client
+        out = json.loads(await getattr(plugin, "__a2a_status")())
+        assert out["connected"] is True
+        assert out["agent_id"] == "slife"
+        assert out["status"] == "idle"
+        assert out["broker"] == "localhost:1883"
+        assert out["peers"] == [
+            {"agent_id": "peer-1", "display_name": "Peer One", "status": "idle"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_reports_queued_counts(self):
+        plugin._inbound_tasks.append({"type": "task", "source": "peer-1",
+                                      "content": "do X", "reply_to": "t",
+                                      "correlation_id": "c1"})
+        plugin._cancellations.append({"type": "cancel", "corr_id": "c2"})
+        out = json.loads(await getattr(plugin, "__a2a_status")())
+        assert out["queued"] == {"tasks": 1, "presence": 0, "cancellations": 1}
+
+    @pytest.mark.asyncio
+    async def test_status_does_not_trigger_connect(self):
+        """A status probe must never side-effect a connection."""
+        with patch.object(plugin, "_ensure_connected", AsyncMock()) as mock_conn:
+            await getattr(plugin, "__a2a_status")()
+        mock_conn.assert_not_awaited()

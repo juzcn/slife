@@ -12,6 +12,7 @@ from slife.tools.system import (
     check_memdb,
     check_wechat,
     check_mcp,
+    check_a2a,
     _group_by_component,
     _component_status,
     _build_summary,
@@ -19,6 +20,7 @@ from slife.tools.system import (
     SystemHealthTool,
     CheckWatchdogTool,
     CheckMcpTool,
+    CheckA2aTool,
 )
 
 
@@ -421,7 +423,8 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_memdb", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
              patch("slife.tools.system.check_memfiles", return_value=[]), \
-             patch("slife.tools.system.check_mcp", return_value=[]):
+             patch("slife.tools.system.check_mcp", return_value=[]), \
+             patch("slife.tools.system.check_a2a", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert "healthy" in parsed
@@ -438,7 +441,8 @@ class TestSystemHealthToolExecute:
         with patch("slife.tools.system.get_startup_records", return_value=startup_entries), \
              patch("slife.tools.system.check_memdb", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
-             patch("slife.tools.system.check_mcp", return_value=[]):
+             patch("slife.tools.system.check_mcp", return_value=[]), \
+             patch("slife.tools.system.check_a2a", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert "startup" in parsed["components"]
@@ -453,7 +457,8 @@ class TestSystemHealthToolExecute:
         with patch("slife.tools.system.get_startup_records", return_value=startup_entries), \
              patch("slife.tools.system.check_memdb", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
-             patch("slife.tools.system.check_mcp", return_value=[]):
+             patch("slife.tools.system.check_mcp", return_value=[]), \
+             patch("slife.tools.system.check_a2a", return_value=[]):
             result = await tool.execute()
             parsed = json.loads(result)
             assert parsed["healthy"] is False
@@ -477,6 +482,8 @@ class TestSystemHealthToolExecute:
             "slife.tools.system.check_memfiles", return_value=[],
         ), patch(
             "slife.tools.system.check_mcp", return_value=[],
+        ), patch(
+            "slife.tools.system.check_a2a", return_value=[],
         ):
             result = await tool.execute()
             parsed = json.loads(result)
@@ -609,3 +616,96 @@ class TestCheckMcpFunction:
         entries = await check_mcp()
         assert entries[0]["value"] == "client_unavailable"
         assert entries[0]["level"] == "warning"
+
+
+class _FakeA2aClient:
+    """Minimal stand-in for the a2a plugin MCP client."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def call_tool(self, name, arguments=None):
+        assert name == "__a2a_status"
+        return json.dumps(self._payload)
+
+
+class TestCheckA2aFunction:
+    """Tests for check_a2a()."""
+
+    @staticmethod
+    def _status(**overrides):
+        data = {
+            "enabled": True, "connected": True, "agent_id": "slife",
+            "status": "idle", "broker": "localhost:1883",
+            "peers": [], "queued": {"tasks": 0, "presence": 0, "cancellations": 0},
+        }
+        data.update(overrides)
+        return data
+
+    @pytest.mark.asyncio
+    async def test_client_unavailable(self):
+        entries = await check_a2a()
+        assert entries[0]["component"] == "a2a"
+        assert entries[0]["level"] == "warning"
+        assert entries[0]["value"] == "unavailable"
+        assert "没有活跃的mqtt端口" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_plugin_disconnected(self):
+        """Mosquitto down → no active MQTT port → a2a unavailable."""
+        client = _FakeA2aClient(self._status(connected=False))
+        entries = await check_a2a(client=client)
+        assert entries[0]["level"] == "warning"
+        assert entries[0]["value"] == "unavailable"
+        assert "没有活跃的mqtt端口" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_connected_no_peers(self):
+        client = _FakeA2aClient(self._status())
+        entries = await check_a2a(client=client)
+        assert len(entries) == 1
+        assert entries[0]["level"] == "ok"
+        assert entries[0]["value"] == "connected"
+        assert "localhost:1883" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_connected_with_peers(self):
+        client = _FakeA2aClient(self._status(peers=[
+            {"agent_id": "peer-1", "display_name": "Peer One", "status": "idle"},
+        ]))
+        entries = await check_a2a(client=client)
+        assert entries[0]["level"] == "ok"
+        assert entries[0]["peers"][0]["agent_id"] == "peer-1"
+        assert "1 peer(s): Peer One" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_check_failure_reports_warning(self):
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
+        entries = await check_a2a(client=client)
+        assert entries[0]["level"] == "warning"
+        assert "boom" in entries[0]["hint"]
+
+
+class TestCheckA2aTool:
+    """Tests for CheckA2aTool metadata and execute."""
+
+    def test_metadata(self):
+        tool = CheckA2aTool()
+        assert tool.name == "check_a2a"
+        assert "a2a" in tool.description.lower()
+        assert tool.parameters["type"] == "object"
+        assert tool.parameters["required"] == []
+
+    @pytest.mark.asyncio
+    async def test_execute_returns_json(self):
+        tool = CheckA2aTool()
+        with patch("slife.tools.system.check_a2a",
+                   new=AsyncMock(return_value=[
+                       {"component": "a2a", "level": "ok", "key": "status",
+                        "value": "connected", "hint": "all good"},
+                   ])):
+            result = await tool.execute()
+            parsed = json.loads(result)
+            assert parsed[0]["component"] == "a2a"
+            assert parsed[0]["value"] == "connected"

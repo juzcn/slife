@@ -1,7 +1,6 @@
 """CLI tool management — register external CLI commands for discovery.
 
 cli_set:               register/update a CLI so the LLM can discover it next turn
-cli_check_installed:   check whether a CLI command is installed on the system
 cli_remove:            remove a registered CLI
 cli_list:              list all registered CLI tools
 
@@ -69,69 +68,6 @@ def get_cli_tools_summary(config_path: Path) -> str:
     if not isinstance(cli_tools, dict) or not cli_tools:
         return "No CLI tools registered."
     return _format_cli_tools(cli_tools)
-
-
-class CliCheckInstalled(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
-    """Check whether CLI commands are registered in slife.json5.
-
-    Looks up command names in the cli_tools config section — this tells
-    you whether slife already knows about a CLI (its command, description,
-    install method) without running anything on the system.
-
-    Use before re-installing, before calling cli_set, or when the
-    user asks "do I have X set up?".  Does NOT run the actual command.
-    """
-
-    name = "cli_check_installed"
-    category = "CLI"
-    description = "Check whether CLI commands are registered in slife.json5. Does NOT run shell commands."
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "commands": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Command names, e.g. ['npm', 'git', 'uv'].",
-            },
-        },
-        "required": ["commands"],
-    }
-
-    async def execute(self, **kwargs) -> str:
-        commands: list[str] = kwargs["commands"]
-
-        ctx = getattr(self, "_ctx", None)
-        config = ctx.config if ctx is not None else None
-        if config is not None and config._path is not None:
-            cli_tools = config.cli_tools
-        else:
-            raw = read_config(self._config_path)
-            cli_tools = raw.get(_CLI_TOOLS_KEY, {})
-            if not isinstance(cli_tools, dict):
-                cli_tools = {}
-
-        lines = []
-        found = 0
-        for cmd in commands:
-            entry = cli_tools.get(cmd)
-            if isinstance(entry, dict):
-                found += 1
-                src_str = format_source_info(entry.get("source"))  # type: ignore[arg-type]
-                source_info = f"  source: {src_str}" if src_str else ""
-                install_info = ""
-                if entry.get("install"):
-                    install_info = f"\n  install: {entry['install']}"
-                line = (
-                    f"● {cmd} — {entry.get('command', cmd)}"
-                    f"{install_info}"
-                    f"{source_info}"
-                )
-            else:
-                line = f"○ {cmd} — not registered in config"
-            lines.append(line)
-
-        summary = f"{found}/{len(commands)} registered"
-        return summary + "\n" + "\n".join(lines)
 
 
 class CliSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
