@@ -504,6 +504,35 @@ class TestSessionStoreCountTurns:
         assert result["total"] == 10
         assert result["filtered"] == 3
 
+    @pytest.mark.asyncio
+    async def test_count_fts5_honors_since_until(self):
+        """REVIEW M6 — the fts5 count joins diary and applies since/until
+        (previously they were silently ignored for fts5 mode)."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        call_count = [0]
+
+        async def _execute_side_effect(*args, **kwargs):
+            call_count[0] += 1
+            cursor = AsyncMock()
+            cursor.fetchone = AsyncMock(return_value=(5,))
+            return cursor
+
+        mock_conn.execute = AsyncMock(side_effect=_execute_side_effect)
+        store._conn = mock_conn
+
+        await store.count_turns(
+            query="hello", mode="fts5",
+            since="2026-01-01", until="2026-02-01",
+        )
+
+        # Second execute = the fts5 count — must JOIN diary and carry the
+        # time clauses + params.
+        sql, params = mock_conn.execute.call_args_list[1][0]
+        assert "JOIN diary" in sql
+        assert "d.created_at >=" in sql and "d.created_at <=" in sql
+        assert len(params) == 3  # fts_query + since + until
+
 
 class TestSessionStoreListRecent:
     """Tests for list_recent."""
@@ -602,6 +631,43 @@ class TestSessionStoreSearchGrep:
 
         result = await store.search_grep(pattern="Hello")
         assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_grep_escapes_like_metachars(self):
+        """REVIEW M5 — %/_ in the pattern are escaped and the LIKE carries an
+        ESCAPE '\\' clause, so they match literally instead of acting as
+        wildcards (previously the escape was a no-op and '50%' matched nothing)."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        await store.search_grep(pattern="50%_done")
+
+        sql, params = mock_conn.execute.call_args[0]
+        assert "ESCAPE '\\'" in sql
+        # instr context uses the raw pattern (literal); the LIKEs use the
+        # escaped pattern so %/_ are literal.
+        assert params[0] == "50%_done"
+        assert params[1] == "%50\\%\\_done%"
+        assert params[2] == "%50\\%\\_done%"
+
+    @pytest.mark.asyncio
+    async def test_search_clamps_negative_limit(self):
+        """REVIEW M6 — a negative limit is clamped (SQLite LIMIT -1 = unlimited)."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        await store.search_grep(pattern="x", limit=-5)
+
+        sql, params = mock_conn.execute.call_args[0]
+        assert params[-1] == 20  # clamped to the default, not -5
 
 
 class TestSessionStoreSearchTime:

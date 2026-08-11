@@ -8,7 +8,7 @@ tool arguments; the loop then asks the user via `on_tool_approval`.
 import pytest; pytestmark = pytest.mark.unit
 
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -223,3 +223,66 @@ class TestAgentLoopApproval:
         assert tools["tool_a"].executed is True   # granted
         assert tools["tool_b"].executed is False  # denied
         assert tools["tool_c"].executed is True   # no flag → no gate
+
+
+# ── ApprovalDialog — keyboard deny beats the App's priority cancel (C7) ──
+
+
+class TestApprovalDialog:
+    """The modal's priority bindings let Esc really deny, instead of being
+    stolen by the App's ``escape -> cancel`` priority binding (REVIEW C7)."""
+
+    def _make(self):
+        import asyncio
+
+        from slife.ui.approval_dialog import ApprovalDialog
+
+        tool_call = ToolCallInfo(id="call_1", name="test_tool", arguments={"a": 1})
+        future = asyncio.Future()
+        return ApprovalDialog(tool_call, future), future
+
+    @pytest.mark.asyncio
+    async def test_escape_deny_binding_is_priority(self):
+        dlg, _ = self._make()
+        assert any(
+            b.key == "escape" and b.action == "deny" and b.priority
+            for b in dlg.BINDINGS
+        )
+
+    @pytest.mark.asyncio
+    async def test_enter_approve_binding_is_priority(self):
+        dlg, _ = self._make()
+        assert any(
+            b.key == "enter" and b.action == "approve" and b.priority
+            for b in dlg.BINDINGS
+        )
+
+    @pytest.mark.asyncio
+    async def test_action_deny_sets_false(self):
+        dlg, future = self._make()
+        with patch.object(dlg, "dismiss"):
+            dlg.action_deny()
+        assert future.result() is False
+
+    @pytest.mark.asyncio
+    async def test_action_approve_sets_true(self):
+        dlg, future = self._make()
+        with patch.object(dlg, "dismiss"):
+            dlg.action_approve()
+        assert future.result() is True
+
+    @pytest.mark.asyncio
+    async def test_button_pressed_routes(self):
+        dlg, future = self._make()
+        with patch.object(dlg, "dismiss"):
+            approve_evt = MagicMock()
+            approve_evt.button.id = "approve-btn"
+            dlg.on_button_pressed(approve_evt)
+        assert future.result() is True
+
+        dlg2, future2 = self._make()
+        with patch.object(dlg2, "dismiss"):
+            deny_evt = MagicMock()
+            deny_evt.button.id = "deny-btn"
+            dlg2.on_button_pressed(deny_evt)
+        assert future2.result() is False

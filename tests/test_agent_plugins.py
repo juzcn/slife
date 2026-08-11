@@ -123,6 +123,32 @@ class TestPluginLifecycleSpawn:
         import os
         os.environ.pop("SLIFE_TEST_PLUGIN_PORT", None)
 
+    @pytest.mark.asyncio
+    async def test_spawn_failure_resets_process_and_stops_child(self, lifecycle):
+        """REVIEW M2 — a failed spawn must not leave the lifecycle pointing at
+        a live-but-unconnected child (the watchdog would block on its wait()
+        forever); it resets and stops the process before re-raising."""
+        import os
+
+        mock_process = MagicMock()
+        mock_process.port = 7777
+        mock_process.start = AsyncMock()
+        mock_process.create_client = AsyncMock(
+            side_effect=ConnectionError("refused"),
+        )
+        mock_process.stop = AsyncMock()
+
+        with patch("slife.mcp.process.MCPWrapperProcess") as MockProc:
+            MockProc.return_value = mock_process
+            with pytest.raises(ConnectionError):
+                await lifecycle.spawn(module="slife.plugins.mcp.server")
+
+        assert lifecycle.process is None
+        assert lifecycle.client is None
+        assert lifecycle.port == 0
+        mock_process.stop.assert_awaited_once()
+        os.environ.pop("SLIFE_TEST_PLUGIN_PORT", None)
+
 
 # ── connect_http ──────────────────────────────────────────────────────────
 

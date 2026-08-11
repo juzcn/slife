@@ -734,6 +734,12 @@ class MCPServerConnection:
                 pass
 
         if self._process is not None:
+            # terminate_process kills only the direct child — npx/uvx spawn
+            # grandchildren that outlive it on Windows.  Kill the whole tree
+            # first, then terminate_process cleans up the pipe transports
+            # (REVIEW M4).
+            from slife.tools.exec import _kill_process_tree
+            await _kill_process_tree(self._process)
             await terminate_process(self._process, label=f"mcp_conn:{self.config.name}")
         self._process = None
 

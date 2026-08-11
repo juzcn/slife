@@ -28,6 +28,20 @@ def _serialize_f32(vector: list[float]) -> bytes:
     return struct.pack(f"{len(vector)}f", *vector)
 
 
+_MAX_SEARCH_LIMIT = 200
+
+
+def _clamp_limit(limit: int) -> int:
+    """Clamp a search limit to a sane positive range.
+
+    SQLite treats a negative LIMIT as unlimited — a malformed/negative limit
+    from the LLM would otherwise scan the whole table (REVIEW M6).
+    """
+    if limit is None or limit < 1:
+        return 20
+    return min(limit, _MAX_SEARCH_LIMIT)
+
+
 class SessionStore:
     """Manages the Slife memory database — turn-based, no sessions."""
 
@@ -325,9 +339,23 @@ class SessionStore:
                 params: list = [like_pattern, like_pattern]
             else:
                 fts_query = _to_fts5_query(query)
+                # FTS5 has no created_at — join the diary rowid so since/until
+                # filter the same way as grep/time (REVIEW M6).
+                time_clauses = ""
+                time_params: list[str] = []
+                if since:
+                    since = _normalize_time_param(since, role="since")
+                    time_clauses += " AND d.created_at >= ?"
+                    time_params.append(since)
+                if until:
+                    until = _normalize_time_param(until, role="until")
+                    time_clauses += " AND d.created_at <= ?"
+                    time_params.append(until)
                 row2 = await self._c.execute(
-                    "SELECT COUNT(*) FROM diary_fts WHERE diary_fts MATCH ?",
-                    (fts_query,),
+                    f"""SELECT COUNT(*) FROM diary_fts fts
+                        JOIN diary d ON fts.rowid = d.rowid
+                        WHERE diary_fts MATCH ?{time_clauses}""",
+                    (fts_query, *time_params),
                 )
                 filtered = (await row2.fetchone())[0]
                 return {"total": total, "filtered": filtered,
@@ -373,6 +401,7 @@ class SessionStore:
 
     async def list_recent(self, limit: int = 20) -> list[dict]:
         """List recent turns, newest first. Lightweight — no full messages."""
+        limit = _clamp_limit(limit)
         cursor = await self._c.execute(
             """SELECT rowid, user_message, summary, tags, created_at,
                       token_count, who_helped, what_model
@@ -414,6 +443,7 @@ class SessionStore:
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """FTS5 keyword search with snippet highlighting."""
+        limit = _clamp_limit(limit)
         fts_query = _to_fts5_query(query)
         time_clauses = ""
         time_params: list[str] = []
@@ -452,6 +482,7 @@ class SessionStore:
         (lowest distance) match per turn so the result list has one entry
         per turn.
         """
+        limit = _clamp_limit(limit)
         vec_blob = _serialize_f32(embedding)
         # Fetch extra rows to account for duplicate diary_rowid entries
         # (one turn → multiple chunks).  Dedup in Python: vec0 KNN does
@@ -490,6 +521,7 @@ class SessionStore:
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """Time-range browsing of turns."""
+        limit = _clamp_limit(limit)
         clauses: list[str] = []
         params: list[str | int] = []
         if since:
@@ -519,7 +551,15 @@ class SessionStore:
         since: str | None = None, until: str | None = None,
     ) -> list[dict]:
         """Exact substring search over user_message + messages."""
-        safe = pattern.replace("%", r"\%").replace("_", r"\_")
+        limit = _clamp_limit(limit)
+        # Escape LIKE metacharacters so a pattern containing %/_ matches them
+        # literally.  The ESCAPE '\' clause is required or the escapes are a
+        # no-op (REVIEW M5); backslashes themselves must be doubled first.
+        safe = (
+            pattern.replace("\\", r"\\")
+                   .replace("%", r"\%")
+                   .replace("_", r"\_")
+        )
         like_pattern = f"%{safe}%"
         time_clauses = ""
         time_params: list[str] = []
@@ -535,7 +575,8 @@ class SessionStore:
             f"""SELECT rowid, user_message, summary, tags, created_at,
                       substr(messages, max(0, instr(messages, ?) - 40), 160) AS context
                FROM diary
-               WHERE (user_message LIKE ? OR messages LIKE ?){time_clauses}
+               WHERE (user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\')
+                     {time_clauses}
                ORDER BY rowid DESC LIMIT ?""",
             (pattern, like_pattern, like_pattern, *time_params, limit),
         )

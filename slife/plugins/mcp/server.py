@@ -8,10 +8,30 @@ This is the entry point for the slife-mcp child process. It:
 
 import json
 import os
+from contextlib import asynccontextmanager
 
 from slife.plugins.mcp.connection import ConnectionPool, ServerConfig, ServerStatus
 from slife.server_utils import create_plugin_server
 from slife.logfmt import ok_json, error_json
+
+
+@asynccontextmanager
+async def _mcp_lifespan(_app):
+    """Release all external MCP connections on server shutdown.
+
+    Runs on the server's event loop (uvicorn lifespan), so the pool's async
+    HTTP/SSE clients, stdio processes and health-monitor tasks are closed on
+    the same loop that created them — otherwise connections leak on exit
+    (REVIEW M3).
+    """
+    try:
+        yield
+    finally:
+        try:
+            await _pool.shutdown()
+        except Exception as e:
+            logger.debug("mcp_pool_shutdown_error err=%s", e)
+
 
 mcp, _log_path, logger = create_plugin_server(
     "slife-mcp",
@@ -20,11 +40,17 @@ mcp, _log_path, logger = create_plugin_server(
         "MCP servers. Use the management tools to add/remove servers, "
         "discover tools, and call tools on connected servers."
     ),
+    lifespan=_mcp_lifespan,
 )
 
 # ── Global state ─────────────────────────────────────────────────────
 
 _pool = ConnectionPool()
+
+# Built-in plugin server names — reserved: an external MCP server must not
+# take one of these, or its tools would collide / misroute in the harness
+# namespace (REVIEW C8).
+_RESERVED_SERVER_NAMES = frozenset({"mcp", "memdb", "wechat", "memfiles", "a2a"})
 
 # ═══════════════════════════════════════════════════════════════════════
 # Management tools
@@ -82,6 +108,13 @@ async def mcp_set(
     if not command and not url:
         return error_json(
             "Either 'command' (for stdio) or 'url' (for HTTP) must be provided.",
+            server=name,
+        )
+
+    if name in _RESERVED_SERVER_NAMES:
+        return error_json(
+            f"Server name '{name}' is reserved by a built-in plugin. "
+            f"Choose a different name.",
             server=name,
         )
 

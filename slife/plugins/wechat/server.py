@@ -107,9 +107,17 @@ _QR_MAX_REFRESH = 3
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _msg_key(msg: dict) -> str:
-    """Unique key for dedup: from_user_id + context_token."""
-    return f"{msg.get('from_user_id', '')}::{msg.get('context_token', '')}"
+def _msg_key(msg: dict, text: str) -> str:
+    """Dedup key: ``from_user_id + context_token + text`` (REVIEW C6).
+
+    ``context_token`` is per-conversation, so sender+token alone collides
+    across every message in one conversation — a second real message would be
+    dropped as a "duplicate".  Including the text makes only true
+    re-deliveries (same sender, same conversation, same text) dedupe.
+    """
+    return (
+        f"{msg.get('from_user_id', '')}::{msg.get('context_token', '')}::{text}"
+    )
 
 
 async def _poll_loop(poll_interval: float = 3.0) -> None:
@@ -128,19 +136,22 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
             _flush_logs()  # ensure POST debug lines hit disk
             new_count = 0
             for m in msgs:
-                key = _msg_key(m)
-                if key in _seen_keys:
-                    continue
-                _seen_keys.add(key)
-
                 text = ""
                 item_list = m.get("item_list", [])
                 if item_list:
                     text_item = item_list[0].get("text_item", {})
                     text = text_item.get("text", "")
 
+                # Non-text items (empty text) are skipped BEFORE the dedup key
+                # is recorded — otherwise they'd burn the conversation key and
+                # drop the next real message (REVIEW C6).
                 if not text.strip():
                     continue
+
+                key = _msg_key(m, text)
+                if key in _seen_keys:
+                    continue
+                _seen_keys.add(key)
 
                 from_id = m.get("from_user_id", "")
                 ctx_token = m.get("context_token", "")

@@ -8,9 +8,9 @@ the tool executes.
 from __future__ import annotations
 
 import asyncio
-import json
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
@@ -119,21 +119,30 @@ class ApprovalDialog(ModalScreen[bool]):
                 yield Button("Approve (Enter)", id="approve-btn", variant="success")
                 yield Button("Deny (Esc)", id="deny-btn", variant="error")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "approve-btn":
-            self._future.set_result(True)
-        else:
-            self._future.set_result(False)
+    # Priority bindings: when this modal is focused they fire BEFORE the
+    # App's own priority ``escape -> cancel`` binding (REVIEW C7), so Esc
+    # really denies here instead of cancelling the whole agent loop and
+    # leaving this future unresolved (modal would stick + loop would hang).
+    BINDINGS = [
+        Binding("enter", "approve", "Approve", priority=True),
+        Binding("escape", "deny", "Deny", priority=True),
+    ]
+
+    def action_approve(self) -> None:
+        """Approve the tool call (Enter or the Approve button)."""
+        self._future.set_result(True)
         self.dismiss()
 
-    def on_key(self, event) -> None:
-        """Handle Enter / Escape for quick keyboard confirmation."""
-        if event.key == "enter":
-            self._future.set_result(True)
-            self.dismiss()
-        elif event.key == "escape":
-            self._future.set_result(False)
-            self.dismiss()
+    def action_deny(self) -> None:
+        """Deny the tool call (Esc or the Deny button)."""
+        self._future.set_result(False)
+        self.dismiss()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "approve-btn":
+            self.action_approve()
+        else:
+            self.action_deny()
 
     def _format_args(self) -> str:
         """Format tool arguments for display, truncating long values."""

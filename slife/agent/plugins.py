@@ -111,33 +111,46 @@ class PluginLifecycle:
         env_key = f"SLIFE_{self.name.upper()}_PORT"
         os.environ[env_key] = str(self.port)
 
-        client = await process.create_client()
-        self.client = client
+        try:
+            client = await process.create_client()
+            self.client = client
 
-        # Discover and register LLM-visible tools
-        plugin_tools = await client.list_tools()
-        logger.debug(
-            "%s_tools names=%s", self.name,
-            [t["name"] for t in plugin_tools],
-        )
+            # Discover and register LLM-visible tools
+            plugin_tools = await client.list_tools()
+            logger.debug(
+                "%s_tools names=%s", self.name,
+                [t["name"] for t in plugin_tools],
+            )
 
-        # Harness-only tools are prefixed with __ (convention) — filtered out
-        # of the schema entirely.  (Single ``_`` = harness but LLM-visible,
-        # e.g. the native `_sys_note`/`_sys_trim`.)  Same predicate as the
-        # generic spawn path in service.py, so a plugin's harness tools are
-        # hidden identically whichever registration path ran.
-        # The deprecated harness_tools set is also respected.
-        tagged = [
-            {**t, "server": self.name}
-            for t in plugin_tools
-            if not t["name"].startswith("__")
-            and (harness_tools is None or t["name"] not in harness_tools)
-        ]
+            # Harness-only tools are prefixed with __ (convention) — filtered
+            # out of the schema entirely.  (Single ``_`` = harness but
+            # LLM-visible, e.g. the native `_sys_note`/`_sys_trim`.)  Same
+            # predicate as the generic spawn path in service.py, so a plugin's
+            # harness tools are hidden identically whichever registration path
+            # ran.  The deprecated harness_tools set is also respected.
+            tagged = [
+                {**t, "server": self.name}
+                for t in plugin_tools
+                if not t["name"].startswith("__")
+                and (harness_tools is None or t["name"] not in harness_tools)
+            ]
 
-        proxy_tools = create_proxy_tools(client, tagged)
-        for tool in proxy_tools:
-            self._service.tool_registry.register(tool)
-        logger.debug("%s_tools_registered count=%d", self.name, len(proxy_tools))
+            proxy_tools = create_proxy_tools(client, tagged)
+            for tool in proxy_tools:
+                self._service.tool_registry.register(tool)
+            logger.debug("%s_tools_registered count=%d", self.name, len(proxy_tools))
+        except Exception:
+            # A failed spawn must not leave the lifecycle pointing at a
+            # live-but-unconnected child — the watchdog would block on its
+            # wait() forever instead of backing off and retrying (REVIEW M2).
+            self.process = None
+            self.port = 0
+            self.client = None
+            try:
+                await process.stop()
+            except Exception:
+                pass
+            raise
 
     # ── watchdog ────────────────────────────────────────────────────────
 

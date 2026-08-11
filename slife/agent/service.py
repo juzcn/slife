@@ -302,51 +302,69 @@ class AgentService:
             command=sys.executable,
             args=["-m", module],
         )
-        await process.start()
-        client = await process.create_client(tool_timeout=self.config.tool_timeout)
+        try:
+            await process.start()
+            client = await process.create_client(tool_timeout=self.config.tool_timeout)
 
-        # Discover tools
-        plugin_tools = await client.list_tools()
-        logger.debug("plugin_tools name=%s count=%d names=%s",
-                     name, len(plugin_tools),
-                     [t["name"] for t in plugin_tools])
+            # Discover tools
+            plugin_tools = await client.list_tools()
+            logger.debug("plugin_tools name=%s count=%d names=%s",
+                         name, len(plugin_tools),
+                         [t["name"] for t in plugin_tools])
 
-        # Register as proxy tools — filter out harness-only tools.
-        # Canonical marker: a plugin tool named ``__*`` (double underscore) is
-        # harness-internal — called programmatically via call_tool(), never
-        # exposed to the LLM.  (Single ``_`` = harness but LLM-visible, e.g.
-        # the native `_sys_note`/`_sys_trim`.)  The "harness-only" description
-        # is kept as a secondary safety check.
-        tagged = [
-            {**t, "server": name}
-            for t in plugin_tools
-            if not t.get("name", "").startswith("__")
-            and "harness-only" not in t.get("description", "").lower()
-        ]
-        if len(tagged) < len(plugin_tools):
-            logger.debug(
-                "plugin_tools_filtered name=%s kept=%d dropped=%d",
-                name, len(tagged), len(plugin_tools) - len(tagged),
-            )
-        proxy_tools = create_proxy_tools(client, tagged)
-        for tool in proxy_tools:
-            self.tool_registry.register(tool)
+            # Register as proxy tools — filter out harness-only tools.
+            # Canonical marker: a plugin tool named ``__*`` (double underscore) is
+            # harness-internal — called programmatically via call_tool(), never
+            # exposed to the LLM.  (Single ``_`` = harness but LLM-visible, e.g.
+            # the native `_sys_note`/`_sys_trim`.)  The "harness-only" description
+            # is kept as a secondary safety check.
+            tagged = [
+                {**t, "server": name}
+                for t in plugin_tools
+                if not t.get("name", "").startswith("__")
+                and "harness-only" not in t.get("description", "").lower()
+            ]
+            if len(tagged) < len(plugin_tools):
+                logger.debug(
+                    "plugin_tools_filtered name=%s kept=%d dropped=%d",
+                    name, len(tagged), len(plugin_tools) - len(tagged),
+                )
+            proxy_tools = create_proxy_tools(client, tagged)
+            for tool in proxy_tools:
+                self.tool_registry.register(tool)
 
-        logger.info("plugin_ready name=%s tools=%d",
-                     name, len(self.tool_registry.list_tools()))
+            logger.info("plugin_ready name=%s tools=%d",
+                         name, len(self.tool_registry.list_tools()))
 
-        # Store for cleanup — use PluginLifecycle for known plugins, setattr for auto-discovered
-        if name in self._plugins:
-            self._plugins[name].client = client
-            self._plugins[name].process = process
-            self._plugins[name].port = process.port
-        else:
-            setattr(self, f"_{name}_client", client)
-            setattr(self, f"_{name}_process", process)
-            setattr(self, f"_{name}_port", process.port)
-        os.environ[f"SLIFE_{name.upper()}_PORT"] = str(process.port)
+            # Store for cleanup — use PluginLifecycle for known plugins, setattr for auto-discovered
+            if name in self._plugins:
+                self._plugins[name].client = client
+                self._plugins[name].process = process
+                self._plugins[name].port = process.port
+            else:
+                setattr(self, f"_{name}_client", client)
+                setattr(self, f"_{name}_process", process)
+                setattr(self, f"_{name}_port", process.port)
+            os.environ[f"SLIFE_{name.upper()}_PORT"] = str(process.port)
 
-        return True
+            return True
+        except Exception:
+            # A failed spawn must not leave the lifecycle pointing at a
+            # live-but-unconnected child (watchdog stall) or an orphaned
+            # process (leak) — reset and stop it before re-raising (REVIEW M2).
+            if name in self._plugins:
+                self._plugins[name].process = None
+                self._plugins[name].client = None
+                self._plugins[name].port = 0
+            else:
+                setattr(self, f"_{name}_process", None)
+                setattr(self, f"_{name}_client", None)
+                setattr(self, f"_{name}_port", 0)
+            try:
+                await process.stop()
+            except Exception:
+                pass
+            raise
 
     # ── MCP lifecycle ──────────────────────────────────────────────────
 
@@ -492,11 +510,25 @@ class AgentService:
             command=mcp_cfg.wrapper_command,
             args=mcp_cfg.wrapper_args,
         )
-        await self._mcp_process.start()
-        self._plugins["mcp"].process = self._mcp_process
-        self._plugins["mcp"].port = self._mcp_process.port
-        os.environ["SLIFE_MCP_PORT"] = str(self._plugins["mcp"].port)
-        self._plugins["mcp"].client = await self._mcp_process.create_client()
+        try:
+            await self._mcp_process.start()
+            self._plugins["mcp"].process = self._mcp_process
+            self._plugins["mcp"].port = self._mcp_process.port
+            os.environ["SLIFE_MCP_PORT"] = str(self._plugins["mcp"].port)
+            self._plugins["mcp"].client = await self._mcp_process.create_client()
+        except Exception:
+            # A failed connect must not leave the lifecycle pointing at a
+            # live-but-unconnected child — the mcp watchdog would block on
+            # its wait() forever instead of backing off and retrying
+            # (REVIEW M2).
+            self._plugins["mcp"].process = None
+            self._plugins["mcp"].port = 0
+            self._plugins["mcp"].client = None
+            try:
+                await self._mcp_process.stop()
+            except Exception:
+                pass
+            raise
 
     async def _register_plugin_tools(self, name: str, **kwargs) -> None:
         """Discover and register a connected plugin's tools as proxy tools.

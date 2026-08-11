@@ -16,7 +16,7 @@ import importlib
 import logging
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -84,3 +84,27 @@ class TestAddServerToolRegistration:
             "__mcp_call_tool",
             "__mcp_connection_status",
         }
+
+    @pytest.mark.asyncio
+    async def test_mcp_set_rejects_reserved_builtin_names(self, restore_root_logger):
+        """REVIEW C8 — an external server cannot take a built-in plugin name,
+        or its tools would collide/misroute in the harness namespace."""
+        import json as _json
+
+        srv = _import_mcp_server()
+        for reserved in ("mcp", "memdb", "wechat", "memfiles", "a2a"):
+            result = await getattr(srv, "mcp_set")(name=reserved, command="echo")
+            parsed = _json.loads(result)
+            assert parsed.get("status") == "error", reserved
+            assert "reserved" in parsed.get("error", ""), reserved
+
+    @pytest.mark.asyncio
+    async def test_lifespan_shuts_down_pool(self, restore_root_logger):
+        """REVIEW M3 — the plugin lifespan releases the connection pool on
+        server shutdown, so HTTP/SSE/stdio connections don't leak."""
+        srv = _import_mcp_server()
+        with patch.object(srv, "_pool") as mock_pool:
+            mock_pool.shutdown = AsyncMock()
+            async with srv._mcp_lifespan(None):
+                pass
+            mock_pool.shutdown.assert_awaited_once()

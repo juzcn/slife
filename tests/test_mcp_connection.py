@@ -926,3 +926,24 @@ class TestMCPServerConnectionLazyReconnect:
             await conn.call_tool("echo", {})
 
         conn.connect.assert_not_called()
+
+
+class TestMCPServerConnectionTreeKill:
+    """REVIEW M4 — stdio teardown kills the whole process tree, not just the
+    direct child (npx/uvx grandchildren survive on Windows)."""
+
+    @pytest.mark.asyncio
+    async def test_cleanup_kills_process_tree(self):
+        cfg = ServerConfig(name="test", command="echo")
+        conn = MCPServerConnection(cfg)
+        proc = MagicMock()
+        proc.stdin = None
+        conn._process = proc
+
+        with patch("slife.plugins.mcp.connection.terminate_process") as mock_term, \
+                patch("slife.tools.exec._kill_process_tree") as mock_tree:
+            await conn._cleanup_resources()
+
+        mock_tree.assert_awaited_once_with(proc)
+        mock_term.assert_awaited_once()
+        assert conn._process is None

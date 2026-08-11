@@ -38,6 +38,10 @@ _db_path: Path | None = None
 _init_lock: asyncio.Lock | None = None
 _reindex_task: asyncio.Task | None = None  # type: ignore[valid-type]
 
+#: Max consecutive reindex batches with zero progress before giving up — a
+#: persistently failing embedder must not spin forever (REVIEW M7).
+_MAX_REINDEX_NO_PROGRESS = 20
+
 
 def _hybrid_fallback_reason() -> str:
     """Return a human-readable reason why hybrid search fell back to FTS5."""
@@ -266,12 +270,26 @@ async def _background_reindex(reset: bool = False) -> None:
         except Exception as e:
             logger.warning("background_reindex_reset_error err=%s", e)
     try:
+        no_progress = 0
         while True:
             result = await _reindex_impl(reset=False, batch_limit=5)
             batches += 1
             if result.get("complete"):
                 logger.info("background_reindex_done batches=%d", batches)
                 return
+            if result.get("indexed", 0) == 0:
+                # Nothing embedded this batch — a persistently failing
+                # embedder would spin forever; bound it (REVIEW M7).
+                no_progress += 1
+                if no_progress >= _MAX_REINDEX_NO_PROGRESS:
+                    logger.warning(
+                        "background_reindex_stalled batches=%d remaining=%s "
+                        "— embedder failing persistently, giving up",
+                        batches, result.get("remaining"),
+                    )
+                    return
+            else:
+                no_progress = 0
             await _asyncio.sleep(0.5)
     except Exception as e:
         logger.warning("background_reindex_aborted err=%s", e)

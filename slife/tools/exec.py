@@ -26,8 +26,12 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
     console and garble the TUI, and hold their pipes open forever.  This
     kills the tree: ``taskkill /T`` on Windows, the process group on POSIX
     (children are spawned with ``start_new_session=True``).
+
+    Runs even when the direct child already exited — its grandchildren may
+    still be alive as orphans (REVIEW M4).  ``taskkill``/``killpg`` on a dead
+    pid is harmless (errors are swallowed).
     """
-    if process is None or process.returncode is not None:
+    if process is None:
         return
     if os.name == "nt":
         await asyncio.to_thread(
