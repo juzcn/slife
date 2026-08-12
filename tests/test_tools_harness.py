@@ -236,6 +236,27 @@ class TestConsecutiveUserFix:
         assert last[1]["role"] == "tool"
         assert "Context usage" in last[1]["content"]
 
+    def test_context_time_start_change_detected(self):
+        """'Context covers' is reported on the first footer, then only when
+        the start time changes (restore sets it, trim advances it)."""
+        reg = _registry()
+        loop = _loop(reg)
+        conv = Conversation(system_prompt="SYS")
+        conv.add_user_message("hi")
+
+        loop._context_time_start = "2026-01-01T00:00:00+08:00"
+        first = loop._footer_kwargs(conv, conv.count_tokens())
+        assert first.get("context_time_start") == "2026-01-01T00:00:00+08:00"
+
+        # Unchanged on the next turn → not reported again.
+        second = loop._footer_kwargs(conv, conv.count_tokens())
+        assert "context_time_start" not in second
+
+        # A trim advances the start → reported again.
+        loop._context_time_start = "2026-02-01T00:00:00+08:00"
+        third = loop._footer_kwargs(conv, conv.count_tokens())
+        assert third.get("context_time_start") == "2026-02-01T00:00:00+08:00"
+
     def test_ensure_turn_consistent_appends_assistant(self):
         reg = _registry()
         loop = _loop(reg)

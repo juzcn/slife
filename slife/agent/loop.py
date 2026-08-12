@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time as _time
+from datetime import datetime
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -237,6 +238,7 @@ class AgentLoop:
         self._last_model_name: str = ""
         self._last_input_modalities: str = ""
         self._context_time_start: str = ""  # earliest turn date in context; set by restore, advanced by trim
+        self._last_context_time_start: str = ""  # for change-detection in the footer
         self._context_turn_dates: list[str] = []  # dates of restored turns, oldest-first; consumed by trim
 
     def cancel(self) -> None:
@@ -410,8 +412,12 @@ class AgentLoop:
         if shell_now != self._last_shell:
             kwargs["shell"] = shell_now
             self._last_shell = shell_now
-        if self._context_time_start:
+        # Context start is reported on the first turn and then only when it
+        # changes (restore sets it, trim advances it) — same change-detection
+        # as model/CWD/shell.
+        if self._context_time_start != self._last_context_time_start:
             kwargs["context_time_start"] = self._context_time_start
+            self._last_context_time_start = self._context_time_start
         # presence_events are NOT drained here — _auto_invoke reads them only
         # when the note is actually recorded, so a cancelled turn doesn't lose
         # them (REVIEW §1-12).
@@ -800,6 +806,14 @@ class AgentLoop:
 
         with request_scope(user_input[:50]):
             try:
+                # Fresh session: establish the context start (now).  "Context
+                # covers" is shown on the first turn, then only when restore
+                # or a trim advances it.
+                if not self._context_time_start:
+                    self._context_time_start = (
+                        datetime.now().astimezone().replace(microsecond=0).isoformat()
+                    )
+
                 # Context usage is computed ONCE and shared: _sys_note
                 # reports it as the usage %, and the trim gate below uses
                 # the same value (no recompute).

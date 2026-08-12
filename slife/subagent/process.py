@@ -15,6 +15,7 @@ import os
 import sys
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from slife.platform import terminate_process
@@ -121,6 +122,9 @@ class SubagentProcess:
         logger.info("spawn name=%s", self._name)
         env = dict(os.environ)
         env["SLIFE_SUBAGENT_NAME"] = self._name
+        env["SLIFE_SUBAGENT_CREATED_AT"] = (
+            datetime.now().astimezone().replace(microsecond=0).isoformat()
+        )
         env["SLIFE_CONFIG"] = self._config_json
         env["SLIFE_SUBAGENT_CONTEXT"] = self._context_source
         # The a2a plugin port (SLIFE_A2A_PORT) is inherited from os.environ

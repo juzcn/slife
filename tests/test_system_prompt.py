@@ -32,7 +32,7 @@ class TestBuild:
     def test_starts_with_runtime_context(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert result.startswith("Slife Environment")
+        assert result.startswith("You are Agent")
 
     def test_has_required_sections(self, cfg):
         from slife.agent.system_prompt import build
@@ -48,12 +48,12 @@ class TestBuild:
         from slife.agent.system_prompt import build
         cfg.a2a_config.agent_name = "MyBot"
         result = build(cfg)
-        assert "Agent: MyBot" in result
+        assert "You are Agent MyBot" in result
 
     def test_falls_back_to_agent_id(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "Agent: testbot" in result
+        assert "You are Agent testbot" in result
 
     def test_context_window_strategy(self, cfg):
         from slife.agent.system_prompt import build
@@ -101,10 +101,11 @@ class TestBuild:
         assert "server_name__" in result
 
     def test_no_personality_language(self, cfg):
-        """No 'you are', 'helpful assistant', or tone instructions."""
+        """No 'helpful assistant' or tone instructions.  (The opening 'You
+        are Agent …' is intentional identity framing, not personality.)
+        """
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "you are" not in result.lower()
         assert "helpful assistant" not in result.lower()
         assert "Always reply" not in result
 
@@ -155,9 +156,10 @@ class TestBuild:
         """is_subagent=True appends the subagent identity template."""
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
+        monkeypatch.setenv("SLIFE_SUBAGENT_CREATED_AT", "2026-01-05T10:00:00+08:00")
         result = build(cfg, is_subagent=True)
-        assert "Subagent role" in result
-        assert "You are a subagent named sub-7" in result
+        assert "By your spawn_subagent action, we enter into subagent mode" in result
+        assert "You are NOW a subagent worker" in result
         assert "with the same capabilities" in result
         assert "may SEND messages" in result
         assert "all replies and management belong to" in result
@@ -167,14 +169,16 @@ class TestBuild:
         """SLIFE_SUBAGENT_NAME is rendered into the subagent identity."""
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
+        monkeypatch.setenv("SLIFE_SUBAGENT_CREATED_AT", "2026-01-05T10:00:00+08:00")
         result = build(cfg, is_subagent=True)
-        assert "You are a subagent named sub-7" in result
+        assert "sub-7, created at 2026-01-05T10:00:00+08:00" in result
 
     def test_subagent_identity_forbids_persona(self, cfg, monkeypatch):
         """A subagent has no independent identity — it speaks as the parent
         agent, never introducing itself as a named persona to remote peers."""
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
+        monkeypatch.setenv("SLIFE_SUBAGENT_CREATED_AT", "2026-01-05T10:00:00+08:00")
         result = build(cfg, is_subagent=True)
         assert "NO independent identity" in result
         assert "no personality" in result
@@ -220,10 +224,45 @@ class TestBuild:
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "{{" not in result  # no unrendered Jinja2
-        assert "Agent:" in result
-        assert "Model:" in result
-        # 工作目录 / 当前时间 are now in the dynamic context_status.j2,
-        # not the static system prompt.
+        assert "Agent testbot" in result  # agent name in the opening line
+        assert "Platform type:" in result
+        # Model / working directory / shell are reported by the dynamic
+        # context_status.j2 (_sys_note), not duplicated in the static prompt.
+
+    def test_memory_start_time_from_diary(self, cfg, tmp_path, monkeypatch):
+        """Opening states when the agent's persisted memory began — the
+        earliest turn in the SQLite diary."""
+        import sqlite3
+
+        from slife.agent.system_prompt import build
+
+        db = tmp_path / "mem.db"
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE diary (created_at TEXT)")
+        con.execute(
+            "INSERT INTO diary (created_at) VALUES ('2026-01-05T10:00:00+08:00')"
+        )
+        con.commit()
+        con.close()
+        monkeypatch.setattr("slife.paths.get_db_path", lambda agent_id: db)
+
+        result = build(cfg)
+        assert (
+            "Your memory (conversation history) begins at 2026-01-05T10:00:00+08:00"
+            in result
+        )
+
+    def test_no_memory_start_when_no_diary(self, cfg, tmp_path, monkeypatch):
+        """Fresh agent with no diary → framed as first arrival, not a time."""
+        from slife.agent.system_prompt import build
+
+        monkeypatch.setattr(
+            "slife.paths.get_db_path", lambda agent_id: tmp_path / "missing.db"
+        )
+        result = build(cfg)
+        assert "begins at" not in result
+        assert "This is your first time in this world." in result
+        assert "You have no memory at all." in result
 
     def test_arch_in_prompt(self, cfg):
         from slife.agent.system_prompt import build
@@ -358,17 +397,10 @@ class TestContextStatusPresence:
         result = build_context_status(presence_events=[])
         assert "peer online/offline" not in result
 
-    def test_subagent_name_rendered_from_env(self, monkeypatch):
-        """The context footer shows the subagent name when running as one."""
+    def test_no_subagent_name_by_default(self):
+        """The context footer has no subagent line — subagent identity lives
+        in subagent.j2 (the subagent's own system prompt), not here."""
         from slife.agent.system_prompt import build_context_status
-        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-1")
-        result = build_context_status()
-        assert "Subagent: sub-1" in result
-
-    def test_no_subagent_name_by_default(self, monkeypatch):
-        """Main agent context footer has no subagent line."""
-        from slife.agent.system_prompt import build_context_status
-        monkeypatch.delenv("SLIFE_SUBAGENT_NAME", raising=False)
         result = build_context_status()
         assert "Subagent:" not in result
 
