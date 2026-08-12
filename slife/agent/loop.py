@@ -231,6 +231,13 @@ class AgentLoop:
         #: changed since the last turn.  Returns ``(epoch_seconds, text)``.
         self._presence_provider = presence_provider
         self._cancel_event = asyncio.Event()
+        # Last API usage, tracked PER CONVERSATION (keyed by id()).  The
+        # heartbeat / A2A / wechat turns run in their own small conversations,
+        # so a global _last_usage would be overwritten by e.g. a heartbeat
+        # (9.6%) and drag the human conversation's status bar / _sys_note
+        # down to the wrong value.  _last_usage is kept only as the
+        # restore-time estimate slot (primed by restore_session).
+        self._usage_by_conv: dict[int, TokenUsage] = {}
         self._last_usage = TokenUsage()
         # Track stable fields — only emit in context footer when they change.
         self._last_cwd: str = ""
@@ -371,7 +378,9 @@ class AgentLoop:
         Single source for ``_sys_note``, the trim gate, and the TUI
         status bar — one value, no recompute.  Resolution order:
 
-        1. After an API call — the last call's actual ``prompt_tokens``.
+        1. After an API call — that conversation's last call's actual
+           ``prompt_tokens`` (tracked per conversation, so a heartbeat's
+           small context never pollutes the human conversation's reading).
         2. First round after a restore — the restore-time estimate primed
            on ``_last_usage`` (computed once when the UI rebuilds the
            session to decide how many turns to restore; we have no real
@@ -379,10 +388,13 @@ class AgentLoop:
         3. Genuinely fresh session — a live :meth:`Conversation.count_tokens`
            estimate.
         """
-        if self._last_usage.prompt_tokens:
-            return self._last_usage.prompt_tokens
-        if self._last_usage.total_tokens:
-            return self._last_usage.total_tokens
+        usage = self._usage_by_conv.get(id(conversation))
+        if usage is None:
+            usage = self._last_usage  # restore-time estimate
+        if usage.prompt_tokens:
+            return usage.prompt_tokens
+        if usage.total_tokens:
+            return usage.total_tokens
         return conversation.count_tokens()
 
     # ── Harness tool invocation ────────────────────────────────────
@@ -543,9 +555,11 @@ class AgentLoop:
             if chunk.usage:
                 stream_usage = chunk.usage
 
-        # Remember last API usage for the next turn's context footer.
+        # Remember last API usage per conversation — heartbeat/A2A/wechat
+        # turns run in their own conversations and must not overwrite the
+        # human conversation's context measurement.
         if stream_usage.total_tokens > 0:
-            self._last_usage = stream_usage
+            self._usage_by_conv[id(conversation)] = stream_usage
 
         return _StreamResult(
             content="".join(content_parts),

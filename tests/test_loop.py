@@ -454,6 +454,43 @@ class TestAgentLoopRun:
         assert msgs[0]["content"] == "User input here"
 
     @pytest.mark.asyncio
+    async def test_context_tokens_isolated_per_conversation(
+        self, sample_model_config, empty_registry, empty_conversation
+    ):
+        """A heartbeat/one-shot conversation's small usage must NOT overwrite
+        the human conversation's context reading (status bar / _sys_note).
+
+        Regression: the heartbeat runs in a fresh, small conversation every
+        beat; a global _last_usage let it drag the human conversation's
+        context measurement down (9.6% while the real context is 26.5%)."""
+        from slife.agent.conversation import Conversation
+
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, empty_registry)
+
+        async def mock_human(messages, tools, **kwargs):
+            yield StreamChunk(content="ok")
+            yield StreamChunk(usage=TokenUsage(10_000, 5, 10_005))
+
+        with patch.object(llm, 'chat_stream', side_effect=mock_human):
+            await loop.run("hi", empty_conversation)
+        assert loop.context_tokens_for(empty_conversation) == 10_000
+
+        # A heartbeat-like fresh conversation runs a much smaller call.
+        heartbeat_conv = Conversation(system_prompt="sys")
+
+        async def mock_heartbeat(messages, tools, **kwargs):
+            yield StreamChunk(content=".")
+            yield StreamChunk(usage=TokenUsage(1_000, 2, 1_002))
+
+        with patch.object(llm, 'chat_stream', side_effect=mock_heartbeat):
+            await loop.run("[Heartbeat]", heartbeat_conv)
+
+        # The human conversation's reading is unaffected by the heartbeat.
+        assert loop.context_tokens_for(empty_conversation) == 10_000
+        assert loop.context_tokens_for(heartbeat_conv) == 1_000
+
+    @pytest.mark.asyncio
     async def test_run_with_tool_calls(self, sample_model_config, tool_registry, conversation):
         """Agent correctly handles tool calls and loops back."""
         llm = LLMClient(sample_model_config)
