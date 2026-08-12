@@ -284,7 +284,7 @@ class TestConsecutiveUserFix:
         assert roles == ["system", "user", "assistant", "tool", "assistant"]
         # synthetic result targets the orphaned call
         assert conv.messages[3]["tool_call_id"] == "orphan1"
-        assert "cancelled" in conv.messages[3]["content"]
+        assert "interrupted" in conv.messages[3]["content"]
         # closing assistant keeps roles alternating
         assert conv.messages[-1]["role"] == "assistant"
 

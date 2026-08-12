@@ -274,7 +274,7 @@ class TestRepairOrphanedToolCalls:
         assert conv.messages[-1]["role"] == "assistant"
         # No synthetic tool error injected
         assert not any(
-            m["role"] == "tool" and "cancelled" in str(m.get("content", "")).lower()
+            m["role"] == "tool" and "interrupted" in str(m.get("content", "")).lower()
             for m in conv.messages
         )
 
@@ -294,7 +294,7 @@ class TestRepairOrphanedToolCalls:
         tool_msgs = [m for m in conv.messages if m["role"] == "tool"]
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["tool_call_id"] == "orphan1"
-        assert "cancelled" in tool_msgs[0]["content"].lower()
+        assert "interrupted" in tool_msgs[0]["content"].lower()
         # closing assistant keeps the wire alternating
         assert conv.messages[-1]["role"] == "assistant"
 
@@ -336,7 +336,7 @@ class TestRepairOrphanedToolCalls:
         # Should have c1's real result plus c2's synthetic error
         assert len(tool_msgs) == 2
         real = [m for m in tool_msgs if "result for c1" in str(m.get("content", ""))]
-        synthetic = [m for m in tool_msgs if "cancelled" in str(m.get("content", "")).lower()]
+        synthetic = [m for m in tool_msgs if "interrupted" in str(m.get("content", "")).lower()]
         assert len(real) == 1
         assert len(synthetic) == 1
 

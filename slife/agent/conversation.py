@@ -94,7 +94,7 @@ class Conversation:
                         {
                             "role": "tool",
                             "tool_call_id": tc_id,
-                            "content": "Error: request cancelled by user",
+                            "content": "(Tool execution interrupted)",
                         },
                     )
                     repaired += 1
