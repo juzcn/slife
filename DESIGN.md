@@ -95,7 +95,7 @@ User Input → Conversation.add_user_message()        (secrets sanitized)
   2. **Alternating roles** — a conversation ending on a `user`/`tool` message (a tool result is a `user` role on the Anthropic wire, which rejects two consecutive users with a 400) gets a closing assistant message.
 
   It has exactly **two call sites**: `save_to_memory` (before persisting — the save-side guarantee, which runs unconditionally after every turn via the inbox `finally`), and `restore_session` (after loading from memory — the load-side guarantee). Because every turn is saved unconditionally, the conversation is always left consistent before the next user message is appended. Each turn also opens with an auto-invoked `_sys_note` assistant+tool pair, so a user message is always sandwiched between assistant messages.
-- **Context tracking**: `_last_context_tokens` (actual `prompt_tokens` from the last API call) drives trim decisions
+- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (actual `prompt_tokens` from the last API call, else the restore-time estimate before the first call, else the chars÷3 live estimate). It drives `_sys_note`, the trim gate, and the TUI status bar — one value, no recompute
 
 ### Context Window Management
 
@@ -109,7 +109,7 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Detect**: context usage is computed **once per turn** as `_last_context_tokens` (accurate prompt tokens) or the chars÷3 estimate on the first turn; `_sys_note` reports it as the usage %
+- **Detect**: context usage is computed **once per turn** via `context_tokens_for()` — the last API call's actual prompt tokens after the first round, else the restore-time estimate primed on `_last_usage` (computed when the UI rebuilds the session to decide how many turns to restore), else the chars÷3 live estimate; `_sys_note` reports it as the usage %
 - **Trim**: when the reported usage % hits the configured `context_ceiling` (default 80%), the loop auto-invokes **`_sys_trim`** — which is the trim itself. It removes the oldest complete turns down to `context_window × context_floor` (default 20%) and returns the notification. The gate lives outside the tool so `_sys_trim` is only invoked — and only records a pair — when a trim actually happens; if the LLM calls it directly it genuinely compacts the context (a legitimate action, not a no-op)
 - **Status**: once per turn the loop auto-invokes **`_sys_note`** (a normal tool-call pair) with the same `current` value the trim gate uses — it renders `context_status.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), and any A2A peer presence events since the last turn (online/offline/timeout, drained read-once)
 - **Restore**: on startup, recent turns are loaded directly from SQLite within the `context_floor` token budget

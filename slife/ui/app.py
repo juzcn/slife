@@ -35,7 +35,8 @@ class StatusBar(Static):
     def update_info(
         self,
         model: str = "",
-        tokens: int = 0,
+        context_tokens: int = 0,
+        context_window: int = 0,
         thinking: bool = False,
         inbox_busy: bool = False,
         inbox_pending: int = 0,
@@ -54,8 +55,13 @@ class StatusBar(Static):
         elif inbox_pending > 0:
             parts.append(f"[#6e7681]⏳ {inbox_pending} queued[/#6e7681]")
 
-        if tokens > 0:
-            parts.append(f"[#6e7681]↑ {tokens:,} tokens[/#6e7681]")
+        if context_window > 0:
+            pct = context_tokens / context_window * 100 if context_tokens else 0.0
+            parts.append(
+                f"[#6e7681]↑ {context_tokens:,} ({pct:.1f}%)[/#6e7681]"
+            )
+        elif context_tokens > 0:
+            parts.append(f"[#6e7681]↑ {context_tokens:,} tokens[/#6e7681]")
 
         parts.append(
             "[#484f58]│ Ctrl+C quit  Esc cancel  Ctrl+L focus  Home/End scroll[/#484f58]"
@@ -350,7 +356,8 @@ class SlifeApp(App):
         inbox = self.service.inbox
         status.update_info(
             model=self.service.model_display_name,
-            tokens=self.service.session_usage.total_tokens,
+            context_tokens=self.service.current_context_tokens,
+            context_window=self.service.context_window,
             thinking=self.service.thinking_enabled,
             inbox_busy=inbox.busy if inbox else False,
             inbox_pending=inbox.pending if inbox else 0,

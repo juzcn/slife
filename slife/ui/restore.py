@@ -488,9 +488,14 @@ async def restore_session(
     # Reset session token counter — session starts fresh
     app.service.session_usage.total_tokens = 0
 
-    # Prime the context footer with the restored token estimate
+    # Prime the context footer with the restored token estimate.  This is
+    # the estimated context size after restore (computed above to decide
+    # how many turns to restore) — on the first round we have no real API
+    # usage yet, so `context_tokens_for` / the status bar fall back to it.
+    # Stored as prompt_tokens because that is semantically what it is.
     if tokens_selected > 0:
         app.service.agent_loop._last_usage = TokenUsage(
+            prompt_tokens=tokens_selected,
             total_tokens=tokens_selected,
         )
     app._update_status()

@@ -65,6 +65,31 @@ class TestAgentService:
         service.clear()
         assert service.session_usage.total_tokens == 0
 
+    def test_context_window_property(self, sample_config):
+        service = AgentService(sample_config)
+        assert service.context_window == sample_config.active_model.context_window
+
+    def test_current_context_tokens_fresh_session(self, sample_config):
+        """No API call yet and no restore → live conversation estimate."""
+        service = AgentService(sample_config)
+        assert service.current_context_tokens == service.conversation.count_tokens()
+
+    def test_current_context_tokens_restore_estimate(self, sample_config):
+        """First round after restore → the precomputed estimate (no recompute)."""
+        service = AgentService(sample_config)
+        service.agent_loop._last_usage = TokenUsage(
+            prompt_tokens=5000, total_tokens=5000,
+        )
+        assert service.current_context_tokens == 5000
+
+    def test_current_context_tokens_last_call_actual(self, sample_config):
+        """After the first API call → the last call's real prompt_tokens."""
+        service = AgentService(sample_config)
+        service.agent_loop._last_usage = TokenUsage(
+            prompt_tokens=4321, completion_tokens=99, total_tokens=4420,
+        )
+        assert service.current_context_tokens == 4321
+
     @pytest.mark.asyncio
     async def test_process_message(self, sample_config):
         """process_message routes through unified inbox — handler on message."""
@@ -383,10 +408,15 @@ class TestStatusBar:
         with patch("slife.ui.app.Static.__init__", return_value=None):
             bar = StatusBar()
         bar.update = MagicMock()
-        bar.update_info(model="DeepSeek V4", tokens=1500, thinking=True)
+        bar.update_info(
+            model="DeepSeek V4",
+            context_tokens=1500,
+            context_window=100000,
+            thinking=True,
+        )
         text = bar.update.call_args[0][0]
         assert "DeepSeek V4" in text
-        assert "1,500 tokens" in text
+        assert "1,500 (1.5%)" in text
         assert "thinking" in text
 
     def test_update_info_no_model(self):
@@ -397,10 +427,21 @@ class TestStatusBar:
         text = bar.update.call_args[0][0]
         assert "Ctrl+C quit" in text
 
-    def test_update_info_no_tokens_hides_count(self):
+    def test_update_info_no_context_hides_ratio(self):
+        """No context info yet → no ↑ token line at all."""
         with patch("slife.ui.app.Static.__init__", return_value=None):
             bar = StatusBar()
         bar.update = MagicMock()
-        bar.update_info(model="Test", tokens=0)
+        bar.update_info(model="Test")
         text = bar.update.call_args[0][0]
         assert "tokens" not in text
+        assert "↑" not in text
+
+    def test_update_info_zero_context_with_window(self):
+        """Window known but no tokens yet → shows 0 with 0.0% (first round)."""
+        with patch("slife.ui.app.Static.__init__", return_value=None):
+            bar = StatusBar()
+        bar.update = MagicMock()
+        bar.update_info(model="Test", context_tokens=0, context_window=100000)
+        text = bar.update.call_args[0][0]
+        assert "0 (0.0%)" in text

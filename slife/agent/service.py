@@ -150,6 +150,19 @@ class AgentService:
         return self.config.active_model.display_name
 
     @property
+    def context_window(self) -> int:
+        """Context window size (tokens) of the active model."""
+        return self.config.active_model.context_window
+
+    @property
+    def current_context_tokens(self) -> int:
+        """Context tokens the next API call would send — same single source
+        as ``_sys_note`` (see :meth:`AgentLoop.context_tokens_for`):
+        last API call's actual prompt tokens, else the restore-time
+        estimate, else a live conversation estimate."""
+        return self.agent_loop.context_tokens_for(self.conversation)
+
+    @property
     def thinking_enabled(self) -> bool:
         """Whether thinking/reasoning mode is active."""
         return self.config.active_model.thinking_enabled

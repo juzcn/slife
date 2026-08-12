@@ -230,7 +230,6 @@ class AgentLoop:
         #: changed since the last turn.  Returns ``(epoch_seconds, text)``.
         self._presence_provider = presence_provider
         self._cancel_event = asyncio.Event()
-        self._last_context_tokens: int = 0
         self._last_usage = TokenUsage()
         # Track stable fields — only emit in context footer when they change.
         self._last_cwd: str = ""
@@ -363,6 +362,26 @@ class AgentLoop:
         return functions
 
     # ── Context trimming ────────────────────────────────────────────
+
+    def context_tokens_for(self, conversation: Conversation) -> int:
+        """Context tokens the next API call would send.
+
+        Single source for ``_sys_note``, the trim gate, and the TUI
+        status bar — one value, no recompute.  Resolution order:
+
+        1. After an API call — the last call's actual ``prompt_tokens``.
+        2. First round after a restore — the restore-time estimate primed
+           on ``_last_usage`` (computed once when the UI rebuilds the
+           session to decide how many turns to restore; we have no real
+           API usage yet).
+        3. Genuinely fresh session — a live :meth:`Conversation.count_tokens`
+           estimate.
+        """
+        if self._last_usage.prompt_tokens:
+            return self._last_usage.prompt_tokens
+        if self._last_usage.total_tokens:
+            return self._last_usage.total_tokens
+        return conversation.count_tokens()
 
     # ── Harness tool invocation ────────────────────────────────────
 
@@ -784,7 +803,7 @@ class AgentLoop:
                 # Context usage is computed ONCE and shared: _sys_note
                 # reports it as the usage %, and the trim gate below uses
                 # the same value (no recompute).
-                current = self._last_context_tokens or conversation.count_tokens()
+                current = self.context_tokens_for(conversation)
                 await self._auto_invoke(
                     "_sys_note", self._footer_kwargs(conversation, current), conversation,
                 )
@@ -798,7 +817,6 @@ class AgentLoop:
                     await self._auto_invoke(
                         "_sys_trim", {"memory_saved": self.memdb_enabled}, conversation,
                     )
-                    self._last_context_tokens = conversation.count_tokens()
                     # Advance the context time range by the number of
                     # removed turns (each complete turn has one user msg).
                     removed = users_before - sum(
@@ -865,7 +883,6 @@ class AgentLoop:
                             t_total,
                             result.content,
                         )
-                        self._last_context_tokens = self._last_usage.prompt_tokens
                         return AgentResult(text=result.content, usage=total_usage)
 
                 raise MaxIterationsExceeded(self.max_iterations)
@@ -873,11 +890,9 @@ class AgentLoop:
                 # Turn consistency is enforced at the single save point
                 # (save_to_memory runs unconditionally after every turn) —
                 # the conversation is repaired there, not here.
-                self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except MaxIterationsExceeded:
                 logger.warning("max_iterations_exceeded max=%d", self.max_iterations)
-                self._last_context_tokens = self._last_usage.prompt_tokens
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except Exception:
                 # Re-raise so the caller (inbox) handles the error as before;
