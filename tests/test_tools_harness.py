@@ -242,9 +242,9 @@ class TestConsecutiveUserFix:
         conv = Conversation(system_prompt="SYS")
         conv.add_user_message("hi")
         # conversation ends on a user message → close it.
-        conv._ensure_turn_consistent("(no output this turn)")
+        conv._ensure_turn_consistent("(Turn interrupted)")
         assert conv.messages[-1]["role"] == "assistant"
-        assert conv.messages[-1]["content"] == "(no output this turn)"
+        assert conv.messages[-1]["content"] == "(Turn interrupted)"
 
     def test_ensure_turn_consistent_noop_when_assistant(self):
         reg = _registry()
@@ -277,7 +277,7 @@ class TestConsecutiveUserFix:
             ],
         )
 
-        conv._ensure_turn_consistent("(no output this turn)")
+        conv._ensure_turn_consistent("(Turn interrupted)")
 
         # system + user + assistant(orphan) + tool(synthetic) + assistant(closing)
         roles = [m["role"] for m in conv.messages]

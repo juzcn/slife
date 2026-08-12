@@ -103,7 +103,7 @@ class Conversation:
             i -= 1
 
         if self.messages and self.messages[-1]["role"] in ("user", "tool"):
-            self.add_assistant_message(content=content or "(no output this turn)")
+            self.add_assistant_message(content=content or "(Turn interrupted)")
         return repaired
 
     def add_user_message(
