@@ -1,8 +1,10 @@
-"""Tests for the memdb plugin server — background reindex bounding (REVIEW M7)."""
+"""Tests for the memdb plugin server — background reindex bounding (REVIEW M7)
+and the index-completeness gate (semantic search only when the index is full)."""
 
 import pytest; pytestmark = pytest.mark.unit
 
 
+import asyncio
 import importlib
 import logging
 import sys
@@ -130,3 +132,74 @@ class TestBackgroundReindex:
         assert result["remaining"] == 0
         assert result["complete"] is True
         store.upsert_embedding.assert_awaited_once()
+
+
+class TestIndexCompletenessGate:
+    """Semantic search is gated OFF while the index is incomplete, ON when
+    every turn is embedded — no partial semantic results are served."""
+
+    def _ready_server(self, unembedded: int):
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        store.count_unembedded = AsyncMock(return_value=unembedded)
+        srv._store = store
+        srv._embedder = MagicMock()
+        srv._embedder.available = True
+        srv._reindex_task = None
+        srv._semantic_ready = False
+        return srv
+
+    @pytest.mark.asyncio
+    async def test_gate_on_when_index_complete(self, restore_root_logger):
+        """count_unembedded() == 0 → semantic gate ON, no reindex started."""
+        srv = self._ready_server(unembedded=0)
+
+        with patch.object(srv, "_background_reindex", AsyncMock()) as mock_reindex:
+            await srv._ensure_index_complete()
+
+        assert srv._semantic_ready is True
+        mock_reindex.assert_not_called()
+        assert srv._reindex_task is None
+
+    @pytest.mark.asyncio
+    async def test_gate_off_and_reindex_started(self, restore_root_logger):
+        """Unembedded turns → gate OFF + a background reindex starts."""
+        srv = self._ready_server(unembedded=3)
+
+        with patch.object(srv, "_background_reindex", AsyncMock()) as mock_reindex:
+            await srv._ensure_index_complete()
+            assert srv._reindex_task is not None
+            await srv._reindex_task  # let the mock reindex task finish
+
+        assert srv._semantic_ready is False
+        mock_reindex.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_double_start_when_reindex_running(self, restore_root_logger):
+        """A reindex already running → _ensure_index_complete does not start another."""
+        srv = self._ready_server(unembedded=3)
+        srv._reindex_task = asyncio.create_task(asyncio.sleep(0.01))
+
+        with patch.object(srv, "_background_reindex", AsyncMock()) as mock_reindex:
+            await srv._ensure_index_complete()
+        mock_reindex.assert_not_called()
+        assert srv._semantic_ready is False  # still incomplete
+
+        srv._reindex_task.cancel()
+        try:
+            await srv._reindex_task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_background_reindex_flips_gate_on_complete(self, restore_root_logger):
+        """When the reindex finishes (remaining == 0), the gate flips ON."""
+        srv = _import_memdb_server()
+        srv._reindex_impl = AsyncMock(return_value={
+            "indexed": 5, "remaining": 0, "complete": True,
+        })
+        srv._semantic_ready = False
+
+        await srv._background_reindex()
+
+        assert srv._semantic_ready is True

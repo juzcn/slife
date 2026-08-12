@@ -32,7 +32,14 @@ async def _memdb_lifespan(_app):
     try:
         yield
     finally:
-        global _store, _reindex_task
+        global _store, _reindex_task, _reinit_task
+        if _reinit_task is not None and not _reinit_task.done():
+            _reinit_task.cancel()
+            try:
+                await _reinit_task
+            except asyncio.CancelledError:
+                pass
+            _reinit_task = None
         if _reindex_task is not None and not _reindex_task.done():
             _reindex_task.cancel()
             try:
@@ -62,6 +69,8 @@ _embedder: EmbeddingClient | None = None
 _db_path: Path | None = None
 _init_lock: asyncio.Lock | None = None
 _reindex_task: asyncio.Task | None = None  # type: ignore[valid-type]
+_reinit_task: asyncio.Task | None = None  # store re-init after model change
+_semantic_ready: bool = False  # index-completeness gate for hybrid search
 
 #: Max consecutive reindex batches with zero progress before giving up — a
 #: persistently failing embedder must not spin forever (REVIEW M7).
@@ -70,6 +79,9 @@ _MAX_REINDEX_NO_PROGRESS = 20
 
 def _hybrid_fallback_reason() -> str:
     """Return a human-readable reason why hybrid search fell back to FTS5."""
+    if not _semantic_ready:
+        return ("hybrid degraded to fts5 — semantic index is building/rebuilding. "
+                "Semantic search resumes automatically when indexing finishes.")
     if _embedder is None:
         return "hybrid degraded to fts5 — embedding backend not initialized"
     if not _embedder.available:
@@ -155,6 +167,10 @@ async def _ensure_store() -> SessionStore:
             )
         else:
             logger.info("embeddings_disabled backend=%s", _embedder.backend if _embedder else "none")
+        # Gate + (re)build the index for the current model: covers a config
+        # model change (the migration just dropped the vec0 table) and a
+        # restart mid-reindex (leftover unembedded turns resume here).
+        await _ensure_index_complete()
         return _store
 
 
@@ -222,6 +238,38 @@ async def _count_all_embedded() -> int:
         return row[0] if row else 0
     except Exception:
         return 0
+
+
+async def _ensure_index_complete() -> None:
+    """Ensure every diary turn is embedded for the current model.
+
+    The index-completeness gate: semantic search is only enabled once
+    ``count_unembedded() == 0``.  If any turns lack embeddings, the gate
+    is switched OFF and a background reindex is started (or resumed); the
+    reindex flips it back ON when it finishes.  Called on store init and
+    at the start of every search / check, so an interrupted or stalled
+    reindex retries on the next call — the index converges to complete and
+    partial semantic results are never returned.
+    """
+    global _reindex_task, _semantic_ready
+    if _embedder is None or not _embedder.available:
+        return
+    store = _store
+    if store is None:
+        return
+    try:
+        unembedded = await store.count_unembedded()
+    except Exception as e:
+        logger.debug("count_unembedded_error err=%s", e)
+        return
+    if unembedded == 0:
+        _semantic_ready = True
+        return
+    _semantic_ready = False
+    if _reindex_task is not None and not _reindex_task.done():
+        return  # a reindex is already running
+    _reindex_task = asyncio.create_task(_background_reindex())
+    logger.info("reindex_started unembedded=%d", unembedded)
 
 
 async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
@@ -296,8 +344,10 @@ async def _background_reindex(reset: bool = False) -> None:
 
     Called by ``_reinit_store_after_model_change`` after the vec0 table
     has been migrated (or confirmed unchanged).  Each batch is small
-    (5 turns) so it doesn't block the event loop.
+    (5 turns) so it doesn't block the event loop.  Flips the
+    ``_semantic_ready`` gate back ON when the index is complete.
     """
+    global _semantic_ready
     import asyncio as _asyncio
 
     batches = 0
@@ -313,6 +363,7 @@ async def _background_reindex(reset: bool = False) -> None:
             result = await _reindex_impl(reset=False, batch_limit=5)
             batches += 1
             if result.get("complete"):
+                _semantic_ready = True
                 logger.info("background_reindex_done batches=%d", batches)
                 return
             if result.get("indexed", 0) == 0:
@@ -380,8 +431,9 @@ async def _reinit_store_after_model_change() -> None:
     _store = new_store
     logger.info("store_reinited model=%s dim=%d", model_id, _embedder.dimension)
 
-    # Background reindex will populate the (possibly migrated) vec0 table.
-    await _background_reindex(reset=False)
+    # Gate OFF + background reindex populates the (possibly migrated) vec0
+    # table; the gate flips back ON when every turn is embedded.
+    await _ensure_index_complete()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -475,6 +527,10 @@ async def memory_search(
     until: str | None = None,
 ) -> str:
     store = await _ensure_store()
+    # Trigger a reindex if any turns lack embeddings (retries a stalled /
+    # interrupted index) — the _semantic_ready gate keeps results keyword-only
+    # until the index is complete, so no partial semantic results are served.
+    await _ensure_index_complete()
     mode = mode.lower()
     if mode not in ("grep", "fts5", "hybrid", "time"):
         mode = "hybrid"
@@ -516,7 +572,9 @@ async def memory_search(
                                                      since=since, until=until)
         semantic_hits: list[dict] = []
         semantic_available = False
-        if _embedder and _embedder.available:
+        # Semantic is only served once the index is complete for the current
+        # model — while a full reindex is building, hybrid degrades to fts5.
+        if _semantic_ready and _embedder and _embedder.available:
             emb = await _embedder.embed_one(query)
             if emb:
                 semantic_hits = await store.search_semantic(embedding=emb,
@@ -602,9 +660,12 @@ async def memory_summarize(
 async def memory_check_embedding() -> str:
     from slife.plugins.memdb.embedding_config import make_check_report
     try:
+        # Retry a stalled/incomplete index on check, and report the gate.
+        await _ensure_index_complete()
         report = make_check_report()
         unembedded = await _count_unembedded()
         report["unembedded"] = unembedded
+        report["semantic_ready"] = _semantic_ready
         if unembedded > 0 and report.get("available"):
             report["hint"] = (
                 report.get("hint", "") +
@@ -685,11 +746,15 @@ async def memory_set_embedding(
         # memory_set_embedding returns immediately.  The task closes
         # the old store connection, re-runs setup (triggering vec0 table
         # migration if the model dimension or identity changed), then
-        # reindexes all turns with the new model.
-        global _reindex_task
+        # reindexes all turns with the new model.  Semantic search is
+        # gated OFF until that reindex completes.
+        global _reinit_task, _reindex_task, _semantic_ready
+        if _reinit_task and not _reinit_task.done():
+            _reinit_task.cancel()
         if _reindex_task and not _reindex_task.done():
             _reindex_task.cancel()
-        _reindex_task = asyncio.create_task(_reinit_store_after_model_change())
+        _semantic_ready = False
+        _reinit_task = asyncio.create_task(_reinit_store_after_model_change())
         logger.info("background_reinit_and_reindex_started")
         status["hint"] = (
             "Background: migrating the vector table and rebuilding the index. "
@@ -722,14 +787,25 @@ async def memory_set_enabled(enabled: bool) -> str:
         status = await reload_embedder()
 
         if enabled:
-            global _reindex_task
+            # Go through the same reinit path as memory_set_embedding: the
+            # model may have been changed manually in the json5 config, so
+            # the store must re-run setup (the vec0 migration detects a
+            # model/dimension change and drops the table) before the gate is
+            # re-enabled — otherwise old-model vectors would be served against
+            # the new model's queries.
+            global _reinit_task, _reindex_task, _semantic_ready
+            if _reinit_task and not _reinit_task.done():
+                _reinit_task.cancel()
             if _reindex_task and not _reindex_task.done():
                 _reindex_task.cancel()
-            _reindex_task = asyncio.create_task(_background_reindex())
-            unembedded = await _count_unembedded()
+            _semantic_ready = False
+            _reinit_task = asyncio.create_task(_reinit_store_after_model_change())
             status["message"] = "Semantic search enabled."
-            if unembedded > 0:
-                status["reindex"] = f"Background reindex started, {unembedded} items pending"
+            status["hint"] = (
+                "Background: verifying the index for the current model "
+                "(detects manual json5 config changes). Semantic search "
+                "resumes when indexing finishes."
+            )
         else:
             embedded_count = await _count_all_embedded()
             status["message"] = "Semantic search disabled. Keyword search still available."
