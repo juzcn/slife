@@ -451,16 +451,29 @@ class TestStatusBar:
             bar = StatusBar()
         bar.update = MagicMock()
         bar.update_info(model="Test")
-        assert "Ctrl+G model" in bar.update.call_args[0][0]
+        assert "Ctrl+S model" in bar.update.call_args[0][0]
 
 
-# ── Model switching (Ctrl+G) ────────────────────────────────────────────
+# ── Model switching (Ctrl+S) ────────────────────────────────────────────
 
 
 class TestModelSwitchBinding:
-    def test_app_binds_ctrl_g_to_switch_model(self):
+    def test_app_binds_ctrl_s_to_switch_model(self):
         from slife.ui.app import SlifeApp
 
-        matches = [b for b in SlifeApp.BINDINGS if b.key == "ctrl+g"]
+        matches = [b for b in SlifeApp.BINDINGS if b.key == "ctrl+s"]
         assert len(matches) == 1
         assert matches[0].action == "switch_model"
+
+    def test_action_switch_model_is_sync_not_async(self):
+        """Regression: binding actions run inside the key-event handler
+        (`App._on_key` → `_check_bindings`).  An async action that awaits
+        the picker's future there blocks the message pump and deadlocks
+        the TUI — the picker needs key events to resolve, which never
+        arrive.  The action must stay sync and defer the await to a task.
+        """
+        import inspect
+
+        from slife.ui.app import SlifeApp
+
+        assert not inspect.iscoroutinefunction(SlifeApp.action_switch_model)

@@ -64,7 +64,7 @@ class StatusBar(Static):
             parts.append(f"[#6e7681]↑ {context_tokens:,} tokens[/#6e7681]")
 
         parts.append(
-            "[#484f58]│ Ctrl+C quit  Esc cancel  Ctrl+G model  Home/End scroll[/#484f58]"
+            "[#484f58]│ Ctrl+C quit  Esc cancel  Ctrl+S model  Home/End scroll[/#484f58]"
         )
 
         self.update("  ".join(parts))
@@ -196,9 +196,11 @@ class SlifeApp(App):
         # unresolved (C7).  A non-priority escape still cancels when no
         # approval prompt is focused.
         Binding("escape", "cancel", "Cancel agent loop"),
-        # NOTE: NOT ctrl+m — Textual aliases ctrl+m to enter (carriage
-        # return); ctrl+g is a free key for the inline model picker.
-        Binding("ctrl+g", "switch_model", "Switch model"),
+        # Model switching key — ctrl+s ("s" = switch).  Not ctrl+m (Textual
+        # aliases it to enter), not ctrl+g (VSCode's goto-line steals it).
+        # Earlier "keys become Home" reports were the picker-mount scroll bug
+        # (now fixed with a deferred scroll), not the key itself.
+        Binding("ctrl+s", "switch_model", "Switch model"),
         Binding("home", "scroll_home", "Scroll to top", priority=True),
         Binding("end", "scroll_end", "Scroll to bottom", priority=True),
     ]
@@ -361,15 +363,21 @@ class SlifeApp(App):
             inbox_pending=inbox.pending if inbox else 0,
         )
 
-    # ── Model switching (Ctrl+G) ──────────────────────────────────
+    # ── Model switching (Ctrl+S) ──────────────────────────────────
 
-    async def action_switch_model(self) -> None:
+    def action_switch_model(self) -> None:
         """Open the inline model picker — works even when the LLM is down.
 
         Switching is config + runtime only (no API call), so this is the
         escape hatch when the current model is unavailable.  Rendered in
         the chat stream, same style as the approval prompt: type a number
         to pick, Esc to cancel.
+
+        NOTE — must be SYNC: binding actions run inside the key-event
+        handler (`App._on_key` → `_check_bindings`), so awaiting the
+        user's choice here would block the message pump and deadlock the
+        TUI (the picker needs key events to resolve).  The post-decision
+        work runs as a background task instead.
         """
         import asyncio
 
@@ -390,9 +398,18 @@ class SlifeApp(App):
             future,
         )
         chat_view.mount(picker)
-        chat_view.scroll_end(animate=False)
+        # Scroll to the picker AFTER it is laid out.  An immediate scroll_end
+        # runs against the pre-mount content, and the picker's insertion can
+        # leave the view pinned at the top — the picker ends up below the
+        # fold (the user only finds it by pressing End).  Same deferred
+        # pattern as ChatView._follow_after_refresh (images).
+        chat_view.call_after_refresh(chat_view.scroll_end, animate=False)
         picker.focus()
 
+        asyncio.create_task(self._finish_model_switch(chat_view, future))
+
+    async def _finish_model_switch(self, chat_view, future) -> None:
+        """Apply the picker's decision off the key-event handler."""
         model = await future
         self.query_one("#user-input").focus()
         if model is None:

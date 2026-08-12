@@ -753,7 +753,7 @@ class TestAgentServiceWeChat:
         assert call_count[0] == 2
 
 
-# ── Direct model switching (Ctrl+G, no LLM needed) ─────────────────────
+# ── Direct model switching (Ctrl+S, no LLM needed) ─────────────────────
 
 
 def _two_model_config():

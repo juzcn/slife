@@ -513,7 +513,7 @@ All user-supplied text is rendered with `markup=False` to prevent `MarkupError` 
 |-----|--------|
 | `Ctrl+C` | Quit |
 | `Esc` | Cancel agent loop |
-| `Ctrl+G` | Switch model (inline picker — click a row or type a number) |
+| `Ctrl+S` | Switch model (inline picker — type a number, Esc cancels) |
 | `Home` / `End` | Scroll to top / bottom |
 | `Ctrl+Y` | Copy result (on a tool call) |
 | `Enter` / `Space` | Toggle thinking block (on an assistant message) |
