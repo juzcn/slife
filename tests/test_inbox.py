@@ -4,6 +4,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from slife.a2a.identity import AgentId, AgentMessage, HUMAN, WECHAT
@@ -360,6 +361,29 @@ class TestInboxProcessOne:
         on_turn_complete.assert_awaited_once()
         call_kwargs = on_turn_complete.call_args[1]
         assert call_kwargs["token_count"] == 77
+
+    @pytest.mark.asyncio
+    async def test_on_turn_complete_passes_handler_timestamp(self, mock_loop, mock_store):
+        """The turn timestamp captured by the TUI handler is forwarded as
+        created_at so the diary save matches the live display time."""
+        from datetime import datetime
+
+        from slife.agent.inbox import Inbox
+        on_turn_complete = AsyncMock()
+        inbox = Inbox(mock_loop, mock_store, on_turn_complete=on_turn_complete)
+
+        mock_result = MagicMock()
+        mock_result.text = "ok"
+        mock_result.usage.total_tokens = 7
+        mock_loop.run.return_value = mock_result
+
+        ts = datetime(2026, 8, 12, 14, 32, 9)
+        handler = SimpleNamespace(_timestamp=ts)
+        msg = self._make_msg(content="go", handler=handler)
+        await inbox._process_one(msg)
+
+        call_kwargs = on_turn_complete.call_args[1]
+        assert call_kwargs["created_at"] is ts
 
     @pytest.mark.asyncio
     async def test_process_on_turn_complete_error_swallowed(self, mock_loop,

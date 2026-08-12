@@ -242,16 +242,27 @@ class SessionStore:
         what_model: str = "",
         channel: str = "",
         embedder=None,
+        created_at: str | None = None,
+        completed_at: str | None = None,
     ) -> int:
-        """Insert a turn. Returns rowid. Generates embedding if embedder available."""
-        now = _now()
+        """Insert a turn. Returns rowid. Generates embedding if embedder available.
+
+        ``created_at`` is the user-input timestamp threaded from the TUI
+        (the Enter-press moment); ``completed_at`` is the assistant
+        completion timestamp (captured after the final ensure).  ``None``
+        falls back to the current wall clock.
+        """
+        now = created_at or _now()
+        done = completed_at or _now()
         messages_json = json.dumps(messages or [], ensure_ascii=False)
 
         cursor = await self._c.execute(
             """INSERT INTO diary (user_message, messages, summary, tags,
-                                  channel, created_at, who_helped, what_model, token_count)
-               VALUES (?, ?, '', '', ?, ?, ?, ?, ?)""",
-            (user_message, messages_json, channel, now, who_helped, what_model, token_count),
+                                  channel, created_at, completed_at,
+                                  who_helped, what_model, token_count)
+               VALUES (?, ?, '', '', ?, ?, ?, ?, ?, ?)""",
+            (user_message, messages_json, channel, now, done,
+             who_helped, what_model, token_count),
         )
         await self._c.commit()
         rowid = cursor.lastrowid
@@ -316,7 +327,8 @@ class SessionStore:
         """
         cursor = await self._c.execute(
             """SELECT rowid, user_message, messages, summary, tags,
-                      channel, created_at, who_helped, what_model, token_count
+                      channel, created_at, completed_at,
+                      who_helped, what_model, token_count
                FROM diary
                WHERE rowid IN (
                    SELECT rowid FROM diary

@@ -256,6 +256,32 @@ class TestSessionStoreSaveTurn:
         mock_conn.commit.assert_called()
 
     @pytest.mark.asyncio
+    async def test_save_turn_honors_created_at(self):
+        """save_turn persists created_at (user input) and completed_at
+        (assistant completion) when both are threaded from the harness."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = MagicMock()
+        mock_cursor.lastrowid = 7
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        mock_conn.commit = AsyncMock()
+        store._conn = mock_conn
+
+        rowid = await store.save_turn(
+            user_message="Hello",
+            created_at="2026-08-12T14:32:09+08:00",
+            completed_at="2026-08-12T14:35:40+08:00",
+        )
+
+        assert rowid == 7
+        args = mock_conn.execute.call_args[0][1]
+        # INSERT tuple order: (user_message, messages_json, channel,
+        #                      created_at, completed_at,
+        #                      who_helped, what_model, token_count)
+        assert args[3] == "2026-08-12T14:32:09+08:00"
+        assert args[4] == "2026-08-12T14:35:40+08:00"
+
+    @pytest.mark.asyncio
     async def test_save_turn_with_embedder(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
@@ -376,6 +402,7 @@ class TestSessionStoreGetRecentTurns:
                 summary        TEXT DEFAULT '',
                 tags           TEXT DEFAULT '',
                 created_at     TEXT NOT NULL,
+                completed_at   TEXT,
                 channel        TEXT DEFAULT '',
                 who_helped     TEXT DEFAULT '',
                 what_model     TEXT DEFAULT '',
@@ -419,6 +446,7 @@ class TestSessionStoreGetRecentTurns:
             assert "user_message" in turn
             assert "messages" in turn
             assert "created_at" in turn
+            assert "completed_at" in turn
             assert "who_helped" in turn
             assert "what_model" in turn
             assert "token_count" in turn

@@ -309,6 +309,14 @@ class Inbox:
                         token_count=token_count,
                         conversation=conversation,
                         channel=str(msg.source),
+                        # The user-input timestamp captured by the TUI
+                        # handler — becomes the diary created_at so restore
+                        # shows the same time as the live display.  Absent
+                        # for non-TUI handlers (None → store uses now).
+                        created_at=getattr(msg.handler, "_timestamp", None),
+                        # The handler receives the completion time so the
+                        # live assistant message matches completed_at.
+                        handler=msg.handler,
                     )
                 except Exception:
                     logger.warning("on_turn_complete_error", exc_info=True)

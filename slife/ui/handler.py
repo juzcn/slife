@@ -13,6 +13,7 @@ Manages per-iteration AssistantMessage lifecycle:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from slife.agent.llm_client import TokenUsage
@@ -36,12 +37,25 @@ class TUIHandler:
     is always at the bottom of the chat.
     """
 
-    def __init__(self, app: SlifeApp, assistant_prefix: str | None = None):
+    def __init__(
+        self,
+        app: SlifeApp,
+        assistant_prefix: str | None = None,
+        timestamp: datetime | None = None,
+    ):
         self._app = app
         self._chat_view: ChatView = app.query_one("#chat-view")  # type: ignore[assignment]
         self._assistant_prefix = assistant_prefix
+        # Turn timestamp — the user's Enter-press moment when threaded from
+        # the app, else captured now.  Rendered on assistant messages AND
+        # threaded into the diary ``created_at`` via the inbox →
+        # save_to_memory path, so restore shows the same [HH:MM] as live.
+        self._timestamp: datetime = timestamp or datetime.now().astimezone()
         self._current_assistant: AssistantMessage | None = None
         self._iteration_needs_new_message: bool = False
+        # Every AssistantMessage widget created for this turn — updated to
+        # the completion time by set_completed_at when the turn ends.
+        self._turn_assistants: list[AssistantMessage] = []
 
     # ── Assistant message lifecycle ──────────────────────────────────
 
@@ -60,8 +74,22 @@ class TUIHandler:
             # Create fresh message for the new iteration
             self._current_assistant = self._chat_view.add_assistant_message(
                 name_prefix=self._assistant_prefix,
+                timestamp=self._timestamp,
             )
+            self._turn_assistants.append(self._current_assistant)
             self._iteration_needs_new_message = False
+
+    def set_completed_at(self, dt: datetime) -> None:
+        """Stamp the turn's assistant messages with the completion time.
+
+        Called by the service when the turn finishes persisting (the
+        ``now`` captured after ``_ensure_turn_consistent``); updates every
+        assistant message of this turn so the live [HH:MM] equals the
+        ``completed_at`` that restore will read.
+        """
+        for msg in self._turn_assistants:
+            msg._timestamp = dt
+            msg._refresh_display()
 
     def finalize_current(self) -> None:
         """Mark the current assistant message as the final response.

@@ -284,6 +284,26 @@ class TestTUIHandler:
         handler.finalize_current()  # should not raise
 
     @pytest.mark.asyncio
+    async def test_set_completed_at_updates_turn_assistants(self):
+        """set_completed_at stamps every assistant message of the turn with
+        the completion time so the live [HH:MM] matches diary completed_at."""
+        from datetime import datetime
+
+        app = self._make_app_mock()
+        mock_assistant = MagicMock()
+        mock_chat_view = app.query_one.return_value
+        mock_chat_view.add_assistant_message.return_value = mock_assistant
+
+        handler = TUIHandler(app)
+        await handler.on_thinking_chunk("x")  # creates + records an assistant
+
+        dt = datetime(2026, 8, 12, 14, 35, 0)
+        handler.set_completed_at(dt)
+
+        assert mock_assistant._timestamp == dt
+        mock_assistant._refresh_display.assert_called()
+
+    @pytest.mark.asyncio
     async def test_on_token_usage_updates_current_assistant(self):
         """on_token_usage sets usage on the current assistant message."""
         app = self._make_app_mock()

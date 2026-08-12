@@ -2,6 +2,7 @@
 
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 
 from textual import events
@@ -446,6 +447,7 @@ class SlifeApp(App):
         """Mount an autonomous (heartbeat) message in the chat — ⚡ 自主."""
         self.query_one("#chat-view", ChatView).add_assistant_message(
             name_prefix="⚡ 自主: ",
+            timestamp=datetime.now().astimezone(),
         ).append_text(text)
 
     async def _on_heartbeat(self, outcome: str) -> None:
@@ -513,12 +515,20 @@ class SlifeApp(App):
         chat_view = self.query_one("#chat-view", ChatView)
         # Display the original raw text (with @path markers visible)
         # … but pass cleaned text + image paths to the agent.
-        chat_view.add_user_message(raw, images=image_paths or None, prefix="You> ")
+        # The timestamp is the Enter-press moment — shown on the user
+        # message and threaded into the turn's diary created_at so the
+        # assistant reply (and restore) show the same time.
+        now = datetime.now().astimezone()
+        chat_view.add_user_message(
+            raw, images=image_paths or None, prefix="You> ", timestamp=now,
+        )
 
         # _process_message just enqueues and returns immediately
         # (handler is attached to the message, inbox streams later).
         self.run_worker(
-            self._process_message(cleaned_text, image_paths or None, chat_view),
+            self._process_message(
+                cleaned_text, image_paths or None, chat_view, turn_time=now,
+            ),
             exclusive=False,
         )
 
@@ -545,13 +555,21 @@ class SlifeApp(App):
             source = kwargs.get("source", "unknown")
             content = kwargs.get("content", "").strip()
             # Show source agent ID as prefix so user knows who sent the task
-            chat_view.add_user_message(content, prefix=f"{source}(a2a)")
+            chat_view.add_user_message(
+                content,
+                prefix=f"{source}(a2a)",
+                timestamp=datetime.now().astimezone(),
+            )
 
         elif kind == "peer_message":
             # Peer terminal (WeChat etc.) — show with channel prefix
             source = kwargs.get("source", "wechat")
             content = kwargs.get("content", "").strip()
-            chat_view.add_user_message(content, prefix="You(Wechat)> ")
+            chat_view.add_user_message(
+                content,
+                prefix="You(Wechat)> ",
+                timestamp=datetime.now().astimezone(),
+            )
 
         elif kind == "loop_error":
             error = kwargs.get("error", "")
@@ -607,11 +625,14 @@ class SlifeApp(App):
         text: str,
         images: list[str] | None,
         chat_view: ChatView,
+        turn_time: datetime | None = None,
     ) -> None:
         """Run the agent loop and stream results to the TUI."""
         self._tool_widgets.clear()
 
-        handler = TUIHandler(self, assistant_prefix=self._assistant_prefix)
+        handler = TUIHandler(
+            self, assistant_prefix=self._assistant_prefix, timestamp=turn_time,
+        )
 
         try:
             await self.service.process_message(

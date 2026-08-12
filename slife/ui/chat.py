@@ -1,6 +1,7 @@
 """Chat view widgets for the Slife TUI — Claude Code CLI style."""
 
 import re
+from datetime import datetime
 
 from rich.style import Style as RichStyle
 from rich.text import Text as RichText
@@ -28,6 +29,34 @@ _WIN_PATH_RE = re.compile(
     r"\.(?:png|jpg|jpeg|gif|webp|bmp|svg|tiff|tif))",
     re.IGNORECASE,
 )
+
+
+def _format_timestamp(ts) -> str | None:
+    """Format *ts* for inline display — ``[HH:MM]`` / ``[MM-DD HH:MM]`` / ``[YYYY-MM-DD HH:MM]``.
+
+    Accepts a timezone-aware ``datetime`` (live path) or an ISO-8601 string
+    as stored in the diary ``created_at`` (restore path, e.g.
+    ``2026-08-12T14:32:09+08:00``).  Same-day → time only; same-year →
+    month-day + time; older → full date.  Returns ``None`` (no timestamp)
+    for a missing or unparseable value.
+    """
+    if ts is None:
+        return None
+    if isinstance(ts, str):
+        try:
+            dt = datetime.fromisoformat(ts)
+        except ValueError:
+            return None
+    else:
+        dt = ts
+    # astimezone() converts aware → local zone and treats naive as local.
+    dt = dt.astimezone()
+    now = datetime.now().astimezone()
+    if dt.date() == now.date():
+        return dt.strftime("%H:%M")
+    if dt.year == now.year:
+        return dt.strftime("%m-%d %H:%M")
+    return dt.strftime("%Y-%m-%d %H:%M")
 
 
 def _linkify(plain: str) -> Content:
@@ -96,13 +125,20 @@ class ChatView(VerticalScroll):
         text: str,
         images: list[str] | None = None,
         prefix: str = "> ",
+        timestamp=None,
     ) -> "UserMessage":
         """Add and return a user message widget.
 
         Image attachments are mounted as sibling widgets below the
         message text so they render inline in the chat scroll.
+
+        Args:
+            timestamp: Turn timestamp (datetime or ISO-8601 str) rendered
+                       as a dim ``[HH:MM]`` before the prefix — for a live
+                       human message this is the Enter-press moment.
+                       ``None`` means no time is shown.
         """
-        msg = UserMessage(text, images=images, prefix=prefix)
+        msg = UserMessage(text, images=images, prefix=prefix, timestamp=timestamp)
         self.mount(msg)
         if images:
             for img_path in images:
@@ -131,15 +167,20 @@ class ChatView(VerticalScroll):
         return widget
 
     def add_assistant_message(
-        self, name_prefix: str | None = None
+        self,
+        name_prefix: str | None = None,
+        timestamp=None,
     ) -> "AssistantMessage":
         """Add and return an assistant message widget (initially empty).
 
         Args:
             name_prefix: Optional prefix like ``"Jack> "`` shown before
                          the response text.  ``None`` means no prefix.
+            timestamp: Turn timestamp (datetime or ISO-8601 str) rendered
+                       as a dim ``[HH:MM]`` before the content.  ``None``
+                       means no time is shown.
         """
-        msg = AssistantMessage(name_prefix=name_prefix)
+        msg = AssistantMessage(name_prefix=name_prefix, timestamp=timestamp)
         self.mount(msg)
         self._follow()
         return msg
@@ -175,20 +216,29 @@ class ChatView(VerticalScroll):
 
 
 class UserMessage(Static):
-    """User message — ``prefix> text``, default prefix ``>``."""
+    """User message — ``[HH:MM] prefix> text``, default prefix ``>``."""
 
     def __init__(
         self,
         text: str,
         images: list[str] | None = None,
         prefix: str = "> ",
+        timestamp=None,
     ):
-        # Build as single string then style only the prefix portion.
-        # Avoids Content concatenation quirks that can insert newlines.
+        # Build as single string then style only the timestamp + prefix
+        # portions.  Avoids Content concatenation quirks that can insert
+        # newlines.
+        ts = _format_timestamp(timestamp)
+        time_str = f"[{ts}] " if ts else ""
         prefix_len = len(prefix)
         content = Content.from_text(
-            f"{prefix}{text}", markup=False,
-        ).stylize("bold #d97706", start=0, end=prefix_len)
+            f"{time_str}{prefix}{text}", markup=False,
+        )
+        if ts:
+            content = content.stylize("dim #6e7681", start=0, end=len(time_str))
+        content = content.stylize(
+            "bold #d97706", start=len(time_str), end=len(time_str) + prefix_len
+        )
         # Image rendering is handled by ChatView.add_user_message()
         # which mounts InlineImage siblings — no text fallback here.
         super().__init__(content)
@@ -232,10 +282,11 @@ class AssistantMessage(Static):
                 return
         await super()._on_key(event)
 
-    def __init__(self, name_prefix: str | None = None):
+    def __init__(self, name_prefix: str | None = None, timestamp=None):
         super().__init__("")
         self.add_class("assistant-message")
         self._name_prefix = name_prefix  # e.g. "Jack> " or None
+        self._timestamp = timestamp  # datetime or ISO-8601 str (diary created_at)
         self._buffer = ""
         self._thinking = ""
         self._has_thinking = False
@@ -369,8 +420,16 @@ class AssistantMessage(Static):
                 content = content + self._build_thinking_expanded()
 
         # Response text — always visible, never collapsed away.
-        # Placeholder only when there is neither text nor thinking yet.
+        # The turn timestamp (dim [HH:MM]) sits right before the response
+        # text, NOT before the thinking block — so the reply reads
+        # "⟐ Thinking…\n[14:35] The answer", and a thinking-only message
+        # (still streaming / tool iteration) shows no time at all.
         if self._buffer:
+            ts = _format_timestamp(getattr(self, "_timestamp", None))
+            if ts:
+                content = content + Content.from_text(
+                    f"[{ts}] ", markup=False,
+                ).stylize("dim #6e7681")
             content = content + self._build_response_text()
         elif not self._has_thinking:
             content = content + Content.from_markup("[dim]…[/dim]")

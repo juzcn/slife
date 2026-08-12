@@ -316,12 +316,25 @@ async def restore_session(
 
         turn_idx = -1
         is_heartbeat = False
+        cur_created = ""
+        cur_completed = ""
         for idx, msg in enumerate(all_messages):
             role = msg.get("role", "")
             if role == "system":
                 continue
             elif role == "user":
                 turn_idx += 1
+                # Per-turn timestamps: created_at = user input time (shown
+                # on the user message), completed_at = assistant completion
+                # (shown on every assistant message of this turn).
+                if turn_idx < len(turns):
+                    cur_created = turns[turn_idx].get("created_at", "")
+                    cur_completed = (
+                        turns[turn_idx].get("completed_at") or cur_created
+                    )
+                else:
+                    cur_created = ""
+                    cur_completed = ""
                 raw = msg.get("content", "") or ""
                 # Heartbeat turns: the trigger is a marked system message,
                 # not a real user message — filter the whole turn (the
@@ -336,6 +349,7 @@ async def restore_session(
                     "content": raw,
                     "images": msg.get("images"),
                     "prefix": prefix,
+                    "created_at": cur_created,
                 })
             elif role == "assistant":
                 # Harness messages (_sys_note, _sys_trim) exist so the
@@ -364,6 +378,7 @@ async def restore_session(
                         "tool_calls": [],
                         "is_final": False,
                         "name_prefix": "⚡ 自主: ",
+                        "completed_at": cur_completed,
                     })
                     continue
                 is_final = (idx == last_assistant_idx)
@@ -386,6 +401,7 @@ async def restore_session(
                     ],
                     "is_final": is_final,
                     "name_prefix": assistant_prefix,
+                    "completed_at": cur_completed,
                 })
             elif role == "tool":
                 pass
@@ -442,10 +458,12 @@ async def restore_session(
                     op["content"],
                     images=op.get("images"),
                     prefix=op["prefix"],
+                    timestamp=op.get("created_at"),
                 )
             elif op["type"] == "assistant":
                 am = chat_view.add_assistant_message(
                     name_prefix=op.get("name_prefix"),
+                    timestamp=op.get("completed_at"),
                 )
                 thinking = op.get("thinking", "")
                 if thinking:

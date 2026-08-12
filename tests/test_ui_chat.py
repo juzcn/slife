@@ -280,3 +280,119 @@ class TestChatView:
             from slife.ui.chat import ChatView
             view = ChatView()
             assert view.can_focus is True
+
+
+# ── Timestamp formatting + per-message rendering ────────────────────
+
+
+class TestTimestamp:
+    """_format_timestamp rules; both user and assistant show a time."""
+
+    def test_none_and_garbage(self):
+        from slife.ui.chat import _format_timestamp
+        assert _format_timestamp(None) is None
+        assert _format_timestamp("not-a-time") is None
+
+    def test_same_day_time_only(self):
+        from datetime import datetime
+        from slife.ui.chat import _format_timestamp
+        now = datetime.now().astimezone()
+        assert _format_timestamp(now) == now.strftime("%H:%M")
+
+    def test_iso_string_same_day(self):
+        from datetime import datetime
+        from slife.ui.chat import _format_timestamp
+        now = datetime.now().astimezone().replace(second=0, microsecond=0)
+        assert _format_timestamp(now.isoformat(timespec="seconds")) == now.strftime("%H:%M")
+
+    def test_other_day_same_year(self, monkeypatch):
+        from datetime import datetime
+        import slife.ui.chat as chat
+
+        class _FixedNow(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 8, 12, 10, 0, tzinfo=tz).astimezone()
+
+        monkeypatch.setattr(chat, "datetime", _FixedNow)
+        assert chat._format_timestamp(datetime(2026, 1, 2, 9, 5)) == "01-02 09:05"
+
+    def test_previous_year_full_date(self, monkeypatch):
+        from datetime import datetime
+        import slife.ui.chat as chat
+
+        class _FixedNow(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 8, 12, 10, 0, tzinfo=tz).astimezone()
+
+        monkeypatch.setattr(chat, "datetime", _FixedNow)
+        assert chat._format_timestamp(datetime(2025, 12, 31, 23, 59)) == "2025-12-31 23:59"
+
+    def test_user_message_with_timestamp(self, monkeypatch):
+        """User messages show [HH:MM] before the prefix (Enter-press time)."""
+        from datetime import datetime
+        from slife.ui.chat import UserMessage
+        import slife.ui.chat as chat
+
+        class _FixedNow(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 8, 12, 10, 0, tzinfo=tz).astimezone()
+
+        monkeypatch.setattr(chat, "datetime", _FixedNow)
+        m = UserMessage(
+            "hello", prefix="You> ", timestamp=datetime(2026, 8, 12, 14, 32),
+        )
+        assert m.render().plain == "[14:32] You> hello"
+
+    def test_user_message_no_timestamp_no_time(self):
+        """Without a timestamp the user message is unchanged."""
+        from slife.ui.chat import UserMessage
+        m = UserMessage("hello", prefix="You> ")
+        assert m.render().plain == "You> hello"
+
+    def test_assistant_message_renders_timestamp(self, monkeypatch):
+        """Assistant messages show [HH:MM] before the content."""
+        from datetime import datetime
+        from slife.ui.chat import AssistantMessage
+        import slife.ui.chat as chat
+
+        class _FixedNow(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 8, 12, 10, 0, tzinfo=tz).astimezone()
+
+        monkeypatch.setattr(chat, "datetime", _FixedNow)
+        m = AssistantMessage(timestamp=datetime(2026, 8, 12, 14, 32))
+        m.append_text("hi")
+        assert m.render().plain == "[14:32] hi"
+
+    def test_assistant_timestamp_after_thinking(self, monkeypatch):
+        """The timestamp goes on the response text, NOT before the thinking
+        block — a thinking-only message shows no time."""
+        from datetime import datetime
+        from slife.ui.chat import AssistantMessage
+        import slife.ui.chat as chat
+
+        class _FixedNow(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 8, 12, 10, 0, tzinfo=tz).astimezone()
+
+        monkeypatch.setattr(chat, "datetime", _FixedNow)
+        m = AssistantMessage(timestamp=datetime(2026, 8, 12, 14, 32))
+        m.append_thinking("thinking…")
+        # Thinking-only (no response text yet) → no timestamp.
+        assert "[14:32]" not in m.render().plain
+        # Once the reply streams in, the time sits before the text.
+        m.append_text("answer")
+        plain = m.render().plain
+        assert plain.index("[14:32]") > plain.index("thinking")
+        assert plain.endswith("answer")
+
+    def test_assistant_no_timestamp_unchanged(self):
+        from slife.ui.chat import AssistantMessage
+        m = AssistantMessage()
+        m.append_text("hi")
+        assert m.render().plain == "hi"

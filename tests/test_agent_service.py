@@ -205,6 +205,53 @@ class TestAgentServiceMemory:
         await service.save_to_memory()
 
     @pytest.mark.asyncio
+    async def test_save_to_memory_passes_created_at(self, sample_config):
+        """The turn-start timestamp captured at display time flows to the
+        __memory_save_turn tool as created_at (→ diary), keeping restore
+        aligned with the live TUI."""
+        from datetime import datetime
+
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(return_value="{}")
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.conversation
+        conv.add_user_message("hi")
+        conv.add_assistant_message("hello back")
+
+        ts = datetime(2026, 8, 12, 14, 32, 9).astimezone()
+        await service.save_to_memory(
+            user_message="hi", token_count=10,
+            conversation=conv, channel="human", created_at=ts,
+        )
+
+        mock_client.call_tool.assert_awaited_once()
+        tool_name, args = mock_client.call_tool.await_args.args
+        assert tool_name == "__memory_save_turn"
+        assert args["created_at"].startswith("2026-08-12T14:32:09")
+        # completed_at is captured after _ensure_turn_consistent — an ISO
+        # timestamp from this run (not the threaded created_at).
+        assert args["completed_at"].startswith(
+            datetime.now().astimezone().strftime("%Y-%m-%d")
+        )
+
+    @pytest.mark.asyncio
+    async def test_save_to_memory_no_created_at_omits_key(self, sample_config):
+        """Without a threaded timestamp the tool is called without created_at."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(return_value="{}")
+        service._plugins["memdb"].client = mock_client
+
+        await service.save_to_memory(user_message="hi", token_count=10)
+        tool_name, args = mock_client.call_tool.await_args.args
+        assert tool_name == "__memory_save_turn"
+        assert "created_at" not in args
+
+    @pytest.mark.asyncio
     async def test_stop_memdb_noop_when_disabled(self, sample_config):
         service = AgentService(sample_config)
         await service.stop_memdb()  # Should not raise
@@ -817,8 +864,8 @@ class TestGetRecentTurns:
         con = sqlite3.connect(str(db))
         con.execute(
             "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
-            "tags TEXT, channel TEXT, created_at TEXT, who_helped TEXT, "
-            "what_model TEXT, token_count INT)"
+            "tags TEXT, channel TEXT, created_at TEXT, completed_at TEXT, "
+            "who_helped TEXT, what_model TEXT, token_count INT)"
         )
         for i in range(1, n + 1):
             con.execute(

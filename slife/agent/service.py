@@ -18,6 +18,7 @@ import os
 import sys
 import time as _time
 from collections import deque
+from datetime import datetime
 from collections.abc import Callable
 from pathlib import Path
 
@@ -1180,6 +1181,8 @@ class AgentService:
         token_count: int | None = None,
         conversation: "Conversation | None" = None,
         channel: str = "",
+        created_at: "datetime | str | None" = None,
+        handler: "object | None" = None,
     ) -> None:
         """Save the just-completed turn as a new row in memory.
 
@@ -1189,6 +1192,13 @@ class AgentService:
             conversation: The conversation to extract messages from.
                 Defaults to self.conversation (the TUI conversation).
             channel: Source channel — 'human', 'wechat', or remote agent id.
+            created_at: The user-input timestamp (Enter-press moment, aware
+                datetime or ISO-8601 str).  Written as the diary
+                ``created_at`` so restore matches the live [HH:MM].
+                ``None`` lets the store use its own now().
+            handler: The turn's UI handler, if any.  Receives the captured
+                completion time via ``set_completed_at`` so the live
+                assistant message shows when the turn actually finished.
         """
         # Accumulate turn's billed tokens into the session total.
         if token_count:
@@ -1203,6 +1213,22 @@ class AgentService:
         # tool_calls and close the turn if needed BEFORE extracting — the
         # same ensure used on load and before each user message.
         conv._ensure_turn_consistent()
+
+        # Completion time — captured AFTER the final ensure (the turn is
+        # now definitively done) and BEFORE the (potentially slow) MCP
+        # save call, so completed_at reflects when the assistant finished,
+        # not when the write landed.
+        now = datetime.now().astimezone()
+
+        # Push the completion time to the live UI so the assistant message
+        # shows [HH:MM] at turn end — the same value restore will read.
+        if handler is not None:
+            set_completed = getattr(handler, "set_completed_at", None)
+            if set_completed is not None:
+                try:
+                    set_completed(now)
+                except Exception:
+                    pass
 
         # Extract turn messages: everything after the matching user message.
         # Must handle both plain text (content is a str) and multimodal
@@ -1231,18 +1257,28 @@ class AgentService:
         # via memory_save_turn, so trimmed turns remain searchable.
 
         assert self._plugins["memdb"].client is not None  # guarded by memdb_enabled
+        save_args = {
+            "user_message": user_message,
+            "messages": turn_messages,
+            "token_count": token_count or 0,
+            "who_helped": (self.config.a2a_config and self.config.a2a_config.agent_name) or "",
+            "what_model": self.config.active_model.ref,
+            "channel": channel,
+        }
+        if created_at:
+            # Normalise an aware datetime to the store's ISO format; a str
+            # (e.g. tests) is passed through as-is.
+            save_args["created_at"] = (
+                created_at.astimezone().isoformat(timespec="seconds")
+                if isinstance(created_at, datetime)
+                else created_at
+            )
+        save_args["completed_at"] = now.isoformat(timespec="seconds")
         try:
             await asyncio.wait_for(
                 self._plugins["memdb"].client.call_tool(
                     "__memory_save_turn",
-                    {
-                        "user_message": user_message,
-                        "messages": turn_messages,
-                        "token_count": token_count or 0,
-                        "who_helped": (self.config.a2a_config and self.config.a2a_config.agent_name) or "",
-                        "what_model": self.config.active_model.ref,
-                        "channel": channel,
-                    },
+                    save_args,
                 ),
                 timeout=10.0,
             )

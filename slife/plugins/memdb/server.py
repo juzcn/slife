@@ -229,6 +229,8 @@ async def __memory_save_turn(
     who_helped: str = "",
     what_model: str = "",
     channel: str = "",
+    created_at: str | None = None,
+    completed_at: str | None = None,
 ) -> str:
     store = await _ensure_store()
     try:
@@ -238,7 +240,8 @@ async def __memory_save_turn(
         rowid = await store.save_turn(
             user_message=user_message, messages=messages,
             token_count=token_count, who_helped=who_helped, what_model=what_model,
-            channel=channel, embedder=_embedder,
+            channel=channel, embedder=_embedder, created_at=created_at,
+            completed_at=completed_at,
         )
         return json.dumps({"rowid": rowid, "status": "saved"}, ensure_ascii=False)
     except Exception as e:
