@@ -141,7 +141,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Harness | `_sys_note` (context status), `_sys_trim` (context trim) — auto-invoked, not for LLM use |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
-Every tool additionally accepts three harness meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (push a confirmation dialog).
+Every tool additionally accepts three harness meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt in the chat — Y approve / N deny / Esc deny).
 
 **Harness tools** come in two tiers. `_`-prefixed native tools (`_sys_note` / `_sys_trim`) are **LLM-visible but reserved**: the agent loop auto-invokes them each turn to maintain context state (report usage %, trim old turns when over the ceiling); they are schema-declared (so the Anthropic / OpenAI-Responses backends accept their call pairs) but the system prompt forbids the LLM from calling them, and both are harmless if it does anyway. `__`-prefixed plugin tools (`__memory_save_turn`, `__mcp_call_tool`, …) are **LLM-invisible** — filtered out of the schema entirely and called programmatically via `client.call_tool()`.
 
@@ -211,7 +211,7 @@ A2A's only implemented transport binding is MQTT — setting `transport` to any 
 |-----|--------|
 | `Ctrl+C` | Quit |
 | `Esc` | Cancel agent loop |
-| `Ctrl+L` | Focus input |
+| `Ctrl+S` | Switch model (inline picker — type a number, Esc cancels) |
 | `Home` / `End` | Scroll to top / bottom |
 | `Ctrl+Y` | Copy result (on a tool call) |
 | `Enter` / `Space` | Toggle thinking block (on an assistant message) |

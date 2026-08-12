@@ -139,7 +139,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | Harness | `_sys_note`（上下文状态）、`_sys_trim`（上下文裁剪）——自主调用，LLM 不可用 |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
 
-每个工具还额外接受三个框架元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（推送确认对话框）。
+每个工具还额外接受三个框架元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（对话流内联审批行——Y 批准 / N 拒绝 / Esc 拒绝）。
 
 **Harness 工具分两级。** `_` 前缀的原生工具（`_sys_note` / `_sys_trim`）**LLM 可见但保留**：agent loop 每轮自主调用它们维护上下文状态（上报用量百分比、超出上限时裁剪旧轮次）；它们是 schema 声明的（这样 Anthropic / OpenAI-Responses 后端才会接受其调用对），但系统提示词禁止 LLM 调用，即便调用也无害。`__` 前缀的插件工具（`__memory_save_turn`、`__mcp_call_tool` 等）**LLM 不可见**——被完全过滤出 schema，仅由框架通过 `client.call_tool()` 编程调用。
 
@@ -209,7 +209,7 @@ A2A 唯一已实现的传输 binding 是 MQTT——把 `transport` 设为任何�
 |------|------|
 | `Ctrl+C` | 退出 |
 | `Esc` | 取消 Agent Loop |
-| `Ctrl+L` | 聚焦输入框 |
+| `Ctrl+S` | 切换模型（内联选择器——输数字选，Esc 取消） |
 | `Home` / `End` | 滚动到顶部 / 底部 |
 | `Ctrl+Y` | 复制结果（工具调用上） |
 | `Enter` / `Space` | 展开/收起思考块（助手消息上） |

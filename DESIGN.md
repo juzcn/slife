@@ -18,7 +18,7 @@ Everything else — reasoning, planning, tool selection, error recovery, coordin
 What Slife deliberately is not:
 
 - **Not a framework** — no agent composition, pipelines, or orchestration abstractions
-- **Not a safety system** — no sandboxing beyond the OS. Approval is model-driven: the LLM sets `_approve: true` on any tool call to push a confirmation dialog, but nothing hardcodes approval on any tool
+- **Not a safety system** — no sandboxing beyond the OS. Approval is model-driven: the LLM sets `_approve: true` on any tool call to show an inline approval prompt, but nothing hardcodes approval on any tool
 - **Not an automation engine** — no scheduled tasks, background workers, or event triggers
 
 It's a chat window with tools. The LLM is in full control.
@@ -257,7 +257,19 @@ Approval is **model-driven** (pure model judgment). The loop injects an `_approv
 
 There is no hardcoded `requires_approval` flag on any tool or MCP server — the model decides per-call whether to ask the user. Headless (subagent) contexts have no handler and auto-approve.
 
-The modal declares its own `enter → approve` / `escape → deny` bindings at `priority=True`; the App's `escape → cancel` is deliberately *not* priority so Textual's priority pass (which resolves the App before the screen) cannot steal Esc — Esc on an approval always denies (REVIEW C7).
+The inline prompt declares its own `y → approve` / `n`/`escape → deny` bindings at `priority=True`; the App's `escape → cancel` is deliberately *not* priority so Textual's priority pass (which resolves the App before the focused widget) cannot steal Esc — Esc on an approval always denies (REVIEW C7).
+
+### Model Switching
+
+The active model is switched via the `model_switch` tool (natural language) in normal operation. A `Ctrl+S` inline picker (same interaction style as `ApprovalPrompt`) is an **emergency escape** for when the current model is unavailable and the LLM can't call `model_switch` itself — switching is config + runtime only, no API call. `AgentService.switch_model(ref)` validates, persists `active_model` to the config file, and rebuilds the LLM client / loop / system prompt.
+
+Picker rules (hard-won):
+
+- Pure priority bindings — digits `1`-`9` → `pick(i)`, `Esc` → cancel. No `_on_key` / `on_click` overrides (they swallowed keys).
+- The binding action must be **sync**: binding actions run inside the key-event handler (`App._on_key` → `_check_bindings`), so awaiting the picker's future there deadlocks the TUI (the picker needs key events to resolve). The await lives in a background task (`_finish_model_switch`).
+- Scroll to the picker **after layout** (`call_after_refresh(scroll_end)`) — an immediate scroll runs against the pre-mount content and the picker's insertion leaves the view pinned at the top (picker below the fold).
+- Key is `Ctrl+S` ("s" = switch). Not `ctrl+m` (Textual aliases it to enter), not `ctrl+g` (VSCode's goto-line steals it).
+- The picker lists up to 9 models (one digit per key); more are folded into "… N more". Accepted — this is an emergency tool; natural-language `model_switch` is the primary path.
 
 ## Plugin Architecture
 
