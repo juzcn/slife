@@ -445,3 +445,22 @@ class TestStatusBar:
         bar.update_info(model="Test", context_tokens=0, context_window=100000)
         text = bar.update.call_args[0][0]
         assert "0 (0.0%)" in text
+
+    def test_status_bar_hints_include_ctrl_g(self):
+        with patch("slife.ui.app.Static.__init__", return_value=None):
+            bar = StatusBar()
+        bar.update = MagicMock()
+        bar.update_info(model="Test")
+        assert "Ctrl+G model" in bar.update.call_args[0][0]
+
+
+# ── Model switching (Ctrl+G) ────────────────────────────────────────────
+
+
+class TestModelSwitchBinding:
+    def test_app_binds_ctrl_g_to_switch_model(self):
+        from slife.ui.app import SlifeApp
+
+        matches = [b for b in SlifeApp.BINDINGS if b.key == "ctrl+g"]
+        assert len(matches) == 1
+        assert matches[0].action == "switch_model"

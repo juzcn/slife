@@ -751,3 +751,56 @@ class TestAgentServiceWeChat:
 
         # Error on first poll, second poll should still run
         assert call_count[0] == 2
+
+
+# ── Direct model switching (Ctrl+G, no LLM needed) ─────────────────────
+
+
+def _two_model_config():
+    """A Config with two models, first active."""
+    from slife.config import Config, ModelConfig
+
+    return Config(
+        models=[
+            ModelConfig(ref="deepseek/dsf", provider="deepseek", api_model="dsf", display_name="DSF", api_key="k"),
+            ModelConfig(ref="openai/gpt", provider="openai", api_model="gpt", display_name="GPT", api_key="k"),
+        ],
+        active_model_ref="deepseek/dsf",
+        tools=[],
+    )
+
+
+class TestSwitchModel:
+    def test_switch_updates_runtime(self):
+        service = AgentService(_two_model_config())
+        msg = service.switch_model("openai/gpt")
+        assert service.config.active_model_ref == "openai/gpt"
+        assert service.config.active_model.display_name == "GPT"
+        assert service.llm_client is not None
+        assert "GPT" in msg
+
+    def test_switch_persists_active_model(self, tmp_path):
+        from slife.tools._config_io import read_config, write_config
+
+        config = _two_model_config()
+        config._path = tmp_path / "slife.json5"
+        write_config(config._path, {"models": {"providers": {}}, "active_model": "deepseek/dsf"})
+        service = AgentService(config)
+
+        service.switch_model("openai/gpt")
+
+        raw = read_config(config._path)
+        assert raw["active_model"] == "openai/gpt"
+
+    def test_switch_unknown_ref_raises(self):
+        service = AgentService(_two_model_config())
+        with pytest.raises(ValueError, match="Unknown model ref"):
+            service.switch_model("nope/x")
+
+    def test_switch_no_config_path_still_switches(self):
+        """In-memory switch works even without a writable config file."""
+        service = AgentService(_two_model_config())
+        service.config._path = None
+        msg = service.switch_model("openai/gpt")
+        assert service.config.active_model_ref == "openai/gpt"
+        assert "GPT" in msg

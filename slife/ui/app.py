@@ -64,7 +64,7 @@ class StatusBar(Static):
             parts.append(f"[#6e7681]↑ {context_tokens:,} tokens[/#6e7681]")
 
         parts.append(
-            "[#484f58]│ Ctrl+C quit  Esc cancel  Ctrl+L focus  Home/End scroll[/#484f58]"
+            "[#484f58]│ Ctrl+C quit  Esc cancel  Ctrl+G model  Home/End scroll[/#484f58]"
         )
 
         self.update("  ".join(parts))
@@ -196,7 +196,9 @@ class SlifeApp(App):
         # unresolved (C7).  A non-priority escape still cancels when no
         # approval prompt is focused.
         Binding("escape", "cancel", "Cancel agent loop"),
-        Binding("ctrl+l", "focus_input", "Focus Input"),
+        # NOTE: NOT ctrl+m — Textual aliases ctrl+m to enter (carriage
+        # return); ctrl+g is a free key for the inline model picker.
+        Binding("ctrl+g", "switch_model", "Switch model"),
         Binding("home", "scroll_home", "Scroll to top", priority=True),
         Binding("end", "scroll_end", "Scroll to bottom", priority=True),
     ]
@@ -336,10 +338,6 @@ class SlifeApp(App):
         chat_view = self.query_one("#chat-view", ChatView)
         chat_view.add_system_message("⏹ 已中断", color="#d29922")
 
-    def action_focus_input(self) -> None:
-        """Focus the input field."""
-        self.query_one("#user-input").focus()
-
     def action_scroll_home(self) -> None:
         """Scroll chat view to the top."""
         self.query_one("#chat-view", ChatView).scroll_home(animate=False)
@@ -362,6 +360,50 @@ class SlifeApp(App):
             inbox_busy=inbox.busy if inbox else False,
             inbox_pending=inbox.pending if inbox else 0,
         )
+
+    # ── Model switching (Ctrl+G) ──────────────────────────────────
+
+    async def action_switch_model(self) -> None:
+        """Open the inline model picker — works even when the LLM is down.
+
+        Switching is config + runtime only (no API call), so this is the
+        escape hatch when the current model is unavailable.  Rendered in
+        the chat stream, same style as the approval prompt: type a number
+        to pick, Esc to cancel.
+        """
+        import asyncio
+
+        from slife.ui.model_picker import ModelPicker
+
+        models = list(self.service.config.models)
+        if not models:
+            self.query_one("#chat-view", ChatView).add_system_message(
+                "No models configured.", color="#f85149"
+            )
+            return
+
+        chat_view = self.query_one("#chat-view", ChatView)
+        future: asyncio.Future = asyncio.Future()
+        picker = ModelPicker(
+            models,
+            self.service.config.active_model_ref,
+            future,
+        )
+        chat_view.mount(picker)
+        chat_view.scroll_end(animate=False)
+        picker.focus()
+
+        model = await future
+        self.query_one("#user-input").focus()
+        if model is None:
+            return  # canceled — the picker already shows the status
+        try:
+            msg = self.service.switch_model(model.ref)
+        except ValueError as exc:
+            chat_view.add_system_message(str(exc), color="#f85149")
+            return
+        self._update_status()
+        chat_view.add_system_message(msg, color="#3fb950")
 
     # ── Plugin startup helpers ────────────────────────────────────
 

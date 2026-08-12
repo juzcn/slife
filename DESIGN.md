@@ -501,7 +501,7 @@ Textual TUI with minimal chrome:
 - **UserMessage** — prefix-styled user text with optional image attachments
 - **AssistantMessage** — streaming text with collapsible thinking blocks (Enter/Space toggle)
 - **ToolCallWidget** — collapsible amber headers: status icon, label, primary-arg preview, iteration counter; Ctrl+Y copies the result
-- **StatusBar** — model name, thinking indicator, inbox state, token count
+- **StatusBar** — model name, thinking indicator, inbox state, last-call context tokens + usage %
 - **ApprovalPrompt** — inline approve/deny row for `_approve: true` tool calls (Y / N / Esc), re-renders to ✓ Approved / ✗ Denied
 - **Auto-restore** — rebuilds last session's UI from the diary on startup
 
@@ -513,7 +513,7 @@ All user-supplied text is rendered with `markup=False` to prevent `MarkupError` 
 |-----|--------|
 | `Ctrl+C` | Quit |
 | `Esc` | Cancel agent loop |
-| `Ctrl+L` | Focus input |
+| `Ctrl+G` | Switch model (inline picker — click a row or type a number) |
 | `Home` / `End` | Scroll to top / bottom |
 | `Ctrl+Y` | Copy result (on a tool call) |
 | `Enter` / `Space` | Toggle thinking block (on an assistant message) |

@@ -167,6 +167,29 @@ class AgentService:
         """Whether thinking/reasoning mode is active."""
         return self.config.active_model.thinking_enabled
 
+    def switch_model(self, ref: str) -> str:
+        """Switch the active model directly from the UI — no LLM round-trip.
+
+        Unlike ``model_switch`` (which requires the LLM to call it), this
+        works even when the current model is unavailable: it validates the
+        ref against the in-memory registry, persists ``active_model`` to
+        the config file, and rebuilds the runtime (LLM client, agent loop,
+        system prompt).  Returns a human-readable confirmation.
+
+        Raises ``ValueError`` for an unknown ref.
+        """
+        if not any(m.ref == ref for m in self.config.models):
+            raise ValueError(
+                f"Unknown model ref '{ref}'. "
+                f"Available: {[m.ref for m in self.config.models]}"
+            )
+        raw = self.config._read_config("switch_model", ref)
+        if raw is not None:
+            raw["active_model"] = ref
+            self.config._write_config(raw)
+        self.reload_active_model(ref)
+        return f"Switched to {self.config.active_model.display_name}"
+
     def reload_active_model(self, new_ref: str) -> None:
         """Reload runtime state after the active model is switched.
 
