@@ -24,11 +24,19 @@ from slife.server_utils import create_plugin_server
 
 @asynccontextmanager
 async def _memdb_lifespan(_app):
-    """Graceful shutdown: close the lazy store and stop a background reindex.
+    """Eagerly initialise the store + embedder, then serve; graceful shutdown.
 
-    The store/embedder are created lazily on first use, so these may all be
-    None here — guard accordingly (REVIEW §1-10).
+    NOT lazy: ``__memory_save_turn`` runs on every turn, so the embedding
+    model would be loaded on the first save anyway — deferring it there
+    made the very first save block (and time out the harness's 10s window).
+    Load it up front so the first save is fast.  Best-effort: if the
+    embedder fails to load, the server still starts (keyword search works)
+    and later reindex/check paths retry.
     """
+    try:
+        await _ensure_store()
+    except Exception as e:
+        logger.warning("eager_store_init_error err=%s", e)
     try:
         yield
     finally:
@@ -141,37 +149,71 @@ async def _ensure_store() -> SessionStore:
             return _store
 
         assert _db_path is not None
-        logger.info("memdb_lazy_init db=%s", _db_path)
+        logger.info("memdb_init db=%s", _db_path)
 
         from slife.logfmt import elapsed
 
-        with elapsed("embedder_init", logger, level=logging.INFO):
-            _embedder = EmbeddingClient.from_config()
-            # Load a transformer model up front so its REAL output dimension
-            # is known before the vec0 table is created — a guessed dimension
-            # (default 1024) silently drops every embedding of a different
-            # width (REVIEW §1-10). No-op for gguf/api backends.
-            if _embedder.available:
-                await _embedder.ensure_loaded()
+        # Create the embedder from config, but do NOT block on the model
+        # load: the store (diary + FTS) is set up now with dim 0 (no vec0
+        # table), so save_turn never waits on the embedding model.  The
+        # model loads in the background; when it's ready, the vec0 table is
+        # added (migration) and the index is (re)built — semantic search
+        # stays gated off until then.
+        _embedder = EmbeddingClient.from_config()
+
+        # The vec0 dimension is known up front for gguf/api (model name or
+        # explicit dim), so the table can be created/kept immediately.  A
+        # transformer's real dimension is only known once the model loads —
+        # defer its vec0 to the background warm (dim 0 here), which adds it
+        # with the real width.  Saves never wait either way (they skip the
+        # embed until the model is loaded).
+        defer_vec0 = bool(_embedder.available and _embedder.backend == "transformer")
+        dim = 0 if defer_vec0 else (_embedder.dimension if _embedder.available else 0)
+        model_id = (
+            f"{_embedder.backend}:{_embedder._model}"
+            if _embedder.available and not defer_vec0 else ""
+        )
+
         _store = SessionStore(_db_path)
         with elapsed("store_setup", logger, level=logging.INFO, db=str(_db_path)):
-            model_id = f"{_embedder.backend}:{_embedder._model}" if _embedder.available else ""
+            await _store.setup(embedding_dim=dim, embedding_model=model_id)
+        logger.info(
+            "embeddings_ready=%s backend=%s model=%s",
+            _embedder.available, _embedder.backend, _embedder._model,
+        )
+
+        if _embedder.available:
+            asyncio.create_task(_warm_embedder_then_reindex())
+
+        await _ensure_index_complete()
+        return _store
+
+
+async def _warm_embedder_then_reindex() -> None:
+    """Load the embedding model in the background, then add the vec0 table
+    and (re)build the index.
+
+    Saves never wait on this: the store was set up with dim 0 (no vec0), so
+    a save just persists the turn data and skips embedding.  Once the model
+    loads, re-running ``setup`` on the SAME store makes the migration create
+    the vec0 table with the real dimension (no re-creation, so concurrent
+    saves are never disrupted), then the index-completeness gate reindexes
+    every turn and flips on.
+    """
+    try:
+        if _embedder is not None and _embedder.available:
+            await _embedder.ensure_loaded()
+        if _store is not None and _embedder is not None and _embedder.available:
+            model_id = f"{_embedder.backend}:{_embedder._model}"
             await _store.setup(
                 embedding_dim=_embedder.dimension,
                 embedding_model=model_id,
             )
-        if _embedder.available:
-            logger.info(
-                "embeddings_ready backend=%s model=%s dim=%d",
-                _embedder.backend, _embedder._model, _embedder.dimension,
-            )
-        else:
-            logger.info("embeddings_disabled backend=%s", _embedder.backend if _embedder else "none")
-        # Gate + (re)build the index for the current model: covers a config
-        # model change (the migration just dropped the vec0 table) and a
-        # restart mid-reindex (leftover unembedded turns resume here).
         await _ensure_index_complete()
-        return _store
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("warm_embedder_error err=%s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -252,7 +294,10 @@ async def _ensure_index_complete() -> None:
     partial semantic results are never returned.
     """
     global _reindex_task, _semantic_ready
-    if _embedder is None or not _embedder.available:
+    # Semantic stays OFF until the model is actually loaded — "disabled" is
+    # immediate, even if the index was complete from a previous session.
+    if _embedder is None or not _embedder.loaded:
+        _semantic_ready = False
         return
     store = _store
     if store is None:
@@ -823,9 +868,11 @@ async def memory_set_enabled(enabled: bool) -> str:
 def main():
     """Run the slife-memdb server on Streamable HTTP transport.
 
-    Store and embedder are lazily initialised on the first tool call
-    INSIDE FastMCP's event loop — this avoids the aiosqlite connection
-    being bound to a temporary loop that gets destroyed by asyncio.run().
+    The store + embedder are initialised eagerly in the lifespan (inside
+    FastMCP's event loop — this avoids the aiosqlite connection being
+    bound to a temporary loop that gets destroyed by asyncio.run()):
+    enabled → the embedding model is loaded up front so the first save is
+    fast; disabled → nothing is loaded.
     """
     import argparse
 

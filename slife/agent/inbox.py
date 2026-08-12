@@ -167,6 +167,15 @@ class Inbox:
         self._processing = True
         self._current_corr = msg.correlation_id or None
 
+        # Notify the TUI so the status bar shows "⏳ processing" for ANY turn
+        # (including autonomous heartbeat turns, whose silent handler never
+        # fires on_token_usage to refresh the status bar).
+        if self._on_activity:
+            try:
+                await self._on_activity("busy")
+            except Exception:
+                pass
+
         conversation = None
         handler = None
         result = None

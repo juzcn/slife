@@ -1251,26 +1251,59 @@ class AgentService:
         except Exception as e:
             logger.warning("memdb_save_error err=%s", e)
 
-    async def get_recent_turns(self, limit: int = 50) -> list[dict]:
+    async def get_recent_turns(self, limit: int = 20) -> list[dict]:
         """Load recent turns for restore. Returns [] if no turns.
 
-        Reads directly from the SQLite database — does NOT go through
-        the MCP tool call / Streamable HTTP transport.  Independent of
-        whether the memory plugin has been started.
+        Fetches newest-first in batches of *limit* (each batch already
+        newest-first, so appending stays globally newest-first), selects the
+        newest turns that fit the configured context floor (default 20%),
+        and returns them **oldest-first** so the restore rebuilds the
+        conversation chronologically.  Heartbeat turns are included — they
+        restore as ⚡ 自主, consistent with the live TUI.
+
+        Reads directly from SQLite — independent of the memory plugin / MCP.
         """
         try:
             from slife.plugins.memdb.store import SessionStore
+            from slife.ui.restore import estimate_turn_tokens
+
             db_path = self._get_memory_db_path()
-            if db_path and db_path.is_file():
-                store = SessionStore(db_path)
-                await store.setup(embedding_dim=0)
-                turns = await store.get_recent_turns(limit=limit)
-                if turns:
-                    return turns
+            if not (db_path and db_path.is_file()):
+                return []
+            budget = int(
+                self.config.active_model.context_window * self.config.context_floor
+            )
+            store = SessionStore(db_path)
+            await store.setup(embedding_dim=0)
+
+            # Accumulate newest-first batches until the estimate reaches the
+            # budget (coarse stop — the exact selection below trims).
+            all_turns: list[dict] = []
+            total = 0
+            offset = 0
+            while total < budget:
+                batch = await store.get_recent_turns(limit=limit, offset=offset)
+                if not batch:
+                    break
+                all_turns.extend(batch)
+                total += sum(estimate_turn_tokens(t) for t in batch)
+                offset += limit
+
+            # Select newest-first within the budget, stopping before a turn
+            # that would overshoot (the first turn is always kept).
+            selected: list[dict] = []
+            tokens = 0
+            for t in all_turns:  # already newest-first
+                est = estimate_turn_tokens(t)
+                if selected and tokens + est > budget:
+                    break
+                tokens += est
+                selected.append(t)
+            selected.reverse()  # oldest-first for restore
+            return selected
         except Exception as e:
             logger.debug("get_recent_turns_direct_db_error err=%s", e)
-
-        return []
+            return []
 
     def _get_memory_db_path(self) -> Path | None:
         """Return the memory database path."""

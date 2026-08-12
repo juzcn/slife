@@ -804,3 +804,52 @@ class TestSwitchModel:
         msg = service.switch_model("openai/gpt")
         assert service.config.active_model_ref == "openai/gpt"
         assert "GPT" in msg
+
+
+class TestGetRecentTurns:
+    """Restore fetch: page-by-page (batch), select newest within budget,
+    return oldest-first so the conversation rebuilds chronologically."""
+
+    def _make_db(self, tmp_path, n):
+        import sqlite3
+
+        db = tmp_path / "test.db"
+        con = sqlite3.connect(str(db))
+        con.execute(
+            "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
+            "tags TEXT, channel TEXT, created_at TEXT, who_helped TEXT, "
+            "what_model TEXT, token_count INT)"
+        )
+        for i in range(1, n + 1):
+            con.execute(
+                "INSERT INTO diary (user_message, messages, channel, created_at, token_count) "
+                "VALUES (?, ?, 'human', ?, ?)",
+                (
+                    f"msg {i}",
+                    _json.dumps([{"role": "assistant", "content": "x" * 90}]),
+                    f"2026-08-12T{i:02d}:00:00+08:00",
+                    100 + i,
+                ),
+            )
+        con.commit()
+        con.close()
+        return db
+
+    @pytest.mark.asyncio
+    async def test_batches_newest_within_budget_oldest_first(
+        self, sample_config, tmp_path, monkeypatch
+    ):
+        from slife.agent.service import AgentService
+
+        db = self._make_db(tmp_path, 5)
+        srv = AgentService(sample_config)
+        # Small budget: each turn ~41 tokens (est), budget 200 fits 4.
+        srv.config.active_model.context_window = 1000
+        srv.config.context_floor = 0.2
+        monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
+
+        turns = await srv.get_recent_turns(limit=2)  # batches of 2 → 3 pages
+
+        ids = [t["rowid"] for t in turns]
+        assert ids == sorted(ids), "must be oldest-first for the restore"
+        assert ids == [2, 3, 4, 5], "newest 4 within the budget, oldest-first"

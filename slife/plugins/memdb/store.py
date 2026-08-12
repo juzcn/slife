@@ -261,7 +261,16 @@ class SessionStore:
         # Embed the turn text in chunks.  Long turns (multi-tool calls,
         # large file reads) are split at paragraph boundaries so every
         # turn contributes to semantic search — no silent skipping.
-        if embedder is not None and embedder.available:
+        # Only embed when the model is actually loaded AND the vec0 table
+        # exists (dim > 0): while the model is loading / the index is
+        # building, the turn is saved without an embedding and the
+        # background reindex catches it up.
+        if (
+            embedder is not None
+            and embedder.available
+            and embedder.loaded
+            and self._embedding_dim > 0
+        ):
             embed_text = _turn_text_for_embedding(user_message, messages or [])
             if embed_text.strip():
                 try:
@@ -296,18 +305,25 @@ class SessionStore:
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def get_recent_turns(self, limit: int = 50) -> list[dict]:
-        """Return the most recent N turns, oldest-first for restore."""
+    async def get_recent_turns(
+        self, limit: int = 50, offset: int = 0
+    ) -> list[dict]:
+        """Return the most recent N turns (from *offset*), newest-first.
+
+        ``offset`` enables batched pagination: the caller fetches 20 at a
+        time (newest batch first) and accumulates — each batch is already
+        newest-first, so appending batches stays globally newest-first.
+        """
         cursor = await self._c.execute(
             """SELECT rowid, user_message, messages, summary, tags,
                       channel, created_at, who_helped, what_model, token_count
                FROM diary
                WHERE rowid IN (
                    SELECT rowid FROM diary
-                   ORDER BY rowid DESC LIMIT ?
+                   ORDER BY rowid DESC LIMIT ? OFFSET ?
                )
-               ORDER BY rowid ASC""",
-            (limit,),
+               ORDER BY rowid DESC""",
+            (limit, offset),
         )
         return [dict(row) for row in await cursor.fetchall()]
 

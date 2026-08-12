@@ -10,8 +10,9 @@ The turn's output contract is ``.`` (nothing worth saying) or real content
 (an autonomous act).  The ``.`` is the minimal non-empty assistant reply —
 it satisfies the user→assistant role alternation (two consecutive user
 messages would be rejected by the Anthropic wire) while signalling
-"checked in, nothing to do".  The turn renders nowhere in the chat; only a
-non-``.`` reply is surfaced to the TUI as an autonomous message (⚡ 自主).
+"checked in, nothing to do".  The turn renders nowhere in the chat (the
+silent handler); only a non-``.`` reply is surfaced to the TUI as an
+autonomous message (⚡ 自主).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from slife.agent.loop import AgentEventHandler, TokenUsage, ToolCallInfo
+    from slife.agent.loop import TokenUsage, ToolCallInfo
     from slife.agent.service import AgentService
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ class _SilentHandler:
     The turn runs normally through the agent loop (its own conversation,
     saved to the diary) but renders nothing to the chat — the final reply
     is delivered to the caller via ``on_reply``, which surfaces non-``.``
-    content as an autonomous message.
+    content as an autonomous message (⚡ 自主).
     """
 
     async def on_thinking_chunk(self, chunk: str) -> None:
@@ -86,7 +87,7 @@ async def heartbeat_loop(service: "AgentService") -> None:
     Skips the beat when a turn is in progress or messages are queued, so
     the heartbeat never competes with real user/remote work.  The message
     flows through the normal inbox pipeline (own conversation, loop, diary
-    save); ``on_reply`` surfaces non-``.`` output to the TUI.
+    save); ``on_reply`` surfaces non-``.`` output to the TUI (⚡ 自主).
     """
     from slife.a2a.identity import HEARTBEAT, AgentMessage
 

@@ -39,6 +39,7 @@ class StatusBar(Static):
         context_window: int = 0,
         thinking: bool = False,
         heartbeat: str = "",
+        heartbeat_color: str = "",
         inbox_busy: bool = False,
         inbox_pending: int = 0,
     ) -> None:
@@ -52,7 +53,8 @@ class StatusBar(Static):
             parts.append("[#d29922]⚡ thinking[/#d29922]")
 
         if heartbeat:
-            parts.append(f"[#d29922]{heartbeat}[/#d29922]")
+            color = heartbeat_color or "#d29922"
+            parts.append(f"[{color}]{heartbeat}[/{color}]")
 
         if inbox_busy:
             parts.append("[#d29922]⏳ processing[/#d29922]")
@@ -224,8 +226,11 @@ class SlifeApp(App):
         # TUI state for tracking active widgets during streaming
         self._tool_widgets: dict[str, ToolCallWidget] = {}
 
-        # Last autonomous heartbeat outcome (⚡ act / · quiet) for the status bar
+        # Autonomous heartbeat status-bar indicator — cycles colour per beat so
+        # consecutive beats are distinguishable.
         self._heartbeat_indicator: str = ""
+        self._heartbeat_color: str = ""
+        self._heartbeat_beat: int = 0
 
         # Recovery state
         self._recovery_info: dict | None = None  # interrupted diary for recovery
@@ -371,6 +376,7 @@ class SlifeApp(App):
             context_window=self.service.context_window,
             thinking=self.service.thinking_enabled,
             heartbeat=self._heartbeat_indicator,
+            heartbeat_color=self._heartbeat_color,
             inbox_busy=inbox.busy if inbox else False,
             inbox_pending=inbox.pending if inbox else 0,
         )
@@ -443,7 +449,11 @@ class SlifeApp(App):
         ).append_text(text)
 
     async def _on_heartbeat(self, outcome: str) -> None:
-        """Update the status-bar heartbeat indicator (⚡ act / · quiet)."""
+        """Update the status-bar heartbeat indicator, cycling its colour so
+        consecutive beats are distinguishable (⚡ act / · quiet)."""
+        self._heartbeat_beat += 1
+        palette = ["#3fb950", "#58a6ff", "#bc8cff", "#d29922", "#f0883e"]
+        self._heartbeat_color = palette[self._heartbeat_beat % len(palette)]
         self._heartbeat_indicator = "⚡" if outcome == "act" else "·"
         self._update_status()
 
@@ -552,6 +562,11 @@ class SlifeApp(App):
             chat_view.add_system_message(
                 f"✓ task from {source} completed", color="#3fb950",
             )
+
+        elif kind == "busy":
+            # A turn started processing (incl. autonomous heartbeat) —
+            # refresh the status bar to show "⏳ processing".
+            self._update_status()
 
         elif kind == "idle":
             # Agent loop finished — refresh status bar to clear

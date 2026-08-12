@@ -270,6 +270,21 @@ class EmbeddingClient:
         return self._available
 
     @property
+    def loaded(self) -> bool:
+        """Whether the backend model is actually in memory.
+
+        ``available`` means "configured and usable"; ``loaded`` means the
+        local model has been materialised.  The API backend is always
+        "loaded" (no local model); gguf/transformer load lazily, so saves
+        can skip embedding (defer to the reindex) until the model is here.
+        """
+        if not self._available:
+            return False
+        if self._backend == "api":
+            return True
+        return self._client is not None
+
+    @property
     def dimension(self) -> int:
         """Embedding vector dimension."""
         return self._dim

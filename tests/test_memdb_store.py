@@ -406,12 +406,12 @@ class TestSessionStoreGetRecentTurns:
         store._conn = await aiosqlite.connect(str(db_path))
         store._conn.row_factory = aiosqlite.Row
 
-        # With limit=3, should return the 3 most recent (rows 3,4,5), oldest-first
+        # With limit=3, should return the 3 most recent (rows 3,4,5), newest-first
         result = await store.get_recent_turns(limit=3)
         assert len(result) == 3
-        assert result[0]["user_message"] == "User message 3"
+        assert result[0]["user_message"] == "User message 5"
         assert result[1]["user_message"] == "User message 4"
-        assert result[2]["user_message"] == "User message 5"
+        assert result[2]["user_message"] == "User message 3"
 
         # All columns should be present in each row
         for turn in result:
@@ -424,13 +424,13 @@ class TestSessionStoreGetRecentTurns:
             assert "token_count" in turn
 
         # Verify messages are parseable JSON
-        assert json.loads(result[0]["messages"])[0]["content"] == "Reply 3"
+        assert json.loads(result[0]["messages"])[0]["content"] == "Reply 5"
 
-        # No limit: should return all 5, oldest-first
+        # No limit: should return all 5, newest-first
         all_result = await store.get_recent_turns(limit=50)
         assert len(all_result) == 5
-        assert all_result[0]["user_message"] == "User message 1"
-        assert all_result[4]["user_message"] == "User message 5"
+        assert all_result[0]["user_message"] == "User message 5"
+        assert all_result[4]["user_message"] == "User message 1"
 
         await store._conn.close()
 
