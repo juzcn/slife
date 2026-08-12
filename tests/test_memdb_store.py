@@ -211,6 +211,33 @@ class TestSessionStoreSetup:
 
         assert mock_connect.call_count == 2
 
+    @pytest.mark.asyncio
+    @patch("pathlib.Path.mkdir")
+    @patch("slife.plugins.memdb.store.aiosqlite.connect")
+    async def test_setup_vec_load_failure_degrades(self, mock_connect, mock_mkdir):
+        """When sqlite-vec can't load (e.g. no bundled extension on macOS
+        CI), setup must NOT fail — the store degrades to keyword-only
+        (dim 0) so session restore / keyword search still work."""
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock()
+        mock_conn.executescript = AsyncMock()
+        mock_conn.commit = AsyncMock()
+        mock_conn.enable_load_extension = AsyncMock()
+        mock_conn.load_extension = AsyncMock(
+            side_effect=RuntimeError("vec unavailable on this platform")
+        )
+
+        async def _connect(*args, **kwargs):
+            return mock_conn
+
+        mock_connect.side_effect = _connect
+
+        store = SessionStore(Path("/tmp/test.db"))
+        await store.setup(embedding_dim=1024)  # must not raise
+
+        assert store._vec_available is False
+        assert store._embedding_dim == 0  # degraded to keyword-only
+
 
 class TestSessionStoreClose:
     """Tests for close."""

@@ -49,6 +49,7 @@ class SessionStore:
         self._db_path = db_path
         self._conn: aiosqlite.Connection | None = None
         self._embedding_dim = DEFAULT_EMBEDDING_DIM
+        self._vec_available = False  # sqlite-vec loaded? embeddings are optional
 
     @property
     def _c(self):
@@ -74,6 +75,11 @@ class SessionStore:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._load_vec_extension()
+        if not self._vec_available:
+            # sqlite-vec couldn't load (e.g. no bundled extension on this
+            # platform) — degrade to keyword-only: no vec0 table, no
+            # embedding writes, semantic search stays gated off.
+            self._embedding_dim = 0
         await self._run_schema()
         logger.info(
             "store_ready path=%s wal=on vec_dim=%d model=%s",
@@ -81,13 +87,26 @@ class SessionStore:
         )
 
     async def _load_vec_extension(self) -> None:
-        import sqlite_vec
-        await self._c.enable_load_extension(True)
-        await self._c.load_extension(sqlite_vec.loadable_path())
-        await self._c.enable_load_extension(False)
-        row = await self._c.execute("SELECT vec_version()")
-        version = await row.fetchone()
-        logger.info("vec_loaded version=%s", version[0] if version else "unknown")
+        """Load sqlite-vec best-effort.
+
+        Embeddings are optional: when the extension can't load (e.g. no
+        bundled ``.dylib``/``.so`` for this platform), the store must still
+        work — restore and keyword search are independent of vec, and
+        semantic search is gated by ``_semantic_ready``.  A hard failure
+        here would break the whole store (and session restore) for no gain.
+        """
+        try:
+            import sqlite_vec
+            await self._c.enable_load_extension(True)
+            await self._c.load_extension(sqlite_vec.loadable_path())
+            await self._c.enable_load_extension(False)
+            row = await self._c.execute("SELECT vec_version()")
+            version = await row.fetchone()
+            logger.info("vec_loaded version=%s", version[0] if version else "unknown")
+            self._vec_available = True
+        except Exception as e:
+            self._vec_available = False
+            logger.warning("vec_unavailable err=%s — semantic search disabled (keyword only)", e)
 
     async def _run_schema(self) -> None:
         schema_path = Path(__file__).parent / "schema.sql"
