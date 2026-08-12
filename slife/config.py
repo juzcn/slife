@@ -337,6 +337,7 @@ class Config:
     tool_result_ceiling: float = 0.2  # max tool result = 20% of context window
     agent_id: str = "slife"
     tool_timeout: float = 60.0  # seconds, 0 to disable — applies to ALL tools
+    heartbeat_interval: int = 60  # seconds — autonomous idle heartbeat period
     mcp_config: MCPConfig | None = None
     memdb_config: MemdbConfig | None = None
     wechat_config: WechatConfig | None = None
@@ -376,6 +377,7 @@ class Config:
             "env": self.env,
             "max_iterations": self.max_iterations,
             "tool_timeout": self.tool_timeout,
+            "heartbeat_interval": self.heartbeat_interval,
             "context_floor": self.context_floor,
             "context_ceiling": self.context_ceiling,
             "tool_result_ceiling": self.tool_result_ceiling,
@@ -420,6 +422,7 @@ class Config:
             env=data.get("env"),
             max_iterations=data.get("max_iterations", 30),
             tool_timeout=data.get("tool_timeout", 60.0),
+            heartbeat_interval=data.get("heartbeat_interval", 60),
             context_floor=data.get("context_floor", 0.2),
             context_ceiling=data.get("context_ceiling", 0.8),
             tool_result_ceiling=data.get("tool_result_ceiling", 0.2),
@@ -922,6 +925,7 @@ class Config:
         agent = _parse_section(raw, "agent", dict, {})
         max_iterations = agent.get("max_iterations", 30)
         tool_timeout = agent.get("tool_timeout", 60.0)
+        heartbeat_interval = agent.get("heartbeat_interval", 60)
         context_floor = agent.get("context_floor", 0.2)
         context_ceiling = agent.get("context_ceiling", 0.8)
         tool_result_ceiling = agent.get("tool_result_ceiling", 0.2)
@@ -999,6 +1003,7 @@ class Config:
             env=env_section,
             max_iterations=max_iterations,
             tool_timeout=tool_timeout,
+            heartbeat_interval=heartbeat_interval,
             context_floor=context_floor,
             context_ceiling=context_ceiling,
             tool_result_ceiling=tool_result_ceiling,

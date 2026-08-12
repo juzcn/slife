@@ -175,7 +175,7 @@ Each turn also records two timestamps — the user's input time (`created_at`, t
 
 ### Autonomous Heartbeat
 
-While idle, the agent gets a periodic autonomous window (every 60s) to think or act on its own. It runs as a normal turn (own conversation, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.` — the `.` and the `[Heartbeat]` trigger are filtered from the chat, and a real autonomous reply renders as `⚡ 自主`. A precondition for emergent self-initiated behavior.
+While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_interval` seconds, default 60) to think or act on its own. It runs as a normal turn (own conversation, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.` — the `.` and the `[Heartbeat]` trigger are filtered from the chat, and a real autonomous reply renders as `⚡ 自主`. A precondition for emergent self-initiated behavior.
 
 ### Image & Vision
 

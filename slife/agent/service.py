@@ -1411,8 +1411,9 @@ class AgentService:
         self._inbox_task = asyncio.create_task(self.inbox.run())
         logger.info("inbox_started")
 
-        # Autonomous heartbeat — main agent only (hardcoded 60s).  Subagents
-        # are workers and never receive a heartbeat trigger.
+        # Autonomous heartbeat — main agent only (period configurable via
+        # agent.heartbeat_interval).  Subagents are workers and never
+        # receive a heartbeat trigger.
         if not self.is_subagent:
             from slife.agent.heartbeat import heartbeat_loop
 

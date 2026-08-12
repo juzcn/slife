@@ -27,7 +27,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Idle heartbeat interval (seconds).  Hardcoded for the prototype.
+#: Default idle heartbeat interval (seconds) — overridable via
+#: ``agent.heartbeat_interval`` in slife.json5.
 HEARTBEAT_INTERVAL = 60
 
 # The "[Heartbeat]" prefix is the TUI filter mark — restore / live both
@@ -91,8 +92,9 @@ async def heartbeat_loop(service: "AgentService") -> None:
     """
     from slife.a2a.identity import HEARTBEAT, AgentMessage
 
+    interval = getattr(service.config, "heartbeat_interval", HEARTBEAT_INTERVAL) or HEARTBEAT_INTERVAL
     while True:
-        await asyncio.sleep(HEARTBEAT_INTERVAL)
+        await asyncio.sleep(interval)
         try:
             inbox = service.inbox
             if inbox is not None and (inbox.busy or inbox.pending):
