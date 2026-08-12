@@ -131,10 +131,12 @@ class Inbox:
 
     async def _process_one(self, msg: AgentMessage) -> None:
         """Process a single message through the agent loop."""
-        from slife.a2a.identity import HUMAN, WECHAT
+        from slife.a2a.identity import HEARTBEAT, HUMAN, WECHAT
         from slife.subagent.identity import SUBAGENT
 
-        is_remote = msg.source not in (HUMAN, WECHAT, SUBAGENT)
+        # Heartbeat is internal (not a peer terminal) — no A2A busy status
+        # or task_received/completed TUI noise for autonomous turns.
+        is_remote = msg.source not in (HUMAN, WECHAT, SUBAGENT, HEARTBEAT)
         logger.info(
             "inbox_process source=%s corr_id=%s content=%.80s remote=%s",
             msg.source, msg.correlation_id, msg.content, is_remote,

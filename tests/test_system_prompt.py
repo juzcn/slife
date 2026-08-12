@@ -210,7 +210,7 @@ class TestBuild:
         cfg.a2a_config.broker_port = 1883
         result = build(cfg)
         assert "8. Data directories" in result
-        assert "9. Multi-agent communication (A2A)" in result
+        assert "10. Multi-agent communication (A2A)" in result
         assert "mqtt.example.com:1883" in result
 
     def test_a2a_section_hidden_when_disabled(self, cfg):

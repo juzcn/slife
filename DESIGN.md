@@ -271,6 +271,15 @@ Picker rules (hard-won):
 - Key is `Ctrl+S` ("s" = switch). Not `ctrl+m` (Textual aliases it to enter), not `ctrl+g` (VSCode's goto-line steals it).
 - The picker lists up to 9 models (one digit per key); more are folded into "… N more". Accepted — this is an emergency tool; natural-language `model_switch` is the primary path.
 
+### Autonomous Heartbeat
+
+The agent is otherwise purely user-driven — no input, no activity. A heartbeat gives it a periodic **autonomous window** (a precondition for emergent self-initiated behavior): while idle, every 60s the service posts a `[Heartbeat]` message to the inbox, which runs as a **normal agent-loop turn** (own conversation via the heartbeat source, saved to the diary like any turn).
+
+- **Reply contract** (also in the system prompt, section 9): real content if the agent has something worth proactively saying, otherwise exactly `.` — never empty (the `.` is the minimal non-empty assistant reply, satisfying the user→assistant role alternation).
+- **TUI filtering** (live + restore): heartbeat turns are recognised by the `[Heartbeat]` mark on the trigger message and filtered — the trigger and a `.` reply are never shown; a real reply renders as `⚡ 自主`. The status bar shows the last beat (`⚡` act / `·` quiet).
+- **Main agent only**: subagents (`is_subagent=True`) never start the heartbeat loop — they are task-driven workers, not autonomous agents.
+- The heartbeat conversation is separate (source `heartbeat`), so the autonomous reflections persist in the diary without polluting the human conversation.
+
 ## Plugin Architecture
 
 Five built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) for all of them — the memfiles plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`), but its control surface is pure MCP.

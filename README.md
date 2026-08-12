@@ -171,6 +171,10 @@ Every conversation turn is permanently recorded in SQLite (`~/.slife/<agent>.db`
 
 Embedding backends: local GGUF (BGE-M3, offline), HuggingFace transformers, or OpenAI-compatible API. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
+### Autonomous Heartbeat
+
+While idle, the agent gets a periodic autonomous window (every 60s) to think or act on its own. It runs as a normal turn (own conversation, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.` — the `.` and the `[Heartbeat]` trigger are filtered from the chat, and a real autonomous reply renders as `⚡ 自主`. A precondition for emergent self-initiated behavior.
+
 ### Image & Vision
 
 Attach images with `@path` / `@url` syntax (quotes supported for paths with spaces), displayed inline in the terminal:

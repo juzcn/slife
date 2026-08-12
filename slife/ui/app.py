@@ -38,6 +38,7 @@ class StatusBar(Static):
         context_tokens: int = 0,
         context_window: int = 0,
         thinking: bool = False,
+        heartbeat: str = "",
         inbox_busy: bool = False,
         inbox_pending: int = 0,
     ) -> None:
@@ -49,6 +50,9 @@ class StatusBar(Static):
 
         if thinking:
             parts.append("[#d29922]⚡ thinking[/#d29922]")
+
+        if heartbeat:
+            parts.append(f"[#d29922]{heartbeat}[/#d29922]")
 
         if inbox_busy:
             parts.append("[#d29922]⏳ processing[/#d29922]")
@@ -220,6 +224,9 @@ class SlifeApp(App):
         # TUI state for tracking active widgets during streaming
         self._tool_widgets: dict[str, ToolCallWidget] = {}
 
+        # Last autonomous heartbeat outcome (⚡ act / · quiet) for the status bar
+        self._heartbeat_indicator: str = ""
+
         # Recovery state
         self._recovery_info: dict | None = None  # interrupted diary for recovery
 
@@ -282,6 +289,10 @@ class SlifeApp(App):
         self.service.inbox._conversations.set_default_handler_factory(
             lambda: TUIHandler(self, assistant_prefix=self._assistant_prefix)
         )
+
+        # Autonomous heartbeat — surface ⚡ 自主 messages + status pulse.
+        self.service.on_autonomous(self._on_autonomous_message)
+        self.service.on_heartbeat(self._on_heartbeat)
 
         # A2A now starts as a plugin via the discovery loop above
         # (start_plugin_server("a2a") → start_a2a, idempotent).
@@ -359,6 +370,7 @@ class SlifeApp(App):
             context_tokens=self.service.current_context_tokens,
             context_window=self.service.context_window,
             thinking=self.service.thinking_enabled,
+            heartbeat=self._heartbeat_indicator,
             inbox_busy=inbox.busy if inbox else False,
             inbox_pending=inbox.pending if inbox else 0,
         )
@@ -421,6 +433,19 @@ class SlifeApp(App):
             return
         self._update_status()
         chat_view.add_system_message(msg, color="#3fb950")
+
+    # ── Autonomous heartbeat (⚡ 自主) ──────────────────────────────
+
+    async def _on_autonomous_message(self, text: str) -> None:
+        """Mount an autonomous (heartbeat) message in the chat — ⚡ 自主."""
+        self.query_one("#chat-view", ChatView).add_assistant_message(
+            name_prefix="⚡ 自主: ",
+        ).append_text(text)
+
+    async def _on_heartbeat(self, outcome: str) -> None:
+        """Update the status-bar heartbeat indicator (⚡ act / · quiet)."""
+        self._heartbeat_indicator = "⚡" if outcome == "act" else "·"
+        self._update_status()
 
     # ── Plugin startup helpers ────────────────────────────────────
 

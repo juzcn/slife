@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from slife.agent.heartbeat import HEARTBEAT_MARK
 from slife.agent.llm_client import TokenUsage
 from slife.agent.loop import extract_image_markers
 from slife.ui.chat import ChatView
@@ -314,15 +315,22 @@ async def restore_session(
             _channel_by_row[i] = turn.get("channel", "")
 
         turn_idx = -1
+        is_heartbeat = False
         for idx, msg in enumerate(all_messages):
             role = msg.get("role", "")
             if role == "system":
                 continue
             elif role == "user":
                 turn_idx += 1
+                raw = msg.get("content", "") or ""
+                # Heartbeat turns: the trigger is a marked system message,
+                # not a real user message — filter the whole turn (the
+                # reply renders as ⚡ 自主 below, or not at all if quiet).
+                is_heartbeat = raw.startswith(HEARTBEAT_MARK)
+                if is_heartbeat:
+                    continue
                 ch = _channel_by_row.get(turn_idx, "")
                 prefix = restore_prefix(ch, agent_id)
-                raw = msg.get("content", "") or ""
                 ui_ops.append({
                     "type": "user",
                     "content": raw,
@@ -343,6 +351,20 @@ async def restore_session(
                         for tc in tcs
                     )
                 ):
+                    continue
+                if is_heartbeat:
+                    # Autonomous beat: show real content as ⚡ 自主, hide ".".
+                    content = msg.get("content") or ""
+                    if not content.strip() or content.strip() == ".":
+                        continue
+                    ui_ops.append({
+                        "type": "assistant",
+                        "thinking": "",
+                        "content": content,
+                        "tool_calls": [],
+                        "is_final": False,
+                        "name_prefix": "⚡ 自主: ",
+                    })
                     continue
                 is_final = (idx == last_assistant_idx)
                 thinking = msg.get("thinking") or ""

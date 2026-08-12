@@ -18,6 +18,9 @@ HUMAN = AgentId("human")
 WECHAT = AgentId("wechat")
 """WeChat user — peer terminal, same processing pipeline as human."""
 
+HEARTBEAT = AgentId("heartbeat")
+"""Internal autonomous heartbeat — not a peer terminal."""
+
 
 @dataclass
 class AgentMessage:

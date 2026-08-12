@@ -110,6 +110,11 @@ class AgentService:
         self._tool_ctx.conversation = self.conversation
         self.session_usage = TokenUsage()
 
+        # Autonomous heartbeat — background idle task + TUI surfacing hooks.
+        self._on_autonomous = None
+        self._on_heartbeat = None
+        self._heartbeat_task: asyncio.Task | None = None
+
         # ── Unified message queue (always active) ──────────────────
         # Every input — human keyboard, A2A MQTT, WeChat — flows
         # through the same inbox queue.  Processed serially.
@@ -1278,6 +1283,52 @@ class AgentService:
         agent_id = os.environ.get("SLIFE_AGENT_ID", "slife")
         return get_data_dir() / f"{agent_id}.db"
 
+    # ── Autonomous heartbeat ──────────────────────────────────────────
+
+    def on_autonomous(self, callback) -> None:
+        """Register a callback for autonomous (heartbeat) output."""
+        self._on_autonomous = callback
+
+    def on_heartbeat(self, callback) -> None:
+        """Register a callback for every heartbeat outcome (quiet|act)."""
+        self._on_heartbeat = callback
+
+    async def surface_autonomous(self, text: str) -> None:
+        """Deliver an autonomous message to the TUI (⚡ 自主)."""
+        cb = self._on_autonomous
+        if cb is not None:
+            try:
+                await cb(text)
+            except Exception:
+                logger.debug("surface_autonomous_error", exc_info=True)
+
+    async def _notify_heartbeat(self, outcome: str) -> None:
+        """Notify the TUI that a heartbeat beat happened (status-bar pulse)."""
+        cb = self._on_heartbeat
+        if cb is not None:
+            try:
+                await cb(outcome)
+            except Exception:
+                pass
+
+    async def surface_autonomous_reply(
+        self, text: str, cancelled: bool = False
+    ) -> None:
+        """``on_reply`` for heartbeat turns — surface only real content.
+
+        The quiet reply is exactly ``.`` (checked in, nothing to do); any
+        other non-empty text is an autonomous act worth surfacing.  Both
+        outcomes are notified as a heartbeat (status-bar pulse).
+        """
+        t = (text or "").strip()
+        if t and t != ".":
+            logger.info("heartbeat_act text=%.200s", t)
+            await self.surface_autonomous(t)
+            await self._notify_heartbeat("act")
+        else:
+            logger.info("heartbeat_quiet")
+            await self._notify_heartbeat("quiet")
+
     # ── Inbox lifecycle (always active) ────────────────────────────────
 
     async def start_inbox(self) -> None:
@@ -1291,8 +1342,24 @@ class AgentService:
         self._inbox_task = asyncio.create_task(self.inbox.run())
         logger.info("inbox_started")
 
+        # Autonomous heartbeat — main agent only (hardcoded 60s).  Subagents
+        # are workers and never receive a heartbeat trigger.
+        if not self.is_subagent:
+            from slife.agent.heartbeat import heartbeat_loop
+
+            if self._heartbeat_task is None or self._heartbeat_task.done():
+                self._heartbeat_task = asyncio.create_task(heartbeat_loop(self))
+                logger.info("heartbeat_started")
+
     async def stop_inbox(self) -> None:
-        """Stop the inbox background processor."""
+        """Stop the inbox background processor (and the heartbeat)."""
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
         if self._inbox_task is None:
             return
         self._inbox_task.cancel()
