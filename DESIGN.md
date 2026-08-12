@@ -95,7 +95,7 @@ User Input → Conversation.add_user_message()        (secrets sanitized)
   2. **Alternating roles** — a conversation ending on a `user`/`tool` message (a tool result is a `user` role on the Anthropic wire, which rejects two consecutive users with a 400) gets a closing assistant message.
 
   It has exactly **two call sites**: `save_to_memory` (before persisting — the save-side guarantee, which runs unconditionally after every turn via the inbox `finally`), and `restore_session` (after loading from memory — the load-side guarantee). Because every turn is saved unconditionally, the conversation is always left consistent before the next user message is appended. Each turn also opens with an auto-invoked `_sys_note` assistant+tool pair, so a user message is always sandwiched between assistant messages.
-- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (actual `prompt_tokens` from the last API call, else the restore-time estimate before the first call, else the chars÷3 live estimate). It drives `_sys_note`, the trim gate, and the TUI status bar — one value, no recompute
+- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (actual `prompt_tokens` from the last API call, else the restore-time estimate before the first call, else the chars÷3 live estimate). It drives `_sys_note`, the trim gate, and the TUI status bar — one value, no recompute. Usage is tracked **per conversation** (`_usage_by_conv`, keyed by `id()`): the heartbeat, A2A, and WeChat turns run in their own (often tiny) conversations, so a global last-usage would let a 9.6% heartbeat drag the human conversation's status bar / `_sys_note` down from its real 26.5%. Each conversation keeps its own reading; `_last_usage` is retained only as the restore-time estimate slot.
 
 ### Context Window Management
 
@@ -109,7 +109,7 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Detect**: context usage is computed **once per turn** via `context_tokens_for()` — the last API call's actual prompt tokens after the first round, else the restore-time estimate primed on `_last_usage` (computed when the UI rebuilds the session to decide how many turns to restore), else the chars÷3 live estimate; `_sys_note` reports it as the usage %
+- **Detect**: context usage is computed **once per turn** via `context_tokens_for()` — the conversation's last API call's actual prompt tokens after the first round (per-conversation, so heartbeat turns don't contaminate the human reading), else the restore-time estimate primed on `_last_usage` (computed when the UI rebuilds the session to decide how many turns to restore), else the chars÷3 live estimate; `_sys_note` reports it as the usage %
 - **Trim**: when the reported usage % hits the configured `context_ceiling` (default 80%), the loop auto-invokes **`_sys_trim`** — which is the trim itself. It removes the oldest complete turns down to `context_window × context_floor` (default 20%) and returns the notification. The gate lives outside the tool so `_sys_trim` is only invoked — and only records a pair — when a trim actually happens; if the LLM calls it directly it genuinely compacts the context (a legitimate action, not a no-op)
 - **Status**: once per turn the loop auto-invokes **`_sys_note`** (a normal tool-call pair) with the same `current` value the trim gate uses — it renders `context_status.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), and any A2A peer presence events since the last turn (online/offline/timeout, drained read-once)
 - **Restore**: on startup, recent turns are loaded directly from SQLite within the `context_floor` token budget
@@ -378,7 +378,8 @@ Every turn permanently recorded as an independent row — no session concept, a 
 | `messages` | Assistant response as OpenAI JSON array (thinking, tool calls, results, text) |
 | `summary` | 1–2 sentence gist (LLM-written) |
 | `tags` | Comma-separated topic tags |
-| `created_at` | ISO 8601 with timezone (B-tree indexed) |
+| `created_at` | ISO 8601 with timezone (B-tree indexed) — user input time (Enter-press moment, threaded from the TUI) |
+| `completed_at` | ISO 8601 — assistant completion time (captured after the final turn ensure, before the MCP save) |
 | `channel` | Source: `human`, `wechat`, or remote agent id |
 | `who_helped` / `what_model` | Agent identity + model used |
 | `token_count` | Tokens consumed by this turn |
@@ -386,6 +387,8 @@ Every turn permanently recorded as an independent row — no session concept, a 
 Supporting structures: `diary_fts` (FTS5 content-sync table over message/summary/tags/channel with insert/delete triggers), `diary_semantic` (sqlite-vec `vec0` table: embedding + rowid + chunk index + summary/tags/created_at), and `diary_meta` (key-value store tracking the embedding model identity for migration detection).
 
 Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the harness-only `__memory_save_turn` tool. The save-side invariant is enforced by the harness: a turn with an orphaned `tool_call` is repaired (`_ensure_turn_consistent`) before it reaches the plugin, so the diary never persists an incomplete pair.
+
+`completed_at` is written for every new turn; databases that predate the column are migrated **once** by `scripts/migrate_memdb_completed_at.py` — a standalone script that adds the column, backfills `completed_at = created_at`, and pulls `created_at` earlier by a random 0–5 minutes to approximate the user-input moment. Deliberately **no** in-plugin ALTER migration: fresh databases get the column from `schema.sql`, existing ones are migrated by the script (run it once per DB, then restart).
 
 ### Search
 
@@ -416,7 +419,7 @@ Backend selection priority: GGUF file present → transformer requested → API 
 
 ### Session Restore
 
-On startup, recent turns are read **directly from SQLite** — no MCP transport, no plugin dependency. The UI rebuilds the last session immediately (user messages, assistant text, tool-call widgets, images whose files still exist); plugins start in parallel.
+On startup, recent turns are read **directly from SQLite** — no MCP transport, no plugin dependency. The UI rebuilds the last session immediately (user messages, assistant text, tool-call widgets, images whose files still exist); plugins start in parallel. Restored messages carry their stored timestamps — user messages read `created_at`, assistant messages read `completed_at` — matching the live display.
 
 ### Agent Isolation
 
@@ -519,12 +522,14 @@ ngrok free tier limits: **1 online agent** (one tunnel per token — only the fi
 Textual TUI with minimal chrome:
 
 - **ChatView** — scrollable message container; printable keys redirect to the input
-- **UserMessage** — prefix-styled user text with optional image attachments
-- **AssistantMessage** — streaming text with collapsible thinking blocks (Enter/Space toggle)
+- **UserMessage** — dim `[HH:MM]` (user input time) + prefix-styled user text, optional image attachments
+- **AssistantMessage** — dim `[HH:MM]` (assistant completion time) on the response text — **not** before the thinking block, so a thinking-only message shows no time — plus streaming text with collapsible thinking blocks (Enter/Space toggle)
 - **ToolCallWidget** — collapsible amber headers: status icon, label, primary-arg preview, iteration counter; Ctrl+Y copies the result
-- **StatusBar** — model name, thinking indicator, inbox state, last-call context tokens + usage %
+- **StatusBar** — model name, thinking indicator, inbox state, last-call context tokens + usage % (per conversation, so a heartbeat turn never drags the human reading down)
 - **ApprovalPrompt** — inline approve/deny row for `_approve: true` tool calls (Y / N / Esc), re-renders to ✓ Approved / ✗ Denied
 - **Auto-restore** — rebuilds last session's UI from the diary on startup
+
+Timestamps: user messages display `created_at` (the input-box Enter-press moment); assistant messages display `completed_at` (the turn's completion time). Both format as `HH:MM` same-day, `MM-DD HH:MM` same-year, `YYYY-MM-DD HH:MM` older. Live display and restore read the same stored values, so the rebuilt chat matches what was seen live. The status bar's token count is the **per-call** prompt tokens of the conversation's last API call — not the turn's cumulative sum (that sum is the assistant message footer).
 
 All user-supplied text is rendered with `markup=False` to prevent `MarkupError` injection.
 

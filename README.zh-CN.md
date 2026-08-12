@@ -169,6 +169,8 @@ active_model: "deepseek/deepseek-v4-pro",
 
 嵌入后端：本地 GGUF（BGE-M3，离线）、HuggingFace transformers 或 OpenAI 兼容 API。无嵌入后端时关键词搜索照常工作。语义（hybrid）结果只在**当前模型的索引完整构建后**才返回——全量重建期间（新/换模型、重启中断续跑）hybrid 退回关键词搜索，索引完成后自动恢复。
 
+每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。`completed_at` 之前的旧库运行一次 `python scripts/migrate_memdb_completed_at.py` 迁移（插件内无 ALTER 迁移代码）；新库自动带该列。
+
 ### 自主心跳
 
 空闲时，agent 每 60 秒获得一次自主思考/行动的窗口。它作为一个正常 turn 运行（独立会话，存入记忆）；回复契约：有值得说的话就输出内容，否则只输出一个 `.`——`. ` 和 `[Heartbeat]` 触发消息会被 TUI 过滤，真正的自主回复显示为 `⚡ 自主`。这是涌现自发性行为的前提。
