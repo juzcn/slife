@@ -1299,6 +1299,7 @@ class AgentService:
 
         Reads directly from SQLite — independent of the memory plugin / MCP.
         """
+        store = None
         try:
             from slife.plugins.memdb.store import SessionStore
             from slife.ui.restore import estimate_turn_tokens
@@ -1340,6 +1341,14 @@ class AgentService:
         except Exception as e:
             logger.debug("get_recent_turns_direct_db_error err=%s", e)
             return []
+        finally:
+            # Close the aiosqlite connection so its worker thread doesn't
+            # outlive the event loop (leaks + "Event loop is closed" in tests).
+            if store is not None:
+                try:
+                    await store.close()
+                except Exception:
+                    pass
 
     def _get_memory_db_path(self) -> Path | None:
         """Return the memory database path."""
