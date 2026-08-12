@@ -167,7 +167,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | `hybrid` | 语义召回（FTS5 + 向量 → RRF 融合） |
 | `time` | 按日期浏览 |
 
-嵌入后端：本地 GGUF（BGE-M3，离线）、HuggingFace transformers 或 OpenAI 兼容 API。无嵌入后端时关键词搜索照常工作。
+嵌入后端：本地 GGUF（BGE-M3，离线）、HuggingFace transformers 或 OpenAI 兼容 API。无嵌入后端时关键词搜索照常工作。语义（hybrid）结果只在**当前模型的索引完整构建后**才返回——全量重建期间（新/换模型、重启中断续跑）hybrid 退回关键词搜索，索引完成后自动恢复。
 
 ### 图片与视觉
 

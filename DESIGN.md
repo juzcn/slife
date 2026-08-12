@@ -391,7 +391,7 @@ Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN), B-tree on `c
 
 Hybrid mode uses Reciprocal Rank Fusion (RRF, k=60). Without an embedding backend, hybrid degrades to FTS5-only gracefully.
 
-Search hardening (REVIEW M5–M7): `search_grep` escapes `%`/`_` with `ESCAPE '\'`; `memory_count` honors `since`/`until` in fts5 mode; LLM-facing search clamps `limit` to `[1, 200]`; the background reindex counts only stored embeddings so it gives up on a persistently failing embedder instead of spinning. Known remainder: the `memory_count` grep branch still emits `LIKE ?` without the `ESCAPE` clause (see REVIEW.md).
+Search hardening (REVIEW M5–M7): `search_grep` escapes `%`/`_` with `ESCAPE '\'`; `memory_count` honors `since`/`until` in fts5 mode; LLM-facing search clamps `limit` to `[1, 200]`; the background reindex counts only stored embeddings so it gives up on a persistently failing embedder instead of spinning. Semantic search is gated on index completeness (`_semantic_ready`) — hybrid degrades to FTS5 while any turn lacks an embedding, and `_ensure_index_complete()` retries an interrupted/stalled reindex on store init and at the start of every `memory_search` / `memory_check_embedding`, so the index converges to complete without partial results ever being served. Known remainder: the `memory_count` grep branch still emits `LIKE ?` without the `ESCAPE` clause (see REVIEW.md).
 
 ### Embedding
 
@@ -403,7 +403,7 @@ Three backends, configurable at runtime via `memory_set_embedding`:
 | Transformer (local) | `sentence-transformers` | BAAI/bge-m3 | 1024 |
 | API (OpenAI-compatible) | Provider key | text-embedding-3-small | 1536 |
 
-Backend selection priority: GGUF file present → transformer requested → API key present → disabled. Long turns are chunked at paragraph boundaries (~2000 chars ≈ 500 tokens, 1-paragraph overlap); the embedded text is the user message plus all assistant/tool contents. Configuration lives in `slife.json5` under `memdb.embedding`. Model/dimension migration drops and recreates the `vec0` table automatically; reindexing runs in the background in small batches without blocking.
+Backend selection priority: GGUF file present → transformer requested → API key present → disabled. Long turns are chunked at paragraph boundaries (~2000 chars ≈ 500 tokens, 1-paragraph overlap); the embedded text is the user message plus all assistant/tool contents. Configuration lives in `slife.json5` under `memdb.embedding`. Model/dimension migration drops and recreates the `vec0` table automatically. Reindexing runs in the background in small batches without blocking; while it runs, semantic search is gated OFF (`_semantic_ready`), so no partial results are served — it flips back ON only when every turn is embedded. Both `memory_set_embedding` and `memory_set_enabled(True)` re-run the store setup, so the vec0 migration also detects a model/dimension change made by a manual `slife.json5` edit before the gate re-enables (new turns embed incrementally on save).
 
 ### Session Restore
 
