@@ -368,8 +368,15 @@ class EmbeddingClient:
             )
             return None
 
-    async def _call_gguf(self, texts: list[str]) -> list[list[float]] | None:
-        """Generate embeddings using a local GGUF model via llama-cpp."""
+    async def _load_gguf(self) -> None:
+        """Materialise the llama-cpp Llama client for the gguf backend.
+
+        Leaves ``_client`` None when llama-cpp-python is absent — the
+        embed() wrapper then reports the backend unavailable.  The Llama
+        constructor is synchronous and can block on first load; it runs on
+        a daemon thread so a hung load can never hang plugin shutdown
+        (threads.py convention).
+        """
         try:
             from llama_cpp import Llama  # type: ignore[import-not-found]
         except ImportError:
@@ -377,23 +384,51 @@ class EmbeddingClient:
                 "embeddings_unavailable backend=gguf reason=llama_cpp_not_installed "
                 "hint='uv pip install llama-cpp-python'"
             )
-            return None
+            return
+        gguf_path = self._gguf_path
+        assert gguf_path is not None  # guaranteed by _backend == "gguf"
+        logger.info("loading_gguf path=%s dim=%d", gguf_path, self._dim)
+        from slife.threads import run_daemon
 
-        if self._client is None:
-            gguf_path = self._gguf_path
-            assert gguf_path is not None  # guaranteed by _backend == "gguf"
-            logger.info(
-                "loading_gguf path=%s dim=%d", gguf_path, self._dim,
-            )
-            # llama-cpp-python's Llama constructor is not async,
-            # but it's fast enough to call synchronously.
-            self._client = Llama(
+        self._client = await run_daemon(
+            lambda: Llama(
                 model_path=gguf_path,
                 embedding=True,
                 n_ctx=8192,
                 verbose=False,
+            ),
+            name="gguf-load",
+        )
+        logger.info("gguf_loaded model=%s", self._model)
+
+    async def load(self) -> bool:
+        """Force the local backend model into memory; return True when loaded.
+
+        gguf/transformer models load lazily on first embed.  After a reload
+        there is nothing left to embed when the index is already complete,
+        so nothing would materialise the model and the semantic gate would
+        stay locked off — load it here so the gate can open.  Idempotent;
+        the API backend is always ready.
+        """
+        if self._client is not None or self._backend == "api":
+            return True
+        try:
+            if self._backend == "transformer":
+                await self.ensure_loaded()
+            elif self._backend == "gguf":
+                await self._load_gguf()
+        except Exception as e:
+            logger.warning(
+                "embedding_load_failed backend=%s err=%s", self._backend, e,
             )
-            logger.info("gguf_loaded model=%s", self._model)
+        return self._client is not None
+
+    async def _call_gguf(self, texts: list[str]) -> list[list[float]] | None:
+        """Generate embeddings using a local GGUF model via llama-cpp."""
+        if self._client is None:
+            await self._load_gguf()
+        if self._client is None:
+            return None
 
         # llama-cpp-python's create_embedding is synchronous.
         # For short summaries, this is fast enough. For bulk

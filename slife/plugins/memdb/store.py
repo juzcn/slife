@@ -499,6 +499,15 @@ class SessionStore:
     ) -> list[dict]:
         """FTS5 keyword search with snippet highlighting."""
         limit = _clamp_limit(limit)
+        # FTS5 unicode61 does not segment CJK — a whole-sentence Chinese
+        # query becomes a phrase/run token that never matches a longer turn.
+        # Substring matching is what Chinese users expect, so route CJK
+        # queries to the LIKE fallback (same shape, so callers and
+        # merge_hybrid are agnostic to the backend).
+        if _contains_cjk(query):
+            return await self._search_like(
+                query, limit=limit, since=since, until=until,
+            )
         fts_query = _to_fts5_query(query)
         time_clauses = ""
         time_params: list[str] = []
@@ -526,6 +535,52 @@ class SessionStore:
         except aiosqlite.OperationalError as e:
             logger.debug("search_keyword_parse_error query=%s err=%s", query, e)
             return []
+
+    async def _search_like(
+        self, pattern: str, limit: int,
+        since: str | None = None, until: str | None = None,
+    ) -> list[dict]:
+        """Substring (LIKE) search over the searchable columns.
+
+        CJK fallback for :meth:`search_keyword` — FTS5 unicode61 cannot
+        segment Chinese, so whole-sentence queries return nothing.  Returns
+        the same shape as ``search_keyword`` (``snippet`` + ``rank``) so
+        callers and merge_hybrid stay backend-agnostic.  Rank is a constant
+        0; ordering is newest-first (rowid DESC).
+        """
+        # Escape LIKE metacharacters so a pattern containing %/_ matches them
+        # literally (REVIEW M5) — same escaping as search_grep.
+        safe = (
+            pattern.replace("\\", r"\\")
+                   .replace("%", r"\%")
+                   .replace("_", r"\_")
+        )
+        like_pattern = f"%{safe}%"
+        time_clauses = ""
+        time_params: list[str] = []
+        if since:
+            since = _normalize_time_param(since, role="since")
+            time_clauses += " AND created_at >= ?"
+            time_params.append(since)
+        if until:
+            until = _normalize_time_param(until, role="until")
+            time_clauses += " AND created_at <= ?"
+            time_params.append(until)
+        cursor = await self._c.execute(
+            f"""SELECT rowid, user_message, summary, tags, created_at,
+                      substr(messages, max(0, instr(messages, ?) - 40), 160) AS snippet,
+                      0 AS rank
+               FROM diary
+               WHERE (user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\'
+                      OR summary LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')
+                     {time_clauses}
+               ORDER BY rowid DESC LIMIT ?""",
+            (pattern, like_pattern, like_pattern, like_pattern, like_pattern,
+             *time_params, limit),
+        )
+        results = [dict(row) for row in await cursor.fetchall()]
+        logger.debug("search_like_cjk pattern=%s hits=%s", pattern[:80], len(results))
+        return results
 
     async def search_semantic(
         self, embedding: list[float], limit: int = 20,
@@ -932,6 +987,17 @@ def _chunk_text(
         chunks.append("\n".join(current))
 
     return chunks or [text]
+
+
+def _contains_cjk(text: str) -> bool:
+    """True if *text* contains CJK ideographs.
+
+    SQLite FTS5's unicode61 tokenizer does not segment Chinese — a
+    whole-sentence CJK query becomes a phrase/run token that never matches
+    a longer stored turn.  Substring (LIKE) matching is what Chinese users
+    expect, so search_keyword routes CJK queries to it.
+    """
+    return any("一" <= ch <= "鿿" for ch in text)
 
 
 def _to_fts5_query(query: str) -> str:

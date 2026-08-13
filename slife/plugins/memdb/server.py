@@ -299,9 +299,18 @@ async def _ensure_index_complete() -> None:
     global _reindex_task, _semantic_ready
     # Semantic stays OFF until the model is actually loaded — "disabled" is
     # immediate, even if the index was complete from a previous session.
-    if _embedder is None or not _embedder.loaded:
+    if _embedder is None or not _embedder.available:
         _semantic_ready = False
         return
+    # A freshly reloaded embedder (memory_set_embedding / memory_set_enabled
+    # / restart) has no model materialised yet, and with nothing left to
+    # reindex nothing would ever load it — the gate would stay locked off
+    # forever (loaded only flips on the first embed, which the gate blocks).
+    # Load the model here so the gate can open.
+    if not _embedder.loaded:
+        if not await _embedder.load():
+            _semantic_ready = False
+            return
     store = _store
     if store is None:
         return
@@ -633,11 +642,14 @@ async def memory_search(
         merged = merge_hybrid(keyword_hits, semantic_hits)
 
         # Build diagnostic hint when hybrid mode degrades to keyword-only.
+        # Surface the degradation reason even when no keyword hits survive —
+        # an empty result is exactly when a silent fallback would mislead.
         hint = ""
-        if merged:
-            if not semantic_available:
-                hint = _hybrid_fallback_reason()
-        else:
+        if not semantic_available:
+            hint = _hybrid_fallback_reason()
+            if not merged:
+                hint += " — no keyword (fts5) matches either"
+        elif not merged:
             hint = "no matching memories found"
 
         return json.dumps({
@@ -718,6 +730,12 @@ async def memory_check_embedding() -> str:
             report["hint"] = (
                 report.get("hint", "") +
                 f" Background indexing in progress — {unembedded} turns pending embedding."
+            ).strip()
+        elif unembedded == 0 and not _semantic_ready and report.get("available"):
+            report["hint"] = (
+                report.get("hint", "") +
+                " Semantic index is complete but the gate is off — the embedding "
+                "model failed to load; keyword search still works."
             ).strip()
         return json.dumps(report, ensure_ascii=False, indent=2)
     except Exception as e:

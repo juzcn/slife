@@ -203,3 +203,91 @@ class TestIndexCompletenessGate:
         await srv._background_reindex()
 
         assert srv._semantic_ready is True
+
+
+class TestGateReopenAfterReload:
+    """A reloaded embedder (loaded=False) with a complete index must still
+    open the gate — the gate triggers the model load itself (deadlock fix)."""
+
+    def _server(self, load_result: bool):
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        store.count_unembedded = AsyncMock(return_value=0)
+        srv._store = store
+        emb = MagicMock()
+        emb.available = True
+        emb.loaded = False
+        emb.load = AsyncMock(return_value=load_result)
+        srv._embedder = emb
+        srv._semantic_ready = False
+        srv._reindex_task = None
+        return srv, emb
+
+    @pytest.mark.asyncio
+    async def test_gate_loads_model_and_opens(self, restore_root_logger):
+        srv, emb = self._server(load_result=True)
+
+        await srv._ensure_index_complete()
+
+        assert srv._semantic_ready is True
+        emb.load.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_gate_stays_off_when_model_load_fails(self, restore_root_logger):
+        srv, emb = self._server(load_result=False)
+
+        await srv._ensure_index_complete()
+
+        assert srv._semantic_ready is False
+        emb.load.assert_awaited_once()
+
+
+class TestHybridDegradationHint:
+    """The hybrid→fts5 degradation must be surfaced even when no keyword
+    hits survive — an empty result is exactly when a silent fallback
+    would mislead (REVIEW: silent degradation)."""
+
+    def _server(self, keyword_hits: list[dict]):
+        import json  # noqa: F401
+
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        store.search_keyword = AsyncMock(return_value=keyword_hits)
+        store.search_semantic = AsyncMock(return_value=[])
+        srv._store = store
+        srv._embedder = MagicMock()
+        srv._embedder.available = True
+        srv._semantic_ready = False  # gate off → semantic unavailable
+        return srv, store
+
+    @pytest.mark.asyncio
+    async def test_empty_result_still_reports_degradation(self, restore_root_logger):
+        import json
+
+        srv, store = self._server(keyword_hits=[])
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)), \
+             patch.object(srv, "_ensure_index_complete", AsyncMock()):
+            out = await srv.memory_search(query="北京天气怎么样", mode="hybrid")
+
+        data = json.loads(out)
+        assert data["mode"] == "fts5"
+        # The degradation reason, not just "no matching memories found".
+        assert "degraded" in data["hint"]
+
+    @pytest.mark.asyncio
+    async def test_keyword_hits_with_gate_off_also_report(self, restore_root_logger):
+        import json
+
+        srv, store = self._server(keyword_hits=[
+            {"rowid": 1, "user_message": "微信登录", "snippet": "…", "rank": -1.0},
+        ])
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)), \
+             patch.object(srv, "_ensure_index_complete", AsyncMock()):
+            out = await srv.memory_search(query="微信登录", mode="hybrid")
+
+        data = json.loads(out)
+        assert data["mode"] == "fts5"
+        assert data["results"]
+        assert "degraded" in data["hint"]

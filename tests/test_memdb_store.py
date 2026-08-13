@@ -669,6 +669,42 @@ class TestSessionStoreSearchKeyword:
         result = await store.search_keyword(query="bad!!query")
         assert result == []
 
+    @pytest.mark.asyncio
+    async def test_search_keyword_cjk_falls_back_to_like(self):
+        """A whole-sentence CJK query routes to LIKE (FTS5 unicode61 cannot
+        segment Chinese — it returns nothing for a longer turn)."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": 1, "user_message": "今天北京天气怎么样？", "snippet": "…", "rank": 0},
+        ])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        result = await store.search_keyword(query="北京天气怎么样")
+        assert len(result) == 1
+
+        sql, params = mock_conn.execute.call_args[0]
+        assert "LIKE" in sql
+        assert "MATCH" not in sql
+        assert params[1] == "%北京天气怎么样%"  # escaped LIKE pattern
+
+    @pytest.mark.asyncio
+    async def test_search_keyword_ascii_keeps_fts5(self):
+        """ASCII queries still go through the FTS5 MATCH path."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        await store.search_keyword(query="hello world")
+
+        sql, _ = mock_conn.execute.call_args[0]
+        assert "MATCH" in sql
+
 
 class TestSessionStoreSearchGrep:
     """Tests for search_grep."""
