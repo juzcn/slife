@@ -42,12 +42,18 @@ def _active_tunnel(url="https://slife.ngrok-free.dev"):
 
 
 def _offline_tunnel():
-    """Patch the tunnel so it reports inactive."""
+    """Patch the tunnel so it reports inactive.
+
+    Also clear ``_PLUGIN_PORT`` so ``_ensure_tunnel`` short-circuits without
+    a real ngrok start attempt — without this the offline test spent ~9s
+    trying to reach the actual ngrok service.
+    """
     return patch.multiple(
         plugin,
         is_active=MagicMock(return_value=False),
         public_url=MagicMock(return_value=None),
         share_url_for=MagicMock(return_value=None),
+        _PLUGIN_PORT=0,
     )
 
 

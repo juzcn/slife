@@ -103,7 +103,7 @@ minversion = "9.1"
 testpaths = ["tests"]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "module"
-addopts = "-v --tb=short --strict-markers --strict-config --no-header --color=yes"
+addopts = "-q --tb=short --strict-markers --strict-config --no-header --color=yes --durations=10"
 filterwarnings = [
     # CPython 3.13+: unittest.mock._AsyncMockMixin creates unawaited
     # coroutine wrappers at class-definition time.  GC may collect them
