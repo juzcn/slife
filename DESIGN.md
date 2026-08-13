@@ -1,29 +1,6 @@
 # Slife Design
 
-## Philosophy
-
-### Minimum Harness
-
-The harness does only what the LLM physically cannot:
-
-1. **Execute tools** — the LLM requests function calls; the harness runs them and returns results.
-2. **Maintain conversation state** — the harness holds the message list and feeds it back each turn.
-3. **Stream responses** — the harness delivers tokens to the UI as they arrive.
-4. **Persist memory** — every message, thinking block, and tool output is saved immutably.
-
-Everything else — reasoning, planning, tool selection, error recovery, coordination — is the LLM's job.
-
-### Negative Space
-
-What Slife deliberately is not:
-
-- **Not a framework** — no agent composition, pipelines, or orchestration abstractions
-- **Not a safety system** — no sandboxing beyond the OS. Approval is model-driven: the LLM sets `_approve: true` on any tool call to show an inline approval prompt, but nothing hardcodes approval on any tool
-- **Not an automation engine** — no scheduled tasks, background workers, or event triggers
-
-It's a chat window with tools. The LLM is in full control.
-
-### Language policy
+## Language policy
 
 The model input should read uniformly, so text that Slife authors is English:
 
