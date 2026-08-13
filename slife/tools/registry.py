@@ -39,6 +39,10 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         """Register a tool instance."""
+        if tool.name in self._tools and self._tools[tool.name] is not tool:
+            logger.warning(
+                "tool_register_duplicate name=%s — replacing existing tool", tool.name,
+            )
         self._tools[tool.name] = tool
 
     def unregister(self, name: str) -> bool:

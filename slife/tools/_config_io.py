@@ -84,6 +84,15 @@ def write_config(path: Path, raw: dict) -> None:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            # Preserve the existing file's mode — mkstemp creates 0600, which
+            # would silently tighten a previously readable config.
+            if path.exists():
+                try:
+                    os.chmod(tmp, path.stat().st_mode & 0o7777)
+                except OSError:
+                    pass
             os.replace(tmp, path)
         except BaseException:
             try:

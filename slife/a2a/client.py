@@ -140,10 +140,12 @@ class A2AClient:
         # so we can detect duplicate agent-ids already on the mesh.
         await self._adapter.subscribe("Slife/+/presence")
 
-        # Check for duplicate agent-id — collect existing presences
-        # briefly before announcing ourselves.
+        # Check for duplicate agent-id — collect existing presences before
+        # announcing ourselves.  Peers re-publish presence every heartbeat
+        # interval, so a short window can miss one that announced earlier;
+        # 5s is a best-effort compromise against blocking connect too long.
         try:
-            async with asyncio.timeout(1.5):
+            async with asyncio.timeout(5.0):
                 async for msg in self._adapter.messages("Slife/+/presence"):
                     try:
                         card = json.loads(msg.payload)
@@ -297,6 +299,12 @@ class A2AClient:
             # the waiter) must not leak the pending future — drop it so a late
             # peer result can't resolve a future nobody awaits (REVIEW §1-8).
             self._pending_tasks.pop(corr_id, None)
+            # Mark the store record terminal so a cancelled waiter doesn't
+            # leave it "pending" forever.  If a2a_cancel_task already marked
+            # it cancelled, leave that status alone.
+            rec = get_store().get(corr_id)
+            if rec is not None and rec.status == "pending":
+                get_store().record_error(corr_id, "cancelled")
             raise
 
     # ── Async task routing ────────────────────────────────────────────
@@ -693,8 +701,13 @@ class A2AClient:
                 get_store().record_result(corr_id, result_text)
             logger.debug("a2a_result_resolved corr_id=%s", corr_id)
         else:
-            # Store for async retrieval — no synchronous waiter
+            # Store for async retrieval — no synchronous waiter.  Cap the
+            # cache so a session that never polls results doesn't grow it
+            # without bound (oldest evicted first).
             self._completed_tasks[corr_id] = result_text
+            if len(self._completed_tasks) > 100:
+                oldest = next(iter(self._completed_tasks))
+                self._completed_tasks.pop(oldest, None)
             if cancelled:
                 get_store().record_cancel(corr_id)
             else:

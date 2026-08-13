@@ -309,6 +309,7 @@ class Inbox:
                         token_count=token_count,
                         conversation=conversation,
                         channel=str(msg.source),
+                        images=getattr(msg, "images", None),
                         # The user-input timestamp captured by the TUI
                         # handler — becomes the diary created_at so restore
                         # shows the same time as the live display.  Absent

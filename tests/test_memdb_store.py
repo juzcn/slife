@@ -15,6 +15,7 @@ from slife.plugins.memdb.store import (
     _normalize_time_param,
     _now,
     _serialize_f32,
+    _split_chunks_to_token_limit,
     _split_sql,
     _to_fts5_query,
     DEFAULT_EMBEDDING_DIM,
@@ -46,6 +47,28 @@ class TestSerializeF32:
     def test_empty_vector(self):
         result = _serialize_f32([])
         assert len(result) == 0
+
+
+class TestSplitChunksToTokenLimit:
+    """Oversized chunks must be hard-split, never dropped — a dropped chunk
+    leaves the turn unembedded and locks the semantic-search gate off."""
+
+    def test_splits_oversized_chunk_without_dropping(self):
+        chunks = ["x" * 100]
+        out = _split_chunks_to_token_limit(chunks, max_tokens=10)  # 40-char limit
+        assert all(len(c) <= 40 for c in out)
+        assert "".join(out) == "x" * 100  # nothing lost
+
+    def test_leaves_small_chunks_untouched(self):
+        chunks = ["hello", "world"]
+        assert _split_chunks_to_token_limit(chunks, max_tokens=100) == chunks
+
+    def test_empty_list(self):
+        assert _split_chunks_to_token_limit([], max_tokens=100) == []
+
+    def test_nonpositive_limit_returns_unchanged(self):
+        chunks = ["abc"]
+        assert _split_chunks_to_token_limit(chunks, max_tokens=0) == chunks
 
 
 class TestToFts5Query:
@@ -98,7 +121,23 @@ class TestNormalizeTimeParam:
         assert _normalize_time_param("  today  ", "since") == today
 
     def test_iso_string_passthrough_since(self):
-        assert _normalize_time_param("2026-07-20T14:39:19+08:00", "since") == "2026-07-20T14:39:19+08:00"
+        """Offset-aware datetimes are normalized to the local offset (same
+        instant) so they compare correctly against local created_at."""
+        import datetime as _dt
+        expected = _dt.datetime.fromisoformat(
+            "2026-07-20T14:39:19+08:00"
+        ).astimezone().isoformat(timespec="seconds")
+        assert _normalize_time_param("2026-07-20T14:39:19+08:00", "since") == expected
+
+    def test_utc_z_datetime_normalized_to_local(self):
+        """A UTC ('Z') datetime is converted to local so a lexicographic
+        comparison against local created_at doesn't misorder the offset."""
+        import datetime as _dt
+        result = _normalize_time_param("2026-07-20T06:39:19Z", "since")
+        assert result != "2026-07-20T06:39:19Z"
+        assert _dt.datetime.fromisoformat(result) == _dt.datetime.fromisoformat(
+            "2026-07-20T06:39:19Z"
+        )
 
     def test_date_only_since_passthrough(self):
         """Bare-date since works: created_at >= '2026-07-20' includes all records on that day."""
@@ -238,6 +277,37 @@ class TestSessionStoreSetup:
         assert store._vec_available is False
         assert store._embedding_dim == 0  # degraded to keyword-only
 
+    @pytest.mark.asyncio
+    @patch("pathlib.Path.mkdir")
+    @patch("slife.plugins.memdb.store.aiosqlite.connect")
+    async def test_reconfigure_for_embedding_reuses_connection(self, mock_connect, mock_mkdir):
+        """reconfigure_for_embedding must upgrade the live connection in
+        place, not reconnect — a second connect leaked the old handle and
+        opened a commit race (save_turn's execute/commit split across two
+        connections)."""
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock()
+        mock_conn.commit = AsyncMock()
+        mock_conn.enable_load_extension = AsyncMock()
+        mock_conn.load_extension = AsyncMock()
+
+        async def _connect(*args, **kwargs):
+            return mock_conn
+
+        mock_connect.side_effect = _connect
+
+        with patch("sqlite_vec.loadable_path", return_value="/path/to/vec"):
+            store = SessionStore(Path("/tmp/test.db"))
+            await store.setup(embedding_dim=0)
+            conn_before = store._conn
+            await store.reconfigure_for_embedding(
+                embedding_dim=768, embedding_model="transformer:bge-m3",
+            )
+
+        assert mock_connect.call_count == 1
+        assert store._conn is conn_before
+        assert store._embedding_dim == 768
+
 
 class TestSessionStoreClose:
     """Tests for close."""
@@ -302,11 +372,11 @@ class TestSessionStoreSaveTurn:
 
         assert rowid == 7
         args = mock_conn.execute.call_args[0][1]
-        # INSERT tuple order: (user_message, messages_json, channel,
-        #                      created_at, completed_at,
+        # INSERT tuple order: (user_message, messages_json, images_json,
+        #                      channel, created_at, completed_at,
         #                      who_helped, what_model, token_count)
-        assert args[3] == "2026-08-12T14:32:09+08:00"
-        assert args[4] == "2026-08-12T14:35:40+08:00"
+        assert args[4] == "2026-08-12T14:32:09+08:00"
+        assert args[5] == "2026-08-12T14:35:40+08:00"
 
     @pytest.mark.asyncio
     async def test_save_turn_with_embedder(self):
@@ -428,6 +498,7 @@ class TestSessionStoreGetRecentTurns:
                 messages       TEXT NOT NULL DEFAULT '[]',
                 summary        TEXT DEFAULT '',
                 tags           TEXT DEFAULT '',
+                images         TEXT NOT NULL DEFAULT '',
                 created_at     TEXT NOT NULL,
                 completed_at   TEXT,
                 channel        TEXT DEFAULT '',

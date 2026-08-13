@@ -178,6 +178,20 @@ class TestToolCallWidget:
         text = content.plain
         assert "Custom tool" in text
 
+    def test_tool_name_with_markup_chars_renders_literally(self):
+        """A tool name containing `[` must not be parsed as markup — it
+        would raise MarkupError and abort the turn."""
+        w = _make_widget(tool_name="get[item", tool_args={"query": "x"})
+        content = w._header_line()  # must not raise
+        assert "Get[item" in content.plain
+
+    def test_arg_key_with_markup_chars_renders_literally(self):
+        """Tool-argument keys are LLM/MCP controlled — `[` must render
+        literally, not as markup."""
+        w = _make_widget(tool_name="web_search", tool_args={"a[b]": "v"})
+        content = w._detail_block()  # must not raise
+        assert "a[b]" in content.plain
+
     # ── Iteration counter ─────────────────────────────────────────
 
     def test_header_line_includes_iteration(self):

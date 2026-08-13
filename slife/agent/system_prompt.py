@@ -68,7 +68,7 @@ def _render_context(config: Config) -> dict:
         # ── 环境 ──
         "platform_type": _platform_type(),
         "platform_name": _os_name(),
-        "os_version": platform.uname().release,
+        "os_version": _os_version(),
         "arch": platform.machine(),
         "python_cmd": sys.executable,
         "python_version": sys.version.split()[0],
@@ -218,6 +218,27 @@ def _os_name() -> str:
     if system == "Linux":
         return "Linux"
     return system
+
+
+def _os_version() -> str:
+    """Human-readable OS version (not the raw kernel build string).
+
+    On Windows ``platform.uname().release`` is the NT build number
+    (e.g. ``"10.0.26200"``), which is meaningless to a model.  Map it to
+    the marketing name; on macOS use the product version; elsewhere fall
+    back to the kernel release.
+    """
+    system = platform.system()
+    if system == "Windows":
+        release = platform.uname().release  # e.g. "10.0.26200"
+        try:
+            build = int(release.split(".")[-1])
+        except (ValueError, IndexError):
+            return release
+        return "11" if build >= 22000 else "10"
+    if system == "Darwin":
+        return platform.mac_ver()[0] or platform.uname().release
+    return platform.uname().release
 
 
 def _current_shell() -> str:

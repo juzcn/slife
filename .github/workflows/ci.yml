@@ -32,7 +32,7 @@ jobs:
       - name: Install
         run: |
           uv pip install dist/slife-*.whl dist/credstore-*.whl
-          uv pip install pytest pytest-asyncio pytest-cov pytest-xdist
+          uv pip install pytest pytest-asyncio
 
       - name: Run tests
         run: uv run pytest -v --tb=short --no-header --maxfail=5

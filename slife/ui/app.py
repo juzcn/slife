@@ -48,7 +48,9 @@ class StatusBar(Static):
         parts = []
 
         if model:
-            parts.append(f"[#8b949e]{model}[/#8b949e]")
+            # Escape `[` so a config-derived model name can't be parsed as
+            # markup (crash / styling injection in the status bar).
+            parts.append(f"[#8b949e]{model.replace('[', '[[')}[/#8b949e]")
 
         if thinking:
             parts.append("[#d29922]⚡ thinking[/#d29922]")
@@ -236,6 +238,10 @@ class SlifeApp(App):
         # Recovery state
         self._recovery_info: dict | None = None  # interrupted diary for recovery
 
+        # Model picker re-entry guard — a second Ctrl+S while one is open
+        # would stack a second picker and leak the first's await-task.
+        self._model_picker_open = False
+
     def compose(self) -> ComposeResult:
         """Minimal layout: chat fills screen, input + status docked at bottom."""
         yield ChatView(id="chat-view")
@@ -398,6 +404,8 @@ class SlifeApp(App):
         TUI (the picker needs key events to resolve).  The post-decision
         work runs as a background task instead.
         """
+        if self._model_picker_open:
+            return  # a picker is already showing — ignore re-entrant Ctrl+S
         import asyncio
 
         from slife.ui.model_picker import ModelPicker
@@ -424,12 +432,14 @@ class SlifeApp(App):
         # pattern as ChatView._follow_after_refresh (images).
         chat_view.call_after_refresh(chat_view.scroll_end, animate=False)
         picker.focus()
+        self._model_picker_open = True
 
         asyncio.create_task(self._finish_model_switch(chat_view, future))
 
     async def _finish_model_switch(self, chat_view, future) -> None:
         """Apply the picker's decision off the key-event handler."""
         model = await future
+        self._model_picker_open = False
         self.query_one("#user-input").focus()
         if model is None:
             return  # canceled — the picker already shows the status

@@ -140,5 +140,7 @@ class TestShellExecute:
         with patch("asyncio.create_subprocess_shell", AsyncMock(return_value=mock_process)):
             result = await tool.execute(command="cat binary")
 
-        # Should not raise, uses replacement chars
-        assert "�" in result or result  # either has replacement chars or is the decoded string
+        # Invalid bytes decode with U+FFFD replacement and the trailing valid
+        # "invalid" survives — decode must not raise and must return a string.
+        assert isinstance(result, str)
+        assert "invalid" in result

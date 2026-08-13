@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS diary (
     summary        TEXT DEFAULT '',
     tags           TEXT DEFAULT '',
 
+    -- ▼ 用户图片附件（JSON 数组：本地路径或 https URL）
+    images         TEXT NOT NULL DEFAULT '',
+
     -- ▼ 时间
     created_at     TEXT NOT NULL,   -- 用户输入时间（输入框回车时刻）
     completed_at   TEXT,            -- assistant 完成时间（旧库经 scripts/migrate_memdb_completed_at.py 回填）
@@ -61,6 +64,16 @@ END;
 CREATE TRIGGER IF NOT EXISTS diary_ad AFTER DELETE ON diary BEGIN
     INSERT INTO diary_fts(diary_fts, rowid, user_message, messages, summary, tags, channel)
     VALUES ('delete', old.rowid, old.user_message, old.messages, old.summary, old.tags, old.channel);
+END;
+
+-- memory_summarize writes summary/tags via UPDATE — the FTS5 external-content
+-- index must track those updates or the summary stays invisible to keyword
+-- search (only the insert-time empty row was indexed).
+CREATE TRIGGER IF NOT EXISTS diary_au AFTER UPDATE ON diary BEGIN
+    INSERT INTO diary_fts(diary_fts, rowid, user_message, messages, summary, tags, channel)
+    VALUES ('delete', old.rowid, old.user_message, old.messages, old.summary, old.tags, old.channel);
+    INSERT INTO diary_fts(rowid, user_message, messages, summary, tags, channel)
+    VALUES (new.rowid, new.user_message, new.messages, new.summary, new.tags, new.channel);
 END;
 
 

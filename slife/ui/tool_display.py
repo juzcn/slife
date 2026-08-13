@@ -216,8 +216,9 @@ class ToolCallWidget(Static):
         content = _lit(indicator + " ")
         # Status icon (colored)
         content = content + _lit(icon + " ", style=color)
-        # Label (bold amber)
-        content = content + _mc(f"[bold #d29922]{label}[/bold #d29922]")
+        # Label (bold amber) — _lit, not _mc: the tool name is LLM/MCP
+        # controlled and may contain markup characters like `[`.
+        content = content + _lit(label, style="bold #d29922")
 
         # Primary arg preview (user data — safe path)
         primary = _primary_arg_value(self.tool_args)
@@ -255,7 +256,7 @@ class ToolCallWidget(Static):
                 val_str = str(value)
                 if len(val_str) > 500:
                     val_str = val_str[:500] + "…"
-                content = content + _mc(f"  [#8b949e]{key}[/#8b949e] = ")
+                content = content + _lit(f"  {key} = ", style="#8b949e")
                 content = content + _lit(val_str, style="#c9d1d9")
                 content = content + _mc("\n")
         else:

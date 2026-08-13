@@ -291,3 +291,65 @@ class TestHybridDegradationHint:
         assert data["mode"] == "fts5"
         assert data["results"]
         assert "degraded" in data["hint"]
+
+
+class TestStoreLifecycleLocking:
+    """The post-model-change rebuild and the per-turn save must both run
+    under the lifecycle lock — a rebuild that races a save closes the old
+    connection mid-save and loses the turn; a rebuild that races
+    _ensure_store orphans the store it builds (REVIEW #2)."""
+
+    @pytest.mark.asyncio
+    async def test_save_turn_holds_lifecycle_lock(self, restore_root_logger):
+        """__memory_save_turn holds the lock during save_turn, so a rebuild
+        cannot close the connection mid-save."""
+        import json
+
+        srv = _import_memdb_server()
+        lock_held = []
+
+        async def _fake_save_turn(**kwargs):
+            lock_held.append(srv._get_init_lock().locked())
+            return 1
+
+        store = AsyncMock()
+        store.save_turn = _fake_save_turn
+        srv._ensure_store_locked = AsyncMock(return_value=store)
+        srv._embedder = MagicMock()
+
+        out = await getattr(srv, "__memory_save_turn")(user_message="hi")
+
+        assert lock_held == [True]
+        assert json.loads(out)["rowid"] == 1
+
+    @pytest.mark.asyncio
+    async def test_reinit_holds_lock_during_swap(self, restore_root_logger):
+        """_reinit_store_after_model_change swaps the store under the lock —
+        the old connection is closed while the lock is held."""
+        srv = _import_memdb_server()
+
+        old_store = AsyncMock()
+        new_store = AsyncMock()
+        srv._store = old_store
+        emb = MagicMock()
+        emb.available = True
+        emb.dimension = 768
+        emb.backend = "api"
+        emb._model = "text-embedding-3-small"
+        srv._embedder = emb
+
+        orig_close = old_store.close
+        close_lock_states = []
+
+        async def _close_and_check():
+            close_lock_states.append(srv._get_init_lock().locked())
+            await orig_close()
+
+        old_store.close = _close_and_check
+
+        with patch.object(srv, "SessionStore", return_value=new_store), \
+             patch.object(srv, "_ensure_index_complete", AsyncMock()):
+            await srv._reinit_store_after_model_change()
+
+        assert close_lock_states == [True]
+        assert srv._store is new_store

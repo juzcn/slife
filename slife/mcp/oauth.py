@@ -115,8 +115,9 @@ def get_valid_token(server_name: str) -> OAuthTokens | None:
     if tokens is None:
         return None
 
-    # Consider tokens expiring within 60s as expired
-    if tokens.expires_at > 0 and _time.time() + 60 >= tokens.expires_at:
+    # Consider tokens expiring within 60s as expired.  expires_at <= 0 means
+    # the expiry is unknown/missing — treat it as expired, not valid forever.
+    if tokens.expires_at <= 0 or _time.time() + 60 >= tokens.expires_at:
         logger.debug("oauth_token_expired server=%s", server_name)
         return None
 
@@ -213,7 +214,13 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
     user_code = device_data.get("user_code", "")
     verification_uri = device_data.get("verification_uri", "")
     expires_in = int(device_data.get("expires_in", 300))
-    poll_interval = float(device_data.get("interval", _POLL_INTERVAL))
+    try:
+        poll_interval = float(device_data.get("interval", _POLL_INTERVAL))
+    except (TypeError, ValueError):
+        poll_interval = _POLL_INTERVAL
+    # A server returning interval=0 (or negative) must not produce a tight
+    # asyncio.sleep(0) loop hammering the token endpoint.
+    poll_interval = max(poll_interval, 1.0)
 
     if not device_code:
         raise RuntimeError(

@@ -87,6 +87,10 @@ def compact_tool_results(turn_messages: list[dict], budget_chars: int) -> int:
         content = m.get("content")
         if not isinstance(content, str) or len(content) <= budget_chars:
             continue
+        if "[compacted at save:" in content:
+            # Already compacted — re-applying would double-wrap and write an
+            # inflated original-size claim.  Skip so compaction is idempotent.
+            continue
         tcid = m.get("tool_call_id")
         tool_name = name_by_id.get(str(tcid), "") if tcid else ""
         name_note = f"by re-running {tool_name}" if tool_name else "by re-running the tool"
@@ -282,6 +286,15 @@ class AgentService:
         self.agent_loop.model_name = model.display_name
         self.agent_loop.input_modalities = ", ".join(model.input_modalities)
         self.agent_loop.context_window = model.context_window
+        # The live tool-result cap is computed from the model's window — it
+        # must track the switch or a 128K→32K switch leaves the old cap in
+        # place (240% of the new window) and oversized results overflow.
+        self.agent_loop.max_tool_result_chars = int(
+            self.config.tool_result_ceiling * model.context_window * 3
+        )
+        # Drop stale per-conversation token caches (keyed by the old model's
+        # prompt-token footprint) so the status bar stops reporting it.
+        self.agent_loop._usage_by_conv.clear()
 
         # Rebuild system prompt with updated model info
         new_system = build_system_prompt(self.config)
@@ -1242,6 +1255,7 @@ class AgentService:
         token_count: int | None = None,
         conversation: "Conversation | None" = None,
         channel: str = "",
+        images: "list[str] | None" = None,
         created_at: "datetime | str | None" = None,
         handler: "object | None" = None,
     ) -> None:
@@ -1294,23 +1308,35 @@ class AgentService:
         # Extract turn messages: everything after the matching user message.
         # Must handle both plain text (content is a str) and multimodal
         # messages (content is a list of {type, text/image_url} parts).
+        #
+        # Compare against the sanitized form of the input: add_user_message
+        # stores sanitize_secrets(content), so a raw match would miss when
+        # the user pasted an API key — and the turn would be saved with
+        # empty messages (silent data loss).  If no user message matches at
+        # all (the turn was rolled back on a content-policy / bad-request
+        # error), there is nothing to persist.
+        from slife.logfmt import sanitize_secrets
+        target = sanitize_secrets(user_message)
         all_messages = list(conv.messages)
-        turn_messages: list[dict] = []
+        turn_messages: list[dict] | None = None
         for i in range(len(all_messages) - 1, -1, -1):
             msg = all_messages[i]
             if msg.get("role") != "user":
                 continue
             content = msg.get("content")
-            if isinstance(content, str) and content == user_message:
+            if isinstance(content, str) and content == target:
                 turn_messages = all_messages[i + 1:]
                 break
             if isinstance(content, list):
                 text = "".join(
                     p.get("text", "") for p in content if p.get("type") == "text"
                 )
-                if text == user_message:
+                if text == target:
                     turn_messages = all_messages[i + 1:]
                     break
+
+        if turn_messages is None:
+            return
 
         # Context trimming now happens in AgentLoop._maybe_trim_context()
         # before each LLM call, with a visible _trim_context notification
@@ -1335,6 +1361,7 @@ class AgentService:
         save_args = {
             "user_message": user_message,
             "messages": turn_messages,
+            "images": images or [],
             "token_count": token_count or 0,
             "who_helped": (self.config.a2a_config and self.config.a2a_config.agent_name) or "",
             "what_model": self.config.active_model.ref,

@@ -40,12 +40,17 @@ class TestMainFunction:
 
     def test_main_default_config_path(self, mock_config):
         """main() uses slife.json5 by default."""
-        with patch("slife.Config.from_json5", return_value=mock_config):
+        with patch("slife.Config.from_json5", return_value=mock_config) as mock_from:
             with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app_cls.return_value.run = MagicMock()
+                mock_app = MagicMock()
+                mock_app_cls.return_value = mock_app
 
                 from slife import main
                 main()
+
+                mock_from.assert_called_once()
+                mock_app_cls.assert_called_once()
+                mock_app.run.assert_called_once()
 
     def test_main_creates_app_with_config(self, mock_config):
         """SlifeApp is created with the loaded config."""

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from slife.agent.heartbeat import HEARTBEAT_MARK
 from slife.agent.llm_client import TokenUsage
 from slife.agent.loop import extract_image_markers
+from slife.agent.multimodal import include_image_url
 from slife.ui.chat import ChatView
 from slife.ui.tool_display import ToolCallWidget
 
@@ -264,11 +265,34 @@ async def restore_session(
                 if isinstance(turn_messages_json, str)
                 else turn_messages_json
             )
-            all_messages.append({
-                "role": "user",
-                "content": user_msg_text,
-            })
+            images_json = turn.get("images", "")
+            images: list[str] = (
+                json.loads(images_json)
+                if isinstance(images_json, str) and images_json
+                else []
+            )
+            user_msg: dict
+            if images:
+                # Rebuild multimodal content (text + image blocks) so the
+                # restored LLM context sees the attachments; keep the original
+                # paths on `images` so the TUI can render thumbnails.
+                parts: list[dict] = [{"type": "text", "text": user_msg_text}]
+                for img in images:
+                    block = include_image_url(img)
+                    if block is not None:
+                        parts.append(block)
+                user_msg = {"role": "user", "content": parts, "images": images}
+            else:
+                user_msg = {"role": "user", "content": user_msg_text}
+            all_messages.append(user_msg)
             all_messages.extend(turn_msgs)
+
+        # Repair orphaned tool_calls (persisted by a pre-ensure session)
+        # BEFORE building the tool-result lookup and UI ops — otherwise the
+        # restored UI shows "done + empty result" while the repaired LLM
+        # context carries "(Tool execution interrupted)".
+        conversation.messages = all_messages
+        conversation._ensure_turn_consistent()
 
         # Build tool-result lookup
         tool_results: dict[str, str] = {}
@@ -335,7 +359,14 @@ async def restore_session(
                 else:
                     cur_created = ""
                     cur_completed = ""
-                raw = msg.get("content", "") or ""
+                content = msg.get("content", "") or ""
+                raw = (
+                    "".join(
+                        p.get("text", "") for p in content if p.get("type") == "text"
+                    )
+                    if isinstance(content, list)
+                    else content
+                )
                 # Heartbeat turns: the trigger is a marked system message,
                 # not a real user message — filter the whole turn (the
                 # reply renders as ⚡ 自主 below, or not at all if quiet).
@@ -419,11 +450,9 @@ async def restore_session(
         return
 
     # ── Phase 2: Replace conversation messages ────────────────────────
+    # (messages were already assigned + repaired in Phase 1, before the
+    # tool-result lookup was built, so the UI and LLM context agree.)
     conversation.messages = all_messages
-    # Load-side invariant: a restored turn may contain an orphaned tool_call
-    # (persisted by a pre-ensure session) — repair it and keep roles
-    # alternating, mirroring the save-side ensure in save_to_memory.
-    conversation._ensure_turn_consistent()
 
     # Prime the context time range so _sys_note shows the LLM
     # what time window its current context covers.  The start date is

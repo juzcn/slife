@@ -830,6 +830,15 @@ class AgentLoop:
                     self._context_time_start = (
                         datetime.now().astimezone().replace(microsecond=0).isoformat()
                     )
+                else:
+                    # Track this new turn's start time so a later trim can
+                    # advance _context_time_start correctly.  The list is
+                    # seeded by restore with the restored turns' dates; new
+                    # turns append here — otherwise it underflows on trim and
+                    # the "context covers since …" footer goes stale.
+                    self._context_turn_dates.append(
+                        datetime.now().astimezone().replace(microsecond=0).isoformat()
+                    )
 
                 # Context usage is computed ONCE and shared: _sys_note
                 # reports it as the usage %, and the trim gate below uses

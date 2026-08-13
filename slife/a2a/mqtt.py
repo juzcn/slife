@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 # MQTTv5 reason-code constants
 _MQTT_RC_SUCCESS = 0
+# Bound each subscription's queue so a slow/hung consumer gets backpressure
+# (drop the newest message with a warning) instead of unbounded growth.
+_MAX_QUEUE_SIZE = 1000
 
 #: Lazily-loaded paho-mqtt module — only imported when MQTT is actually used.
 mqtt: Any = None
@@ -119,6 +122,13 @@ class MQTTAdapter(TransportAdapter):
         if self._connected:
             return
 
+        # Re-arm after a prior disconnect(): a reused adapter must deliver
+        # messages again (messages() loops on _closed) and wait for a FRESH
+        # connect signal — the previous _on_connect already set the old event,
+        # so a stale one would return immediately without a real connection.
+        self._closed = False
+        self._connect_event = asyncio.Event()
+
         mq = _get_mqtt()
 
         lwt_topic = f"Slife/{self._agent_id}/presence"
@@ -144,7 +154,18 @@ class MQTTAdapter(TransportAdapter):
         self._loop = asyncio.get_running_loop()
 
         # Wait for the connection to complete
-        await self._wait_for_connection(timeout=10.0)
+        try:
+            await self._wait_for_connection(timeout=10.0)
+        except Exception:
+            # A failed connect must not leak the paho thread / client — a
+            # retry would otherwise stack a second client + network loop.
+            self._client = None
+            self._connected = False
+            try:
+                c.loop_stop()
+            except Exception:
+                pass
+            raise
 
         self._connected = True
         self._last_publish_time = _time.monotonic()
@@ -212,7 +233,7 @@ class MQTTAdapter(TransportAdapter):
             self._subscriptions[topic] = qos
             # Create a queue for this subscription if it doesn't exist
             if topic not in self._queues:
-                self._queues[topic] = asyncio.Queue()
+                self._queues[topic] = asyncio.Queue(maxsize=_MAX_QUEUE_SIZE)
         logger.debug("a2a_mqtt_subscribed topic=%s", topic)
 
     async def messages(self, topic_filter: str) -> AsyncIterator[TransportMessage]:
@@ -223,7 +244,7 @@ class MQTTAdapter(TransportAdapter):
         with self._state_lock:
             queue = self._queues.get(topic_filter)
             if queue is None:
-                queue = asyncio.Queue()
+                queue = asyncio.Queue(maxsize=_MAX_QUEUE_SIZE)
                 self._queues[topic_filter] = queue
 
         # Loop on _closed (deliberate shutdown), NOT _connected: a transient

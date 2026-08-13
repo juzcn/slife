@@ -221,12 +221,17 @@ class SubagentProcess:
             # Release the in-flight slot and mark the record failed — otherwise
             # a worker whose task never resolves stays busy forever, every
             # later send auto-queues async, and records pile up (REVIEW §1-8).
+            # Also mark it cancelled so the child's eventual late response is
+            # discarded, not mis-routed as a fresh async completion (which
+            # would double-decrement _inflight and surface a stale result).
+            self._cancelled.add(rpc_id)
             if self._inflight > 0:
                 self._inflight -= 1
             self._record_update(rpc_id, "failed", "Error: timed out")
             raise TimeoutError(f"Task to '{self._name}' timed out after {timeout}s")
         except asyncio.CancelledError:
             self._pending.pop(rpc_id, None)
+            self._cancelled.add(rpc_id)
             if self._inflight > 0:
                 self._inflight -= 1
             raise

@@ -129,6 +129,19 @@ def _get_db_path() -> Path:
     return data_dir / f"{agent_id}.db"
 
 
+def _get_init_lock() -> asyncio.Lock:
+    """Return (creating if needed) the lock guarding store lifecycle.
+
+    Serializes store creation, the post-model-change rebuild, and store
+    writes so a rebuild can neither orphan a concurrently-built store nor
+    close a connection a save is still using.
+    """
+    global _init_lock
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
+    return _init_lock
+
+
 async def _ensure_store() -> SessionStore:
     """Lazy-init the store and embedder inside FastMCP's event loop.
 
@@ -137,56 +150,57 @@ async def _ensure_store() -> SessionStore:
     operations to hang forever because their background thread is bound
     to a loop that no longer exists.
     """
-    global _store, _embedder, _init_lock
+    if _store is not None:
+        return _store
+    async with _get_init_lock():
+        return await _ensure_store_locked()
+
+
+async def _ensure_store_locked() -> SessionStore:
+    """Build the store if needed. Caller must already hold ``_init_lock``."""
+    global _store, _embedder
     if _store is not None:
         return _store
 
-    if _init_lock is None:
-        _init_lock = asyncio.Lock()
+    assert _db_path is not None
+    logger.info("memdb_init db=%s", _db_path)
 
-    async with _init_lock:
-        if _store is not None:
-            return _store
+    from slife.logfmt import elapsed
 
-        assert _db_path is not None
-        logger.info("memdb_init db=%s", _db_path)
+    # Create the embedder from config, but do NOT block on the model
+    # load: the store (diary + FTS) is set up now with dim 0 (no vec0
+    # table), so save_turn never waits on the embedding model.  The
+    # model loads in the background; when it's ready, the vec0 table is
+    # added (migration) and the index is (re)built — semantic search
+    # stays gated off until then.
+    _embedder = EmbeddingClient.from_config()
 
-        from slife.logfmt import elapsed
+    # The vec0 dimension is known up front for gguf/api (model name or
+    # explicit dim), so the table can be created/kept immediately.  A
+    # transformer's real dimension is only known once the model loads —
+    # defer its vec0 to the background warm (dim 0 here), which adds it
+    # with the real width.  Saves never wait either way (they skip the
+    # embed until the model is loaded).
+    defer_vec0 = bool(_embedder.available and _embedder.backend == "transformer")
+    dim = 0 if defer_vec0 else (_embedder.dimension if _embedder.available else 0)
+    model_id = (
+        f"{_embedder.backend}:{_embedder._model}"
+        if _embedder.available and not defer_vec0 else ""
+    )
 
-        # Create the embedder from config, but do NOT block on the model
-        # load: the store (diary + FTS) is set up now with dim 0 (no vec0
-        # table), so save_turn never waits on the embedding model.  The
-        # model loads in the background; when it's ready, the vec0 table is
-        # added (migration) and the index is (re)built — semantic search
-        # stays gated off until then.
-        _embedder = EmbeddingClient.from_config()
+    _store = SessionStore(_db_path)
+    with elapsed("store_setup", logger, level=logging.INFO, db=str(_db_path)):
+        await _store.setup(embedding_dim=dim, embedding_model=model_id)
+    logger.info(
+        "embeddings_ready=%s backend=%s model=%s",
+        _embedder.available, _embedder.backend, _embedder._model,
+    )
 
-        # The vec0 dimension is known up front for gguf/api (model name or
-        # explicit dim), so the table can be created/kept immediately.  A
-        # transformer's real dimension is only known once the model loads —
-        # defer its vec0 to the background warm (dim 0 here), which adds it
-        # with the real width.  Saves never wait either way (they skip the
-        # embed until the model is loaded).
-        defer_vec0 = bool(_embedder.available and _embedder.backend == "transformer")
-        dim = 0 if defer_vec0 else (_embedder.dimension if _embedder.available else 0)
-        model_id = (
-            f"{_embedder.backend}:{_embedder._model}"
-            if _embedder.available and not defer_vec0 else ""
-        )
+    if _embedder.available:
+        asyncio.create_task(_warm_embedder_then_reindex())
 
-        _store = SessionStore(_db_path)
-        with elapsed("store_setup", logger, level=logging.INFO, db=str(_db_path)):
-            await _store.setup(embedding_dim=dim, embedding_model=model_id)
-        logger.info(
-            "embeddings_ready=%s backend=%s model=%s",
-            _embedder.available, _embedder.backend, _embedder._model,
-        )
-
-        if _embedder.available:
-            asyncio.create_task(_warm_embedder_then_reindex())
-
-        await _ensure_index_complete()
-        return _store
+    await _ensure_index_complete()
+    return _store
 
 
 async def _warm_embedder_then_reindex() -> None:
@@ -195,17 +209,17 @@ async def _warm_embedder_then_reindex() -> None:
 
     Saves never wait on this: the store was set up with dim 0 (no vec0), so
     a save just persists the turn data and skips embedding.  Once the model
-    loads, re-running ``setup`` on the SAME store makes the migration create
-    the vec0 table with the real dimension (no re-creation, so concurrent
-    saves are never disrupted), then the index-completeness gate reindexes
-    every turn and flips on.
+    loads, ``reconfigure_for_embedding`` re-runs the schema on the existing
+    connection (never reconnects) so the migration creates the vec0 table
+    with the real dimension without disrupting concurrent saves, then the
+    index-completeness gate reindexes every turn and flips on.
     """
     try:
         if _embedder is not None and _embedder.available:
             await _embedder.ensure_loaded()
         if _store is not None and _embedder is not None and _embedder.available:
             model_id = f"{_embedder.backend}:{_embedder._model}"
-            await _store.setup(
+            await _store.reconfigure_for_embedding(
                 embedding_dim=_embedder.dimension,
                 embedding_model=model_id,
             )
@@ -232,17 +246,21 @@ async def __memory_save_turn(
     created_at: str | None = None,
     completed_at: str | None = None,
 ) -> str:
-    store = await _ensure_store()
     try:
-        # The harness guarantees a consistent turn (no orphaned tool_calls,
-        # alternating roles) via Conversation._ensure_turn_consistent before
-        # it ever calls here — the storage layer persists what it receives.
-        rowid = await store.save_turn(
-            user_message=user_message, messages=messages,
-            token_count=token_count, who_helped=who_helped, what_model=what_model,
-            channel=channel, embedder=_embedder, created_at=created_at,
-            completed_at=completed_at,
-        )
+        # Hold the lifecycle lock across the save so a concurrent
+        # model-change rebuild (memory_set_embedding / memory_set_enabled)
+        # cannot close the store's connection mid-save and lose the turn.
+        async with _get_init_lock():
+            store = await _ensure_store_locked()
+            # The harness guarantees a consistent turn (no orphaned tool_calls,
+            # alternating roles) via Conversation._ensure_turn_consistent before
+            # it ever calls here — the storage layer persists what it receives.
+            rowid = await store.save_turn(
+                user_message=user_message, messages=messages,
+                token_count=token_count, who_helped=who_helped, what_model=what_model,
+                channel=channel, embedder=_embedder, created_at=created_at,
+                completed_at=completed_at,
+            )
         return json.dumps({"rowid": rowid, "status": "saved"}, ensure_ascii=False)
     except Exception as e:
         logger.exception("save_turn_failed user_msg=%.80s", user_message)
@@ -354,7 +372,9 @@ async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
     if total == 0:
         return {"total": 0, "indexed": 0, "remaining": 0, "complete": True}
 
-    from slife.plugins.memdb.store import _chunk_text, _turn_text_for_embedding
+    from slife.plugins.memdb.store import (
+        _chunk_text, _split_chunks_to_token_limit, _turn_text_for_embedding,
+    )
 
     turns = await store.get_unembedded_turns(limit=batch_limit)
     indexed = 0
@@ -366,9 +386,9 @@ async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
             )
             if embed_text.strip():
                 chunks = _chunk_text(embed_text)
-                valid = [c for c in chunks if len(c) // 4 <= _embedder.max_tokens]
-                if valid:
-                    embeddings = await _embedder.embed(valid)
+                chunks = _split_chunks_to_token_limit(chunks, _embedder.max_tokens)
+                if chunks:
+                    embeddings = await _embedder.embed(chunks)
                     if embeddings:
                         stored = 0
                         for idx, emb in enumerate(embeddings):
@@ -448,45 +468,48 @@ async def _reinit_store_after_model_change() -> None:
     changed.  Runs as a background task — ``memory_set_embedding``
     returns immediately while this runs asynchronously.
 
-    Sets ``_store = None`` first so concurrent ``_ensure_store`` calls
-    see an uninitialized store and create a new one (protected by its
-    own lock).  After migration, the background reindex populates the
+    The whole swap runs under ``_init_lock`` so it never races a
+    concurrent ``_ensure_store`` (which would orphan the store it builds)
+    or an in-flight save (which would lose a turn when the old connection
+    is closed).  After migration, the background reindex populates the
     vec0 table with new-model vectors.
     """
     global _store
     if _embedder is None:
         return
 
-    # Null out the global so concurrent _ensure_store calls know to
-    # reinitialize.  The old connection is closed below.
-    old_store = _store
-    _store = None
+    async with _get_init_lock():
+        # Null out the global so any caller that re-acquires the lock
+        # afterwards sees the fresh store.  The old connection is closed
+        # below while the lock is held, so no save is mid-flight on it.
+        old_store = _store
+        _store = None
 
-    if old_store is not None:
-        try:
-            await old_store.close()
-        except Exception as e:
-            logger.debug("store_close_error err=%s", e)
-        del old_store
+        if old_store is not None:
+            try:
+                await old_store.close()
+            except Exception as e:
+                logger.debug("store_close_error err=%s", e)
+            del old_store
 
-    model_id = (
-        f"{_embedder.backend}:{_embedder._model}"
-        if _embedder.available else ""
-    )
-    logger.info(
-        "store_reinit_start db=%s model=%s dim=%d",
-        _db_path, model_id, _embedder.dimension,
-    )
-
-    new_store = SessionStore(_db_path)  # type: ignore[arg-type]
-    from slife.logfmt import elapsed
-    with elapsed("store_reinit", logger, level=logging.INFO, db=str(_db_path)):
-        await new_store.setup(
-            embedding_dim=_embedder.dimension,
-            embedding_model=model_id,
+        model_id = (
+            f"{_embedder.backend}:{_embedder._model}"
+            if _embedder.available else ""
         )
-    _store = new_store
-    logger.info("store_reinited model=%s dim=%d", model_id, _embedder.dimension)
+        logger.info(
+            "store_reinit_start db=%s model=%s dim=%d",
+            _db_path, model_id, _embedder.dimension,
+        )
+
+        new_store = SessionStore(_db_path)  # type: ignore[arg-type]
+        from slife.logfmt import elapsed
+        with elapsed("store_reinit", logger, level=logging.INFO, db=str(_db_path)):
+            await new_store.setup(
+                embedding_dim=_embedder.dimension,
+                embedding_model=model_id,
+            )
+        _store = new_store
+        logger.info("store_reinited model=%s dim=%d", model_id, _embedder.dimension)
 
     # Gate OFF + background reindex populates the (possibly migrated) vec0
     # table; the gate flips back ON when every turn is embedded.

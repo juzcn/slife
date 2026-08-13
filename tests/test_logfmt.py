@@ -383,6 +383,42 @@ class TestSanitizeSecrets:
         assert "sk-12345" not in result
         assert "<MASKED>" in result
 
+    def test_stripe_underscore_key_redacted(self):
+        """Stripe sk_live_/sk_test_ keys (underscore form) are redacted."""
+        # Short value (real Stripe keys are 24+ chars) so GitHub's secret
+        # scanner doesn't flag the fixture, but still ≥10 to hit the pattern.
+        result = sanitize_secrets("STRIPE_KEY=sk_live_abc123def456")
+        assert "sk_live_abc" not in result
+        assert "<MASKED>" in result
+
+    def test_aws_compound_key_redacted(self):
+        """AWS *_SECRET_ACCESS_KEY / *_ACCESS_KEY_ID names are redacted."""
+        result = sanitize_secrets(
+            "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        )
+        assert "wJalrXUtn" not in result
+        assert "<MASKED>" in result
+        result2 = sanitize_secrets("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE")
+        assert "AKIAIOSFODNN7" not in result2
+
+    def test_short_password_redacted(self):
+        """Short credential values (>=6 chars) are redacted."""
+        result = sanitize_secrets("password=hunter2")
+        assert "hunter2" not in result
+        assert "<MASKED>" in result
+
+    def test_connection_string_password_redacted(self):
+        """Connection-string URL credentials mask only the password."""
+        result = sanitize_secrets("DATABASE_URL=postgres://app:hunter2@db")
+        assert "hunter2" not in result
+        assert "<MASKED>" in result
+        assert "postgres://app:" in result  # structure preserved
+
+    def test_plain_url_passes_through(self):
+        """A URL without embedded credentials is unchanged."""
+        url = "https://example.com:8080/path"
+        assert sanitize_secrets(url) == url
+
     def test_hex_token_32_chars_redacted(self):
         """Generic 32+ char hex-ish tokens are redacted."""
         result = sanitize_secrets(

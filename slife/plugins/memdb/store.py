@@ -86,6 +86,41 @@ class SessionStore:
             self._db_path, self._embedding_dim, embedding_model or "none",
         )
 
+    async def reconfigure_for_embedding(
+        self,
+        embedding_dim: int,
+        embedding_model: str = "",
+    ) -> None:
+        """Switch the live connection to a real embedding dimension.
+
+        The initial ``setup`` runs with dim 0 (no vec0) so the first save
+        never waits on the embedding model.  Once the model is loaded, this
+        re-runs the schema on the SAME connection so the vec0 table is
+        created with the real width.  Unlike ``setup`` it never reconnects,
+        so a concurrent ``save_turn`` is not split across two handles
+        (``_c`` stays valid from ``execute`` to ``commit``) and no handle
+        leaks.
+
+        Falls back to ``setup`` only when there is no live connection to
+        upgrade (defensive — the store was closed).
+        """
+        if self._conn is None:
+            await self.setup(
+                embedding_dim=embedding_dim, embedding_model=embedding_model,
+            )
+            return
+        self._embedding_dim = embedding_dim
+        self._embedding_model = embedding_model
+        if not self._vec_available:
+            await self._load_vec_extension()
+            if not self._vec_available:
+                self._embedding_dim = 0
+        await self._run_schema()
+        logger.info(
+            "store_reconfigured vec_dim=%d model=%s",
+            self._embedding_dim, embedding_model or "none",
+        )
+
     async def _load_vec_extension(self) -> None:
         """Load sqlite-vec best-effort.
 
@@ -128,6 +163,21 @@ class SessionStore:
             except Exception as e:
                 logger.debug("schema_stmt_error err=%s stmt=%.80s", e, stmt)
         await self._c.commit()
+
+        # In-place migration for columns added after the table's first
+        # release (SQLite has no ADD COLUMN IF NOT EXISTS).  Older DBs
+        # predate the `images` column — add it so saved image attachments
+        # survive a session restore.
+        cols = {
+            row[1] for row in await (
+                await self._c.execute("PRAGMA table_info(diary)")
+            ).fetchall()
+        }
+        if "images" not in cols:
+            await self._c.execute(
+                "ALTER TABLE diary ADD COLUMN images TEXT NOT NULL DEFAULT ''"
+            )
+            await self._c.commit()
 
         # Detect and fix embedding dimension mismatch after model change.
         # CREATE TABLE IF NOT EXISTS won't alter a vec0 table whose
@@ -260,6 +310,7 @@ class SessionStore:
         who_helped: str = "",
         what_model: str = "",
         channel: str = "",
+        images: list[str] | None = None,
         embedder=None,
         created_at: str | None = None,
         completed_at: str | None = None,
@@ -274,13 +325,14 @@ class SessionStore:
         now = created_at or _now()
         done = completed_at or _now()
         messages_json = json.dumps(messages or [], ensure_ascii=False)
+        images_json = json.dumps(images or [], ensure_ascii=False)
 
         cursor = await self._c.execute(
-            """INSERT INTO diary (user_message, messages, summary, tags,
+            """INSERT INTO diary (user_message, messages, images, summary, tags,
                                   channel, created_at, completed_at,
                                   who_helped, what_model, token_count)
-               VALUES (?, ?, '', '', ?, ?, ?, ?, ?, ?)""",
-            (user_message, messages_json, channel, now, done,
+               VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?, ?)""",
+            (user_message, messages_json, images_json, channel, now, done,
              who_helped, what_model, token_count),
         )
         await self._c.commit()
@@ -305,14 +357,16 @@ class SessionStore:
             if embed_text.strip():
                 try:
                     chunks = _chunk_text(embed_text)
-                    # Filter chunks that exceed the token limit (unlikely
-                    # with 2000-char chunks, but a safety net).
-                    valid_chunks = [
-                        c for c in chunks
-                        if len(c) // 4 <= embedder.max_tokens
-                    ]
-                    if valid_chunks:
-                        embeddings = await embedder.embed(valid_chunks)
+                    # Hard-split (never drop) any chunk that exceeds the
+                    # token limit — a single newline-free paragraph longer
+                    # than the limit would otherwise be silently discarded,
+                    # keeping count_unembedded() > 0 and locking the
+                    # semantic-search gate off forever.
+                    chunks = _split_chunks_to_token_limit(
+                        chunks, embedder.max_tokens,
+                    )
+                    if chunks:
+                        embeddings = await embedder.embed(chunks)
                         if embeddings:
                             for idx, emb in enumerate(embeddings):
                                 if emb:
@@ -345,7 +399,7 @@ class SessionStore:
         newest-first, so appending batches stays globally newest-first.
         """
         cursor = await self._c.execute(
-            """SELECT rowid, user_message, messages, summary, tags,
+            """SELECT rowid, user_message, messages, images, summary, tags,
                       channel, created_at, completed_at,
                       who_helped, what_model, token_count
                FROM diary
@@ -390,7 +444,7 @@ class SessionStore:
                          .replace("_", r"\_")
                 )
                 like_pattern = f"%{safe}%"
-                where = "user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\'"
+                where = "(user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\')"
                 params: list = [like_pattern, like_pattern]
             else:
                 fts_query = _to_fts5_query(query)
@@ -833,9 +887,11 @@ def _normalize_time_param(value: str, role: str = "since") -> str:
     """
     today = date.today()
 
-    # Populate cached relative dates if needed
-    if not _RELATIVE_DATES["today"]:
-        _RELATIVE_DATES["today"] = today.isoformat()
+    # Populate / refresh cached relative dates.  Refresh on calendar-date
+    # rollover — a long-running server must not serve yesterday's "today".
+    today_iso = today.isoformat()
+    if _RELATIVE_DATES["today"] != today_iso:
+        _RELATIVE_DATES["today"] = today_iso
         _RELATIVE_DATES["yesterday"] = (today - timedelta(days=1)).isoformat()
         _RELATIVE_DATES["tomorrow"] = (today + timedelta(days=1)).isoformat()
         _RELATIVE_DATES["now"] = datetime.now().astimezone().isoformat(
@@ -855,6 +911,19 @@ def _normalize_time_param(value: str, role: str = "since") -> str:
             value = (d + timedelta(days=1)).isoformat()
         except ValueError:
             pass  # Not a valid ISO date; pass through unchanged
+
+    # Normalize offset-aware ISO datetimes to the local offset.  created_at
+    # is stored in local time (via _now()); the LLM may pass UTC ("Z") or a
+    # different offset, which would misorder a lexicographic comparison
+    # across the offset boundary.  A naive datetime is already local and is
+    # left unchanged.
+    if "T" in value:
+        try:
+            dt = datetime.fromisoformat(value)
+            if dt.tzinfo is not None:
+                value = dt.astimezone().isoformat(timespec="seconds")
+        except ValueError:
+            pass  # not a parseable ISO datetime; pass through unchanged
 
     return value
 
@@ -1015,15 +1084,41 @@ def _chunk_text(
     return chunks or [text]
 
 
+def _split_chunks_to_token_limit(chunks: list[str], max_tokens: int) -> list[str]:
+    """Hard-split any chunk exceeding *max_tokens* so none is silently dropped.
+
+    ``_chunk_text`` splits on paragraph boundaries, so a single newline-free
+    paragraph longer than the limit becomes one oversized chunk.  Dropping it
+    (the previous behavior) left the turn permanently unembedded, which kept
+    ``count_unembedded()`` > 0 and locked the semantic-search gate off forever.
+    Hard-splitting by character (never a partial code point) keeps every turn
+    embeddable so the index can always complete.
+    """
+    char_limit = max_tokens * 4
+    if char_limit <= 0:
+        return chunks
+    out: list[str] = []
+    for c in chunks:
+        while len(c) > char_limit:
+            out.append(c[:char_limit])
+            c = c[char_limit:]
+        if c:
+            out.append(c)
+    return out
+
+
 def _contains_cjk(text: str) -> bool:
-    """True if *text* contains CJK ideographs.
+    """True if *text* contains CJK ideographs (incl. Extension A).
 
     SQLite FTS5's unicode61 tokenizer does not segment Chinese — a
     whole-sentence CJK query becomes a phrase/run token that never matches
     a longer stored turn.  Substring (LIKE) matching is what Chinese users
     expect, so search_keyword routes CJK queries to it.
     """
-    return any("一" <= ch <= "鿿" for ch in text)
+    return any(
+        "㐀" <= ch <= "䶿" or "一" <= ch <= "鿿"
+        for ch in text
+    )
 
 
 def _to_fts5_query(query: str) -> str:
@@ -1031,6 +1126,10 @@ def _to_fts5_query(query: str) -> str:
     words = cleaned.split()
     if not words:
         return '""'
-    if len(words) == 1:
-        return words[0]
-    return " AND ".join(words)
+    # Quote FTS5 reserved operators so a literal "and"/"or"/"not"/"near"
+    # doesn't become a syntax error (e.g. "foo AND bar" → "foo AND AND bar").
+    quoted = [
+        f'"{w}"' if w.lower() in ("and", "or", "not", "near") else w
+        for w in words
+    ]
+    return " AND ".join(quoted)

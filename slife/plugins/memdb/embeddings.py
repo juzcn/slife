@@ -443,16 +443,19 @@ class EmbeddingClient:
         if self._client is None:
             return None
 
-        # llama-cpp-python's create_embedding is synchronous.
-        # For short summaries, this is fast enough. For bulk
-        # embedding, consider running in a thread pool.
-        embeddings = []
-        for text in texts:
-            result = self._client.create_embedding(text)
-            emb = result["data"][0]["embedding"]
-            embeddings.append(emb)
+        # llama-cpp-python's create_embedding is synchronous — offload it to a
+        # daemon thread (threads.py convention) so a bulk embed or reindex
+        # never blocks the asyncio event loop.
+        from slife.threads import run_daemon
 
-        return embeddings
+        def _encode() -> list[list[float]]:
+            out = []
+            for text in texts:
+                result = self._client.create_embedding(text)
+                out.append(result["data"][0]["embedding"])
+            return out
+
+        return await run_daemon(_encode, name="gguf-embed")
 
     async def _call_transformer(self, texts: list[str]) -> list[list[float]] | None:
         """Generate embeddings using a local HuggingFace model via

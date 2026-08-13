@@ -43,7 +43,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install build tools
-        run: pip install build twine
+        run: pip install build "twine<6"
 
       - name: Build slife
         run: python -m build

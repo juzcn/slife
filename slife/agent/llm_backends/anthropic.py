@@ -134,6 +134,13 @@ class AnthropicBackend:
                         "name": fn.get("name", ""),
                         "input": inp,
                     })
+                if not blocks:
+                    # An assistant turn with no text and no tool_calls (e.g. a
+                    # reasoning-only response cut by max_tokens) would emit an
+                    # empty content array, which the Messages API rejects with a
+                    # 400.  Emit a single empty text block instead — it keeps the
+                    # role alternating and carries the (empty) turn.
+                    blocks.append({"type": "text", "text": ""})
                 converted.append({"role": "assistant", "content": blocks})
             elif role == "tool":
                 pending_tool_results.append({

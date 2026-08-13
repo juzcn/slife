@@ -246,10 +246,56 @@ class TestAgentServiceMemory:
         mock_client.call_tool = AsyncMock(return_value="{}")
         service._plugins["memdb"].client = mock_client
 
-        await service.save_to_memory(user_message="hi", token_count=10)
+        conv = service.conversation
+        conv.add_user_message("hi")
+        conv.add_assistant_message("hello back")
+
+        await service.save_to_memory(
+            user_message="hi", token_count=10, conversation=conv,
+        )
         tool_name, args = mock_client.call_tool.await_args.args
         assert tool_name == "__memory_save_turn"
         assert "created_at" not in args
+
+    @pytest.mark.asyncio
+    async def test_save_to_memory_matches_sanitized_user_message(self, sample_config):
+        """A user message containing an API key is sanitized on store, but the
+        turn must still be saved — the backscan compares sanitized forms, so
+        the assistant reply is persisted (not an empty turn)."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(return_value="{}")
+        service._plugins["memdb"].client = mock_client
+
+        secret = "sk-" + "a" * 24  # matches sanitize_secrets' sk- pattern
+        conv = service.conversation
+        conv.add_user_message(f"my key is {secret}")  # sanitized on store
+        conv.add_assistant_message("got it")
+
+        await service.save_to_memory(
+            user_message=f"my key is {secret}", conversation=conv,
+        )
+
+        mock_client.call_tool.assert_awaited_once()
+        tool_name, args = mock_client.call_tool.await_args.args
+        assert tool_name == "__memory_save_turn"
+        assert args["messages"]  # not an empty turn
+
+    @pytest.mark.asyncio
+    async def test_save_to_memory_skips_when_user_message_absent(self, sample_config):
+        """When the user message is no longer in the conversation (rolled back
+        on a content-policy error), nothing is saved — no empty diary row."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(return_value="{}")
+        service._plugins["memdb"].client = mock_client
+
+        # Empty conversation — no matching user message to anchor the turn.
+        await service.save_to_memory(user_message="hi", token_count=10)
+
+        mock_client.call_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_save_to_memory_compacts_oversized_tool_result(self, sample_config):

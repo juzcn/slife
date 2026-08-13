@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 from slife.platform import _resolve_skill_script
+from slife.logfmt import sanitize_secrets
 from slife.tools.base import Tool
 
 
@@ -97,7 +98,7 @@ class ShellTool(Tool):
     async def execute(self, **kwargs) -> str:
         command: str = kwargs["command"]
         timeout: int = kwargs.get("timeout", self.timeout)
-        logger.debug("shell_exec cmd=%.200s timeout=%d", command, timeout)
+        logger.debug("shell_exec cmd=%.200s timeout=%d", sanitize_secrets(command), timeout)
 
         process = await asyncio.create_subprocess_shell(
             command,
@@ -117,7 +118,7 @@ class ShellTool(Tool):
             # shell and orphans yt-dlp/ffmpeg, which keep writing to the
             # console and garble the TUI.
             await _kill_process_tree(process)
-            logger.warning("shell_timeout timeout=%ds cmd=%.200s", timeout, command)
+            logger.warning("shell_timeout timeout=%ds cmd=%.200s", timeout, sanitize_secrets(command))
             return f"Error: Command timed out after {timeout}s"
 
         output = stdout.decode("utf-8", errors="replace")
@@ -174,14 +175,14 @@ class RunPythonScriptTool(Tool):
         if input_str.startswith("-c ") or input_str.startswith("-c"):
             code = input_str[2:].strip()
             argv = [sys.executable, "-c", code]
-            logger.debug("run_python_script argv=%s", argv)
+            logger.debug("run_python_script argv=%s", sanitize_secrets(str(argv)))
         else:
             script, args = _parse_input(input_str)
             script = _resolve_skill_script(script)
             argv = [sys.executable, script]
             if args:
                 argv.append(args)
-            logger.debug("run_python_script argv=%s", argv)
+            logger.debug("run_python_script argv=%s", sanitize_secrets(str(argv)))
 
         proc = await asyncio.create_subprocess_exec(
             *argv,

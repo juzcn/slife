@@ -92,7 +92,14 @@ async def heartbeat_loop(service: "AgentService") -> None:
     """
     from slife.a2a.identity import HEARTBEAT, AgentMessage
 
-    interval = getattr(service.config, "heartbeat_interval", HEARTBEAT_INTERVAL) or HEARTBEAT_INTERVAL
+    try:
+        interval = float(getattr(service.config, "heartbeat_interval", HEARTBEAT_INTERVAL))
+    except (TypeError, ValueError):
+        interval = HEARTBEAT_INTERVAL
+    if interval <= 0:
+        # A non-positive interval (e.g. a bad config value) would either
+        # raise in asyncio.sleep or spin the loop — fall back to default.
+        interval = HEARTBEAT_INTERVAL
     while True:
         await asyncio.sleep(interval)
         try:

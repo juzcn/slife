@@ -270,6 +270,8 @@ _SECRET_PATTERNS: list[re.Pattern] = [
     # ── Well-known AI / cloud provider prefixes ─────────────────────
     # OpenAI / Anthropic / DeepSeek / Azure
     re.compile(r"\bsk-(?:ant|agent|proj|svcacct|admin|or|org)?[A-Za-z0-9_-]{20,}\b"),
+    # Stripe secret/restricted keys (underscore form: sk_live_…, sk_test_…)
+    re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}\b"),
     # Groq
     re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b"),
     # HuggingFace
@@ -298,11 +300,22 @@ _SECRET_PATTERNS: list[re.Pattern] = [
     # ── Header / key=value patterns ─────────────────────────────────
     # Authorization: Bearer <token>
     re.compile(r"(?:Authorization|Bearer)\s+([A-Za-z0-9+/=._-]{20,})", re.IGNORECASE),
-    # key=value pairs: API_KEY=<value>, token=<value>, etc.
-    re.compile(r"(?:api[_-]?key|apikey|secret|token|password|auth[_-]?token)\s*[=:]\s*([^\s]{20,})", re.IGNORECASE),
+    # key=value pairs — whole words (api_key, token, password, …) and
+    # compound names (AWS_SECRET_ACCESS_KEY, STRIPE_SECRET_KEY,
+    # aws_access_key_id).  Value floor 6 chars so short secrets mask too.
+    re.compile(
+        r"(?:api[_-]?key|apikey|token|password|auth[_-]?token|"
+        r"[A-Za-z0-9_]*secret[A-Za-z0-9_]*|"
+        r"[A-Za-z0-9_]*access[_-]?key[A-Za-z0-9_]*)\s*[=:]\s*([^\s]{6,})",
+        re.IGNORECASE,
+    ),
 ]
 
 _MASKED = "<MASKED>"
+
+# Connection-string credentials: scheme://user:password@host — mask just the
+# password, keeping the rest of the URL readable.
+_URL_CREDENTIAL_PATTERN = re.compile(r"(://[^/\s@]*:)[^@\s]+(@)")
 
 
 def sanitize_secrets(text: str) -> str:
@@ -325,6 +338,9 @@ def sanitize_secrets(text: str) -> str:
 
     for pat in _SECRET_PATTERNS:
         text = pat.sub(_MASKED, text)
+
+    # Mask credentials embedded in connection-string URLs (scheme://user:pass@host).
+    text = _URL_CREDENTIAL_PATTERN.sub(r"\1" + _MASKED + r"\2", text)
 
     return text
 
