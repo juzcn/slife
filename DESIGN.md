@@ -27,7 +27,7 @@ It's a chat window with tools. The LLM is in full control.
 
 The model input should read uniformly, so text that Slife authors is English:
 
-- **System prompt** (`system_prompt.j2`, `context_status.j2`): English.
+- **System prompt** (`agent.j2` / `subagent.j2` + `slife.j2`, `context_status.j2`): English.
 - **Native tool schemas** — tool `name`, `description`, parameter docs, and result strings: English.
 - **Plugin tool schemas and result strings**: English (same policy as native tools — they are model-visible).
 - **External tools** (MCP servers, skills, third-party commands): keep the language of the external source — do not translate. They are opaque and pass through as-is.
@@ -138,7 +138,7 @@ The three registration paths share one `__` predicate (`agent/plugins.py`) — n
 
 The prompt is a **runtime spec sheet** — facts the LLM cannot discover from training data or tool schemas. Two-part design:
 
-- **Static** — `slife/agent/templates/system_prompt.j2`, rendered once at startup: model identity, context policy (floor/ceiling/tool-result %), host platform (OS, arch, shell, python), workspace paths (data/config/logs/db/images/skills), credstore backend name, MCP tool naming prefix, and A2A broker info when configured. Never changes → maximal prompt cache hit rate.
+- **Static** — an identity template (`slife/agent/templates/agent.j2` for the main agent, `subagent.j2` for a worker), rendered once at startup. Both `{% include 'slife.j2' %}` — the shared runtime spec: context policy (floor/ceiling/tool-result %), host platform (OS, arch, shell, python), workspace paths (data/config/logs/db/images/skills), credstore backend name, MCP tool naming prefix, and A2A broker info when configured. Identity owns the role framing (heartbeat, persistence, send-only constraints); the world block is byte-identical in both roles. Never changes → maximal prompt cache hit rate.
 - **Dynamic** — `slife/agent/templates/context_status.j2`, rendered by the `_sys_note` tool (auto-invoked once per turn): current time + UTC offset and context usage % always; context time range when set; model/CWD/shell/modalities only when changed; pending A2A peer presence events since the last turn (the same lines the TUI shows, drained once).
 
 Design principles:
@@ -173,7 +173,7 @@ Reasoning ("thinking") support is per-backend:
 
 **Prompt caching (Anthropic system blocks):** `AnthropicBackend._oa_msgs_to_anthropic` emits each OpenAI `system` message as an Anthropic system content block and tags the **last** one with `cache_control: {type: "ephemeral"}` — the static base prompt becomes the cache breakpoint, so only the dynamic `_sys_note` status (a message-stream tool pair, never a second `system` message) changes per turn. Guarded by `_use_system_cache_control()`: on by default for `api.anthropic.com`, off for Anthropic-compatible providers (Bailian/Qwen) that may reject the field, overridable per model via `compat.cacheControl`.
 
-**History validation (H3, resolved):** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_sys_note` / `_sys_trim` are therefore **declared native tools** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not conversation-layer fabrications — so their pairs validate. The system prompt forbids the LLM from calling them (see §6 of `system_prompt.j2`), and both are side-effect free if it does. DeepSeek (Chat Completions) doesn't validate and is unaffected.
+**History validation (H3, resolved):** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_sys_note` / `_sys_trim` are therefore **declared native tools** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not conversation-layer fabrications — so their pairs validate. The system prompt forbids the LLM from calling them (see Tools & skills, §3 under **Capabilities** in `slife.j2`), and both are side-effect free if it does. DeepSeek (Chat Completions) doesn't validate and is unaffected.
 
 **History wire shape (W2, resolved):** `OpenAIResponsesBackend._oa_msgs_to_responses` emits the Responses API's native `function_call` / `function_call_output` items for tool history — not the Chat-Completions `role:"tool"` / `tool_calls` shape. Multi-turn tool conversations are accepted by the Responses API (unit-tested; not yet exercised against a live endpoint).
 
@@ -668,7 +668,7 @@ slife/
     conversation.py    #   Message storage + history (OpenAI-format, sanitization, _ensure_turn_consistent)
     llm_client.py      #   Backend router + StreamChunk
     system_prompt.py   #   Prompt rendering (static + dynamic Jinja2)
-    templates/         #   system_prompt.j2, context_status.j2
+    templates/         #   agent.j2, subagent.j2, slife.j2, context_status.j2
     llm_backends/      #   API backends: openai.py, anthropic.py, openai_responses.py
     inbox.py           #   Unified message queue + ConversationStore
     plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle)

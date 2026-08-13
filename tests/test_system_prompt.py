@@ -32,17 +32,25 @@ class TestBuild:
     def test_starts_with_runtime_context(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert result.startswith("You are Agent")
+        # 一级标题 **Identity** 起头，身份句紧随其后
+        assert result.startswith("**Identity**\nYou are Agent")
 
     def test_has_required_sections(self, cfg):
+        """Primary headings (unnumbered) + secondary headings (numbered per group)."""
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "1. Environment" in result
-        assert "2. Conversation history" in result
-        assert "3. Persistent memory" in result
-        assert "4. Images & multimodal" in result
-        assert "5. Credential resolution chain" in result
-        assert "6. Tools & skills" in result
+        # 一级标题（不编号）
+        assert "**Environment**" in result
+        assert "**Memory & Context**" in result
+        assert "**Capabilities**" in result
+        assert "**Coordination**" in result
+        # 二级标题（组内编号）
+        assert "1. Platform & OS" in result
+        assert "1. Conversation history" in result
+        assert "2. Persistent memory" in result
+        assert "1. Images & multimodal" in result
+        assert "2. Credential resolution chain" in result
+        assert "3. Tools & skills" in result
 
     def test_agent_name_displayed(self, cfg):
         from slife.agent.system_prompt import build
@@ -61,6 +69,14 @@ class TestBuild:
         assert "Context floor: 20% / ceiling: 80%" in result  # defaults
         assert "_sys_trim" in result
         assert "memory_search" in result
+
+    def test_heartbeat_interval_rendered_from_config(self, cfg):
+        """The Autonomy heartbeat window advertises the configured interval."""
+        from slife.agent.system_prompt import build
+        assert "every 60 seconds" in build(cfg)  # default 60s
+        cfg.heartbeat_interval = 30
+        assert "every 30 seconds" in build(cfg)
+        assert "every 60 seconds" not in build(cfg)
 
     def test_vision_disabled(self, cfg):
         from slife.agent.system_prompt import build
@@ -152,26 +168,26 @@ class TestBuild:
         assert "cannot interact" in result
         assert "it only sends" in result
 
-    def test_subagent_identity_appended_when_is_subagent(self, cfg, monkeypatch):
-        """is_subagent=True appends the subagent identity template."""
+    def test_subagent_identity_when_is_subagent(self, cfg, monkeypatch):
+        """is_subagent=True renders the subagent identity template."""
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
         monkeypatch.setenv("SLIFE_SUBAGENT_CREATED_AT", "2026-01-05T10:00:00+08:00")
         result = build(cfg, is_subagent=True)
-        assert "By your spawn_subagent action, we enter into subagent mode" in result
-        assert "You are NOW a subagent worker" in result
+        assert "You are sub-7, an agent worker of testbot" in result
         assert "with the same capabilities" in result
         assert "may SEND messages" in result
         assert "all replies and management belong to" in result
         assert "conversation is not persisted" in result
 
     def test_subagent_identity_includes_name(self, cfg, monkeypatch):
-        """SLIFE_SUBAGENT_NAME is rendered into the subagent identity."""
+        """SLIFE_SUBAGENT_NAME and created_at are rendered into the identity."""
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
         monkeypatch.setenv("SLIFE_SUBAGENT_CREATED_AT", "2026-01-05T10:00:00+08:00")
         result = build(cfg, is_subagent=True)
-        assert "sub-7, created at 2026-01-05T10:00:00+08:00" in result
+        assert "sub-7, an agent worker of" in result
+        assert "created at 2026-01-05T10:00:00+08:00" in result
 
     def test_subagent_identity_forbids_persona(self, cfg, monkeypatch):
         """A subagent has no independent identity — it speaks as the parent
@@ -202,22 +218,77 @@ class TestBuild:
         assert "Context: cloned from" in result
 
     def test_a2a_section_when_configured(self, cfg):
-        """A2A section visible when a2a is configured."""
+        """A2A secondary heading visible when a2a is configured."""
         from slife.agent.system_prompt import build
         cfg.a2a_config.enabled = True
         cfg.a2a_config.transport = "mqtt"
         cfg.a2a_config.broker_host = "mqtt.example.com"
         cfg.a2a_config.broker_port = 1883
         result = build(cfg)
-        assert "8. Data directories" in result
-        assert "10. Multi-agent communication (A2A)" in result
+        assert "**Coordination**" in result
+        assert "2. A2A mesh" in result
         assert "mqtt.example.com:1883" in result
 
     def test_a2a_section_hidden_when_disabled(self, cfg):
-        """A2A section hidden when a2a is not enabled."""
+        """A2A secondary heading hidden when a2a is not enabled."""
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "Multi-agent communication" not in result
+        assert "A2A mesh" not in result
+
+
+class TestStructure:
+    """Primary-heading taxonomy and world (slife.j2) consistency across roles."""
+
+    _MAIN_HEADS = [
+        "**Identity**", "**Environment**", "**Memory & Context**",
+        "**Capabilities**", "**Coordination**", "**Autonomy**",
+    ]
+
+    def _env_sub(self, monkeypatch):
+        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
+        monkeypatch.setenv("SLIFE_SUBAGENT_CREATED_AT", "2026-01-05T10:00:00+08:00")
+
+    def test_agent_has_six_primary_headings(self, cfg):
+        from slife.agent.system_prompt import build
+        result = build(cfg)
+        for h in self._MAIN_HEADS:
+            assert h in result
+
+    def test_subagent_has_five_primary_headings_no_autonomy(self, cfg, monkeypatch):
+        """A subagent never gets a heartbeat, so it has no Autonomy block."""
+        from slife.agent.system_prompt import build
+        self._env_sub(monkeypatch)
+        result = build(cfg, is_subagent=True)
+        for h in self._MAIN_HEADS:
+            if h == "**Autonomy**":
+                assert h not in result
+            else:
+                assert h in result
+
+    def test_role_specific_identity_does_not_leak(self, cfg, monkeypatch):
+        """Each composition carries only its own identity framing."""
+        from slife.agent.system_prompt import build
+        self._env_sub(monkeypatch)
+        main = build(cfg)
+        sub = build(cfg, is_subagent=True)
+        # 主 agent 身份不进子 agent
+        assert "silicon-based life" not in sub
+        assert "This is your first time in this world." not in sub
+        # 子 agent 身份不进主 agent
+        assert "an agent worker of" not in main
+        assert "subagent worker" not in main
+
+    def test_common_world_identical_across_roles(self, cfg, monkeypatch):
+        """The slife.j2 world block is byte-identical in both compositions."""
+        from slife.agent.system_prompt import build
+        self._env_sub(monkeypatch)
+
+        def world(s: str) -> str:
+            start = s.index("**Environment**")
+            end = s.find("**Autonomy**")
+            return s[start:end if end != -1 else len(s)].strip()
+
+        assert world(build(cfg)) == world(build(cfg, is_subagent=True))
 
     def test_environment_facts_present(self, cfg):
         """Platform facts are rendered, not left as template variables."""

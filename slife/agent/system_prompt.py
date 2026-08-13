@@ -1,7 +1,9 @@
-"""System prompt builder — renders the Slife runtime spec sheet.
+"""System prompt builder — renders the Slife system prompt.
 
-Only project-specific facts the LLM cannot discover from training data or
-tool schemas.  No personality, no instructions, no decoration.
+Identity templates (``agent.j2`` / ``subagent.j2``) own the role framing;
+both ``{% include 'slife.j2' %}`` for the shared runtime spec sheet.  Only
+project-specific facts the LLM cannot discover from training data or tool
+schemas.  No personality, no instructions, no decoration.
 """
 
 from __future__ import annotations
@@ -32,74 +34,73 @@ _env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)))
 
 
 def build(config: Config, is_subagent: bool = False) -> str:
-    """Render the system prompt from the runtime spec sheet template.
+    """Render the system prompt for a main agent or a subagent worker.
 
-    All platform facts are computed here — no dependency on
-    ``slife.tools`` or any tool module.
+    The identity template (``agent.j2`` / ``subagent.j2``) opens with the
+    role's identity framing and ``{% include 'slife.j2' %}`` for the shared
+    runtime spec sheet — one render, no string concatenation.  The
+    ``slife.j2`` block is byte-identical in both compositions, so the model
+    sees the same world regardless of role.
 
-    When *is_subagent* is True, the subagent identity template
-    (``subagent.j2``) is appended so the spawned process knows its role.
+    All platform facts are computed in :func:`_render_context` — no
+    dependency on ``slife.tools`` or any tool module.
+    """
+    name = "subagent.j2" if is_subagent else "agent.j2"
+    return _env.get_template(name).render(**_render_context(config)).strip()
+
+
+def _render_context(config: Config) -> dict:
+    """Compute the render context shared by every identity template.
+
+    ``agent.j2`` ignores the ``subagent_*`` keys; the world template
+    (``slife.j2``) is included identically by both identities.
     """
     model = config.active_model
-    now = datetime.now().astimezone()
     a2a = config.a2a_config
     agent_name: str = (a2a.agent_name if a2a else "") or config.agent_id
 
-    prompt = _env.get_template("system_prompt.j2").render(
-        # ── 1. 环境 ──
-        agent_name=agent_name,
+    return {
+        # ── 身份 ──
+        "agent_name": agent_name,
         # When the agent's persisted memory began (earliest diary turn) —
         # tells the LLM the origin of its session history.
-        memory_start_time=_memory_start_time(config.agent_id),
-        model_name=model.display_name,
-        context_window=f"{model.context_window:,}",
-        input_modalities=", ".join(model.input_modalities),
-        platform_type=_platform_type(),
-        platform_name=_os_name(),
-        os_version=platform.uname().release,
-        arch=platform.machine(),
-        workspace=os.getcwd(),
-        default_shell=_current_shell(),
-        python_cmd=sys.executable,
-        python_version=sys.version.split()[0],
-        package_manager="uv",
-        current_datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
-        utc_offset=now.strftime("%z"),
-        # ── 2. 上下文窗口策略 ──
-        context_floor=int(config.context_floor * 100),
-        context_ceiling=int(config.context_ceiling * 100),
-        tool_result_max_percent=int(config.tool_result_ceiling * 100),
-        # ── 3. 图像与多模态 ──
-        has_vision=model.supports_vision,
-        # ── 4. 凭证解析链 ──
-        credstore_backend=_credstore_backend(),
-        # ── 5. 工具与技能 ──
-        mcp_tool_prefix="server_name__",
-        skills_directory=str(get_skills_dir().resolve()),
-        data_dir=str(get_data_dir().resolve()),
-        config_path=str(get_config_path().resolve()),
-        logs_dir=str(get_logs_dir().resolve()),
-        db_path=str(get_db_path(config.agent_id).resolve()),
-        images_dir=str(get_images_dir().resolve()),
-        # ── 6. 多代理通信 (A2A) ──
-        a2a_configured=a2a is not None and a2a.enabled,
-        a2a_transport=(a2a.transport if a2a else "mqtt"),
-        a2a_broker_host=(a2a.broker_host if a2a else "localhost"),
-        a2a_broker_port=(a2a.broker_port if a2a else 1883),
-    ).strip()
-
-    if is_subagent:
-        prompt += "\n\n" + _env.get_template("subagent.j2").render(
-            # The spawner (subagent/process.py) sets SLIFE_SUBAGENT_NAME,
-            # SLIFE_SUBAGENT_CREATED_AT and SLIFE_SUBAGENT_CONTEXT
-            # ("pure" | "cloned").  agent_name is the MAIN agent's name —
-            # the subagent speaks AS it on the network.
-            subagent_name=os.environ.get("SLIFE_SUBAGENT_NAME", ""),
-            created_at=os.environ.get("SLIFE_SUBAGENT_CREATED_AT", ""),
-            context_source=os.environ.get("SLIFE_SUBAGENT_CONTEXT", "pure"),
-            agent_name=agent_name,
-        ).strip()
-    return prompt
+        "memory_start_time": _memory_start_time(config.agent_id),
+        # ── 环境 ──
+        "platform_type": _platform_type(),
+        "platform_name": _os_name(),
+        "os_version": platform.uname().release,
+        "arch": platform.machine(),
+        "python_cmd": sys.executable,
+        "python_version": sys.version.split()[0],
+        "package_manager": "uv",
+        # ── 上下文窗口策略 ──
+        "context_floor": int(config.context_floor * 100),
+        "context_ceiling": int(config.context_ceiling * 100),
+        "tool_result_max_percent": int(config.tool_result_ceiling * 100),
+        # ── 图像与多模态 ──
+        "has_vision": model.supports_vision,
+        # ── 凭证解析链 ──
+        "credstore_backend": _credstore_backend(),
+        # ── 工具与技能 ──
+        "mcp_tool_prefix": "server_name__",
+        "skills_directory": str(get_skills_dir().resolve()),
+        "data_dir": str(get_data_dir().resolve()),
+        "config_path": str(get_config_path().resolve()),
+        "logs_dir": str(get_logs_dir().resolve()),
+        "db_path": str(get_db_path(config.agent_id).resolve()),
+        "images_dir": str(get_images_dir().resolve()),
+        # ── 多代理通信 (A2A) ──
+        "a2a_configured": a2a is not None and a2a.enabled,
+        "a2a_transport": (a2a.transport if a2a else "mqtt"),
+        "a2a_broker_host": (a2a.broker_host if a2a else "localhost"),
+        "a2a_broker_port": (a2a.broker_port if a2a else 1883),
+        # ── 自主心跳 ──
+        "heartbeat_interval": config.heartbeat_interval,
+        # ── 子 agent 身份（agent.j2 不使用）──
+        "subagent_name": os.environ.get("SLIFE_SUBAGENT_NAME", ""),
+        "created_at": os.environ.get("SLIFE_SUBAGENT_CREATED_AT", ""),
+        "context_source": os.environ.get("SLIFE_SUBAGENT_CONTEXT", "pure"),
+    }
 
 
 def build_context_status(

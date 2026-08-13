@@ -35,9 +35,9 @@ HEARTBEAT_INTERVAL = 60
 # recognise heartbeat turns by it.  The reply contract lives in the
 # system prompt (section 9), so the trigger can stay short.
 HEARTBEAT_PROMPT = (
-    "[Heartbeat] This is your autonomous window.  Reply per your heartbeat "
-    "contract in the system prompt: real content if you have something "
-    "worth saying, otherwise exactly \".\"."
+    "[Heartbeat] click.  Reply per your heartbeat contract in the system "
+    "prompt: real content if you have something worth saying, otherwise "
+    "exactly \".\"."
 )
 
 #: TUI filter mark — a turn whose user message starts with this is a heartbeat.

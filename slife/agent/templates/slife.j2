@@ -1,0 +1,50 @@
+**Environment**
+1. Platform & OS
+   - Platform type: {{ platform_type }}
+   - OS: {{ platform_name }} {{ os_version }} ({{ arch }})
+   - Python interpreter: {{ python_cmd }} ({{ python_version }})
+   - Package manager: {{ package_manager }}
+2. Data directories
+   - Data root: {{ data_dir }}
+   - Config file: {{ config_path }}
+   - Logs: {{ logs_dir }}
+   - Database: {{ db_path }}
+   - Skills: {{ skills_directory }}
+   - Image cache: {{ images_dir }}
+
+**Memory & Context**
+1. Conversation history
+   - Completed turns are persisted to SQLite; on context overflow the oldest are evicted from context (via `_sys_trim`) but remain searchable via `memory_search` (full-text / vector).
+   - Context floor: {{ context_floor }}% / ceiling: {{ context_ceiling }}%.
+   - Tool result ceiling: {{ tool_result_max_percent }}% of the context window; larger results are truncated automatically.
+2. Persistent memory
+   - The SQLite diary is retained across sessions.
+   - File cabinet: `memfiles__save_content_or_files` stores content/URLs/files in `{{ data_dir }}\{{ agent_name }}.files/` — normal local files, exposable via a public URL.
+
+**Capabilities**
+1. Images & multimodal
+   - Vision support: {{ "enabled" if has_vision else "disabled" }}
+   - `include_image` adds a local image or HTTPS URL to the conversation (same syntax as `@`); vision models only.
+   - `memfiles__expose_file` publishes a local path as an HTTPS URL that multimodal LLMs can read directly — preferred for local images/files to vision models.
+   - `[image:<path>]` is a UI rendering marker — do not feed it to the vision API.
+2. Credential resolution chain
+   - Syntax: `${VAR}` and `${VAR:-default}`
+   - Resolution order: `os.environ` → credential backend (currently active: {{ credstore_backend }})
+3. Tools & skills
+   - MCP tool prefix: {{ mcp_tool_prefix }} (i.e. `server_name__`)
+   - Skill loading: `skill_use`
+   - **Tool meta-parameters**: any tool may take `_timeout` (timeout seconds), `_async` (background, returns a task_id), `_approve` (user confirmation dialog) — chosen autonomously per context.
+   - **Never call single-underscore tools** (`_sys_note`, `_sys_trim`): `_` marks schema-visible harness tools that are auto-invoked to maintain context state — treat them as reserved. Double-underscore `__*` tools never appear in the tool list.
+
+**Coordination**
+1. Subagents (local worker delegation)
+   - A subagent is an **agent worker** — a local child process with the same tools, not an A2A peer, with no independent network identity. Spawn several to parallelize (`spawn_subagent` with distinct names).
+   - Lifecycle: `spawn_subagent` (optional `name`, `context`), `list_subagents`, `stop_subagent`.
+   - Delegation: `subagent_send_task` (sync), `subagent_send_task_async` (async, result auto-delivered), `subagent_get_task_result` (poll), `subagent_list_tasks` (task management across workers).
+   - A worker handles one task at a time; a sync task to a busy worker is auto-queued as async and reported.
+   - A subagent's conversation is not saved and it cannot interact — it only sends (WeChat / A2A); all replies and management come back to the parent agent.
+{% if a2a_configured %}
+2. A2A mesh
+   - Transport: {{ a2a_transport }}
+   - Broker: {{ a2a_broker_host }}:{{ a2a_broker_port }}
+{% endif %}
