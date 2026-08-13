@@ -336,6 +336,115 @@ class TestProcessStream:
 
         assert result.content == "test"
 
+    @pytest.mark.asyncio
+    async def test_retries_transient_error(
+        self, sample_model_config, empty_registry, conversation,
+    ):
+        """A transient httpx transport failure is retried transparently."""
+        import httpx
+
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, empty_registry)
+        calls: list[int] = []
+
+        async def flaky_stream(messages, tools, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise httpx.RemoteProtocolError(
+                    "peer closed connection without sending complete message "
+                    "body (incomplete chunked read)"
+                )
+            yield StreamChunk(content="Hello")
+            yield StreamChunk(usage=TokenUsage(2, 1, 3))
+
+        with (
+            patch.object(llm, "chat_stream", side_effect=flaky_stream),
+            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+        ):
+            result = await loop._process_stream(conversation, None)
+
+        assert result.content == "Hello"
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_non_transient(
+        self, sample_model_config, empty_registry, conversation,
+    ):
+        """Non-transient errors are not retried."""
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, empty_registry)
+        calls: list[int] = []
+
+        async def failing_stream(messages, tools, **kwargs):
+            calls.append(1)
+            raise ValueError("bad request")
+            yield  # pragma: no cover — marks this as an async generator
+
+        with (
+            patch.object(llm, "chat_stream", side_effect=failing_stream),
+            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+        ):
+            with pytest.raises(ValueError):
+                await loop._process_stream(conversation, None)
+
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_resets_handler_before_retry(
+        self, sample_model_config, empty_registry, conversation,
+    ):
+        """Partial streamed output is cleared via on_stream_retry before retry."""
+        import httpx
+
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, empty_registry)
+        handler = AsyncMock(spec=AgentEventHandler)
+        calls: list[int] = []
+
+        async def flaky_stream(messages, tools, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                yield StreamChunk(thinking="partial thinking...")
+                raise httpx.RemoteProtocolError("connection dropped mid-stream")
+            yield StreamChunk(content="clean answer")
+            yield StreamChunk(usage=TokenUsage(2, 1, 3))
+
+        with (
+            patch.object(llm, "chat_stream", side_effect=flaky_stream),
+            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+        ):
+            result = await loop._process_stream(conversation, handler)
+
+        handler.on_stream_retry.assert_awaited_once()
+        assert result.content == "clean answer"
+        assert result.thinking == ""
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_retries(
+        self, sample_model_config, empty_registry, conversation,
+    ):
+        """Retryable failures stop after the max retries and wrap the error."""
+        import httpx
+
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, empty_registry)
+        calls: list[int] = []
+
+        async def always_fails(messages, tools, **kwargs):
+            calls.append(1)
+            raise httpx.RemoteProtocolError("peer closed connection")
+            yield  # pragma: no cover — marks this as an async generator
+
+        with (
+            patch.object(llm, "chat_stream", side_effect=always_fails),
+            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+        ):
+            with pytest.raises(RuntimeError, match="LLM stream failed after 3 attempts"):
+                await loop._process_stream(conversation, None)
+
+        assert len(calls) == 3
+
 
 # ── _execute_tools ────────────────────────────────────────────────────
 

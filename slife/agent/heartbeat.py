@@ -78,6 +78,9 @@ class _SilentHandler:
     async def on_image(self, source: str) -> None:
         pass
 
+    async def on_stream_retry(self) -> None:
+        pass
+
     def finalize_current(self) -> None:
         pass
 

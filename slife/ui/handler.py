@@ -100,6 +100,12 @@ class TUIHandler:
         if self._current_assistant is not None:
             self._current_assistant.finalize(intermediate=False)
 
+    async def on_stream_retry(self) -> None:
+        """Discard partial streamed text/thinking so a retried LLM request
+        starts visually clean (no duplicated output in the chat view)."""
+        if self._current_assistant is not None:
+            self._current_assistant.reset_stream()
+
     # ── AgentEventHandler implementation ─────────────────────────────
 
     async def on_thinking_chunk(self, chunk: str) -> None:

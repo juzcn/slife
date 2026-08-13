@@ -306,6 +306,19 @@ class AssistantMessage(Static):
         self._buffer += text
         self._refresh_display()
 
+    def reset_stream(self) -> None:
+        """Discard partial streamed text/thinking/usage before an LLM retry.
+
+        The agent loop retries transient transport failures; the retried
+        request re-streams into this same message, so the partial output
+        from the failed attempt is cleared to avoid duplication.
+        """
+        self._buffer = ""
+        self._thinking = ""
+        self._has_thinking = False
+        self._usage = None
+        self._refresh_display()
+
     def set_token_usage(self, usage: TokenUsage) -> None:
         """Set token usage to display after the response."""
         self._usage = usage

@@ -28,6 +28,53 @@ class AgentCancelled(Exception):
     pass
 
 
+# ── LLM stream retry ───────────────────────────────────────────────
+
+#: Bounded retry for transient LLM transport failures (e.g. DeepSeek closing
+#: the streaming connection mid-body → httpx RemoteProtocolError). The SDK's
+#: built-in max_retries only covers request-establishment errors, not body-read
+#: failures during stream iteration — so we retry here, at the contract layer,
+#: for every turn source (main agent, subagents, heartbeat, WeChat, A2A).
+_LLM_STREAM_MAX_RETRIES = 2  # total attempts = 3
+_LLM_STREAM_RETRY_BASE_DELAY = 0.5  # seconds, linear backoff: 0.5 * attempt
+
+
+def _is_retryable_stream_error(exc: BaseException) -> bool:
+    """True if *exc* is a transient LLM transport failure worth retrying.
+
+    ``httpx.TransportError`` covers ``RemoteProtocolError`` (peer closed the
+    connection before the chunked body completed), ``ReadError``,
+    ``ConnectError`` and the timeout classes. The SDKs' ``*APIConnectionError`` /
+    ``*APITimeoutError`` wrap the same httpx failures at request time and are
+    also retried. Bad-request, content-filter and auth errors are NOT retried
+    here — they are the SDK's / inbox's concern, and 429/5xx are already
+    retried by the SDK internally.
+    """
+    try:
+        import httpx
+    except ImportError:
+        httpx = None
+    if httpx is not None and isinstance(exc, httpx.TransportError):
+        return True
+    try:
+        import openai
+    except ImportError:
+        openai = None
+    if openai is not None and isinstance(
+        exc, (openai.APIConnectionError, openai.APITimeoutError),
+    ):
+        return True
+    try:
+        import anthropic
+    except ImportError:
+        anthropic = None
+    if anthropic is not None and isinstance(
+        exc, (anthropic.APIConnectionError, anthropic.APITimeoutError),
+    ):
+        return True
+    return False
+
+
 # ── Types ──────────────────────────────────────────────────────────
 
 
@@ -106,6 +153,16 @@ class AgentEventHandler(Protocol):
 
         *source* is a local file path or base64 data URI.
         Default is a no-op — handlers opt in by implementing this method.
+        """
+        ...
+
+    async def on_stream_retry(self) -> None:
+        """Discard any partial text/thinking shown for a retried LLM request.
+
+        The agent loop retries transient transport failures (connection drop
+        mid-stream). When partial output was already streamed, the handler
+        resets it so the retried request starts visually clean — otherwise
+        the user sees the partial output duplicated. Default is a no-op.
         """
         ...
 
@@ -516,44 +573,90 @@ class AgentLoop:
         tool_accum: dict[int, dict] = {}
         stream_usage = TokenUsage()
 
-        async for chunk in self.llm_client.chat_stream(
-            messages=conversation.to_openai_messages(
-                thinking_enabled=self.llm_client.model_config.thinking_enabled,
-            ),
-            tools=self._inject_meta_params(
-                self.tool_registry.to_openai_functions()
-            ),
-            cancel_event=self._cancel_event,
-        ):
-            if chunk.thinking:
-                thinking_parts.append(chunk.thinking)
-                if handler and not self._cancel_event.is_set():
-                    await handler.on_thinking_chunk(chunk.thinking)
+        # Transient transport failures (e.g. the peer closing the connection
+        # mid-chunked-read) are retried with linear backoff.  The conversation
+        # is untouched while streaming — the assistant message is only added
+        # after this method returns — so a retry sends identical messages.
+        attempts = 0
+        while True:
+            attempts += 1
+            emitted_any = False
+            try:
+                async for chunk in self.llm_client.chat_stream(
+                    messages=conversation.to_openai_messages(
+                        thinking_enabled=self.llm_client.model_config.thinking_enabled,
+                    ),
+                    tools=self._inject_meta_params(
+                        self.tool_registry.to_openai_functions()
+                    ),
+                    cancel_event=self._cancel_event,
+                ):
+                    emitted_any = True
 
-            if chunk.content:
-                content_parts.append(chunk.content)
-                if handler and not self._cancel_event.is_set():
-                    await handler.on_text_chunk(chunk.content)
+                    if chunk.thinking:
+                        thinking_parts.append(chunk.thinking)
+                        if handler and not self._cancel_event.is_set():
+                            await handler.on_thinking_chunk(chunk.thinking)
 
-            if chunk.tool_deltas:
-                for td in chunk.tool_deltas:
-                    idx = td["index"]
-                    if idx not in tool_accum:
-                        tool_accum[idx] = {
-                            "id": "",
-                            "name": "",
-                            "arguments": "",
-                        }
-                    acc = tool_accum[idx]
-                    if td["id"]:
-                        acc["id"] = td["id"]
-                    if td["function"]["name"]:
-                        acc["name"] = td["function"]["name"]
-                    if td["function"]["arguments"]:
-                        acc["arguments"] += td["function"]["arguments"]
+                    if chunk.content:
+                        content_parts.append(chunk.content)
+                        if handler and not self._cancel_event.is_set():
+                            await handler.on_text_chunk(chunk.content)
 
-            if chunk.usage:
-                stream_usage = chunk.usage
+                    if chunk.tool_deltas:
+                        for td in chunk.tool_deltas:
+                            idx = td["index"]
+                            if idx not in tool_accum:
+                                tool_accum[idx] = {
+                                    "id": "",
+                                    "name": "",
+                                    "arguments": "",
+                                }
+                            acc = tool_accum[idx]
+                            if td["id"]:
+                                acc["id"] = td["id"]
+                            if td["function"]["name"]:
+                                acc["name"] = td["function"]["name"]
+                            if td["function"]["arguments"]:
+                                acc["arguments"] += td["function"]["arguments"]
+
+                    if chunk.usage:
+                        stream_usage = chunk.usage
+                break  # stream completed cleanly
+            except asyncio.CancelledError:
+                # Cancellation is a control-flow signal — never retry it.
+                raise
+            except Exception as e:
+                if not _is_retryable_stream_error(e):
+                    raise
+                if attempts > _LLM_STREAM_MAX_RETRIES:
+                    # Wrap the exhausted-retries error so the surfaced message
+                    # is actionable.  RuntimeError is not a BadRequestError, so
+                    # the inbox keeps the conversation intact — correct for a
+                    # transient failure.
+                    raise RuntimeError(
+                        f"LLM stream failed after {attempts} attempts: {e}"
+                    ) from e
+                # Reset partial state + TUI display before retrying, so the
+                # retried request starts visually clean.
+                if emitted_any and handler is not None:
+                    on_retry = getattr(handler, "on_stream_retry", None)
+                    if on_retry is not None:
+                        try:
+                            await on_retry()
+                        except Exception:
+                            pass
+                content_parts.clear()
+                thinking_parts.clear()
+                tool_accum.clear()
+                stream_usage = TokenUsage()
+                logger.warning(
+                    "llm_stream_retry attempt=%d max=%d err=%s",
+                    attempts, _LLM_STREAM_MAX_RETRIES, e,
+                )
+                if self._cancel_event.is_set():
+                    raise AgentCancelled()
+                await asyncio.sleep(_LLM_STREAM_RETRY_BASE_DELAY * attempts)
 
         # Remember last API usage per conversation — heartbeat/A2A/wechat
         # turns run in their own conversations and must not overwrite the
