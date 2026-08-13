@@ -705,6 +705,28 @@ class TestSessionStoreSearchKeyword:
         sql, _ = mock_conn.execute.call_args[0]
         assert "MATCH" in sql
 
+    @pytest.mark.asyncio
+    async def test_search_keyword_cjk_multiword_ands(self):
+        """Space-separated CJK words AND together (each word must appear),
+        matching FTS5's space-splitting — a single LIKE on the whole phrase
+        would return nothing because stored text has no spaces."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        await store.search_keyword(query="子agent 委托 测试")
+
+        sql, params = mock_conn.execute.call_args[0]
+        assert "LIKE" in sql
+        # 3 words × 4 columns each = 12 LIKE predicates, ANDed together.
+        assert sql.count("LIKE") == 12
+        assert "%子agent%" in params
+        assert "%委托%" in params
+        assert "%测试%" in params
+
 
 class TestSessionStoreSearchGrep:
     """Tests for search_grep."""
@@ -790,8 +812,11 @@ class TestSessionStoreSearchSemantic:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 1, "summary": "A chat", "distance": 0.5},
+        # First fetchall = KNN rows, second = diary lookup rows.
+        mock_cursor.fetchall = AsyncMock(side_effect=[
+            [{"rowid": 1, "diary_rowid": 7, "summary": "A chat", "distance": 0.5,
+              "tags": "", "created_at": "2026-01-01"}],
+            [{"rowid": 7, "user_message": "北京天气怎么样"}],
         ])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
@@ -800,6 +825,35 @@ class TestSessionStoreSearchSemantic:
             embedding=[0.1, 0.2, 0.3],
         )
         assert len(result) == 1
+        assert result[0]["rowid"] == 7  # rowid == diary_rowid (merge_hybrid keys on it)
+        assert result[0]["user_message"] == "北京天气怎么样"
+
+    @pytest.mark.asyncio
+    async def test_search_semantic_knn_has_no_join(self):
+        """sqlite-vec forbids auxiliary-column constraints (including JOIN ON)
+        inside a KNN query — the KNN runs alone and the diary lookup is a
+        second query."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(side_effect=[
+            [{"rowid": 1, "diary_rowid": 7, "summary": "s", "tags": "",
+              "created_at": "2026-01-01", "distance": 0.1}],
+            [{"rowid": 7, "user_message": "北京天气怎么样"}],
+        ])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        await store.search_semantic(embedding=[0.1, 0.2], limit=5)
+
+        # First execute is the KNN query — no JOIN, bare k.
+        knn_sql = mock_conn.execute.call_args_list[0].args[0]
+        assert "JOIN" not in knn_sql
+        assert "turn_embedding MATCH ? AND k = ?" in knn_sql
+        # Second execute fetches user_message for the surviving diary_rowids.
+        assert mock_conn.execute.await_count == 2
+        second_sql = mock_conn.execute.call_args_list[1].args[0]
+        assert "user_message FROM diary" in second_sql
 
 
 class TestSessionStoreUpsertEmbedding:

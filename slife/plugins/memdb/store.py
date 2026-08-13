@@ -543,40 +543,51 @@ class SessionStore:
         """Substring (LIKE) search over the searchable columns.
 
         CJK fallback for :meth:`search_keyword` — FTS5 unicode61 cannot
-        segment Chinese, so whole-sentence queries return nothing.  Returns
-        the same shape as ``search_keyword`` (``snippet`` + ``rank``) so
-        callers and merge_hybrid stay backend-agnostic.  Rank is a constant
-        0; ordering is newest-first (rowid DESC).
+        segment Chinese, so whole-sentence queries return nothing.  The
+        pattern is split on whitespace and every word must appear in some
+        column (AND semantics — the same space-splitting ``_to_fts5_query``
+        applies), while each CJK word matches by substring.  Returns the
+        same shape as ``search_keyword`` (``snippet`` + ``rank``); rank is
+        a constant 0, ordering is newest-first.
         """
-        # Escape LIKE metacharacters so a pattern containing %/_ matches them
-        # literally (REVIEW M5) — same escaping as search_grep.
-        safe = (
-            pattern.replace("\\", r"\\")
-                   .replace("%", r"\%")
-                   .replace("_", r"\_")
-        )
-        like_pattern = f"%{safe}%"
+        words = [w for w in pattern.split() if w]
+        if not words:
+            return []
+        and_clauses: list[str] = []
+        params: list[str | int] = [words[0]]  # instr context anchors on the first word
+        for w in words:
+            # Escape LIKE metacharacters so %/_ match literally (REVIEW M5) —
+            # same escaping as search_grep.
+            safe = (
+                w.replace("\\", r"\\")
+                 .replace("%", r"\%")
+                 .replace("_", r"\_")
+            )
+            like = f"%{safe}%"
+            and_clauses.append(
+                "(user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\'"
+                " OR summary LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like, like, like, like])
         time_clauses = ""
-        time_params: list[str] = []
         if since:
             since = _normalize_time_param(since, role="since")
             time_clauses += " AND created_at >= ?"
-            time_params.append(since)
+            params.append(since)
         if until:
             until = _normalize_time_param(until, role="until")
             time_clauses += " AND created_at <= ?"
-            time_params.append(until)
+            params.append(until)
+        params.append(limit)
         cursor = await self._c.execute(
             f"""SELECT rowid, user_message, summary, tags, created_at,
                       substr(messages, max(0, instr(messages, ?) - 40), 160) AS snippet,
                       0 AS rank
                FROM diary
-               WHERE (user_message LIKE ? ESCAPE '\\' OR messages LIKE ? ESCAPE '\\'
-                      OR summary LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')
+               WHERE {" AND ".join(and_clauses)}
                      {time_clauses}
                ORDER BY rowid DESC LIMIT ?""",
-            (pattern, like_pattern, like_pattern, like_pattern, like_pattern,
-             *time_params, limit),
+            params,
         )
         results = [dict(row) for row in await cursor.fetchall()]
         logger.debug("search_like_cjk pattern=%s hits=%s", pattern[:80], len(results))
@@ -604,13 +615,15 @@ class SessionStore:
         # pool reduces the chance that the in-window turns are all outside the
         # fetched KNN results (REVIEW §1-10).
         fetch_limit = (limit * 8) if (since or until) else (limit * 2)
+        # sqlite-vec forbids ANY auxiliary-column constraint — including a
+        # JOIN ON — inside a KNN query ("illegal WHERE constraint on a vec0
+        # auxiliary column").  So the KNN runs alone (no JOIN) and the diary
+        # lookup is a separate query below.
         cursor = await self._c.execute(
-            """SELECT ds.diary_rowid AS rowid, d.user_message,
-                      ds.summary, ds.tags, ds.created_at, ds.distance
-               FROM diary_semantic ds
-               JOIN diary d ON ds.diary_rowid = d.rowid
-               WHERE ds.turn_embedding MATCH ? AND ds.k = ?
-               ORDER BY ds.distance""",
+            """SELECT rowid, diary_rowid, summary, tags, created_at, distance
+               FROM diary_semantic
+               WHERE turn_embedding MATCH ? AND k = ?
+               ORDER BY distance""",
             (vec_blob, fetch_limit),
         )
         # Deduplicate by diary_rowid — keep best (lowest) distance per turn
@@ -618,9 +631,10 @@ class SessionStore:
         results: list[dict] = []
         for row in await cursor.fetchall():
             r = dict(row)
-            rid = r.get("rowid")
+            rid = r.get("diary_rowid")
             if rid is not None and rid not in seen:
                 seen.add(rid)
+                r["rowid"] = rid  # merge_hybrid keys on rowid (= diary_rowid)
                 results.append(r)
         if since:
             since = _normalize_time_param(since, role="since")
@@ -629,6 +643,18 @@ class SessionStore:
             until = _normalize_time_param(until, role="until")
             results = [r for r in results if r.get("created_at", "") <= until]
         results = results[:limit]
+        # Fetch user_message for the surviving turns — a second query, since
+        # the KNN query must not join the diary table.
+        if results:
+            rowids = [r["diary_rowid"] for r in results]
+            ph = ",".join("?" * len(rowids))
+            cur = await self._c.execute(
+                f"SELECT rowid, user_message FROM diary WHERE rowid IN ({ph})",
+                rowids,
+            )
+            msgs = {r["rowid"]: r["user_message"] for r in await cur.fetchall()}
+            for r in results:
+                r["user_message"] = msgs.get(r["diary_rowid"], "")
         logger.debug("search_semantic hits=%s", len(results))
         return results
 

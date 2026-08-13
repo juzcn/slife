@@ -226,3 +226,34 @@ class TestEmbeddingClientEmbedOne:
         with patch.object(client, "embed", return_value=None):
             result = await client.embed_one("test")
             assert result is None
+
+
+class TestEmbeddingLoad:
+    """load() must materialise the local model exactly once, even under
+    concurrent callers — the semantic gate calls load() from every search,
+    so without this a burst of searches would load the GGUF model repeatedly."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_load_shares_one_materialisation(self):
+        import asyncio
+
+        client = EmbeddingClient.__new__(EmbeddingClient)
+        client._backend = "gguf"
+        client._available = True
+        client._gguf_path = "/tmp/m.gguf"
+        client._model = "bge-m3"
+        client._dim = 1024
+        client._client = None
+        client._loading = None
+        calls = 0
+
+        async def _fake_load():
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.01)
+            client._client = object()
+
+        client._load_gguf = _fake_load
+        await asyncio.gather(client.load(), client.load())
+        assert calls == 1
+        assert client._client is not None

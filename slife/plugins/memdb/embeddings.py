@@ -11,6 +11,7 @@ Falls back gracefully when embeddings are unavailable — keyword
 search (FTS5) still works fine without vectors.
 """
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -117,6 +118,10 @@ class EmbeddingClient:
         self._gguf_path = gguf_path
         self._dim = dim or _guess_dim(model, gguf_path)
         self._client: Any = None        # AsyncOpenAI, Llama, or SentenceTransformer
+        # In-flight load future — concurrent load() calls share one model
+        # materialisation instead of each loading the local model (the
+        # semantic gate calls load() from every search/check).
+        self._loading: asyncio.Future | None = None
         self._backend: str = ""         # "gguf" | "transformer" | "api" | ""
         self._available = False
         self._device = device           # "cpu" | "cuda" (transformer only)
@@ -412,16 +417,24 @@ class EmbeddingClient:
         """
         if self._client is not None or self._backend == "api":
             return True
+        if self._loading is not None:
+            return await self._loading  # share the in-flight load
+        self._loading = asyncio.get_running_loop().create_future()
         try:
             if self._backend == "transformer":
                 await self.ensure_loaded()
             elif self._backend == "gguf":
                 await self._load_gguf()
+            ok = self._client is not None
         except Exception as e:
             logger.warning(
                 "embedding_load_failed backend=%s err=%s", self._backend, e,
             )
-        return self._client is not None
+            ok = False
+        if not self._loading.done():
+            self._loading.set_result(ok)
+        self._loading = None
+        return ok
 
     async def _call_gguf(self, texts: list[str]) -> list[list[float]] | None:
         """Generate embeddings using a local GGUF model via llama-cpp."""
