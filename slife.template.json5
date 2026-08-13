@@ -14,6 +14,13 @@
     "context_ceiling": 0.8,
     "tool_timeout": 60,
     "heartbeat_interval": 60,
+    "tool_result_ceiling": 0.2,
+    // Per-tool-result char budget kept in PERMANENT memory (save side).
+    // The live conversation keeps the full result for the turn; the diary
+    // stores a head+tail digest so a single result can't starve restore.
+    // Results ≤ budget are stored as-is. Tool output is reproducible —
+    // re-run the tool to retrieve the full version.
+    "memory_tool_result_chars": 8000,
   },
   "models": {
     "mode": "merge",

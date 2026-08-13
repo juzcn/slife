@@ -41,6 +41,67 @@ logger = logging.getLogger(__name__)
 _on_model_switched: list[Callable[[str], None]] = []
 
 
+# ── Tool result compaction for permanent memory ─────────────────────────
+#
+# The live conversation keeps oversized tool results whole — the model
+# reasons over them during the turn (the 20% tool_result_ceiling is the
+# only live cap, a hard window-safety constraint).  Permanent memory does
+# NOT: tool output is reproducible (re-run the tool), so the diary stores
+# a head+tail digest.  This keeps diary turns small enough that session
+# restore can fill the context floor, and keeps memory_search recall cheap.
+# Truncation is always announced to the model via an explicit marker.
+
+
+def compact_tool_results(turn_messages: list[dict], budget_chars: int) -> int:
+    """Compress oversized tool results in a turn to head+tail digests.
+
+    A ``tool`` message whose content exceeds *budget_chars* is replaced
+    with ``head + marker + tail`` (the budget split evenly between head
+    and tail).  The marker tells a future reader the output was compacted
+    at save time, how large it originally was, and which tool to re-run to
+    retrieve the full version.  Results that already fit are left
+    untouched.  Returns the number of messages compacted.
+
+    The replacement is a *copy* — the caller's ``turn_messages`` list
+    entries are swapped for new dicts, never mutated in place, so the
+    live conversation keeps the full output.
+    """
+    if budget_chars <= 0:
+        return 0
+    head_chars = max(budget_chars // 2, 1)
+    tail_chars = max(budget_chars - head_chars, 1)
+
+    # Map tool_call_id → tool name so the marker can name the tool to
+    # re-run (a future reader doesn't have the live assistant message).
+    name_by_id: dict[str, str] = {}
+    for m in turn_messages:
+        for tc in m.get("tool_calls") or []:
+            cid = tc.get("id")
+            if cid:
+                name_by_id[cid] = (tc.get("function") or {}).get("name", "")
+
+    compacted = 0
+    for i, m in enumerate(turn_messages):
+        if m.get("role") != "tool":
+            continue
+        content = m.get("content")
+        if not isinstance(content, str) or len(content) <= budget_chars:
+            continue
+        tcid = m.get("tool_call_id")
+        tool_name = name_by_id.get(str(tcid), "") if tcid else ""
+        name_note = f"by re-running {tool_name}" if tool_name else "by re-running the tool"
+        marker = (
+            f"\n… [compacted at save: original {len(content)} chars — "
+            f"full output retrievable {name_note}]\n"
+        )
+        turn_messages[i] = {
+            **m,
+            "content": content[:head_chars] + marker + content[-tail_chars:],
+        }
+        compacted += 1
+    return compacted
+
+
 class AgentService:
     """Wires together LLM client, tools, conversation, and agent loop.
 
@@ -1255,6 +1316,20 @@ class AgentService:
         # before each LLM call, with a visible _trim_context notification
         # inserted into the conversation.  Each turn is still saved here
         # via memory_save_turn, so trimmed turns remain searchable.
+
+        # Permanent memory keeps only head+tail digests of oversized tool
+        # results — the diary never hoards reproducible tool output, so a
+        # single result can't grow a turn past what session restore can
+        # rebuild within the context floor.  The live conversation is not
+        # touched (the copy swapped into turn_messages is a new dict).
+        compacted = compact_tool_results(
+            turn_messages, self.config.memory_tool_result_chars,
+        )
+        if compacted:
+            logger.info(
+                "memory_tool_result_compacted count=%d budget=%d",
+                compacted, self.config.memory_tool_result_chars,
+            )
 
         assert self._plugins["memdb"].client is not None  # guarded by memdb_enabled
         save_args = {

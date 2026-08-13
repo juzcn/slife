@@ -746,7 +746,10 @@ class AgentLoop:
             max_chars = self.max_tool_result_chars
             if max_chars > 0 and len(result) > max_chars:
                 original_len = len(result)
-                result = result[:max_chars] + f"\n… (truncated, original {original_len} chars)"
+                result = result[:max_chars] + (
+                    f"\n… (truncated: original {original_len} chars — "
+                    f"re-run the tool to see the full output)"
+                )
                 logger.debug("tool_result_truncated name=%s original=%d truncated=%d", tc.name, original_len, max_chars)
             is_error = result.startswith("Error")
 

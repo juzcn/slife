@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from slife.agent.service import AgentService
+from slife.agent.service import AgentService, compact_tool_results
 from slife.agent.plugins import PluginStartStatus
 from slife.agent.llm_client import TokenUsage
 from slife.a2a.identity import HUMAN, WECHAT
@@ -252,9 +252,114 @@ class TestAgentServiceMemory:
         assert "created_at" not in args
 
     @pytest.mark.asyncio
+    async def test_save_to_memory_compacts_oversized_tool_result(self, sample_config):
+        """An oversized tool result is compacted to a head+tail digest in the
+        DIARY copy, while the live conversation keeps the full output (the
+        model reasoned over it this turn)."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(return_value="{}")
+        service._plugins["memdb"].client = mock_client
+
+        big = "y" * 50000
+        conv = service.conversation
+        conv.add_user_message("read the big file")
+        conv.add_assistant_message(
+            "", tool_calls=[{"id": "call_1", "type": "function",
+                             "function": {"name": "read_file", "arguments": "{}"}}],
+        )
+        conv.add_tool_result("call_1", big)
+        conv.add_assistant_message("the file is huge.")
+
+        await service.save_to_memory(user_message="read the big file", conversation=conv)
+
+        tool_name, args = mock_client.call_tool.await_args.args
+        assert tool_name == "__memory_save_turn"
+        # The persisted turn carries the digest, not the full blob.
+        persisted_tool = next(m for m in args["messages"] if m.get("role") == "tool")
+        assert len(persisted_tool["content"]) < 9000
+        assert "[compacted at save: original 50000 chars" in persisted_tool["content"]
+        assert "by re-running read_file" in persisted_tool["content"]
+        # Live conversation is untouched — the model still has the full result.
+        live_tool = next(m for m in conv.messages if m.get("role") == "tool")
+        assert len(live_tool["content"]) == 50000
+
+    @pytest.mark.asyncio
+    async def test_save_to_memory_small_tool_result_untouched(self, sample_config):
+        """Results within the memory budget are persisted as-is."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(return_value="{}")
+        service._plugins["memdb"].client = mock_client
+
+        small = "z" * 100
+        conv = service.conversation
+        conv.add_user_message("hi")
+        conv.add_assistant_message(
+            "", tool_calls=[{"id": "call_1", "type": "function",
+                             "function": {"name": "check", "arguments": "{}"}}],
+        )
+        conv.add_tool_result("call_1", small)
+        conv.add_assistant_message("checked.")
+
+        await service.save_to_memory(user_message="hi", conversation=conv)
+        _, args = mock_client.call_tool.await_args.args
+        persisted_tool = next(m for m in args["messages"] if m.get("role") == "tool")
+        assert persisted_tool["content"] == small
+
+    @pytest.mark.asyncio
     async def test_stop_memdb_noop_when_disabled(self, sample_config):
         service = AgentService(sample_config)
         await service.stop_memdb()  # Should not raise
+
+
+class TestCompactToolResults:
+    """Direct tests for the save-side compaction helper."""
+
+    def test_compacts_oversized_result_to_head_tail(self):
+        messages = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "c1", "function": {"name": "run_python_script", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "A" * 1000 + "B" * 1000},
+        ]
+        n = compact_tool_results(messages, budget_chars=200)
+        assert n == 1
+        content = messages[1]["content"]
+        assert len(content) < 400  # head 100 + marker + tail 100
+        assert content.startswith("A" * 100)
+        assert content.endswith("B" * 100)
+        assert "[compacted at save: original 2000 chars" in content
+        assert "by re-running run_python_script" in content
+
+    def test_leaves_small_results_untouched(self):
+        messages = [{"role": "tool", "tool_call_id": "c1", "content": "small"}]
+        n = compact_tool_results(messages, budget_chars=8000)
+        assert n == 0
+        assert messages[0]["content"] == "small"
+
+    def test_zero_budget_is_noop(self):
+        messages = [{"role": "tool", "tool_call_id": "c1", "content": "x" * 50000}]
+        n = compact_tool_results(messages, budget_chars=0)
+        assert n == 0
+        assert len(messages[0]["content"]) == 50000
+
+    def test_does_not_mutate_input_dicts(self):
+        big = "x" * 50000
+        original = {"role": "tool", "tool_call_id": "c1", "content": big}
+        messages = [original]
+        n = compact_tool_results(messages, budget_chars=100)
+        assert n == 1
+        # the list slot is swapped for a copy — the caller's dict is untouched
+        assert original["content"] == big
+        assert messages[0] is not original
+
+    def test_marker_omits_tool_name_when_unknown(self):
+        messages = [{"role": "tool", "tool_call_id": "orphan", "content": "x" * 50000}]
+        n = compact_tool_results(messages, budget_chars=100)
+        assert n == 1
+        assert "by re-running the tool" in messages[0]["content"]
 
 
 # ── AgentService A2A ────────────────────────────────────────────────────────

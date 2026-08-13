@@ -334,7 +334,13 @@ class Config:
     max_iterations: int = 30
     context_floor: float = 0.2
     context_ceiling: float = 0.8
-    tool_result_ceiling: float = 0.2  # max tool result = 20% of context window
+    tool_result_ceiling: float = 0.2  # max tool result = 20% of context window (HARD constraint, see DESIGN)
+    # Per-tool-result char budget for PERMANENT memory (save side).  The live
+    # conversation keeps oversized results whole for the current turn; the
+    # diary stores a head+tail digest so a single result can never starve
+    # session restore.  Results ≤ budget are stored as-is.  Tool output is
+    # reproducible — re-run the tool to retrieve the full version.
+    memory_tool_result_chars: int = 8000
     agent_id: str = "slife"
     tool_timeout: float = 60.0  # seconds, 0 to disable — applies to ALL tools
     heartbeat_interval: int = 60  # seconds — autonomous idle heartbeat period
@@ -381,6 +387,7 @@ class Config:
             "context_floor": self.context_floor,
             "context_ceiling": self.context_ceiling,
             "tool_result_ceiling": self.tool_result_ceiling,
+            "memory_tool_result_chars": self.memory_tool_result_chars,
             "agent_id": self.agent_id,
             "mcp_config": asdict(self.mcp_config) if self.mcp_config else None,
             "memdb_config": asdict(self.memdb_config) if self.memdb_config else None,
@@ -929,6 +936,7 @@ class Config:
         context_floor = agent.get("context_floor", 0.2)
         context_ceiling = agent.get("context_ceiling", 0.8)
         tool_result_ceiling = agent.get("tool_result_ceiling", 0.2)
+        memory_tool_result_chars = agent.get("memory_tool_result_chars", 8000)
 
         # Env -- inject into os.environ so child processes (MCP wrappers,
         # sub-agents) inherit credentials.  Resolution order:
@@ -1007,6 +1015,7 @@ class Config:
             context_floor=context_floor,
             context_ceiling=context_ceiling,
             tool_result_ceiling=tool_result_ceiling,
+            memory_tool_result_chars=memory_tool_result_chars,
             agent_id=agent_id,
             mcp_config=mcp_config,
             memdb_config=memdb_config,
