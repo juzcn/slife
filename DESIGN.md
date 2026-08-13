@@ -136,15 +136,18 @@ The three registration paths share one `__` predicate (`agent/plugins.py`) — n
 
 ### System Prompt
 
-The prompt is a **runtime spec sheet** — facts the LLM cannot discover from training data or tool schemas. Two-part design:
+The system prompt splits **identity** from **world** so each role reads one coherent document:
 
-- **Static** — an identity template (`slife/agent/templates/agent.j2` for the main agent, `subagent.j2` for a worker), rendered once at startup. Both `{% include 'slife.j2' %}` — the shared runtime spec: context policy (floor/ceiling/tool-result %), host platform (OS, arch, shell, python), workspace paths (data/config/logs/db/images/skills), credstore backend name, MCP tool naming prefix, and A2A broker info when configured. Identity owns the role framing (heartbeat, persistence, send-only constraints); the world block is byte-identical in both roles. Never changes → maximal prompt cache hit rate.
+- **Identity** — `slife/agent/templates/agent.j2` (main agent) / `subagent.j2` (worker): who the agent is. Role framing only — heartbeat/persistence ownership for the main agent, ephemeral/send-only constraints for a worker. The only part that carries persona.
+- **World** — `slife/agent/templates/slife.j2`, `{% include 'slife.j2' %}` by both identity templates: the runtime spec — context policy (floor/ceiling/tool-result %), host platform (OS, arch, shell, python), workspace paths (data/config/logs/db/images/skills), credstore backend name, MCP tool naming prefix, and A2A broker info when configured. Byte-identical in both roles.
 - **Dynamic** — `slife/agent/templates/context_status.j2`, rendered by the `_sys_note` tool (auto-invoked once per turn): current time + UTC offset and context usage % always; context time range when set; model/CWD/shell/modalities only when changed; pending A2A peer presence events since the last turn (the same lines the TUI shows, drained once).
 
+Identity + world are rendered once at startup and never change → maximal prompt cache hit rate.
+
 Design principles:
-1. **Project-specific only** — if the LLM can infer it from tool schemas or training data, it doesn't belong
+1. **World spec is project-specific facts only** — if the LLM can infer it from tool schemas or training data, it doesn't belong
 2. **Tool schemas over prompts** — usage instructions live in function `description`/`parameters`
-3. **No personality or tone** — not a job description
+3. **No personality in the world spec** — role identity lives in the identity templates, not in `slife.j2`
 4. **No slash commands** — natural language only; the LLM interprets intent
 5. **Static baseline + change notifications** — constants at startup, deltas per-turn
 
@@ -275,7 +278,7 @@ Picker rules (hard-won):
 
 The agent is otherwise purely user-driven — no input, no activity. A heartbeat gives it a periodic **autonomous window** (a precondition for emergent self-initiated behavior): while idle, every `agent.heartbeat_interval` seconds (default 60) the service posts a `[Heartbeat]` message to the inbox, which runs as a **normal agent-loop turn** (own conversation via the heartbeat source, saved to the diary like any turn). The interval is read from `service.config.heartbeat_interval` (parsed from the `agent` section of `slife.json5`), falling back to 60.
 
-- **Reply contract** (also in the system prompt, section 9): real content if the agent has something worth proactively saying, otherwise exactly `.` — never empty (the `.` is the minimal non-empty assistant reply, satisfying the user→assistant role alternation).
+- **Reply contract** (also in the system prompt, under **Autonomy** → Heartbeat in `agent.j2`): real content if the agent has something worth proactively saying, otherwise exactly `.` — never empty (the `.` is the minimal non-empty assistant reply, satisfying the user→assistant role alternation).
 - **TUI filtering** (live + restore): heartbeat turns are recognised by the `[Heartbeat]` mark on the trigger message and filtered — the trigger and a `.` reply are never shown; a real reply renders as `⚡ 自主`. The status bar shows the last beat (`⚡` act / `·` quiet).
 - **Main agent only**: subagents (`is_subagent=True`) never start the heartbeat loop — they are task-driven workers, not autonomous agents.
 - The heartbeat conversation is separate (source `heartbeat`), so the autonomous reflections persist in the diary without polluting the human conversation.
