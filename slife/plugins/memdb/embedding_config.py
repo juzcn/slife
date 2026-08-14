@@ -1,13 +1,13 @@
-"""Embedding configuration helpers — read, write, validate, reload.
+"""Embedding configuration helpers — read, write, validate, report.
 
 Used by the memory_set_embedding / memory_check_embedding /
 memory_set_enabled MCP tools to manage the ``memdb.embedding``
-section of ``slife.json5`` at runtime.
+section of ``slife.json5`` at runtime.  The embedder itself is owned by
+``SemanticManager`` (semantic.py); this module never mutates it.
 """
 
 import logging
 from pathlib import Path
-from typing import Any
 
 from slife.paths import get_config_path
 from slife.tools._config_io import read_config, write_config
@@ -104,82 +104,6 @@ def validate_gguf_path(path: str) -> tuple[bool, str]:
     if p.suffix.lower() not in (".gguf", ".bin", ".ggml"):
         return False, f"file suffix is not .gguf / .bin / .ggml: {p}"
     return True, str(p)
-
-
-# ── Embedder reload ───────────────────────────────────────────────────
-
-# Imported lazily to avoid circular imports at module level.
-# ``Any``: a module object whose ``_embedder`` global reload_embedder mutates —
-# either the running server (``__main__`` under ``python -m``) or a plain
-# import of ``slife.plugins.memdb.server``.
-_embedder_module: Any = None
-
-
-def _get_embedder_module() -> Any:
-    """Return the server module whose ``_embedder`` global the tools mutate.
-
-    The memdb server runs via ``python -m slife.plugins.memdb.server``, which
-    executes the module's code in the ``__main__`` namespace WITHOUT
-    populating ``sys.modules["slife.plugins.memdb.server"]``. A plain import
-    here would therefore build a SECOND module object (re-running the module)
-    — mutating its ``_embedder`` would never reach the running server, leaving
-    semantic search disabled forever after ``memory_set_embedding``. Prefer
-    the real ``__main__`` when it IS the server; fall back to a normal import
-    for tests / external callers.
-    """
-    global _embedder_module
-    if _embedder_module is None:
-        import sys
-        main = sys.modules.get("__main__")
-        if (
-            main is not None
-            and getattr(main, "__spec__", None) is not None
-            and getattr(main.__spec__, "name", "") == "slife.plugins.memdb.server"
-        ):
-            _embedder_module = main
-        else:
-            import slife.plugins.memdb.server as _embedder_module
-    return _embedder_module
-
-
-async def reload_embedder() -> dict:
-    """Recreate the global _embedder from the current config.
-
-    Returns a status dict suitable for returning from a tool.
-    """
-    from slife.plugins.memdb.embeddings import EmbeddingClient  # local import
-
-    mod = _get_embedder_module()
-    mod._embedder = EmbeddingClient.from_config()
-
-    e = mod._embedder
-    if e.available:
-        logger.info(
-            "embedder_reloaded backend=%s model=%s dim=%d",
-            e.backend, e._model, e.dimension,
-        )
-        return {
-            "status": "ok",
-            "backend": e.backend,
-            "model": e._model,
-            "dimension": e.dimension,
-            "available": True,
-            "message": f"enabled {e.backend} backend: {e._model} (dim={e.dimension})",
-        }
-    else:
-        logger.info("embedder_reloaded state=disabled")
-        return {
-            "status": "ok",
-            "backend": "none",
-            "model": "",
-            "dimension": e.dimension,
-            "available": False,
-            "message": (
-                "Embedding not configured — semantic search unavailable, "
-                "keyword search (FTS5) still works. Configure with "
-                "memory_set_embedding: gguf / transformer / api."
-            ),
-        }
 
 
 def make_check_report() -> dict:

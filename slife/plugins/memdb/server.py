@@ -4,6 +4,10 @@ Each turn (user message + assistant response) is an independent,
 immutable row.  No sessions, no lifecycle — just turns.
 Restore loads the most recent N turns by rowid.
 
+The semantic-search lifecycle (embedder, index-completeness gate, index
+drainer) is owned by ``SemanticManager`` (semantic.py).  This module only
+wires the store and the MCP tools to it — no scattered lifecycle globals.
+
 Usage:
     uv run python -m slife.plugins.memdb.server       # auto-assigned port (Streamable HTTP)
     uv run python -m slife.plugins.memdb.server --port 9877   # fixed port
@@ -20,18 +24,16 @@ from slife.paths import get_data_dir
 from slife.plugins.memdb.store import SessionStore, _clamp_limit
 from slife.plugins.memdb.embeddings import EmbeddingClient
 from slife.plugins.memdb.search import merge_hybrid
+from slife.plugins.memdb.semantic import SemanticManager
 from slife.server_utils import create_plugin_server
+
 
 @asynccontextmanager
 async def _memdb_lifespan(_app):
-    """Eagerly initialise the store + embedder, then serve; graceful shutdown.
+    """Initialise the store, then serve; graceful shutdown.
 
-    NOT lazy: ``__memory_save_turn`` runs on every turn, so the embedding
-    model would be loaded on the first save anyway — deferring it there
-    made the very first save block (and time out the harness's 10s window).
-    Load it up front so the first save is fast.  Best-effort: if the
-    embedder fails to load, the server still starts (keyword search works)
-    and later reindex/check paths retry.
+    Best-effort: if the store fails to init, the server still starts and
+    retries lazily on the first tool call.
     """
     try:
         await _ensure_store()
@@ -40,21 +42,12 @@ async def _memdb_lifespan(_app):
     try:
         yield
     finally:
-        global _store, _reindex_task, _reinit_task
-        if _reinit_task is not None and not _reinit_task.done():
-            _reinit_task.cancel()
-            try:
-                await _reinit_task
-            except asyncio.CancelledError:
-                pass
-            _reinit_task = None
-        if _reindex_task is not None and not _reindex_task.done():
-            _reindex_task.cancel()
-            try:
-                await _reindex_task
-            except asyncio.CancelledError:
-                pass
-            _reindex_task = None
+        global _store, _manager
+        # Stop the semantic drainer BEFORE closing the store connection —
+        # a canceled drainer must never write to a closed handle.
+        if _manager is not None:
+            await _manager.close()
+            _manager = None
         if _store is not None:
             await _store.close()
             _store = None
@@ -73,46 +66,9 @@ mcp, _log_path, logger = create_plugin_server(
 )
 
 _store: SessionStore | None = None
-_embedder: EmbeddingClient | None = None
+_manager: SemanticManager | None = None
 _db_path: Path | None = None
 _init_lock: asyncio.Lock | None = None
-_reindex_task: asyncio.Task | None = None  # type: ignore[valid-type]
-_reinit_task: asyncio.Task | None = None  # store re-init after model change
-_semantic_ready: bool = False  # index-completeness gate for hybrid search
-
-#: Max consecutive reindex batches with zero progress before giving up — a
-#: persistently failing embedder must not spin forever (REVIEW M7).
-_MAX_REINDEX_NO_PROGRESS = 20
-
-
-def _hybrid_fallback_reason() -> str:
-    """Return a human-readable reason why hybrid search fell back to FTS5."""
-    if not _semantic_ready:
-        return ("hybrid degraded to fts5 — semantic index is building/rebuilding. "
-                "Semantic search resumes automatically when indexing finishes.")
-    if _embedder is None:
-        return "hybrid degraded to fts5 — embedding backend not initialized"
-    if not _embedder.available:
-        cfg = _embedder._backend
-        if cfg == "gguf":
-            if _embedder._gguf_path:
-                if Path(_embedder._gguf_path).exists():
-                    return ("hybrid degraded to fts5 — llama-cpp-python not installed. "
-                            "Run: uv pip install llama-cpp-python")
-                return ("hybrid degraded to fts5 — GGUF file not found. "
-                        "Download the model and set its path with memory_set_embedding")
-            return "hybrid degraded to fts5 — no GGUF model path configured"
-        if cfg == "api":
-            return ("hybrid degraded to fts5 — API key is an unresolved ${VAR} "
-                    "placeholder or missing. Configure a real API key with "
-                    "memory_set_embedding backend=api, or switch to a local model: "
-                    "memory_set_embedding backend=gguf")
-        return ("hybrid degraded to fts5 — embedding backend unavailable. "
-                "Run memory_check_embedding for details; configure with "
-                "memory_set_embedding")
-    # embedder.available is True but embed_one() returned None
-    return ("hybrid degraded to fts5 — query embedding generation failed "
-            "(API error or timeout). Check the API key, or switch to a local model")
 
 
 def _get_db_path() -> Path:
@@ -132,9 +88,8 @@ def _get_db_path() -> Path:
 def _get_init_lock() -> asyncio.Lock:
     """Return (creating if needed) the lock guarding store lifecycle.
 
-    Serializes store creation, the post-model-change rebuild, and store
-    writes so a rebuild can neither orphan a concurrently-built store nor
-    close a connection a save is still using.
+    Serializes store creation and store writes so a concurrent
+    ``_ensure_store`` can never build two stores.
     """
     global _init_lock
     if _init_lock is None:
@@ -143,7 +98,7 @@ def _get_init_lock() -> asyncio.Lock:
 
 
 async def _ensure_store() -> SessionStore:
-    """Lazy-init the store and embedder inside FastMCP's event loop.
+    """Lazy-init the store inside FastMCP's event loop.
 
     This MUST run inside ``mcp.run()``'s event loop — ``asyncio.run()``
     creates a temporary loop that gets destroyed, causing ``aiosqlite``
@@ -158,7 +113,7 @@ async def _ensure_store() -> SessionStore:
 
 async def _ensure_store_locked() -> SessionStore:
     """Build the store if needed. Caller must already hold ``_init_lock``."""
-    global _store, _embedder
+    global _store, _manager
     if _store is not None:
         return _store
 
@@ -167,67 +122,27 @@ async def _ensure_store_locked() -> SessionStore:
 
     from slife.logfmt import elapsed
 
-    # Create the embedder from config, but do NOT block on the model
-    # load: the store (diary + FTS) is set up now with dim 0 (no vec0
-    # table), so save_turn never waits on the embedding model.  The
-    # model loads in the background; when it's ready, the vec0 table is
-    # added (migration) and the index is (re)built — semantic search
-    # stays gated off until then.
-    _embedder = EmbeddingClient.from_config()
-
-    # The vec0 dimension is known up front for gguf/api (model name or
-    # explicit dim), so the table can be created/kept immediately.  A
-    # transformer's real dimension is only known once the model loads —
-    # defer its vec0 to the background warm (dim 0 here), which adds it
-    # with the real width.  Saves never wait either way (they skip the
-    # embed until the model is loaded).
-    defer_vec0 = bool(_embedder.available and _embedder.backend == "transformer")
-    dim = 0 if defer_vec0 else (_embedder.dimension if _embedder.available else 0)
+    # Probe the embedding config just to size the vec0 table up front
+    # (gguf/api know their dim; transformer defers until the model loads).
+    # The model itself is loaded later by SemanticManager.enable() in the
+    # background — saves never wait on it.
+    probe = EmbeddingClient.from_config()
+    defer_vec0 = bool(probe.available and probe.backend == "transformer")
+    dim = 0 if defer_vec0 else (probe.dimension if probe.available else 0)
     model_id = (
-        f"{_embedder.backend}:{_embedder._model}"
-        if _embedder.available and not defer_vec0 else ""
+        f"{probe.backend}:{probe._model}"
+        if probe.available and not defer_vec0 else ""
     )
 
     _store = SessionStore(_db_path)
     with elapsed("store_setup", logger, level=logging.INFO, db=str(_db_path)):
         await _store.setup(embedding_dim=dim, embedding_model=model_id)
-    logger.info(
-        "embeddings_ready=%s backend=%s model=%s",
-        _embedder.available, _embedder.backend, _embedder._model,
-    )
+    logger.info("embeddings_configured=%s backend=%s model=%s",
+                probe.available, probe.backend, probe._model)
 
-    if _embedder.available:
-        asyncio.create_task(_warm_embedder_then_reindex())
-
-    await _ensure_index_complete()
+    _manager = SemanticManager(_store)
+    asyncio.create_task(_manager.start())
     return _store
-
-
-async def _warm_embedder_then_reindex() -> None:
-    """Load the embedding model in the background, then add the vec0 table
-    and (re)build the index.
-
-    Saves never wait on this: the store was set up with dim 0 (no vec0), so
-    a save just persists the turn data and skips embedding.  Once the model
-    loads, ``reconfigure_for_embedding`` re-runs the schema on the existing
-    connection (never reconnects) so the migration creates the vec0 table
-    with the real dimension without disrupting concurrent saves, then the
-    index-completeness gate reindexes every turn and flips on.
-    """
-    try:
-        if _embedder is not None and _embedder.available:
-            await _embedder.ensure_loaded()
-        if _store is not None and _embedder is not None and _embedder.available:
-            model_id = f"{_embedder.backend}:{_embedder._model}"
-            await _store.reconfigure_for_embedding(
-                embedding_dim=_embedder.dimension,
-                embedding_model=model_id,
-            )
-        await _ensure_index_complete()
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        logger.warning("warm_embedder_error err=%s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -248,18 +163,10 @@ async def __memory_save_turn(
     completed_at: str | None = None,
 ) -> str:
     try:
-        # Hold the lifecycle lock across the save so a concurrent
-        # model-change rebuild (memory_set_embedding / memory_set_enabled)
-        # cannot close the store's connection mid-save and lose the turn.
+        # Hold the lifecycle lock across the save so a concurrent store
+        # build cannot race the insert.
         async with _get_init_lock():
             store = await _ensure_store_locked()
-            # The harness guarantees a consistent turn (no orphaned tool_calls,
-            # alternating roles) via Conversation._ensure_turn_consistent before
-            # it ever calls here — the storage layer persists what it receives.
-            # save_turn only inserts — embedding is internal to the plugin
-            # (the background reindex embeds off the save path, so a slow
-            # GGUF embed of a large turn never trips the harness's 10s
-            # save timeout).
             rowid = await store.save_turn(
                 user_message=user_message, messages=messages,
                 images=images, token_count=token_count,
@@ -267,12 +174,10 @@ async def __memory_save_turn(
                 channel=channel, created_at=created_at,
                 completed_at=completed_at,
             )
-        # Kick (or continue) the background reindex so the just-saved turn
-        # gets embedded without waiting for the next search to discover it.
-        try:
-            await _ensure_index_complete()
-        except Exception:
-            logger.debug("reindex_kick_after_save_error rowid=%s", rowid)
+        # A saved turn is new work for the index drainer — wake it
+        # (non-blocking event.set(), no DB work).
+        if _manager is not None:
+            _manager.on_turn_saved()
         return json.dumps({"rowid": rowid, "status": "saved"}, ensure_ascii=False)
     except Exception as e:
         logger.exception("save_turn_failed user_msg=%.80s", user_message)
@@ -288,247 +193,6 @@ async def __memory_get_recent_turns(limit: int = 50) -> str:
     except Exception as e:
         logger.exception("get_recent_turns_failed limit=%d", limit)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-async def _count_unembedded() -> int:
-    """Quick count of turns needing reindex (non-blocking if store is ready)."""
-    if _store is None:
-        return 0
-    try:
-        return await _store.count_unembedded()
-    except Exception:
-        return 0
-
-
-async def _count_all_embedded() -> int:
-    """Count already-embedded turns (non-blocking if store is ready)."""
-    if _store is None:
-        return 0
-    try:
-        assert _store._conn is not None
-        cursor = await _store._conn.execute(
-            "SELECT COUNT(DISTINCT diary_rowid) FROM diary_semantic",
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else 0
-    except Exception:
-        return 0
-
-
-async def _ensure_index_complete() -> None:
-    """Ensure every diary turn is embedded for the current model.
-
-    The index-completeness gate: semantic search is only enabled once
-    ``count_unembedded() == 0``.  If any turns lack embeddings, the gate
-    is switched OFF and a background reindex is started (or resumed); the
-    reindex flips it back ON when it finishes.  Called on store init and
-    at the start of every search / check, so an interrupted or stalled
-    reindex retries on the next call — the index converges to complete and
-    partial semantic results are never returned.
-    """
-    global _reindex_task, _semantic_ready
-    # Semantic stays OFF until the model is actually loaded — "disabled" is
-    # immediate, even if the index was complete from a previous session.
-    if _embedder is None or not _embedder.available:
-        _semantic_ready = False
-        return
-    # A freshly reloaded embedder (memory_set_embedding / memory_set_enabled
-    # / restart) has no model materialised yet, and with nothing left to
-    # reindex nothing would ever load it — the gate would stay locked off
-    # forever (loaded only flips on the first embed, which the gate blocks).
-    # Load the model here so the gate can open.
-    if not _embedder.loaded:
-        if not await _embedder.load():
-            _semantic_ready = False
-            return
-    store = _store
-    if store is None:
-        return
-    try:
-        unembedded = await store.count_unembedded()
-    except Exception as e:
-        logger.debug("count_unembedded_error err=%s", e)
-        return
-    if unembedded == 0:
-        _semantic_ready = True
-        return
-    _semantic_ready = False
-    if _reindex_task is not None and not _reindex_task.done():
-        return  # a reindex is already running
-    _reindex_task = asyncio.create_task(_background_reindex())
-    logger.info("reindex_started unembedded=%d", unembedded)
-
-
-async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
-    """Core reindex logic — shared by background reindex tasks.
-
-    Returns a dict with total, indexed, remaining, complete.
-    """
-    store = await _ensure_store()
-    if not _embedder or not _embedder.available:
-        # If embedding is configured but the runtime check fails
-        # (e.g. llama-cpp-python not installed yet), keep retrying.
-        # If embedding was never configured, exit cleanly — the task
-        # will be restarted by memory_set_embedding when needed.
-        from slife.plugins.memdb.embedding_config import read_embedding_config
-        cfg = read_embedding_config()
-        if cfg and cfg.get("enabled", True):
-            return {"complete": False, "reason": "embedder unavailable, will retry"}
-        return {"complete": True, "reason": "embedder not configured"}
-
-    if reset:
-        cleared = await store.clear_all_embeddings()
-        logger.info("reindex_reset cleared=%d", cleared)
-
-    total = await store.count_unembedded()
-    if total == 0:
-        return {"total": 0, "indexed": 0, "remaining": 0, "complete": True}
-
-    from slife.plugins.memdb.store import (
-        _chunk_text, _split_chunks_to_token_limit, _turn_text_for_embedding,
-    )
-
-    turns = await store.get_unembedded_turns(limit=batch_limit)
-    indexed = 0
-    for turn in turns:
-        try:
-            embed_text = _turn_text_for_embedding(
-                turn["user_message"],
-                json.loads(turn.get("messages", "[]")),
-            )
-            if embed_text.strip():
-                chunks = _chunk_text(embed_text)
-                chunks = _split_chunks_to_token_limit(chunks, _embedder.max_tokens)
-                if chunks:
-                    embeddings = await _embedder.embed(chunks)
-                    # Commit atomically ONLY when every chunk produced a
-                    # vector — a partial set (embed failed / backend error)
-                    # leaves the turn fully unembedded so the next pass
-                    # retries it, instead of half-indexing it (the
-                    # NOT-IN-unembedded query mistakes partial chunks for
-                    # complete). Counted only on full success so the M7
-                    # no-progress bound still trips on a persistently
-                    # failing embedder.
-                    if (
-                        embeddings
-                        and len(embeddings) == len(chunks)
-                        and all(emb for emb in embeddings)
-                    ):
-                        await store.replace_embedding_chunks(
-                            diary_rowid=turn["rowid"],
-                            summary="", tags="",
-                            created_at=turn["created_at"],
-                            embeddings=embeddings,
-                        )
-                        indexed += 1
-        except Exception as e:
-            logger.debug("reindex_skip rowid=%s err=%s", turn["rowid"], e)
-
-    remaining = await store.count_unembedded()
-    return {
-        "total": total, "indexed": indexed,
-        "remaining": remaining, "complete": remaining == 0,
-    }
-
-
-async def _background_reindex(reset: bool = False) -> None:
-    """Run _reindex_impl in small batches until complete.
-
-    Called by ``_reinit_store_after_model_change`` after the vec0 table
-    has been migrated (or confirmed unchanged).  Each batch is small
-    (5 turns) so it doesn't block the event loop.  Flips the
-    ``_semantic_ready`` gate back ON when the index is complete.
-    """
-    global _semantic_ready
-    import asyncio as _asyncio
-
-    batches = 0
-    if reset:
-        try:
-            cleared = await _reindex_impl(reset=True, batch_limit=0)
-            logger.info("background_reindex_reset cleared=%d", cleared.get("total", 0))
-        except Exception as e:
-            logger.warning("background_reindex_reset_error err=%s", e)
-    try:
-        no_progress = 0
-        while True:
-            result = await _reindex_impl(reset=False, batch_limit=5)
-            batches += 1
-            if result.get("complete"):
-                _semantic_ready = True
-                logger.info("background_reindex_done batches=%d", batches)
-                return
-            if result.get("indexed", 0) == 0:
-                # Nothing embedded this batch — a persistently failing
-                # embedder would spin forever; bound it (REVIEW M7).
-                no_progress += 1
-                if no_progress >= _MAX_REINDEX_NO_PROGRESS:
-                    logger.warning(
-                        "background_reindex_stalled batches=%d remaining=%s "
-                        "— embedder failing persistently, giving up",
-                        batches, result.get("remaining"),
-                    )
-                    return
-            else:
-                no_progress = 0
-            await _asyncio.sleep(0.5)
-    except Exception as e:
-        logger.warning("background_reindex_aborted err=%s", e)
-
-
-async def _reinit_store_after_model_change() -> None:
-    """Close + re-setup the store so migration runs, then reindex.
-
-    Must be called after ``reload_embedder()`` when the embedding model
-    changed.  Runs as a background task — ``memory_set_embedding``
-    returns immediately while this runs asynchronously.
-
-    The whole swap runs under ``_init_lock`` so it never races a
-    concurrent ``_ensure_store`` (which would orphan the store it builds)
-    or an in-flight save (which would lose a turn when the old connection
-    is closed).  After migration, the background reindex populates the
-    vec0 table with new-model vectors.
-    """
-    global _store
-    if _embedder is None:
-        return
-
-    async with _get_init_lock():
-        # Null out the global so any caller that re-acquires the lock
-        # afterwards sees the fresh store.  The old connection is closed
-        # below while the lock is held, so no save is mid-flight on it.
-        old_store = _store
-        _store = None
-
-        if old_store is not None:
-            try:
-                await old_store.close()
-            except Exception as e:
-                logger.debug("store_close_error err=%s", e)
-            del old_store
-
-        model_id = (
-            f"{_embedder.backend}:{_embedder._model}"
-            if _embedder.available else ""
-        )
-        logger.info(
-            "store_reinit_start db=%s model=%s dim=%d",
-            _db_path, model_id, _embedder.dimension,
-        )
-
-        new_store = SessionStore(_db_path)  # type: ignore[arg-type]
-        from slife.logfmt import elapsed
-        with elapsed("store_reinit", logger, level=logging.INFO, db=str(_db_path)):
-            await new_store.setup(
-                embedding_dim=_embedder.dimension,
-                embedding_model=model_id,
-            )
-        _store = new_store
-        logger.info("store_reinited model=%s dim=%d", model_id, _embedder.dimension)
-
-    # Gate OFF + background reindex populates the (possibly migrated) vec0
-    # table; the gate flips back ON when every turn is embedded.
-    await _ensure_index_complete()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -622,10 +286,8 @@ async def memory_search(
     until: str | None = None,
 ) -> str:
     store = await _ensure_store()
-    # Trigger a reindex if any turns lack embeddings (retries a stalled /
-    # interrupted index) — the _semantic_ready gate keeps results keyword-only
-    # until the index is complete, so no partial semantic results are served.
-    await _ensure_index_complete()
+    # Search only READS the semantic gate — no side effects, no reindex kick.
+    manager = _manager
     mode = mode.lower()
     if mode not in ("grep", "fts5", "hybrid", "time"):
         mode = "hybrid"
@@ -650,41 +312,49 @@ async def memory_search(
     try:
         if mode == "grep":
             hits = await store.search_grep(pattern=query, limit=limit,
-                                             since=since, until=until)
+                                           since=since, until=until)
             return json.dumps({"mode": "grep", "query": query, "results": hits,
                                "hint": "" if hits else f"no memories contain '{query}'"},
                               ensure_ascii=False, indent=2)
 
         if mode == "fts5":
             hits = await store.search_keyword(query=query, limit=limit,
-                                                since=since, until=until)
+                                              since=since, until=until)
             return json.dumps({"mode": "fts5", "query": query, "results": hits,
                                "hint": "" if hits else f"no memories related to '{query}'"},
                               ensure_ascii=False, indent=2)
 
         # hybrid
         keyword_hits = await store.search_keyword(query=query, limit=limit * 2,
-                                                     since=since, until=until)
+                                                  since=since, until=until)
         semantic_hits: list[dict] = []
         semantic_available = False
-        # Semantic is only served once the index is complete for the current
-        # model — while a full reindex is building, hybrid degrades to fts5.
-        if _semantic_ready and _embedder and _embedder.available:
-            emb = await _embedder.embed_one(query)
+        if (
+            manager is not None
+            and manager.semantic_ready
+            and manager.embedder is not None
+            and manager.embedder.available
+        ):
+            emb = await manager.embedder.embed_one(query)
             if emb:
                 semantic_hits = await store.search_semantic(embedding=emb,
-                                                              limit=limit * 2,
-                                                              since=since, until=until)
+                                                            limit=limit * 2,
+                                                            since=since, until=until)
                 semantic_available = True
 
         merged = merge_hybrid(keyword_hits, semantic_hits)
 
-        # Build diagnostic hint when hybrid mode degrades to keyword-only.
         # Surface the degradation reason even when no keyword hits survive —
         # an empty result is exactly when a silent fallback would mislead.
         hint = ""
         if not semantic_available:
-            hint = _hybrid_fallback_reason()
+            if manager is not None and manager.semantic_ready:
+                hint = ("hybrid degraded to fts5 — query embedding generation "
+                        "failed (API error or timeout). Check the API key, or "
+                        "switch to a local model")
+            else:
+                hint = manager.reason if manager else (
+                    "hybrid degraded to fts5 — embedding backend unavailable")
             if not merged:
                 hint += " — no keyword (fts5) matches either"
         elif not merged:
@@ -715,28 +385,12 @@ async def memory_summarize(
     store = await _ensure_store()
     try:
         await store.update_summary(rowid=rowid, summary=summary, tags=tags)
-
-        if summary and _embedder and _embedder.available:
+        if summary and _manager is not None:
             try:
-                emb = await _embedder.embed_one(summary)
-                if emb:
-                    assert store._conn is not None
-                    cursor = await store._conn.execute(
-                        "SELECT tags, created_at FROM diary WHERE rowid = ?",
-                        (rowid,),
-                    )
-                    row = await cursor.fetchone()
-                    if row:
-                        # Replace old chunks (summary is short — one chunk)
-                        await store._clear_chunks(rowid)
-                        await store.upsert_embedding(
-                            diary_rowid=rowid, chunk_index=0,
-                            summary=summary, tags=tags or row["tags"] or "",
-                            created_at=row["created_at"], turn_embedding=emb,
-                        )
+                # Re-embed from the summary, serialized with the drainer.
+                await _manager.reembed_summary(rowid, summary, tags or "")
             except Exception as e:
                 logger.debug("embedding_upsert_skipped err=%s", e)
-
         return json.dumps({"status": "updated", "rowid": rowid}, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("summarize_failed rowid=%s", rowid)
@@ -744,37 +398,56 @@ async def memory_summarize(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Embedding config tools (unchanged)
+# Embedding config tools
 # ═══════════════════════════════════════════════════════════════════════
 
 
 @mcp.tool(
     name="memory_check_embedding",
     description=(
-        "Embedding backend status + reindex progress: backend, model, dimension, "
-        "available, unembedded count, hints."
+        "Embedding backend status + index state: backend, model, dimension, "
+        "available, semantic_ready (the search gate), state, unembedded, hint."
     ),
 )
 async def memory_check_embedding() -> str:
     from slife.plugins.memdb.embedding_config import make_check_report
+    await _ensure_store()
+    manager = _manager
     try:
-        # Retry a stalled/incomplete index on check, and report the gate.
-        await _ensure_index_complete()
         report = make_check_report()
-        unembedded = await _count_unembedded()
-        report["unembedded"] = unembedded
-        report["semantic_ready"] = _semantic_ready
-        if unembedded > 0 and report.get("available"):
-            report["hint"] = (
-                report.get("hint", "") +
-                f" Background indexing in progress — {unembedded} turns pending embedding."
-            ).strip()
-        elif unembedded == 0 and not _semantic_ready and report.get("available"):
-            report["hint"] = (
-                report.get("hint", "") +
-                " Semantic index is complete but the gate is off — the embedding "
-                "model failed to load; keyword search still works."
-            ).strip()
+        if manager is not None:
+            report["semantic_ready"] = manager.semantic_ready
+            report["state"] = manager.state
+            report["reason"] = manager.reason
+            report["unembedded"] = await manager.unembedded()
+            e = manager.embedder
+            if e is not None:
+                # live embedder facts override the config probe
+                report["backend"] = e.backend
+                report["model"] = e._model
+                report["dimension"] = e.dimension
+                report["available"] = e.available
+                report["loaded"] = e.loaded
+            # hint by state
+            state = manager.state
+            if state == "ready":
+                report["hint"] = (
+                    f"{report.get('backend', '')} embedding model ready: "
+                    f"{report.get('model', '')} (dim={report.get('dimension')})"
+                )
+            elif state in ("loading", "indexing"):
+                report["hint"] = (
+                    f"Semantic index building — {report.get('unembedded', 0)} "
+                    "turns pending embedding. Keyword search remains available."
+                )
+            elif state == "stalled":
+                report["hint"] = report.get("reason", "Semantic index stalled.")
+            elif state == "disabled" and report.get("configured"):
+                report["hint"] = (
+                    "Semantic search disabled. Re-enable with "
+                    "memory_set_enabled true, or reconfigure with "
+                    "memory_set_embedding."
+                )
         return json.dumps(report, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("check_embedding_failed")
@@ -786,7 +459,7 @@ async def memory_check_embedding() -> str:
     description=(
         "Configure the embedding backend (gguf/transformer/api) for hybrid search. "
         "Existing turns auto-reindex in the background; keyword search stays "
-        "available meanwhile."
+        "available meanwhile. BLOCKS until the model is loaded."
     ),
 )
 async def memory_set_embedding(
@@ -808,8 +481,7 @@ async def memory_set_embedding(
             (``"cpu"`` / ``"cuda"``). Auto-detect when empty.
     """
     from slife.plugins.memdb.embedding_config import (
-        write_embedding_config, validate_gguf_path,
-        get_first_provider_api_key, reload_embedder,
+        write_embedding_config, validate_gguf_path, get_first_provider_api_key,
     )
     backend = backend.lower().strip()
     if backend not in ("gguf", "transformer", "api"):
@@ -840,32 +512,18 @@ async def memory_set_embedding(
             cfg["dim"] = dim
     try:
         write_embedding_config(cfg)
-        status = await reload_embedder()
+        await _ensure_store()  # builds the store + manager if needed
+        manager = _manager
+        assert manager is not None
+        status = await manager.enable()  # BLOCKING: model load + migration
         status["backend"] = backend
         status["model"] = model
         if gguf_path:
             status["gguf_path"] = gguf_path
-
-        # Fire store reinit + reindex as a background task so
-        # memory_set_embedding returns immediately.  The task closes
-        # the old store connection, re-runs setup (triggering vec0 table
-        # migration if the model dimension or identity changed), then
-        # reindexes all turns with the new model.  Semantic search is
-        # gated OFF until that reindex completes.
-        global _reinit_task, _reindex_task, _semantic_ready
-        if _reinit_task and not _reinit_task.done():
-            _reinit_task.cancel()
-        if _reindex_task and not _reindex_task.done():
-            _reindex_task.cancel()
-        _semantic_ready = False
-        _reinit_task = asyncio.create_task(_reinit_store_after_model_change())
-        logger.info("background_reinit_and_reindex_started")
         status["hint"] = (
-            "Background: migrating the vector table and rebuilding the index. "
-            "Keyword search remains available; semantic search resumes when "
-            "indexing finishes."
+            "Semantic search resumes automatically when indexing finishes; "
+            "keyword search remains available."
         )
-
         return json.dumps(status, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("set_embedding_failed backend=%s model=%s", backend, model)
@@ -876,11 +534,12 @@ async def memory_set_embedding(
     name="memory_set_enabled",
     description=(
         "Enable/disable semantic (hybrid) search. Disabling preserves embeddings; "
-        "re-enabling re-indexes turns saved meanwhile."
+        "re-enabling re-indexes turns saved meanwhile. Enable blocks until the "
+        "model is loaded."
     ),
 )
 async def memory_set_enabled(enabled: bool) -> str:
-    from slife.plugins.memdb.embedding_config import set_embedding_enabled, reload_embedder
+    from slife.plugins.memdb.embedding_config import set_embedding_enabled
     try:
         ok = set_embedding_enabled(enabled)
         if not ok:
@@ -888,33 +547,24 @@ async def memory_set_enabled(enabled: bool) -> str:
                 {"error": "No embedding configured. Run memory_set_embedding first."},
                 ensure_ascii=False,
             )
-        status = await reload_embedder()
+        store = await _ensure_store()
+        manager = _manager
+        assert manager is not None
 
         if enabled:
-            # Go through the same reinit path as memory_set_embedding: the
-            # model may have been changed manually in the json5 config, so
-            # the store must re-run setup (the vec0 migration detects a
-            # model/dimension change and drops the table) before the gate is
-            # re-enabled — otherwise old-model vectors would be served against
-            # the new model's queries.
-            global _reinit_task, _reindex_task, _semantic_ready
-            if _reinit_task and not _reinit_task.done():
-                _reinit_task.cancel()
-            if _reindex_task and not _reindex_task.done():
-                _reindex_task.cancel()
-            _semantic_ready = False
-            _reinit_task = asyncio.create_task(_reinit_store_after_model_change())
+            status = await manager.enable()
             status["message"] = "Semantic search enabled."
             status["hint"] = (
-                "Background: verifying the index for the current model "
-                "(detects manual json5 config changes). Semantic search "
-                "resumes when indexing finishes."
+                "Verifying the index for the current model (detects manual "
+                "json5 config changes). Semantic search resumes when indexing "
+                "finishes."
             )
         else:
-            embedded_count = await _count_all_embedded()
+            status = await manager.disable()
             status["message"] = "Semantic search disabled. Keyword search still available."
-            if embedded_count > 0:
-                status["preserved"] = f"{embedded_count} existing embeddings preserved."
+            embedded = await store.count_embedded()
+            if embedded > 0:
+                status["preserved"] = f"{embedded} existing embeddings preserved."
         return json.dumps(status, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("set_enabled_failed enabled=%s", enabled)
@@ -927,11 +577,11 @@ async def memory_set_enabled(enabled: bool) -> str:
 def main():
     """Run the slife-memdb server on Streamable HTTP transport.
 
-    The store + embedder are initialised eagerly in the lifespan (inside
-    FastMCP's event loop — this avoids the aiosqlite connection being
-    bound to a temporary loop that gets destroyed by asyncio.run()):
-    enabled → the embedding model is loaded up front so the first save is
-    fast; disabled → nothing is loaded.
+    The store is initialised eagerly in the lifespan (inside FastMCP's event
+    loop — this avoids the aiosqlite connection being bound to a temporary
+    loop that gets destroyed by asyncio.run()).  The semantic manager is
+    started as a background task — the model loads without blocking startup,
+    and saves never wait on it.
     """
     import argparse
 

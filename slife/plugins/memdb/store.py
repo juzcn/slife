@@ -803,7 +803,8 @@ class SessionStore:
         Returns lightweight rows: rowid, user_message, messages, created_at.
         """
         cursor = await self._c.execute(
-            """SELECT d.rowid, d.user_message, d.messages, d.created_at
+            """SELECT d.rowid, d.user_message, d.messages, d.summary, d.tags,
+                      d.created_at
                FROM diary d
                WHERE d.rowid NOT IN (
                    SELECT DISTINCT diary_rowid FROM diary_semantic
@@ -821,6 +822,14 @@ class SessionStore:
                WHERE d.rowid NOT IN (
                    SELECT DISTINCT diary_rowid FROM diary_semantic
                )""",
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def count_embedded(self) -> int:
+        """Count distinct turns that have at least one embedding chunk."""
+        cursor = await self._c.execute(
+            "SELECT COUNT(DISTINCT diary_rowid) FROM diary_semantic",
         )
         row = await cursor.fetchone()
         return row[0] if row else 0

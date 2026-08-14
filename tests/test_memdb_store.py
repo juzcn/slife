@@ -1013,3 +1013,55 @@ class TestSessionStoreHasEmbedding:
 
         result = await store.has_embedding(diary_rowid=1)
         assert result is False
+
+
+class TestSessionStoreCountEmbedded:
+    """count_embedded — distinct turns that have ≥1 embedding chunk."""
+
+    @pytest.mark.asyncio
+    async def test_counts_distinct_diary_rowids(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone = AsyncMock(return_value=(7,))  # row[0] index access
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        assert await store.count_embedded() == 7
+
+    @pytest.mark.asyncio
+    async def test_zero_when_no_rows(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone = AsyncMock(return_value=None)
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        assert await store.count_embedded() == 0
+
+
+class TestSessionStoreGetUnembeddedTurnsColumns:
+    """get_unembedded_turns must return summary/tags so a rebuild preserves
+    them via replace_embedding_chunks."""
+
+    @pytest.mark.asyncio
+    async def test_selects_summary_and_tags(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        row = {
+            "rowid": 3, "user_message": "hi", "messages": "[]",
+            "summary": "sum", "tags": "tag", "created_at": "2026-01-01T00:00:00+00:00",
+        }
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[row])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        turns = await store.get_unembedded_turns(limit=10)
+
+        assert len(turns) == 1
+        assert turns[0]["summary"] == "sum"
+        assert turns[0]["tags"] == "tag"
+        sql = mock_conn.execute.await_args.args[0]
+        assert "summary" in sql and "tags" in sql
