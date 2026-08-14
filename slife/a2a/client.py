@@ -34,7 +34,7 @@ from slife.a2a import wire
 
 
 class DuplicateAgentError(RuntimeError):
-    """Raised when another instance with the same agent-id is on the MQTT mesh."""
+    """Raised when another instance with the same agent-name is on the MQTT mesh."""
     pass
 
 logger = logging.getLogger(__name__)
@@ -137,10 +137,10 @@ class A2AClient:
         self._adapter.on_reconnect = self._publish_presence
 
         # Subscribe to peer presence before publishing our own,
-        # so we can detect duplicate agent-ids already on the mesh.
+        # so we can detect duplicate agent-names already on the mesh.
         await self._adapter.subscribe("Slife/+/presence")
 
-        # Check for duplicate agent-id — collect existing presences before
+        # Check for duplicate agent-name — collect existing presences before
         # announcing ourselves.  Peers re-publish presence every heartbeat
         # interval, so a short window can miss one that announced earlier;
         # 5s is a best-effort compromise against blocking connect too long.

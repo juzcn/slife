@@ -75,7 +75,7 @@ class MQTTAdapter(TransportAdapter):
 
     def __init__(self, client_id: str):
         import os as _os
-        # Append PID so two instances with the same agent-id don't
+        # Append PID so two instances with the same agent-name don't
         # fight over the MQTT client-id at the protocol level.
         # Duplicate detection is handled at the application layer.
         self._agent_name = client_id
