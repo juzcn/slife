@@ -131,7 +131,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
-| A2A | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
+| A2A | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch` |
@@ -206,7 +206,7 @@ All plugins — built-in and auto-discovered third-party alike — run with a **
 ### A2A — Agent-to-Agent (mesh)
 
 The A2A protocol (JSON-RPC operations and Message/Task/AgentCard data shapes mirroring the official a2a-python reference interface) runs over a pluggable transport **binding** — currently MQTT. The **`a2a` plugin** hosts the LLM-visible tools and the `A2AClient`, and only starts when the broker is reachable:
-- **Mesh tools** (one uniform `a2a_` prefix): `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`.
+- **Mesh tools** (one uniform `a2a_` prefix): `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`.
 - **Local workers** are NOT A2A: `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task`. A worker runs one task at a time; a sync send to a busy worker is auto-queued as async (task_id returned) and reported.
 
 A2A's only implemented transport binding is MQTT — setting `transport` to any other value disables A2A with a warning instead of crashing startup. All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.

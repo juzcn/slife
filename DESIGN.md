@@ -198,7 +198,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Skills | `skill.py` | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli.py` | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api.py` | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
-| A2A | `a2a` plugin | one uniform `a2a_` prefix (hosted in the plugin, mesh-only) — `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
+| A2A | `a2a` plugin | one uniform `a2a_` prefix (hosted in the plugin, mesh-only) — `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | Subagent | `subagent.py` | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` (no prefix; local workers, not A2A) |
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch` |

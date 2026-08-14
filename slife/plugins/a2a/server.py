@@ -73,6 +73,7 @@ _connect_lock = asyncio.Lock()
 _inbound_tasks: list[dict] = []
 _presence_events: list[dict] = []
 _cancellations: list[dict] = []
+_task_completions: list[dict] = []  # outbound async results → auto-push to harness
 _MAX_QUEUED = 500
 
 
@@ -97,6 +98,7 @@ async def _ensure_connected() -> A2AClient:
         client.on_incoming_task(_on_incoming_task)
         client.on_incoming_cancel(_on_incoming_cancel)
         client.on_agent_change(_on_agent_change)
+        client.on_task_result(_on_task_result)
         await client.connect()
         _client = client
         logger.info("a2a_plugin_client_connected id=%s", client.agent_name)
@@ -115,6 +117,29 @@ async def _on_incoming_task(msg: AgentMessage) -> None:
         "content": msg.content,
         "reply_to": msg.reply_to or "",
         "correlation_id": msg.correlation_id or "",
+    })
+
+
+async def _on_task_result(corr_id: str, result: str, cancelled: bool) -> None:
+    """Queue an outbound async-task completion for auto-push to the harness.
+
+    The result arrived over MQTT (the peer published to our result topic);
+    the harness drains this and pushes it into the conversation so the agent
+    never needs to poll or block on ``a2a_subscribe_task``.
+    """
+    peer = ""
+    try:
+        from slife.a2a.task_store import get_store
+        rec = get_store().get(corr_id)
+        if rec is not None:
+            peer = rec.agent_name
+    except Exception:
+        pass
+    if len(_task_completions) >= _MAX_QUEUED:
+        _task_completions.pop(0)
+    _task_completions.append({
+        "corr_id": corr_id, "result": result,
+        "cancelled": cancelled, "peer": peer,
     })
 
 
@@ -184,7 +209,8 @@ async def a2a_send_task(agent_name: str, task: str) -> str:
 @mcp.tool(
     name="a2a_send_task_async",
     description="Send a task to a remote A2A mesh peer without waiting — returns a "
-    "task_id. Poll with a2a_get_task_result. Requires the A2A mesh (MQTT broker).",
+    "task_id. The result is delivered automatically when the peer completes "
+    "it. Requires the A2A mesh (MQTT broker).",
 )
 async def a2a_send_task_async(agent_name: str, task: str) -> str:
     """Send a task without waiting — returns the correlation/task id."""
@@ -252,20 +278,6 @@ async def a2a_list_tasks(agent_name: str = "", status: str = "") -> str:
 
 
 @mcp.tool(
-    name="a2a_subscribe_task",
-    description="Wait for a remote async task to complete and return its result. "
-    "Requires the A2A mesh (MQTT broker).",
-)
-async def a2a_subscribe_task(
-    agent_name: str, task_id: str, timeout: float = 120.0,
-) -> str:
-    """Wait for an async task to complete and return its result."""
-    client = await _ensure_connected()
-    result = await client.subscribe_task(task_id, timeout=timeout)
-    return result if result is not None else "pending"
-
-
-@mcp.tool(
     name="a2a_agent_card",
     description="Return a mesh peer's card (agent_name, status), or "
     "'unknown'. Requires the A2A mesh (MQTT broker).",
@@ -301,19 +313,27 @@ async def a2a_broadcast(task: str) -> str:
 
 @mcp.tool(
     name="__a2a_drain_incoming",
-    description="Drain queued inbound A2A tasks + presence events + cancellations. "
-    "Harness-only.",
+    description="Drain queued inbound A2A tasks + presence events + cancellations "
+    "+ async task completions. Harness-only.",
 )
 async def __a2a_drain_incoming() -> str:
-    """Drain queued inbound tasks + presence events + cancellations (harness only)."""
+    """Drain queued inbound tasks + presence events + cancellations + async
+    task completions (harness only)."""
     tasks = list(_inbound_tasks)
     _inbound_tasks.clear()
     presence = list(_presence_events)
     _presence_events.clear()
     cancellations = list(_cancellations)
     _cancellations.clear()
+    completions = list(_task_completions)
+    _task_completions.clear()
     return json.dumps(
-        {"tasks": tasks, "presence": presence, "cancellations": cancellations},
+        {
+            "tasks": tasks,
+            "presence": presence,
+            "cancellations": cancellations,
+            "task_completions": completions,
+        },
         ensure_ascii=False,
     )
 
@@ -359,6 +379,7 @@ async def __a2a_status() -> str:
             "tasks": len(_inbound_tasks),
             "presence": len(_presence_events),
             "cancellations": len(_cancellations),
+            "task_completions": len(_task_completions),
         },
     }, ensure_ascii=False)
 

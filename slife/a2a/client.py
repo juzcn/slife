@@ -105,6 +105,11 @@ class A2AClient:
         # Completed async task results (corr_id → result_text)
         self._completed_tasks: dict[str, str] = {}
 
+        # Callbacks fired when an outbound async task's result arrives (MQTT)
+        # — the plugin queues these so the harness can auto-push the result
+        # to the conversation instead of the agent having to poll or block.
+        self._task_result_callbacks: list[Callable] = []
+
         # Status exposed via AgentCard
         self._status: str = "idle"
 
@@ -246,6 +251,11 @@ class A2AClient:
     def on_agent_change(self, callback: AgentChangeCallback) -> None:
         """Register a callback fired when agents come online or go offline."""
         self._agent_change_callbacks.append(callback)
+
+    def on_task_result(self, callback) -> None:
+        """Register a callback fired when an outbound async task's result
+        arrives over MQTT (corr_id, result_text, cancelled)."""
+        self._task_result_callbacks.append(callback)
 
     def on_incoming_task(self, callback: IncomingTaskCallback) -> None:
         """Register a callback for inbound A2A tasks."""
@@ -437,53 +447,6 @@ class A2AClient:
                 agent_name=agent_name, status=status, transport="mqtt",
             )
         ]
-
-    async def subscribe_task(
-        self, task_id: str, timeout: float = 120.0,
-    ) -> str | None:
-        """Wait for an existing task to complete, returning its result.
-
-        If the task is still pending (has a live Future), awaits it.
-        If the task already completed, returns the stored result immediately.
-        If the task is unknown, returns ``None``.
-        """
-        # Check completed store first
-        if task_id in self._completed_tasks:
-            return self._completed_tasks.pop(task_id)
-
-        # Check pending — the future might still be alive
-        future = self._pending_tasks.get(task_id)
-        if future is not None:
-            try:
-                result = await asyncio.wait_for(future, timeout=timeout)
-                from slife.a2a.task_store import get_store
-                get_store().record_result(task_id, result)
-                return result
-            except asyncio.TimeoutError:
-                from slife.a2a.task_store import get_store
-                get_store().record_error(task_id, "timeout")
-                raise TimeoutError(f"Subscribe to task '{task_id}' timed out after {timeout}s")
-
-        # Subscribe via MQTT progress topic — wait for result on result topic
-        progress_topic = f"Slife/{self._agent_name}/tasks/result"
-        try:
-            await self._adapter.subscribe(progress_topic)
-        except Exception:
-            pass  # Already subscribed
-
-        # Poll with backoff
-        deadline = _time.monotonic() + timeout
-        while _time.monotonic() < deadline:
-            if task_id in self._completed_tasks:
-                result = self._completed_tasks.pop(task_id)
-                from slife.a2a.task_store import get_store
-                get_store().record_result(task_id, result)
-                return result
-            await asyncio.sleep(0.5)
-
-        from slife.a2a.task_store import get_store
-        get_store().record_error(task_id, "timeout")
-        raise TimeoutError(f"Subscribe to task '{task_id}' timed out after {timeout}s")
 
     async def _publish_presence(self, status_override: str | None = None) -> None:
         """Publish our presence (called on connect, heartbeat, status change).
@@ -722,6 +685,10 @@ class A2AClient:
                 get_store().record_cancel(corr_id)
             else:
                 get_store().record_result(corr_id, result_text)
+            # Auto-push: notify the harness (which queues a completion for
+            # the inbox) so the agent doesn't have to poll or block on the
+            # async result.
+            await self._notify_task_result(corr_id, result_text, cancelled)
             logger.debug("a2a_result_stored_async corr_id=%s", corr_id)
 
     # ── Notify ─────────────────────────────────────────────────────────
@@ -733,3 +700,13 @@ class A2AClient:
                 await cb(card, event)
             except Exception as e:
                 logger.warning("a2a_agent_change_cb_error err=%s", e)
+
+    async def _notify_task_result(
+        self, corr_id: str, result: str, cancelled: bool,
+    ) -> None:
+        """Fire all task-result callbacks (auto-push of an async completion)."""
+        for cb in self._task_result_callbacks:
+            try:
+                await cb(corr_id, result, cancelled)
+            except Exception as e:
+                logger.warning("a2a_task_result_cb_error err=%s", e)

@@ -31,7 +31,6 @@ def _fake_client():
     client.get_task_result = MagicMock(return_value="done")
     client.cancel_task = AsyncMock(return_value="cancelled")
     client.broadcast = AsyncMock(return_value=["peer-1:corr-1"])
-    client.subscribe_task = AsyncMock(return_value="sub-result")
     client.get_agent_card = MagicMock(return_value=MagicMock(
         agent_name="peer-1", status="idle",
     ))
@@ -174,6 +173,18 @@ class TestHarnessTools:
         assert out["tasks"][0]["correlation_id"] == "cid-1"
         assert len(out["presence"]) == 1
         assert out["presence"][0]["event"] == "online"
+
+    @pytest.mark.asyncio
+    async def test_task_completion_queued_and_drained(self):
+        """An outbound async result is queued by _on_task_result and drained
+        for auto-push to the harness."""
+        plugin._task_completions.clear()
+        await plugin._on_task_result("cid-1", "the answer", False)
+        out = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
+        assert out["task_completions"] == [
+            {"corr_id": "cid-1", "result": "the answer",
+             "cancelled": False, "peer": ""},
+        ]
         # Queue is cleared after drain
         assert plugin._inbound_tasks == []
         assert plugin._presence_events == []
@@ -248,7 +259,7 @@ class TestHarnessTools:
         for name in (
             "a2a_send_task", "a2a_send_task_async", "a2a_list_agents",
             "a2a_get_task_result", "a2a_cancel_task", "a2a_list_tasks",
-            "a2a_subscribe_task", "a2a_agent_card", "a2a_broadcast",
+            "a2a_agent_card", "a2a_broadcast",
         ):
             assert name in by_name, f"{name} missing from plugin tools"
             assert "harness-only" not in by_name[name].lower(), name
@@ -386,8 +397,13 @@ class TestA2aStatusTool:
                                       "content": "do X", "reply_to": "t",
                                       "correlation_id": "c1"})
         plugin._cancellations.append({"type": "cancel", "corr_id": "c2"})
+        plugin._task_completions.append({"corr_id": "c3", "result": "ok",
+                                         "cancelled": False, "peer": ""})
         out = json.loads(await getattr(plugin, "__a2a_status")())
-        assert out["queued"] == {"tasks": 1, "presence": 0, "cancellations": 1}
+        assert out["queued"] == {
+            "tasks": 1, "presence": 0,
+            "cancellations": 1, "task_completions": 1,
+        }
 
     @pytest.mark.asyncio
     async def test_status_does_not_trigger_connect(self):

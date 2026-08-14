@@ -129,7 +129,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
-| A2A | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_subscribe_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
+| A2A | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch` |
@@ -204,7 +204,7 @@ active_model: "deepseek/deepseek-v4-pro",
 ### A2A — 智能体间通信（网格）
 
 A2A 协议（JSON-RPC 操作与 Message/Task/AgentCard 数据形状，镜像官方 a2a-python 参考接口）运行在可插拔的传输 **binding** 上——当前为 MQTT。**`a2a` 插件**承载 LLM 可见工具与 `A2AClient`，仅在 broker 可达时启动：
-- **网格工具**（统一 `a2a_` 前缀）：`a2a_send_task`、`a2a_send_task_async`、`a2a_get_task_result`、`a2a_cancel_task`、`a2a_subscribe_task`、`a2a_list_agents`、`a2a_list_tasks`、`a2a_agent_card`、`a2a_broadcast`。
+- **网格工具**（统一 `a2a_` 前缀）：`a2a_send_task`、`a2a_send_task_async`、`a2a_get_task_result`、`a2a_cancel_task`、`a2a_list_agents`、`a2a_list_tasks`、`a2a_agent_card`、`a2a_broadcast`。
 - **本地 worker 不是 A2A**：`spawn_subagent`、`list_subagents`、`stop_subagent`、`subagent_send_task`、`subagent_send_task_async`、`subagent_get_task_result`、`subagent_list_tasks`、`subagent_cancel_task`。一个 worker 一次处理一个任务；对忙碌 worker 的同步发送会自动转异步入队（返回 task_id）并告知。
 
 A2A 唯一已实现的传输 binding 是 MQTT——把 `transport` 设为任何其他值会禁用 A2A 并打印警告，而不是导致启动崩溃。所有消息——人类输入、微信、MQTT、子智能体结果——通过单一收件箱队列逐个处理。

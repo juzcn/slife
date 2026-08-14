@@ -1713,6 +1713,25 @@ class AgentService:
                     await self._notify_a2a_activity(
                         "agent_change", event=pev.get("event", ""), card=card,
                     )
+
+                # Outbound async-task results (auto-push) — the peer's result
+                # arrived over MQTT; surface it so the agent doesn't need to
+                # poll or block on subscribe.
+                for cev in data.get("task_completions", []):
+                    corr_id = cev.get("corr_id", "")
+                    result = cev.get("result", "")
+                    peer = cev.get("peer", "") or corr_id or "peer"
+                    if not result:
+                        continue
+                    state = "cancelled" if cev.get("cancelled") else "completed"
+                    await self.inbox.post(AgentMessage(
+                        source=AgentName(peer),
+                        content=(
+                            f"Peer **{peer}** {state} async task "
+                            f"(ID: `{corr_id}`):\n\n{result}"
+                        ),
+                    ))
+                    logger.debug("a2a_task_completed_autopushed peer=%s task=%s", peer, corr_id)
             except asyncio.CancelledError:
                 break
             except Exception as e:

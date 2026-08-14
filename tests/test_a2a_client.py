@@ -209,6 +209,28 @@ class TestIncomingCancel:
         assert get_store().get("cid-1").status == "cancelled"
         assert client.get_task_result("cid-1") == "stopped by peer"
 
+    @pytest.mark.asyncio
+    async def test_async_result_fires_on_task_result(self):
+        """An outbound async result fires on_task_result (auto-push)."""
+        from slife.a2a import wire
+
+        client = self._client()
+        got: list[tuple[str, str, bool]] = []
+
+        async def _cb(corr_id, result, cancelled):
+            got.append((corr_id, result, cancelled))
+
+        client.on_task_result(_cb)
+
+        task = wire.Task.completed("cid-9", "the answer")
+        payload = json.dumps(wire.task_result_envelope("cid-9", task))
+        await client._handle_result(
+            TransportMessage(topic="Slife/jack/tasks/result", payload=payload),
+        )
+
+        assert got == [("cid-9", "the answer", False)]
+        assert client.get_task_result("cid-9") == "the answer"
+
 
 class _EchoThenBlockAdapter:
     """Adapter that yields our own presence echo once, then blocks."""
