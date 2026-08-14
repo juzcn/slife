@@ -301,7 +301,7 @@ Processes communicate through environment variables:
 
 | Variable | Purpose |
 |----------|---------|
-| `SLIFE_SESSION_ID` / `SLIFE_AGENT_ID` | Log correlation, agent identity |
+| `SLIFE_SESSION_ID` / `SLIFE_AGENT_NAME` | Log correlation, agent identity |
 | `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` | Directory overrides |
 | `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES / MQTT) |
 | `SLIFE_MEMFILES_URL` | Public ngrok URL (set inside the memfiles plugin process) |
@@ -440,9 +440,9 @@ The LLM-facing `a2a_*` tools live in the a2a plugin (one uniform prefix; the MCP
 
 ### MQTT Mesh
 
-- Topics: `Slife/<agent_id>/presence`, `Slife/<agent_id>/tasks/inbox`, `Slife/<agent_id>/tasks/result`
+- Topics: `Slife/<agent_name>/presence`, `Slife/<agent_name>/tasks/inbox`, `Slife/<agent_name>/tasks/result`
 - Presence heartbeat every 15 s (configurable); peers silent for 45 s are pruned. LWT publishes `{"status":"offline"}` (QoS 1) so crashes are visible
-- Client id is `<agent_id>-<pid>` to allow multiple processes per agent id
+- Client id is `<agent_name>-<pid>` to allow multiple processes per agent id
 - Duplicate agent detection: after subscribing, the client listens 1.5 s for an existing presence with the same id and exits with a clear error rather than splitting the identity
 - Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; if the probe fails, the a2a plugin is not started (A2A disabled) and this is reported via `system_health`
 - The mesh connects **eagerly** when the plugin starts (lifespan hook) so presence is announced at launch; a failed eager connect is tolerated and mesh tools attempt a lazy connect on demand
@@ -704,7 +704,7 @@ slife/
     task_store.py      #   In-memory mesh task records
     card.py            #   AgentCard + format_presence_line (TUI/context shared)
     config.py          #   A2A config (transport validation)
-    identity.py        #   AgentId, HUMAN/WECHAT sentinels, AgentMessage
+    identity.py        #   AgentName, HUMAN/WECHAT sentinels, AgentMessage
   subagent/            # Local workers (agent workers, not A2A)
     headless.py        #   Headless worker-scoped JSON-RPC process
     identity.py        #   SUBAGENT unified-inbox source sentinel

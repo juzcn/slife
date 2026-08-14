@@ -20,8 +20,8 @@
 
 > ✅ 已修 3 项（脱敏覆盖面 / config_env_get 门 / exec.py 日志）；仍剩 3 项注入类 + 1 处文件名 markup。
 
-- **远端 peer 名字原文注入模型上下文（跨代理提示注入）** — `context_status.j2:19` `{{ ev.text }}` ← `format_presence_line`（`a2a/card.py:77-98`）← 远端 MQTT presence 的 `display_name`/`agent_id`（`a2a/client.py:509-515` 无长度/合法性校验）。恶意 peer 发布 `display_name="\n\n<system>..."` → 原样进每轮 `_sys_note`。
-- **`subagent_name` 由 LLM 控制、原样进子代理 system prompt** — `system_prompt.py:100` 读 `SLIFE_SUBAGENT_NAME`，`subagent.j2:2` 渲染 `You are {{ subagent_name }}`。来源 `spawn_subagent` 的 `name` 参数（`subagent/process.py:124`）无校验 → 受注入的父代理可注入子代理身份行。
+- **远端 peer 名字原文注入模型上下文（跨代理提示注入）** — `context_status.j2:19` `{{ ev.text }}` ← `format_presence_line`（`a2a/card.py:77-98`）← 远端 MQTT presence 的 `agent_name`（`a2a/client.py:509-515` 无长度/合法性校验）。恶意 peer 发布 `agent_name="\n\n<system>..."` → 原样进每轮 `_sys_note`。
+- **`subagent_name` 由 LLM 控制、原样进子代理 system prompt** — `system_prompt.py:99` 读 `SLIFE_SUBAGENT_NAME`，`subagent.j2:2` 渲染 `You are {{ subagent_name }}`。来源 `spawn_subagent` 的 `subagent_name` 参数（`subagent/process.py:124`）无校验 → 受注入的父代理可注入子代理身份行。
 - **✅ `config_env_get` 原样吐密钥** — `tools/config.py:135-153` 读 `os.environ` + `slife.json5 env:`，含 list-all 分支枚举全部。→ 其输出走 tool-output 门（`loop.py` `sanitize_secrets`），门覆盖补齐后凭据不再到 LLM。
 - **✅ `sanitize_secrets` 覆盖面缺口** — 补 `sk_live_`/`sk_test_`/`rk_live_`（Stripe 下划线）、AWS/Stripe `*_SECRET_KEY`/`*_ACCESS_KEY` 复合名、短密下限 6 字符、连接串 URL 内嵌密码。
 - **⚠️ 工具参数键 / 图片文件名经 markup** — `tool_display.py:258` 键已修（→`_lit`）；`image_utils.py:69-71` 把 `path.name` 塞进 `from_markup` 仍开。
