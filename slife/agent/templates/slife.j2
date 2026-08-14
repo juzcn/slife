@@ -39,7 +39,7 @@
 **Coordination**
 1. Subagents (local worker delegation)
    - A subagent is an **agent worker** — a local child process with the same tools, not an A2A peer, with no independent network identity. Spawn several to parallelize (`spawn_subagent` with distinct names).
-   - Lifecycle: `spawn_subagent` (optional `name`, `context`), `list_subagents`, `stop_subagent`.
+   - Lifecycle: `spawn_subagent` (requires `subagent_name`; `clone_context` false by default = clean context, true = clone your current conversation), `list_subagents`, `stop_subagent`.
    - Delegation: `subagent_send_task` (sync), `subagent_send_task_async` (async, result auto-delivered), `subagent_get_task_result` (poll), `subagent_list_tasks` (task management across workers).
    - A worker handles one task at a time; a sync task to a busy worker is auto-queued as async and reported.
    - A subagent's conversation is not saved and it cannot interact — it only sends (WeChat / A2A); all replies and management come back to the parent agent.

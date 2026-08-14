@@ -122,13 +122,13 @@ class SpawnSubagentTool(Tool):
                     "identity, used by list_subagents / subagent_send_task."
                 ),
             },
-            "clean_context": {
+            "clone_context": {
                 "type": "boolean",
-                "default": True,
+                "default": False,
                 "description": (
-                    "Start the worker with a clean (fresh) context. "
-                    "Set to false to clone the current conversation "
-                    "(a trimmed copy of this agent's context)."
+                    "Clone the main agent's current conversation (a trimmed "
+                    "copy) into the worker's context. Default false = the "
+                    "worker starts with a clean (empty) context."
                 ),
             },
         },
@@ -136,7 +136,7 @@ class SpawnSubagentTool(Tool):
     }
 
     async def execute(
-        self, subagent_name: str = "", clean_context: bool = True, **kwargs,
+        self, subagent_name: str = "", clone_context: bool = False, **kwargs,
     ) -> str:
         manager, hint = _manager_or_hint()
         if manager is None:
@@ -150,7 +150,7 @@ class SpawnSubagentTool(Tool):
                 '(e.g. "researcher", "coder-1").'
             )
 
-        context_source = "clean" if clean_context else "cloned"
+        context_source = "cloned" if clone_context else "clean"
         context_messages = (
             _serialize_cloned_context(getattr(self, "_ctx", None))
             if context_source == "cloned" else None

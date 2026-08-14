@@ -161,7 +161,7 @@ class TestSpawnSubagentTool:
             assert "Error" in result
 
     @pytest.mark.asyncio
-    async def test_spawn_clean_context_default_true(self):
+    async def test_spawn_clone_context_default_false(self):
         """Spawn defaults to a clean context (no cloned messages)."""
         mock_mgr = MagicMock()
         mock_mgr.spawn = AsyncMock(return_value="sub-3")
@@ -175,8 +175,8 @@ class TestSpawnSubagentTool:
         assert kwargs["context_messages"] is None
 
     @pytest.mark.asyncio
-    async def test_spawn_clean_context_false_clones(self):
-        """clean_context=False passes the parent conversation messages to spawn."""
+    async def test_spawn_clone_context_true_clones(self):
+        """clone_context=True passes the parent conversation messages to spawn."""
         from slife.agent.conversation import Conversation
         from slife.config import Config, ModelConfig
         from slife.tools.context import ToolContext
@@ -195,7 +195,7 @@ class TestSpawnSubagentTool:
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SpawnSubagentTool()
             object.__setattr__(tool, "_ctx", ToolContext(conversation=conv, config=cfg))
-            await tool.execute(subagent_name="worker", clean_context=False)
+            await tool.execute(subagent_name="worker", clone_context=True)
 
         kwargs = mock_mgr.spawn.call_args.kwargs
         assert kwargs["context_source"] == "cloned"

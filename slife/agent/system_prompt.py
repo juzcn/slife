@@ -98,7 +98,7 @@ def _render_context(config: Config) -> dict:
         # ── 子 agent 身份（agent.j2 不使用）──
         "subagent_name": os.environ.get("SLIFE_SUBAGENT_NAME", ""),
         "created_at": os.environ.get("SLIFE_SUBAGENT_CREATED_AT", ""),
-        "context_source": os.environ.get("SLIFE_SUBAGENT_CONTEXT", "pure"),
+        "context_source": os.environ.get("SLIFE_SUBAGENT_CONTEXT", "clean"),
     }
 
 
