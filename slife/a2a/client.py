@@ -226,6 +226,20 @@ class A2AClient:
 
     # ── Discovery ─────────────────────────────────────────────────────
 
+    def own_card(self) -> AgentCard:
+        """Return this agent's own mesh card (self-view).
+
+        ``list_agents`` deliberately excludes self — it is the peer cache.
+        Agent-facing tooling like ``a2a_list_agents`` prepends this card so
+        the agent can tell itself apart from peers instead of mistaking a
+        same-named peer (e.g. a second ``slife`` process) for itself.
+        """
+        return AgentCard(
+            agent_id=self._agent_id,
+            display_name=self._config.agent_name,
+            status=self._status,
+        )
+
     async def list_agents(self) -> list[AgentCard]:
         """Return all known online peer agents."""
         return [card for card, _ in self._peers.values()]

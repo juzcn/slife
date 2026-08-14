@@ -25,6 +25,9 @@ def _fake_client():
     client.list_agents = AsyncMock(return_value=[
         MagicMock(agent_id="peer-1", display_name="Peer One", status="idle"),
     ])
+    client.own_card = MagicMock(return_value=MagicMock(
+        agent_id="self-1", display_name="Self One", status="idle",
+    ))
     client.get_task_result = MagicMock(return_value="done")
     client.cancel_task = AsyncMock(return_value="cancelled")
     client.broadcast = AsyncMock(return_value=["peer-1:corr-1"])
@@ -59,8 +62,12 @@ class TestPluginTools:
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
             result = await getattr(plugin, "a2a_list_agents")()
         data = json.loads(result)
-        assert data[0]["agent_id"] == "peer-1"
-        assert data[0]["display_name"] == "Peer One"
+        # Own card is first — the agent must see itself to tell it apart
+        # from a same-named peer (e.g. a second "slife" process).
+        assert data[0]["agent_id"] == "self-1"
+        assert data[0]["display_name"] == "Self One"
+        assert data[1]["agent_id"] == "peer-1"
+        assert data[1]["display_name"] == "Peer One"
 
     @pytest.mark.asyncio
     async def test_a2a_broadcast(self):

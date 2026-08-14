@@ -1015,7 +1015,8 @@ class TestGetRecentTurns:
         con = sqlite3.connect(str(db))
         con.execute(
             "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
-            "tags TEXT, channel TEXT, created_at TEXT, completed_at TEXT, "
+            "tags TEXT, images TEXT NOT NULL DEFAULT '', channel TEXT, "
+            "created_at TEXT, completed_at TEXT, "
             "who_helped TEXT, what_model TEXT, token_count INT)"
         )
         for i in range(1, n + 1):

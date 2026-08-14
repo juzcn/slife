@@ -171,7 +171,7 @@ Every conversation turn is permanently recorded in SQLite (`~/.slife/<agent>.db`
 
 Embedding backends: local GGUF (BGE-M3, offline), HuggingFace transformers, or OpenAI-compatible API. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
-Each turn also records two timestamps — the user's input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers in the chat (user messages and assistant responses respectively). Databases created before `completed_at` are migrated once with `python scripts/migrate_memdb_completed_at.py` (no in-plugin ALTER); fresh databases get the column automatically.
+Each turn also records two timestamps — the user's input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers in the chat (user messages and assistant responses respectively). Databases created before `completed_at` are migrated once with `python scripts/migrate_memdb_completed_at.py` (no in-plugin ALTER); fresh databases get the column automatically. Image attachments (`images`) use the same standalone-script pattern — `python scripts/migrate_memdb_images.py` for pre-existing databases.
 
 ### Autonomous Heartbeat
 

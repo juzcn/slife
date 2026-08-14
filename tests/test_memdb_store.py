@@ -399,59 +399,6 @@ class TestSessionStoreSaveTurn:
         assert args[4] == "2026-08-12T14:32:09+08:00"
         assert args[5] == "2026-08-12T14:35:40+08:00"
 
-    @pytest.mark.asyncio
-    async def test_save_turn_with_embedder(self):
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = MagicMock()
-        mock_cursor.lastrowid = 1
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        mock_conn.commit = AsyncMock()
-        store._conn = mock_conn
-
-        mock_embedder = MagicMock()
-        mock_embedder.available = True
-        mock_embedder.max_tokens = 8192
-        mock_embedder.embed = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
-
-        rowid = await store.save_turn(
-            user_message="Hello",
-            embedder=mock_embedder,
-        )
-
-        assert rowid == 1
-        mock_embedder.embed.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_save_turn_chunks_long_text(self):
-        """Long turns are chunked — embedder.embed() receives multiple chunks."""
-        store = SessionStore(Path("/tmp/test.db"))
-        mock_conn = AsyncMock()
-        mock_cursor = MagicMock()
-        mock_cursor.lastrowid = 1
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        mock_conn.commit = AsyncMock()
-        store._conn = mock_conn
-
-        mock_embedder = MagicMock()
-        mock_embedder.available = True
-        mock_embedder.max_tokens = 8192
-        # Return one embedding per chunk
-        mock_embedder.embed = AsyncMock(return_value=[[0.1] * 1024] * 3)
-
-        long_msg = "\n".join([f"line {i}" for i in range(500)])
-        rowid = await store.save_turn(
-            user_message=long_msg,
-            embedder=mock_embedder,
-        )
-
-        assert rowid == 1
-        # embed() should have been called with multiple chunks
-        mock_embedder.embed.assert_called_once()
-        chunks = mock_embedder.embed.call_args[0][0]
-        assert len(chunks) > 1  # Long text → multiple chunks
-
-
 class TestSessionStoreGetTurn:
     """Tests for get_turn."""
 

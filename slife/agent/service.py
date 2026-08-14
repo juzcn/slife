@@ -1385,7 +1385,11 @@ class AgentService:
                 timeout=10.0,
             )
         except asyncio.TimeoutError:
-            logger.warning("memdb_save_timeout reason=first_save_loads_embedding_model")
+            # The save is a fast insert (embedding is deferred to the memdb
+            # plugin's background reindex) — a timeout now means the MCP
+            # channel itself is slow, not a first-save model load.  The row
+            # may still be written server-side.
+            logger.warning("memdb_save_timeout reason=save_call_exceeded_timeout")
         except Exception as e:
             logger.warning("memdb_save_error err=%s", e)
 

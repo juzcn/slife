@@ -358,6 +358,7 @@ Every turn permanently recorded as an independent row — no session concept, a 
 |--------|---------|
 | `user_message` | What the user said |
 | `messages` | Assistant response as OpenAI JSON array (thinking, tool calls, results, text) |
+| `images` | User image attachments as a JSON array (local paths / https URLs) |
 | `summary` | 1–2 sentence gist (LLM-written) |
 | `tags` | Comma-separated topic tags |
 | `created_at` | ISO 8601 with timezone (B-tree indexed) — user input time (Enter-press moment, threaded from the TUI) |
@@ -366,11 +367,11 @@ Every turn permanently recorded as an independent row — no session concept, a 
 | `who_helped` / `what_model` | Agent identity + model used |
 | `token_count` | Tokens consumed by this turn |
 
-Supporting structures: `diary_fts` (FTS5 content-sync table over message/summary/tags/channel with insert/delete triggers), `diary_semantic` (sqlite-vec `vec0` table: embedding + rowid + chunk index + summary/tags/created_at), and `diary_meta` (key-value store tracking the embedding model identity for migration detection).
+Supporting structures: `diary_fts` (FTS5 content-sync table over message/summary/tags/channel with insert/update/delete triggers — the update trigger keeps `memory_summarize`'s summary/tags visible to keyword search), `diary_semantic` (sqlite-vec `vec0` table: embedding + rowid + chunk index + summary/tags/created_at), and `diary_meta` (key-value store tracking the embedding model identity for migration detection).
 
 Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the harness-only `__memory_save_turn` tool. The save-side invariant is enforced by the harness: a turn with an orphaned `tool_call` is repaired (`_ensure_turn_consistent`) before it reaches the plugin, so the diary never persists an incomplete pair.
 
-`completed_at` is written for every new turn; databases that predate the column are migrated **once** by `scripts/migrate_memdb_completed_at.py` — a standalone script that adds the column, backfills `completed_at = created_at`, and pulls `created_at` earlier by a random 0–5 minutes to approximate the user-input moment. Deliberately **no** in-plugin ALTER migration: fresh databases get the column from `schema.sql`, existing ones are migrated by the script (run it once per DB, then restart).
+`completed_at` is written for every new turn; databases that predate the column are migrated **once** by `scripts/migrate_memdb_completed_at.py` — a standalone script that adds the column, backfills `completed_at = created_at`, and pulls `created_at` earlier by a random 0–5 minutes to approximate the user-input moment. Deliberately **no** in-plugin ALTER migration: fresh databases get the column from `schema.sql`, existing ones are migrated by the script (run it once per DB, then restart). The `images` column (user image attachments) follows the same pattern — `scripts/migrate_memdb_images.py` adds it to pre-existing databases; fresh databases get it from `schema.sql`.
 
 ### Search
 
@@ -397,7 +398,7 @@ Three backends, configurable at runtime via `memory_set_embedding`:
 | Transformer (local) | `sentence-transformers` | BAAI/bge-m3 | 1024 |
 | API (OpenAI-compatible) | Provider key | text-embedding-3-small | 1536 |
 
-Backend selection priority: GGUF file present → transformer requested → API key present → disabled. Long turns are chunked at paragraph boundaries (~2000 chars ≈ 500 tokens, 1-paragraph overlap); the embedded text is the user message plus all assistant/tool contents. Configuration lives in `slife.json5` under `memdb.embedding`. Model/dimension migration drops and recreates the `vec0` table automatically. Reindexing runs in the background in small batches without blocking; while it runs, semantic search is gated OFF (`_semantic_ready`), so no partial results are served — it flips back ON only when every turn is embedded. Both `memory_set_embedding` and `memory_set_enabled(True)` re-run the store setup, so the vec0 migration also detects a model/dimension change made by a manual `slife.json5` edit before the gate re-enables (new turns embed incrementally on save).
+Backend selection priority: GGUF file present → transformer requested → API key present → disabled. Long turns are chunked at paragraph boundaries (~2000 chars ≈ 500 tokens, 1-paragraph overlap); the embedded text is the user message plus all assistant/tool contents. Configuration lives in `slife.json5` under `memdb.embedding`. Model/dimension migration drops and recreates the `vec0` table automatically. Reindexing runs in the background in small batches without blocking; while it runs, semantic search is gated OFF (`_semantic_ready`), so no partial results are served — it flips back ON only when every turn is embedded. Both `memory_set_embedding` and `memory_set_enabled(True)` re-run the store setup, so the vec0 migration also detects a model/dimension change made by a manual `slife.json5` edit before the gate re-enables. Saves are **insert-only**: `save_turn` never embeds on the save path (a slow GGUF embed of a large turn previously tripped the harness's 10s save timeout); `__memory_save_turn` kicks the background reindex right after each insert, so a turn becomes semantically searchable shortly after save once the gate re-opens.
 
 ### Session Restore
 

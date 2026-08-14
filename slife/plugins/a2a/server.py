@@ -195,13 +195,14 @@ async def a2a_send_task_async(agent_id: str, task: str) -> str:
 
 @mcp.tool(
     name="a2a_list_agents",
-    description="List known online A2A mesh peers as JSON agent cards. "
+    description="List known online A2A mesh agents as JSON agent cards — "
+    "the first entry is this agent itself, the rest are remote peers. "
     "Requires the A2A mesh (MQTT broker).",
 )
 async def a2a_list_agents() -> str:
-    """List known online A2A mesh peers as JSON agent cards."""
+    """List mesh agents — this agent's own card first, then remote peers."""
     client = await _ensure_connected()
-    cards = await client.list_agents()
+    cards = [client.own_card()] + await client.list_agents()
     return json.dumps(
         [{"agent_id": str(c.agent_id), "display_name": c.display_name, "status": c.status}
          for c in cards],

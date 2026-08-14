@@ -48,7 +48,7 @@ class TestA2AConfigFromDict:
         cfg = A2AConfig.from_dict(None, agent_id="my-agent")
         assert cfg.agent_id == "my-agent"
         assert cfg.enabled is False
-        assert cfg.agent_name == ""
+        assert cfg.agent_name == "my-agent"  # name = the --agent value
         assert cfg.broker_host == "localhost"
         assert cfg.broker_port == 1883
 
@@ -56,17 +56,18 @@ class TestA2AConfigFromDict:
         cfg = A2AConfig.from_dict({})
         assert cfg.enabled is True  # user has mqtt section → probe at runtime
         assert cfg.agent_id == "slife"  # default agent_id
-        assert cfg.agent_name == ""
+        assert cfg.agent_name == "slife"  # default name too
 
     def test_user_becomes_agent_id(self):
         cfg = A2AConfig.from_dict({}, agent_id="bob")
         assert cfg.agent_id == "bob"
         assert cfg.enabled is True  # user has mqtt section → probe at runtime
 
-    def test_agent_name_from_data(self):
+    def test_agent_name_ignores_config_uses_agent_id(self):
+        """agent_name comes ONLY from --agent, never from the json5 section."""
         cfg = A2AConfig.from_dict({"agent_name": "My Agent"}, agent_id="bob")
         assert cfg.agent_id == "bob"
-        assert cfg.agent_name == "My Agent"
+        assert cfg.agent_name == "bob"  # config's "My Agent" is ignored
 
     def test_broker_defaults_from_empty_dict(self):
         cfg = A2AConfig.from_dict({}, agent_id="agent-1")

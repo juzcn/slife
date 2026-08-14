@@ -345,13 +345,18 @@ class TestStoreLifecycleLocking:
         store.save_turn = _fake_save_turn
         srv._ensure_store_locked = AsyncMock(return_value=store)
         srv._embedder = MagicMock()
-
-        out = await getattr(srv, "__memory_save_turn")(
-            user_message="hi", images=[r"C:\cache\a.png"],
-        )
+        reindex = AsyncMock()
+        with patch.object(srv, "_ensure_index_complete", reindex):
+            out = await getattr(srv, "__memory_save_turn")(
+                user_message="hi", images=[r"C:\cache\a.png"],
+            )
 
         assert json.loads(out)["rowid"] == 7
         assert captured["images"] == [r"C:\cache\a.png"]
+        # save_turn is insert-only (embedding is internal/reindex); the
+        # harness's 10s save timeout can no longer be tripped by a slow embed.
+        assert "embedder" not in captured
+        reindex.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_reinit_holds_lock_during_swap(self, restore_root_logger):

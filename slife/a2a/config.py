@@ -31,7 +31,13 @@ class A2AConfig:
     """Unique id in the mesh.  Auto-generated when not set in json5."""
 
     agent_name: str = ""
-    """Optional human-readable display name."""
+    """Human-readable display name — always the ``--agent`` value.
+
+    Never read from the json5 ``a2a`` section: the agent name comes
+    exclusively from the CLI (``--agent Jack`` → "Jack"; no ``--agent``
+    → "slife").  Kept separate from :attr:`agent_id` so a future
+    per-agent display alias could diverge without touching identity.
+    """
 
     transport: str = "mqtt"
     """Transport type.  Only ``"mqtt"`` (default) is implemented — any other
@@ -78,10 +84,8 @@ class A2AConfig:
             it never crashes startup.
         """
         broker = {}
-        agent_name = ""
         if isinstance(data, dict):
             broker = data.get("broker", {}) if isinstance(data.get("broker"), dict) else {}
-            agent_name = data.get("agent_name", "")
 
         # The a2a section provides connection details only.
         # A2A enablement is decided at runtime by the Mosquitto TCP probe —
@@ -106,7 +110,7 @@ class A2AConfig:
         return cls(
             enabled=enabled,  # downgraded at runtime on probe failure
             agent_id=agent_id,
-            agent_name=agent_name,
+            agent_name=agent_id,  # display name = the --agent value, never config
             transport=transport,
             broker_host=broker.get("host", "localhost"),
             broker_port=broker.get("port", 1883),

@@ -256,13 +256,23 @@ async def __memory_save_turn(
             # The harness guarantees a consistent turn (no orphaned tool_calls,
             # alternating roles) via Conversation._ensure_turn_consistent before
             # it ever calls here — the storage layer persists what it receives.
+            # save_turn only inserts — embedding is internal to the plugin
+            # (the background reindex embeds off the save path, so a slow
+            # GGUF embed of a large turn never trips the harness's 10s
+            # save timeout).
             rowid = await store.save_turn(
                 user_message=user_message, messages=messages,
                 images=images, token_count=token_count,
                 who_helped=who_helped, what_model=what_model,
-                channel=channel, embedder=_embedder, created_at=created_at,
+                channel=channel, created_at=created_at,
                 completed_at=completed_at,
             )
+        # Kick (or continue) the background reindex so the just-saved turn
+        # gets embedded without waiting for the next search to discover it.
+        try:
+            await _ensure_index_complete()
+        except Exception:
+            logger.debug("reindex_kick_after_save_error rowid=%s", rowid)
         return json.dumps({"rowid": rowid, "status": "saved"}, ensure_ascii=False)
     except Exception as e:
         logger.exception("save_turn_failed user_msg=%.80s", user_message)

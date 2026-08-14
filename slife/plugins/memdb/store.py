@@ -296,11 +296,15 @@ class SessionStore:
         what_model: str = "",
         channel: str = "",
         images: list[str] | None = None,
-        embedder=None,
         created_at: str | None = None,
         completed_at: str | None = None,
     ) -> int:
-        """Insert a turn. Returns rowid. Generates embedding if embedder available.
+        """Insert a turn. Returns rowid.
+
+        Embedding is an internal plugin concern — the background reindex
+        embeds unembedded turns off the save path, so a slow GGUF embed never
+        blocks the caller (large turns previously exceeded the 10s save
+        timeout).  ``save_turn`` only persists the row.
 
         ``created_at`` is the user-input timestamp threaded from the TUI
         (the Enter-press moment); ``completed_at`` is the assistant
@@ -324,45 +328,6 @@ class SessionStore:
         rowid = cursor.lastrowid
         assert rowid is not None  # insert just succeeded
         logger.debug("turn_saved rowid=%s", rowid)
-
-        # Embed the turn text in chunks.  Long turns (multi-tool calls,
-        # large file reads) are split at paragraph boundaries so every
-        # turn contributes to semantic search — no silent skipping.
-        # Only embed when the model is actually loaded AND the vec0 table
-        # exists (dim > 0): while the model is loading / the index is
-        # building, the turn is saved without an embedding and the
-        # background reindex catches it up.
-        if (
-            embedder is not None
-            and embedder.available
-            and embedder.loaded
-            and self._embedding_dim > 0
-        ):
-            embed_text = _turn_text_for_embedding(user_message, messages or [])
-            if embed_text.strip():
-                try:
-                    chunks = _chunk_text(embed_text)
-                    # Hard-split (never drop) any chunk that exceeds the
-                    # token limit — a single newline-free paragraph longer
-                    # than the limit would otherwise be silently discarded,
-                    # keeping count_unembedded() > 0 and locking the
-                    # semantic-search gate off forever.
-                    chunks = _split_chunks_to_token_limit(
-                        chunks, embedder.max_tokens,
-                    )
-                    if chunks:
-                        embeddings = await embedder.embed(chunks)
-                        if embeddings:
-                            for idx, emb in enumerate(embeddings):
-                                if emb:
-                                    await self.upsert_embedding(
-                                        diary_rowid=rowid, chunk_index=idx,
-                                        summary="", tags="",
-                                        created_at=now, turn_embedding=emb,
-                                    )
-                except Exception as e:
-                    logger.debug("embedding_save_skipped rowid=%s err=%s", rowid, e)
-
         return rowid
 
     async def get_turn(self, rowid: int) -> dict | None:
