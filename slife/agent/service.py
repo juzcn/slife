@@ -1689,9 +1689,18 @@ class AgentService:
                         except Exception:
                             pass
 
+                    # The sender knows the task_id (a2a_send_task_async returns
+                    # it); surface the same id to the receiver so it can
+                    # reference the task it is responding to instead of making
+                    # one up (a reported mismatch in round-trips).
+                    task_text = ev.get("content", "")
+                    corr_id = ev.get("correlation_id", "")
+                    src = ev.get("source", "unknown")
+                    if corr_id:
+                        task_text = f"[Task {corr_id} from {src}] {task_text}"
                     msg = AgentMessage(
-                        source=AgentName(ev.get("source", "unknown")),
-                        content=ev.get("content", ""),
+                        source=AgentName(src),
+                        content=task_text,
                         reply_to=ev.get("reply_to", ""),
                         correlation_id=ev.get("correlation_id", ""),
                         on_reply=_reply,

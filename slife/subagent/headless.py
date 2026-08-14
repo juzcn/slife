@@ -270,6 +270,12 @@ async def run_headless() -> None:
                     _write(result=reply_text, rpc_id=rid)
                     _notify("worker/complete", {"task_id": str(rid)})
 
+                # The parent knows the task_id (send_task returns it); surface
+                # the same id to the worker so it can reference the task it is
+                # responding to instead of making one up (mirrors the a2a path).
+                if rpc_id:
+                    task_text = f"[Task {rpc_id} from {service.config.agent_name}] {task_text}"
+
                 await service.inbox.post(AgentMessage(
                     source=_source,
                     content=task_text,
