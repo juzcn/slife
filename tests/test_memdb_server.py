@@ -89,7 +89,7 @@ class TestBackgroundReindex:
              "created_at": "2026-01-01T00:00:00+00:00"},
         ]
         store.count_unembedded.return_value = 1
-        store.upsert_embedding = AsyncMock()
+        store.replace_embedding_chunks = AsyncMock()
 
         failing = MagicMock()
         failing.available = True
@@ -103,7 +103,7 @@ class TestBackgroundReindex:
         assert result["indexed"] == 0
         assert result["remaining"] == 1
         assert result["complete"] is False
-        store.upsert_embedding.assert_not_called()
+        store.replace_embedding_chunks.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reindex_impl_counts_stored_embeddings(self, restore_root_logger):
@@ -117,7 +117,7 @@ class TestBackgroundReindex:
         ]
         # 1 unembedded turn before processing, 0 after.
         store.count_unembedded = AsyncMock(side_effect=[1, 0])
-        store.upsert_embedding = AsyncMock()
+        store.replace_embedding_chunks = AsyncMock()
 
         healthy = MagicMock()
         healthy.available = True
@@ -131,7 +131,7 @@ class TestBackgroundReindex:
         assert result["indexed"] == 1
         assert result["remaining"] == 0
         assert result["complete"] is True
-        store.upsert_embedding.assert_awaited_once()
+        store.replace_embedding_chunks.assert_awaited_once()
 
 
 class TestIndexCompletenessGate:

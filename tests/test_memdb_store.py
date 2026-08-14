@@ -935,6 +935,58 @@ class TestSessionStoreUpsertEmbedding:
         mock_conn.commit.assert_called_once()
 
 
+class TestSessionStoreReplaceEmbeddingChunks:
+    """replace_embedding_chunks — atomic per-turn chunk replace.
+
+    A turn's chunks must be replaced in ONE transaction: a crash mid-way
+    rolls back to NO chunks (turn fully unembedded, re-indexed next pass),
+    never a half-indexed turn that the NOT-IN-unembedded query would
+    mistake for complete.
+    """
+
+    @pytest.mark.asyncio
+    async def test_replaces_all_chunks_in_one_transaction(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock(return_value=AsyncMock())
+        mock_conn.commit = AsyncMock()
+        mock_conn.rollback = AsyncMock()
+        store._conn = mock_conn
+
+        await store.replace_embedding_chunks(
+            diary_rowid=7, summary="s", tags="t",
+            created_at="2024-01-01T00:00:00",
+            embeddings=[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+        )
+        # DELETE (1) + 3 INSERTs = 4 executes, exactly one commit, no rollback
+        assert mock_conn.execute.call_count == 4
+        mock_conn.commit.assert_awaited_once()
+        mock_conn.rollback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rolls_back_on_mid_insert_failure(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock(side_effect=[
+            AsyncMock(),              # DELETE
+            AsyncMock(),              # INSERT chunk 0
+            RuntimeError("boom"),     # INSERT chunk 1 → fails mid-way
+            AsyncMock(),              # INSERT chunk 2 (not reached)
+        ])
+        mock_conn.commit = AsyncMock()
+        mock_conn.rollback = AsyncMock()
+        store._conn = mock_conn
+
+        with pytest.raises(RuntimeError):
+            await store.replace_embedding_chunks(
+                diary_rowid=7, summary="", tags="",
+                created_at="2024-01-01T00:00:00",
+                embeddings=[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+            )
+        mock_conn.rollback.assert_awaited_once()
+        mock_conn.commit.assert_not_awaited()
+
+
 class TestSessionStoreHasEmbedding:
     """Tests for has_embedding."""
 

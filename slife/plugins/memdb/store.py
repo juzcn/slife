@@ -753,6 +753,41 @@ class SessionStore:
         await self._c.commit()
         logger.debug("embedding_upserted diary_rowid=%s chunk=%s", diary_rowid, chunk_index)
 
+    async def replace_embedding_chunks(
+        self, diary_rowid: int, summary: str, tags: str,
+        created_at: str, embeddings: list[list[float]],
+    ) -> None:
+        """Atomically replace a turn's embedding chunks.
+
+        Deletes the turn's old chunks and inserts every new chunk in ONE
+        transaction.  A crash (or error) mid-way rolls back to NO chunks —
+        the turn is fully unembedded again and gets re-indexed on the next
+        pass, instead of being left half-indexed where the ``NOT IN
+        diary_semantic`` unembedded query would mistake it for complete.
+        """
+        vec_blobs = [_serialize_f32(emb) for emb in embeddings]
+        try:
+            await self._c.execute(
+                "DELETE FROM diary_semantic WHERE diary_rowid = ?",
+                (diary_rowid,),
+            )
+            for idx, blob in enumerate(vec_blobs):
+                await self._c.execute(
+                    """INSERT INTO diary_semantic
+                       (turn_embedding, diary_rowid, chunk_index,
+                        summary, tags, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (blob, diary_rowid, idx, summary, tags, created_at),
+                )
+            await self._c.commit()
+        except Exception:
+            await self._c.rollback()
+            raise
+        logger.debug(
+            "embedding_chunks_replaced diary_rowid=%s chunks=%d",
+            diary_rowid, len(vec_blobs),
+        )
+
     async def _clear_chunks(self, diary_rowid: int) -> None:
         """Delete all embedding chunks for a turn (prep for re-embed)."""
         await self._c.execute(

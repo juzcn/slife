@@ -401,23 +401,26 @@ async def _reindex_impl(reset: bool = False, batch_limit: int = 10) -> dict:
                 chunks = _split_chunks_to_token_limit(chunks, _embedder.max_tokens)
                 if chunks:
                     embeddings = await _embedder.embed(chunks)
-                    if embeddings:
-                        stored = 0
-                        for idx, emb in enumerate(embeddings):
-                            if emb:
-                                await store.upsert_embedding(
-                                    diary_rowid=turn["rowid"], chunk_index=idx,
-                                    summary="", tags="",
-                                    created_at=turn["created_at"],
-                                    turn_embedding=emb,
-                                )
-                                stored += 1
-                        # Count only turns that actually stored embeddings.
-                        # embed() swallows backend errors and returns None, so
-                        # counting attempts here would keep `indexed` non-zero
-                        # and the M7 no-progress bound would never trip.
-                        if stored:
-                            indexed += 1
+                    # Commit atomically ONLY when every chunk produced a
+                    # vector — a partial set (embed failed / backend error)
+                    # leaves the turn fully unembedded so the next pass
+                    # retries it, instead of half-indexing it (the
+                    # NOT-IN-unembedded query mistakes partial chunks for
+                    # complete). Counted only on full success so the M7
+                    # no-progress bound still trips on a persistently
+                    # failing embedder.
+                    if (
+                        embeddings
+                        and len(embeddings) == len(chunks)
+                        and all(emb for emb in embeddings)
+                    ):
+                        await store.replace_embedding_chunks(
+                            diary_rowid=turn["rowid"],
+                            summary="", tags="",
+                            created_at=turn["created_at"],
+                            embeddings=embeddings,
+                        )
+                        indexed += 1
         except Exception as e:
             logger.debug("reindex_skip rowid=%s err=%s", turn["rowid"], e)
 
