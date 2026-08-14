@@ -228,6 +228,89 @@ class TestEmbeddingClientEmbedOne:
             assert result is None
 
 
+class TestEmbeddingConcurrentEmbed:
+    """Concurrent embeds on a shared local model must serialise.
+
+    llama-cpp / sentence-transformers instances are NOT safe for concurrent
+    encode calls. A burst of hybrid searches (main agent + subagents share
+    one memdb server) calls ``embed_one`` at once; without the per-client
+    ``_embed_lock`` the GGUF backend used to crash llama.cpp natively
+    (``GGML_ASSERT … tensor buffer not set`` abort)."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_gguf_embeds_serialize(self):
+        import asyncio
+        import threading
+        import time
+
+        client = EmbeddingClient.__new__(EmbeddingClient)
+        client._backend = "gguf"
+        client._available = True
+        client._model = "bge-m3"
+        client._dim = 4
+        client._client = None
+        client._loading = None
+        client._embed_lock = threading.Lock()
+
+        class FakeLlama:
+            def __init__(self):
+                self.cur = 0
+                self.peak = 0
+
+            def create_embedding(self, text):
+                self.cur += 1
+                self.peak = max(self.peak, self.cur)
+                time.sleep(0.02)
+                self.cur -= 1
+                return {"data": [{"embedding": [0.1] * 4}]}
+
+        client._client = FakeLlama()
+
+        results = await asyncio.gather(
+            *(client.embed_one(f"concurrent query {i}") for i in range(6))
+        )
+        assert all(r is not None and len(r) == 4 for r in results)
+        # Never two create_embedding calls in flight → no native crash.
+        assert client._client.peak == 1
+
+    @pytest.mark.asyncio
+    async def test_batch_embed_does_not_hold_lock_between_calls(self):
+        """A reindex batch may interleave with a search's single embed —
+        the lock is per create_embedding call, not per whole batch."""
+        import asyncio
+        import threading
+        import time
+
+        client = EmbeddingClient.__new__(EmbeddingClient)
+        client._backend = "gguf"
+        client._available = True
+        client._model = "bge-m3"
+        client._dim = 4
+        client._client = None
+        client._loading = None
+        client._embed_lock = threading.Lock()
+
+        class FakeLlama:
+            def __init__(self):
+                self.cur = 0
+                self.peak = 0
+
+            def create_embedding(self, text):
+                self.cur += 1
+                self.peak = max(self.peak, self.cur)
+                time.sleep(0.01)
+                self.cur -= 1
+                return {"data": [{"embedding": [0.1] * 4}]}
+
+        client._client = FakeLlama()
+
+        # batch (reindex-style, 3 texts) racing a single search embed
+        batch = asyncio.create_task(client.embed(["a", "b", "c"]))
+        single = asyncio.create_task(client.embed_one("s"))
+        await asyncio.gather(batch, single)
+        assert client._client.peak == 1
+
+
 class TestEmbeddingLoad:
     """load() must materialise the local model exactly once, even under
     concurrent callers — the semantic gate calls load() from every search,

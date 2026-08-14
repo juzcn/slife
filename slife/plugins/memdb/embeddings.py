@@ -13,6 +13,7 @@ search (FTS5) still works fine without vectors.
 
 import asyncio
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +123,11 @@ class EmbeddingClient:
         # materialisation instead of each loading the local model (the
         # semantic gate calls load() from every search/check).
         self._loading: asyncio.Future | None = None
+        # Serialises model inference — llama-cpp / sentence-transformers
+        # instances are NOT safe for concurrent encode calls, and concurrent
+        # searches (main agent + subagent) would otherwise crash the process
+        # (REVIEW: gguf concurrent create_embedding → native abort).
+        self._embed_lock = threading.Lock()
         self._backend: str = ""         # "gguf" | "transformer" | "api" | ""
         self._available = False
         self._device = device           # "cpu" | "cuda" (transformer only)
@@ -451,7 +457,15 @@ class EmbeddingClient:
         def _encode() -> list[list[float]]:
             out = []
             for text in texts:
-                result = self._client.create_embedding(text)
+                # The Llama instance is NOT safe for concurrent
+                # create_embedding — a burst of hybrid searches (main agent
+                # + subagents share this server) would crash llama.cpp natively.
+                # Serialise per call. threading.Lock, not asyncio.Lock: the
+                # encode runs on a daemon thread, so the lock must arbitrate
+                # across threads, and interleave single embeds between a
+                # reindex's batch instead of blocking a search on the whole batch.
+                with self._embed_lock:
+                    result = self._client.create_embedding(text)
                 out.append(result["data"][0]["embedding"])
             return out
 
@@ -475,14 +489,17 @@ class EmbeddingClient:
         # convention — a blocked encode must never hang shutdown).
         from slife.threads import run_daemon
 
-        embeddings = await run_daemon(
-            lambda: self._client.encode(
-                texts,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            ),
-            name="transformer-encode",
-        )
+        def _encode() -> Any:
+            # Same thread-safety rule as the gguf backend — a shared
+            # SentenceTransformer instance must not encode concurrently.
+            with self._embed_lock:
+                return self._client.encode(
+                    texts,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )
+
+        embeddings = await run_daemon(_encode, name="transformer-encode")
         return [emb.tolist() for emb in embeddings]
 
     async def _call_api(self, texts: list[str]) -> list[list[float]] | None:
