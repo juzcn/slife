@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 
-def _default_agent_id() -> str:
+def _default_agent_name() -> str:
     """Auto-generate an agent id from hostname + pid."""
     host = platform.node().split(".")[0] or "unknown"
     return f"{host}-{os.getpid()}"
@@ -27,16 +27,11 @@ class A2AConfig:
     enabled: bool = False
     """Master switch — A2A is off by default."""
 
-    agent_id: str = field(default_factory=_default_agent_id)
-    """Unique id in the mesh.  Auto-generated when not set in json5."""
+    agent_name: str = field(default_factory=_default_agent_name)
+    """Unique id in the mesh.  Auto-generated when not set in json5.
 
-    agent_name: str = ""
-    """Human-readable display name — always the ``--agent`` value.
-
-    Never read from the json5 ``a2a`` section: the agent name comes
-    exclusively from the CLI (``--agent Jack`` → "Jack"; no ``--agent``
-    → "slife").  Kept separate from :attr:`agent_id` so a future
-    per-agent display alias could diverge without touching identity.
+    This is also the agent's only identity — there is no separate display
+    name (a duplicate was pure context pollution).
     """
 
     transport: str = "mqtt"
@@ -64,7 +59,7 @@ class A2AConfig:
 
     @classmethod
     def from_dict(
-        cls, data: dict | None, agent_id: str = "slife",
+        cls, data: dict | None, agent_name: str = "slife",
     ) -> "A2AConfig":
         """Parse the ``a2a`` section from slife.json5.
 
@@ -75,7 +70,7 @@ class A2AConfig:
 
         Args:
             data: The ``a2a`` dict from the JSON5 config, or ``None``.
-            agent_id: The ``--agent`` value (defaults to ``"slife"``).
+            agent_name: The ``--agent`` value (defaults to ``"slife"``).
                       Used as the MQTT client id / agent identity.
 
         Note:
@@ -109,8 +104,7 @@ class A2AConfig:
 
         return cls(
             enabled=enabled,  # downgraded at runtime on probe failure
-            agent_id=agent_id,
-            agent_name=agent_id,  # display name = the --agent value, never config
+            agent_name=agent_name,
             transport=transport,
             broker_host=broker.get("host", "localhost"),
             broker_port=broker.get("port", 1883),

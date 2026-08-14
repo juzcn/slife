@@ -47,15 +47,15 @@ def get_logs_dir() -> Path:
     return get_data_dir() / "logs"
 
 
-def get_db_path(agent_id: str = "slife") -> Path:
-    """Path to the SQLite memory database for *agent_id*.
+def get_db_path(agent_name: str = "slife") -> Path:
+    """Path to the SQLite memory database for *agent_name*.
 
-    Uses ``SLIFE_AGENT_ID`` from the environment when available (mirrors
+    Uses ``SLIFE_AGENT_NAME`` from the environment when available (mirrors
     :func:`get_memfiles_dir`), falling back to ``"slife"`` — so health tools
     and any caller that omits the agent resolve the right per-agent database
     instead of always reporting the default ``slife.db``.
     """
-    agent = os.environ.get("SLIFE_AGENT_ID", agent_id)
+    agent = os.environ.get("SLIFE_AGENT_NAME", agent_name)
     return get_data_dir() / f"{agent}.db"
 
 
@@ -90,14 +90,14 @@ def get_images_dir() -> Path:
     return get_data_dir() / "logs" / "images"
 
 
-def get_memfiles_dir(agent_id: str = "slife") -> Path:
+def get_memfiles_dir(agent_name: str = "slife") -> Path:
     """Directory for user-saved files — one per agent.
 
     Files saved via ``save_content_or_files`` land here — plain files browsable
     by the user and accessible via both local path and sharing URL.
 
-    Uses ``SLIFE_AGENT_ID`` from the environment when available (mirrors
+    Uses ``SLIFE_AGENT_NAME`` from the environment when available (mirrors
     :func:`get_db_path`), falling back to ``"slife"``.
     """
-    agent = os.environ.get("SLIFE_AGENT_ID", agent_id)
+    agent = os.environ.get("SLIFE_AGENT_NAME", agent_name)
     return get_data_dir() / f"{agent}.files"

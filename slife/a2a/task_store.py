@@ -22,7 +22,7 @@ class TaskRecord:
     task_id: str
     """Unique correlation / rpc id."""
 
-    agent_id: str
+    agent_name: str
     """Target agent this task was sent to."""
 
     task_preview: str
@@ -68,7 +68,7 @@ class TaskRecord:
             "artifacts": artifacts,
             "history": [],
             "metadata": {
-                "target": self.agent_id,
+                "target": self.agent_name,
                 "preview": self.task_preview,
                 "transport": self.transport,
             },
@@ -102,12 +102,12 @@ class TaskStore:
     # ── Write ─────────────────────────────────────────────────────────
 
     def record_send(
-        self, task_id: str, agent_id: str, task: str, transport: str,
+        self, task_id: str, agent_name: str, task: str, transport: str,
     ) -> TaskRecord:
         """Record a newly-sent task (status = pending)."""
         rec = TaskRecord(
             task_id=task_id,
-            agent_id=agent_id,
+            agent_name=agent_name,
             task_preview=task[: self.MAX_PREVIEW_LEN],
             status="pending",
             transport=transport,
@@ -161,7 +161,7 @@ class TaskStore:
 
     def list_tasks(
         self,
-        agent_id: str | None = None,
+        agent_name: str | None = None,
         status: str | None = None,
         transport: str | None = None,
         limit: int = 50,
@@ -169,8 +169,8 @@ class TaskStore:
         """Return filtered task records, newest first."""
         result = list(self._records.values())
 
-        if agent_id is not None:
-            result = [r for r in result if r.agent_id == agent_id]
+        if agent_name is not None:
+            result = [r for r in result if r.agent_name == agent_name]
         if status is not None:
             result = [r for r in result if r.status == status]
         if transport is not None:

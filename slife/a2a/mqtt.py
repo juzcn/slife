@@ -22,7 +22,7 @@ from typing import Any, Callable, Coroutine
 
 import paho.mqtt.client as mqtt
 
-from slife.a2a.identity import AgentId
+from slife.a2a.identity import AgentName
 from slife.a2a.transport import TransportAdapter, TransportMessage
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ class MQTTAdapter(TransportAdapter):
         # Append PID so two instances with the same agent-id don't
         # fight over the MQTT client-id at the protocol level.
         # Duplicate detection is handled at the application layer.
-        self._agent_id = client_id
+        self._agent_name = client_id
         self._client_id = f"{client_id}-{_os.getpid()}"
         self._client: mqtt.Client | None = None
         self._queues: dict[str, asyncio.Queue[TransportMessage]] = {}
@@ -131,11 +131,11 @@ class MQTTAdapter(TransportAdapter):
 
         mq = _get_mqtt()
 
-        lwt_topic = f"Slife/{self._agent_id}/presence"
-        # agent_id is required by the peer watchdog to identify who left —
+        lwt_topic = f"Slife/{self._agent_name}/presence"
+        # agent_name is required by the peer watchdog to identify who left —
         # a bare {"status":"offline"} is dropped as "unknown peer".
         lwt_payload = json.dumps(
-            {"status": "offline", "agent_id": self._agent_id},
+            {"status": "offline", "agent_name": self._agent_name},
         )
 
         c = mq.Client(  # type: ignore[union-attr]
@@ -187,9 +187,9 @@ class MQTTAdapter(TransportAdapter):
 
         try:
             self._client.publish(
-                f"Slife/{self._agent_id}/presence",
+                f"Slife/{self._agent_name}/presence",
                 json.dumps(
-                    {"status": "offline", "agent_id": self._agent_id},
+                    {"status": "offline", "agent_name": self._agent_name},
                 ),
                 qos=1,
                 retain=False,

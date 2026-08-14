@@ -15,7 +15,7 @@ Usage:
     python scripts/migrate_memdb_completed_at.py [DB_PATH] [--max-minutes 5]
 
 DB resolution (no positional arg): $SLIFE_MEMDB_DB, else
-<data_dir>/<agent_id>.db where agent_id = $SLIFE_AGENT_ID or "slife".
+<data_dir>/<agent_name>.db where agent_name = $SLIFE_AGENT_NAME or "slife".
 Idempotent: rows whose ``completed_at`` is already set are left untouched.
 """
 
@@ -28,7 +28,7 @@ from pathlib import Path
 
 
 def resolve_db_path(arg: str | None) -> Path:
-    """Pick the diary DB: CLI arg > $SLIFE_MEMDB_DB > <data_dir>/<agent_id>.db."""
+    """Pick the diary DB: CLI arg > $SLIFE_MEMDB_DB > <data_dir>/<agent_name>.db."""
     if arg:
         return Path(arg).expanduser()
     import os
@@ -38,8 +38,8 @@ def resolve_db_path(arg: str | None) -> Path:
         return Path(env)
     from slife.paths import get_data_dir
 
-    agent_id = os.environ.get("SLIFE_AGENT_ID", "slife")
-    return get_data_dir() / f"{agent_id}.db"
+    agent_name = os.environ.get("SLIFE_AGENT_NAME", "slife")
+    return get_data_dir() / f"{agent_name}.db"
 
 
 def _shift_earlier(iso: str, max_minutes: int) -> tuple[str, str]:
@@ -103,7 +103,7 @@ def main() -> None:
     )
     parser.add_argument(
         "db", nargs="?",
-        help="diary SQLite path (default: $SLIFE_MEMDB_DB or <data_dir>/<agent_id>.db)",
+        help="diary SQLite path (default: $SLIFE_MEMDB_DB or <data_dir>/<agent_name>.db)",
     )
     parser.add_argument(
         "--max-minutes", type=int, default=5,

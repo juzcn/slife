@@ -1,7 +1,7 @@
 """Tests for A2AClient presence watchdog / offline detection.
 
 Covers the fix where a peer that vanishes silently (its offline presence
-message is lost or lacks ``agent_id``) is still pruned: the watchdog must
+message is lost or lacks ``agent_name``) is still pruned: the watchdog must
 run the stale-peer prune on every presence sighting — including our own
 heartbeat echo — not only on messages from identified peers.
 """
@@ -14,7 +14,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 from slife.a2a.client import A2AClient
 from slife.a2a.config import A2AConfig
-from slife.a2a.identity import AgentId
+from slife.a2a.identity import AgentName
 from slife.a2a.card import AgentCard
 from slife.a2a.transport import TransportMessage
 
@@ -47,7 +47,7 @@ class _RecordingAdapter:
 
 class TestSendTaskWire:
     def _client(self):
-        cfg = A2AConfig(enabled=True, agent_id="jack")
+        cfg = A2AConfig(enabled=True, agent_name="jack")
         return A2AClient(cfg, transport=_RecordingAdapter())
 
     @pytest.mark.asyncio
@@ -66,7 +66,7 @@ class TestSendTaskWire:
 
         adapter.publish = _publish
 
-        result = await client.send_task(AgentId("peer-1"), "do X", timeout=5)
+        result = await client.send_task(AgentName("peer-1"), "do X", timeout=5)
         assert result == "the result"
 
         topic, payload = adapter.published[0]
@@ -83,7 +83,7 @@ class TestSendTaskWire:
         client = self._client()
         adapter = client._adapter
 
-        corr_id = await client.send_task_async(AgentId("peer-1"), "do X")
+        corr_id = await client.send_task_async(AgentName("peer-1"), "do X")
         assert corr_id
         topic, payload = adapter.published[0]
         assert topic == "Slife/peer-1/tasks/inbox"
@@ -97,7 +97,7 @@ class TestCancelTask:
     a completed result as cancelled or discards it."""
 
     def _client(self):
-        cfg = A2AConfig(enabled=True, agent_id="jack")
+        cfg = A2AConfig(enabled=True, agent_name="jack")
         return A2AClient(cfg, transport=_RecordingAdapter())
 
     def setup_method(self):
@@ -113,7 +113,7 @@ class TestCancelTask:
         get_store().record_result("cid-1", "the answer")
         client._completed_tasks["cid-1"] = "the answer"
 
-        status = await client.cancel_task(AgentId("peer-1"), "cid-1")
+        status = await client.cancel_task(AgentName("peer-1"), "cid-1")
 
         assert status == "completed"
         # Result stays retrievable — not consumed, not marked cancelled.
@@ -129,7 +129,7 @@ class TestCancelTask:
         fut = asyncio.get_event_loop().create_future()
         client._pending_tasks["cid-1"] = fut
 
-        status = await client.cancel_task(AgentId("peer-1"), "cid-1")
+        status = await client.cancel_task(AgentName("peer-1"), "cid-1")
 
         assert status == "cancelled"
         assert fut.cancelled()
@@ -147,7 +147,7 @@ class TestCancelTask:
         get_store().record_send("cid-1", "peer-1", "do X", "mqtt")
         get_store().record_error("cid-1", "timeout")
 
-        status = await client.cancel_task(AgentId("peer-1"), "cid-1")
+        status = await client.cancel_task(AgentName("peer-1"), "cid-1")
 
         assert status == "failed"
         assert get_store().get("cid-1").status == "failed"
@@ -156,7 +156,7 @@ class TestCancelTask:
     async def test_cancel_unknown_task_still_dispatches_notice(self):
         client = self._client()
 
-        status = await client.cancel_task(AgentId("peer-1"), "cid-unknown")
+        status = await client.cancel_task(AgentName("peer-1"), "cid-unknown")
 
         assert status == "not_found"
         assert len(client._adapter.published) == 1  # best-effort notice sent
@@ -166,7 +166,7 @@ class TestIncomingCancel:
     """REVIEW C5 — inbound CancelTask routing and cancelled-result recording."""
 
     def _client(self):
-        cfg = A2AConfig(enabled=True, agent_id="jack")
+        cfg = A2AConfig(enabled=True, agent_name="jack")
         return A2AClient(cfg, transport=_RecordingAdapter())
 
     def setup_method(self):
@@ -213,16 +213,16 @@ class TestIncomingCancel:
 class _EchoThenBlockAdapter:
     """Adapter that yields our own presence echo once, then blocks."""
 
-    def __init__(self, agent_id: str):
-        self._agent_id = agent_id
+    def __init__(self, agent_name: str):
+        self._agent_name = agent_name
         self.is_connected = True
 
     def messages(self, topic_filter):
         async def gen():
             yield TransportMessage(
-                topic=f"Slife/{self._agent_id}/presence",
+                topic=f"Slife/{self._agent_name}/presence",
                 payload=json.dumps(
-                    {"agent_id": self._agent_id, "status": "online"},
+                    {"agent_name": self._agent_name, "status": "online"},
                 ),
             )
             await asyncio.Event().wait()  # block after the echo
@@ -232,7 +232,7 @@ class _EchoThenBlockAdapter:
 class TestPresenceWatchdog:
     def _client(self):
         cfg = A2AConfig(
-            enabled=True, agent_id="jack",
+            enabled=True, agent_name="jack",
             heartbeat_interval=1, heartbeat_timeout=1,
         )
         return A2AClient(cfg)
@@ -242,13 +242,13 @@ class TestPresenceWatchdog:
         """Prune runs even when only our own presence echo arrives, so a
         peer that vanished silently is still marked offline."""
         client = self._client()
-        client._peers[AgentId("slife")] = (
-            AgentCard(agent_id=AgentId("slife"), display_name="", status="idle"),
+        client._peers[AgentName("slife")] = (
+            AgentCard(agent_name=AgentName("slife"), status="idle"),
             _time.monotonic() - 10,  # last heard long ago (> heartbeat_timeout)
         )
 
         events: list[tuple[str, str]] = []
-        client.on_agent_change(lambda card, ev: events.append((str(card.agent_id), ev)))
+        client.on_agent_change(lambda card, ev: events.append((str(card.agent_name), ev)))
 
         client._adapter = _EchoThenBlockAdapter("jack")
 
@@ -268,17 +268,17 @@ class TestPresenceWatchdog:
                 pass
 
     @pytest.mark.asyncio
-    async def test_offline_message_with_agent_id_removes_peer(self):
-        """A presence message with status=offline + agent_id removes the peer
+    async def test_offline_message_with_agent_name_removes_peer(self):
+        """A presence message with status=offline + agent_name removes the peer
         and fires the offline notification."""
         client = self._client()
-        client._peers[AgentId("slife")] = (
-            AgentCard(agent_id=AgentId("slife"), display_name="", status="idle"),
+        client._peers[AgentName("slife")] = (
+            AgentCard(agent_name=AgentName("slife"), status="idle"),
             _time.monotonic(),
         )
 
         events: list[tuple[str, str]] = []
-        client.on_agent_change(lambda card, ev: events.append((str(card.agent_id), ev)))
+        client.on_agent_change(lambda card, ev: events.append((str(card.agent_name), ev)))
 
         class _OfflineAdapter:
             def __init__(self):
@@ -288,7 +288,7 @@ class TestPresenceWatchdog:
                     yield TransportMessage(
                         topic="Slife/slife/presence",
                         payload=json.dumps(
-                            {"status": "offline", "agent_id": "slife"},
+                            {"status": "offline", "agent_name": "slife"},
                         ),
                     )
                     await asyncio.Event().wait()

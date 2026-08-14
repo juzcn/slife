@@ -1,24 +1,25 @@
 """AgentCard — identity + liveness announcement, wire-conformant.
 
-The card carries the slife identity/liveness fields (``agent_id``,
-``display_name``, ``status``) plus the official A2A ``AgentCard`` fields
+The card carries the slife identity/liveness fields (``agent_name``,
+``status``) plus the official A2A ``AgentCard`` fields
 (name, description, url, version, capabilities, skills) so the presence
-payload mirrors the canonical shape.
+payload mirrors the canonical shape.  There is no separate display name —
+``agent_name`` is the identity (the ``--agent`` value); a duplicate
+``display_name`` field was pure context pollution.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from slife.a2a.identity import AgentId
+from slife.a2a.identity import AgentName
 
 
 @dataclass
 class AgentCard:
     """Who is this agent and is it alive right now?"""
 
-    agent_id: AgentId
-    display_name: str = ""
+    agent_name: AgentName
     status: str = "idle"  # "idle" or "busy"
 
     # Official A2A AgentCard fields (mirror a2a_pb2) — wire conformant.
@@ -36,14 +37,14 @@ class AgentCard:
     skills: list = field(default_factory=list)
 
     @classmethod
-    def create(cls, agent_id: AgentId, display_name: str = "", status: str = "idle") -> "AgentCard":
-        return cls(agent_id=agent_id, display_name=display_name, status=status)
+    def create(cls, agent_name: AgentName, status: str = "idle") -> "AgentCard":
+        return cls(agent_name=agent_name, status=status)
 
     def to_dict(self) -> dict:
         """Serialize as the presence wire payload (official + slife fields)."""
         d: dict = {
             "protocolVersion": self.protocol_version,
-            "name": self.name or self.display_name,
+            "name": self.name or str(self.agent_name),
             "description": self.description,
             "url": self.url,
             "version": self.version,
@@ -52,8 +53,7 @@ class AgentCard:
         }
         # Slife extensions — read by the peer watchdog, format_presence_line
         # and duplicate-id detection.
-        d["agent_id"] = str(self.agent_id)
-        d["display_name"] = self.display_name
+        d["agent_name"] = str(self.agent_name)
         d["status"] = self.status
         return d
 
@@ -61,8 +61,7 @@ class AgentCard:
     def from_dict(cls, data: dict) -> "AgentCard":
         """Parse a presence wire payload back into an :class:`AgentCard`."""
         return cls(
-            agent_id=AgentId(data.get("agent_id", "?")),
-            display_name=data.get("display_name", ""),
+            agent_name=AgentName(data.get("agent_name", "?")),
             status=data.get("status", "idle"),
             protocol_version=data.get("protocolVersion", "0.3.0"),
             name=data.get("name", ""),
@@ -85,15 +84,9 @@ def format_presence_line(card: "AgentCard", event: str) -> str | None:
     footer (:mod:`slife.agent.system_prompt`) so the two never drift.
     """
     if event == "online":
-        name = card.display_name or card.agent_id
-        extra = (
-            f" ({card.agent_id})"
-            if card.display_name and card.display_name != card.agent_id
-            else ""
-        )
-        return f"⚡ {name}{extra} online [{card.status}]"
+        return f"⚡ {card.agent_name} online [{card.status}]"
     if event == "offline":
-        return f"✗ {card.agent_id} offline"
+        return f"✗ {card.agent_name} offline"
     if event == "timeout":
-        return f"⏱ {card.agent_id} timed out"
+        return f"⏱ {card.agent_name} timed out"
     return None

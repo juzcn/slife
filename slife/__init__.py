@@ -28,7 +28,7 @@ def main(config_path: str = "slife.json5"):
     Dev mode (detected via pyproject.toml): data files stay in CWD.
     Otherwise: everything lives in ``~/.slife/``.
     """
-    agent_id = parse_cli_agent(sys.argv)
+    agent_name = parse_cli_agent(sys.argv)
 
     # Resolve data dir BEFORE logging setup so logs go to the right place.
     # Only two modes:
@@ -52,7 +52,7 @@ def main(config_path: str = "slife.json5"):
     # Generate session ID — shared with MCP subprocess via env var
     sid = init_session_id()
     os.environ["SLIFE_SESSION_ID"] = sid
-    os.environ["SLIFE_AGENT_ID"] = agent_id
+    os.environ["SLIFE_AGENT_NAME"] = agent_name
 
     # Force UTF-8 encoding for Python subprocesses on Windows.
     # Without this, Python defaults to the system code page (e.g. GBK / cp936)
@@ -60,7 +60,7 @@ def main(config_path: str = "slife.json5"):
     if sys.platform == "win32":
         os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-    log_path, _ = setup_logging(agent_id=agent_id)
+    log_path, _ = setup_logging(agent_name=agent_name)
 
     logger.debug("log_path=%s", log_path)
     logger.debug("data_dir=%s", data_dir)
@@ -69,7 +69,7 @@ def main(config_path: str = "slife.json5"):
     logger.debug("config loading…")
     with _elapsed("config_load", logger, level=logging.DEBUG, path=str(_cp)):
         try:
-            config = Config.from_json5(str(_cp), agent_id=agent_id)
+            config = Config.from_json5(str(_cp), agent_name=agent_name)
         except Exception:
             logger.exception("config_load_failed path=%s", config_path)
             raise

@@ -128,10 +128,10 @@ def _get_wechat_config():
     """Try to load slife config for wechat status.  Returns None on failure."""
     try:
         from slife.config import Config, parse_cli_agent
-        agent_id = parse_cli_agent(sys.argv)
+        agent_name = parse_cli_agent(sys.argv)
         cfg_path = get_data_dir() / "slife.json5"
         if cfg_path.exists():
-            return Config.from_json5(cfg_path, agent_id=agent_id)
+            return Config.from_json5(cfg_path, agent_name=agent_name)
     except Exception:
         pass
     return None
@@ -169,7 +169,7 @@ def check_wechat(config=None) -> list[dict]:
                         "hint": "WeChat plugin is enabled but the wechat package is not installed."})
         return results
 
-    session = load_wechat_config(config.agent_id, get_data_dir())
+    session = load_wechat_config(config.agent_name, get_data_dir())
 
     if not session.get("bot_token"):
         results.append({"component": "wechat", "level": "ok", "key": "status",
@@ -481,17 +481,20 @@ async def check_a2a(client=None) -> list[dict]:
                      "hint": f"没有活跃的mqtt端口，a2a不可用{where}。启动 mosquitto 后插件会自动重连。"}]
 
         peers = data.get("peers", [])
-        peer_names = ", ".join(
-            (p.get("display_name") or p.get("agent_id") or "?") for p in peers
-        ) or "none"
+        peer_names = ", ".join(p.get("agent_name") or "?" for p in peers)
+        n = len(peers)
+        if n == 0:
+            peer_clause = "You have no peers online."
+        elif n == 1:
+            peer_clause = f"You have 1 peer: {peer_names}."
+        else:
+            peer_clause = f"You have {n} peers: {peer_names}."
         broker = data.get("broker", "")
         return [{
             "component": "a2a", "level": "ok", "key": "status",
             "value": "connected",
             "peers": peers,
-            "hint": (f"A2A mesh online (broker {broker}). Agent: "
-                     f"{data.get('agent_id', '?')} ({data.get('status', '?')}), "
-                     f"{len(peers)} peer(s): {peer_names}."),
+            "hint": f"A2A mesh online (broker {broker}). {peer_clause}",
         }]
     except Exception as e:
         logger.warning("a2a_check_failed err=%s", e)

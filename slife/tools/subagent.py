@@ -66,7 +66,7 @@ class ListSubagentsTool(Tool):
     name = "list_subagents"
     category = "Subagent"
     description = (
-        "List local subagent workers with their state: agent_id, PID, "
+        "List local subagent workers with their state: subagent_name, PID, "
         "readiness, context (pure/cloned), busy/in-flight count, and pending "
         "async task count. Local workers are not A2A peers — remote mesh "
         "peers use a2a_list_agents."
@@ -82,15 +82,15 @@ class ListSubagentsTool(Tool):
         if manager is None:
             return hint
 
-        agent_ids = manager.list()
-        if not agent_ids:
+        subagent_names = manager.list()
+        if not subagent_names:
             return (
                 "No local subagents running. "
                 "Use spawn_subagent to create one."
             )
 
-        lines = [f"Local subagents ({len(agent_ids)}):"]
-        for aid in sorted(agent_ids):
+        lines = [f"Local subagents ({len(subagent_names)}):"]
+        for aid in sorted(subagent_names):
             p = manager.get(aid)
             pid = f" [pid={p.pid}]" if p and p.pid else ""
             ready = " [ready]" if p and p.is_ready else " [starting]"
@@ -115,12 +115,11 @@ class SpawnSubagentTool(Tool):
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "name": {
+            "subagent_name": {
                 "type": "string",
                 "description": (
-                    'Optional name for the worker (e.g. "researcher", '
-                    '"coder-1"). If omitted, an auto-generated name like '
-                    '"sub-1" is used.'
+                    'Name for the worker (e.g. "researcher", "coder-1") — its '
+                    "identity, used by list_subagents / subagent_send_task."
                 ),
             },
             "context": {
@@ -133,15 +132,23 @@ class SpawnSubagentTool(Tool):
                 ),
             },
         },
-        "required": [],
+        "required": ["subagent_name"],
     }
 
     async def execute(
-        self, name: str = "", context: str = "pure", **kwargs,
+        self, subagent_name: str = "", context: str = "pure", **kwargs,
     ) -> str:
         manager, hint = _manager_or_hint()
         if manager is None:
             return hint
+
+        # The worker's name is its identity — never auto-generate an id.
+        worker_name = subagent_name.strip()
+        if not worker_name:
+            return (
+                "Error: subagent_name is required — give the worker a name "
+                '(e.g. "researcher", "coder-1").'
+            )
 
         context_source = context if context in ("pure", "cloned") else "pure"
         context_messages = (
@@ -152,24 +159,23 @@ class SpawnSubagentTool(Tool):
             logger.warning("subagent_clone_ctx_unavailable — falling back to pure")
             context_source = "pure"
 
-        agent_name = name.strip() if name else None
         logger.info(
-            "subagent_tool_spawn name=%s context=%s",
-            agent_name or "<auto>", context_source,
+            "subagent_tool_spawn subagent_name=%s context=%s",
+            worker_name, context_source,
         )
 
         try:
-            agent_id = await manager.spawn(
-                name=agent_name,
+            spawned = await manager.spawn(
+                name=worker_name,
                 context_source=context_source,
                 context_messages=context_messages,
             )
             return (
                 f"Subagent spawned successfully.\n"
-                f"  Agent ID: {agent_id}\n"
+                f"  Subagent Name: {spawned}\n"
                 f"  Context: {context_source}\n"
                 f"  Use list_subagents to see all local workers.\n"
-                f'  Use subagent_send_task with agent_id="{agent_id}" to delegate work.'
+                f'  Use subagent_send_task with subagent_name="{spawned}" to delegate work.'
             )
         except Exception as e:
             logger.error("subagent_tool_spawn_failed err=%s", e)
@@ -187,33 +193,33 @@ class StopSubagentTool(Tool):
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "agent_id": {
+            "subagent_name": {
                 "type": "string",
-                "description": "The agent_id of the subagent to stop.",
+                "description": "The subagent_name of the subagent to stop.",
             },
         },
-        "required": ["agent_id"],
+        "required": ["subagent_name"],
     }
 
-    async def execute(self, agent_id: str = "", **kwargs) -> str:
-        if not agent_id:
-            return "Error: agent_id is required."
+    async def execute(self, subagent_name: str = "", **kwargs) -> str:
+        if not subagent_name:
+            return "Error: subagent_name is required."
 
         manager, hint = _manager_or_hint()
         if manager is None:
             return hint
 
-        logger.info("subagent_tool_stop agent_id=%s", agent_id)
+        logger.info("subagent_tool_stop subagent_name=%s", subagent_name)
 
-        ok = await manager.stop(agent_id)
+        ok = await manager.stop(subagent_name)
         if ok:
             return (
-                f"Subagent '{agent_id}' stopped successfully. "
+                f"Subagent '{subagent_name}' stopped successfully. "
                 f"Use list_subagents to verify."
             )
         else:
             return (
-                f"Subagent '{agent_id}' not found. "
+                f"Subagent '{subagent_name}' not found. "
                 f"Use list_subagents to see managed subagents."
             )
 
@@ -232,16 +238,16 @@ class SubagentSendTaskTool(Tool):
     description = (
         "Delegate a task to a local subagent worker and wait for the result. "
         "If the worker is busy, the task is queued and converted to async "
-        "automatically (the result is delivered later). agent_id from "
+        "automatically (the result is delivered later). subagent_name from "
         "spawn_subagent / list_subagents."
     )
     parameters: ClassVar[dict] = make_params(
-        agent_id={"type": "string", "description": "agent_id of the local subagent worker."},
+        subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
         task={"type": "string", "description": "Self-contained task for the worker."},
     )
 
-    async def execute(self, agent_id: str = "", task: str = "", **kwargs) -> str:
-        if err := require_params(agent_id=agent_id, task=task):
+    async def execute(self, subagent_name: str = "", task: str = "", **kwargs) -> str:
+        if err := require_params(subagent_name=subagent_name, task=task):
             return err
         manager, hint = _manager_or_hint()
         if manager is None:
@@ -249,31 +255,31 @@ class SubagentSendTaskTool(Tool):
 
         # The worker processes tasks serially.  When busy, queue the task as
         # async and tell the caller — never make it resend.
-        if manager.is_busy(agent_id):
-            n = manager.queued_count(agent_id)
+        if manager.is_busy(subagent_name):
+            n = manager.queued_count(subagent_name)
             try:
-                rpc_id = await manager.send_task_async(agent_id, task)
+                rpc_id = await manager.send_task_async(subagent_name, task)
             except Exception as e:
-                return f"Error queueing task to subagent '{agent_id}': {e}"
+                return f"Error queueing task to subagent '{subagent_name}': {e}"
             return (
-                f"Subagent '{agent_id}' is busy ({n} task(s) in flight) — the "
+                f"Subagent '{subagent_name}' is busy ({n} task(s) in flight) — the "
                 f"task was queued and converted to async.\n"
                 f"task_id: {rpc_id}\n"
                 "The result will be delivered automatically when complete; "
                 "poll with subagent_get_task_result "
-                f"(agent_id={agent_id}, task_id={rpc_id})."
+                f"(subagent_name={subagent_name}, task_id={rpc_id})."
             )
 
         try:
-            return await manager.send_task(agent_id, task)
+            return await manager.send_task(subagent_name, task)
         except TimeoutError:
             return (
-                f"Timed out waiting for task to '{agent_id}' after the worker "
+                f"Timed out waiting for task to '{subagent_name}' after the worker "
                 "timeout. The task is still running on the worker — its result "
                 "will be delivered automatically when complete."
             )
         except Exception as e:
-            return f"Error sending task to subagent '{agent_id}': {e}"
+            return f"Error sending task to subagent '{subagent_name}': {e}"
 
 
 class SubagentSendTaskAsyncTool(Tool):
@@ -289,27 +295,27 @@ class SubagentSendTaskAsyncTool(Tool):
     description = (
         "Delegate a task to a local subagent worker without waiting — returns "
         "a task_id. The result is delivered automatically when complete; poll "
-        "with subagent_get_task_result. agent_id from spawn_subagent / list_subagents."
+        "with subagent_get_task_result. subagent_name from spawn_subagent / list_subagents."
     )
     parameters: ClassVar[dict] = make_params(
-        agent_id={"type": "string", "description": "agent_id of the local subagent worker."},
+        subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
         task={"type": "string", "description": "Self-contained task for the worker."},
     )
 
-    async def execute(self, agent_id: str = "", task: str = "", **kwargs) -> str:
-        if err := require_params(agent_id=agent_id, task=task):
+    async def execute(self, subagent_name: str = "", task: str = "", **kwargs) -> str:
+        if err := require_params(subagent_name=subagent_name, task=task):
             return err
         manager, hint = _manager_or_hint()
         if manager is None:
             return hint
         try:
-            rpc_id = await manager.send_task_async(agent_id, task)
+            rpc_id = await manager.send_task_async(subagent_name, task)
             return (
-                f"Task sent to subagent '{agent_id}' (task_id: {rpc_id}). "
+                f"Task sent to subagent '{subagent_name}' (task_id: {rpc_id}). "
                 "The result will be delivered automatically when complete."
             )
         except Exception as e:
-            return f"Error sending task to subagent '{agent_id}': {e}"
+            return f"Error sending task to subagent '{subagent_name}': {e}"
 
 
 class SubagentGetTaskResultTool(Tool):
@@ -322,17 +328,17 @@ class SubagentGetTaskResultTool(Tool):
         "task_id comes from subagent_send_task_async."
     )
     parameters: ClassVar[dict] = make_params(
-        agent_id={"type": "string", "description": "agent_id of the local subagent worker."},
+        subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
         task_id={"type": "string", "description": "task_id from subagent_send_task_async."},
     )
 
-    async def execute(self, agent_id: str = "", task_id: str = "", **kwargs) -> str:
-        if err := require_params(agent_id=agent_id, task_id=task_id):
+    async def execute(self, subagent_name: str = "", task_id: str = "", **kwargs) -> str:
+        if err := require_params(subagent_name=subagent_name, task_id=task_id):
             return err
         manager, hint = _manager_or_hint()
         if manager is None:
             return hint
-        result = manager.get_task_result(agent_id, task_id)
+        result = manager.get_task_result(subagent_name, task_id)
         return result if result is not None else "pending"
 
 
@@ -343,20 +349,20 @@ class SubagentListTasksTool(Tool):
     category = "Subagent"
     description = (
         "List worker task records across local subagents (task_id, worker, "
-        "status, preview, result) — filterable by agent_id/status. Useful to "
+        "status, preview, result) — filterable by subagent_name/status. Useful to "
         "track multiple async tasks sent via subagent_send_task_async."
     )
     parameters: ClassVar[dict] = make_params(
-        agent_id={"type": "string", "description": "Optional worker agent_id to filter on.", "default": ""},
+        subagent_name={"type": "string", "description": "Optional worker subagent_name to filter on.", "default": ""},
         status={"type": "string", "description": "Optional status filter (pending/completed/failed).", "default": ""},
     )
 
-    async def execute(self, agent_id: str = "", status: str = "", **kwargs) -> str:
+    async def execute(self, subagent_name: str = "", status: str = "", **kwargs) -> str:
         manager, hint = _manager_or_hint()
         if manager is None:
             return hint
         records = manager.list_tasks(
-            agent_id=agent_id or None, status=status or None,
+            agent_name=subagent_name or None, status=status or None,
         )
         if not records:
             return "No subagent task records found."
@@ -364,7 +370,7 @@ class SubagentListTasksTool(Tool):
         for r in records:
             mode = r.get("mode", "sync")
             lines.append(
-                f"  - {r['task_id']} [{r['agent_id']}] {mode}/{r['status']}: "
+                f"  - {r['task_id']} [{r['agent_name']}] {mode}/{r['status']}: "
                 f"{r['preview'][:60]}"
             )
         return "\n".join(lines)
@@ -381,23 +387,23 @@ class SubagentCancelTaskTool(Tool):
         "drops a still-queued task; the worker moves on to the next task."
     )
     parameters: ClassVar[dict] = make_params(
-        agent_id={"type": "string", "description": "agent_id of the local subagent worker."},
+        subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
         task_id={"type": "string", "description": "task_id from subagent_send_task_async."},
     )
 
-    async def execute(self, agent_id: str = "", task_id: str = "", **kwargs) -> str:
-        if err := require_params(agent_id=agent_id, task_id=task_id):
+    async def execute(self, subagent_name: str = "", task_id: str = "", **kwargs) -> str:
+        if err := require_params(subagent_name=subagent_name, task_id=task_id):
             return err
         manager, hint = _manager_or_hint()
         if manager is None:
             return hint
         try:
-            cancelled = await manager.cancel_task(agent_id, task_id)
+            cancelled = await manager.cancel_task(subagent_name, task_id)
         except Exception as e:
-            return f"Error cancelling task '{task_id}' on subagent '{agent_id}': {e}"
+            return f"Error cancelling task '{task_id}' on subagent '{subagent_name}': {e}"
         if cancelled:
-            return f"Task '{task_id}' on subagent '{agent_id}' cancelled."
+            return f"Task '{task_id}' on subagent '{subagent_name}' cancelled."
         return (
-            f"Task '{task_id}' not found on subagent '{agent_id}' or already "
+            f"Task '{task_id}' not found on subagent '{subagent_name}' or already "
             "completed/failed."
         )

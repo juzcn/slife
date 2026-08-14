@@ -99,7 +99,7 @@ def _render_qr_ascii(content: str) -> str:
 # ── Global state ─────────────────────────────────────────────────────────
 
 _client = WechatClawbotClient()
-_agent_id: str = os.environ.get("SLIFE_AGENT_ID", "slife")
+_agent_name: str = os.environ.get("SLIFE_AGENT_NAME", "slife")
 from slife.paths import get_data_dir as _get_data_dir
 _work_dir: Path = _get_data_dir()
 
@@ -423,7 +423,7 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
             # Save with ilink_user_id for session-restore across restarts
             session_dict = _client.get_session_dict()
             session_dict["ilink_user_id"] = ilink_user_id
-            save_wechat_config(_agent_id, session_dict, _work_dir)
+            save_wechat_config(_agent_name, session_dict, _work_dir)
             _start_polling()
             _qr_status = "confirmed"
             logger.info("qr_login_confirmed user_id=%s", ilink_user_id)
@@ -666,7 +666,7 @@ async def wechat_check_status() -> str:
         return json.dumps(qr_info, ensure_ascii=False, indent=2)
 
     if not _client.is_logged_in:
-        saved = load_wechat_config(_agent_id, _work_dir)
+        saved = load_wechat_config(_agent_name, _work_dir)
         if saved.get("bot_token"):
             try:
                 restored = await _client.try_restore_session(saved)
@@ -765,7 +765,7 @@ async def wechat_logout() -> str:
         logger.debug("stop_error err=%s", e)
 
     _client = WechatClawbotClient()
-    clear_wechat_config(_agent_id, _work_dir)
+    clear_wechat_config(_agent_name, _work_dir)
 
     return json.dumps({
         "status": "logged_out",
@@ -786,12 +786,12 @@ def main():
     """
     from slife.server_utils import run_plugin_server, shutdown_server_logging
 
-    logger.info("wechat_start agent_id=%s log=%s pid=%s",
-                _agent_id, _log_path, os.getpid())
+    logger.info("wechat_start agent_name=%s log=%s pid=%s",
+                _agent_name, _log_path, os.getpid())
     try:
         run_plugin_server(mcp)
     finally:
-        logger.info("wechat_stop agent_id=%s", _agent_id)
+        logger.info("wechat_stop agent_name=%s", _agent_name)
         shutdown_server_logging()
 
 

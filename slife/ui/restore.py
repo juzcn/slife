@@ -52,13 +52,13 @@ def estimate_turn_tokens(turn: dict) -> int:
 # ── Prefix mapping ────────────────────────────────────────────────────
 
 
-def restore_prefix(channel: str | None, _agent_id: str) -> str:
+def restore_prefix(channel: str | None, _agent_name: str) -> str:
     """Consistent prefix mapping for restored turns.
 
     Matches the real-time display prefixes used during live operation:
       - human  → "You> "
-      - wechat → "<agent_id>(Wechat)"
-      - other   → "<remote_agent_id>(a2a)" (external agent id, A2A peer, etc.)
+      - wechat → "<agent_name>(Wechat)"
+      - other   → "<remote_agent_name>(a2a)" (external agent id, A2A peer, etc.)
     """
     ch = channel or ""
     if ch == "human":
@@ -206,7 +206,7 @@ async def restore_session(
     recovery_info: dict,
     conversation: "Conversation",
     config: "Config",
-    agent_id: str,
+    agent_name: str,
     assistant_prefix: str,
 ) -> None:
     """Restore a previous session from turn-based memory.
@@ -374,7 +374,7 @@ async def restore_session(
                 if is_heartbeat:
                     continue
                 ch = _channel_by_row.get(turn_idx, "")
-                prefix = restore_prefix(ch, agent_id)
+                prefix = restore_prefix(ch, agent_name)
                 ui_ops.append({
                     "type": "user",
                     "content": raw,

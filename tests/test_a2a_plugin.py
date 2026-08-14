@@ -23,17 +23,17 @@ def _fake_client():
     client.send_task = AsyncMock(return_value="result-text")
     client.send_task_async = AsyncMock(return_value="corr-1")
     client.list_agents = AsyncMock(return_value=[
-        MagicMock(agent_id="peer-1", display_name="Peer One", status="idle"),
+        MagicMock(agent_name="peer-1", status="idle"),
     ])
     client.own_card = MagicMock(return_value=MagicMock(
-        agent_id="self-1", display_name="Self One", status="idle",
+        agent_name="self-1", status="idle",
     ))
     client.get_task_result = MagicMock(return_value="done")
     client.cancel_task = AsyncMock(return_value="cancelled")
     client.broadcast = AsyncMock(return_value=["peer-1:corr-1"])
     client.subscribe_task = AsyncMock(return_value="sub-result")
     client.get_agent_card = MagicMock(return_value=MagicMock(
-        agent_id="peer-1", display_name="Peer One", status="idle",
+        agent_name="peer-1", status="idle",
     ))
     client.list_tasks = MagicMock(return_value=[])
     client.publish_message = AsyncMock()
@@ -64,10 +64,10 @@ class TestPluginTools:
         data = json.loads(result)
         # Own card is first — the agent must see itself to tell it apart
         # from a same-named peer (e.g. a second "slife" process).
-        assert data[0]["agent_id"] == "self-1"
-        assert data[0]["display_name"] == "Self One"
-        assert data[1]["agent_id"] == "peer-1"
-        assert data[1]["display_name"] == "Peer One"
+        assert data[0]["agent_name"] == "self-1"
+        assert data[0]["status"] == "idle"
+        assert data[1]["agent_name"] == "peer-1"
+        assert data[1]["status"] == "idle"
 
     @pytest.mark.asyncio
     async def test_a2a_broadcast(self):
@@ -164,7 +164,7 @@ class TestHarnessTools:
             reply_to="Slife/slife/tasks/result", correlation_id="cid-1",
         ))
         await plugin._on_agent_change(
-            MagicMock(agent_id="peer-1", display_name="Peer One", status="idle"),
+            MagicMock(agent_name="peer-1", status="idle"),
             "online",
         )
 
@@ -209,14 +209,14 @@ class TestHarnessTools:
         from slife.a2a.task_store import TaskRecord, get_store, clear_store
         clear_store()
         get_store()._records["t1"] = TaskRecord(
-            task_id="t1", agent_id="peer-1", task_preview="do x",
+            task_id="t1", agent_name="peer-1", task_preview="do x",
             status="completed", transport="mqtt", result="done",
         )
         client = _fake_client()
         client.list_tasks = MagicMock(
             return_value=[
                 TaskRecord(
-                    task_id="t1", agent_id="peer-1", task_preview="do x",
+                    task_id="t1", agent_name="peer-1", task_preview="do x",
                     status="completed", transport="mqtt", result="done",
                 ).to_task(),
             ],
@@ -258,15 +258,15 @@ class TestConfig:
     def test_load_config_from_env(self, monkeypatch):
         import json as _json
         from slife.a2a.config import A2AConfig
-        cfg = A2AConfig(enabled=True, agent_id="slife", broker_host="localhost", broker_port=1883)
+        cfg = A2AConfig(enabled=True, agent_name="slife", broker_host="localhost", broker_port=1883)
         monkeypatch.setenv("SLIFE_A2A_CONFIG", _json.dumps({
-            "enabled": True, "agent_id": "slife", "agent_name": "",
+            "enabled": True, "agent_name": "slife",
             "transport": "mqtt", "broker_host": "localhost", "broker_port": 1883,
             "http_host": "127.0.0.1", "http_port": 0,
             "heartbeat_interval": 15, "heartbeat_timeout": 45, "task_timeout": 120,
         }))
         loaded = plugin._load_config()
-        assert loaded.agent_id == "slife"
+        assert loaded.agent_name == "slife"
         assert loaded.broker_port == 1883
 
 
@@ -317,7 +317,7 @@ class TestEagerConnect:
         """_ensure_connected builds an A2AClient, connects it, and caches it."""
         import json as _json
         monkeypatch.setenv("SLIFE_A2A_CONFIG", _json.dumps({
-            "enabled": True, "agent_id": "slife", "agent_name": "",
+            "enabled": True, "agent_name": "slife",
             "transport": "mqtt", "broker_host": "localhost", "broker_port": 1883,
             "http_host": "127.0.0.1", "http_port": 0,
             "heartbeat_interval": 15, "heartbeat_timeout": 45, "task_timeout": 120,
@@ -335,7 +335,7 @@ class TestA2aStatusTool:
     """Tests for the __a2a_status harness tool (health-check probe)."""
 
     _CONFIG = json.dumps({
-        "enabled": True, "agent_id": "slife", "agent_name": "",
+        "enabled": True, "agent_name": "slife",
         "transport": "mqtt", "broker_host": "localhost", "broker_port": 1883,
         "http_host": "127.0.0.1", "http_port": 0,
         "heartbeat_interval": 15, "heartbeat_timeout": 45, "task_timeout": 120,
@@ -360,7 +360,7 @@ class TestA2aStatusTool:
         out = json.loads(await getattr(plugin, "__a2a_status")())
         assert out["enabled"] is True
         assert out["connected"] is False
-        assert out["agent_id"] == ""
+        assert out["agent_name"] == ""
         assert out["status"] == ""
         assert out["peers"] == []
         assert out["broker"] == "localhost:1883"
@@ -368,16 +368,16 @@ class TestA2aStatusTool:
     @pytest.mark.asyncio
     async def test_connected_with_peers(self):
         client = _fake_client()
-        client.agent_id = "slife"
+        client.agent_name = "slife"
         client.status = "idle"
         plugin._client = client
         out = json.loads(await getattr(plugin, "__a2a_status")())
         assert out["connected"] is True
-        assert out["agent_id"] == "slife"
+        assert out["agent_name"] == "slife"
         assert out["status"] == "idle"
         assert out["broker"] == "localhost:1883"
         assert out["peers"] == [
-            {"agent_id": "peer-1", "display_name": "Peer One", "status": "idle"},
+            {"agent_name": "peer-1", "status": "idle"},
         ]
 
     @pytest.mark.asyncio

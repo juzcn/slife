@@ -190,7 +190,7 @@ async def run_headless() -> None:
     from slife.agent.conversation import Conversation
     from slife.agent.inbox import ConversationStore
     from slife.agent.system_prompt import build as build_system_prompt
-    from slife.a2a.identity import AgentId, AgentMessage
+    from slife.a2a.identity import AgentName, AgentMessage
 
     # Subagents never save turns to memory, even when sharing the main
     # agent's memdb plugin (which would make memdb_enabled True).
@@ -200,7 +200,7 @@ async def run_headless() -> None:
         """Fresh one-shot conversation per task, seeded with the cloned
         parent context (mirrors the main agent's remote-message model)."""
 
-        def get_or_create(self, source: AgentId) -> Conversation:
+        def get_or_create(self, source: AgentName) -> Conversation:
             if _inherited_context:
                 return Conversation.from_history(
                     self._system_prompt, _inherited_context,
@@ -211,7 +211,7 @@ async def run_headless() -> None:
         system_prompt=build_system_prompt(service.config, is_subagent=True),
     )
     await service.start_inbox()
-    _source = AgentId(_name or "worker")
+    _source = AgentName(_name or "worker")
 
     request_count = 0
     try:

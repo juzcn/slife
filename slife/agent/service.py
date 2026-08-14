@@ -1363,7 +1363,7 @@ class AgentService:
             "messages": turn_messages,
             "images": images or [],
             "token_count": token_count or 0,
-            "who_helped": (self.config.a2a_config and self.config.a2a_config.agent_name) or "",
+            "who_helped": self.config.agent_name,
             "what_model": self.config.active_model.ref,
             "channel": channel,
         }
@@ -1464,8 +1464,8 @@ class AgentService:
         env_path = os.environ.get("SLIFE_MEMDB_DB")
         if env_path:
             return Path(env_path)
-        agent_id = os.environ.get("SLIFE_AGENT_ID", "slife")
-        return get_data_dir() / f"{agent_id}.db"
+        agent_name = os.environ.get("SLIFE_AGENT_NAME", "slife")
+        return get_data_dir() / f"{agent_name}.db"
 
     # ── Autonomous heartbeat ──────────────────────────────────────────
 
@@ -1652,7 +1652,7 @@ class AgentService:
         routed back through the plugin via ``__a2a_dispatch_result``.
         """
         import json as _json
-        from slife.a2a.identity import AgentId, AgentMessage
+        from slife.a2a.identity import AgentName, AgentMessage
         from slife.a2a.card import AgentCard, format_presence_line
 
         logger.info("a2a_poll_loop_start interval=%.1fs", interval)
@@ -1690,7 +1690,7 @@ class AgentService:
                             pass
 
                     msg = AgentMessage(
-                        source=AgentId(ev.get("source", "unknown")),
+                        source=AgentName(ev.get("source", "unknown")),
                         content=ev.get("content", ""),
                         reply_to=ev.get("reply_to", ""),
                         correlation_id=ev.get("correlation_id", ""),
@@ -1704,8 +1704,7 @@ class AgentService:
 
                 for pev in data.get("presence", []):
                     card = AgentCard(
-                        agent_id=AgentId(pev.get("card", {}).get("agent_id", "?")),
-                        display_name=pev.get("card", {}).get("display_name", ""),
+                        agent_name=AgentName(pev.get("card", {}).get("agent_name", "?")),
                         status=pev.get("card", {}).get("status", "idle"),
                     )
                     text = format_presence_line(card, pev.get("event", ""))
@@ -1776,13 +1775,13 @@ class AgentService:
 
         # When a subagent completes an async task, push the result into
         # the inbox so the user sees it without having to poll.
-        async def _on_subagent_done(agent_id: str, task_id: str, result: str) -> None:
+        async def _on_subagent_done(agent_name: str, task_id: str, result: str) -> None:
             from slife.a2a.identity import AgentMessage
             from slife.subagent.identity import SUBAGENT
             msg = AgentMessage(
                 source=SUBAGENT,
                 content=(
-                    f"Subagent **{agent_id}** completed async task "
+                    f"Subagent **{agent_name}** completed async task "
                     f"(ID: `{task_id}`):\n\n"
                     f"{result}"
                 ),

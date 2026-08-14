@@ -219,12 +219,8 @@ class SlifeApp(App):
         self.service = AgentService(config)
 
         # Resolve assistant name prefix once (set on first user message)
-        a2a = config.a2a_config
-        agent_name = a2a.agent_name if a2a else ""
-        self._agent_id: str = config.agent_id
-        self._assistant_prefix: str = (
-            f"{agent_name}> " if agent_name else f"{self._agent_id}> "
-        )
+        self._agent_name: str = config.agent_name
+        self._assistant_prefix: str = f"{self._agent_name}> "
 
         # TUI state for tracking active widgets during streaming
         self._tool_widgets: dict[str, ToolCallWidget] = {}
@@ -628,7 +624,7 @@ class SlifeApp(App):
             recovery_info=self._recovery_info,
             conversation=self.service.conversation,
             config=self.service.config,
-            agent_id=self._agent_id,
+            agent_name=self._agent_name,
             assistant_prefix=self._assistant_prefix,
         )
         self._recovery_info = None

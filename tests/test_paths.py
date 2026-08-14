@@ -95,25 +95,25 @@ class TestGetLogsDir:
 class TestGetDbPath:
     """Tests for get_db_path."""
 
-    def test_default_agent_id_uses_slife(self, monkeypatch):
+    def test_default_agent_name_uses_slife(self, monkeypatch):
         monkeypatch.setenv("SLIFE_DATA_DIR", "/data")
-        monkeypatch.delenv("SLIFE_AGENT_ID", raising=False)
+        monkeypatch.delenv("SLIFE_AGENT_NAME", raising=False)
         assert paths.get_db_path() == Path("/data/slife.db")
 
-    def test_custom_agent_id_in_filename(self, monkeypatch):
+    def test_custom_agent_name_in_filename(self, monkeypatch):
         monkeypatch.setenv("SLIFE_DATA_DIR", "/data")
-        monkeypatch.delenv("SLIFE_AGENT_ID", raising=False)
+        monkeypatch.delenv("SLIFE_AGENT_NAME", raising=False)
         assert paths.get_db_path("my-agent") == Path("/data/my-agent.db")
 
     def test_agent_env_var_used_when_no_arg(self, monkeypatch):
-        """SLIFE_AGENT_ID is honored when no agent_id is passed.
+        """SLIFE_AGENT_NAME is honored when no agent_name is passed.
 
         Regression: health tools (check_memdb/system_health) omit the
         agent and must resolve the current agent's database, not always
         ``slife.db`` (the Jack-agent confusion).
         """
         monkeypatch.setenv("SLIFE_DATA_DIR", "/data")
-        monkeypatch.setenv("SLIFE_AGENT_ID", "Jack")
+        monkeypatch.setenv("SLIFE_AGENT_NAME", "Jack")
         assert paths.get_db_path() == Path("/data/Jack.db")
 
 

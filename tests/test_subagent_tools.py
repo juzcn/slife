@@ -133,19 +133,22 @@ class TestSpawnSubagentTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SpawnSubagentTool()
-            result = await tool.execute(name="worker")
+            result = await tool.execute(subagent_name="worker")
             assert "sub-1" in result
             assert "spawned" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_spawn_with_auto_name(self):
+    async def test_spawn_requires_name(self):
+        """No auto-generated id — subagent_name is required."""
         mock_mgr = MagicMock()
         mock_mgr.spawn = AsyncMock(return_value="sub-2")
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SpawnSubagentTool()
             result = await tool.execute()
-            assert "sub-2" in result
+
+        assert "subagent_name is required" in result
+        mock_mgr.spawn.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_spawn_failure(self):
@@ -165,7 +168,7 @@ class TestSpawnSubagentTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SpawnSubagentTool()
-            await tool.execute()
+            await tool.execute(subagent_name="worker")
 
         kwargs = mock_mgr.spawn.call_args.kwargs
         assert kwargs["context_source"] == "pure"
@@ -185,14 +188,14 @@ class TestSpawnSubagentTool:
             ref="t/m", provider="t", api_model="m", display_name="M",
             api_key="k", context_window=1000,
         )
-        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_id="testbot")
+        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
 
         mock_mgr = MagicMock()
         mock_mgr.spawn = AsyncMock(return_value="sub-4")
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SpawnSubagentTool()
             object.__setattr__(tool, "_ctx", ToolContext(conversation=conv, config=cfg))
-            await tool.execute(context="cloned")
+            await tool.execute(subagent_name="worker", context="cloned")
 
         kwargs = mock_mgr.spawn.call_args.kwargs
         assert kwargs["context_source"] == "cloned"
@@ -214,7 +217,7 @@ class TestSpawnSubagentTool:
             ref="t/m", provider="t", api_model="m", display_name="M",
             api_key="k", context_window=1000,
         )
-        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_id="testbot")
+        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
 
         data = _serialize_cloned_context(ToolContext(conversation=conv, config=cfg))
         assert data is not None
@@ -228,16 +231,16 @@ class TestSpawnSubagentTool:
 
 class TestStopSubagentTool:
     @pytest.mark.asyncio
-    async def test_missing_agent_id(self):
+    async def test_missing_agent_name(self):
         tool = StopSubagentTool()
-        result = await tool.execute(agent_id="")
+        result = await tool.execute(subagent_name="")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_no_manager(self):
         with patch(MANAGER_PATH, return_value=None):
             tool = StopSubagentTool()
-            result = await tool.execute(agent_id="sub-1")
+            result = await tool.execute(subagent_name="sub-1")
             assert "not running yet" in result
 
     @pytest.mark.asyncio
@@ -247,7 +250,7 @@ class TestStopSubagentTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = StopSubagentTool()
-            result = await tool.execute(agent_id="sub-1")
+            result = await tool.execute(subagent_name="sub-1")
             assert "stopped" in result.lower()
 
     @pytest.mark.asyncio
@@ -257,7 +260,7 @@ class TestStopSubagentTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = StopSubagentTool()
-            result = await tool.execute(agent_id="sub-1")
+            result = await tool.execute(subagent_name="sub-1")
             assert "not found" in result.lower()
 
 
@@ -270,14 +273,14 @@ class TestSubagentSendTaskTool:
     @pytest.mark.asyncio
     async def test_missing_params(self):
         tool = SubagentSendTaskTool()
-        result = await tool.execute(agent_id="", task="")
+        result = await tool.execute(subagent_name="", task="")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_no_manager(self):
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentSendTaskTool()
-            result = await tool.execute(agent_id="sub-1", task="do X")
+            result = await tool.execute(subagent_name="sub-1", task="do X")
             assert "not running yet" in result
 
     @pytest.mark.asyncio
@@ -288,7 +291,7 @@ class TestSubagentSendTaskTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentSendTaskTool()
-            result = await tool.execute(agent_id="sub-1", task="do X")
+            result = await tool.execute(subagent_name="sub-1", task="do X")
         assert result == "done result"
         mock_mgr.send_task.assert_awaited_once_with("sub-1", "do X")
 
@@ -301,7 +304,7 @@ class TestSubagentSendTaskTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentSendTaskTool()
-            result = await tool.execute(agent_id="sub-1", task="do X")
+            result = await tool.execute(subagent_name="sub-1", task="do X")
         assert "still running" in result
         assert "delivered automatically" in result
 
@@ -315,7 +318,7 @@ class TestSubagentSendTaskTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentSendTaskTool()
-            result = await tool.execute(agent_id="sub-1", task="do X")
+            result = await tool.execute(subagent_name="sub-1", task="do X")
         assert "queued" in result
         assert "converted to async" in result
         assert "rpc-9" in result
@@ -327,14 +330,14 @@ class TestSubagentSendTaskAsyncTool:
     @pytest.mark.asyncio
     async def test_missing_params(self):
         tool = SubagentSendTaskAsyncTool()
-        result = await tool.execute(agent_id="", task="")
+        result = await tool.execute(subagent_name="", task="")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_no_manager(self):
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentSendTaskAsyncTool()
-            result = await tool.execute(agent_id="sub-1", task="do X")
+            result = await tool.execute(subagent_name="sub-1", task="do X")
             assert "not running yet" in result
 
     @pytest.mark.asyncio
@@ -344,7 +347,7 @@ class TestSubagentSendTaskAsyncTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentSendTaskAsyncTool()
-            result = await tool.execute(agent_id="sub-1", task="do X")
+            result = await tool.execute(subagent_name="sub-1", task="do X")
         assert "rpc-1" in result
         assert "delivered automatically" in result
         mock_mgr.send_task_async.assert_awaited_once_with("sub-1", "do X")
@@ -354,14 +357,14 @@ class TestSubagentGetTaskResultTool:
     @pytest.mark.asyncio
     async def test_missing_params(self):
         tool = SubagentGetTaskResultTool()
-        result = await tool.execute(agent_id="", task_id="")
+        result = await tool.execute(subagent_name="", task_id="")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_no_manager(self):
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentGetTaskResultTool()
-            result = await tool.execute(agent_id="sub-1", task_id="rpc-1")
+            result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
             assert "not running yet" in result
 
     @pytest.mark.asyncio
@@ -371,7 +374,7 @@ class TestSubagentGetTaskResultTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentGetTaskResultTool()
-            result = await tool.execute(agent_id="sub-1", task_id="rpc-1")
+            result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
         assert result == "pending"
 
     @pytest.mark.asyncio
@@ -381,7 +384,7 @@ class TestSubagentGetTaskResultTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentGetTaskResultTool()
-            result = await tool.execute(agent_id="sub-1", task_id="rpc-1")
+            result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
         assert result == "the result"
 
 
@@ -407,11 +410,11 @@ class TestSubagentListTasksTool:
         mock_mgr = MagicMock()
         mock_mgr.list_tasks = MagicMock(return_value=[
             {
-                "task_id": "rpc-1", "agent_id": "sub-1", "status": "pending",
+                "task_id": "rpc-1", "agent_name": "sub-1", "status": "pending",
                 "preview": "do X", "result": None,
             },
             {
-                "task_id": "rpc-2", "agent_id": "sub-2", "status": "completed",
+                "task_id": "rpc-2", "agent_name": "sub-2", "status": "completed",
                 "preview": "do Y", "result": "done",
             },
         ])
@@ -429,9 +432,9 @@ class TestSubagentListTasksTool:
         mock_mgr.list_tasks = MagicMock(return_value=[])
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentListTasksTool()
-            await tool.execute(agent_id="sub-1", status="pending")
+            await tool.execute(subagent_name="sub-1", status="pending")
         mock_mgr.list_tasks.assert_called_once_with(
-            agent_id="sub-1", status="pending",
+            agent_name="sub-1", status="pending",
         )
 
 
@@ -439,14 +442,14 @@ class TestSubagentCancelTaskTool:
     @pytest.mark.asyncio
     async def test_missing_params(self):
         tool = SubagentCancelTaskTool()
-        result = await tool.execute(agent_id="", task_id="")
+        result = await tool.execute(subagent_name="", task_id="")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_no_manager(self):
         with patch(MANAGER_PATH, return_value=None):
             tool = SubagentCancelTaskTool()
-            result = await tool.execute(agent_id="sub-1", task_id="rpc-1")
+            result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
             assert "not running yet" in result
 
     @pytest.mark.asyncio
@@ -456,7 +459,7 @@ class TestSubagentCancelTaskTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentCancelTaskTool()
-            result = await tool.execute(agent_id="sub-1", task_id="rpc-1")
+            result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
         assert "cancelled" in result.lower()
         mock_mgr.cancel_task.assert_awaited_once_with("sub-1", "rpc-1")
 
@@ -467,5 +470,5 @@ class TestSubagentCancelTaskTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentCancelTaskTool()
-            result = await tool.execute(agent_id="sub-1", task_id="rpc-1")
+            result = await tool.execute(subagent_name="sub-1", task_id="rpc-1")
         assert "not found" in result.lower()

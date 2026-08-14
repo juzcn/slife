@@ -14,20 +14,20 @@ from slife.logfmt import SessionFormatter, FILE_LOG_FORMAT, resolve_log_dir
 logger = logging.getLogger("slife")
 
 
-def _session_log_path(agent_id: str = "slife") -> Path:
+def _session_log_path(agent_name: str = "slife") -> Path:
     """Generate a timestamped log file path for this session.
 
     Follows the same naming convention as sub-agent logs:
-    ``logs/YYYYMMDD_HHMMSS_<agent_id>.log``.
+    ``logs/YYYYMMDD_HHMMSS_<agent_name>.log``.
     """
     log_dir = resolve_log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return log_dir / f"{ts}_{agent_id}.log"
+    return log_dir / f"{ts}_{agent_name}.log"
 
 
 def setup_logging(
-    agent_id: str = "slife",
+    agent_name: str = "slife",
     level: int = logging.DEBUG,
 ) -> tuple[Path, logging.Handler]:
     """Configure logging to both console and file.
@@ -35,7 +35,7 @@ def setup_logging(
     Console: WARNING+ only — keeps the terminal clean before Textual's
              alternate screen activates and during TUI runtime.
     File:    DEBUG+ with timestamps, session/request IDs for troubleshooting.
-    Each session writes to a new ``logs/YYYYMMDD_HHMMSS_<agent_id>.log`` file.
+    Each session writes to a new ``logs/YYYYMMDD_HHMMSS_<agent_name>.log`` file.
 
     Returns:
         (log_path, console_handler) — console is already at WARNING;
@@ -53,9 +53,9 @@ def setup_logging(
             None
         )
         if console is not None:
-            return _session_log_path(agent_id), console
+            return _session_log_path(agent_name), console
 
-    log_path = _session_log_path(agent_id)
+    log_path = _session_log_path(agent_name)
     file_fmt = SessionFormatter(FILE_LOG_FORMAT)
 
     console = configure_root_logging(

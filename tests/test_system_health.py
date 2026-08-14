@@ -330,7 +330,7 @@ class TestCheckWechatStatus:
 
     def test_not_logged_in(self):
         mock_config = MagicMock()
-        mock_config.agent_id = "testuser"
+        mock_config.agent_name = "testuser"
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
@@ -348,7 +348,7 @@ class TestCheckWechatStatus:
     def test_session_expired(self):
         import time
         mock_config = MagicMock()
-        mock_config.agent_id = "testuser"
+        mock_config.agent_name = "testuser"
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
@@ -365,7 +365,7 @@ class TestCheckWechatStatus:
     def test_logged_in(self):
         import time
         mock_config = MagicMock()
-        mock_config.agent_id = "testuser"
+        mock_config.agent_name = "testuser"
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
@@ -635,7 +635,7 @@ class TestCheckA2aFunction:
     @staticmethod
     def _status(**overrides):
         data = {
-            "enabled": True, "connected": True, "agent_id": "slife",
+            "enabled": True, "connected": True, "agent_name": "slife",
             "status": "idle", "broker": "localhost:1883",
             "peers": [], "queued": {"tasks": 0, "presence": 0, "cancellations": 0},
         }
@@ -667,16 +667,27 @@ class TestCheckA2aFunction:
         assert entries[0]["level"] == "ok"
         assert entries[0]["value"] == "connected"
         assert "localhost:1883" in entries[0]["hint"]
+        assert "You have no peers online." in entries[0]["hint"]
 
     @pytest.mark.asyncio
     async def test_connected_with_peers(self):
         client = _FakeA2aClient(self._status(peers=[
-            {"agent_id": "peer-1", "display_name": "Peer One", "status": "idle"},
+            {"agent_name": "peer-1", "status": "idle"},
         ]))
         entries = await check_a2a(client=client)
         assert entries[0]["level"] == "ok"
-        assert entries[0]["peers"][0]["agent_id"] == "peer-1"
-        assert "1 peer(s): Peer One" in entries[0]["hint"]
+        assert entries[0]["peers"][0]["agent_name"] == "peer-1"
+        assert "You have 1 peer: peer-1." in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_connected_multiple_peers_plural(self):
+        """Two peers pluralise the hint and list both names."""
+        client = _FakeA2aClient(self._status(peers=[
+            {"agent_name": "peer-1", "status": "idle"},
+            {"agent_name": "peer-2", "status": "idle"},
+        ]))
+        entries = await check_a2a(client=client)
+        assert "You have 2 peers: peer-1, peer-2." in entries[0]["hint"]
 
     @pytest.mark.asyncio
     async def test_check_failure_reports_warning(self):

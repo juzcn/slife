@@ -25,8 +25,8 @@ class TestSessionLogPath:
         assert path.name.endswith("_slife.log")
 
     @patch("pathlib.Path.mkdir")
-    def test_custom_agent_id(self, mock_mkdir):
-        path = bootstrap._session_log_path(agent_id="testbot")
+    def test_custom_agent_name(self, mock_mkdir):
+        path = bootstrap._session_log_path(agent_name="testbot")
         assert "_testbot.log" in str(path)
 
     @patch("pathlib.Path.mkdir")
@@ -35,7 +35,7 @@ class TestSessionLogPath:
         # Timestamp: YYYYMMDD_HHMMSS
         name = path.stem  # e.g. 20260719_113147_slife
         parts = name.split("_")
-        assert len(parts) >= 3  # YYYYMMDD, HHMMSS, agent_id
+        assert len(parts) >= 3  # YYYYMMDD, HHMMSS, agent_name
 
 
 # ── setup_logging ───────────────────────────────────────────────────────────

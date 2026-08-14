@@ -5,7 +5,7 @@ import pytest; pytestmark = pytest.mark.unit
 import json
 
 from slife.a2a.card import AgentCard
-from slife.a2a.identity import AgentId
+from slife.a2a.identity import AgentName
 from slife.a2a import wire
 
 
@@ -92,30 +92,29 @@ class TestTaskState:
 
 class TestAgentCardWire:
     def test_to_dict_keeps_slife_extensions(self):
-        card = AgentCard.create(agent_id=AgentId("jack"), display_name="Jack", status="busy")
+        card = AgentCard.create(agent_name=AgentName("jack"), status="busy")
         d = card.to_dict()
-        assert d["agent_id"] == "jack"
-        assert d["display_name"] == "Jack"
+        assert d["agent_name"] == "jack"
         assert d["status"] == "busy"
-        # Official fields present.
+        # Official fields present (name falls back to agent_name).
         assert d["protocolVersion"] == "0.3.0"
-        assert d["name"] == "Jack"
+        assert d["name"] == "jack"
         assert "capabilities" in d
         assert "skills" in d
 
     def test_from_dict_roundtrip(self):
         card = AgentCard(
-            agent_id=AgentId("jack"), display_name="Jack", status="idle",
+            agent_name=AgentName("jack"), status="idle",
             name="Jack", description="d", url="http://x", version="1",
         )
         restored = AgentCard.from_dict(card.to_dict())
-        assert restored.agent_id == "jack"
+        assert restored.agent_name == "jack"
         assert restored.status == "idle"
         assert restored.name == "Jack"
         assert restored.url == "http://x"
 
     def test_from_dict_minimal_presence(self):
         """Legacy/minimal presence payloads (no official fields) still parse."""
-        card = AgentCard.from_dict({"agent_id": "jack", "status": "online"})
-        assert card.agent_id == "jack"
+        card = AgentCard.from_dict({"agent_name": "jack", "status": "online"})
+        assert card.agent_name == "jack"
         assert card.status == "online"

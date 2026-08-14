@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from openai import BadRequestError, ContentFilterFinishReasonError
 
-from slife.a2a.identity import AgentId, AgentMessage
+from slife.a2a.identity import AgentName, AgentMessage
 from slife.agent.conversation import Conversation
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ class Inbox:
     Usage::
 
         inbox = Inbox(agent_loop, conversations)
-        await inbox.post(AgentMessage(source=AgentId("human"), content="hi"))
+        await inbox.post(AgentMessage(source=AgentName("human"), content="hi"))
     """
 
     def __init__(
@@ -355,8 +355,8 @@ class ConversationStore:
 
     def __init__(self, system_prompt: str):
         self._system_prompt = system_prompt
-        self._convs: dict[AgentId, Conversation] = {}
-        self._handler_factories: dict[AgentId, "AgentEventHandler | None"] = {}
+        self._convs: dict[AgentName, Conversation] = {}
+        self._handler_factories: dict[AgentName, "AgentEventHandler | None"] = {}
         self._default_handler_factory: "Callable[[], AgentEventHandler] | None" = (
             None
         )
@@ -372,7 +372,7 @@ class ConversationStore:
         self._default_handler_factory = factory
 
     def register_handler(
-        self, source: AgentId, handler: "AgentEventHandler | None",
+        self, source: AgentName, handler: "AgentEventHandler | None",
     ) -> None:
         """Register a handler (or None) for a specific source agent.
 
@@ -381,7 +381,7 @@ class ConversationStore:
         """
         self._handler_factories[source] = handler
 
-    def handler_for(self, source: AgentId) -> "AgentEventHandler | None":
+    def handler_for(self, source: AgentName) -> "AgentEventHandler | None":
         """Return the handler for *source*.
 
         Falls back to the human handler, then to the default factory,
@@ -398,7 +398,7 @@ class ConversationStore:
             return self._default_handler_factory()
         return None
 
-    def get_or_create(self, source: AgentId) -> Conversation:
+    def get_or_create(self, source: AgentName) -> Conversation:
         """Get or create a conversation for *source*.
 
         Human (TUI) and WeChat conversations are persistent so the
@@ -423,7 +423,7 @@ class ConversationStore:
         # One-shot conversation for remote agents
         return Conversation(system_prompt=self._system_prompt)
 
-    def clear(self, source: AgentId) -> None:
+    def clear(self, source: AgentName) -> None:
         """Clear conversation history for *source*."""
         if source in self._convs:
             self._convs[source].clear()

@@ -17,13 +17,13 @@ class TestTaskRecord:
     def test_default_values(self):
         rec = TaskRecord(
             task_id="t1",
-            agent_id="agent-1",
+            agent_name="agent-1",
             task_preview="do something",
             status="pending",
             transport="mqtt",
         )
         assert rec.task_id == "t1"
-        assert rec.agent_id == "agent-1"
+        assert rec.agent_name == "agent-1"
         assert rec.task_preview == "do something"
         assert rec.status == "pending"
         assert rec.transport == "mqtt"
@@ -34,7 +34,7 @@ class TestTaskRecord:
     def test_with_result(self):
         rec = TaskRecord(
             task_id="t2",
-            agent_id="a2",
+            agent_name="a2",
             task_preview="run tests",
             status="completed",
             transport="mqtt",
@@ -49,7 +49,7 @@ class TestTaskRecord:
         """to_task() serializes as an official A2A Task dict."""
         rec = TaskRecord(
             task_id="t9",
-            agent_id="agent-1",
+            agent_name="agent-1",
             task_preview="do thing",
             status="completed",
             transport="mqtt",
@@ -66,7 +66,7 @@ class TestTaskRecord:
     def test_to_task_pending_maps_to_submitted(self):
         rec = TaskRecord(
             task_id="t10",
-            agent_id="agent-1",
+            agent_name="agent-1",
             task_preview="",
             status="pending",
             transport="mqtt",
@@ -89,7 +89,7 @@ class TestTaskStoreWrites:
     def test_record_send(self, store):
         rec = store.record_send("t1", "agent-1", "do the thing", "mqtt")
         assert rec.task_id == "t1"
-        assert rec.agent_id == "agent-1"
+        assert rec.agent_name == "agent-1"
         assert rec.status == "pending"
         assert rec.transport == "mqtt"
         assert rec.task_preview == "do the thing"
@@ -164,10 +164,10 @@ class TestTaskStoreReads:
         # newest first
         assert records[0].created_at >= records[-1].created_at
 
-    def test_list_tasks_filter_agent_id(self, store):
-        records = store.list_tasks(agent_id="agent-1")
+    def test_list_tasks_filter_agent_name(self, store):
+        records = store.list_tasks(agent_name="agent-1")
         assert len(records) == 2
-        assert all(r.agent_id == "agent-1" for r in records)
+        assert all(r.agent_name == "agent-1" for r in records)
 
     def test_list_tasks_filter_status(self, store):
         records = store.list_tasks(status="pending")
@@ -183,7 +183,7 @@ class TestTaskStoreReads:
         assert store.list_tasks(transport="nonexistent-binding") == []
 
     def test_list_tasks_combined_filters(self, store):
-        records = store.list_tasks(agent_id="agent-1", status="completed")
+        records = store.list_tasks(agent_name="agent-1", status="completed")
         assert len(records) == 1
         assert records[0].task_id == "t1"
 

@@ -9,16 +9,16 @@ from typing import TYPE_CHECKING, NewType
 if TYPE_CHECKING:
     from slife.agent.loop import AgentEventHandler
 
-AgentId = NewType("AgentId", str)
-"""Identifies an agent.  Examples: ``"human"``, ``"sub-1"``, ``"desk-01"``."""
+AgentName = NewType("AgentName", str)
+"""Identifies an agent by its name.  Examples: ``"human"``, ``"Jack"``, ``"desk-01"``."""
 
-HUMAN = AgentId("human")
+HUMAN = AgentName("human")
 """The operator at the keyboard."""
 
-WECHAT = AgentId("wechat")
+WECHAT = AgentName("wechat")
 """WeChat user — peer terminal, same processing pipeline as human."""
 
-HEARTBEAT = AgentId("heartbeat")
+HEARTBEAT = AgentName("heartbeat")
 """Internal autonomous heartbeat — not a peer terminal."""
 
 
@@ -32,7 +32,7 @@ class AgentMessage:
     the agent's response back to the originating channel.
     """
 
-    source: AgentId
+    source: AgentName
     content: str
     images: list[str] = field(default_factory=list)
     reply_to: str | None = None

@@ -305,7 +305,7 @@ class WechatConfig:
     """Configuration for the slife-wechat plugin.
 
     Optional -- only loaded when ``wechat.enabled`` is true.
-    Session tokens are stored per-agent in ``wechat_<agent_id>.json5``.
+    Session tokens are stored per-agent in ``wechat_<agent_name>.json5``.
     """
 
     enabled: bool = True
@@ -341,7 +341,7 @@ class Config:
     # session restore.  Results ≤ budget are stored as-is.  Tool output is
     # reproducible — re-run the tool to retrieve the full version.
     memory_tool_result_chars: int = 8000
-    agent_id: str = "slife"
+    agent_name: str = "slife"
     tool_timeout: float = 60.0  # seconds, 0 to disable — applies to ALL tools
     heartbeat_interval: int = 60  # seconds — autonomous idle heartbeat period
     mcp_config: MCPConfig | None = None
@@ -388,7 +388,7 @@ class Config:
             "context_ceiling": self.context_ceiling,
             "tool_result_ceiling": self.tool_result_ceiling,
             "memory_tool_result_chars": self.memory_tool_result_chars,
-            "agent_id": self.agent_id,
+            "agent_name": self.agent_name,
             "mcp_config": asdict(self.mcp_config) if self.mcp_config else None,
             "memdb_config": asdict(self.memdb_config) if self.memdb_config else None,
             "wechat_config": asdict(self.wechat_config) if self.wechat_config else None,
@@ -433,7 +433,7 @@ class Config:
             context_floor=data.get("context_floor", 0.2),
             context_ceiling=data.get("context_ceiling", 0.8),
             tool_result_ceiling=data.get("tool_result_ceiling", 0.2),
-            agent_id=data.get("agent_id", "slife"),
+            agent_name=data.get("agent_name", "slife"),
             mcp_config=mcp_cfg,
             memdb_config=mem_cfg,
             wechat_config=wc_cfg,
@@ -896,14 +896,14 @@ class Config:
     @classmethod
     def from_json5(
         cls, path: str | Path = "slife.json5",
-        agent_id: str = "slife",
+        agent_name: str = "slife",
     ) -> "Config":
         """Load from JSON5 file with provider->model hierarchy.
 
         Args:
             path: Path to the JSON5 config file.
                   Defaults to ``~/.slife/slife.json5``.
-            agent_id: Agent identity key (``--agent`` on the CLI).
+            agent_name: Agent identity key (``--agent`` on the CLI).
                       Defaults to ``"slife"``.  Used for memory isolation
                       and as the MQTT agent identity when Mosquitto is available.
         """
@@ -958,7 +958,7 @@ class Config:
         )
 
         # Memory -- built-in plugin, always enabled.  DB files live in
-        # ~/.slife/<agent_id>.db — no configuration needed.
+        # ~/.slife/<agent_name>.db — no configuration needed.
         memdb_config = MemdbConfig.from_dict(raw.get("memdb", {}))
         logger.debug(
             "memdb_config embed=%s",
@@ -969,8 +969,8 @@ class Config:
         wechat_config = WechatConfig.from_dict(raw.get("wechat", {}))
         if wechat_config.enabled:
             logger.debug(
-                "wechat_config agent_id=%s",
-                agent_id,
+                "wechat_config agent_name=%s",
+                agent_name,
             )
 
         # A2A — always parse config; enabled at runtime after mosquitto probe.
@@ -983,11 +983,11 @@ class Config:
                 "(renamed: plugin is a2a, mqtt is the transport binding)",
             )
             a2a_raw = raw.get("mqtt")
-        a2a_config = A2AConfig.from_dict(a2a_raw, agent_id=agent_id)
+        a2a_config = A2AConfig.from_dict(a2a_raw, agent_name=agent_name)
         if a2a_config.enabled:
             logger.debug(
                 "a2a_config id=%s broker=%s:%d",
-                a2a_config.agent_id,
+                a2a_config.agent_name,
                 a2a_config.broker_host,
                 a2a_config.broker_port,
             )
@@ -1016,7 +1016,7 @@ class Config:
             context_ceiling=context_ceiling,
             tool_result_ceiling=tool_result_ceiling,
             memory_tool_result_chars=memory_tool_result_chars,
-            agent_id=agent_id,
+            agent_name=agent_name,
             mcp_config=mcp_config,
             memdb_config=memdb_config,
             wechat_config=wechat_config,

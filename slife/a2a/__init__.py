@@ -12,7 +12,7 @@ Subagents are **not** part of A2A — they are local workers (see
 from slife.a2a.card import AgentCard
 from slife.a2a.client import A2AClient
 from slife.a2a.config import A2AConfig
-from slife.a2a.identity import AgentId, AgentMessage, HUMAN
+from slife.a2a.identity import AgentName, AgentMessage, HUMAN
 from slife.a2a.mqtt import MQTTAdapter
 from slife.a2a.transport import TransportAdapter, TransportMessage
 
@@ -20,7 +20,7 @@ __all__ = [
     "A2AClient",
     "A2AConfig",
     "AgentCard",
-    "AgentId",
+    "AgentName",
     "AgentMessage",
     "HUMAN",
     "MQTTAdapter",

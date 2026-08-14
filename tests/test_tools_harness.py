@@ -80,7 +80,7 @@ class TestSysTrim:
             models=[ModelConfig(ref="t/m", provider="t", api_model="m",
                                 display_name="M", api_key="k",
                                 context_window=200, supports_vision=False)],
-            active_model_ref="t/m", tools=[], agent_id="test",
+            active_model_ref="t/m", tools=[], agent_name="test",
         )
 
     @classmethod
@@ -128,7 +128,7 @@ class TestTurnTrim:
             models=[ModelConfig(ref="t/m", provider="t", api_model="m",
                                 display_name="M", api_key="k",
                                 context_window=200, supports_vision=False)],
-            active_model_ref="t/m", tools=[], agent_id="test",
+            active_model_ref="t/m", tools=[], agent_name="test",
         )
 
     @staticmethod

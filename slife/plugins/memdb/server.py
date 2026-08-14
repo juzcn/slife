@@ -121,12 +121,12 @@ def _get_db_path() -> Path:
     Uses ``SLIFE_DATA_DIR`` (set by the main process) so dev and
     production environments each get their own location.
     """
-    agent_id = os.environ.get("SLIFE_AGENT_ID", "slife")
+    agent_name = os.environ.get("SLIFE_AGENT_NAME", "slife")
     env_path = os.environ.get("SLIFE_MEMDB_DB")
     if env_path:
         return Path(env_path)
     data_dir = get_data_dir()
-    return data_dir / f"{agent_id}.db"
+    return data_dir / f"{agent_name}.db"
 
 
 def _get_init_lock() -> asyncio.Lock:

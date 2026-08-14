@@ -29,7 +29,7 @@ def _mock_config(**overrides):
     cfg._path = None
     cfg.to_dict = Mock(return_value={
         "models": [], "active_model_ref": "", "tools": [],
-        "max_iterations": 30, "agent_id": "slife",
+        "max_iterations": 30, "agent_name": "slife",
         "mcp_config": None, "memdb_config": None,
         "wechat_config": None, "a2a_config": None,
         "subagent_config": {"max_subagents": 5, "task_timeout": 120},
@@ -84,7 +84,7 @@ class TestSubagentProcessInit:
         cfg = _mock_config()
         proc = SubagentProcess("worker", cfg)
         parsed = json.loads(proc._config_json)
-        assert parsed["agent_id"] == "slife"
+        assert parsed["agent_name"] == "slife"
         assert parsed["max_iterations"] == 30
 
 

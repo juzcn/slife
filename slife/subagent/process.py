@@ -70,7 +70,7 @@ class SubagentProcess:
         self._pending: dict[str, asyncio.Future[str]] = {}
         self._async_results: dict[str, str] = {}
         self._ready = asyncio.Event()
-        # Local worker task records — rpc_id → {task_id, agent_id, preview,
+        # Local worker task records — rpc_id → {task_id, agent_name, preview,
         # status, result}.  Kept separate from the A2A task store: worker
         # tasks are not mesh tasks.
         self._task_records: dict[str, dict] = {}
@@ -321,7 +321,7 @@ class SubagentProcess:
         """
         self._task_records[rpc_id] = {
             "task_id": rpc_id,
-            "agent_id": self._name,
+            "agent_name": self._name,
             "preview": task[:200],
             "status": "pending",
             "mode": mode,
@@ -475,13 +475,12 @@ class SubagentManager:
 
     def __init__(self, config: "Config"):
         self._subagents: dict[str, SubagentProcess] = {}
-        self._counter = 0
         self._config = config
         sc = config.subagent_config or {}
         self._max = sc.get("max_subagents", 5)
         self._timeout = sc.get("task_timeout", 120)
         # Callback invoked when a subagent task completes:
-        #   async def cb(agent_id: str, task_id: str, result: str) -> None
+        #   async def cb(agent_name: str, task_id: str, result: str) -> None
         self.on_task_complete: "Callable | None" = None
 
     @property
@@ -492,7 +491,10 @@ class SubagentManager:
         context_source: str = "pure", context_messages: list[dict] | None = None,
     ) -> str:
         if self.count >= self._max: raise RuntimeError(f"Max {self._max} subagents reached")
-        if name is None: self._counter += 1; name = f"sub-{self._counter}"
+        # The worker's name is its identity — never auto-generate an id.
+        if not name or not name.strip():
+            raise ValueError("subagent_name is required")
+        name = name.strip()
         if name in self._subagents and self._subagents[name].is_running: return name
         proc = SubagentProcess(
             name, self._config,
@@ -501,25 +503,25 @@ class SubagentManager:
         await proc.start(); self._subagents[name] = proc
         return name
 
-    async def send_task(self, agent_id: str, task: str, timeout: float | None = None) -> str:
-        if (proc := self._subagents.get(agent_id)) is None:
-            raise ValueError(f"Subagent '{agent_id}' not found")
+    async def send_task(self, agent_name: str, task: str, timeout: float | None = None) -> str:
+        if (proc := self._subagents.get(agent_name)) is None:
+            raise ValueError(f"Subagent '{agent_name}' not found")
         return await proc.send_task(task, timeout or self._timeout)
 
-    async def send_task_async(self, agent_id: str, task: str) -> str:
+    async def send_task_async(self, agent_name: str, task: str) -> str:
         """Send a task without waiting — returns *rpc_id* immediately."""
-        if (proc := self._subagents.get(agent_id)) is None:
-            raise ValueError(f"Subagent '{agent_id}' not found")
+        if (proc := self._subagents.get(agent_name)) is None:
+            raise ValueError(f"Subagent '{agent_name}' not found")
         return await proc.send_task_async(task)
 
-    def get_task_result(self, agent_id: str, rpc_id: str) -> str | None:
+    def get_task_result(self, agent_name: str, rpc_id: str) -> str | None:
         """Return the result of an async task, or ``None`` if not yet ready."""
-        if (proc := self._subagents.get(agent_id)) is None:
+        if (proc := self._subagents.get(agent_name)) is None:
             return None
         return proc.get_task_result(rpc_id)
 
     def list_tasks(
-        self, agent_id: str | None = None, status: str | None = None,
+        self, agent_name: str | None = None, status: str | None = None,
     ) -> list[dict]:
         """List worker task records across all subagents (local store).
 
@@ -528,7 +530,7 @@ class SubagentManager:
         """
         records: list[dict] = []
         for aid, proc in self._subagents.items():
-            if agent_id is not None and aid != agent_id:
+            if agent_name is not None and aid != agent_name:
                 continue
             records.extend(proc.list_task_records())
         if status is not None:
@@ -536,9 +538,9 @@ class SubagentManager:
         records.sort(key=lambda r: r.get("created_at", 0), reverse=True)
         return records[:50]
 
-    async def stop(self, agent_id: str) -> bool:
-        if (proc := self._subagents.get(agent_id)) is None: return False
-        await proc.stop(); del self._subagents[agent_id]
+    async def stop(self, agent_name: str) -> bool:
+        if (proc := self._subagents.get(agent_name)) is None: return False
+        await proc.stop(); del self._subagents[agent_name]
         return True
 
     async def stop_all(self) -> None:
@@ -549,22 +551,22 @@ class SubagentManager:
     def list(self) -> list[str]:
         return [n for n, p in self._subagents.items() if p.is_running]
 
-    def get(self, agent_id: str) -> SubagentProcess | None:
-        return self._subagents.get(agent_id)
+    def get(self, agent_name: str) -> SubagentProcess | None:
+        return self._subagents.get(agent_name)
 
-    def is_busy(self, agent_id: str) -> bool:
-        """True if *agent_id* has a task in flight (serially processed)."""
-        proc = self._subagents.get(agent_id)
+    def is_busy(self, agent_name: str) -> bool:
+        """True if *agent_name* has a task in flight (serially processed)."""
+        proc = self._subagents.get(agent_name)
         return bool(proc and proc.is_busy)
 
-    def queued_count(self, agent_id: str) -> int:
-        """Return the number of in-flight/queued tasks for *agent_id*."""
-        proc = self._subagents.get(agent_id)
+    def queued_count(self, agent_name: str) -> int:
+        """Return the number of in-flight/queued tasks for *agent_name*."""
+        proc = self._subagents.get(agent_name)
         return proc.queued if proc else 0
 
-    async def cancel_task(self, agent_id: str, task_id: str) -> bool:
-        """Cancel a pending/queued worker task on *agent_id* (best-effort)."""
-        proc = self._subagents.get(agent_id)
+    async def cancel_task(self, agent_name: str, task_id: str) -> bool:
+        """Cancel a pending/queued worker task on *agent_name* (best-effort)."""
+        proc = self._subagents.get(agent_name)
         if proc is None:
             return False
         return await proc.cancel_task(task_id)

@@ -4,7 +4,7 @@ One row = one turn (user message + assistant's complete response).
 No sessions, no lifecycle — each turn is independent and immutable.
 Restore loads the most recent N turns by rowid.
 
-Agent isolation is at the file level — each agent_id has its own .db file.
+Agent isolation is at the file level — each agent_name has its own .db file.
 """
 
 import json

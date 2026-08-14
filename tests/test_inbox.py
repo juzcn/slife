@@ -7,7 +7,7 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from slife.a2a.identity import AgentId, AgentMessage, HUMAN, WECHAT
+from slife.a2a.identity import AgentName, AgentMessage, HUMAN, WECHAT
 from slife.agent.inbox import ConversationStore
 
 
@@ -33,13 +33,13 @@ class TestConversationStore:
         assert msgs[0]["content"] == "You are helpful."
 
     def test_get_or_create_remote_agent_one_shot(self, store):
-        remote = AgentId("agent-7")
+        remote = AgentName("agent-7")
         conv1 = store.get_or_create(remote)
         conv2 = store.get_or_create(remote)
         assert conv1 is not conv2  # Fresh conversation each time
 
     def test_get_or_create_remote_has_system_prompt(self, store):
-        remote = AgentId("agent-7")
+        remote = AgentName("agent-7")
         conv = store.get_or_create(remote)
         msgs = conv.to_openai_messages()
         assert msgs[0]["content"] == "You are helpful."
@@ -50,11 +50,11 @@ class TestConversationStore:
         assert store.handler_for(HUMAN) is handler
 
     def test_handler_for_unregistered_returns_none(self, store):
-        assert store.handler_for(AgentId("unknown")) is None
+        assert store.handler_for(AgentName("unknown")) is None
 
     def test_register_none_handler(self, store):
-        store.register_handler(AgentId("bot"), None)
-        assert store.handler_for(AgentId("bot")) is None
+        store.register_handler(AgentName("bot"), None)
+        assert store.handler_for(AgentName("bot")) is None
 
     def test_clear_removes_conversation(self, store):
         conv = store.get_or_create(HUMAN)
@@ -65,7 +65,7 @@ class TestConversationStore:
 
     def test_clear_unknown_agent_noop(self, store):
         """Clearing an unknown agent should not raise."""
-        store.clear(AgentId("unknown"))  # Should not raise
+        store.clear(AgentName("unknown"))  # Should not raise
 
 
 # ── AgentMessage ────────────────────────────────────────────────────────
@@ -84,7 +84,7 @@ class TestAgentMessage:
 
     def test_full_message(self):
         msg = AgentMessage(
-            source=AgentId("agent-1"),
+            source=AgentName("agent-1"),
             content="task result",
             images=["img1.png"],
             reply_to="Slife/human/tasks",
@@ -94,13 +94,13 @@ class TestAgentMessage:
         assert msg.reply_to == "Slife/human/tasks"
         assert msg.correlation_id == "corr-123"
 
-    def test_agent_id_new_type(self):
-        """AgentId is a NewType — behaves like str."""
-        aid = AgentId("my-agent")
+    def test_agent_name_new_type(self):
+        """AgentName is a NewType — behaves like str."""
+        aid = AgentName("my-agent")
         assert aid == "my-agent"
         assert isinstance(aid, str)
 
-    def test_human_is_agent_id(self):
+    def test_human_is_agent_name(self):
         assert HUMAN == "human"
         assert isinstance(HUMAN, str)
 
@@ -145,7 +145,7 @@ class TestInboxConstruction:
     async def test_post_from_remote_agent(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
         inbox = Inbox(mock_loop, mock_store)
-        msg = AgentMessage(source=AgentId("agent-3"), content="task done")
+        msg = AgentMessage(source=AgentName("agent-3"), content="task done")
         await inbox.post(msg)
         assert not inbox._queue.empty()
 
@@ -194,8 +194,8 @@ class TestInboxCancelCorrelation:
     async def test_drops_queued_matching_message(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
         inbox = Inbox(mock_loop, mock_store)
-        await inbox.post(AgentMessage(source=AgentId("peer"), content="a", correlation_id="cid-a"))
-        await inbox.post(AgentMessage(source=AgentId("peer"), content="b", correlation_id="cid-b"))
+        await inbox.post(AgentMessage(source=AgentName("peer"), content="a", correlation_id="cid-a"))
+        await inbox.post(AgentMessage(source=AgentName("peer"), content="b", correlation_id="cid-b"))
 
         inbox.cancel_correlation("cid-a")
 
@@ -299,7 +299,7 @@ class TestInboxProcessOne:
         mock_loop.run = AsyncMock(return_value=mock_result)
         mock_store.get_or_create.return_value = MagicMock()
 
-        msg = self._make_msg(source=AgentId("remote-1"), content="task",
+        msg = self._make_msg(source=AgentName("remote-1"), content="task",
                              reply_to="Slife/human/tasks", corr_id="corr-1")
         # Patch _publish_reply to avoid real MQTT publish
         inbox._publish_reply = AsyncMock()
@@ -466,7 +466,7 @@ class TestInboxProcessOne:
         mock_loop.run = AsyncMock(side_effect=ValueError("broken"))
         mock_store.get_or_create.return_value = MagicMock()
 
-        msg = self._make_msg(source=AgentId("remote"), content="do it",
+        msg = self._make_msg(source=AgentName("remote"), content="do it",
                              reply_to="Slife/human/tasks", corr_id="err-1")
         await inbox._process_one(msg)
 
@@ -486,7 +486,7 @@ class TestInboxProcessOne:
         mock_loop.run = AsyncMock(return_value=mock_result)
         mock_store.get_or_create.return_value = MagicMock()
 
-        msg = self._make_msg(source=AgentId("remote-2"), content="task")
+        msg = self._make_msg(source=AgentName("remote-2"), content="task")
         # Should not raise — error is caught in try/except pass
         await inbox._process_one(msg)
 
@@ -669,7 +669,7 @@ class TestConversationStoreDefaultHandler:
         store.set_default_handler_factory(factory)
 
         # Unknown source with no registered handler
-        result = store.handler_for(AgentId("unknown-bot"))
+        result = store.handler_for(AgentName("unknown-bot"))
         assert result is default_handler
         factory.assert_called_once()
 
@@ -677,10 +677,10 @@ class TestConversationStoreDefaultHandler:
         store = ConversationStore(system_prompt="test")
         registered = MagicMock()
         default = MagicMock()
-        store.register_handler(AgentId("bot"), registered)
+        store.register_handler(AgentName("bot"), registered)
         store.set_default_handler_factory(lambda: default)
 
-        result = store.handler_for(AgentId("bot"))
+        result = store.handler_for(AgentName("bot"))
         assert result is registered
 
     def test_human_handler_fallback(self):
@@ -689,7 +689,7 @@ class TestConversationStoreDefaultHandler:
         store.register_handler(HUMAN, human_handler)
 
         # Unknown source should fall back to human handler
-        result = store.handler_for(AgentId("unknown"))
+        result = store.handler_for(AgentName("unknown"))
         assert result is human_handler
 
 

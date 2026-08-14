@@ -52,7 +52,7 @@ class TestMQTTAdapterInit:
     def test_initial_state(self):
         import os
         adapter = MQTTAdapter("test-client")
-        assert adapter._agent_id == "test-client"
+        assert adapter._agent_name == "test-client"
         assert adapter._client_id == f"test-client-{os.getpid()}"
         assert adapter.is_connected is False
         assert adapter._client is None
@@ -124,8 +124,8 @@ class TestMQTTAdapterConnect:
 
         mock_client.will_set.assert_called_once_with(
             "Slife/agent-01/presence",
-            # agent_id lets peers' watchdog identify who went offline.
-            json.dumps({"status": "offline", "agent_id": "agent-01"}),
+            # agent_name lets peers' watchdog identify who went offline.
+            json.dumps({"status": "offline", "agent_name": "agent-01"}),
             qos=1,
             retain=False,
         )
@@ -150,10 +150,10 @@ class TestMQTTAdapterDisconnect:
         await adapter.disconnect()
 
         assert not adapter.is_connected
-        # Publishes an offline presence carrying agent_id so the peer
+        # Publishes an offline presence carrying agent_name so the peer
         # watchdog can identify who left.
         offline_payload = json.loads(mock_client.publish.call_args.args[1])
-        assert offline_payload == {"status": "offline", "agent_id": "agent-01"}
+        assert offline_payload == {"status": "offline", "agent_name": "agent-01"}
         mock_client.loop_stop.assert_called_once()
         mock_client.disconnect.assert_called_once()
 

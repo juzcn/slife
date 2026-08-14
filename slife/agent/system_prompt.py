@@ -57,14 +57,13 @@ def _render_context(config: Config) -> dict:
     """
     model = config.active_model
     a2a = config.a2a_config
-    agent_name: str = (a2a.agent_name if a2a else "") or config.agent_id
 
     return {
         # ── 身份 ──
-        "agent_name": agent_name,
+        "agent_name": config.agent_name,
         # When the agent's persisted memory began (earliest diary turn) —
         # tells the LLM the origin of its session history.
-        "memory_start_time": _memory_start_time(config.agent_id),
+        "memory_start_time": _memory_start_time(config.agent_name),
         # ── 环境 ──
         "platform_type": _platform_type(),
         "platform_name": _os_name(),
@@ -87,7 +86,7 @@ def _render_context(config: Config) -> dict:
         "data_dir": str(get_data_dir().resolve()),
         "config_path": str(get_config_path().resolve()),
         "logs_dir": str(get_logs_dir().resolve()),
-        "db_path": str(get_db_path(config.agent_id).resolve()),
+        "db_path": str(get_db_path(config.agent_name).resolve()),
         "images_dir": str(get_images_dir().resolve()),
         # ── 多代理通信 (A2A) ──
         "a2a_configured": a2a is not None and a2a.enabled,
@@ -161,7 +160,7 @@ def build_context_status(
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _memory_start_time(agent_id: str) -> str:
+def _memory_start_time(agent_name: str) -> str:
     """Earliest persisted turn time from the SQLite diary — ``""`` if none.
 
     This is the agent's true memory origin: the diary is append-only (old
@@ -173,7 +172,7 @@ def _memory_start_time(agent_id: str) -> str:
     try:
         from slife.paths import get_db_path
 
-        db_path = get_db_path(agent_id)
+        db_path = get_db_path(agent_name)
         if not db_path.is_file():
             return ""
         import sqlite3

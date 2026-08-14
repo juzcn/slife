@@ -27,7 +27,7 @@ from collections.abc import Awaitable, Callable
 
 from slife.a2a.card import AgentCard
 from slife.a2a.config import A2AConfig
-from slife.a2a.identity import AgentId, AgentMessage
+from slife.a2a.identity import AgentName, AgentMessage
 from slife.a2a.mqtt import MQTTAdapter
 from slife.a2a.transport import TransportAdapter, TransportMessage
 from slife.a2a import wire
@@ -80,14 +80,14 @@ class A2AClient:
         self, config: A2AConfig, transport: TransportAdapter | None = None,
     ):
         self._config = config
-        self._agent_id = AgentId(config.agent_id)
+        self._agent_name = AgentName(config.agent_name)
         self._adapter: TransportAdapter = (
             transport if transport is not None
-            else MQTTAdapter(config.agent_id)
+            else MQTTAdapter(config.agent_name)
         )
 
-        # Peer tracking: agent_id → (AgentCard, last_heard_at)
-        self._peers: dict[AgentId, tuple[AgentCard, float]] = {}
+        # Peer tracking: agent_name → (AgentCard, last_heard_at)
+        self._peers: dict[AgentName, tuple[AgentCard, float]] = {}
 
         # Callbacks
         self._agent_change_callbacks: list[AgentChangeCallback] = []
@@ -111,8 +111,8 @@ class A2AClient:
     # ── Properties ────────────────────────────────────────────────────
 
     @property
-    def agent_id(self) -> AgentId:
-        return self._agent_id
+    def agent_name(self) -> AgentName:
+        return self._agent_name
 
     @property
     def status(self) -> str:
@@ -129,7 +129,7 @@ class A2AClient:
         host = self._config.broker_host
         port = self._config.broker_port
 
-        logger.info("a2a_connect host=%s port=%d id=%s", host, port, self._agent_id)
+        logger.info("a2a_connect host=%s port=%d id=%s", host, port, self._agent_name)
         await self._adapter.connect(host, port)
 
         # On a paho auto-reconnect, re-announce presence so peers (which
@@ -149,9 +149,9 @@ class A2AClient:
                 async for msg in self._adapter.messages("Slife/+/presence"):
                     try:
                         card = json.loads(msg.payload)
-                        if card.get("agent_id") == self._agent_id:
+                        if card.get("agent_name") == self._agent_name:
                             raise DuplicateAgentError(
-                                f"Agent '{self._agent_id}' is already running "
+                                f"Agent '{self._agent_name}' is already running "
                                 f"on the MQTT mesh.\n"
                                 f"  • Stop mosquitto first, then restart slife\n"
                                 f"  • Or use a different agent id:\n"
@@ -166,19 +166,19 @@ class A2AClient:
         await self._publish_presence("online")
 
         # Subscribe to own inbox + results
-        await self._adapter.subscribe(f"Slife/{self._agent_id}/tasks/inbox")
-        await self._adapter.subscribe(f"Slife/{self._agent_id}/tasks/result")
+        await self._adapter.subscribe(f"Slife/{self._agent_name}/tasks/inbox")
+        await self._adapter.subscribe(f"Slife/{self._agent_name}/tasks/result")
 
         # Start background loops
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         self._peer_watchdog_task = asyncio.create_task(self._peer_watchdog_loop())
         self._inbox_listener_task = asyncio.create_task(self._inbox_listener())
 
-        logger.info("a2a_connected id=%s", self._agent_id)
+        logger.info("a2a_connected id=%s", self._agent_name)
 
     async def disconnect(self) -> None:
         """Gracefully leave the mesh."""
-        logger.info("a2a_disconnecting id=%s", self._agent_id)
+        logger.info("a2a_disconnecting id=%s", self._agent_name)
 
         # Cancel background tasks
         for task in (
@@ -201,7 +201,7 @@ class A2AClient:
         self._completed_tasks.clear()
 
         await self._adapter.disconnect()
-        logger.info("a2a_disconnected id=%s", self._agent_id)
+        logger.info("a2a_disconnected id=%s", self._agent_name)
 
     # ── Public transport proxies ────────────────────────────────────
     # These exist so external code (Inbox, SubagentManager) never
@@ -235,8 +235,7 @@ class A2AClient:
         same-named peer (e.g. a second ``slife`` process) for itself.
         """
         return AgentCard(
-            agent_id=self._agent_id,
-            display_name=self._config.agent_name,
+            agent_name=self._agent_name,
             status=self._status,
         )
 
@@ -259,7 +258,7 @@ class A2AClient:
     # ── Task routing ──────────────────────────────────────────────────
 
     async def send_task(
-        self, target: AgentId, task: str, timeout: float | None = None,
+        self, target: AgentName, task: str, timeout: float | None = None,
     ) -> str:
         """Send a task to *target* and wait for the result.
 
@@ -278,9 +277,9 @@ class A2AClient:
         payload = json.dumps(
             wire.send_message_envelope(
                 corr_id=corr_id,
-                source=str(self._agent_id),
+                source=str(self._agent_name),
                 task=task,
-                reply_to=f"Slife/{self._agent_id}/tasks/result",
+                reply_to=f"Slife/{self._agent_name}/tasks/result",
             ),
             ensure_ascii=False,
         )
@@ -323,7 +322,7 @@ class A2AClient:
 
     # ── Async task routing ────────────────────────────────────────────
 
-    async def send_task_async(self, target: AgentId, task: str) -> str:
+    async def send_task_async(self, target: AgentName, task: str) -> str:
         """Send a task without waiting — returns *correlation_id* immediately.
 
         The result can be retrieved later via :meth:`get_task_result`.
@@ -336,9 +335,9 @@ class A2AClient:
         payload = json.dumps(
             wire.send_message_envelope(
                 corr_id=corr_id,
-                source=str(self._agent_id),
+                source=str(self._agent_name),
                 task=task,
-                reply_to=f"Slife/{self._agent_id}/tasks/result",
+                reply_to=f"Slife/{self._agent_name}/tasks/result",
             ),
             ensure_ascii=False,
         )
@@ -358,7 +357,7 @@ class A2AClient:
         """
         return self._completed_tasks.pop(corr_id, None)
 
-    async def cancel_task(self, target: AgentId, corr_id: str) -> str:
+    async def cancel_task(self, target: AgentName, corr_id: str) -> str:
         """Cancel a pending or async task, returning its resulting status.
 
         Returns ``"cancelled"``, ``"completed"``, ``"failed"``, or
@@ -390,7 +389,7 @@ class A2AClient:
 
         # Notify the target agent with the official CancelTask request.
         cancel_payload = json.dumps(
-            wire.cancel_task_envelope(corr_id, str(self._agent_id)),
+            wire.cancel_task_envelope(corr_id, str(self._agent_name)),
             ensure_ascii=False,
         )
         try:
@@ -417,15 +416,15 @@ class A2AClient:
         logger.info("a2a_broadcast peers=%d task=%.80s", len(corr_ids), task)
         return corr_ids
 
-    def get_agent_card(self, agent_id: AgentId) -> AgentCard | None:
+    def get_agent_card(self, agent_name: AgentName) -> AgentCard | None:
         """Return the :class:`AgentCard` for a known peer, or ``None``."""
-        entry = self._peers.get(AgentId(agent_id))
+        entry = self._peers.get(AgentName(agent_name))
         return entry[0] if entry else None
 
     # ── Task introspection ────────────────────────────────────────────
 
     def list_tasks(
-        self, agent_id: str | None = None, status: str | None = None,
+        self, agent_name: str | None = None, status: str | None = None,
     ) -> list[dict]:
         """List mesh tasks from the shared :class:`TaskStore`.
 
@@ -435,7 +434,7 @@ class A2AClient:
         return [
             rec.to_task()
             for rec in get_store().list_tasks(
-                agent_id=agent_id, status=status, transport="mqtt",
+                agent_name=agent_name, status=status, transport="mqtt",
             )
         ]
 
@@ -466,7 +465,7 @@ class A2AClient:
                 raise TimeoutError(f"Subscribe to task '{task_id}' timed out after {timeout}s")
 
         # Subscribe via MQTT progress topic — wait for result on result topic
-        progress_topic = f"Slife/{self._agent_id}/tasks/result"
+        progress_topic = f"Slife/{self._agent_name}/tasks/result"
         try:
             await self._adapter.subscribe(progress_topic)
         except Exception:
@@ -490,17 +489,15 @@ class A2AClient:
         """Publish our presence (called on connect, heartbeat, status change).
 
         The payload carries the official ``AgentCard`` fields plus the slife
-        extensions (``agent_id``/``display_name``/``status``) read by the
-        peer watchdog.
+        extensions (``agent_name``/``status``) read by the peer watchdog.
         """
         card = AgentCard(
-            agent_id=self._agent_id,
-            display_name=self._config.agent_name,
+            agent_name=self._agent_name,
             status=status_override if status_override in ("offline",) else self._status,
         )
         payload = json.dumps(card.to_dict(), ensure_ascii=False)
         await self._adapter.publish(
-            f"Slife/{self._agent_id}/presence", payload, qos=1, retain=False,
+            f"Slife/{self._agent_name}/presence", payload, qos=1, retain=False,
         )
 
     async def _heartbeat_loop(self) -> None:
@@ -529,12 +526,11 @@ class A2AClient:
             await self._prune_stale_peers(timeout)
 
             card = AgentCard.from_dict(data)
-            peer_id = card.agent_id
-            if not peer_id or peer_id == self._agent_id:
+            peer_id = card.agent_name
+            if not peer_id or peer_id == self._agent_name:
                 continue
 
             status = card.status
-            display_name = card.display_name
 
             was_known = peer_id in self._peers
 
@@ -549,7 +545,7 @@ class A2AClient:
             self._peers[peer_id] = (card, _time.monotonic())
 
             if not was_known:
-                logger.info("a2a_agent_online id=%s name=%s", peer_id, display_name)
+                logger.info("a2a_agent_online id=%s", peer_id)
                 await self._notify_agent_change(card, "online")
             else:
                 await self._notify_agent_change(card, "status_change")
@@ -578,8 +574,8 @@ class A2AClient:
         cycle, which leaks orphaned ``queue.get()`` tasks that silently
         consume inbound messages.
         """
-        inbox_filter = f"Slife/{self._agent_id}/tasks/inbox"
-        result_filter = f"Slife/{self._agent_id}/tasks/result"
+        inbox_filter = f"Slife/{self._agent_name}/tasks/inbox"
+        result_filter = f"Slife/{self._agent_name}/tasks/result"
 
         logger.debug(
             "a2a_inbox_listener_start inbox=%s result=%s",
@@ -648,7 +644,7 @@ class A2AClient:
 
         method = data.get("method", "")
         slife = data.get("_slife", {}) if isinstance(data.get("_slife"), dict) else {}
-        source = AgentId(slife.get("source", "unknown"))
+        source = AgentName(slife.get("source", "unknown"))
 
         if method == "CancelTask":
             logger.info("a2a_incoming_cancel source=%s task_id=%s", source, data.get("id"))

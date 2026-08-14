@@ -773,9 +773,9 @@ class TestConfigSubagentDefault:
 
 
 class TestConfigA2A:
-    """Tests for A2A config — agent_id derived from user."""
+    """Tests for A2A config — agent_name derived from user."""
 
-    def test_agent_id_from_user(self, tmp_path, monkeypatch):
+    def test_agent_name_from_user(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({
@@ -788,9 +788,9 @@ class TestConfigA2A:
                 "broker": {"host": "mqtt.example.com", "port": 1883},
             },
         }))
-        config = Config.from_json5(str(cfg_path), agent_id="bob")
+        config = Config.from_json5(str(cfg_path), agent_name="bob")
         assert config.a2a_config is not None
-        assert config.a2a_config.agent_id == "bob"
+        assert config.a2a_config.agent_name == "bob"
         assert config.a2a_config.enabled is True  # auto-enabled when a2a config present
 
     def test_deprecated_mqtt_key_aliases_a2a(self, tmp_path, monkeypatch, caplog):
@@ -809,7 +809,7 @@ class TestConfigA2A:
         }))
         import logging
         with caplog.at_level(logging.WARNING, logger="slife.config"):
-            config = Config.from_json5(str(cfg_path), agent_id="bob")
+            config = Config.from_json5(str(cfg_path), agent_name="bob")
         assert config.a2a_config is not None
         assert config.a2a_config.broker_host == "mqtt.example.com"
         assert any(
@@ -829,7 +829,7 @@ class TestConfigA2A:
             "a2a": {"broker": {"host": "new.example.com", "port": 1883}},
             "mqtt": {"broker": {"host": "old.example.com", "port": 1883}},
         }))
-        config = Config.from_json5(str(cfg_path), agent_id="bob")
+        config = Config.from_json5(str(cfg_path), agent_name="bob")
         assert config.a2a_config.broker_host == "new.example.com"
 
 

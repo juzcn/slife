@@ -24,7 +24,7 @@ def cfg():
         )],
         active_model_ref="test/test-model",
         tools=[],
-        agent_id="testbot",
+        agent_name="testbot",
     )
 
 
@@ -52,13 +52,8 @@ class TestBuild:
         assert "2. Credential resolution chain" in result
         assert "3. Tools & skills" in result
 
-    def test_agent_name_displayed(self, cfg):
-        from slife.agent.system_prompt import build
-        cfg.a2a_config.agent_name = "MyBot"
-        result = build(cfg)
-        assert "You are Agent MyBot" in result
-
-    def test_falls_back_to_agent_id(self, cfg):
+    def test_agent_nameentity_is_agent_name(self, cfg):
+        """The prompt identity is the agent_name (--agent) — no separate name."""
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "You are Agent testbot" in result
@@ -168,7 +163,7 @@ class TestBuild:
         assert "cannot interact" in result
         assert "it only sends" in result
 
-    def test_subagent_identity_when_is_subagent(self, cfg, monkeypatch):
+    def test_subagent_nameentity_when_is_subagent(self, cfg, monkeypatch):
         """is_subagent=True renders the subagent identity template."""
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
@@ -180,7 +175,7 @@ class TestBuild:
         assert "all replies and management belong to" in result
         assert "conversation is not persisted" in result
 
-    def test_subagent_identity_includes_name(self, cfg, monkeypatch):
+    def test_subagent_nameentity_includes_name(self, cfg, monkeypatch):
         """SLIFE_SUBAGENT_NAME and created_at are rendered into the identity."""
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
@@ -189,7 +184,7 @@ class TestBuild:
         assert "sub-7, an agent worker of" in result
         assert "created at 2026-01-05T10:00:00+08:00" in result
 
-    def test_subagent_identity_forbids_persona(self, cfg, monkeypatch):
+    def test_subagent_nameentity_forbids_persona(self, cfg, monkeypatch):
         """A subagent has no independent identity — it speaks as the parent
         agent, never introducing itself as a named persona to remote peers."""
         from slife.agent.system_prompt import build
@@ -315,7 +310,7 @@ class TestStructure:
         )
         con.commit()
         con.close()
-        monkeypatch.setattr("slife.paths.get_db_path", lambda agent_id: db)
+        monkeypatch.setattr("slife.paths.get_db_path", lambda agent_name: db)
 
         result = build(cfg)
         assert (
@@ -328,7 +323,7 @@ class TestStructure:
         from slife.agent.system_prompt import build
 
         monkeypatch.setattr(
-            "slife.paths.get_db_path", lambda agent_id: tmp_path / "missing.db"
+            "slife.paths.get_db_path", lambda agent_name: tmp_path / "missing.db"
         )
         result = build(cfg)
         assert "begins at" not in result
@@ -489,24 +484,13 @@ class TestFormatPresenceLine:
 
     def _card(self, **kw):
         from slife.a2a.card import AgentCard
-        defaults = dict(agent_id="desk-02", display_name="", status="idle")
+        defaults = dict(agent_name="desk-02", status="idle")
         defaults.update(kw)
         return AgentCard(**defaults)
 
-    def test_online_with_display_name(self):
+    def test_online(self):
         from slife.a2a.card import format_presence_line
-        card = self._card(agent_id="desk-02", display_name="采采", status="busy")
-        assert format_presence_line(card, "online") == "⚡ 采采 (desk-02) online [busy]"
-
-    def test_online_without_display_name(self):
-        from slife.a2a.card import format_presence_line
-        card = self._card(agent_id="desk-02")
-        assert format_presence_line(card, "online") == "⚡ desk-02 online [idle]"
-
-    def test_online_same_display_and_id_no_duplicate(self):
-        from slife.a2a.card import format_presence_line
-        card = self._card(agent_id="desk-02", display_name="desk-02")
-        assert format_presence_line(card, "online") == "⚡ desk-02 online [idle]"
+        assert format_presence_line(self._card(status="busy"), "online") == "⚡ desk-02 online [busy]"
 
     def test_offline(self):
         from slife.a2a.card import format_presence_line

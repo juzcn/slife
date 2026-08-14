@@ -1,41 +1,41 @@
-"""Tests for slife.a2a.identity — AgentId, AgentMessage, HUMAN, WECHAT."""
+"""Tests for slife.a2a.identity — AgentName, AgentMessage, HUMAN, WECHAT."""
 
 import pytest; pytestmark = pytest.mark.unit
 
 
 import pytest
 
-from slife.a2a.identity import AgentId, AgentMessage, HUMAN, WECHAT
+from slife.a2a.identity import AgentName, AgentMessage, HUMAN, WECHAT
 
 
-# ── AgentId ──────────────────────────────────────────────────────────────
+# ── AgentName ──────────────────────────────────────────────────────────────
 
 
-class TestAgentId:
-    """Tests for the AgentId NewType."""
+class TestAgentName:
+    """Tests for the AgentName NewType."""
 
-    def test_agent_id_is_string(self):
-        """AgentId is a str subtype."""
-        aid = AgentId("test-agent")
+    def test_agent_name_is_string(self):
+        """AgentName is a str subtype."""
+        aid = AgentName("test-agent")
         assert aid == "test-agent"
         assert isinstance(aid, str)
 
-    def test_agent_id_equality(self):
+    def test_agent_name_equality(self):
         """Same string == same agent."""
-        a = AgentId("agent-1")
-        b = AgentId("agent-1")
+        a = AgentName("agent-1")
+        b = AgentName("agent-1")
         assert a == b
 
-    def test_agent_id_inequality(self):
+    def test_agent_name_inequality(self):
         """Different strings != same agent."""
-        a = AgentId("agent-1")
-        b = AgentId("agent-2")
+        a = AgentName("agent-1")
+        b = AgentName("agent-2")
         assert a != b
 
-    def test_agent_id_hashable(self):
-        """AgentId can be used as dict key and in sets."""
-        d = {AgentId("a"): 1, AgentId("b"): 2}
-        assert d[AgentId("a")] == 1
+    def test_agent_name_hashable(self):
+        """AgentName can be used as dict key and in sets."""
+        d = {AgentName("a"): 1, AgentName("b"): 2}
+        assert d[AgentName("a")] == 1
 
 
 # ── HUMAN / WECHAT constants ─────────────────────────────────────────────
@@ -44,13 +44,13 @@ class TestAgentId:
 class TestConstants:
     """Tests for HUMAN and WECHAT sentinel values."""
 
-    def test_human_is_agent_id(self):
-        """HUMAN is an AgentId."""
+    def test_human_is_agent_name(self):
+        """HUMAN is an AgentName."""
         assert isinstance(HUMAN, str)
         assert HUMAN == "human"
 
-    def test_wechat_is_agent_id(self):
-        """WECHAT is an AgentId."""
+    def test_wechat_is_agent_name(self):
+        """WECHAT is an AgentName."""
         assert isinstance(WECHAT, str)
         assert WECHAT == "wechat"
 
@@ -73,7 +73,7 @@ class TestAgentMessage:
 
     def test_defaults(self):
         """Check all default field values."""
-        msg = AgentMessage(source=AgentId("bot"), content="test")
+        msg = AgentMessage(source=AgentName("bot"), content="test")
         assert msg.images == []
         assert msg.reply_to is None
         assert msg.correlation_id is None
@@ -87,7 +87,7 @@ class TestAgentMessage:
             pass
 
         msg = AgentMessage(
-            source=AgentId("sub-1"),
+            source=AgentName("sub-1"),
             content="task result",
             images=["img1.png"],
             reply_to="task-123",

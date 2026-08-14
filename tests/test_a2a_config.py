@@ -9,28 +9,28 @@ import platform
 import pytest
 from unittest.mock import patch
 
-from slife.a2a.config import A2AConfig, _default_agent_id
+from slife.a2a.config import A2AConfig, _default_agent_name
 from slife.a2a.card import AgentCard
-from slife.a2a.identity import AgentId
+from slife.a2a.identity import AgentName
 
 
-# ── _default_agent_id ────────────────────────────────────────────────────
+# ── _default_agent_name ────────────────────────────────────────────────────
 
 
-class TestDefaultAgentId:
-    """Tests for the _default_agent_id helper."""
+class TestDefaultAgentName:
+    """Tests for the _default_agent_name helper."""
 
     def test_hostname_with_dots_uses_first_segment(self, monkeypatch):
-        """When hostname is 'myhost.local', agent_id starts with 'myhost-'."""
+        """When hostname is 'myhost.local', agent_name starts with 'myhost-'."""
         monkeypatch.setattr(platform, "node", lambda: "myhost.local")
-        agent_id = _default_agent_id()
-        assert agent_id.startswith("myhost-")
+        agent_name = _default_agent_name()
+        assert agent_name.startswith("myhost-")
 
     def test_empty_hostname_falls_back_to_unknown(self, monkeypatch):
-        """When hostname is empty, agent_id starts with 'unknown-'."""
+        """When hostname is empty, agent_name starts with 'unknown-'."""
         monkeypatch.setattr(platform, "node", lambda: "")
-        agent_id = _default_agent_id()
-        assert agent_id.startswith("unknown-")
+        agent_name = _default_agent_name()
+        assert agent_name.startswith("unknown-")
 
 
 # ── A2AConfig.from_dict ─────────────────────────────────────────────────
@@ -43,47 +43,39 @@ class TestA2AConfigFromDict:
         cfg = A2AConfig.from_dict(None)
         assert cfg.enabled is False
 
-    def test_none_data_with_custom_agent_id(self):
-        """None data still uses the caller-supplied agent_id."""
-        cfg = A2AConfig.from_dict(None, agent_id="my-agent")
-        assert cfg.agent_id == "my-agent"
+    def test_none_data_with_custom_agent_name(self):
+        """None data still uses the caller-supplied agent_name."""
+        cfg = A2AConfig.from_dict(None, agent_name="my-agent")
+        assert cfg.agent_name == "my-agent"
         assert cfg.enabled is False
-        assert cfg.agent_name == "my-agent"  # name = the --agent value
         assert cfg.broker_host == "localhost"
         assert cfg.broker_port == 1883
 
     def test_empty_data_returns_enabled_with_defaults(self):
         cfg = A2AConfig.from_dict({})
         assert cfg.enabled is True  # user has mqtt section → probe at runtime
-        assert cfg.agent_id == "slife"  # default agent_id
-        assert cfg.agent_name == "slife"  # default name too
+        assert cfg.agent_name == "slife"  # default agent_name
 
-    def test_user_becomes_agent_id(self):
-        cfg = A2AConfig.from_dict({}, agent_id="bob")
-        assert cfg.agent_id == "bob"
+    def test_user_becomes_agent_name(self):
+        cfg = A2AConfig.from_dict({}, agent_name="bob")
+        assert cfg.agent_name == "bob"
         assert cfg.enabled is True  # user has mqtt section → probe at runtime
 
-    def test_agent_name_ignores_config_uses_agent_id(self):
-        """agent_name comes ONLY from --agent, never from the json5 section."""
-        cfg = A2AConfig.from_dict({"agent_name": "My Agent"}, agent_id="bob")
-        assert cfg.agent_id == "bob"
-        assert cfg.agent_name == "bob"  # config's "My Agent" is ignored
-
     def test_broker_defaults_from_empty_dict(self):
-        cfg = A2AConfig.from_dict({}, agent_id="agent-1")
+        cfg = A2AConfig.from_dict({}, agent_name="agent-1")
         assert cfg.broker_host == "localhost"
         assert cfg.broker_port == 1883
 
     def test_broker_from_data(self):
         cfg = A2AConfig.from_dict(
             {"broker": {"host": "mqtt.example.com", "port": 8883}},
-            agent_id="agent-1",
+            agent_name="agent-1",
         )
         assert cfg.broker_host == "mqtt.example.com"
         assert cfg.broker_port == 8883
 
     def test_heartbeat_defaults(self):
-        cfg = A2AConfig.from_dict({}, agent_id="agent-1")
+        cfg = A2AConfig.from_dict({}, agent_name="agent-1")
         assert cfg.heartbeat_interval == 15
         assert cfg.heartbeat_timeout == 45
         assert cfg.task_timeout == 120
@@ -91,7 +83,7 @@ class TestA2AConfigFromDict:
     def test_custom_heartbeat_values(self):
         cfg = A2AConfig.from_dict(
             {"heartbeat_interval": 30, "heartbeat_timeout": 90, "task_timeout": 300},
-            agent_id="agent-1",
+            agent_name="agent-1",
         )
         assert cfg.heartbeat_interval == 30
         assert cfg.heartbeat_timeout == 90
@@ -101,7 +93,7 @@ class TestA2AConfigFromDict:
         """When broker is not a dict, use defaults."""
         cfg = A2AConfig.from_dict(
             {"broker": "just a string"},
-            agent_id="agent-1",
+            agent_name="agent-1",
         )
         assert cfg.broker_host == "localhost"
         assert cfg.broker_port == 1883
@@ -110,7 +102,7 @@ class TestA2AConfigFromDict:
         """When broker is None, use defaults."""
         cfg = A2AConfig.from_dict(
             {"broker": None},
-            agent_id="agent-1",
+            agent_name="agent-1",
         )
         assert cfg.broker_host == "localhost"
         assert cfg.broker_port == 1883
@@ -119,7 +111,7 @@ class TestA2AConfigFromDict:
         """When broker is a list (not a dict), use defaults."""
         cfg = A2AConfig.from_dict(
             {"broker": [1, 2, 3]},
-            agent_id="agent-1",
+            agent_name="agent-1",
         )
         assert cfg.broker_host == "localhost"
         assert cfg.broker_port == 1883
@@ -127,7 +119,7 @@ class TestA2AConfigFromDict:
     def test_http_transport_disables_a2a(self, caplog):
         """transport 'http' no longer crashes — A2A is disabled with a warning."""
         with caplog.at_level(logging.WARNING, logger="slife.a2a.config"):
-            cfg = A2AConfig.from_dict({"transport": "http"}, agent_id="agent-1")
+            cfg = A2AConfig.from_dict({"transport": "http"}, agent_name="agent-1")
         assert cfg.transport == "http"
         assert cfg.enabled is False
         assert any(
@@ -137,13 +129,13 @@ class TestA2AConfigFromDict:
     def test_unknown_transport_disables_a2a(self, caplog):
         """An unknown transport value is treated like 'http': disable + warn."""
         with caplog.at_level(logging.WARNING, logger="slife.a2a.config"):
-            cfg = A2AConfig.from_dict({"transport": "carrier-pigeon"}, agent_id="agent-1")
+            cfg = A2AConfig.from_dict({"transport": "carrier-pigeon"}, agent_name="agent-1")
         assert cfg.transport == "carrier-pigeon"
         assert cfg.enabled is False
 
     def test_mqtt_transport_accepted(self):
         """transport 'mqtt' is the default and passes through."""
-        cfg = A2AConfig.from_dict({"transport": "mqtt"}, agent_id="agent-1")
+        cfg = A2AConfig.from_dict({"transport": "mqtt"}, agent_name="agent-1")
         assert cfg.transport == "mqtt"
 
 
@@ -157,11 +149,11 @@ class TestA2AConfigDefaults:
         cfg = A2AConfig()
         assert cfg.enabled is False
 
-    def test_default_agent_id_has_format(self):
-        """Default agent_id is hostname-pid format."""
+    def test_default_agent_name_has_format(self):
+        """Default agent_name is hostname-pid format."""
         cfg = A2AConfig()
-        assert "-" in cfg.agent_id
-        assert len(cfg.agent_id) > 0
+        assert "-" in cfg.agent_name
+        assert len(cfg.agent_name) > 0
 
     def test_default_heartbeat_values(self):
         cfg = A2AConfig()
@@ -177,41 +169,34 @@ class TestAgentCard:
     """Tests for AgentCard dataclass."""
 
     def test_default_values(self):
-        card = AgentCard(agent_id=AgentId("agent-1"))
-        assert card.agent_id == "agent-1"
-        assert card.display_name == ""
+        card = AgentCard(agent_name=AgentName("agent-1"))
+        assert card.agent_name == "agent-1"
         assert card.status == "idle"
 
     def test_full_values(self):
         card = AgentCard(
-            agent_id=AgentId("agent-1"),
-            display_name="My Agent",
+            agent_name=AgentName("agent-1"),
             status="busy",
         )
-        assert card.display_name == "My Agent"
+        assert card.agent_name == "agent-1"
         assert card.status == "busy"
 
     def test_create_factory(self):
         card = AgentCard.create(
-            agent_id=AgentId("agent-x"),
-            display_name="X Agent",
+            agent_name=AgentName("agent-x"),
             status="idle",
         )
-        assert card.agent_id == "agent-x"
-        assert card.display_name == "X Agent"
+        assert card.agent_name == "agent-x"
         assert card.status == "idle"
 
     def test_create_defaults(self):
-        card = AgentCard.create(agent_id=AgentId("agent-x"))
-        assert card.display_name == ""
+        card = AgentCard.create(agent_name=AgentName("agent-x"))
         assert card.status == "idle"
 
     def test_create_busy_status(self):
         card = AgentCard.create(
-            agent_id=AgentId("agent-x"),
-            display_name="X Agent",
+            agent_name=AgentName("agent-x"),
             status="busy",
         )
-        assert card.agent_id == "agent-x"
-        assert card.display_name == "X Agent"
+        assert card.agent_name == "agent-x"
         assert card.status == "busy"

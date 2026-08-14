@@ -26,7 +26,7 @@ from slife.a2a import wire
 from slife.a2a.card import AgentCard
 from slife.a2a.client import A2AClient
 from slife.a2a.config import A2AConfig
-from slife.a2a.identity import AgentId, AgentMessage
+from slife.a2a.identity import AgentName, AgentMessage
 from slife.server_utils import create_plugin_server, run_plugin_server
 
 
@@ -99,7 +99,7 @@ async def _ensure_connected() -> A2AClient:
         client.on_agent_change(_on_agent_change)
         await client.connect()
         _client = client
-        logger.info("a2a_plugin_client_connected id=%s", client.agent_id)
+        logger.info("a2a_plugin_client_connected id=%s", client.agent_name)
     return _client
 
 
@@ -153,8 +153,7 @@ async def _on_agent_change(card: AgentCard, event: str) -> None:
         "type": "presence",
         "event": event,
         "card": {
-            "agent_id": str(card.agent_id),
-            "display_name": card.display_name,
+            "agent_name": str(card.agent_name),
             "status": card.status,
         },
     })
@@ -176,10 +175,10 @@ async def _on_agent_change(card: AgentCard, event: str) -> None:
     description="Send a task to a remote A2A mesh peer and wait for the result. "
     "Requires the A2A mesh (MQTT broker running).",
 )
-async def a2a_send_task(agent_id: str, task: str) -> str:
-    """Send a task to *agent_id* and wait for the result."""
+async def a2a_send_task(agent_name: str, task: str) -> str:
+    """Send a task to *agent_name* and wait for the result."""
     client = await _ensure_connected()
-    return await client.send_task(AgentId(agent_id), task)
+    return await client.send_task(AgentName(agent_name), task)
 
 
 @mcp.tool(
@@ -187,25 +186,24 @@ async def a2a_send_task(agent_id: str, task: str) -> str:
     description="Send a task to a remote A2A mesh peer without waiting — returns a "
     "task_id. Poll with a2a_get_task_result. Requires the A2A mesh (MQTT broker).",
 )
-async def a2a_send_task_async(agent_id: str, task: str) -> str:
+async def a2a_send_task_async(agent_name: str, task: str) -> str:
     """Send a task without waiting — returns the correlation/task id."""
     client = await _ensure_connected()
-    return await client.send_task_async(AgentId(agent_id), task)
+    return await client.send_task_async(AgentName(agent_name), task)
 
 
 @mcp.tool(
     name="a2a_list_agents",
-    description="List known online A2A mesh agents as JSON agent cards — "
-    "the first entry is this agent itself, the rest are remote peers. "
-    "Requires the A2A mesh (MQTT broker).",
+    description="List known online A2A mesh agents as JSON agent cards "
+    "({agent_name, status}) — the first entry is this agent itself, the rest "
+    "are remote peers. Requires the A2A mesh (MQTT broker).",
 )
 async def a2a_list_agents() -> str:
     """List mesh agents — this agent's own card first, then remote peers."""
     client = await _ensure_connected()
     cards = [client.own_card()] + await client.list_agents()
     return json.dumps(
-        [{"agent_id": str(c.agent_id), "display_name": c.display_name, "status": c.status}
-         for c in cards],
+        [{"agent_name": str(c.agent_name), "status": c.status} for c in cards],
         ensure_ascii=False,
     )
 
@@ -215,7 +213,7 @@ async def a2a_list_agents() -> str:
     description="Return a remote async task's result, or 'pending' if not ready. "
     "Requires the A2A mesh (MQTT broker).",
 )
-async def a2a_get_task_result(agent_id: str, task_id: str) -> str:
+async def a2a_get_task_result(agent_name: str, task_id: str) -> str:
     """Return the result of an async task, or 'pending' if not ready."""
     client = await _ensure_connected()
     result = client.get_task_result(task_id)
@@ -228,15 +226,15 @@ async def a2a_get_task_result(agent_id: str, task_id: str) -> str:
     "the task's resulting status: 'cancelled', 'completed', 'failed', or 'not_found'. "
     "Requires the A2A mesh (MQTT broker).",
 )
-async def a2a_cancel_task(agent_id: str, task_id: str) -> str:
-    """Cancel a pending or async task on *agent_id*.
+async def a2a_cancel_task(agent_name: str, task_id: str) -> str:
+    """Cancel a pending or async task on *agent_name*.
 
     Returns the task's resulting status — a task that already finished is
     reported as ``completed``/``failed`` (never ``cancelled``) and its result
     stays retrievable (REVIEW C5).
     """
     client = await _ensure_connected()
-    return await client.cancel_task(AgentId(agent_id), task_id)
+    return await client.cancel_task(AgentName(agent_name), task_id)
 
 
 @mcp.tool(
@@ -244,11 +242,11 @@ async def a2a_cancel_task(agent_id: str, task_id: str) -> str:
     description="List A2A mesh task-store entries (filterable by agent/status). "
     "Requires the A2A mesh (MQTT broker).",
 )
-async def a2a_list_tasks(agent_id: str = "", status: str = "") -> str:
+async def a2a_list_tasks(agent_name: str = "", status: str = "") -> str:
     """List A2A task-store entries (filterable by agent/status)."""
     client = await _ensure_connected()
     return json.dumps(
-        client.list_tasks(agent_id=agent_id or None, status=status or None),
+        client.list_tasks(agent_name=agent_name or None, status=status or None),
         ensure_ascii=False, default=str,
     )
 
@@ -259,7 +257,7 @@ async def a2a_list_tasks(agent_id: str = "", status: str = "") -> str:
     "Requires the A2A mesh (MQTT broker).",
 )
 async def a2a_subscribe_task(
-    agent_id: str, task_id: str, timeout: float = 120.0,
+    agent_name: str, task_id: str, timeout: float = 120.0,
 ) -> str:
     """Wait for an async task to complete and return its result."""
     client = await _ensure_connected()
@@ -269,17 +267,17 @@ async def a2a_subscribe_task(
 
 @mcp.tool(
     name="a2a_agent_card",
-    description="Return a mesh peer's card (agent_id, display_name, status), or "
+    description="Return a mesh peer's card (agent_name, status), or "
     "'unknown'. Requires the A2A mesh (MQTT broker).",
 )
-async def a2a_agent_card(agent_id: str) -> str:
-    """Return a mesh peer's card (agent_id, display_name, status), or 'unknown'."""
+async def a2a_agent_card(agent_name: str) -> str:
+    """Return a mesh peer's card (agent_name, status), or 'unknown'."""
     client = await _ensure_connected()
-    card = client.get_agent_card(AgentId(agent_id))
+    card = client.get_agent_card(AgentName(agent_name))
     if card is None:
         return "unknown"
     return json.dumps(
-        {"agent_id": str(card.agent_id), "display_name": card.display_name, "status": card.status},
+        {"agent_name": str(card.agent_name), "status": card.status},
         ensure_ascii=False,
     )
 
@@ -336,17 +334,16 @@ async def __a2a_status() -> str:
     cfg = _load_config()
     client = _client
     connected = client is not None and client.is_connected
-    agent_id = ""
+    agent_name = ""
     status = ""
     peers: list[dict] = []
     if client is not None and client.is_connected:
-        agent_id = str(client.agent_id)
+        agent_name = str(client.agent_name)
         status = str(client.status)
         try:
             for card in await client.list_agents():
                 peers.append({
-                    "agent_id": str(card.agent_id),
-                    "display_name": card.display_name,
+                    "agent_name": str(card.agent_name),
                     "status": card.status,
                 })
         except Exception as e:
@@ -354,7 +351,7 @@ async def __a2a_status() -> str:
     return json.dumps({
         "enabled": cfg.enabled,
         "connected": connected,
-        "agent_id": agent_id,
+        "agent_name": agent_name,
         "status": status,
         "broker": f"{cfg.broker_host}:{cfg.broker_port}",
         "peers": peers,

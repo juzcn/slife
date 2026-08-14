@@ -132,7 +132,7 @@ def require_params(**params: object) -> str | None:
 
     Usage::
 
-        if err := require_params(agent_id=agent_id, task=task):
+        if err := require_params(agent_name=agent_name, task=task):
             return err
     """
     missing = [k for k, v in params.items() if not v]

@@ -120,10 +120,10 @@ def setup_server_logging(
 ) -> Path:
     """Configure shared logging for a server process (stderr + file).
 
-    - Adopts ``SLIFE_SESSION_ID`` and ``SLIFE_AGENT_ID`` from the parent env.
+    - Adopts ``SLIFE_SESSION_ID`` and ``SLIFE_AGENT_NAME`` from the parent env.
     - stderr: DEBUG+ with timestamped format (parent captures and relays).
     - File:    DEBUG+ with ``SessionFormatter`` (session/request IDs), one per session.
-    - File naming: ``{YYYYMMDD_HHMMSS}_{agent_id}_{service}.log``
+    - File naming: ``{YYYYMMDD_HHMMSS}_{agent_name}_{service}.log``
       (e.g. ``logs/20260808_143025_slife_mcp.log``).
     - Silences httpx/httpcore/openai/asyncio and FastMCP noise.
 
@@ -138,7 +138,7 @@ def setup_server_logging(
     if _sid:
         set_session_id(_sid)
 
-    _agent_id = os.environ.get("SLIFE_AGENT_ID", "slife")
+    _agent_name = os.environ.get("SLIFE_AGENT_NAME", "slife")
 
     stderr_fmt = logging.Formatter(
         "%(asctime)s [%(levelname)-5s] %(name)s | %(message)s",
@@ -146,7 +146,7 @@ def setup_server_logging(
     )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"{ts}_{_agent_id}_{service_name}.log"
+    log_path = log_dir / f"{ts}_{_agent_name}_{service_name}.log"
 
     configure_root_logging(
         stderr_level=logging.DEBUG,

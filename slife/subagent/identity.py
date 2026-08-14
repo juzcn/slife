@@ -8,9 +8,9 @@ human turns in memory search.
 
 from __future__ import annotations
 
-from slife.a2a.identity import AgentId
+from slife.a2a.identity import AgentName
 
-SUBAGENT = AgentId("subagent")
+SUBAGENT = AgentName("subagent")
 """Subagent completion — result posted by the subagent manager when an
 async subagent task finishes.  Routed to the human conversation so the
 user sees the output, but persisted with channel ``"subagent"`` so it is
