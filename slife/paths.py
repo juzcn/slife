@@ -48,8 +48,15 @@ def get_logs_dir() -> Path:
 
 
 def get_db_path(agent_id: str = "slife") -> Path:
-    """Path to the SQLite memory database for *agent_id*."""
-    return get_data_dir() / f"{agent_id}.db"
+    """Path to the SQLite memory database for *agent_id*.
+
+    Uses ``SLIFE_AGENT_ID`` from the environment when available (mirrors
+    :func:`get_memfiles_dir`), falling back to ``"slife"`` — so health tools
+    and any caller that omits the agent resolve the right per-agent database
+    instead of always reporting the default ``slife.db``.
+    """
+    agent = os.environ.get("SLIFE_AGENT_ID", agent_id)
+    return get_data_dir() / f"{agent}.db"
 
 
 def get_venv_python() -> str:
