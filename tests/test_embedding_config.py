@@ -306,3 +306,75 @@ class TestMakeCheckReport:
         report = make_check_report()
         assert report["configured"] is True
         assert report["backend"] == "api"
+
+
+class TestGetEmbedderModule:
+    """_get_embedder_module must resolve to the RUNNING server module.
+
+    The memdb server runs via ``python -m slife.plugins.memdb.server``, which
+    executes the module's code in the ``__main__`` namespace WITHOUT
+    populating ``sys.modules["slife.plugins.memdb.server"]``. A plain import
+    would create a SECOND module object (re-running the module), so
+    reload_embedder's ``mod._embedder = ...`` would mutate a module the server
+    never reads — leaving semantic search stuck disabled after
+    memory_set_embedding. Guard: return ``__main__`` when it is the server.
+    """
+
+    def test_prefers_main_when_it_is_the_server(self):
+        import sys
+        import types
+
+        from slife.plugins.memdb import embedding_config as ec
+
+        fake = types.ModuleType("slife.plugins.memdb.server")
+        fake.__spec__ = types.SimpleNamespace(name="slife.plugins.memdb.server")
+        saved_main = sys.modules["__main__"]
+        saved_cache = ec._embedder_module
+        ec._embedder_module = None
+        try:
+            sys.modules["__main__"] = fake
+            assert ec._get_embedder_module() is fake
+        finally:
+            sys.modules["__main__"] = saved_main
+            ec._embedder_module = saved_cache
+
+    def test_mutation_reaches_main_when_main_is_server(self):
+        import sys
+        import types
+
+        from slife.plugins.memdb import embedding_config as ec
+
+        fake = types.ModuleType("slife.plugins.memdb.server")
+        fake.__spec__ = types.SimpleNamespace(name="slife.plugins.memdb.server")
+        saved_main = sys.modules["__main__"]
+        saved_cache = ec._embedder_module
+        ec._embedder_module = None
+        try:
+            sys.modules["__main__"] = fake
+            mod = ec._get_embedder_module()
+            mod._embedder = "new-client"
+            assert fake._embedder == "new-client"
+        finally:
+            sys.modules["__main__"] = saved_main
+            ec._embedder_module = saved_cache
+
+    def test_falls_back_to_import_when_main_is_not_server(self):
+        import sys
+        import types
+
+        from slife.plugins.memdb import embedding_config as ec
+        import slife.plugins.memdb.server as real_server
+
+        fake_main = types.ModuleType("__main__")
+        fake_main.__spec__ = types.SimpleNamespace(name="pytest")
+        saved_main = sys.modules["__main__"]
+        saved_cache = ec._embedder_module
+        ec._embedder_module = None
+        try:
+            sys.modules["__main__"] = fake_main
+            # __main__ is NOT the server → fall back to importing the
+            # canonical module (standard behaviour, unchanged by the fix).
+            assert ec._get_embedder_module() is real_server
+        finally:
+            sys.modules["__main__"] = saved_main
+            ec._embedder_module = saved_cache

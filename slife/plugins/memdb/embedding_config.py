@@ -7,6 +7,7 @@ section of ``slife.json5`` at runtime.
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from slife.paths import get_config_path
 from slife.tools._config_io import read_config, write_config
@@ -108,14 +109,36 @@ def validate_gguf_path(path: str) -> tuple[bool, str]:
 # ── Embedder reload ───────────────────────────────────────────────────
 
 # Imported lazily to avoid circular imports at module level.
-_embedder_module = None
+# ``Any``: a module object whose ``_embedder`` global reload_embedder mutates —
+# either the running server (``__main__`` under ``python -m``) or a plain
+# import of ``slife.plugins.memdb.server``.
+_embedder_module: Any = None
 
 
-def _get_embedder_module():
-    """Lazy-import the server module to access the global _embedder."""
+def _get_embedder_module() -> Any:
+    """Return the server module whose ``_embedder`` global the tools mutate.
+
+    The memdb server runs via ``python -m slife.plugins.memdb.server``, which
+    executes the module's code in the ``__main__`` namespace WITHOUT
+    populating ``sys.modules["slife.plugins.memdb.server"]``. A plain import
+    here would therefore build a SECOND module object (re-running the module)
+    — mutating its ``_embedder`` would never reach the running server, leaving
+    semantic search disabled forever after ``memory_set_embedding``. Prefer
+    the real ``__main__`` when it IS the server; fall back to a normal import
+    for tests / external callers.
+    """
     global _embedder_module
     if _embedder_module is None:
-        import slife.plugins.memdb.server as _embedder_module
+        import sys
+        main = sys.modules.get("__main__")
+        if (
+            main is not None
+            and getattr(main, "__spec__", None) is not None
+            and getattr(main.__spec__, "name", "") == "slife.plugins.memdb.server"
+        ):
+            _embedder_module = main
+        else:
+            import slife.plugins.memdb.server as _embedder_module
     return _embedder_module
 
 
