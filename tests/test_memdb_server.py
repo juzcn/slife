@@ -323,6 +323,37 @@ class TestStoreLifecycleLocking:
         assert json.loads(out)["rowid"] == 1
 
     @pytest.mark.asyncio
+    async def test_save_turn_forwards_images(self, restore_root_logger):
+        """__memory_save_turn must accept and forward ``images`` to
+        store.save_turn.
+
+        Regression: save_to_memory passes ``images`` (the diary column added
+        for TUI image restore), but the tool signature lacked it — FastMCP
+        rejected the call as an unexpected keyword argument and every save
+        failed silently.
+        """
+        import json
+
+        srv = _import_memdb_server()
+        captured: dict = {}
+
+        async def _fake_save_turn(**kwargs):
+            captured.update(kwargs)
+            return 7
+
+        store = AsyncMock()
+        store.save_turn = _fake_save_turn
+        srv._ensure_store_locked = AsyncMock(return_value=store)
+        srv._embedder = MagicMock()
+
+        out = await getattr(srv, "__memory_save_turn")(
+            user_message="hi", images=[r"C:\cache\a.png"],
+        )
+
+        assert json.loads(out)["rowid"] == 7
+        assert captured["images"] == [r"C:\cache\a.png"]
+
+    @pytest.mark.asyncio
     async def test_reinit_holds_lock_during_swap(self, restore_root_logger):
         """_reinit_store_after_model_change swaps the store under the lock —
         the old connection is closed while the lock is held."""

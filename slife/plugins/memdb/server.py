@@ -239,6 +239,7 @@ async def _warm_embedder_then_reindex() -> None:
 async def __memory_save_turn(
     user_message: str = "",
     messages: list[dict] | None = None,
+    images: list[str] | None = None,
     token_count: int = 0,
     who_helped: str = "",
     what_model: str = "",
@@ -257,7 +258,8 @@ async def __memory_save_turn(
             # it ever calls here — the storage layer persists what it receives.
             rowid = await store.save_turn(
                 user_message=user_message, messages=messages,
-                token_count=token_count, who_helped=who_helped, what_model=what_model,
+                images=images, token_count=token_count,
+                who_helped=who_helped, what_model=what_model,
                 channel=channel, embedder=_embedder, created_at=created_at,
                 completed_at=completed_at,
             )

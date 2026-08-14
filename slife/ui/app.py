@@ -53,7 +53,7 @@ class StatusBar(Static):
             parts.append(f"[#8b949e]{model.replace('[', '[[')}[/#8b949e]")
 
         if thinking:
-            parts.append("[#d29922]⚡ thinking[/#d29922]")
+            parts.append("[#d29922]thinking[/#d29922]")
 
         if heartbeat:
             color = heartbeat_color or "#d29922"
@@ -462,11 +462,16 @@ class SlifeApp(App):
 
     async def _on_heartbeat(self, outcome: str) -> None:
         """Update the status-bar heartbeat indicator, cycling its colour so
-        consecutive beats are distinguishable (⚡ act / · quiet)."""
+        consecutive beats are distinguishable (● act / · quiet).
+
+        The act glyph is a dot, not the ⚡ bolt used by the thinking badge —
+        a heartbeat firing would otherwise be indistinguishable from the
+        agent thinking.
+        """
         self._heartbeat_beat += 1
         palette = ["#3fb950", "#58a6ff", "#bc8cff", "#d29922", "#f0883e"]
         self._heartbeat_color = palette[self._heartbeat_beat % len(palette)]
-        self._heartbeat_indicator = "⚡" if outcome == "act" else "·"
+        self._heartbeat_indicator = "●" if outcome == "act" else "·"
         self._update_status()
 
     # ── Plugin startup helpers ────────────────────────────────────

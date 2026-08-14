@@ -164,21 +164,6 @@ class SessionStore:
                 logger.debug("schema_stmt_error err=%s stmt=%.80s", e, stmt)
         await self._c.commit()
 
-        # In-place migration for columns added after the table's first
-        # release (SQLite has no ADD COLUMN IF NOT EXISTS).  Older DBs
-        # predate the `images` column — add it so saved image attachments
-        # survive a session restore.
-        cols = {
-            row[1] for row in await (
-                await self._c.execute("PRAGMA table_info(diary)")
-            ).fetchall()
-        }
-        if "images" not in cols:
-            await self._c.execute(
-                "ALTER TABLE diary ADD COLUMN images TEXT NOT NULL DEFAULT ''"
-            )
-            await self._c.commit()
-
         # Detect and fix embedding dimension mismatch after model change.
         # CREATE TABLE IF NOT EXISTS won't alter a vec0 table whose
         # dimension no longer matches.  We drop it so the next statement
@@ -1011,8 +996,22 @@ def _split_sql(sql_text: str) -> list[str]:
 
 
 def _looks_like_trigger_start(stmt: str) -> bool:
-    """True if *stmt* starts a CREATE TRIGGER that has a BEGIN body."""
-    upper = stmt.strip().upper()
+    """True if *stmt* starts a CREATE TRIGGER that has a BEGIN body.
+
+    Tolerates leading ``--`` comment lines (e.g. the comment block above the
+    diary_au trigger): the comments accumulate into the same fragment and must
+    not hide the CREATE TRIGGER keyword — otherwise the trigger body's interior
+    semicolons split into orphan fragments and the trigger is never created.
+    """
+    first_non_comment = next(
+        (
+            ln.strip()
+            for ln in stmt.splitlines()
+            if ln.strip() and not ln.strip().startswith("--")
+        ),
+        "",
+    )
+    upper = first_non_comment.upper()
     return upper.startswith("CREATE TRIGGER") and "BEGIN" in upper
 
 

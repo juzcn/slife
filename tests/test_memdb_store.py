@@ -187,6 +187,27 @@ class TestSplitSql:
         assert len(result) == 1
         assert result[0] == "SELECT * FROM foo"
 
+    def test_trigger_after_comment_block_is_kept_together(self):
+        """A CREATE TRIGGER preceded by -- comments must not be split.
+
+        Regression: the diary_au trigger (two interior INSERTs) follows a
+        comment block; the comments accumulate into the same fragment and
+        used to hide the CREATE TRIGGER keyword, so the trigger body was
+        split into orphan fragments and never created.
+        """
+        sql = (
+            "-- memory_summarize writes summary/tags via UPDATE\n"
+            "-- index must track those updates\n"
+            "CREATE TRIGGER IF NOT EXISTS diary_au AFTER UPDATE ON diary BEGIN\n"
+            "    INSERT INTO diary_fts(diary_fts, rowid) VALUES ('delete', old.rowid);\n"
+            "    INSERT INTO diary_fts(rowid) VALUES (new.rowid);\n"
+            "END;\n"
+        )
+        result = _split_sql(sql)
+        assert len(result) == 1
+        assert "CREATE TRIGGER" in result[0]
+        assert result[0].rstrip().rstrip(";").strip().upper().endswith("END")
+
 
 # ── SessionStore ────────────────────────────────────────────────────────────
 

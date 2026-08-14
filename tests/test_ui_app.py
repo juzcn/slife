@@ -439,6 +439,38 @@ class TestStatusBar:
         assert "1,500 (1.5%)" in text
         assert "thinking" in text
 
+    def test_update_info_heartbeat_uses_dot_not_bolt(self):
+        """Heartbeat renders as a colored dot — the status bar carries no ⚡."""
+        with patch("slife.ui.app.Static.__init__", return_value=None):
+            bar = StatusBar()
+        bar.update = MagicMock()
+        bar.update_info(thinking=True, heartbeat="●", heartbeat_color="#3fb950")
+        text = bar.update.call_args[0][0]
+        assert "thinking" in text     # thinking badge keeps its label
+        assert "⚡" not in text        # no bolt anywhere (badge or heartbeat)
+        assert "●" in text            # heartbeat is a dot
+        assert "#3fb950" in text      # colored
+
+    @pytest.mark.asyncio
+    async def test_on_heartbeat_glyph_is_dot(self):
+        """_on_heartbeat picks a dot glyph (● act / · quiet), cycling colour."""
+        from slife.ui.app import SlifeApp
+
+        app = object.__new__(SlifeApp)
+        app._heartbeat_beat = 0
+        app._heartbeat_color = ""
+        app._heartbeat_indicator = ""
+        app._update_status = MagicMock()
+
+        await app._on_heartbeat("act")
+        assert app._heartbeat_indicator == "●"
+        assert app._heartbeat_color  # a cycling palette colour
+        assert "⚡" not in app._heartbeat_indicator
+
+        await app._on_heartbeat("quiet")
+        assert app._heartbeat_indicator == "·"
+        assert app._heartbeat_color != ""
+
     def test_update_info_no_model(self):
         with patch("slife.ui.app.Static.__init__", return_value=None):
             bar = StatusBar()
