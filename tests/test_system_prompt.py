@@ -195,13 +195,13 @@ class TestBuild:
         assert "no personality" in result
         assert "NEVER introduce yourself by name" in result
 
-    def test_subagent_context_pure_by_default(self, cfg, monkeypatch):
-        """Context defaults to clean (pure) when SLIFE_SUBAGENT_CONTEXT unset."""
+    def test_subagent_context_clean_by_default(self, cfg, monkeypatch):
+        """Context defaults to clean when SLIFE_SUBAGENT_CONTEXT unset."""
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
         monkeypatch.delenv("SLIFE_SUBAGENT_CONTEXT", raising=False)
         result = build(cfg, is_subagent=True)
-        assert "Context: clean (pure)" in result
+        assert "Context: clean" in result
         assert "cloned from" not in result
 
     def test_subagent_context_cloned(self, cfg, monkeypatch):

@@ -53,7 +53,7 @@ class SubagentProcess:
 
     def __init__(
         self, name: str, config: "Config",
-        context_source: str = "pure", context_messages: list[dict] | None = None,
+        context_source: str = "clean", context_messages: list[dict] | None = None,
     ):
         import json as _json
 
@@ -99,7 +99,7 @@ class SubagentProcess:
         return self._inflight
     @property
     def context_source(self) -> str:
-        """How this worker's context was built: ``"pure"`` or ``"cloned"``."""
+        """How this worker's context was built: ``"clean"`` or ``"cloned"``."""
         return self._context_source
     @property
     def pending_async_count(self) -> int:
@@ -488,7 +488,7 @@ class SubagentManager:
 
     async def spawn(
         self, name: str | None = None,
-        context_source: str = "pure", context_messages: list[dict] | None = None,
+        context_source: str = "clean", context_messages: list[dict] | None = None,
     ) -> str:
         if self.count >= self._max: raise RuntimeError(f"Max {self._max} subagents reached")
         # The worker's name is its identity — never auto-generate an id.

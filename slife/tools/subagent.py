@@ -67,7 +67,7 @@ class ListSubagentsTool(Tool):
     category = "Subagent"
     description = (
         "List local subagent workers with their state: subagent_name, PID, "
-        "readiness, context (pure/cloned), busy/in-flight count, and pending "
+        "readiness, context (clean/cloned), busy/in-flight count, and pending "
         "async task count. Local workers are not A2A peers — remote mesh "
         "peers use a2a_list_agents."
     )
@@ -122,13 +122,13 @@ class SpawnSubagentTool(Tool):
                     "identity, used by list_subagents / subagent_send_task."
                 ),
             },
-            "context": {
-                "type": "string",
-                "enum": ["pure", "cloned"],
+            "clean_context": {
+                "type": "boolean",
+                "default": True,
                 "description": (
-                    'Context for the worker: "pure" (default, a fresh '
-                    'independent context) or "cloned" (inherit a trimmed '
-                    "copy of your current conversation)."
+                    "Start the worker with a clean (fresh) context. "
+                    "Set to false to clone the current conversation "
+                    "(a trimmed copy of this agent's context)."
                 ),
             },
         },
@@ -136,7 +136,7 @@ class SpawnSubagentTool(Tool):
     }
 
     async def execute(
-        self, subagent_name: str = "", context: str = "pure", **kwargs,
+        self, subagent_name: str = "", clean_context: bool = True, **kwargs,
     ) -> str:
         manager, hint = _manager_or_hint()
         if manager is None:
@@ -150,14 +150,14 @@ class SpawnSubagentTool(Tool):
                 '(e.g. "researcher", "coder-1").'
             )
 
-        context_source = context if context in ("pure", "cloned") else "pure"
+        context_source = "clean" if clean_context else "cloned"
         context_messages = (
             _serialize_cloned_context(getattr(self, "_ctx", None))
             if context_source == "cloned" else None
         )
         if context_source == "cloned" and not context_messages:
-            logger.warning("subagent_clone_ctx_unavailable — falling back to pure")
-            context_source = "pure"
+            logger.warning("subagent_clone_ctx_unavailable — falling back to clean")
+            context_source = "clean"
 
         logger.info(
             "subagent_tool_spawn subagent_name=%s context=%s",

@@ -33,7 +33,7 @@ logger = logging.getLogger("slife_subagent")
 _log_path: Path | None = None
 
 #: Cloned parent conversation (received via the stdin "context" message),
-#: or None for a pure-context subagent.
+#: or None for a clean-context subagent.
 _inherited_context: list[dict] | None = None
 
 
