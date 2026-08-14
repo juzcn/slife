@@ -230,6 +230,36 @@ class TestTUIHandler:
         assert handler._current_assistant is mock_assistant
 
     @pytest.mark.asyncio
+    async def test_bare_dot_reply_is_silent(self):
+        """A bare "." reply is never rendered and the message is discarded."""
+        handler, app, mock_assistant = self._handler_with_assistant()
+        mock_assistant._buffer = ""
+        handler._silent_dot = False
+
+        await handler.on_text_chunk(".")
+        assert handler._silent_dot is True
+        mock_assistant.append_text.assert_not_called()
+
+        handler.finalize_current()
+        assert handler._current_assistant is None
+        assert mock_assistant.display is False
+        mock_assistant.finalize.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_dot_reply_renders(self):
+        """A normal text reply renders; silent_dot stays False."""
+        handler, app, mock_assistant = self._handler_with_assistant()
+        mock_assistant._buffer = ""
+        handler._silent_dot = False
+
+        await handler.on_text_chunk("Hello")
+        assert handler._silent_dot is False
+        mock_assistant.append_text.assert_called_once_with("Hello")
+
+        handler.finalize_current()
+        mock_assistant.finalize.assert_called_once_with(intermediate=False)
+
+    @pytest.mark.asyncio
     async def test_ensure_assistant_creates_new_after_tool_result(self):
         """After tool result, next chunk creates new message and collapses old."""
         app = self._make_app_mock()

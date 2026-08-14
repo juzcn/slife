@@ -383,6 +383,11 @@ async def restore_session(
                     "created_at": cur_created,
                 })
             elif role == "assistant":
+                # "." uniformly means silence — never restore a bare-dot
+                # reply, from any turn source (heartbeat, autonomous a2a
+                # notification, or anything else).
+                if (msg.get("content") or "").strip() == ".":
+                    continue
                 # Harness messages (_sys_note, _sys_trim) exist so the
                 # LLM sees system status in context.  They are never
                 # visible in the live TUI — skip their widgets here.
@@ -398,9 +403,11 @@ async def restore_session(
                 ):
                     continue
                 if is_heartbeat:
-                    # Autonomous beat: show real content as ⚡ 自主, hide ".".
+                    # Autonomous beat: show real content as ⚡ 自主.  A bare
+                    # "." is already skipped by the general silence filter
+                    # above; here we only drop empty messages.
                     content = msg.get("content") or ""
-                    if not content.strip() or content.strip() == ".":
+                    if not content.strip():
                         continue
                     ui_ops.append({
                         "type": "assistant",

@@ -56,6 +56,9 @@ class TUIHandler:
         # Every AssistantMessage widget created for this turn — updated to
         # the completion time by set_completed_at when the turn ends.
         self._turn_assistants: list[AssistantMessage] = []
+        # True when the current assistant reply is a bare "." — silence, so
+        # the message is discarded at finalize instead of shown.
+        self._silent_dot: bool = False
 
     # ── Assistant message lifecycle ──────────────────────────────────
 
@@ -78,6 +81,7 @@ class TUIHandler:
             )
             self._turn_assistants.append(self._current_assistant)
             self._iteration_needs_new_message = False
+            self._silent_dot = False
 
     def set_completed_at(self, dt: datetime) -> None:
         """Stamp the turn's assistant messages with the completion time.
@@ -95,10 +99,27 @@ class TUIHandler:
         """Mark the current assistant message as the final response.
 
         Called after the agent loop completes (success, max iterations,
-        or error). Keeps thinking expanded and shows token usage.
+        or error). Keeps thinking expanded and shows token usage.  A bare
+        "." reply is silence — discard it instead of showing it.
         """
         if self._current_assistant is not None:
-            self._current_assistant.finalize(intermediate=False)
+            if self._silent_dot:
+                self._discard_current_assistant()
+            else:
+                self._current_assistant.finalize(intermediate=False)
+
+    def _discard_current_assistant(self) -> None:
+        """Hide a silent (".") assistant message — it never appears in chat."""
+        msg = self._current_assistant
+        self._current_assistant = None
+        self._silent_dot = False
+        if msg is not None:
+            if msg in self._turn_assistants:
+                self._turn_assistants.remove(msg)
+            try:
+                msg.display = False
+            except Exception:
+                pass
 
     async def on_stream_retry(self) -> None:
         """Discard partial streamed text/thinking so a retried LLM request
@@ -116,9 +137,20 @@ class TUIHandler:
             self._chat_view.scroll_end(animate=False)
 
     async def on_text_chunk(self, chunk: str) -> None:
-        """Stream a text token to the active assistant widget."""
+        """Stream a text token to the active assistant widget.
+
+        A lone "." is silence — never render it; the message is discarded
+        at finalize (covers heartbeats, autonomous a2a notifications, and
+        any other event where the model replies ".").
+        """
         self._ensure_assistant()
         if self._current_assistant:
+            if (
+                not self._current_assistant._buffer.strip()
+                and chunk.strip() == "."
+            ):
+                self._silent_dot = True
+                return
             self._current_assistant.append_text(chunk)
             self._chat_view.scroll_end(animate=False)
 
