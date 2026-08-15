@@ -1093,8 +1093,9 @@ class TestGetRecentTurns:
         srv.config.context_floor = 0.2
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
 
-        turns = await srv.get_recent_turns(limit=2)  # batches of 2 → 3 pages
+        turns, skipped = await srv.get_recent_turns(limit=2)  # batches of 2 → 3 pages
 
         ids = [t["rowid"] for t in turns]
         assert ids == sorted(ids), "must be oldest-first for the restore"
         assert ids == [2, 3, 4, 5], "newest 4 within the budget, oldest-first"
+        assert skipped == 1, "5 fetched turns, budget fits 4 → 1 dropped"

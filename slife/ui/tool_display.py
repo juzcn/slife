@@ -231,8 +231,9 @@ class ToolCallWidget(Static):
         # Status text
         content = content + _lit("  ") + _lit(label_text, style=color)
 
-        # Iteration counter (e.g. "1/10")
-        if self._iteration > 0:
+        # Iteration counter (e.g. "1/10") — hidden when iterations are
+        # uncapped (max_iterations = 0 means no limit).
+        if self._iteration > 0 and self._max_iterations > 0:
             content = content + _lit(
                 f"  ({self._iteration}/{self._max_iterations})",
                 style="#484f58",

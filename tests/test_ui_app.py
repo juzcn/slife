@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from slife.config import Config, ModelConfig
 from slife.agent.llm_client import TokenUsage
-from slife.agent.loop import ToolCallInfo, AgentResult, MaxIterationsExceeded
+from slife.agent.loop import ToolCallInfo, AgentResult
 from slife.agent.service import AgentService
 from slife.ui.app import StatusBar
 from slife.ui.handler import TUIHandler

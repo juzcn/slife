@@ -1,9 +1,10 @@
 """Meta tools — agent self-management.
 
-list_tools      — inventory with category filter
-check_async     — poll background task result
-cancel_async    — cancel a running background task
-clear_context   — reset conversation history
+list_tools         — inventory with category filter
+check_async        — poll background task result
+cancel_async       — cancel a running background task
+clear_context      — reset conversation history
+set_max_iterations — change the loop's iteration cap at runtime (0 = unlimited)
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import uuid
 from collections import defaultdict
 from typing import ClassVar
 
-from slife.tools.base import Tool
+from slife.tools.base import Tool, make_params
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +251,34 @@ class ClearContextTool(Tool):
         remaining = len(conv.messages)
         logger.info("clear_context removed=%d remaining=%d", removed, remaining)
         return f"[OK] Cleared {removed} old message(s); {remaining} remaining (system prompt + current turn)."
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# set_max_iterations
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class SetMaxIterationsTool(Tool):
+    name = "set_max_iterations"
+    category: ClassVar[str] = "Meta"
+    description = (
+        "Set the maximum tool-call iterations per turn (0 = unlimited); "
+        "applies from the next turn."
+    )
+    parameters = make_params(
+        max_iterations={
+            "type": "integer",
+            "description": "Max tool-call iterations per turn. 0 = unlimited (no cap).",
+        },
+    )
+
+    async def execute(self, max_iterations: int = 0, **kwargs) -> str:
+        setter = getattr(self, "_ctx", None)
+        if setter is not None:
+            setter = setter.set_max_iterations
+        if setter is None:
+            return "Error: agent loop is not available yet — call this after the agent service has started."
+        return setter(max_iterations)
 
 
 

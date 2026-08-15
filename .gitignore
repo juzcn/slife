@@ -1,6 +1,9 @@
 # Runtime config — personal per-user settings; template is slife.template.json5.
 slife.json5
 
+# Playwright MCP browser traces (test artifacts)
+.playwright-mcp/
+
 # Credential store encrypted backup
 credentials.crypt
 

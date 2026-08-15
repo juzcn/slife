@@ -13,6 +13,7 @@ from slife.tools.meta import (
     CheckAsyncTool,
     CancelAsyncTool,
     ClearContextTool,
+    SetMaxIterationsTool,
     _classify,
     _tasks,
     schedule,
@@ -521,3 +522,34 @@ class TestClearContextTool:
             assert len(conv.messages) >= 1
         finally:
             tool._ctx = None
+
+
+# ── SetMaxIterationsTool ─────────────────────────────────────────────
+
+
+class TestSetMaxIterationsTool:
+    """set_max_iterations delegates to the ctx hook."""
+
+    def test_parameters_schema(self):
+        assert "max_iterations" in SetMaxIterationsTool.parameters["required"]
+        prop = SetMaxIterationsTool.parameters["properties"]["max_iterations"]
+        assert prop["type"] == "integer"
+
+    @pytest.mark.asyncio
+    async def test_sets_via_ctx_hook(self):
+        from slife.tools.context import ToolContext
+
+        tool = SetMaxIterationsTool()
+        tool._ctx = ToolContext(
+            set_max_iterations=lambda n: f"Max iterations set to {n}",
+        )
+
+        result = await tool.execute(max_iterations=0)
+
+        assert result == "Max iterations set to 0"
+
+    @pytest.mark.asyncio
+    async def test_loop_unavailable(self):
+        tool = SetMaxIterationsTool()  # no _ctx → no hook
+        result = await tool.execute(max_iterations=0)
+        assert result.startswith("Error")

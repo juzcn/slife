@@ -65,7 +65,7 @@ User Input → Conversation.add_user_message()        (secrets sanitized)
 - **Concurrent execution**: all calls in a batch run via `asyncio.gather`; approval dialogs serialize behind a lock
 - **Tool timeout**: single enforcement point — `asyncio.wait_for()` wraps every call (default 60 s, `agent.tool_timeout`). Per-call override via `_timeout`; tools with a native `timeout` parameter (`execute_shell`) receive it directly instead of a double wrap
 - **Background execution**: per-call `_async: true` schedules the tool as a background task and returns a task id immediately; poll with `check_async`, cancel with `cancel_async`
-- **Iteration limit**: `max_iterations` (default 30) prevents infinite loops
+- **Iteration limit**: `max_iterations` (default 30) prevents infinite loops; **0 = unlimited** (the loop only ends via a final response or cancellation). The cap is checked **live each iteration** (not fixed at `run()` start), so a mid-turn `set_max_iterations` (the `set_max_iterations` meta tool) applies to the running turn immediately and to the next. Hitting the cap returns a cancelled result and notifies the handler via `on_max_iterations` — the TUI shows `✗ Agent exceeded maximum of N iterations` instead of stopping silently.
 - **Cancellation**: `Esc` sets a cancel event; checked before each iteration, after each stream, and before each tool batch
 - **Turn consistency**: one function — `Conversation._ensure_turn_consistent()` — enforces two idempotent invariants before a conversation is persisted (and again on load), so it is always well-formed when it next reaches the wire:
   1. **No orphaned tool_calls** — an assistant `tool_call` whose result never arrived (an interrupted turn, e.g. a hung tool) gets a synthetic `(Tool execution interrupted)` result inserted right after it; otherwise the orphan is persisted and re-repaired on every restore.
@@ -214,7 +214,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `vision.py` | `include_image` (native — injects image blocks into the conversation; gated on a vision-capable model) |
 | Harness | `harness.py` | `_sys_note`, `_sys_trim` (visible-but-reserved, see above) |
-| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
+| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
 Plus **plugin tools** — registered at runtime as `{server}__{tool}` proxies via `create_proxy_tools`:
 
@@ -422,6 +422,8 @@ Backend selection priority: GGUF file present → transformer requested → API 
 ### Session Restore
 
 On startup, recent turns are read **directly from SQLite** — no MCP transport, no plugin dependency. The UI rebuilds the last session immediately (user messages, assistant text, tool-call widgets, images whose files still exist); plugins start in parallel. Restored messages carry their stored timestamps — user messages read `created_at`, assistant messages read `completed_at` — matching the live display.
+
+Turns are selected newest-first within the context-floor token budget; the trimming happens in `get_recent_turns`, which returns `(selected, skipped)` so the restore can report it. When history doesn't fit, the TUI shows **`✅ 已恢复最近 N 轮对话（M 轮旧记录未加载，可用 memory_search 查找）`**.
 
 ### Agent Isolation
 

@@ -120,7 +120,7 @@ active_model: "deepseek/deepseek-v4-pro",
 
 统一为 OpenAI 函数定义。LLM 看不出原生、插件与外部 MCP 工具的区别。
 
-**14 个类别共 51 个原生工具** — 从 `slife/tools/` 自动发现（最多 49 个 LLM 可见 + 2 个 harness；`include_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
+**14 个类别共 52 个原生工具** — 从 `slife/tools/` 自动发现（最多 50 个 LLM 可见 + 2 个 harness；`include_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
 
 | 类别 | 工具 |
 |------|------|
@@ -137,7 +137,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | Vision | `include_image`（把本地图片或 URL 注入对话） |
 | Display | `show_image`, `notify_user` |
 | Harness | `_sys_note`（上下文状态）、`_sys_trim`（上下文裁剪）——自主调用，LLM 不可用 |
-| Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
+| Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
 每个工具还额外接受三个框架元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（对话流内联审批行——Y 批准 / N 拒绝 / Esc 拒绝）。
 

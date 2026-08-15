@@ -9,6 +9,7 @@ no implicit initialisation order.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -50,3 +51,8 @@ class ToolContext:
 
     conversation: Conversation | None = None
     """The active :class:`Conversation` (needed by ``clear_context``)."""
+
+    set_max_iterations: Callable[[int], str] | None = None
+    """Runtime hook to change the agent loop's per-turn iteration cap
+    (0 = unlimited).  Populated by AgentService after the loop is built;
+    used by the ``set_max_iterations`` meta tool."""

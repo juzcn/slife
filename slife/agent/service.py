@@ -174,6 +174,8 @@ class AgentService:
             system_prompt=build_system_prompt(self.config),
         )
         self._tool_ctx.conversation = self.conversation
+        # Runtime iteration-cap hook for the set_max_iterations meta tool.
+        self._tool_ctx.set_max_iterations = self.agent_loop.set_max_iterations
         self.session_usage = TokenUsage()
 
         # Autonomous heartbeat — background idle task + TUI surfacing hooks.
@@ -1393,8 +1395,8 @@ class AgentService:
         except Exception as e:
             logger.warning("memdb_save_error err=%s", e)
 
-    async def get_recent_turns(self, limit: int = 20) -> list[dict]:
-        """Load recent turns for restore. Returns [] if no turns.
+    async def get_recent_turns(self, limit: int = 20) -> tuple[list[dict], int]:
+        """Load recent turns for restore. Returns ([], 0) if no turns.
 
         Fetches newest-first in batches of *limit* (each batch already
         newest-first, so appending stays globally newest-first), selects the
@@ -1402,6 +1404,11 @@ class AgentService:
         and returns them **oldest-first** so the restore rebuilds the
         conversation chronologically.  Heartbeat turns are included — they
         restore as ⚡ 自主, consistent with the live TUI.
+
+        Returns ``(selected, skipped)`` — *skipped* is how many fetched
+        turns were dropped for the budget, so the TUI can report
+        "已恢复最近 N 轮（M 轮旧记录未加载）".  The trimming happens here
+        (not in the restore), so the count must originate here.
 
         Reads directly from SQLite — independent of the memory plugin / MCP.
         """
@@ -1412,7 +1419,7 @@ class AgentService:
 
             db_path = self._get_memory_db_path()
             if not (db_path and db_path.is_file()):
-                return []
+                return [], 0
             budget = int(
                 self.config.active_model.context_window * self.config.context_floor
             )
@@ -1443,10 +1450,11 @@ class AgentService:
                 tokens += est
                 selected.append(t)
             selected.reverse()  # oldest-first for restore
-            return selected
+            skipped = len(all_turns) - len(selected)
+            return selected, skipped
         except Exception as e:
             logger.debug("get_recent_turns_direct_db_error err=%s", e)
-            return []
+            return [], 0
         finally:
             # Close the aiosqlite connection so its worker thread doesn't
             # outlive the event loop (leaks + "Event loop is closed" in tests).

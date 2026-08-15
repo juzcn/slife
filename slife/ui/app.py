@@ -14,7 +14,6 @@ from slife.config import Config
 from slife.a2a.card import format_presence_line
 from slife.agent.service import AgentService
 from slife.agent.plugins import PluginStartStatus
-from slife.agent.loop import MaxIterationsExceeded
 from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
 from slife.ui.image_utils import is_image_file
@@ -276,9 +275,9 @@ class SlifeApp(App):
         # get_recent_turns reads the DB directly via aiosqlite —
         # completely independent of the memory plugin process.
         try:
-            turns = await self.service.get_recent_turns()
+            turns, skipped = await self.service.get_recent_turns()
             if turns:
-                self._recovery_info = {"turns": turns}
+                self._recovery_info = {"turns": turns, "skipped": skipped}
                 await self._restore_session()
         except Exception as e:
             logger.debug("session_restore_skip err=%s", e)
@@ -652,9 +651,6 @@ class SlifeApp(App):
                 handler=handler,
             )
             handler.finalize_current()
-        except MaxIterationsExceeded as e:
-            handler.finalize_current()
-            chat_view.add_system_message(f"✗ {e}", color="#f85149")
         except Exception as e:
             handler.finalize_current()
             chat_view.add_system_message(f"✗ Error: {e}", color="#f85149")

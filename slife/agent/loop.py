@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import itertools
 import json
 import logging
 import os
@@ -166,6 +167,15 @@ class AgentEventHandler(Protocol):
         """
         ...
 
+    async def on_max_iterations(self, iterations: int) -> None:
+        """Called when the agent loop hits the configured iteration limit.
+
+        The turn still completes as a cancelled turn (persistence-wise),
+        but the handler can surface the limit to the user. Default is a
+        no-op.
+        """
+        ...
+
     def finalize_current(self) -> None:
         """Mark the current (last incomplete) assistant message as complete.
 
@@ -304,6 +314,23 @@ class AgentLoop:
         self._context_time_start: str = ""  # earliest turn date in context; set by restore, advanced by trim
         self._last_context_time_start: str = ""  # for change-detection in the footer
         self._context_turn_dates: list[str] = []  # dates of restored turns, oldest-first; consumed by trim
+
+    def set_max_iterations(self, max_iterations: int) -> str:
+        """Change the per-turn iteration cap at runtime (0 = unlimited).
+
+        Takes effect from the next turn: the running turn's iteration
+        budget was fixed when ``run()`` started, so this only affects
+        subsequent ``run()`` calls.  Returns a human-readable confirmation
+        or an error string.
+        """
+        if not isinstance(max_iterations, int) or isinstance(max_iterations, bool):
+            return f"Error: max_iterations must be an integer, got {max_iterations!r}."
+        if max_iterations < 0:
+            return f"Error: max_iterations must be >= 0 (0 = unlimited), got {max_iterations}."
+        self.max_iterations = max_iterations
+        if max_iterations == 0:
+            return "Max iterations set to 0 — unlimited (no cap). Applies next turn."
+        return f"Max iterations set to {max_iterations}. Applies next turn."
 
     def cancel(self) -> None:
         """Signal the agent loop to stop at the next safe point."""
@@ -897,11 +924,10 @@ class AgentLoop:
             handler: Optional event handler for real-time callbacks.
 
         Returns:
-            AgentResult with final text and cumulative token usage.
-
-        Raises:
-            MaxIterationsExceeded: If the loop exceeds max_iterations.
-            AgentCancelled: If cancel() was called during execution.
+            AgentResult with final text and cumulative token usage.  On
+            cancellation or hitting max_iterations, the result carries
+            ``cancelled=True`` and is surfaced to the handler via
+            ``on_max_iterations`` (it is not raised).
         """
         n_imgs = len(images) if images else 0
         if n_imgs > 0 and not self.supports_vision:
@@ -972,7 +998,12 @@ class AgentLoop:
                         "context_trimmed turns=%d time_start=%s",
                         removed, self._context_time_start,
                     )
-                for i in range(self.max_iterations):
+                # max_iterations = 0 means no cap.  The cap is checked live
+                # each iteration, so a mid-turn set_max_iterations applies
+                # immediately (and to the next turn too).
+                for i in itertools.count():
+                    if self.max_iterations > 0 and i >= self.max_iterations:
+                        raise MaxIterationsExceeded(self.max_iterations)
                     # Check for cancellation before each iteration
                     if self._cancel_event.is_set():
                         logger.info("agent_cancelled iter=%d", i + 1)
@@ -1027,8 +1058,6 @@ class AgentLoop:
                             result.content,
                         )
                         return AgentResult(text=result.content, usage=total_usage)
-
-                raise MaxIterationsExceeded(self.max_iterations)
             except AgentCancelled:
                 # Turn consistency is enforced at the single save point
                 # (save_to_memory runs unconditionally after every turn) —
@@ -1036,6 +1065,17 @@ class AgentLoop:
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except MaxIterationsExceeded:
                 logger.warning("max_iterations_exceeded max=%d", self.max_iterations)
+                # Surface the limit to the handler (e.g. the TUI) before
+                # returning the cancelled result — the turn is saved as a
+                # normal cancelled turn, but the user should see why it
+                # stopped.
+                if handler is not None:
+                    on_max = getattr(handler, "on_max_iterations", None)
+                    if on_max is not None:
+                        try:
+                            await on_max(self.max_iterations)
+                        except Exception:
+                            pass
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except Exception:
                 # Re-raise so the caller (inbox) handles the error as before;

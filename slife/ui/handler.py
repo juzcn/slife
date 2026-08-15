@@ -127,6 +127,14 @@ class TUIHandler:
         if self._current_assistant is not None:
             self._current_assistant.reset_stream()
 
+    async def on_max_iterations(self, iterations: int) -> None:
+        """Surface the iteration limit being hit — the loop stops silently
+        otherwise (cancelled turn, no final text)."""
+        self._chat_view.add_system_message(
+            f"✗ Agent exceeded maximum of {iterations} iterations",
+            color="#f85149",
+        )
+
     # ── AgentEventHandler implementation ─────────────────────────────
 
     async def on_thinking_chunk(self, chunk: str) -> None:

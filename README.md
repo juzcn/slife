@@ -122,7 +122,7 @@ Switch at runtime: `model_list` → `model_switch(ref="bailian/qwen3.8-max")`.
 
 All unified as OpenAI function definitions. The LLM sees no difference between native, plugin, and external MCP tools.
 
-**51 native tools in 14 categories** — auto-discovered from `slife/tools/` (up to 49 LLM-visible + 2 harness; `include_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
+**52 native tools in 14 categories** — auto-discovered from `slife/tools/` (up to 50 LLM-visible + 2 harness; `include_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
 
 | Category | Tools |
 |----------|-------|
@@ -139,7 +139,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Vision | `include_image` (injects a local image or URL into the conversation) |
 | Display | `show_image`, `notify_user` |
 | Harness | `_sys_note` (context status), `_sys_trim` (context trim) — auto-invoked, not for LLM use |
-| Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context` |
+| Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
 Every tool additionally accepts three harness meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt in the chat — Y approve / N deny / Esc deny).
 

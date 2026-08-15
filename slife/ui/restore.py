@@ -237,7 +237,12 @@ async def restore_session(
         tokens_selected += t
     turns.reverse()
 
-    skipped = len(all_turns) - len(turns)
+    # Budget trimming already happened in get_recent_turns, which reports
+    # how many fetched turns were dropped.  Fall back to computing it here
+    # for legacy recovery_info that carries the untrimmed list.
+    skipped = recovery_info.get("skipped")
+    if skipped is None:
+        skipped = len(all_turns) - len(turns)
     if skipped > 0:
         logger.debug(
             "session_restore_trimmed loaded=%d skipped=%d budget=%d selected=%d",

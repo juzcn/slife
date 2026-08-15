@@ -231,6 +231,36 @@ class TestAgentLoopConstruction:
         assert loop.max_iterations == 30
 
 
+# ── set_max_iterations ────────────────────────────────────────────────
+
+
+class TestSetMaxIterations:
+    """set_max_iterations — runtime cap change (0 = unlimited)."""
+
+    def test_accepts_zero_unlimited(self, sample_model_config, empty_registry):
+        loop = AgentLoop(LLMClient(sample_model_config), empty_registry)
+        msg = loop.set_max_iterations(0)
+        assert "unlimited" in msg
+        assert loop.max_iterations == 0
+
+    def test_accepts_positive(self, sample_model_config, empty_registry):
+        loop = AgentLoop(LLMClient(sample_model_config), empty_registry)
+        msg = loop.set_max_iterations(5)
+        assert msg.startswith("Max iterations set to 5")
+        assert loop.max_iterations == 5
+
+    def test_rejects_negative(self, sample_model_config, empty_registry):
+        loop = AgentLoop(LLMClient(sample_model_config), empty_registry)
+        assert "Error" in loop.set_max_iterations(-1)
+        assert loop.max_iterations == 30  # unchanged
+
+    def test_rejects_non_int(self, sample_model_config, empty_registry):
+        loop = AgentLoop(LLMClient(sample_model_config), empty_registry)
+        assert "Error" in loop.set_max_iterations("5")
+        assert "Error" in loop.set_max_iterations(True)
+        assert loop.max_iterations == 30  # unchanged
+
+
 # ── _process_stream ───────────────────────────────────────────────────
 
 
@@ -651,10 +681,119 @@ class TestAgentLoopRun:
             ])
             yield StreamChunk(usage=TokenUsage(2, 1, 3))
 
+        handler = AsyncMock(spec=AgentEventHandler)
+
         with patch.object(llm, 'chat_stream', side_effect=always_tool_call):
-            result = await loop.run("test", conversation)
+            result = await loop.run("test", conversation, handler=handler)
             assert result.cancelled is True
             assert result.usage.total_tokens > 0
+            # The limit is surfaced via the handler, not left silent.
+            handler.on_max_iterations.assert_awaited_once_with(2)
+
+    @pytest.mark.asyncio
+    async def test_max_iterations_zero_is_unlimited(
+        self, sample_model_config, tool_registry, conversation,
+    ):
+        """max_iterations=0 means no cap — the loop runs past any fixed
+        iteration count until a final response arrives (never raises
+        MaxIterationsExceeded)."""
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, tool_registry, max_iterations=0)
+
+        calls = 0
+
+        async def tool_then_done(messages, tools, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls < 6:  # 5 tool-calling iterations, then a final answer
+                yield StreamChunk(tool_deltas=[
+                    {"index": 0, "id": "c1", "function": {"name": "echo", "arguments": '{"message":"x"}'}}
+                ])
+                yield StreamChunk(usage=TokenUsage(2, 1, 3))
+            else:
+                yield StreamChunk(content="Done!")
+                yield StreamChunk(usage=TokenUsage(1, 1, 2))
+
+        with patch.object(llm, 'chat_stream', side_effect=tool_then_done):
+            result = await loop.run("test", conversation)
+
+        assert result.text == "Done!"
+        assert result.cancelled is False
+        assert calls == 6  # no cap at 0 — all 5 tool iterations + final ran
+
+    @pytest.mark.asyncio
+    async def test_set_max_iterations_applies_next_turn(
+        self, sample_model_config, tool_registry, conversation,
+    ):
+        """A runtime cap change does not affect the running turn; the next
+        run reads the new value."""
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, tool_registry, max_iterations=1)
+
+        async def always_tool_call(messages, tools, **kwargs):
+            yield StreamChunk(tool_deltas=[
+                {"index": 0, "id": "c1", "function": {"name": "echo", "arguments": '{"message":"x"}'}}
+            ])
+            yield StreamChunk(usage=TokenUsage(2, 1, 3))
+
+        # Turn 1: capped at 1 → cancelled at the cap.
+        with patch.object(llm, 'chat_stream', side_effect=always_tool_call):
+            r1 = await loop.run("test", conversation)
+            assert r1.cancelled is True
+
+        # Raise to unlimited mid-session → the next turn runs freely.
+        assert loop.set_max_iterations(0).startswith("Max iterations set to 0")
+
+        calls = 0
+
+        async def tool_then_done(messages, tools, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls < 4:  # 3 tool iterations, then a final answer
+                yield StreamChunk(tool_deltas=[
+                    {"index": 0, "id": "c1", "function": {"name": "echo", "arguments": '{"message":"x"}'}}
+                ])
+                yield StreamChunk(usage=TokenUsage(2, 1, 3))
+            else:
+                yield StreamChunk(content="Done!")
+                yield StreamChunk(usage=TokenUsage(1, 1, 2))
+
+        with patch.object(llm, 'chat_stream', side_effect=tool_then_done):
+            r2 = await loop.run("test", conversation)
+            assert r2.text == "Done!"
+            assert calls == 4  # cap 0 took effect — not stopped at 1
+
+    @pytest.mark.asyncio
+    async def test_set_max_iterations_applies_mid_turn(
+        self, sample_model_config, tool_registry, conversation,
+    ):
+        """Tightening the cap mid-turn stops the running turn immediately —
+        the cap is checked live, not fixed at run() start."""
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, tool_registry, max_iterations=5)
+
+        calls = 0
+
+        async def shrink_cap(messages, tools, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                loop.set_max_iterations(1)  # tighten the cap mid-turn
+            yield StreamChunk(tool_deltas=[
+                {"index": 0, "id": "c1", "function": {"name": "echo", "arguments": '{"message":"x"}'}}
+            ])
+            yield StreamChunk(usage=TokenUsage(2, 1, 3))
+
+        handler = AsyncMock(spec=AgentEventHandler)
+
+        with patch.object(llm, 'chat_stream', side_effect=shrink_cap):
+            result = await loop.run("test", conversation, handler=handler)
+
+        assert result.cancelled is True
+        # Stopped at the tightened cap (iteration 2's live check), not the
+        # original 5 — only 2 LLM calls happened.
+        assert calls == 2
+        handler.on_max_iterations.assert_awaited_once_with(1)
 
     @pytest.mark.asyncio
     async def test_run_with_images(self, sample_model_config, empty_registry, conversation, tmp_path):
