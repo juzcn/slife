@@ -1456,6 +1456,7 @@ class AgentService:
         Reads directly from SQLite — independent of the memory plugin / MCP.
         """
         store = None
+        db_path = None
         try:
             from slife.plugins.memdb.store import SessionStore
             from slife.ui.restore import estimate_turn_tokens
@@ -1501,7 +1502,7 @@ class AgentService:
             # memory is core, so restore failure is fatal.
             logger.error("memory_restore_fatal err=%s", e)
             raise MemoryDatabaseError(
-                f"无法读取记忆库 {db_path}: {e}"
+                f"cannot read memory database {db_path or 'unknown'}: {e}"
             ) from e
         finally:
             # Close the aiosqlite connection so its worker thread doesn't

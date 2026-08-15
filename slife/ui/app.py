@@ -2,6 +2,7 @@
 
 import logging
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -285,8 +286,16 @@ class SlifeApp(App):
             logger.error("memory_restore_fatal err=%s", e)
             chat_view = self.query_one("#chat-view", ChatView)
             chat_view.add_system_message(
-                f"✗ 记忆库不可用: {e}\n记忆是核心功能 — 请修复数据库后重启。",
+                f"✗ Memory database unavailable: {e}\nMemory is a core feature — fix the database and restart.",
                 color="#f85149",
+            )
+            # The TUI message above never gets a chance to render before
+            # exit() tears the app down, and the logger only writes to the
+            # log file — so the terminal would otherwise be silent. Emit the
+            # fatal error to stderr too so it's visible where slife ran.
+            print(
+                f"\n✗ Memory database unavailable: {e}\n  Memory is a core feature — fix the database and restart.",
+                file=sys.stderr,
             )
             self.exit()
         except Exception as e:
