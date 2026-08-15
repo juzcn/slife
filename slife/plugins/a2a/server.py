@@ -74,6 +74,7 @@ _inbound_tasks: list[dict] = []
 _presence_events: list[dict] = []
 _cancellations: list[dict] = []
 _task_completions: list[dict] = []  # outbound async results → auto-push to harness
+_poll_tasks: set[str] = set()  # outbound async task_ids sent in "poll" mode (no auto-push)
 _MAX_QUEUED = 500
 
 
@@ -135,6 +136,11 @@ async def _on_task_result(corr_id: str, result: str, cancelled: bool) -> None:
             peer = rec.agent_name
     except Exception:
         pass
+    if corr_id in _poll_tasks:
+        # Sent in "poll" mode — the caller retrieves via a2a_get_task_result;
+        # no auto-push (avoids the redundant double-delivery of poll + push).
+        _poll_tasks.discard(corr_id)
+        return
     if len(_task_completions) >= _MAX_QUEUED:
         _task_completions.pop(0)
     _task_completions.append({
@@ -214,18 +220,30 @@ async def a2a_send_task(agent_name: str, task: str) -> str:
 @mcp.tool(
     name="a2a_send_task_async",
     description="Send a task to a remote A2A mesh peer without waiting — returns a "
-    "task_id. The result is delivered automatically when the peer completes "
-    "it. Requires the A2A mesh (MQTT broker).",
+    "task_id. mode='auto' (default) auto-delivers the result when the peer "
+    "completes it; mode='poll' suppresses that — retrieve with "
+    "a2a_get_task_result. Requires the A2A mesh (MQTT broker).",
 )
-async def a2a_send_task_async(agent_name: str, task: str) -> str:
+async def a2a_send_task_async(agent_name: str, task: str, mode: str = "auto") -> str:
     """Send a task without waiting — returns the correlation/task id.
 
     Args:
         agent_name: Remote peer's agent_name (from a2a_list_agents).
         task: The task text/instruction for the peer.
+        mode: 'auto' (default) auto-pushes the result when the peer completes;
+            'poll' suppresses the push (retrieve with a2a_get_task_result).
     """
+    if mode not in ("auto", "poll"):
+        return f"Error: mode must be 'auto' or 'poll', got {mode!r}."
     client = await _ensure_connected()
-    return await client.send_task_async(AgentName(agent_name), task)
+    corr_id = await client.send_task_async(AgentName(agent_name), task)
+    if mode == "poll":
+        _poll_tasks.add(corr_id)
+        return (
+            f"{corr_id}\n[auto-delivery disabled (mode=poll) — retrieve with "
+            f"a2a_get_task_result]"
+        )
+    return corr_id
 
 
 @mcp.tool(
@@ -247,7 +265,8 @@ async def a2a_list_agents() -> str:
 @mcp.tool(
     name="a2a_get_task_result",
     description="Return a remote async task's result, or 'pending' if not ready. "
-    "Requires the A2A mesh (MQTT broker).",
+    "Used to retrieve tasks sent with mode='poll' (auto-delivery disabled); "
+    "auto-mode tasks are delivered automatically. Requires the A2A mesh (MQTT broker).",
 )
 async def a2a_get_task_result(agent_name: str, task_id: str) -> str:
     """Return the result of an async task, or 'pending' if not ready.

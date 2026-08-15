@@ -56,6 +56,29 @@ class TestPluginTools:
         assert result == "corr-1"
 
     @pytest.mark.asyncio
+    async def test_a2a_send_task_async_poll_mode(self):
+        """mode='poll' marks the task so its completion is not auto-pushed."""
+        client = _fake_client()
+        plugin._poll_tasks.clear()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
+            result = await getattr(plugin, "a2a_send_task_async")(
+                "peer-1", "hello", mode="poll",
+            )
+        assert result.startswith("corr-1")
+        assert "a2a_get_task_result" in result
+        assert "corr-1" in plugin._poll_tasks
+
+    @pytest.mark.asyncio
+    async def test_a2a_send_task_async_rejects_invalid_mode(self):
+        plugin._poll_tasks.clear()
+        with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=_fake_client())):
+            result = await getattr(plugin, "a2a_send_task_async")(
+                "peer-1", "hello", mode="nope",
+            )
+        assert result.startswith("Error")
+        assert plugin._poll_tasks == set()
+
+    @pytest.mark.asyncio
     async def test_a2a_list_agents_serializes_cards(self):
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
@@ -188,6 +211,17 @@ class TestHarnessTools:
         # Queue is cleared after drain
         assert plugin._inbound_tasks == []
         assert plugin._presence_events == []
+
+    @pytest.mark.asyncio
+    async def test_task_completion_skipped_for_poll_mode(self):
+        """Poll-mode tasks don't auto-push — the marker is consumed and the
+        completion never reaches the harness queue."""
+        plugin._task_completions.clear()
+        plugin._poll_tasks.add("cid-poll")
+        await plugin._on_task_result("cid-poll", "the answer", False)
+        out = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
+        assert out["task_completions"] == []
+        assert "cid-poll" not in plugin._poll_tasks
 
     @pytest.mark.asyncio
     async def test_dispatch_result_publishes(self):
