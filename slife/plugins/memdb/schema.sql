@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS diary (
     --   ]
     messages       TEXT NOT NULL DEFAULT '[]',
 
-    -- ▼ 回忆线索（LLM 通过 memory_summarize 写入）
+    -- ▼ 回忆线索（LLM 通过 memory_turn_summarize 写入）
     summary        TEXT DEFAULT '',
     tags           TEXT DEFAULT '',
 
@@ -66,7 +66,7 @@ CREATE TRIGGER IF NOT EXISTS diary_ad AFTER DELETE ON diary BEGIN
     VALUES ('delete', old.rowid, old.user_message, old.messages, old.summary, old.tags, old.channel);
 END;
 
--- memory_summarize writes summary/tags via UPDATE — the FTS5 external-content
+-- memory_turn_summarize writes summary/tags via UPDATE — the FTS5 external-content
 -- index must track those updates or the summary stays invisible to keyword
 -- search (only the insert-time empty row was indexed).
 CREATE TRIGGER IF NOT EXISTS diary_au AFTER UPDATE ON diary BEGIN

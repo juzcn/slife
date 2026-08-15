@@ -495,6 +495,14 @@ class SessionStore:
         )
         await self._c.commit()
 
+    async def latest_rowid(self) -> int | None:
+        """Rowid of the newest turn, or None if the diary is empty."""
+        cursor = await self._c.execute(
+            "SELECT rowid FROM diary ORDER BY rowid DESC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
     # ── Search ──────────────────────────────────────────────────────
 
     async def search_keyword(
@@ -737,11 +745,11 @@ class SessionStore:
         summary: str, tags: str, created_at: str,
         turn_embedding: list[float],
     ) -> None:
-        """Insert or update one chunk embedding for a turn.
+        """Insert one chunk embedding for a turn.
 
         Each turn can produce multiple chunks — *chunk_index* is 0-based.
-        When re-embedding (e.g. after summary update), all chunks for
-        the same *diary_rowid* are replaced.
+        Always INSERTs; the caller clears old chunks (``replace_embedding_chunks``
+        does delete-then-insert atomically).
         """
         vec_blob = _serialize_f32(turn_embedding)
         await self._c.execute(

@@ -59,7 +59,7 @@ mcp, _log_path, logger = create_plugin_server(
         "slife-memdb — turn-based long-term knowledge. "
         "Every turn (user question + your response) is one row. "
         "LLM-visible tools: memory_list_recent, memory_search (grep/fts5/hybrid/time), "
-        "memory_open, memory_summarize, memory_check/set/remove_embedding. "
+        "memory_open, memory_turn_summarize, memory_check/set/remove_embedding. "
         "All data is automatically scoped to the current agent."
     ),
     lifespan=_memdb_lifespan,
@@ -372,25 +372,28 @@ async def memory_search(
 
 
 @mcp.tool(
-    name="memory_summarize",
+    name="memory_turn_summarize",
     description=(
         "Write a summary (1-2 sentences) and comma-separated tags for a turn, "
-        "making it findable via search. Both optional."
+        "making it findable via keyword search. Both optional. "
+        "rowid defaults to the most recent turn. "
+        "Does NOT touch the semantic index — the turn keeps its full-text vectors."
     ),
 )
-async def memory_summarize(
-    rowid: int,
+async def memory_turn_summarize(
+    rowid: int | None = None,
     summary: str | None = None, tags: str | None = None,
 ) -> str:
     store = await _ensure_store()
     try:
+        if rowid is None:
+            rowid = await store.latest_rowid()
+            if rowid is None:
+                return json.dumps(
+                    {"error": "no turns saved yet — nothing to summarize"},
+                    ensure_ascii=False, indent=2,
+                )
         await store.update_summary(rowid=rowid, summary=summary, tags=tags)
-        if summary and _manager is not None:
-            try:
-                # Re-embed from the summary, serialized with the drainer.
-                await _manager.reembed_summary(rowid, summary, tags or "")
-            except Exception as e:
-                logger.debug("embedding_upsert_skipped err=%s", e)
         return json.dumps({"status": "updated", "rowid": rowid}, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("summarize_failed rowid=%s", rowid)

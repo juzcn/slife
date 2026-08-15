@@ -174,3 +174,55 @@ class TestStoreLifecycleLocking:
         # harness's 10s save timeout can no longer be tripped by a slow embed.
         assert "embedder" not in captured
         manager.on_turn_saved.assert_called_once()
+
+
+class TestTurnSummarize:
+    """memory_turn_summarize — rowid defaults to the most recent turn."""
+
+    def _server(self, latest: int | None):
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        store.latest_rowid = AsyncMock(return_value=latest)
+        store.update_summary = AsyncMock()
+        srv._store = store
+        return srv, store
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_latest_rowid(self, restore_root_logger):
+        import json
+
+        srv, store = self._server(latest=7)
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.memory_turn_summarize(summary="sum", tags="a,b")
+
+        data = json.loads(out)
+        assert data["rowid"] == 7
+        store.update_summary.assert_awaited_once_with(
+            rowid=7, summary="sum", tags="a,b",
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_rowid_skips_lookup(self, restore_root_logger):
+        import json
+
+        srv, store = self._server(latest=7)
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.memory_turn_summarize(rowid=3, summary="sum")
+
+        data = json.loads(out)
+        assert data["rowid"] == 3
+        store.update_summary.assert_awaited_once_with(
+            rowid=3, summary="sum", tags=None,
+        )
+        store.latest_rowid.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_diary_is_an_error_not_a_write(self, restore_root_logger):
+        import json
+
+        srv, store = self._server(latest=None)
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.memory_turn_summarize(summary="sum")
+
+        assert "error" in json.loads(out)
+        store.update_summary.assert_not_awaited()

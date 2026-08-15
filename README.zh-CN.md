@@ -150,7 +150,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | 服务器 | LLM 可见工具 |
 |--------|-------------|
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
-| `memdb` | `memdb__memory_list_recent`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_summarize`, `memdb__memory_count`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
+| `memdb` | `memdb__memory_list_recent`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_turn_summarize`, `memdb__memory_count`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `memfiles__expose_file`, `memfiles__save_content_or_files` |
 

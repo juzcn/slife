@@ -196,7 +196,7 @@ class TestSplitSql:
         split into orphan fragments and never created.
         """
         sql = (
-            "-- memory_summarize writes summary/tags via UPDATE\n"
+            "-- memory_turn_summarize writes summary/tags via UPDATE\n"
             "-- index must track those updates\n"
             "CREATE TRIGGER IF NOT EXISTS diary_au AFTER UPDATE ON diary BEGIN\n"
             "    INSERT INTO diary_fts(diary_fts, rowid) VALUES ('delete', old.rowid);\n"
@@ -674,6 +674,32 @@ class TestSessionStoreUpdateSummary:
 
         await store.update_summary(rowid=1)
         mock_conn.execute.assert_not_called()
+
+
+class TestSessionStoreLatestRowid:
+    """Tests for latest_rowid (the memory_turn_summarize default)."""
+
+    @pytest.mark.asyncio
+    async def test_returns_newest_rowid(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone = AsyncMock(return_value=(42,))
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        assert await store.latest_rowid() == 42
+
+    @pytest.mark.asyncio
+    async def test_empty_diary_returns_none(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone = AsyncMock(return_value=None)
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        assert await store.latest_rowid() is None
 
 
 class TestSessionStoreSearchKeyword:

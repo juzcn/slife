@@ -265,22 +265,3 @@ class TestOnTurnSaved:
         assert not m._work_event.is_set()
 
 
-class TestReembedSummary:
-    @pytest.mark.asyncio
-    async def test_reembeds_from_summary(self):
-        store = AsyncMock()
-        store._conn = AsyncMock()
-        cursor = AsyncMock()
-        cursor.fetchone = AsyncMock(return_value={"tags": "existing", "created_at": "2026-01-01T00:00:00+00:00"})
-        store._conn.execute = AsyncMock(return_value=cursor)
-        store.replace_embedding_chunks = AsyncMock()
-        m = SemanticManager(store)
-        m._embedder = _embedder()
-
-        await m.reembed_summary(3, "a short summary", "")
-
-        store.replace_embedding_chunks.assert_awaited_once()
-        kwargs = store.replace_embedding_chunks.await_args.kwargs
-        assert kwargs["diary_rowid"] == 3
-        assert kwargs["summary"] == "a short summary"
-        assert kwargs["tags"] == "existing"  # falls back to the row's tags

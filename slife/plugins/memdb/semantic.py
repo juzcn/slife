@@ -157,27 +157,6 @@ class SemanticManager:
         if self._enabled:
             self._work_event.set()
 
-    async def reembed_summary(self, rowid: int, summary: str, tags: str) -> None:
-        """Re-embed a turn from its summary, serialized with drainer writes."""
-        embedder = self._embedder
-        if not summary or not embedder or not embedder.available:
-            return
-        async with self._write_lock:
-            emb = await embedder.embed_one(summary)
-            if not emb:
-                return
-            assert self._store._conn is not None
-            cursor = await self._store._conn.execute(
-                "SELECT tags, created_at FROM diary WHERE rowid = ?", (rowid,),
-            )
-            row = await cursor.fetchone()
-            if row:
-                await self._store.replace_embedding_chunks(
-                    diary_rowid=rowid, summary=summary,
-                    tags=tags or row["tags"] or "",
-                    created_at=row["created_at"], embeddings=[emb],
-                )
-
     async def close(self) -> None:
         """Shutdown: cancel the drainer so it never writes a closed connection."""
         await self._stop_drainer()
