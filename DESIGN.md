@@ -180,6 +180,15 @@ Model switches fire callbacks that rebuild the LLM client, update loop parameter
 
 Categories in use (14): `System`, `Execution`, `Skills`, `CLI`, `REST API`, `A2A`, `Subagent`, `Config`, `Models`, `Credentials`, `Vision`, `Display`, `Harness`, `Meta`. The docstring in `base.py` lists only a subset — treat it as illustrative, not enforced.
 
+### Schema Authoring
+
+The schema is the model's only view of a tool — write it for the model, not the maintainer:
+
+- **`description` = what the tool does.** One or two sentences: what it does and what it returns. Do **not** write when-to-use ("Use when…", "when the user says…"), and do **not** restate knowledge the LLM already has (pip, timeouts, env-var concepts). Keep project-specific facts the model cannot infer — idempotency ("upsert — add + update in one call"), blocking ("BLOCKS until the model is loaded"), effect timing ("takes effect after restart"), or that a value comes from a sibling tool.
+- **Parameter docs = how to use.** Per parameter: the accepted format, where the value comes from ("`rowid` from `memory_list_recent`"), what the values mean, and the default. Cross-references to sibling tools are how-to and belong here; only when-to-use is dropped.
+- **Mechanism.** Native tools carry parameter docs directly in the `parameters` dict. Plugin tools (`@mcp.tool`) get them from a Google-style `Args:` docstring — fastmcp parses it into the input schema, so a plugin tool whose parameters have no `Args:` yields an undocumented schema.
+- **Language.** Model-visible strings are English (see Language policy). Content authored by an external source (CLI / API / skill descriptions) keeps the source language — do not translate.
+
 ### Auto-Discovery
 
 `slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, skips vision tools when the active model can't see images, and skips `_skip_auto_register` classes (e.g. `MCPProxyTool`, created per-instance at runtime).

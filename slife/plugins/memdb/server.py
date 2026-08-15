@@ -208,6 +208,11 @@ async def __memory_get_recent_turns(limit: int = 50) -> str:
     ),
 )
 async def memory_list_recent(limit: int = 20) -> str:
+    """List recent memories, newest first.
+
+    Args:
+        limit: Maximum number of memories to return.
+    """
     store = await _ensure_store()
     try:
         entries = await store.list_recent(limit=limit)
@@ -235,6 +240,14 @@ async def memory_count(
     query: str | None = None,
     mode: str = "fts5",
 ) -> str:
+    """Count memories.
+
+    Args:
+        since: Lower bound, ISO datetime. "since" alone = count since that time.
+        until: Upper bound, ISO datetime.
+        query: Search text to count matches for (grep/fts5 modes).
+        mode: Search mode for counting: grep or fts5 (default fts5).
+    """
     store = await _ensure_store()
     try:
         result = await store.count_turns(
@@ -254,6 +267,11 @@ async def memory_count(
     ),
 )
 async def memory_open(rowid: int) -> str:
+    """Load a full memory turn by rowid.
+
+    Args:
+        rowid: The memory rowid, from memory_list_recent / memory_search.
+    """
     store = await _ensure_store()
     try:
         turn = await store.get_turn(rowid=rowid)
@@ -285,6 +303,15 @@ async def memory_search(
     since: str | None = None,
     until: str | None = None,
 ) -> str:
+    """Search memories (each result = one turn).
+
+    Args:
+        query: The search text. Required except for mode="time".
+        mode: grep (exact substring) | fts5 (BM25 keyword) | hybrid (fts5 + semantic, default) | time (browse by date range, no query).
+        limit: Maximum results.
+        since: Lower bound, ISO datetime. Convert relative time ("yesterday") to a date first.
+        until: Upper bound, ISO datetime.
+    """
     store = await _ensure_store()
     # Search only READS the semantic gate — no side effects, no reindex kick.
     manager = _manager
@@ -384,6 +411,13 @@ async def memory_turn_summarize(
     rowid: int | None = None,
     summary: str | None = None, tags: str | None = None,
 ) -> str:
+    """Write a summary and tags for a turn, making it findable by keyword search.
+
+    Args:
+        rowid: The turn rowid to summarize (default: the most recent turn).
+        summary: A 1-2 sentence summary of the turn.
+        tags: Comma-separated tags for keyword search.
+    """
     store = await _ensure_store()
     try:
         if rowid is None:
@@ -542,6 +576,11 @@ async def memory_set_embedding(
     ),
 )
 async def memory_set_enabled(enabled: bool) -> str:
+    """Enable or disable semantic (hybrid) search.
+
+    Args:
+        enabled: true to enable semantic search, false to disable (embeddings preserved).
+    """
     from slife.plugins.memdb.embedding_config import set_embedding_enabled
     try:
         ok = set_embedding_enabled(enabled)

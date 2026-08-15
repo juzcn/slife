@@ -255,6 +255,6 @@ def _credstore_backend() -> str:
         from credstore import get_backend_name
         return get_backend_name()
     except ImportError:
-        return "不可用"
+        return "unavailable"
     except Exception:
         return "unknown"

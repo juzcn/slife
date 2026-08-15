@@ -76,15 +76,9 @@ def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
 @mcp.tool(
     name="mcp_set",
     description=(
-        "Add/update an external MCP server (upsert, idempotent — add + update "
-        "in one call). stdio: `command` + `args` (use the binary name — npx, "
-        "uvx, python; do NOT wrap in `cmd /c` unless the platform type is "
-        "native-Windows). http: `url` (SSE or streamable, auto-detected). "
-        "`env`/`headers`: use ${VAR} refs for secrets, never plaintext — run "
-        "'credstore set <KEY>' first. `enabled` sets the initial state; to "
-        "toggle enable/disable at runtime use mcp_set_enabled. "
-        "Write `description` in the server's own language — don't translate. "
-        "Add `source` provenance when from a known registry."
+        "Add or update an external MCP server connection (upsert — add + update "
+        "in one call). Provide either stdio (`command` + `args`) or http (`url`). "
+        "Runtime enable/disable is handled by mcp_set_enabled."
     ),
 )
 async def mcp_set(
@@ -104,6 +98,18 @@ async def mcp_set(
     Identical config → ``already_connected``, no restart.  Changed config →
     restart.  ``enabled`` sets the initial state; use ``mcp_set_enabled`` to
     toggle enable/disable at runtime.
+
+    Args:
+        name: Unique server name (must not collide with a built-in plugin name).
+        command: For stdio servers — the binary name (npx, uvx, python). Do NOT wrap in `cmd /c` unless the platform is native-Windows.
+        args: For stdio servers — command-line arguments (list of strings).
+        env: Environment overrides for the server process. Use ${VAR} refs for secrets, never plaintext (run 'credstore set <KEY>' first).
+        url: For http servers — the SSE or streamable endpoint (auto-detected).
+        headers: HTTP headers for the connection. Use ${VAR} refs for secrets, never plaintext.
+        description: What the server does, in the server's own language — don't translate.
+        enabled: Initial state — true connects now, false adds the server but stays disconnected.
+        source: Optional provenance (e.g. registry) for future updates.
+        auth: Optional OAuth config for device code flow (auth type 'oauth').
     """
     if not command and not url:
         return error_json(
@@ -182,7 +188,12 @@ async def mcp_set(
     ),
 )
 async def mcp_set_enabled(name: str, enabled: bool) -> str:
-    """Toggle enable/disable on an existing MCP server."""
+    """Toggle enable/disable on an existing MCP server.
+
+    Args:
+        name: Server name (from mcp_list).
+        enabled: true reconnects and loads tools; false disconnects and unloads tools.
+    """
     existing = _pool.get_server(name)
     if existing is None:
         return error_json(

@@ -171,9 +171,9 @@ class TestBuild:
         result = build(cfg, is_subagent=True)
         assert "You are sub-7, an agent worker of testbot" in result
         assert "with the same capabilities" in result
-        assert "may SEND messages" in result
-        assert "all replies and management belong to" in result
-        assert "conversation is not persisted" in result
+        assert "you act as testbot" in result
+        assert "NEVER introduce yourself by name" in result
+        assert "nothing you do outlives this process" in result
 
     def test_subagent_nameentity_includes_name(self, cfg, monkeypatch):
         """SLIFE_SUBAGENT_NAME and created_at are rendered into the identity."""
@@ -191,7 +191,7 @@ class TestBuild:
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
         monkeypatch.setenv("SLIFE_SUBAGENT_CREATED_AT", "2026-01-05T10:00:00+08:00")
         result = build(cfg, is_subagent=True)
-        assert "NO independent identity" in result
+        assert "no identity of your own" in result
         assert "no personality" in result
         assert "NEVER introduce yourself by name" in result
 

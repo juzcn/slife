@@ -235,7 +235,7 @@ class CancelAsyncTool(Tool):
 class ClearContextTool(Tool):
     name = "clear_context"
     category: ClassVar[str] = "Meta"
-    description = "Clear conversation history, keeping only the system prompt. Use when context is polluted."
+    description = "Clear the conversation history, keeping only the system prompt."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:

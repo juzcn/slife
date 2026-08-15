@@ -133,8 +133,7 @@ class NotifyUserTool(Tool):
     name: ClassVar[str] = "notify_user"
     category: ClassVar[str] = "Display"
     description: ClassVar[str] = (
-        "Send a desktop notification to the human user (e.g. task done, "
-        "attention needed)."
+        "Send a desktop notification to the human user."
     )
     parameters: ClassVar[dict] = {
         "type": "object",

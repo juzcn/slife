@@ -3,7 +3,7 @@
 Bidirectional WeChat integration:
   - Auto-restores session from ``wechat_<user>.json5`` on startup.
   - Background poll loop fetches incoming messages continuously.
-  - LLM tools: login, send_message, check_messages, check_status, logout.
+  - LLM tools: wechat_login, wechat_send_message, wechat_check_messages, wechat_check_status, wechat_logout.
 
 Usage:
     uv run python -m slife.plugins.wechat.server       # auto-assigned port (Streamable HTTP)
@@ -52,8 +52,8 @@ mcp, _log_path, logger = create_plugin_server(
     "slife-wechat",
     instructions=(
         "slife-wechat — bidirectional WeChat messaging. "
-        "LLM tools: login (QR scan), send_message (reply), "
-        "check_messages (incoming), check_status, logout."
+        "LLM tools: wechat_login (QR scan), wechat_send_message (reply), "
+        "wechat_check_messages (incoming), wechat_check_status, wechat_logout."
     ),
     lifespan=_wechat_lifespan,
 )
@@ -448,7 +448,7 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
                     return
             else:
                 _qr_status = "expired"
-                _qr_error = "QR code expired after 3 refreshes. Call login again."
+                _qr_error = "QR code expired after 3 refreshes. Call wechat_login again."
                 return
 
         if data.get("scanned"):
@@ -456,21 +456,21 @@ async def _qr_poll_loop(qrcode: str, base_url: str, refresh_count: int = 0) -> N
 
         if data.get("verify_code_blocked"):
             _qr_status = "error"
-            _qr_error = "Verify code blocked. Call login again."
+            _qr_error = "Verify code blocked. Call wechat_login again."
             return
 
         await asyncio.sleep(_QR_POLL_INTERVAL)
 
     _qr_status = "error"
-    _qr_error = "Login timed out (10 min). Call login again."
+    _qr_error = "Login timed out (10 min). Call wechat_login again."
 
 
 @mcp.tool(
-    name="login",
+    name="wechat_login",
     description=(
         "Generate a WeChat login QR code. Copy the ASCII QR block verbatim "
         "into your reply — the user cannot see tool output. Then poll "
-        "check_status until login completes."
+        "wechat_check_status until login completes."
     ),
 )
 async def wechat_login() -> str:
@@ -479,7 +479,7 @@ async def wechat_login() -> str:
     if _client.is_logged_in:
         return json.dumps({
             "status": "already_logged_in",
-            "hint": "Already logged in. Call logout first to switch accounts.",
+            "hint": "Already logged in. Call wechat_logout first to switch accounts.",
         }, ensure_ascii=False, indent=2)
 
     # Reset QR state
@@ -508,15 +508,15 @@ async def wechat_login() -> str:
     return "\n".join([
         "SHOW THIS QR IN YOUR REPLY:",
         qr_ascii,
-        "Scan with WeChat. Call check_status to track. ~10min expiry.",
+        "Scan with WeChat. Call wechat_check_status to track. ~10min expiry.",
     ])
 
 
 @mcp.tool(
-    name="send_message",
+    name="wechat_send_message",
     description=(
         "Send a text message to the logged-in WeChat user. to_user_id/context_token "
-        "from check_status.last_contact; context_token may be empty for the first message."
+        "from wechat_check_status.last_contact; context_token may be empty for the first message."
     ),
 )
 async def wechat_send_message(
@@ -524,10 +524,17 @@ async def wechat_send_message(
     context_token: str = "",
     text: str = "",
 ) -> str:
+    """Send a text message to the logged-in WeChat user.
+
+    Args:
+        to_user_id: The recipient's WeChat user id (from wechat_check_status.last_contact / wechat_check_messages).
+        context_token: Conversation token for replying in a thread; may be empty for the first message.
+        text: The message body.
+    """
     global _client
 
     if not _client.is_logged_in:
-        return error_json("Not logged in. Call login first.")
+        return error_json("Not logged in. Call wechat_login first.")
 
     if not to_user_id.strip() or not text.strip():
         return error_json("Both to_user_id and text are required and must be non-empty.")
@@ -551,7 +558,7 @@ async def wechat_send_message(
 
 
 @mcp.tool(
-    name="send_typing",
+    name="wechat_send_typing",
     description=(
         "Show (status=1) or hide (status=2) the typing indicator on the "
         "WeChat user's phone."
@@ -562,10 +569,17 @@ async def wechat_send_typing(
     context_token: str = "",
     status: int = 1,
 ) -> str:
+    """Show or hide the typing indicator.
+
+    Args:
+        to_user_id: The recipient's WeChat user id (from wechat_check_status.last_contact / wechat_check_messages).
+        context_token: Conversation token (from the same source as to_user_id).
+        status: 1 = show typing, 2 = hide typing.
+    """
     global _client
 
     if not _client.is_logged_in:
-        return error_json("Not logged in. Call login first.")
+        return error_json("Not logged in. Call wechat_login first.")
 
     if not to_user_id.strip():
         return error_json("to_user_id is required.")
@@ -591,10 +605,10 @@ async def wechat_send_typing(
 
 
 @mcp.tool(
-    name="check_messages",
+    name="wechat_check_messages",
     description=(
         "Check for new incoming WeChat messages (consumed on read). Each has "
-        "from_user_id + context_token for replying with send_message."
+        "from_user_id + context_token for replying with wechat_send_message."
     ),
 )
 async def wechat_check_messages() -> str:
@@ -604,7 +618,7 @@ async def wechat_check_messages() -> str:
         return json.dumps({
             "messages": [],
             "status": "not_logged_in",
-            "hint": "Not logged in. Call login first.",
+            "hint": "Not logged in. Call wechat_login first.",
         }, ensure_ascii=False, indent=2)
 
     # Drain pending messages
@@ -624,14 +638,14 @@ async def wechat_check_messages() -> str:
         "status": "ok",
         "hint": (
             f"{len(msgs)} new message(s). "
-            "Reply using send_message with the to_user_id and context_token "
+            "Reply using wechat_send_message with the to_user_id and context_token "
             "from each message above."
         ),
     }, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
-    name="check_status",
+    name="wechat_check_status",
     description=(
         "WeChat connection status: logged in?, session age, time remaining, "
         "polling active, last_contact."
@@ -659,10 +673,10 @@ async def wechat_check_status() -> str:
             )
         elif _qr_status == "expired":
             qr_info["hint"] = (
-                "QR code expired. Call login again to generate a new one."
+                "QR code expired. Call wechat_login again to generate a new one."
             )
         elif _qr_status == "error":
-            qr_info["hint"] = f"QR login error: {_qr_error}. Call login again."
+            qr_info["hint"] = f"QR login error: {_qr_error}. Call wechat_login again."
         return json.dumps(qr_info, ensure_ascii=False, indent=2)
 
     if not _client.is_logged_in:
@@ -698,7 +712,7 @@ async def wechat_check_status() -> str:
         return json.dumps({
             "status": "not_logged_in",
             "polling": False,
-            "hint": "Not logged in. Call login to start the QR login flow.",
+            "hint": "Not logged in. Call wechat_login to start the QR login flow.",
         }, ensure_ascii=False, indent=2)
 
     # Track last contact for proactive messaging
@@ -727,10 +741,10 @@ async def wechat_check_status() -> str:
         hint = (
             f"Logged in — {remaining/3600:.1f}h remaining, "
             f"{len(_pending)} messages queued. "
-            f"To send a WeChat message, call send_message with "
+            f"To send a WeChat message, call wechat_send_message with "
             f'to_user_id="{last_from_id}" and context_token="{last_ctx or ""}".'
             if remaining > 0 else
-            "Session EXPIRED. Call login to re-scan QR code."
+            "Session EXPIRED. Call wechat_login to re-scan QR code."
         )
     else:
         hint = (
@@ -738,7 +752,7 @@ async def wechat_check_status() -> str:
             f"{len(_pending)} messages queued. "
             "No contacts yet — ask the WeChat user to send a message first."
             if remaining > 0 else
-            "Session EXPIRED. Call login to re-scan QR code."
+            "Session EXPIRED. Call wechat_login to re-scan QR code."
         )
 
     return json.dumps({
@@ -748,10 +762,10 @@ async def wechat_check_status() -> str:
 
 
 @mcp.tool(
-    name="logout",
+    name="wechat_logout",
     description=(
         "Log out of WeChat, clear the saved session, stop polling. "
-        "Call login to reconnect."
+        "Call wechat_login to reconnect."
     ),
 )
 async def wechat_logout() -> str:
@@ -770,7 +784,7 @@ async def wechat_logout() -> str:
     return json.dumps({
         "status": "logged_out",
         "config_cleared": True,
-        "hint": "Logged out. Call login to reconnect.",
+        "hint": "Logged out. Call wechat_login to reconnect.",
     }, ensure_ascii=False, indent=2)
 
 
@@ -780,7 +794,7 @@ async def wechat_logout() -> str:
 def main():
     """Run the slife-wechat server on Streamable HTTP transport.
 
-    Session restore happens lazily on the first check_status call,
+    Session restore happens lazily on the first wechat_check_status call,
     inside FastMCP's own event loop — this avoids the aiohttp session
     being bound to a temporary loop that gets closed.
     """

@@ -87,10 +87,8 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
     name = "rest_api_set"
     category = "REST API"
     description = (
-        "Register/update an external REST API from its OpenAPI spec (upsert, "
-        "idempotent — add + update in one call); generates typed tools per "
-        "endpoint. For auth, pass the credential var name "
-        "(e.g. GITHUB_TOKEN) via credstore. Use the API's own language for `description`."
+        "Register/update an external REST API from its OpenAPI spec (upsert — "
+        "add + update in one call); generates typed tools per endpoint."
     )
     parameters = {
         "type": "object",
@@ -109,11 +107,11 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
             },
             "api_key": {
                 "type": "string",
-                "description": "Credential variable name for Bearer auth. Omit for public APIs.",
+                "description": "Credential variable name for Bearer auth (store the secret via credstore first). Omit for public APIs.",
             },
             "description": {
                 "type": "string",
-                "description": "What this API does. Helps decide when to invoke its tools.",
+                "description": "What this API does. Write in the API's own language — don't translate.",
             },
         },
         "required": ["name", "spec_url", "base_url"],

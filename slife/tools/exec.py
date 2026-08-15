@@ -220,7 +220,7 @@ class InstallPythonPackageTool(Tool):
 
     name = "install_python_package"
     category = "Execution"
-    description = "Install PyPI packages via uv pip install. Supports version pins like 'requests>=2.31'."
+    description = "Install PyPI packages into slife's environment via uv pip install."
     parameters = {
         "type": "object",
         "properties": {

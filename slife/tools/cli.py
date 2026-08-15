@@ -81,13 +81,13 @@ class CliSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
 
     name = "cli_set"
     category = "CLI"
-    description = "Register/update an external CLI in slife.json5 (upsert, idempotent — add + update in one call). Does not execute — records for future discovery. Use the language from the CLI's own documentation for the description — don't translate."
+    description = "Register/update an external CLI in slife.json5 (upsert — add + update in one call). Records the CLI for the LLM to discover later; does not execute it."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Short name (e.g. 'gh', 'yldp')."},
             "command": {"type": "string", "description": "Shell invocation (e.g. 'gh', 'python -m mytool')."},
-            "description": {"type": "string", "description": "What it does, subcommands, usage. Write from --help output."},
+            "description": {"type": "string", "description": "What it does, subcommands, usage. Write from --help output, in the CLI's own language — don't translate."},
             "install": {"type": "string", "description": "Install command (e.g. 'npm i -g yldp'). Omit if pre-installed."},
             "source": {
                 "type": "object",

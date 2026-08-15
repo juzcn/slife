@@ -104,7 +104,7 @@ class SysTrimTool(Tool):
         if memory_saved:
             head = (
                 f"Trimmed {len(turns)} oldest turns (~{tokens_freed} tokens); "
-                f"content saved to the memory store. Use memory_search to review."
+                f"content saved to the memory store. Use memdb__memory_search to review."
             )
         else:
             head = (

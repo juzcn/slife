@@ -68,8 +68,7 @@ class ListSubagentsTool(Tool):
     description = (
         "List local subagent workers with their state: subagent_name, PID, "
         "readiness, context (clean/cloned), busy/in-flight count, and pending "
-        "async task count. Local workers are not A2A peers — remote mesh "
-        "peers use a2a_list_agents."
+        "async task count. Local workers are not A2A peers."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -109,8 +108,7 @@ class SpawnSubagentTool(Tool):
     category = "Subagent"
     description = (
         "Spawn a local subagent worker (agent worker — same LLM config and "
-        "tools) to parallelize work; then delegate via subagent_send_task / "
-        "subagent_send_task_async. Workers are local and not A2A peers."
+        "tools) to parallelize work. Workers are local and not A2A peers."
     )
     parameters: ClassVar[dict] = {
         "type": "object",

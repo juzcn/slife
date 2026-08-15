@@ -201,7 +201,12 @@ async def _on_agent_change(card: AgentCard, event: str) -> None:
     "Requires the A2A mesh (MQTT broker running).",
 )
 async def a2a_send_task(agent_name: str, task: str) -> str:
-    """Send a task to *agent_name* and wait for the result."""
+    """Send a task to *agent_name* and wait for the result.
+
+    Args:
+        agent_name: Remote peer's agent_name (from a2a_list_agents).
+        task: The task text/instruction for the peer.
+    """
     client = await _ensure_connected()
     return await client.send_task(AgentName(agent_name), task)
 
@@ -213,7 +218,12 @@ async def a2a_send_task(agent_name: str, task: str) -> str:
     "it. Requires the A2A mesh (MQTT broker).",
 )
 async def a2a_send_task_async(agent_name: str, task: str) -> str:
-    """Send a task without waiting — returns the correlation/task id."""
+    """Send a task without waiting — returns the correlation/task id.
+
+    Args:
+        agent_name: Remote peer's agent_name (from a2a_list_agents).
+        task: The task text/instruction for the peer.
+    """
     client = await _ensure_connected()
     return await client.send_task_async(AgentName(agent_name), task)
 
@@ -240,7 +250,12 @@ async def a2a_list_agents() -> str:
     "Requires the A2A mesh (MQTT broker).",
 )
 async def a2a_get_task_result(agent_name: str, task_id: str) -> str:
-    """Return the result of an async task, or 'pending' if not ready."""
+    """Return the result of an async task, or 'pending' if not ready.
+
+    Args:
+        agent_name: Remote peer's agent_name (from a2a_list_agents).
+        task_id: The task id returned by a2a_send_task_async.
+    """
     client = await _ensure_connected()
     result = client.get_task_result(task_id)
     return result if result is not None else "pending"
@@ -258,6 +273,10 @@ async def a2a_cancel_task(agent_name: str, task_id: str) -> str:
     Returns the task's resulting status — a task that already finished is
     reported as ``completed``/``failed`` (never ``cancelled``) and its result
     stays retrievable (REVIEW C5).
+
+    Args:
+        agent_name: Remote peer's agent_name (from a2a_list_agents).
+        task_id: The task id returned by a2a_send_task_async.
     """
     client = await _ensure_connected()
     return await client.cancel_task(AgentName(agent_name), task_id)
@@ -269,7 +288,12 @@ async def a2a_cancel_task(agent_name: str, task_id: str) -> str:
     "Requires the A2A mesh (MQTT broker).",
 )
 async def a2a_list_tasks(agent_name: str = "", status: str = "") -> str:
-    """List A2A task-store entries (filterable by agent/status)."""
+    """List A2A task-store entries (filterable by agent/status).
+
+    Args:
+        agent_name: Optional filter — only tasks involving this peer.
+        status: Optional filter — pending/completed/failed/cancelled.
+    """
     client = await _ensure_connected()
     return json.dumps(
         client.list_tasks(agent_name=agent_name or None, status=status or None),
@@ -283,7 +307,11 @@ async def a2a_list_tasks(agent_name: str = "", status: str = "") -> str:
     "'unknown'. Requires the A2A mesh (MQTT broker).",
 )
 async def a2a_agent_card(agent_name: str) -> str:
-    """Return a mesh peer's card (agent_name, status), or 'unknown'."""
+    """Return a mesh peer's card (agent_name, status), or 'unknown'.
+
+    Args:
+        agent_name: Remote peer's agent_name (from a2a_list_agents).
+    """
     client = await _ensure_connected()
     card = client.get_agent_card(AgentName(agent_name))
     if card is None:
@@ -300,7 +328,11 @@ async def a2a_agent_card(agent_name: str) -> str:
     "Requires the A2A mesh (MQTT broker).",
 )
 async def a2a_broadcast(task: str) -> str:
-    """Send *task* to every known A2A mesh peer (fire-and-forget)."""
+    """Send *task* to every known A2A mesh peer (fire-and-forget).
+
+    Args:
+        task: The task text/instruction to send to every peer.
+    """
     client = await _ensure_connected()
     corr_ids = await client.broadcast(task)
     return "\n".join(corr_ids) if corr_ids else "no_peers"

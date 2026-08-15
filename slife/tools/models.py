@@ -119,11 +119,9 @@ class SetModelTool(_ConfigPathMixin, Tool):
     name: ClassVar[str] = "model_set"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
-        "Add/update an LLM model in the configuration (upsert, idempotent — add "
-        "+ update in one call). If the provider doesn't exist, it will be created. "
-        "Supported api values: openai-completions, "
-        "anthropic-messages, openai-responses. "
-        "Takes effect immediately — the running session's model registry is synced."
+        "Add/update an LLM model in the configuration (upsert — add + update in "
+        "one call); creates the provider if new. Takes effect immediately — the "
+        "running session's model registry is synced."
     )
     parameters: ClassVar[dict] = {
         "type": "object",

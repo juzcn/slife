@@ -306,14 +306,14 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
 
     name = "skill_set"
     category = "Skills"
-    description = "Install/update a skill (upsert, idempotent) from [{path, content}] files or a base64 .zip/.tar.gz archive. Add + update in one call. Use the skill's own language for `description`."
+    description = "Install/update a skill (upsert — add + update in one call) from [{path, content}] files or a base64 .zip/.tar.gz archive."
     parameters = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Directory name, kebab-case (e.g. 'browser-use')."},
             "files": {
                 "type": "array",
-                "description": "[{path, content}]. Must include SKILL.md with YAML frontmatter.",
+                "description": "[{path, content}]. Must include SKILL.md with YAML frontmatter — write its description in the skill's own language.",
                 "items": {
                     "type": "object",
                     "properties": {

@@ -402,7 +402,11 @@ def _detect_category(filename: str, override: str = "") -> str:
     ),
 )
 async def expose_file(path: str) -> str:
-    """Expose a local file as a public HTTPS URL."""
+    """Expose a local file as a public HTTPS URL.
+
+    Args:
+        path: Absolute path to the local file to expose.
+    """
     p = Path(path)
     if not p.exists():
         return f"Error: file not found — {path}"
@@ -435,13 +439,19 @@ async def expose_file(path: str) -> str:
     name="note_save",
     description=(
         "Write or update a note for a subject.  Appends a timestamped "
-        "section to notes/<subject>.md and re-indexes it for search. "
-        "Use when the user says 'take a note on …' / 'remember this about …'."
+        "section to notes/<subject>.md and re-indexes it for search."
     ),
 )
 async def note_save(
     subject: str, content: str, tags: str | None = None,
 ) -> str:
+    """Write or update a note for a subject.
+
+    Args:
+        subject: The note's subject — also its filename (notes/<subject>.md).
+        content: The note body (Markdown).
+        tags: Optional comma-separated tags for search.
+    """
     store = await _ensure_store()
     try:
         info = await store.upsert_note(subject, content, tags or "")
@@ -463,6 +473,13 @@ async def note_save(
 async def diary_write(
     date: str | None = None, content: str = "", tags: str | None = None,
 ) -> str:
+    """Write today's (or a given date's) diary entry.
+
+    Args:
+        date: The diary date, YYYY-MM-DD (default: today).
+        content: The diary entry body (Markdown).
+        tags: Optional comma-separated tags for search.
+    """
     store = await _ensure_store()
     day = date or datetime.now().strftime("%Y-%m-%d")
     try:
@@ -489,6 +506,15 @@ async def file_save(
     paths: list[str], title: str = "", tags: str | None = None,
     summary: str = "", category: str = "",
 ) -> str:
+    """Copy local files into the cabinet and record them.
+
+    Args:
+        paths: Absolute paths of the local files to copy into the cabinet.
+        title: Display title (default: the source filename).
+        tags: Optional comma-separated tags for search.
+        summary: Optional LLM summary — makes the file findable by semantic search.
+        category: Optional subfolder override (files/<category>/); auto-detected from the extension by default.
+    """
     store = await _ensure_store()
     mem_dir = store.mem_dir
     files_dir = mem_dir / "files"
@@ -537,6 +563,15 @@ async def url_save(
     url: str, title: str = "", tags: str | None = None, summary: str = "",
     category: str = "",
 ) -> str:
+    """Download a public http(s) URL into the cabinet and record it.
+
+    Args:
+        url: The public http(s) URL to download.
+        title: Display title (default: derived from the URL).
+        tags: Optional comma-separated tags for search.
+        summary: Optional LLM summary — makes the file findable by semantic search.
+        category: Optional subfolder override (files/<category>/); auto-detected from the extension by default.
+    """
     import aiohttp
 
     store = await _ensure_store()
@@ -602,6 +637,14 @@ async def url_save(
 async def search(
     query: str, kind: str = "all", mode: str = "hybrid", limit: int = 20,
 ) -> str:
+    """Search notes, diary and saved files.
+
+    Args:
+        query: The search text.
+        kind: note | diary | file | all (default).
+        mode: hybrid (keyword + semantic, default) | fts5 (keyword only).
+        limit: Maximum results.
+    """
     store = await _ensure_store()
     manager = _manager
     mode = mode.lower()
@@ -710,6 +753,11 @@ async def embedding_check() -> str:
     ),
 )
 async def read(path: str) -> str:
+    """Read a saved file's content.
+
+    Args:
+        path: Relative path under the cabinet, as returned by file_save / search.
+    """
     store = await _ensure_store()
     try:
         target = store.resolve_safe_path(path)
@@ -736,6 +784,12 @@ async def read(path: str) -> str:
     ),
 )
 async def note_list(limit: int = 50, offset: int = 0) -> str:
+    """List notes, newest-updated first.
+
+    Args:
+        limit: Maximum entries to return.
+        offset: Skip this many entries (for paging).
+    """
     store = await _ensure_store()
     data = await store.list_notes(limit=limit, offset=offset)
     return json.dumps(
@@ -758,6 +812,14 @@ async def diary_list(
     since: str | None = None, until: str | None = None,
     limit: int = 50, offset: int = 0,
 ) -> str:
+    """List diary entries, newest first.
+
+    Args:
+        since: Lower bound, YYYY-MM-DD (omit for no lower bound).
+        until: Upper bound, YYYY-MM-DD (omit for no upper bound).
+        limit: Maximum entries to return.
+        offset: Skip this many entries (for paging).
+    """
     store = await _ensure_store()
     data = await store.list_diary(since=since, until=until, limit=limit, offset=offset)
     return json.dumps(
@@ -772,6 +834,11 @@ async def diary_list(
     description="Read a note's full content by its subject.",
 )
 async def note_read(subject: str) -> str:
+    """Read a note's full content.
+
+    Args:
+        subject: The note's subject (from note_list / note_save).
+    """
     store = await _ensure_store()
     note = await store.get_note(subject)
     if note is None:
@@ -784,6 +851,11 @@ async def note_read(subject: str) -> str:
     description="Read a day's diary full content by date (YYYY-MM-DD).",
 )
 async def diary_read(date: str) -> str:
+    """Read a day's diary full content.
+
+    Args:
+        date: The diary date, YYYY-MM-DD (from diary_list / diary_write).
+    """
     store = await _ensure_store()
     entry = await store.get_diary(date)
     if entry is None:
@@ -802,6 +874,13 @@ async def diary_read(date: str) -> str:
     ),
 )
 async def list_files(category: str = "", limit: int = 50, offset: int = 0) -> str:
+    """List saved files, newest first.
+
+    Args:
+        category: Optional filter — images/documents/archives/code/audio/video/data/other.
+        limit: Maximum entries to return.
+        offset: Skip this many entries (for paging).
+    """
     store = await _ensure_store()
     data = await store.list_files(category=category, limit=limit, offset=offset)
     return json.dumps(
