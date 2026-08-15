@@ -79,6 +79,34 @@ def _fake_store(mem_dir: Path) -> MagicMock:
     store.search = AsyncMock(return_value=[
         {"id": "note:1", "file_path": "notes/subj.md",
          "snippet": "…", "rrf_score": 0.01}])
+    store.list_notes = AsyncMock(return_value={
+        "entries": [
+            {"id": 1, "subject": "subj", "tags": "", "file_path": "notes/subj.md",
+             "created_at": "2026-01-01", "updated_at": "2026-01-02"},
+        ],
+        "total": 1,
+    })
+    store.list_diary = AsyncMock(return_value={
+        "entries": [
+            {"id": 2, "date": "2026-08-15", "tags": "", "file_path": "diary/2026-08-15.md",
+             "created_at": "2026-08-15", "updated_at": "2026-08-15"},
+        ],
+        "total": 1,
+    })
+    store.get_note = AsyncMock(return_value={
+        "id": 1, "subject": "subj", "content": "# subj\n\nbody", "tags": "",
+        "file_path": "notes/subj.md", "created_at": "2026-01-01", "updated_at": "2026-01-02"})
+    store.get_diary = AsyncMock(return_value={
+        "id": 2, "date": "2026-08-15", "content": "# 2026-08-15\n\nbody", "tags": "",
+        "file_path": "diary/2026-08-15.md", "created_at": "2026-08-15", "updated_at": "2026-08-15"})
+    store.list_files = AsyncMock(return_value={
+        "entries": [
+            {"id": 3, "title": "a.txt", "saved_path": "files/documents/a.txt",
+             "category": "documents", "mime": "text/plain", "size": 3,
+             "tags": "", "summary": "", "created_at": "2026-08-15"},
+        ],
+        "total": 1,
+    })
     store.resolve_safe_path = MagicMock(return_value=mem_dir / "notes" / "subj.md")
     return store
 
@@ -398,6 +426,75 @@ class TestRead:
         assert out.startswith("Error: not a file")
 
 
+class TestNoteDiaryBrowse:
+    """note_list / diary_list / note_read / diary_read — browse by key."""
+
+    @pytest.mark.asyncio
+    async def test_note_list(self, tmp_path):
+        store = _fake_store(tmp_path / "files")
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.note_list()
+        data = json.loads(out)
+        assert data["total"] == 1
+        assert data["entries"][0]["subject"] == "subj"
+        assert data["entries"][0]["file_path"] == "notes/subj.md"
+        store.list_notes.assert_awaited_once_with(limit=50, offset=0)
+
+    @pytest.mark.asyncio
+    async def test_diary_list_range(self, tmp_path):
+        store = _fake_store(tmp_path / "files")
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.diary_list(since="2026-08-01", until="2026-08-31")
+        data = json.loads(out)
+        assert data["entries"][0]["date"] == "2026-08-15"
+        store.list_diary.assert_awaited_once_with(
+            since="2026-08-01", until="2026-08-31", limit=50, offset=0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_note_read(self, tmp_path):
+        store = _fake_store(tmp_path / "files")
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.note_read(subject="subj")
+        assert out == "# subj\n\nbody"
+
+    @pytest.mark.asyncio
+    async def test_note_read_missing(self, tmp_path):
+        store = _fake_store(tmp_path / "files")
+        store.get_note = AsyncMock(return_value=None)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.note_read(subject="nope")
+        assert out.startswith("Error: note not found")
+
+    @pytest.mark.asyncio
+    async def test_diary_read(self, tmp_path):
+        store = _fake_store(tmp_path / "files")
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.diary_read(date="2026-08-15")
+        assert out == "# 2026-08-15\n\nbody"
+
+    @pytest.mark.asyncio
+    async def test_diary_read_missing(self, tmp_path):
+        store = _fake_store(tmp_path / "files")
+        store.get_diary = AsyncMock(return_value=None)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.diary_read(date="2020-01-01")
+        assert out.startswith("Error: diary not found")
+
+    @pytest.mark.asyncio
+    async def test_list_files(self, tmp_path):
+        store = _fake_store(tmp_path / "files")
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            out = await plugin.list_files(category="documents")
+        data = json.loads(out)
+        assert data["total"] == 1
+        assert data["entries"][0]["category"] == "documents"
+        assert data["entries"][0]["saved_path"] == "files/documents/a.txt"
+        store.list_files.assert_awaited_once_with(
+            category="documents", limit=50, offset=0,
+        )
+
+
 class TestEmbeddingCheck:
     """embedding_check reports the memfiles index's OWN gate — independent
     from memdb's memory_check_embedding (each plugin reindexes its own DB,
@@ -657,6 +754,68 @@ class TestMemfilesStore:
             # updated note is re-marked unembedded (stale vectors cleared)
             await store.upsert_note("Python", "more asyncio", "")
             assert await store.count_unembedded() == 1
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_list_and_get_notes_diary(self, tmp_path):
+        store = await _real_store(tmp_path)
+        try:
+            await store.upsert_note("Python", "asyncio", "py")
+            await store.upsert_note("Go", "goroutines", "")
+            await store.upsert_diary("2026-08-15", "refactor day", "dev")
+            await store.upsert_diary("2026-08-14", "setup day", "")
+
+            notes = await store.list_notes()
+            # newest-updated first; timestamps share second precision in-tests,
+            # so don't assert tie order
+            assert {n["subject"] for n in notes["entries"]} == {"Python", "Go"}
+            assert notes["total"] == 2
+            assert "content" not in notes["entries"][0]  # lightweight
+
+            days = await store.list_diary(since="2026-08-14", until="2026-08-15")
+            assert [d["date"] for d in days["entries"]] == ["2026-08-15", "2026-08-14"]
+            assert days["total"] == 2
+            days = await store.list_diary(since="2026-08-15")
+            assert [d["date"] for d in days["entries"]] == ["2026-08-15"]
+
+            # paging: limit 1 of 2 → total tells the caller more remain
+            paged = await store.list_diary(limit=1)
+            assert len(paged["entries"]) == 1 and paged["total"] == 2
+            rest = await store.list_diary(limit=1, offset=1)
+            assert len(rest["entries"]) == 1 and rest["total"] == 2
+
+            note = await store.get_note("Python")
+            assert note is not None and "asyncio" in note["content"]
+            assert await store.get_note("missing") is None
+            day = await store.get_diary("2026-08-15")
+            assert day is not None and "refactor" in day["content"]
+            assert await store.get_diary("2020-01-01") is None
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_list_files(self, tmp_path):
+        store = await _real_store(tmp_path)
+        try:
+            await store.add_file(title="a", original_path="/x/a",
+                                 saved_path="files/documents/a.pdf",
+                                 mime="pdf", size=1, tags="", summary="")
+            await store.add_file(title="b", original_path="/x/b",
+                                 saved_path="files/images/b.png",
+                                 mime="png", size=2, tags="", summary="s")
+
+            data = await store.list_files()
+            assert data["total"] == 2
+            assert {e["category"] for e in data["entries"]} == {"documents", "images"}
+
+            docs = await store.list_files(category="documents")
+            assert docs["total"] == 1
+            assert docs["entries"][0]["category"] == "documents"
+            assert docs["entries"][0]["saved_path"] == "files/documents/a.pdf"
+
+            paged = await store.list_files(limit=1)
+            assert len(paged["entries"]) == 1 and paged["total"] == 2
         finally:
             await store.close()
 

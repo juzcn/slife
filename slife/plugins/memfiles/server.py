@@ -24,6 +24,7 @@ The plugin owns everything:
     (Streamable HTTP) and ``/share/...`` (plain HTTP).
 
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
+``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``list_files``,
 ``search``, ``read``, ``expose_file``, ``embedding_check``.
 Harness-only tools (``__`` prefix, never LLM-visible): ``__tunnel_status``,
 ``__register_file``.
@@ -720,6 +721,94 @@ async def read(path: str) -> str:
         return target.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
         return f"Error: cannot read {path} — {e}"
+
+
+# ── Notes & diary browsing ────────────────────────────────────────
+
+
+@mcp.tool(
+    name="note_list",
+    description=(
+        "List notes (newest-updated first): subject, tags, file path, "
+        "timestamps.  Returns {total, limit, offset, entries} — if "
+        "offset + len(entries) < total, pass a higher offset to page. "
+        "Use note_read(subject) for full content."
+    ),
+)
+async def note_list(limit: int = 50, offset: int = 0) -> str:
+    store = await _ensure_store()
+    data = await store.list_notes(limit=limit, offset=offset)
+    return json.dumps(
+        {"total": data["total"], "limit": len(data["entries"]),
+         "offset": max(0, offset), "entries": data["entries"]},
+        ensure_ascii=False, indent=2,
+    )
+
+
+@mcp.tool(
+    name="diary_list",
+    description=(
+        "List diary entries (newest first), optionally within a date range "
+        "since/until (YYYY-MM-DD).  Returns {total, limit, offset, entries} — "
+        "if offset + len(entries) < total, pass a higher offset to page. "
+        "Use diary_read(date) for full content."
+    ),
+)
+async def diary_list(
+    since: str | None = None, until: str | None = None,
+    limit: int = 50, offset: int = 0,
+) -> str:
+    store = await _ensure_store()
+    data = await store.list_diary(since=since, until=until, limit=limit, offset=offset)
+    return json.dumps(
+        {"total": data["total"], "limit": len(data["entries"]),
+         "offset": max(0, offset), "entries": data["entries"]},
+        ensure_ascii=False, indent=2,
+    )
+
+
+@mcp.tool(
+    name="note_read",
+    description="Read a note's full content by its subject.",
+)
+async def note_read(subject: str) -> str:
+    store = await _ensure_store()
+    note = await store.get_note(subject)
+    if note is None:
+        return f"Error: note not found — {subject}"
+    return note["content"]
+
+
+@mcp.tool(
+    name="diary_read",
+    description="Read a day's diary full content by date (YYYY-MM-DD).",
+)
+async def diary_read(date: str) -> str:
+    store = await _ensure_store()
+    entry = await store.get_diary(date)
+    if entry is None:
+        return f"Error: diary not found — {date}"
+    return entry["content"]
+
+
+@mcp.tool(
+    name="list_files",
+    description=(
+        "List saved files (newest first) with their category, size, mime, "
+        "tags, summary.  Returns {total, limit, offset, entries} — if "
+        "offset + len(entries) < total, pass a higher offset to page. "
+        "Optionally filter by category (images/documents/archives/code/audio/"
+        "video/data/other).  Use read(path) for text content."
+    ),
+)
+async def list_files(category: str = "", limit: int = 50, offset: int = 0) -> str:
+    store = await _ensure_store()
+    data = await store.list_files(category=category, limit=limit, offset=offset)
+    return json.dumps(
+        {"total": data["total"], "limit": len(data["entries"]),
+         "offset": max(0, offset), "entries": data["entries"]},
+        ensure_ascii=False, indent=2,
+    )
 
 
 # ── SSRF guard (shared with url_save) ─────────────────────────────

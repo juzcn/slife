@@ -62,6 +62,14 @@ def _unique_path(directory: Path, stem: str, suffix: str) -> Path:
         n += 1
 
 
+def _category_from_path(saved_path: str) -> str:
+    """Derive a file's category from its stored path (``files/<cat>/<name>``)."""
+    parts = Path(saved_path).parts
+    if len(parts) >= 2 and parts[0] == "files":
+        return parts[1]
+    return ""
+
+
 #: Per-kind specs — maps a kind to its tables/columns in the generic doc shape.
 _KIND_SPECS = {
     "note": {
@@ -367,6 +375,114 @@ class MemfilesStore:
         await self._c.commit()
         return {"kind": "file", "doc_id": cursor.lastrowid,
                 "key": saved_path, "file_path": saved_path}
+
+    # ── browse / read ────────────────────────────────────────────────
+
+    async def list_notes(self, limit: int = 50, offset: int = 0) -> dict:
+        """List notes, newest-updated first.  Lightweight — no content.
+
+        Returns ``{"entries": [...], "total": n}`` so the caller knows how
+        many more remain beyond this page (``offset + len(entries) < total``).
+        """
+        limit = _clamp_limit(limit)
+        offset = max(0, offset)
+        cursor = await self._c.execute("SELECT COUNT(*) FROM notes")
+        row = await cursor.fetchone()
+        total = row[0] if row else 0
+        cursor = await self._c.execute(
+            "SELECT id, subject, tags, file_path, created_at, updated_at "
+            "FROM notes ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        entries = [dict(row) for row in await cursor.fetchall()]
+        return {"entries": entries, "total": total}
+
+    async def list_diary(
+        self, since: str | None = None, until: str | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> dict:
+        """List diary entries, newest first, optionally within a date range.
+
+        Returns ``{"entries": [...], "total": n}`` (total counts every row in
+        the range, before ``limit``/``offset``).
+        """
+        limit = _clamp_limit(limit)
+        offset = max(0, offset)
+        clauses: list[str] = []
+        params: list[str] = []
+        if since:
+            clauses.append("date >= ?")
+            params.append(since)
+        if until:
+            clauses.append("date <= ?")
+            params.append(until)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor = await self._c.execute(
+            f"SELECT COUNT(*) FROM diary {where}", params,
+        )
+        row = await cursor.fetchone()
+        total = row[0] if row else 0
+        cursor = await self._c.execute(
+            f"SELECT id, date, tags, file_path, created_at, updated_at "
+            f"FROM diary {where} ORDER BY date DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        entries = [dict(row) for row in await cursor.fetchall()]
+        return {"entries": entries, "total": total}
+
+    async def list_files(
+        self, category: str = "", limit: int = 50, offset: int = 0,
+    ) -> dict:
+        """List saved files, newest first, optionally filtered by category.
+
+        Returns ``{"entries": [...], "total": n}``.  Each entry carries the
+        file's metadata (title, saved_path, category, mime, size, tags,
+        summary, created_at) — not the binary content.
+        """
+        limit = _clamp_limit(limit)
+        offset = max(0, offset)
+        where = ""
+        params: list[str] = []
+        if category.strip():
+            where = "WHERE saved_path LIKE ?"
+            params.append(f"files/{_slugify(category)}/%")
+        cursor = await self._c.execute(
+            f"SELECT COUNT(*) FROM files {where}", params,
+        )
+        row = await cursor.fetchone()
+        total = row[0] if row else 0
+        cursor = await self._c.execute(
+            f"SELECT id, title, original_path, saved_path, mime, size, tags, "
+            f"summary, created_at FROM files {where} "
+            f"ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        entries = []
+        for row in await cursor.fetchall():
+            r = dict(row)
+            r["category"] = _category_from_path(r["saved_path"])
+            entries.append(r)
+        return {"entries": entries, "total": total}
+
+    async def get_note(self, subject: str) -> dict | None:
+        """Return one note by subject (with full content), or None."""
+        cursor = await self._c.execute(
+            "SELECT id, subject, content, tags, file_path, created_at, updated_at "
+            "FROM notes WHERE subject = ?",
+            (subject,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_diary(self, date: str) -> dict | None:
+        """Return one day's diary (with full content), or None."""
+        cursor = await self._c.execute(
+            "SELECT id, date, content, tags, file_path, created_at, updated_at "
+            "FROM diary WHERE date = ?",
+            (date,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
     async def _clear_kind_chunks(self, kind: str, doc_id: int) -> None:
         """Delete a document's vector chunks (marks it for re-embedding).

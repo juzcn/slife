@@ -76,18 +76,9 @@ Slife的智能体设计紧扣上面的思考。下面是与传统智能体设计
  - 可能会带来缓存命中率的减低，增加token预算。
  - lazy 和 eager 模式是可以设置的，还是默认都懒加载，只eager加载load tool。
  - 是不是可以根据使用情况排名来自动加载？
- - 能不能指导大模型自动开始下一个Lopp
+ - 能不能指导大模型自动开始下一个Loop
 
- 4.2 Summary, 笔记， 日记；当前有save contennt or files 工具，保存都是按文件格式保存的。存放在memmfiles 的文件夹下。需要完善的是：
-
- - 对当前turn 或 某个turn的summary，这个功能好像有，核实一下，它保存在当前数据库，进入语义搜索。
- - 对某个事件的summary，可以用笔记的方式， take note
- - 对某天的summary， 写日记
- - 保存某个文件save file。
- - 需要有搜索和读写功能。
- - 对于每个类型，定义不同的metadata
-
- 4.3 原生工具 “一切都是plugin”
+ 4.2 原生工具 “一切都是plugin”
 
 最近Deepseek 推出了一款Deepseek Harness， 口号是，一切都是插件。由此想到，如果我们把目前编写的原生工具都封装到一个或多个mcp中，用插件加载，我们也是一切都是plugin了。
 
