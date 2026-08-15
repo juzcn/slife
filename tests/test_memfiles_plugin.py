@@ -689,9 +689,15 @@ class TestShareRoute:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-async def _real_store(tmp_path, dim: int = 4) -> MemfilesStore:
+async def _real_store(tmp_path, dim: int = 4, require_vec: bool = False) -> MemfilesStore:
     store = MemfilesStore(tmp_path / ".index.db")
     await store.setup(embedding_dim=dim, embedding_model="test:model")
+    if require_vec and store._embedding_dim <= 0:
+        # sqlite-vec can't load on this platform (e.g. macOS Python built
+        # without enable_load_extension) — the vec0 tables are skipped, so
+        # semantic tests can't run.
+        await store.close()
+        pytest.skip("sqlite-vec unavailable on this platform (vec_dim=0)")
     return store
 
 
@@ -723,7 +729,7 @@ class TestMemfilesStore:
 
     @pytest.mark.asyncio
     async def test_count_and_get_unembedded_docs(self, tmp_path):
-        store = await _real_store(tmp_path)
+        store = await _real_store(tmp_path, require_vec=True)
         try:
             await store.upsert_note("Python", "asyncio concurrency", "")
             await store.upsert_diary("2026-08-15", "shipped the refactor", "")
@@ -744,7 +750,7 @@ class TestMemfilesStore:
 
     @pytest.mark.asyncio
     async def test_replace_embedding_chunks_routes_by_kind(self, tmp_path):
-        store = await _real_store(tmp_path)
+        store = await _real_store(tmp_path, require_vec=True)
         try:
             note = await store.upsert_note("Python", "asyncio concurrency", "")
             doc = {"kind": "note", "doc_id": note["doc_id"],
@@ -836,7 +842,7 @@ class TestMemfilesStore:
 
     @pytest.mark.asyncio
     async def test_search_hybrid_with_vectors(self, tmp_path):
-        store = await _real_store(tmp_path)
+        store = await _real_store(tmp_path, require_vec=True)
         try:
             await store.upsert_note("Python", "Everything about asyncio concurrency", "")
             await store.add_file(title="report", original_path="/x/r.pdf",

@@ -501,6 +501,10 @@ class MemfilesStore:
     # ── SemanticManager contract (unified document view) ───────────
 
     async def count_unembedded(self) -> int:
+        # No vec0 tables when embedding is disabled (dim 0) — nothing can
+        # be embedded, so the count is 0 (matches _clear_kind_chunks' guard).
+        if self._embedding_dim <= 0:
+            return 0
         total = 0
         for kind in _KIND_NAMES:
             spec = _KIND_SPECS[kind]
@@ -515,6 +519,8 @@ class MemfilesStore:
         return total
 
     async def get_unembedded_docs(self, limit: int = 100) -> list[dict]:
+        if self._embedding_dim <= 0:
+            return []
         docs: list[dict] = []
         for kind in _KIND_NAMES:
             spec = _KIND_SPECS[kind]
@@ -538,7 +544,13 @@ class MemfilesStore:
     async def replace_embedding_chunks(
         self, doc: dict, embeddings: list[list[float]],
     ) -> None:
-        """Atomically replace a document's vector chunks (routed by kind)."""
+        """Atomically replace a document's vector chunks (routed by kind).
+
+        No-op when embedding is disabled (dim 0) — the vec0 tables were not
+        created, so there is nothing to write.
+        """
+        if self._embedding_dim <= 0:
+            return
         spec = _KIND_SPECS[doc["kind"]]
         doc_id = doc["doc_id"]
         summary = doc.get("summary", "")
@@ -644,6 +656,10 @@ class MemfilesStore:
     async def _semantic_search_kind(
         self, kind: str, embedding: list[float], limit: int,
     ) -> list[dict]:
+        # No vec0 tables when embedding is disabled (dim 0) — hybrid search
+        # degrades to keyword-only (search() keeps the FTS5 half).
+        if self._embedding_dim <= 0:
+            return []
         spec = _KIND_SPECS[kind]
         vec_blob = _serialize_f32(embedding)
         # Fetch extra rows to dedup multi-chunk documents (vec0 KNN no GROUP BY).

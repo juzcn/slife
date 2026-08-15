@@ -615,6 +615,10 @@ class SessionStore:
         (lowest distance) match per turn so the result list has one entry
         per turn.
         """
+        # No vec0 table when embedding is disabled (dim 0) — semantic search
+        # degrades to keyword-only (the caller keeps the FTS5 half).
+        if self._embedding_dim <= 0:
+            return []
         limit = _clamp_limit(limit)
         vec_blob = _serialize_f32(embedding)
         # Fetch extra rows to account for duplicate diary_rowid entries
@@ -774,6 +778,8 @@ class SessionStore:
         ``doc`` is a drainer row: ``doc_id`` plus ``summary`` / ``tags`` /
         ``created_at`` (which are stored on every chunk for display).
         """
+        if self._embedding_dim <= 0:
+            return
         diary_rowid = doc["doc_id"]
         summary = doc.get("summary", "")
         tags = doc.get("tags", "")
@@ -817,6 +823,8 @@ class SessionStore:
         (the turn rowid), ``text`` (the embed-ready turn text) and
         ``summary`` / ``tags`` / ``created_at``.
         """
+        if self._embedding_dim <= 0:
+            return []
         cursor = await self._c.execute(
             """SELECT d.rowid AS doc_id, d.user_message, d.messages, d.summary,
                       d.tags, d.created_at
@@ -844,6 +852,8 @@ class SessionStore:
 
     async def count_unembedded(self) -> int:
         """Count turns that need re-indexing."""
+        if self._embedding_dim <= 0:
+            return 0
         cursor = await self._c.execute(
             """SELECT COUNT(*) FROM diary d
                WHERE d.rowid NOT IN (
@@ -855,6 +865,8 @@ class SessionStore:
 
     async def count_embedded(self) -> int:
         """Count distinct turns that have at least one embedding chunk."""
+        if self._embedding_dim <= 0:
+            return 0
         cursor = await self._c.execute(
             "SELECT COUNT(DISTINCT diary_rowid) FROM diary_semantic",
         )
