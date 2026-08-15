@@ -174,6 +174,11 @@ class RunPythonScriptTool(Tool):
 
         if input_str.startswith("-c ") or input_str.startswith("-c"):
             code = input_str[2:].strip()
+            # LLMs naturally write shell-style '-c "code"'.  Strip the
+            # wrapping quotes, otherwise python -c gets a bare string-literal
+            # expression and silently does nothing (exit 0, no output).
+            if len(code) >= 2 and code[0] == code[-1] and code[0] in "\"'":
+                code = code[1:-1]
             argv = [sys.executable, "-c", code]
             logger.debug("run_python_script argv=%s", sanitize_secrets(str(argv)))
         else:

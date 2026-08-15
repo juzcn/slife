@@ -369,6 +369,46 @@ class TestRunPythonScriptToolExecute:
         assert result == "hello"
 
     @pytest.mark.asyncio
+    async def test_inline_code_with_double_quote_wrapping(self):
+        """Shell-style '-c "code"' strips the wrapping quotes before exec.
+
+        Without this, python -c receives a bare string-literal expression and
+        silently does nothing (exit 0, no output) — the turn-488 regression
+        where every -c call reported "Script completed with no output."
+        """
+        tool = RunPythonScriptTool()
+        mock_process = MagicMock()
+        mock_process.communicate = AsyncMock(return_value=(b"openpyxl 3.1.5", b""))
+        mock_process.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as mock_exec:
+            result = await tool.execute(
+                script="-c \"import openpyxl; print('openpyxl', openpyxl.__version__)\""
+            )
+
+        assert result == "openpyxl 3.1.5"
+        # The code handed to python -c must not carry the wrapping quotes.
+        call_args = mock_exec.call_args[0]
+        assert call_args[1] == "-c"
+        assert call_args[2] == "import openpyxl; print('openpyxl', openpyxl.__version__)"
+
+    @pytest.mark.asyncio
+    async def test_inline_code_with_single_quote_wrapping(self):
+        """Single-quoted '-c 'code'' is stripped too, even when the code
+        contains double quotes."""
+        tool = RunPythonScriptTool()
+        mock_process = MagicMock()
+        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
+        mock_process.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as mock_exec:
+            result = await tool.execute(script="-c 'print(\"hi\")'")
+
+        assert result == "ok"
+        call_args = mock_exec.call_args[0]
+        assert call_args[2] == 'print("hi")'
+
+    @pytest.mark.asyncio
     async def test_syntax_error(self):
         """Python syntax error returns error with exit code and stderr."""
         tool = RunPythonScriptTool()
