@@ -1,9 +1,19 @@
-"""slife-memfiles — standard plugin: file cabinet + public file sharing.
+"""slife-memfiles — standard plugin: notes / diary / files cabinet + sharing.
 
 A self-contained, replaceable plugin exactly like memdb / mqtt.  Slife
 (the main process) is a thin MCP client: it spawns this plugin over
 Streamable HTTP, registers the ``memfiles__*`` tools, and never touches
 file-serving state directly.
+
+Three typed knowledge stores (each md-mirrored on disk + SQLite-indexed):
+  - ``note_save(subject, …)`` — a note keyed by subject, appended to
+    ``notes/<subject>.md``
+  - ``diary_write(date, …)``   — a day's diary, appended to ``diary/<date>.md``
+  - ``file_save`` / ``url_save`` — saved attachments (bytes on disk,
+    metadata + optional LLM ``summary`` in the SQLite index)
+``search`` hybrid-searches them (FTS5 + vec0, reusing memdb's SemanticManager
+and RRF merge); ``read`` re-opens a saved file.  ``expose_file`` publishes a
+local file as a public HTTPS URL.
 
 The plugin owns everything:
   - the token registry (token → local path, in-process),
@@ -13,7 +23,8 @@ The plugin owns everything:
     (``GET /share/{file_id}``) — one port, two protocols: ``/mcp``
     (Streamable HTTP) and ``/share/...`` (plain HTTP).
 
-LLM-visible tools: ``expose_file``, ``save_content_or_files``.
+LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
+``file_summarize``, ``search``, ``read``, ``expose_file``.
 Harness-only tools (``__`` prefix, never LLM-visible): ``__tunnel_status``,
 ``__register_file``.
 
@@ -30,15 +41,18 @@ import re
 import secrets
 import shutil
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from slife.paths import get_memfiles_dir
+from slife.plugins.memdb.embeddings import EmbeddingClient
+from slife.plugins.memdb.semantic import SemanticManager
+from slife.plugins.memfiles.store import MemfilesStore, _slugify, _unique_path
 from slife.plugins.memfiles.tunnel import (
     is_active,
     public_url,
@@ -90,23 +104,92 @@ async def _memfiles_lifespan(_app):
         # Background monitor — one-shot retry if the eager start failed.
         start_monitor(_PLUGIN_PORT)
     try:
+        try:
+            await _ensure_store()
+        except Exception as e:
+            logger.warning("memfiles_store_init_error err=%s", e)
         yield
     finally:
         stop_monitor()
         stop_tunnel()
+        global _store, _manager
+        # Stop the semantic drainer BEFORE closing the store connection.
+        if _manager is not None:
+            await _manager.close()
+            _manager = None
+        if _store is not None:
+            await _store.close()
+            _store = None
 
 
 mcp, _log_path, logger = create_plugin_server(
     "slife-memfiles",
     instructions=(
-        "slife-memfiles — file cabinet + public file sharing. "
-        "expose_file makes a local file reachable by public HTTPS URL "
-        "(prefer it when passing local images/files to a multimodal model); "
-        "save_content_or_files persists content/URLs/files into the agent's "
-        "files folder and returns both the local path and a share URL."
+        "slife-memfiles — notes / diary / files cabinet + public sharing. "
+        "note_save writes/updates a subject note (md in notes/, searchable); "
+        "diary_write writes a day's diary (md in diary/, searchable); "
+        "file_save / url_save store one or more files; file_summarize adds an "
+        "LLM summary for semantic search. search finds them by hybrid "
+        "(keyword + semantic) search; read re-opens a saved file; expose_file "
+        "publishes a local file as a public HTTPS URL."
     ),
     lifespan=_memfiles_lifespan,
 )
+
+
+_store: MemfilesStore | None = None
+_manager: SemanticManager | None = None
+_db_path: Path | None = None
+_init_lock: asyncio.Lock | None = None
+
+
+def _get_db_path() -> Path:
+    """Index DB lives next to the files: ``{agent}.files/.index.db``."""
+    return get_memfiles_dir() / ".index.db"
+
+
+def _get_init_lock() -> asyncio.Lock:
+    global _init_lock
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
+    return _init_lock
+
+
+async def _ensure_store() -> MemfilesStore:
+    """Lazy-init the store + SemanticManager inside the event loop.
+
+    Mirrors memdb: the store is sized from the shared embedding config up
+    front (vec0 dimension), while the model itself loads in the background
+    via ``SemanticManager.start()`` — saves never wait on it.
+    """
+    if _store is not None:
+        return _store
+    async with _get_init_lock():
+        return await _ensure_store_locked()
+
+
+async def _ensure_store_locked() -> MemfilesStore:
+    global _store, _manager, _db_path
+    if _store is not None:
+        return _store
+
+    _db_path = _get_db_path()
+    logger.info("memfiles_init db=%s", _db_path)
+
+    probe = EmbeddingClient.from_config()
+    defer_vec0 = bool(probe.available and probe.backend == "transformer")
+    dim = 0 if defer_vec0 else (probe.dimension if probe.available else 0)
+    model_id = (
+        f"{probe.backend}:{probe._model}"
+        if probe.available and not defer_vec0 else ""
+    )
+
+    _store = MemfilesStore(_db_path)
+    await _store.setup(embedding_dim=dim, embedding_model=model_id)
+
+    _manager = SemanticManager(_store)
+    asyncio.create_task(_manager.start())
+    return _store
 
 
 async def _ensure_tunnel() -> bool:
@@ -180,80 +263,6 @@ def _content_disposition(filename: str) -> str:
         )
     safe = filename.replace('"', "_").replace("\\", "_")
     return f'inline; filename="{safe}"'
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Filename helpers
-# ═══════════════════════════════════════════════════════════════════════
-
-
-def _slugify(text: str) -> str:
-    """Turn arbitrary text into a safe filename slug.
-
-    ``"Project Notes 2026!"`` → ``"project-notes-2026"``
-    """
-    slug = re.sub(r"[^\w\s-]", "", text.lower())
-    slug = re.sub(r"[-\s]+", "-", slug)
-    return slug.strip("-")[:120]
-
-
-def _unique_path(directory: Path, stem: str, suffix: str) -> Path:
-    """Return a unique file path: ``directory / stem{suffix}``, adding _N if needed."""
-    candidate = directory / f"{stem}{suffix}"
-    if not candidate.exists():
-        return candidate
-    n = 1
-    while True:
-        candidate = directory / f"{stem}_{n}{suffix}"
-        if not candidate.exists():
-            return candidate
-        n += 1
-
-
-def _extract_title(content: str) -> str | None:
-    """Extract a title from the first ``# Heading`` line in markdown content."""
-    match = re.match(r"^#\s+(.+)", content.strip(), re.MULTILINE)
-    return match.group(1).strip() if match else None
-
-
-# ── Index helpers (user-facing file index under <agent>.files/index.json) ──
-
-_INDEX_PATH: Path | None = None
-
-
-def _index_file() -> Path:
-    global _INDEX_PATH
-    if _INDEX_PATH is None:
-        _INDEX_PATH = get_memfiles_dir() / "index.json"
-    return _INDEX_PATH
-
-
-def _load_index() -> list[dict]:
-    idx = _index_file()
-    if idx.exists():
-        try:
-            return json.loads(idx.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
-
-
-def _save_index(entries: list[dict]) -> None:
-    idx = _index_file()
-    idx.parent.mkdir(parents=True, exist_ok=True)
-    idx.write_text(json.dumps(entries, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def _add_index_entry(title: str, filename: str, tags: list[str], source: str) -> None:
-    entries = _load_index()
-    entries.append({
-        "title": title,
-        "filename": filename,
-        "tags": tags or [],
-        "source": source,
-        "saved_at": datetime.now(timezone.utc).isoformat(),
-    })
-    _save_index(entries)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -344,6 +353,15 @@ async def __register_file(path: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _saved_result(filepath: Path) -> str:
+    """Register the file for sharing and format the save confirmation."""
+    file_id = _register_file(str(filepath.resolve()))
+    url = share_url_for(file_id)
+    lines = [f"Saved: {filepath}"]
+    lines.append(f"URL: {url}" if url else "URL: (sharing offline — file accessible locally)")
+    return "\n".join(lines)
+
+
 @mcp.tool(
     name="expose_file",
     description=(
@@ -382,71 +400,318 @@ async def expose_file(path: str) -> str:
 
 
 @mcp.tool(
-    name="save_content_or_files",
+    name="note_save",
     description=(
-        "Save content, a URL, or a local file to persistent storage "
-        "(the agent's files folder).  Provide exactly one of "
-        "content/url/path.  Sharing URL included when the tunnel is up.  "
-        "Use when the user says 'remember this' / 'save this'."
+        "Write or update a note for a subject.  Appends a timestamped "
+        "section to notes/<subject>.md and re-indexes it for search. "
+        "Use when the user says 'take a note on …' / 'remember this about …'."
     ),
 )
-async def save_content_or_files(
-    content: str = "",
-    url: str = "",
-    path: str = "",
-    title: str = "",
-    tags: list[str] | None = None,
+async def note_save(
+    subject: str, content: str, tags: str | None = None,
 ) -> str:
-    """Save content, a URL, or a local file to persistent file storage."""
-    tags = tags or []
-    sources = [k for k in ("content", "url", "path") if locals()[k]]
-    if len(sources) == 0:
-        return "Error: provide one of: content, url, or path."
-    if len(sources) > 1:
-        return f"Error: provide only one source, got: {', '.join(sources)}."
+    store = await _ensure_store()
+    try:
+        info = await store.upsert_note(subject, content, tags or "")
+    except ValueError as e:
+        return f"Error: {e}"
+    if _manager is not None:
+        _manager.on_saved()
+    return _saved_result(store.mem_dir / info["file_path"])
 
-    mem_dir = get_memfiles_dir()
+
+@mcp.tool(
+    name="diary_write",
+    description=(
+        "Write today's (or a given date's) diary entry.  Appends a "
+        "timestamped section to diary/<date>.md and re-indexes it. "
+        "date defaults to today (YYYY-MM-DD)."
+    ),
+)
+async def diary_write(
+    date: str | None = None, content: str = "", tags: str | None = None,
+) -> str:
+    store = await _ensure_store()
+    day = date or datetime.now().strftime("%Y-%m-%d")
+    try:
+        info = await store.upsert_diary(day, content, tags or "")
+    except ValueError as e:
+        return f"Error: {e}"
+    if _manager is not None:
+        _manager.on_saved()
+    return _saved_result(store.mem_dir / info["file_path"])
+
+
+@mcp.tool(
+    name="file_save",
+    description=(
+        "Copy one or more local files into the agent's files folder and "
+        "record them.  Optionally give a title and an LLM summary (the "
+        "summary makes the file findable by semantic search). "
+        "Returns local paths + share URLs."
+    ),
+)
+async def file_save(
+    paths: list[str], title: str = "", tags: str | None = None,
+    summary: str = "",
+) -> str:
+    store = await _ensure_store()
+    mem_dir = store.mem_dir
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+    embedded = False
+    for p in paths:
+        src = Path(p)
+        if not src.exists():
+            results.append(f"Error: file not found — {p}")
+            continue
+        if not src.is_file():
+            results.append(f"Error: not a file — {p}")
+            continue
+        stem = _slugify(title) if title else src.stem
+        display_title = title or src.name
+        saved = _unique_path(mem_dir, stem, src.suffix)
+        shutil.copy2(src, saved)
+        rel = saved.relative_to(mem_dir).as_posix()
+        mime = mimetypes.guess_type(str(src))[0] or ""
+        await store.add_file(
+            title=display_title, original_path=str(src), saved_path=rel,
+            mime=mime, size=src.stat().st_size, tags=tags or "",
+            summary=summary,
+        )
+        if summary:
+            embedded = True
+        results.append(_saved_result(saved))
+    if _manager is not None and embedded:
+        _manager.on_saved()
+    return "\n".join(results)
+
+
+@mcp.tool(
+    name="url_save",
+    description=(
+        "Download a public http(s) URL into the agent's files folder and "
+        "record it.  Optionally give a title and an LLM summary (for "
+        "semantic search).  Only publicly reachable URLs are accepted."
+    ),
+)
+async def url_save(
+    url: str, title: str = "", tags: str | None = None, summary: str = "",
+) -> str:
+    import aiohttp
+
+    store = await _ensure_store()
+    mem_dir = store.mem_dir
     mem_dir.mkdir(parents=True, exist_ok=True)
 
-    if content:
-        return _save_content(content, title, tags, mem_dir)
-    if url:
-        return await _save_url(url, title, tags, mem_dir)
-    return await _save_path(path, title, tags, mem_dir)
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return f"Error: invalid URL — {url}"
 
+    # SSRF guard — only publicly reachable http(s) URLs may be fetched.
+    from slife.threads import run_daemon
 
-# ── Save helpers ─────────────────────────────────────────────────────
+    err = await run_daemon(_reject_non_public_url, url)
+    if err:
+        return f"Error: refusing URL — {err}"
 
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    return f"Error: HTTP {resp.status} — {url}"
+                raw = await resp.read()
+    except Exception as e:
+        return f"Error: download failed — {e}"
 
-def _build_result(filepath: Path, title: str, tags: list[str], source: str) -> str:
-    """Build result string + update index.  Common to all source types."""
-    _add_index_entry(title, filepath.name, tags, source)
-    file_id = _register_file(str(filepath.resolve()))
-    url = share_url_for(file_id)
-
-    lines = [f"Saved: {filepath}"]
-    if url:
-        lines.append(f"URL: {url}")
-    else:
-        lines.append("URL: (sharing offline — file accessible locally)")
-    return "\n".join(lines)
-
-
-def _save_content(content: str, title: str, tags: list[str], mem_dir: Path) -> str:
-    if not content.strip():
-        return "Error: content is empty."
-    display_title = title or _extract_title(content) or "untitled"
+    url_name = parsed.path.rsplit("/", 1)[-1] if parsed.path else ""
+    display_title = title or url_name or "untitled"
     stem = _slugify(display_title) or "untitled"
-    filepath = _unique_path(mem_dir, stem, ".md")
-    filepath.write_text(content.strip(), encoding="utf-8")
-    return _build_result(filepath, display_title, tags, "content")
+    if url_name and "." in url_name:
+        ext = "." + url_name.rsplit(".", 1)[-1].split("?")[0]
+        ext = re.sub(r"[^\w.]", "", ext)[:10]
+        if not ext.startswith("."):
+            ext = ""
+    else:
+        ext = ""
+    saved = _unique_path(mem_dir, stem, ext or "")
+    saved.write_bytes(raw)
+    rel = saved.relative_to(mem_dir).as_posix()
+    mime = mimetypes.guess_type(url_name)[0] or ""
+    await store.add_file(
+        title=display_title, original_path=url, saved_path=rel,
+        mime=mime, size=len(raw), tags=tags or "", summary=summary,
+    )
+    if _manager is not None and summary:
+        _manager.on_saved()
+    return _saved_result(saved)
+
+
+@mcp.tool(
+    name="file_summarize",
+    description=(
+        "Write or update a saved file's LLM summary (by its relative path, "
+        "as returned by file_save / search).  The summary makes the file "
+        "findable by semantic search."
+    ),
+)
+async def file_summarize(
+    path: str, summary: str, tags: str | None = None,
+) -> str:
+    store = await _ensure_store()
+    info = await store.update_file_summary(path, summary, tags)
+    if info is None:
+        return f"Error: file not found in cabinet — {path}"
+    if _manager is not None:
+        _manager.on_saved()
+    return json.dumps(
+        {"status": "updated", "file": path, "summary": summary},
+        ensure_ascii=False, indent=2,
+    )
+
+
+@mcp.tool(
+    name="search",
+    description=(
+        "Search notes, diary and saved files.  kind: note | diary | file | "
+        "all (default).  mode: hybrid (keyword + semantic) or fts5. "
+        "Returns matches with their relative path, snippet and kind."
+    ),
+)
+async def search(
+    query: str, kind: str = "all", mode: str = "hybrid", limit: int = 20,
+) -> str:
+    store = await _ensure_store()
+    manager = _manager
+    mode = mode.lower()
+    if mode not in ("hybrid", "fts5"):
+        mode = "hybrid"
+    if kind not in ("all", "note", "diary", "file"):
+        kind = "all"
+
+    emb: list[float] | None = None
+    semantic_available = False
+    if mode == "hybrid" and manager is not None and manager.semantic_ready:
+        e = manager.embedder
+        if e is not None and e.available:
+            emb = await e.embed_one(query)
+            if emb:
+                semantic_available = True
+
+    try:
+        hits = await store.search(
+            query, kind=kind, limit=limit, mode=mode, embed_query=emb,
+        )
+    except Exception as e:
+        logger.exception("memfiles_search_failed query=%s kind=%s", query, kind)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+    hint = ""
+    if mode == "hybrid" and not semantic_available:
+        hint = manager.reason if manager else (
+            "hybrid degraded to fts5 — embedding backend unavailable"
+        )
+        if not hits:
+            hint += " — no keyword matches either"
+    elif not hits:
+        hint = "no matching memories found"
+
+    return json.dumps(
+        {
+            "mode": "hybrid" if semantic_available else "fts5",
+            "query": query, "kind": kind, "results": hits, "hint": hint,
+        },
+        ensure_ascii=False, indent=2,
+    )
+
+
+@mcp.tool(
+    name="embedding_check",
+    description=(
+        "Memfiles semantic-search status: shared embedding config plus the "
+        "memfiles index's own gate (semantic_ready, state, unembedded). "
+        "Independent from memdb's memory_check_embedding — the two plugins "
+        "reindex their own DBs, so one can be semantically ready while the "
+        "other is still building."
+    ),
+)
+async def embedding_check() -> str:
+    from slife.plugins.memdb.embedding_config import make_check_report
+
+    await _ensure_store()
+    manager = _manager
+    try:
+        report = make_check_report()
+        if manager is not None:
+            report["semantic_ready"] = manager.semantic_ready
+            report["state"] = manager.state
+            report["reason"] = manager.reason
+            report["unembedded"] = await manager.unembedded()
+            e = manager.embedder
+            if e is not None:
+                # live embedder facts override the config probe
+                report["backend"] = e.backend
+                report["model"] = e._model
+                report["dimension"] = e.dimension
+                report["available"] = e.available
+                report["loaded"] = e.loaded
+            # hint by state
+            state = manager.state
+            if state == "ready":
+                report["hint"] = (
+                    f"{report.get('backend', '')} embedding model ready: "
+                    f"{report.get('model', '')} (dim={report.get('dimension')})"
+                )
+            elif state in ("loading", "indexing"):
+                report["hint"] = (
+                    f"Memfiles index building — {report.get('unembedded', 0)} "
+                    "notes/diary/files pending embedding. Keyword search remains available."
+                )
+            elif state == "stalled":
+                report["hint"] = report.get("reason", "Memfiles semantic index stalled.")
+            elif state == "disabled" and report.get("configured"):
+                report["hint"] = (
+                    "Memfiles semantic search disabled. Re-enable via memdb's "
+                    "memory_set_enabled true (shared embedding config)."
+                )
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.exception("memfiles_check_embedding_failed")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="read",
+    description=(
+        "Read a saved file's content by its relative path under the agent's "
+        "files folder (as returned by file_save / search), e.g. "
+        "notes/python.md or diary/2026-08-15.md."
+    ),
+)
+async def read(path: str) -> str:
+    store = await _ensure_store()
+    try:
+        target = store.resolve_safe_path(path)
+    except ValueError as e:
+        return f"Error: {e}"
+    if not target.is_file():
+        return f"Error: not a file — {path}"
+    try:
+        return target.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return f"Error: cannot read {path} — {e}"
+
+
+# ── SSRF guard (shared with url_save) ─────────────────────────────
 
 
 def _reject_non_public_url(url: str) -> str | None:
     """Return an error message if *url* is not a publicly reachable http(s)
     URL, else None.
 
-    SSRF guard for ``_save_url``: this plugin process fetches *url*, so a
+    SSRF guard for ``url_save``: this plugin process fetches *url*, so a
     loopback / LAN / cloud-metadata target (``169.254.169.254`` etc.) would
     let the LLM read addresses the user's browser can't reach — and with the
     ngrok tunnel up, the response would be published as a public file. The
@@ -456,7 +721,6 @@ def _reject_non_public_url(url: str) -> str | None:
     """
     import ipaddress
     import socket
-    from urllib.parse import urlparse
 
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -483,72 +747,6 @@ def _reject_non_public_url(url: str) -> str | None:
         ):
             return f"refusing non-public host '{host}' ({ip})"
     return None
-
-
-async def _save_url(url: str, title: str, tags: list[str], mem_dir: Path) -> str:
-    import aiohttp
-    from urllib.parse import urlparse
-
-    parsed = urlparse(url)
-    if not parsed.scheme or not parsed.netloc:
-        return f"Error: invalid URL — {url}"
-
-    # SSRF guard — only publicly reachable http(s) URLs may be fetched.
-    # DNS resolution runs on a daemon thread (threads.py convention).
-    from slife.threads import run_daemon
-
-    err = await run_daemon(_reject_non_public_url, url)
-    if err:
-        return f"Error: refusing URL — {err}"
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status != 200:
-                    return f"Error: HTTP {resp.status} — {url}"
-                raw = await resp.read()
-    except Exception as e:
-        return f"Error: download failed — {e}"
-
-    url_name = parsed.path.rsplit("/", 1)[-1] if parsed.path else ""
-    if title:
-        stem = _slugify(title)
-        display_title = title
-    elif url_name:
-        stem = _slugify(url_name.rsplit(".", 1)[0]) if "." in url_name else _slugify(url_name)
-        display_title = url_name
-    else:
-        stem = "untitled"
-        display_title = "untitled"
-
-    if url_name and "." in url_name:
-        ext = "." + url_name.rsplit(".", 1)[-1].split("?")[0]
-        ext = re.sub(r"[^\w.]", "", ext)[:10]
-        if not ext.startswith("."):
-            ext = ""
-    else:
-        ext = ""
-
-    filepath = _unique_path(mem_dir, stem, ext or "")
-    filepath.write_bytes(raw)
-    return _build_result(filepath, display_title, tags, "url")
-
-
-async def _save_path(path: str, title: str, tags: list[str], mem_dir: Path) -> str:
-    src = Path(path)
-    if not src.exists():
-        return f"Error: file not found — {path}"
-    if not src.is_file():
-        return f"Error: not a file — {path}"
-
-    stem = _slugify(title) if title else src.stem
-    display_title = title or src.name
-
-    filepath = _unique_path(mem_dir, stem, src.suffix)
-    shutil.copy2(src, filepath)
-    return _build_result(filepath, display_title, tags, "path")
 
 
 # ── Entry point ──────────────────────────────────────────────────────

@@ -51,8 +51,9 @@ Non-MCP endpoints on an MCP plugin
   the same port — register them with ``@mcp.custom_route(path, methods=...)``
   and FastMCP mounts them on the same uvicorn app as the Streamable HTTP
   endpoint.  ``memfiles`` does exactly this: MCP tools (``expose_file``,
-  ``save_content_or_files``) plus ``GET /share/{file_id}`` for serving the
-  actual file bytes — one port, two protocols.  Such a plugin binds its
+  ``note_save`` / ``diary_write`` / ``file_save`` / ``search``) plus
+  ``GET /share/{file_id}`` for serving the actual file bytes — one port, two
+  protocols.  Such a plugin binds its
   own port in ``main()`` (when it must know the port, e.g. to point the
   ngrok tunnel at it) and passes the pre-bound socket to
   :func:`run_plugin_server(mcp, sockets=[sock])`.

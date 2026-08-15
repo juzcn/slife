@@ -762,17 +762,22 @@ class SessionStore:
         logger.debug("embedding_upserted diary_rowid=%s chunk=%s", diary_rowid, chunk_index)
 
     async def replace_embedding_chunks(
-        self, diary_rowid: int, summary: str, tags: str,
-        created_at: str, embeddings: list[list[float]],
+        self, doc: dict, embeddings: list[list[float]],
     ) -> None:
-        """Atomically replace a turn's embedding chunks.
+        """Atomically replace a document's embedding chunks.
 
-        Deletes the turn's old chunks and inserts every new chunk in ONE
+        Deletes the document's old chunks and inserts every new chunk in ONE
         transaction.  A crash (or error) mid-way rolls back to NO chunks —
-        the turn is fully unembedded again and gets re-indexed on the next
+        the document is fully unembedded again and gets re-indexed on the next
         pass, instead of being left half-indexed where the ``NOT IN
         diary_semantic`` unembedded query would mistake it for complete.
+        ``doc`` is a drainer row: ``doc_id`` plus ``summary`` / ``tags`` /
+        ``created_at`` (which are stored on every chunk for display).
         """
+        diary_rowid = doc["doc_id"]
+        summary = doc.get("summary", "")
+        tags = doc.get("tags", "")
+        created_at = doc.get("created_at", "")
         vec_blobs = [_serialize_f32(emb) for emb in embeddings]
         try:
             await self._c.execute(
@@ -804,15 +809,17 @@ class SessionStore:
         )
         await self._c.commit()
 
-    async def get_unembedded_turns(self, limit: int = 100) -> list[dict]:
-        """Return turns that have no embedding in diary_semantic.
+    async def get_unembedded_docs(self, limit: int = 100) -> list[dict]:
+        """Return documents (turns) that have no embedding in diary_semantic.
 
         These need re-indexing after embedding config is added or changed.
-        Returns lightweight rows: rowid, user_message, messages, created_at.
+        Each row carries the SemanticManager drainer's shape: ``doc_id``
+        (the turn rowid), ``text`` (the embed-ready turn text) and
+        ``summary`` / ``tags`` / ``created_at``.
         """
         cursor = await self._c.execute(
-            """SELECT d.rowid, d.user_message, d.messages, d.summary, d.tags,
-                      d.created_at
+            """SELECT d.rowid AS doc_id, d.user_message, d.messages, d.summary,
+                      d.tags, d.created_at
                FROM diary d
                WHERE d.rowid NOT IN (
                    SELECT DISTINCT diary_rowid FROM diary_semantic
@@ -821,7 +828,19 @@ class SessionStore:
                LIMIT ?""",
             (limit,),
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        docs = []
+        for row in await cursor.fetchall():
+            r = dict(row)
+            docs.append({
+                "doc_id": r["doc_id"],
+                "text": _turn_text_for_embedding(
+                    r["user_message"], json.loads(r.get("messages") or "[]"),
+                ),
+                "summary": r.get("summary", ""),
+                "tags": r.get("tags", ""),
+                "created_at": r.get("created_at", ""),
+            })
+        return docs
 
     async def count_unembedded(self) -> int:
         """Count turns that need re-indexing."""

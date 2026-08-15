@@ -177,7 +177,7 @@ async def __memory_save_turn(
         # A saved turn is new work for the index drainer — wake it
         # (non-blocking event.set(), no DB work).
         if _manager is not None:
-            _manager.on_turn_saved()
+            _manager.on_saved()
         return json.dumps({"rowid": rowid, "status": "saved"}, ensure_ascii=False)
     except Exception as e:
         logger.exception("save_turn_failed user_msg=%.80s", user_message)

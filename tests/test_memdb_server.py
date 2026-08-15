@@ -147,7 +147,7 @@ class TestStoreLifecycleLocking:
 
     @pytest.mark.asyncio
     async def test_save_turn_forwards_images_and_wakes_drainer(self, restore_root_logger):
-        """__memory_save_turn forwards ``images`` and calls on_turn_saved()
+        """__memory_save_turn forwards ``images`` and calls on_saved()
         (the drainer wake) — no reindex side-effect on the save path."""
         import json
 
@@ -173,7 +173,7 @@ class TestStoreLifecycleLocking:
         # save_turn is insert-only (embedding is internal/reindex); the
         # harness's 10s save timeout can no longer be tripped by a slow embed.
         assert "embedder" not in captured
-        manager.on_turn_saved.assert_called_once()
+        manager.on_saved.assert_called_once()
 
 
 class TestTurnSummarize:

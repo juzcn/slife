@@ -33,7 +33,7 @@ The model input should read uniformly, so text that Slife authors is English:
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins (independent child processes, Streamable HTTP)              │
 │  slife-mcp (gateway) · slife-memdb (diary) · slife-wechat            │
-│  slife-a2a (A2A over MQTT) · slife-memfiles (file sharing: /mcp + /share)                         │
+│  slife-a2a (A2A over MQTT) · slife-memfiles (notes/diary/files + /share)                          │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
@@ -214,7 +214,7 @@ Plus **plugin tools** — registered at runtime as `{server}__{tool}` proxies vi
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
 | `memdb` | `memdb__memory_list_recent`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_turn_summarize`, `memdb__memory_count`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `memfiles__expose_file`, `memfiles__save_content_or_files` |
+| `memfiles` | `memfiles__note_save`, `memfiles__diary_write`, `memfiles__file_save`, `memfiles__url_save`, `memfiles__file_summarize`, `memfiles__search`, `memfiles__read`, `memfiles__embedding_check`, `memfiles__expose_file` |
 
 Naming rule: a plugin tool already carrying its server as a name prefix (`mcp_set`, `wechat_login`) is registered as-is (avoids the redundant `mcp__mcp_set` / `wechat__wechat_login`); otherwise the proxy adds `{server}__`. External MCP servers always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
 
@@ -313,7 +313,7 @@ Processes communicate through environment variables:
 | **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config. |
 | **slife-memdb** | Streamable HTTP | Diary database. Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
-| **slife-memfiles** | Streamable HTTP + `/share` route | File cabinet + public sharing. MCP tools (`expose_file`, `save_content_or_files`), harness tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel and in-process token registry. |
+| **slife-memfiles** | Streamable HTTP + `/share` route | Notes/diary/files cabinet + public sharing. MCP tools (`note_save`, `diary_write`, `file_save`, `url_save`, `file_summarize`, `search`, `read`, `expose_file`), harness tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel, the in-process token registry, and a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. |
 | **slife-a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools; only the drain/dispatch harness tools (`__a2a_*`) stay `__`-prefixed. |
 
 ### slife-mcp — External MCP Gateway
@@ -402,9 +402,9 @@ Backend selection priority: GGUF file present → transformer requested → API 
 
 **Vector store.** `diary_semantic` is a sqlite-vec `vec0` table (`turn_embedding float[dim]`, `+diary_rowid`, `+chunk_index`, `+summary`, `+tags`, `+created_at`). One turn → multiple chunks: text is split at paragraph boundaries (~2000 chars ≈ 500 tokens, 1-paragraph overlap), and the embedded text is the user message plus all assistant/tool contents. Semantic search dedupes by `diary_rowid`, keeping only the best (lowest-distance) chunk per turn.
 
-**Write path is insert-only.** `save_turn` persists the row and never embeds on the save path (a slow GGUF embed of a large turn previously tripped the harness's 10s save timeout — a false alarm; the row was saved anyway). Embedding is an internal plugin concern: after each insert `__memory_save_turn` calls `manager.on_turn_saved()` — a non-blocking `event.set()` that wakes the idle drainer, so the turn becomes semantically searchable shortly after save once the gate re-opens. `memory_turn_summarize` writes only the `summary`/`tags` columns — a recall clue for keyword (FTS5) search — and never touches the semantic index, which keeps the turn's full-text vectors intact. Its `rowid` defaults to the most recent turn, so the LLM can summarize "the turn just completed" in one call without a `memory_list_recent` lookup.
+**Write path is insert-only.** `save_turn` persists the row and never embeds on the save path (a slow GGUF embed of a large turn previously tripped the harness's 10s save timeout — a false alarm; the row was saved anyway). Embedding is an internal plugin concern: after each insert `__memory_save_turn` calls `manager.on_saved()` — a non-blocking `event.set()` that wakes the idle drainer, so the turn becomes semantically searchable shortly after save once the gate re-opens. `memory_turn_summarize` writes only the `summary`/`tags` columns — a recall clue for keyword (FTS5) search — and never touches the semantic index, which keeps the turn's full-text vectors intact. Its `rowid` defaults to the most recent turn, so the LLM can summarize "the turn just completed" in one call without a `memory_list_recent` lookup.
 
-**SemanticManager — the lifecycle actor.** `SemanticManager` (`semantic.py`) owns the binary gate, the embedder instance, and an event-driven index drainer as one object — the only place the gate is written. The gate (`semantic_ready`) opens exactly when `embedder_ready ∧ count_unembedded() == 0`; there are no intermediate states. `enable(cfg)` / `disable()` are blocking config transitions (load model, migrate vec0 in place, start/stop the drainer); `on_turn_saved()` is a non-blocking `event.set()` wake. The drainer loops: `count_unembedded() == 0` → gate ON, wait on the `asyncio.Event` (no polling); else → gate OFF, embed one batch (atomic `replace_embedding_chunks`). A persistently failing embedder is bounded by a no-progress limit → state `stalled`, and only `enable()` (a config change) resets it. The state machine (`disabled | loading | indexing | ready | stalled`) and a human `reason` are reported separately from the binary gate — `memory_check_embedding` surfaces both. While the gate is OFF, hybrid degrades to FTS5-only with a hint naming the reason — partial semantic results are never served. The embedder is owned in-process (no cross-module `reload_embedder` global mutation), so the `python -m` double-module hazard that once left the gate stuck is structurally impossible.
+**SemanticManager — the lifecycle actor.** `SemanticManager` (`semantic.py`) owns the binary gate, the embedder instance, and an event-driven index drainer as one object — the only place the gate is written. It is document-generic (a store contract: `count_unembedded` / `get_unembedded_docs` / `replace_embedding_chunks` / `reconfigure_for_embedding`), so memdb's `SessionStore` and memfiles' `MemfilesStore` both drive their own instance — the two plugins' gates are independent. The gate (`semantic_ready`) opens exactly when `embedder_ready ∧ count_unembedded() == 0`; there are no intermediate states. `enable(cfg)` / `disable()` are blocking config transitions (load model, migrate vec0 in place, start/stop the drainer); `on_saved()` is a non-blocking `event.set()` wake. The drainer loops: `count_unembedded() == 0` → gate ON, wait on the `asyncio.Event` (no polling); else → gate OFF, embed one batch (atomic `replace_embedding_chunks`). A persistently failing embedder is bounded by a no-progress limit → state `stalled`, and only `enable()` (a config change) resets it. The state machine (`disabled | loading | indexing | ready | stalled`) and a human `reason` are reported separately from the binary gate — `memory_check_embedding` surfaces both. While the gate is OFF, hybrid degrades to FTS5-only with a hint naming the reason — partial semantic results are never served. The embedder is owned in-process (no cross-module `reload_embedder` global mutation), so the `python -m` double-module hazard that once left the gate stuck is structurally impossible.
 
 **Search.** `memory_search` has four modes (`grep` / `fts5` / `hybrid` / `time`). `hybrid` runs the FTS5 keyword query and a vec0 KNN side by side, then merges via Reciprocal Rank Fusion (k=60, `search.py`). sqlite-vec forbids any auxiliary-column constraint or JOIN inside a KNN query, so the KNN runs alone, time-window filtering happens in Python (with a wider fetch pool), and `user_message` is fetched in a second query.
 
@@ -492,16 +492,27 @@ The TUI extracts attachments; `include_image_url()` turns each into a vision con
 
 Three-tier rendering in the terminal: **Sixel** (full-colour; whitelisted terminals: Windows Terminal, WezTerm, iTerm2, Kitty — detected via `WT_SESSION` / `TERM_PROGRAM` / `KITTY_WINDOW_ID`) → **HalfcellImage** (coloured Unicode half-blocks, any true-colour terminal) → text placeholder. Chat images are capped at 32×16 cells (thumbnails 20×10).
 
-### Memfiles — File Serving
+### Memfiles — Notes / Diary / Files Cabinet + Sharing
 
 A standard Streamable HTTP plugin (`slife/plugins/memfiles/server.py`) — self-contained and replaceable exactly like memdb / mqtt.  The harness is a thin MCP client: it spawns the plugin, registers the `memfiles__*` tools, and never touches file-serving state directly.
+
+#### Notes / Diary / Files Cabinet
+
+Three typed knowledge stores, each **dual-written** to a human-browsable markdown file and a SQLite index (`{agent}.files/.index.db`):
+- `note_save(subject, …)` — a note keyed by **subject**, appended to `notes/<subject>.md` (each call adds a timestamped section);
+- `diary_write(date, …)` — a day's entry keyed by **date**, appended to `diary/<YYYY-MM-DD>.md`;
+- `file_save` / `url_save` — saved attachments (bytes stay on the filesystem; an optional LLM `summary` makes them semantically searchable), with `file_summarize` to write/update a summary later.
+
+Each kind owns its FTS5 + vec0 tables (`notes_*` / `diary_*` / `files_*`). `search(query, kind, mode)` runs hybrid (FTS5 + vec0 KNN, RRF via the shared `merge_hybrid`) or keyword search across them; `read(path)` re-opens a file with a path-traversal guard. The index mirrors memdb's design and **reuses its code**: the shared `SemanticManager` (document-source contract) drives the drainer over all three kinds, and `embedding_check` reports this index's own gate — independent from memdb's `memory_check_embedding`, because each plugin reindexes its own DB (one shared `memdb.embedding` config, independent availability).
+
+#### Public File Sharing
 
 The plugin owns everything — the in-process token registry, the ngrok tunnel, and serving the file bytes on the **same port** via a custom HTTP route (one port, two protocols: `/mcp` for Streamable HTTP, `/share/{token}` for plain HTTP):
 
 1. `expose_file(path)` (MCP) → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`.  Always registered — when the tunnel is offline the tool returns a graceful error rather than being hidden.
 2. `GET /share/{token}` streams the file in 64 KB chunks (403 unknown token, 404 file gone).
 
-No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file). `save_content_or_files` persists content/URL/files under `<agent>.files/` with an `index.json` and returns share URLs when the tunnel is active; when offline, files are still saved locally and the result notes "(sharing offline)". `include_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/vision.py`) that injects image blocks into the main-process conversation.
+No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file). Saved files return share URLs when the tunnel is active; when offline, they are still saved locally and the result notes "(sharing offline)". `include_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/vision.py`) that injects image blocks into the main-process conversation.
 
 `GET /share/{token}` streams the file with an RFC 5987 `Content-Disposition` — a non-ASCII filename (e.g. CJK) is emitted as an ASCII fallback in `filename=` plus the real name percent-encoded in `filename*=UTF-8''`, because HTTP header values must be Latin-1 (a raw CJK filename otherwise raises `UnicodeEncodeError` → HTTP 500).
 
@@ -689,7 +700,7 @@ slife/
     mcp/               #   External MCP gateway (raw JSON-RPC: stdio/SSE/streamable)
     memdb/             #   Diary database (store, search, embeddings, schema.sql)
     wechat/            #   WeChat messaging (iLink ClawBot client)
-    memfiles/          #   File cabinet + sharing (server.py owns tunnel + registry, tunnel.py = ngrok)
+    memfiles/          #   Notes/diary/files cabinet + sharing (server.py tools, store.py + schema.sql, tunnel.py = ngrok)
     a2a/               #   A2A mesh (a2a_* tools + A2AClient, MQTT binding)
   mcp/                 # MCP client infra
     client.py          #   Streamable HTTP client

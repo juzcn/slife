@@ -48,8 +48,8 @@ def _embedder(*, available=True, backend="gguf", model="bge-m3", dim=1024,
     return e
 
 
-def _turn(**kw):
-    t = {"rowid": 1, "user_message": "hello world", "messages": "[]",
+def _doc(**kw):
+    t = {"doc_id": 1, "text": "hello world",
          "summary": "", "tags": "", "created_at": "2026-01-01T00:00:00+00:00"}
     t.update(kw)
     return t
@@ -156,7 +156,7 @@ class TestDrainerGate:
         q = deque([0, 1, 1, 0, 0, 0])
         store = AsyncMock()
         store.count_unembedded = AsyncMock(side_effect=lambda: q.popleft())
-        store.get_unembedded_turns = AsyncMock(return_value=[_turn()])
+        store.get_unembedded_docs = AsyncMock(return_value=[_doc()])
         store.replace_embedding_chunks = AsyncMock()
         m = SemanticManager(store)
         m._enabled = True
@@ -167,7 +167,7 @@ class TestDrainerGate:
             assert m.semantic_ready is True and m.state == "ready"
 
             # a saved turn wakes the idle drainer; it drains and re-opens the gate
-            m.on_turn_saved()
+            m.on_saved()
             await asyncio.sleep(0.1)
             assert m.semantic_ready is True and m.state == "ready"
         finally:
@@ -181,7 +181,7 @@ class TestDrainerGate:
         store = AsyncMock()
         store.count_unembedded = AsyncMock(
             side_effect=lambda: next(cycle([1, 1, 1])))
-        store.get_unembedded_turns = AsyncMock(return_value=[_turn()])
+        store.get_unembedded_docs = AsyncMock(return_value=[_doc()])
         store.replace_embedding_chunks = AsyncMock()
         m = SemanticManager(store)
         m._enabled = True
@@ -201,7 +201,7 @@ class TestDrainerGate:
         store = AsyncMock()
         store.count_unembedded = AsyncMock(
             side_effect=lambda: next(cycle([1, 1, 1])))
-        store.get_unembedded_turns = AsyncMock(return_value=[_turn()])
+        store.get_unembedded_docs = AsyncMock(return_value=[_doc()])
         m = SemanticManager(store)
         m._enabled = True
         m._embedder = _embedder(embed_result=None)  # embed fails persistently
@@ -218,8 +218,8 @@ class TestProcessBatch:
     @pytest.mark.asyncio
     async def test_counts_full_success_and_preserves_summary_tags(self):
         store = AsyncMock()
-        store.get_unembedded_turns = AsyncMock(return_value=[
-            _turn(rowid=1, summary="s", tags="t"),
+        store.get_unembedded_docs = AsyncMock(return_value=[
+            _doc(doc_id=1, summary="s", tags="t"),
         ])
         store.count_unembedded = AsyncMock(side_effect=[1, 0])
         store.replace_embedding_chunks = AsyncMock()
@@ -231,15 +231,15 @@ class TestProcessBatch:
         assert result["indexed"] == 1
         assert result["complete"] is True
         store.replace_embedding_chunks.assert_awaited_once()
-        kwargs = store.replace_embedding_chunks.await_args.kwargs
-        assert kwargs["summary"] == "s"
-        assert kwargs["tags"] == "t"
-        assert kwargs["diary_rowid"] == 1
+        doc, _embeddings = store.replace_embedding_chunks.await_args.args
+        assert doc["doc_id"] == 1
+        assert doc["summary"] == "s"
+        assert doc["tags"] == "t"
 
     @pytest.mark.asyncio
     async def test_failed_embed_counts_zero_no_commit(self):
         store = AsyncMock()
-        store.get_unembedded_turns = AsyncMock(return_value=[_turn()])
+        store.get_unembedded_docs = AsyncMock(return_value=[_doc()])
         store.count_unembedded = AsyncMock(side_effect=[1, 1])
         store.replace_embedding_chunks = AsyncMock()
         m = SemanticManager(store)
@@ -252,16 +252,16 @@ class TestProcessBatch:
         store.replace_embedding_chunks.assert_not_awaited()
 
 
-class TestOnTurnSaved:
+class TestOnSaved:
     def test_sets_event_only_when_enabled(self):
         m = SemanticManager(AsyncMock())
         m._enabled = True
-        m.on_turn_saved()
+        m.on_saved()
         assert m._work_event.is_set()
 
         m._work_event.clear()
         m._enabled = False
-        m.on_turn_saved()
+        m.on_saved()
         assert not m._work_event.is_set()
 
 

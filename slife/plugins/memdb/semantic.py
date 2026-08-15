@@ -1,8 +1,16 @@
-"""Semantic lifecycle manager for the memdb plugin.
+"""Semantic lifecycle manager — shared by the memdb and memfiles plugins.
 
 Owns the semantic-search gate (binary, single source of truth) and the
 embedder + index drainer as one actor. ``enable`` / ``disable`` are blocking
-config transitions; ``on_turn_saved`` wakes the event-driven drainer.
+config transitions; ``on_saved`` wakes the event-driven drainer.
+
+Store contract (a "document source"): the store must provide
+``count_unembedded()``, ``get_unembedded_docs(limit)`` (rows carrying
+``doc_id``/``text``/``summary``/``tags``/``created_at``), and
+``replace_embedding_chunks(doc, embeddings)``.  memdb's ``SessionStore``
+serves turns; memfiles' ``MemfilesStore`` serves notes/diary/file summaries.
+Each plugin constructs its own ``SemanticManager`` against its own store, so
+the two plugins' gates are independent.
 
 Why this exists: the previous design scattered ``_semantic_ready`` /
 ``_embedder`` / ``_reindex_task`` / ``_reinit_task`` across ``server.py``
@@ -14,7 +22,6 @@ impossible.
 """
 
 import asyncio
-import json
 import logging
 from pathlib import Path
 
@@ -152,8 +159,8 @@ class SemanticManager:
                 status="ok", message="Semantic search disabled. Keyword search still available.",
             )
 
-    def on_turn_saved(self) -> None:
-        """A turn was persisted — wake an idle drainer (non-blocking)."""
+    def on_saved(self) -> None:
+        """A document was persisted — wake an idle drainer (non-blocking)."""
         if self._enabled:
             self._work_event.set()
 
@@ -257,15 +264,15 @@ class SemanticManager:
             await asyncio.sleep(0)  # yield between batches
 
     async def _process_batch(self, batch_limit: int = REINDEX_BATCH_LIMIT) -> dict:
-        """Embed one batch of unembedded turns.
+        """Embed one batch of unembedded documents.
 
-        Returns ``{total, indexed, remaining, complete}``. Only turns whose
+        Returns ``{total, indexed, remaining, complete}``. Only documents whose
         every chunk produced a vector are committed (atomic replace) and
-        counted — a partial/failed embed leaves the turn fully unembedded so
-        the next pass retries it (and the M7 no-progress bound still trips).
+        counted — a partial/failed embed leaves the document fully unembedded
+        so the next pass retries it (and the M7 no-progress bound still trips).
         """
         from slife.plugins.memdb.store import (
-            _chunk_text, _split_chunks_to_token_limit, _turn_text_for_embedding,
+            _chunk_text, _split_chunks_to_token_limit,
         )
         embedder = self._embedder
         if not embedder or not embedder.available:
@@ -274,13 +281,11 @@ class SemanticManager:
         total = await self._store.count_unembedded()
         if total == 0:
             return {"total": 0, "indexed": 0, "remaining": 0, "complete": True}
-        turns = await self._store.get_unembedded_turns(limit=batch_limit)
+        docs = await self._store.get_unembedded_docs(limit=batch_limit)
         indexed = 0
-        for turn in turns:
+        for doc in docs:
             try:
-                embed_text = _turn_text_for_embedding(
-                    turn["user_message"], json.loads(turn.get("messages", "[]")),
-                )
+                embed_text = doc["text"]
                 if not embed_text.strip():
                     continue
                 chunks = _chunk_text(embed_text)
@@ -295,15 +300,11 @@ class SemanticManager:
                 ):
                     async with self._write_lock:
                         await self._store.replace_embedding_chunks(
-                            diary_rowid=turn["rowid"],
-                            summary=turn.get("summary", ""),
-                            tags=turn.get("tags", ""),
-                            created_at=turn["created_at"],
-                            embeddings=embeddings,
+                            doc, embeddings,
                         )
                     indexed += 1
             except Exception as e:
-                logger.debug("reindex_skip rowid=%s err=%s", turn["rowid"], e)
+                logger.debug("reindex_skip doc_id=%s err=%s", doc.get("doc_id"), e)
         remaining = await self._store.count_unembedded()
         return {
             "total": total, "indexed": indexed,

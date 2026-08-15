@@ -152,7 +152,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
 | `memdb` | `memdb__memory_list_recent`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_turn_summarize`, `memdb__memory_count`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `memfiles__expose_file`, `memfiles__save_content_or_files` |
+| `memfiles` | `memfiles__note_save`, `memfiles__diary_write`, `memfiles__file_save`, `memfiles__url_save`, `memfiles__file_summarize`, `memfiles__search`, `memfiles__read`, `memfiles__embedding_check`, `memfiles__expose_file` |
 
 内置插件工具若已自带服务器名前缀（`mcp_set`、`wechat_login`）则原样注册，其余按 `{server}__{tool}` 命名。外部 MCP 服务器（`slife.json5` → `mcp.servers`）一律以 `{server}__{tool}` 出现（如 `filesystem__read_file`）。
 
@@ -194,7 +194,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | **slife-mcp** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP） |
 | **slife-memdb** | 日记数据库 + 混合搜索 |
 | **slife-wechat** | 双向微信消息 |
-| **slife-memfiles** | 文件柜 + 公开文件分享（Streamable HTTP 插件，`/share` 路由在同一端口；ngrok 隧道由插件自持） |
+| **slife-memfiles** | 笔记 / 日记 / 文件柜 + 公开分享（Streamable HTTP 插件，`/share` 路由在同一端口；ngrok 隧道由插件自持）。笔记与日记双写为 markdown + SQLite 混合索引 |
 | **slife-a2a** | A2A 网格通道（MQTT binding；仅在 broker 可达时启动） |
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。

@@ -49,5 +49,4 @@ class ToolContext:
     query the file-sharing tunnel status via the plugin's harness tool."""
 
     conversation: Conversation | None = None
-    """The active :class:`Conversation` (needed by ``clear_context``,
-    ``save_content_or_files``)."""
+    """The active :class:`Conversation` (needed by ``clear_context``)."""

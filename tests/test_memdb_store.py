@@ -980,9 +980,9 @@ class TestSessionStoreReplaceEmbeddingChunks:
         store._conn = mock_conn
 
         await store.replace_embedding_chunks(
-            diary_rowid=7, summary="s", tags="t",
-            created_at="2024-01-01T00:00:00",
-            embeddings=[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+            {"doc_id": 7, "summary": "s", "tags": "t",
+             "created_at": "2024-01-01T00:00:00"},
+            [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
         )
         # DELETE (1) + 3 INSERTs = 4 executes, exactly one commit, no rollback
         assert mock_conn.execute.call_count == 4
@@ -1005,9 +1005,9 @@ class TestSessionStoreReplaceEmbeddingChunks:
 
         with pytest.raises(RuntimeError):
             await store.replace_embedding_chunks(
-                diary_rowid=7, summary="", tags="",
-                created_at="2024-01-01T00:00:00",
-                embeddings=[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+                {"doc_id": 7, "summary": "", "tags": "",
+                 "created_at": "2024-01-01T00:00:00"},
+                [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
             )
         mock_conn.rollback.assert_awaited_once()
         mock_conn.commit.assert_not_awaited()
@@ -1067,16 +1067,16 @@ class TestSessionStoreCountEmbedded:
         assert await store.count_embedded() == 0
 
 
-class TestSessionStoreGetUnembeddedTurnsColumns:
-    """get_unembedded_turns must return summary/tags so a rebuild preserves
-    them via replace_embedding_chunks."""
+class TestSessionStoreGetUnembeddedDocs:
+    """get_unembedded_docs must return doc_id/text/summary/tags so a rebuild
+    preserves them via replace_embedding_chunks."""
 
     @pytest.mark.asyncio
     async def test_selects_summary_and_tags(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         row = {
-            "rowid": 3, "user_message": "hi", "messages": "[]",
+            "doc_id": 3, "user_message": "hi", "messages": "[]",
             "summary": "sum", "tags": "tag", "created_at": "2026-01-01T00:00:00+00:00",
         }
         mock_cursor = AsyncMock()
@@ -1084,10 +1084,12 @@ class TestSessionStoreGetUnembeddedTurnsColumns:
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
-        turns = await store.get_unembedded_turns(limit=10)
+        docs = await store.get_unembedded_docs(limit=10)
 
-        assert len(turns) == 1
-        assert turns[0]["summary"] == "sum"
-        assert turns[0]["tags"] == "tag"
+        assert len(docs) == 1
+        assert docs[0]["doc_id"] == 3
+        assert docs[0]["text"] == "hi"  # embed-ready turn text
+        assert docs[0]["summary"] == "sum"
+        assert docs[0]["tags"] == "tag"
         sql = mock_conn.execute.await_args.args[0]
         assert "summary" in sql and "tags" in sql
