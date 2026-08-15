@@ -359,6 +359,8 @@ Subagents inherit `SLIFE_MCP_PORT` from the parent environment, connect to the e
 
 Every turn permanently recorded as an independent row — no session concept, a continuous time-ordered log in `~/.slife/<agent>.db`.
 
+**Memory is core — the agent never runs silently without it.** A fatal turn-save failure (the memdb plugin returns `{"error": …}` for a broken schema / corruption / disk error) is a hard stop, not a skip: `save_to_memory` sets the memory-broken state, **freezes the inbox** (queued turns are dropped, never run — a turn that can't be persisted isn't worth running), and the TUI shows a **persistent red banner** with the reason until the DB is fixed and the agent restarted. Transient MCP timeouts are only warned, not fatal. Restore-side failure is also fatal (startup abort — see [Session Restore](#session-restore)).
+
 ### Schema
 
 `diary` table:
@@ -424,6 +426,8 @@ Backend selection priority: GGUF file present → transformer requested → API 
 On startup, recent turns are read **directly from SQLite** — no MCP transport, no plugin dependency. The UI rebuilds the last session immediately (user messages, assistant text, tool-call widgets, images whose files still exist); plugins start in parallel. Restored messages carry their stored timestamps — user messages read `created_at`, assistant messages read `completed_at` — matching the live display.
 
 Turns are selected newest-first within the context-floor token budget; the trimming happens in `get_recent_turns`, which returns `(selected, skipped)` so the restore can report it. When history doesn't fit, the TUI shows **`✅ 已恢复最近 N 轮对话（M 轮旧记录未加载，可用 memory_search 查找）`**.
+
+**Restore failure is fatal, never silent.** A present-but-broken memory DB (missing column, corruption, disk error) makes `get_recent_turns` raise `MemoryDatabaseError` instead of returning `[]` — the TUI shows the error and **aborts startup**. The agent must not begin a memory-less session as if nothing happened.
 
 ### Agent Isolation
 

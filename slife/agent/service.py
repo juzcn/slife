@@ -35,6 +35,16 @@ from slife.mcp.tool_adapter import create_proxy_tools
 
 logger = logging.getLogger(__name__)
 
+
+class MemoryDatabaseError(Exception):
+    """The memory database is present but unreadable/unwritable (broken
+    schema, corruption, disk error).
+
+    Memory is core — the agent must not run without it.  Restore treats
+    this as fatal (startup abort); turn-save treats it as a hard stop.
+    """
+
+
 # Module-level callbacks invoked when the active model is switched at
 # runtime (e.g. by the model_switch tool).  Each callback receives the
 # new model ref string (e.g. "deepseek/deepseek-v4-flash").
@@ -199,6 +209,15 @@ class AgentService:
             on_turn_complete=self.save_to_memory,
         )
         self._inbox_task: asyncio.Task | None = None
+
+        # ── Memory health ──────────────────────────────────────────
+        # Memory is core.  A fatal turn-save failure (broken schema,
+        # corruption, disk error) sets _memory_broken and freezes the
+        # inbox — the agent must not keep running turns it can't persist.
+        self._memory_broken = False
+        self._memory_error = ""
+        # TUI callback (set by the app) → persistent red banner.
+        self._on_memory_broken: "Callable[[str], None] | None" = None
 
         # ── Plugin lifecycle containers (replace dynamic setattr/getattr) ─
         self._plugins: dict[str, PluginLifecycle] = {
@@ -1379,7 +1398,7 @@ class AgentService:
             )
         save_args["completed_at"] = now.isoformat(timespec="seconds")
         try:
-            await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 self._plugins["memdb"].client.call_tool(
                     "__memory_save_turn",
                     save_args,
@@ -1392,8 +1411,32 @@ class AgentService:
             # channel itself is slow, not a first-save model load.  The row
             # may still be written server-side.
             logger.warning("memdb_save_timeout reason=save_call_exceeded_timeout")
+            return
         except Exception as e:
+            # A raised call_tool is a transient MCP/channel failure (the
+            # plugin returns {"error": ...} for DB-side failures instead).
             logger.warning("memdb_save_error err=%s", e)
+            return
+
+        # The plugin returns {"error": ...} on a persistent DB failure
+        # (broken schema, corruption, disk).  Memory is core — this is a
+        # hard stop, not a silent skip: freeze the inbox and surface it.
+        if isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict) and parsed.get("error"):
+                self._memory_broken = True
+                self._memory_error = parsed["error"]
+                logger.error("memory_save_fatal err=%s", self._memory_error)
+                if self.inbox is not None:
+                    self.inbox.freeze(f"记忆保存失败: {self._memory_error}")
+                if self._on_memory_broken is not None:
+                    try:
+                        self._on_memory_broken(self._memory_error)
+                    except Exception:
+                        pass
 
     async def get_recent_turns(self, limit: int = 20) -> tuple[list[dict], int]:
         """Load recent turns for restore. Returns ([], 0) if no turns.
@@ -1453,8 +1496,13 @@ class AgentService:
             skipped = len(all_turns) - len(selected)
             return selected, skipped
         except Exception as e:
-            logger.debug("get_recent_turns_direct_db_error err=%s", e)
-            return [], 0
+            # A present-but-broken memory DB (missing column, corruption,
+            # disk error) must NOT start a memory-less session silently —
+            # memory is core, so restore failure is fatal.
+            logger.error("memory_restore_fatal err=%s", e)
+            raise MemoryDatabaseError(
+                f"无法读取记忆库 {db_path}: {e}"
+            ) from e
         finally:
             # Close the aiosqlite connection so its worker thread doesn't
             # outlive the event loop (leaks + "Event loop is closed" in tests).
@@ -1484,6 +1532,10 @@ class AgentService:
     def on_heartbeat(self, callback) -> None:
         """Register a callback for every heartbeat outcome (quiet|act)."""
         self._on_heartbeat = callback
+
+    def on_memory_broken(self, callback) -> None:
+        """Register a callback for a fatal memory-save failure (red banner)."""
+        self._on_memory_broken = callback
 
     async def surface_autonomous(self, text: str) -> None:
         """Deliver an autonomous message to the TUI (⚡ 自主)."""

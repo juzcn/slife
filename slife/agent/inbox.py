@@ -58,6 +58,11 @@ class Inbox:
         #: correlation_id of the message currently being processed (remote
         #: A2A/subagent tasks), used by :meth:`cancel_correlation`.
         self._current_corr: str | None = None
+        # Frozen — memory is broken.  No new turns are processed; queued
+        # messages are dropped (running a turn that can't be persisted is
+        # pointless).  Set by AgentService on a fatal memory-save failure.
+        self._frozen: bool = False
+        self._frozen_reason: str = ""
 
     # ── Cancel ────────────────────────────────────────────────────────
 
@@ -67,6 +72,18 @@ class Inbox:
         Safe to call when nothing is running — does nothing.
         """
         self._agent_loop.cancel()
+
+    def freeze(self, reason: str) -> None:
+        """Freeze the inbox — stop processing new turns.
+
+        Used when memory (a core feature) is broken: any turn saved after
+        this would be lost, so new turns are dropped instead of run.  The
+        process stays alive so the TUI can show *reason*; the user fixes
+        the DB and restarts.
+        """
+        self._frozen = True
+        self._frozen_reason = reason
+        logger.error("inbox_frozen reason=%s", reason)
 
     def cancel_correlation(self, corr_id: str) -> None:
         """Cancel the task carrying *corr_id* — Esc-equivalent for a remote
@@ -120,6 +137,14 @@ class Inbox:
         logger.info("inbox_start")
         while True:
             msg = await self._queue.get()
+            if self._frozen:
+                # Memory is broken — drop rather than run (the turn couldn't
+                # be saved anyway).
+                logger.warning(
+                    "inbox_frozen_dropped source=%s reason=%.120s",
+                    msg.source, self._frozen_reason,
+                )
+                continue
             await self._process_one(msg)
             # Notify TUI that processing completed so the status bar
             # can clear the "⏳ processing" indicator.

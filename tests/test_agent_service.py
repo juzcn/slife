@@ -298,6 +298,37 @@ class TestAgentServiceMemory:
         mock_client.call_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_save_to_memory_fatal_error_freezes_inbox(self, sample_config):
+        """A persistent memory-save failure (plugin returns {"error": ...})
+        must NOT be silent — it sets memory-broken, freezes the inbox, and
+        fires the on_memory_broken callback (TUI red banner)."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(
+            return_value='{"error": "table diary has no column named images"}',
+        )
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.conversation
+        conv.add_user_message("hi")
+        conv.add_assistant_message("hello back")
+
+        surfaced: list[str] = []
+        service.on_memory_broken(surfaced.append)
+
+        await service.save_to_memory(
+            user_message="hi", token_count=10, conversation=conv,
+        )
+
+        assert service._memory_broken is True
+        assert "no column named images" in service._memory_error
+        assert surfaced == ["table diary has no column named images"]
+        # Inbox frozen — new turns are dropped, not run without memory.
+        assert service.inbox._frozen is True
+        assert "记忆保存失败" in service.inbox._frozen_reason
+
+    @pytest.mark.asyncio
     async def test_save_to_memory_compacts_oversized_tool_result(self, sample_config):
         """An oversized tool result is compacted to a head+tail digest in the
         DIARY copy, while the live conversation keeps the full output (the
@@ -457,7 +488,7 @@ class TestAgentServiceA2A:
         mock_a2a.is_connected = True
         calls = [0]
 
-        async def mock_call_tool(name, _args):
+        async def mock_call_tool(name, _):
             if name == "__a2a_drain_incoming":
                 calls[0] += 1
                 if calls[0] == 1:
@@ -1027,13 +1058,14 @@ class TestSwitchModel:
         from slife.tools._config_io import read_config, write_config
 
         config = _two_model_config()
-        config._path = tmp_path / "slife.json5"
-        write_config(config._path, {"models": {"providers": {}}, "active_model": "deepseek/dsf"})
+        path = tmp_path / "slife.json5"
+        config._path = path
+        write_config(path, {"models": {"providers": {}}, "active_model": "deepseek/dsf"})
         service = AgentService(config)
 
         service.switch_model("openai/gpt")
 
-        raw = read_config(config._path)
+        raw = read_config(path)
         assert raw["active_model"] == "openai/gpt"
 
     def test_switch_unknown_ref_raises(self):
@@ -1099,3 +1131,33 @@ class TestGetRecentTurns:
         assert ids == sorted(ids), "must be oldest-first for the restore"
         assert ids == [2, 3, 4, 5], "newest 4 within the budget, oldest-first"
         assert skipped == 1, "5 fetched turns, budget fits 4 → 1 dropped"
+
+    @pytest.mark.asyncio
+    async def test_broken_db_raises_memory_error(
+        self, sample_config, tmp_path, monkeypatch,
+    ):
+        """A present-but-broken memory DB raises MemoryDatabaseError —
+        restore treats it as fatal (startup abort) instead of silently
+        returning [] and starting a memory-less session."""
+        import sqlite3
+        from slife.agent.service import AgentService, MemoryDatabaseError
+
+        # Old-schema DB — missing the `images` column the store SELECTs.
+        db = tmp_path / "old.db"
+        con = sqlite3.connect(str(db))
+        con.execute(
+            "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
+            "tags TEXT, channel TEXT, created_at TEXT, "
+            "who_helped TEXT, what_model TEXT, token_count INT)"
+        )
+        con.execute(
+            "INSERT INTO diary (user_message, messages, channel, created_at, token_count) "
+            "VALUES ('hi', '[]', 'human', '2026-08-12T00:00:00+08:00', 100)"
+        )
+        con.commit()
+        con.close()
+
+        srv = AgentService(sample_config)
+        monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
+        with pytest.raises(MemoryDatabaseError):
+            await srv.get_recent_turns()

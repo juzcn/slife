@@ -12,7 +12,7 @@ from textual.widgets import Input, Static
 
 from slife.config import Config
 from slife.a2a.card import format_presence_line
-from slife.agent.service import AgentService
+from slife.agent.service import AgentService, MemoryDatabaseError
 from slife.agent.plugins import PluginStartStatus
 from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
@@ -279,6 +279,16 @@ class SlifeApp(App):
             if turns:
                 self._recovery_info = {"turns": turns, "skipped": skipped}
                 await self._restore_session()
+        except MemoryDatabaseError as e:
+            # Memory is core — a broken memory DB must not start a
+            # memory-less session.  Surface the error and abort startup.
+            logger.error("memory_restore_fatal err=%s", e)
+            chat_view = self.query_one("#chat-view", ChatView)
+            chat_view.add_system_message(
+                f"✗ 记忆库不可用: {e}\n记忆是核心功能 — 请修复数据库后重启。",
+                color="#f85149",
+            )
+            self.exit()
         except Exception as e:
             logger.debug("session_restore_skip err=%s", e)
 
@@ -300,6 +310,8 @@ class SlifeApp(App):
         # Autonomous heartbeat — surface ⚡ 自主 messages + status pulse.
         self.service.on_autonomous(self._on_autonomous_message)
         self.service.on_heartbeat(self._on_heartbeat)
+        # Fatal memory-save failure — persistent red banner (memory is core).
+        self.service.on_memory_broken(self._on_memory_broken)
 
         # A2A now starts as a plugin via the discovery loop above
         # (start_plugin_server("a2a") → start_a2a, idempotent).
@@ -445,6 +457,21 @@ class SlifeApp(App):
             return
         self._update_status()
         chat_view.add_system_message(msg, color="#3fb950")
+
+    # ── Memory health (✗ core failure) ─────────────────────────────
+
+    def _on_memory_broken(self, error: str) -> None:
+        """Persistent memory-save failure — show a persistent red banner.
+
+        Memory is core; the inbox is frozen (no new turns) until the DB is
+        fixed and the agent restarted.
+        """
+        chat_view = self.query_one("#chat-view", ChatView)
+        chat_view.add_system_message(
+            f"✗ 记忆保存失败: {error}\n"
+            f"记忆是核心功能 — 已停止处理新消息,请修复数据库后重启。",
+            color="#f85149",
+        )
 
     # ── Autonomous heartbeat (⚡ 自主) ──────────────────────────────
 
