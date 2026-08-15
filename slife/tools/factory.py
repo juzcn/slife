@@ -60,7 +60,7 @@ def create_tools_from_config(
                 continue
 
         # Note: the memfiles tools (expose_file, note_save, diary_write,
-        # file_save, url_save, file_summarize, search, read) live in the
+        # file_save, url_save, search, read) live in the
         # memfiles plugin (registered as memfiles__* proxy tools), not here —
         # so there is no tunnel-gating needed at native-tool load time.
 

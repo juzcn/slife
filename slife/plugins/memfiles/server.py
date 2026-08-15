@@ -24,7 +24,7 @@ The plugin owns everything:
     (Streamable HTTP) and ``/share/...`` (plain HTTP).
 
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
-``file_summarize``, ``search``, ``read``, ``expose_file``.
+``search``, ``read``, ``expose_file``, ``embedding_check``.
 Harness-only tools (``__`` prefix, never LLM-visible): ``__tunnel_status``,
 ``__register_file``.
 
@@ -128,8 +128,8 @@ mcp, _log_path, logger = create_plugin_server(
         "slife-memfiles — notes / diary / files cabinet + public sharing. "
         "note_save writes/updates a subject note (md in notes/, searchable); "
         "diary_write writes a day's diary (md in diary/, searchable); "
-        "file_save / url_save store one or more files; file_summarize adds an "
-        "LLM summary for semantic search. search finds them by hybrid "
+        "file_save / url_save store one or more files, with an optional LLM "
+        "summary (given at save time) for semantic search. search finds them by hybrid "
         "(keyword + semantic) search; read re-opens a saved file; expose_file "
         "publishes a local file as a public HTTPS URL."
     ),
@@ -362,6 +362,37 @@ def _saved_result(filepath: Path) -> str:
     return "\n".join(lines)
 
 
+#: Extension → category subfolder under ``{agent}.files/files/``.
+_FILE_CATEGORIES: dict[str, set[str]] = {
+    "images":     {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"},
+    "documents":  {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+                   ".txt", ".md", ".rtf", ".odt", ".ods", ".odp"},
+    "archives":   {".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bz2", ".xz"},
+    "code":       {".py", ".js", ".ts", ".java", ".go", ".rs", ".c", ".cpp", ".h",
+                   ".json", ".yaml", ".yml", ".toml", ".sh", ".sql",
+                   ".html", ".css", ".xml", ".ini", ".cfg"},
+    "audio":      {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"},
+    "video":      {".mp4", ".mov", ".avi", ".mkv", ".webm"},
+    "data":       {".csv", ".tsv", ".parquet", ".db", ".sqlite", ".jsonl", ".ndjson"},
+}
+_DEFAULT_CATEGORY = "other"
+
+
+def _detect_category(filename: str, override: str = "") -> str:
+    """Pick a ``files/<category>/`` subfolder for a saved file.
+
+    ``override`` (an explicit LLM ``category`` param) wins; otherwise the
+    extension decides.  Unknown extensions land in ``other``.
+    """
+    if override.strip():
+        return _slugify(override) or _DEFAULT_CATEGORY
+    ext = Path(filename).suffix.lower()
+    for cat, exts in _FILE_CATEGORIES.items():
+        if ext in exts:
+            return cat
+    return _DEFAULT_CATEGORY
+
+
 @mcp.tool(
     name="expose_file",
     description=(
@@ -446,18 +477,21 @@ async def diary_write(
     name="file_save",
     description=(
         "Copy one or more local files into the agent's files folder and "
-        "record them.  Optionally give a title and an LLM summary (the "
-        "summary makes the file findable by semantic search). "
+        "record them.  Auto-filed under files/<category>/ by extension "
+        "(images / documents / archives / code / audio / video / data / other); "
+        "pass category to override.  Optionally give a title and an LLM "
+        "summary (the summary makes the file findable by semantic search). "
         "Returns local paths + share URLs."
     ),
 )
 async def file_save(
     paths: list[str], title: str = "", tags: str | None = None,
-    summary: str = "",
+    summary: str = "", category: str = "",
 ) -> str:
     store = await _ensure_store()
     mem_dir = store.mem_dir
-    mem_dir.mkdir(parents=True, exist_ok=True)
+    files_dir = mem_dir / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
     results = []
     embedded = False
     for p in paths:
@@ -470,7 +504,9 @@ async def file_save(
             continue
         stem = _slugify(title) if title else src.stem
         display_title = title or src.name
-        saved = _unique_path(mem_dir, stem, src.suffix)
+        cat_dir = files_dir / _detect_category(src.name, category)
+        cat_dir.mkdir(parents=True, exist_ok=True)
+        saved = _unique_path(cat_dir, stem, src.suffix)
         shutil.copy2(src, saved)
         rel = saved.relative_to(mem_dir).as_posix()
         mime = mimetypes.guess_type(str(src))[0] or ""
@@ -491,18 +527,21 @@ async def file_save(
     name="url_save",
     description=(
         "Download a public http(s) URL into the agent's files folder and "
-        "record it.  Optionally give a title and an LLM summary (for "
-        "semantic search).  Only publicly reachable URLs are accepted."
+        "record it.  Auto-filed under files/<category>/ by extension; pass "
+        "category to override.  Optionally give a title and an LLM summary "
+        "(for semantic search).  Only publicly reachable URLs are accepted."
     ),
 )
 async def url_save(
     url: str, title: str = "", tags: str | None = None, summary: str = "",
+    category: str = "",
 ) -> str:
     import aiohttp
 
     store = await _ensure_store()
     mem_dir = store.mem_dir
-    mem_dir.mkdir(parents=True, exist_ok=True)
+    files_dir = mem_dir / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
 
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc:
@@ -536,7 +575,9 @@ async def url_save(
             ext = ""
     else:
         ext = ""
-    saved = _unique_path(mem_dir, stem, ext or "")
+    cat_dir = files_dir / _detect_category(url_name or display_title, category)
+    cat_dir.mkdir(parents=True, exist_ok=True)
+    saved = _unique_path(cat_dir, stem, ext or "")
     saved.write_bytes(raw)
     rel = saved.relative_to(mem_dir).as_posix()
     mime = mimetypes.guess_type(url_name)[0] or ""
@@ -547,29 +588,6 @@ async def url_save(
     if _manager is not None and summary:
         _manager.on_saved()
     return _saved_result(saved)
-
-
-@mcp.tool(
-    name="file_summarize",
-    description=(
-        "Write or update a saved file's LLM summary (by its relative path, "
-        "as returned by file_save / search).  The summary makes the file "
-        "findable by semantic search."
-    ),
-)
-async def file_summarize(
-    path: str, summary: str, tags: str | None = None,
-) -> str:
-    store = await _ensure_store()
-    info = await store.update_file_summary(path, summary, tags)
-    if info is None:
-        return f"Error: file not found in cabinet — {path}"
-    if _manager is not None:
-        _manager.on_saved()
-    return json.dumps(
-        {"status": "updated", "file": path, "summary": summary},
-        ensure_ascii=False, indent=2,
-    )
 
 
 @mcp.tool(

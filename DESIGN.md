@@ -214,7 +214,7 @@ Plus **plugin tools** — registered at runtime as `{server}__{tool}` proxies vi
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
 | `memdb` | `memdb__memory_list_recent`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_turn_summarize`, `memdb__memory_count`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `memfiles__note_save`, `memfiles__diary_write`, `memfiles__file_save`, `memfiles__url_save`, `memfiles__file_summarize`, `memfiles__search`, `memfiles__read`, `memfiles__embedding_check`, `memfiles__expose_file` |
+| `memfiles` | `memfiles__note_save`, `memfiles__diary_write`, `memfiles__file_save`, `memfiles__url_save`, `memfiles__search`, `memfiles__read`, `memfiles__embedding_check`, `memfiles__expose_file` |
 
 Naming rule: a plugin tool already carrying its server as a name prefix (`mcp_set`, `wechat_login`) is registered as-is (avoids the redundant `mcp__mcp_set` / `wechat__wechat_login`); otherwise the proxy adds `{server}__`. External MCP servers always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
 
@@ -313,7 +313,7 @@ Processes communicate through environment variables:
 | **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config. |
 | **slife-memdb** | Streamable HTTP | Diary database. Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
-| **slife-memfiles** | Streamable HTTP + `/share` route | Notes/diary/files cabinet + public sharing. MCP tools (`note_save`, `diary_write`, `file_save`, `url_save`, `file_summarize`, `search`, `read`, `expose_file`), harness tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel, the in-process token registry, and a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. |
+| **slife-memfiles** | Streamable HTTP + `/share` route | Notes/diary/files cabinet + public sharing. MCP tools (`note_save`, `diary_write`, `file_save`, `url_save`, `search`, `read`, `expose_file`, `embedding_check`), harness tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel, the in-process token registry, and a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. |
 | **slife-a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools; only the drain/dispatch harness tools (`__a2a_*`) stay `__`-prefixed. |
 
 ### slife-mcp — External MCP Gateway
@@ -501,7 +501,7 @@ A standard Streamable HTTP plugin (`slife/plugins/memfiles/server.py`) — self-
 Three typed knowledge stores, each **dual-written** to a human-browsable markdown file and a SQLite index (`{agent}.files/.index.db`):
 - `note_save(subject, …)` — a note keyed by **subject**, appended to `notes/<subject>.md` (each call adds a timestamped section);
 - `diary_write(date, …)` — a day's entry keyed by **date**, appended to `diary/<YYYY-MM-DD>.md`;
-- `file_save` / `url_save` — saved attachments (bytes stay on the filesystem; an optional LLM `summary` makes them semantically searchable), with `file_summarize` to write/update a summary later.
+- `file_save` / `url_save` — saved attachments under `files/<category>/` (bytes stay on the filesystem), auto-filed by extension (images / documents / archives / code / audio / video / data / other) with an optional `category` override; an LLM `summary` given at save time makes them semantically searchable (one pass — no separate summarize tool).
 
 Each kind owns its FTS5 + vec0 tables (`notes_*` / `diary_*` / `files_*`). `search(query, kind, mode)` runs hybrid (FTS5 + vec0 KNN, RRF via the shared `merge_hybrid`) or keyword search across them; `read(path)` re-opens a file with a path-traversal guard. The index mirrors memdb's design and **reuses its code**: the shared `SemanticManager` (document-source contract) drives the drainer over all three kinds, and `embedding_check` reports this index's own gate — independent from memdb's `memory_check_embedding`, because each plugin reindexes its own DB (one shared `memdb.embedding` config, independent availability).
 

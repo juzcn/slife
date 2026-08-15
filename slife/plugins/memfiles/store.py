@@ -368,31 +368,6 @@ class MemfilesStore:
         return {"kind": "file", "doc_id": cursor.lastrowid,
                 "key": saved_path, "file_path": saved_path}
 
-    async def update_file_summary(
-        self, saved_path: str, summary: str, tags: str | None = None,
-    ) -> dict | None:
-        """Update a saved file's LLM summary (clears stale vectors → re-embed)."""
-        cursor = await self._c.execute(
-            "SELECT id FROM files WHERE saved_path = ?", (saved_path,),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        if tags is not None:
-            await self._c.execute(
-                "UPDATE files SET summary=?, tags=? WHERE saved_path=?",
-                (summary, tags, saved_path),
-            )
-        else:
-            await self._c.execute(
-                "UPDATE files SET summary=? WHERE saved_path=?",
-                (summary, saved_path),
-            )
-        await self._clear_kind_chunks("file", row["id"])
-        await self._c.commit()
-        return {"kind": "file", "doc_id": row["id"],
-                "key": saved_path, "file_path": saved_path}
-
     async def _clear_kind_chunks(self, kind: str, doc_id: int) -> None:
         """Delete a document's vector chunks (marks it for re-embedding).
 

@@ -76,8 +76,6 @@ def _fake_store(mem_dir: Path) -> MagicMock:
         "file_path": "diary/2026-08-15.md", "content": "# 2026-08-15\n\nbody"})
     store.add_file = AsyncMock(return_value={
         "kind": "file", "doc_id": 3, "key": "a.txt", "file_path": "a.txt"})
-    store.update_file_summary = AsyncMock(return_value={
-        "kind": "file", "doc_id": 3, "key": "a.txt", "file_path": "a.txt"})
     store.search = AsyncMock(return_value=[
         {"id": "note:1", "file_path": "notes/subj.md",
          "snippet": "…", "rrf_score": 0.01}])
@@ -185,7 +183,7 @@ class TestExposeFile:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# note_save / diary_write / file_save / url_save / file_summarize
+# note_save / diary_write / file_save / url_save
 # ═══════════════════════════════════════════════════════════════════════
 
 
@@ -246,8 +244,37 @@ class TestFileSave:
             result = await plugin.file_save(paths=[str(a), str(b)])
         assert "Saved:" in result
         assert store.add_file.await_count == 2
-        assert (mem_dir / "a.txt").read_text() == "aaa"
-        assert (mem_dir / "b.txt").read_text() == "bbb"
+        # .txt → documents category
+        assert (mem_dir / "files" / "documents" / "a.txt").read_text() == "aaa"
+        assert (mem_dir / "files" / "documents" / "b.txt").read_text() == "bbb"
+
+    @pytest.mark.asyncio
+    async def test_auto_categories_by_extension(self, tmp_path):
+        png = tmp_path / "shot.png"
+        png.write_bytes(b"png")
+        pdf = tmp_path / "report.pdf"
+        pdf.write_bytes(b"pdf")
+        unknown = tmp_path / "archive.xyz"
+        unknown.write_bytes(b"xyz")
+        mem_dir = tmp_path / "files"
+        mem_dir.mkdir()
+        store = _fake_store(mem_dir)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            await plugin.file_save(paths=[str(png), str(pdf), str(unknown)])
+        assert (mem_dir / "files" / "images" / "shot.png").is_file()
+        assert (mem_dir / "files" / "documents" / "report.pdf").is_file()
+        assert (mem_dir / "files" / "other" / "archive.xyz").is_file()
+
+    @pytest.mark.asyncio
+    async def test_category_override(self, tmp_path):
+        f = tmp_path / "report.pdf"
+        f.write_bytes(b"pdf")
+        mem_dir = tmp_path / "files"
+        mem_dir.mkdir()
+        store = _fake_store(mem_dir)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            await plugin.file_save(paths=[str(f)], category="books")
+        assert (mem_dir / "files" / "books" / "report.pdf").is_file()
 
     @pytest.mark.asyncio
     async def test_missing_file_reports_error(self, tmp_path):
@@ -305,27 +332,6 @@ class TestUrlSave:
             result = await plugin.url_save(url="http://169.254.169.254/latest/meta-data/")
         assert result.startswith("Error: refusing URL")
         store.add_file.assert_not_awaited()
-
-
-class TestFileSummarize:
-    @pytest.mark.asyncio
-    async def test_updates_summary(self, tmp_path):
-        store = _fake_store(tmp_path / "files")
-        manager = MagicMock()
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_manager", manager):
-            out = await plugin.file_summarize("report.pdf", "financial summary")
-        assert json.loads(out)["status"] == "updated"
-        store.update_file_summary.assert_awaited_once_with("report.pdf", "financial summary", None)
-        manager.on_saved.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_unknown_file(self, tmp_path):
-        store = _fake_store(tmp_path / "files")
-        store.update_file_summary = AsyncMock(return_value=None)
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.file_summarize("missing.pdf", "s")
-        assert out.startswith("Error: file not found")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -700,7 +706,6 @@ class TestMemfilesStore:
             await store.upsert_diary("2026-08-15", "refactor day", "")
             await store.add_file(title="f", original_path="/x/f", saved_path="f.txt",
                                  mime="text", size=1, tags="", summary="")
-            await store.update_file_summary("f.txt", "a note about files", "doc")
             hits = await store.search("asyncio", kind="note", mode="fts5")
             assert [h["id"] for h in hits] == ["note:1"]
         finally:
