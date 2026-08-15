@@ -350,7 +350,35 @@ class TestSubagentSendTaskAsyncTool:
             result = await tool.execute(subagent_name="sub-1", task="do X")
         assert "rpc-1" in result
         assert "delivered automatically" in result
-        mock_mgr.send_task_async.assert_awaited_once_with("sub-1", "do X")
+        # mode defaults to "auto" (push).
+        mock_mgr.send_task_async.assert_awaited_once_with("sub-1", "do X", mode="auto")
+
+    @pytest.mark.asyncio
+    async def test_send_async_poll_mode_disables_push(self):
+        mock_mgr = MagicMock()
+        mock_mgr.send_task_async = AsyncMock(return_value="rpc-2")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = SubagentSendTaskAsyncTool()
+            result = await tool.execute(
+                subagent_name="sub-1", task="do X", mode="poll",
+            )
+        assert "rpc-2" in result
+        assert "Auto-push disabled" in result
+        assert "subagent_get_task_result" in result
+        mock_mgr.send_task_async.assert_awaited_once_with("sub-1", "do X", mode="poll")
+
+    @pytest.mark.asyncio
+    async def test_send_async_rejects_invalid_mode(self):
+        mock_mgr = MagicMock()
+        mock_mgr.send_task_async = AsyncMock()
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = SubagentSendTaskAsyncTool()
+            result = await tool.execute(
+                subagent_name="sub-1", task="do X", mode="push-forever",
+            )
+        assert result.startswith("Error")
+        mock_mgr.send_task_async.assert_not_awaited()
 
 
 class TestSubagentGetTaskResultTool:

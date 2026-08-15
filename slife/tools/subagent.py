@@ -283,31 +283,49 @@ class SubagentSendTaskTool(Tool):
 class SubagentSendTaskAsyncTool(Tool):
     """Send a task to a local subagent worker without waiting.
 
-    Returns a task_id.  The result is auto-subscribed: when the worker
-    finishes it is pushed to this agent's conversation automatically; it
-    can also be polled with ``subagent_get_task_result``.
+    Returns a task_id.  Delivery of the result is chosen at send time:
+    ``mode="auto"`` (default) pushes the result to this agent's
+    conversation when the worker finishes; ``mode="poll"`` suppresses the
+    push — the caller retrieves it with ``subagent_get_task_result``.
     """
 
     name = "subagent_send_task_async"
     category = "Subagent"
     description = (
         "Delegate a task to a local subagent worker without waiting — returns "
-        "a task_id. The result is delivered automatically when complete; poll "
-        "with subagent_get_task_result. subagent_name from spawn_subagent / list_subagents."
+        "a task_id. mode='auto' (default) auto-pushes the result when complete; "
+        "mode='poll' suppresses the push — retrieve with subagent_get_task_result. "
+        "subagent_name from spawn_subagent / list_subagents."
     )
     parameters: ClassVar[dict] = make_params(
         subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
         task={"type": "string", "description": "Self-contained task for the worker."},
+        mode={
+            "type": "string",
+            "enum": ["auto", "poll"],
+            "default": "auto",
+            "description": "Result delivery. 'auto' (default) auto-pushes the result when the worker completes; 'poll' suppresses the push — you must retrieve the result with subagent_get_task_result.",
+        },
     )
 
-    async def execute(self, subagent_name: str = "", task: str = "", **kwargs) -> str:
+    async def execute(
+        self, subagent_name: str = "", task: str = "", mode: str = "auto", **kwargs,
+    ) -> str:
         if err := require_params(subagent_name=subagent_name, task=task):
             return err
+        if mode not in ("auto", "poll"):
+            return f"Error: mode must be 'auto' or 'poll', got {mode!r}."
         manager, hint = _manager_or_hint()
         if manager is None:
             return hint
         try:
-            rpc_id = await manager.send_task_async(subagent_name, task)
+            rpc_id = await manager.send_task_async(subagent_name, task, mode=mode)
+            if mode == "poll":
+                return (
+                    f"Task sent to subagent '{subagent_name}' (task_id: {rpc_id}). "
+                    "Auto-push disabled (mode=poll) — retrieve the result with "
+                    "subagent_get_task_result."
+                )
             return (
                 f"Task sent to subagent '{subagent_name}' (task_id: {rpc_id}). "
                 "The result will be delivered automatically when complete."
@@ -323,7 +341,9 @@ class SubagentGetTaskResultTool(Tool):
     category = "Subagent"
     description = (
         "Return an async subagent task's result, or 'pending' if not ready. "
-        "task_id comes from subagent_send_task_async."
+        "Used to retrieve tasks sent with mode='poll' (auto-push disabled); "
+        "auto-mode tasks are delivered automatically. task_id comes from "
+        "subagent_send_task_async."
     )
     parameters: ClassVar[dict] = make_params(
         subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},

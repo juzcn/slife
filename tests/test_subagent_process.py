@@ -218,6 +218,39 @@ class TestSubagentProcessReadStdout:
         assert proc._inflight == 0
 
     @pytest.mark.asyncio
+    async def test_dispatch_auto_mode_notifies_manager(self):
+        """mode='async' (auto-push) tasks notify the manager on completion."""
+        proc = self._proc()
+        manager = Mock(spec=SubagentManager)
+        manager.on_task_complete = AsyncMock()
+        set_manager(manager)
+        try:
+            proc._record_send("rpc-1", "do X", mode="async")
+            proc._dispatch_message({"id": "rpc-1", "result": "done"})
+            await asyncio.sleep(0)  # let the scheduled task run
+            manager.on_task_complete.assert_awaited_once_with("test", "rpc-1", "done")
+        finally:
+            clear_manager()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_poll_mode_skips_manager_notify(self):
+        """mode='poll' tasks don't auto-push — the result stays retrievable
+        via get_task_result instead."""
+        proc = self._proc()
+        manager = Mock(spec=SubagentManager)
+        manager.on_task_complete = AsyncMock()
+        set_manager(manager)
+        try:
+            proc._record_send("rpc-1", "do X", mode="async-poll")
+            proc._dispatch_message({"id": "rpc-1", "result": "done"})
+            await asyncio.sleep(0)
+            manager.on_task_complete.assert_not_awaited()
+            assert proc._async_results["rpc-1"] == "done"
+            assert proc.get_task_result("rpc-1") == "done"
+        finally:
+            clear_manager()
+
+    @pytest.mark.asyncio
     async def test_dispatch_ignores_late_result_for_cancelled_task(self):
         proc = self._proc()
         proc._record_send("rpc-1", "do X", mode="async")

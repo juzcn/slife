@@ -236,10 +236,12 @@ class SubagentProcess:
                 self._inflight -= 1
             raise
 
-    async def send_task_async(self, task: str) -> str:
+    async def send_task_async(self, task: str, mode: str = "auto") -> str:
         """Send a task without waiting for the result — returns *rpc_id*.
 
-        The result can be retrieved later via :meth:`get_task_result`.
+        *mode* ``"auto"`` (default) auto-pushes the result to the parent
+        when the worker completes; ``"poll"`` suppresses the push — the
+        caller retrieves the result via :meth:`get_task_result`.
         """
         if not self.is_running or not self._process or not self._process.stdin:
             raise RuntimeError(f"Subagent '{self._name}' not running")
@@ -247,7 +249,9 @@ class SubagentProcess:
             raise RuntimeError(f"Subagent '{self._name}' not ready")
         rpc_id = uuid.uuid4().hex[:12]
 
-        self._record_send(rpc_id, task, mode="async")
+        self._record_send(
+            rpc_id, task, mode="async-poll" if mode == "poll" else "async",
+        )
         self._inflight += 1
         req = json.dumps(
             {"jsonrpc": "2.0", "method": "worker/send",
@@ -419,8 +423,11 @@ class SubagentProcess:
                 result_text = str(msg.get("result", ""))
                 self._async_results[rpc_id] = result_text
                 self._record_update(rpc_id, "completed", result_text)
-            # Notify the manager so it can auto-push the result to the user.
-            self._notify_manager_task_done(rpc_id)
+            # Notify the manager so it can auto-push the result to the user,
+            # unless the task was sent in "poll" mode — the caller retrieves
+            # it via get_task_result instead (no redundant push).
+            if self._task_records.get(rpc_id, {}).get("mode") != "async-poll":
+                self._notify_manager_task_done(rpc_id)
         elif rpc_id is None:
             # JSON-RPC notification or ready signal (no id)
             if isinstance(msg.get("result"), dict) and msg["result"].get("ready"):
@@ -508,11 +515,17 @@ class SubagentManager:
             raise ValueError(f"Subagent '{agent_name}' not found")
         return await proc.send_task(task, timeout or self._timeout)
 
-    async def send_task_async(self, agent_name: str, task: str) -> str:
-        """Send a task without waiting — returns *rpc_id* immediately."""
+    async def send_task_async(
+        self, agent_name: str, task: str, mode: str = "auto",
+    ) -> str:
+        """Send a task without waiting — returns *rpc_id* immediately.
+
+        *mode* ``"auto"`` (default) auto-pushes the result when complete;
+        ``"poll"`` suppresses the push (retrieve via get_task_result).
+        """
         if (proc := self._subagents.get(agent_name)) is None:
             raise ValueError(f"Subagent '{agent_name}' not found")
-        return await proc.send_task_async(task)
+        return await proc.send_task_async(task, mode=mode)
 
     def get_task_result(self, agent_name: str, rpc_id: str) -> str | None:
         """Return the result of an async task, or ``None`` if not yet ready."""
