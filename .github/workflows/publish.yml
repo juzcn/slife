@@ -43,7 +43,11 @@ jobs:
           python-version: '3.13'
 
       - name: Install build tools
-        run: pip install build "twine<6"
+        # twine unpinned (7.x): twine<6 breaks trusted publishing — it falls
+        # back to "Enter your API token" (no OIDC in the retry step) and its
+        # pkginfo caps Metadata-Version at 2.3, so uploads fail. 7.x handles
+        # both.
+        run: pip install build twine
 
       - name: Build slife
         run: python -m build

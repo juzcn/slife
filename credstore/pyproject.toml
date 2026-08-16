@@ -1,6 +1,6 @@
 [project]
 name = "credstore"
-version = "0.9.3"
+version = "0.9.4"
 description = "Cross-platform credential storage — OS keyring with AES-encrypted file backup"
 readme = "README.md"
 license = { text = "MIT" }
