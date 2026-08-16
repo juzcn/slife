@@ -124,6 +124,7 @@ def _make_http_mock(*responses: dict | Exception):
     mock_http = MagicMock()
     mock_http.__aenter__ = AsyncMock(return_value=mock_http)
     mock_http.__aexit__ = AsyncMock(return_value=None)
+    mock_http.aclose = AsyncMock()
 
     call_count = 0
     responses_list = list(responses)
@@ -143,6 +144,37 @@ def _make_http_mock(*responses: dict | Exception):
 
     mock_http.post = _post
     return mock_http
+
+
+def _closed_aware_client(*responses: dict | Exception):
+    """A mock httpx.AsyncClient whose post() raises RuntimeError once closed.
+
+    Mirrors real httpx: a client used inside ``async with`` is closed when the
+    block exits, and posting to a closed client raises ``RuntimeError`` — which
+    is NOT an ``httpx.HTTPError``, so poll loops cannot swallow it.
+    """
+    client = MagicMock()
+    client._closed = False
+    client.served = 0
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(side_effect=lambda *a: client.__setattr__("_closed", True))
+    client.aclose = AsyncMock()
+    responses_list = list(responses)
+
+    async def _post(url, **kwargs):
+        if client._closed:
+            raise RuntimeError("Cannot send a request, as the client has been closed.")
+        client.served += 1
+        item = responses_list[client.served - 1]
+        if isinstance(item, Exception):
+            raise item
+        resp = MagicMock()
+        resp.json.return_value = item
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    client.post = _post
+    return client
 
 
 class TestDeviceCodeFlow:
@@ -172,6 +204,43 @@ class TestDeviceCodeFlow:
 
         assert result.access_token == "gh_token_abc"
         assert result.refresh_token == "gh_refresh_xyz"
+        mock_store.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_poll_runs_on_fresh_client_after_device_post(self):
+        """Regression: polling a closed httpx client raised RuntimeError and
+        wedged connect() at CONNECTING — the device-code POST client is closed
+        before polling starts, so the poll must run on a fresh client."""
+        device_data = {
+            "device_code": "dc_123",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://example.com/device",
+            "expires_in": 300,
+            "interval": 1,
+        }
+        token_data = {
+            "access_token": "gh_token_abc",
+            "refresh_token": "gh_refresh_xyz",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        }
+        device_client = _closed_aware_client(device_data)
+        poll_client = _closed_aware_client(token_data)
+
+        with patch(
+            "slife.mcp.oauth.httpx.AsyncClient",
+            side_effect=[device_client, poll_client],
+        ), \
+            patch("slife.mcp.oauth._store_tokens") as mock_store, \
+            patch("slife.mcp.oauth.asyncio.sleep", AsyncMock()):
+            result = await run_device_code_flow(AUTH, "test-server")
+
+        assert result.access_token == "gh_token_abc"
+        # The device client was closed after its POST and must not serve the
+        # poll (real httpx raises RuntimeError there); the poll ran on the
+        # fresh client instead.
+        assert device_client.served == 1
+        assert poll_client.served >= 1
         mock_store.assert_called_once()
 
     def test_emit_user_message_uses_stderr_with_marker(self, capsys):

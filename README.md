@@ -268,8 +268,6 @@ Dev mode auto-detects (via `pyproject.toml` in CWD): data files stay in the proj
 
 See **[DESIGN.md](DESIGN.md)** — philosophy, agent loop, tool system, plugin contract, MCP gateway, memory database, A2A mesh, credential security model, and full project structure.
 
-Known issues and improvement proposals from the latest code review: **[REVIEW.md](REVIEW.md)**.
-
 ## License
 
 MIT

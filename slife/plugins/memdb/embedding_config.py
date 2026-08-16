@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 
 from slife.paths import get_config_path
-from slife.tools._config_io import read_config, write_config
+from slife.tools._config_io import ConfigParseError, read_config, write_config
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +18,18 @@ _CONFIG_PATH = get_config_path()
 
 
 def _read_raw() -> dict:
-    """Read the full slife.json5 dict, returning {} on failure."""
-    return read_config(_CONFIG_PATH)
+    """Read the full slife.json5 dict, returning {} on failure.
+
+    This is a read-only helper for the embedding section; an unparseable
+    config must not crash the caller, it just means "no usable section".
+    (Mutating paths deliberately do *not* swallow the error — see
+    :func:`slife.tools._config_io.read_config`.)
+    """
+    try:
+        return read_config(_CONFIG_PATH)
+    except ConfigParseError:
+        logger.error("embedding_config_unparseable path=%s", _CONFIG_PATH)
+        return {}
 
 
 def _write_raw(raw: dict) -> None:

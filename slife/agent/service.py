@@ -25,7 +25,7 @@ from pathlib import Path
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
-from slife.agent.conversation import Conversation
+from slife.agent.conversation import Conversation, IMAGE_NOTE_PREFIX
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
 from slife.agent.inbox import Inbox, ConversationStore
 from slife.agent.plugins import PluginLifecycle, PluginStartStatus
@@ -1442,8 +1442,14 @@ class AgentService:
                 turn_messages = all_messages[i + 1:]
                 break
             if isinstance(content, list):
+                # Exclude the "[System note: … image could not be read …]"
+                # part that add_user_message appends for dropped attachments —
+                # it is not the user's text, and including it breaks the match
+                # so the whole turn silently fails to persist.
                 text = "".join(
-                    p.get("text", "") for p in content if p.get("type") == "text"
+                    p.get("text", "") for p in content
+                    if p.get("type") == "text"
+                    and not p.get("text", "").startswith(IMAGE_NOTE_PREFIX)
                 )
                 if text == target:
                     turn_messages = all_messages[i + 1:]
@@ -1870,9 +1876,15 @@ class AgentService:
                     )
 
                 for pev in data.get("presence", []):
+                    # The presence card comes off the wire from any peer —
+                    # guard the shape so a malformed entry can't crash the
+                    # drain loop (which would freeze all A2A processing).
+                    card_data = pev.get("card") if isinstance(pev, dict) else None
+                    if not isinstance(card_data, dict):
+                        continue
                     card = AgentCard(
-                        agent_name=AgentName(pev.get("card", {}).get("agent_name", "?")),
-                        status=pev.get("card", {}).get("status", "idle"),
+                        agent_name=AgentName(card_data.get("agent_name", "?")),
+                        status=card_data.get("status", "idle"),
                     )
                     text = format_presence_line(card, pev.get("event", ""))
                     if text is not None:

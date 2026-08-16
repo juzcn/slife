@@ -283,6 +283,33 @@ class TestAgentServiceMemory:
         assert args["messages"]  # not an empty turn
 
     @pytest.mark.asyncio
+    async def test_save_to_memory_with_dropped_image_still_saves(self, sample_config):
+        """Regression: a user message whose image attachment failed to read gets
+        a '[System note: … could not be read …]' text part appended — the turn
+        used to be silently dropped because the stored text no longer matched
+        the input."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(return_value="{}")
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.conversation
+        conv.add_user_message(
+            "describe this", images=["definitely_missing_file.png"],
+        )
+        conv.add_assistant_message("it is missing")
+
+        await service.save_to_memory(
+            user_message="describe this", conversation=conv,
+        )
+
+        mock_client.call_tool.assert_awaited_once()
+        tool_name, args = mock_client.call_tool.await_args.args
+        assert tool_name == "__memory_save_turn"
+        assert args["messages"]  # not an empty turn — the turn must persist
+
+    @pytest.mark.asyncio
     async def test_save_to_memory_skips_when_user_message_absent(self, sample_config):
         """When the user message is no longer in the conversation (rolled back
         on a content-policy error), nothing is saved — no empty diary row."""

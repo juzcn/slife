@@ -154,8 +154,13 @@ class A2AClient:
             async with asyncio.timeout(1.5):
                 async for msg in self._adapter.messages("Slife/+/presence"):
                     try:
-                        card = json.loads(msg.payload)
-                        if card.get("agent_name") == self._agent_name:
+                        data = json.loads(msg.payload)
+                        # A non-object payload (list/str/number) has no
+                        # agent_name — ignore it rather than crash connect().
+                        if (
+                            isinstance(data, dict)
+                            and data.get("agent_name") == self._agent_name
+                        ):
                             raise DuplicateAgentError(
                                 f"Agent '{self._agent_name}' is already running "
                                 f"on the MQTT mesh.\n"
@@ -487,32 +492,53 @@ class A2AClient:
             # malformed/offline payloads that fail to identify a peer.  Without
             # this, a peer that vanishes silently (lost offline message) is
             # never marked offline, because prune only ran on the peer path.
-            await self._prune_stale_peers(timeout)
+            try:
+                await self._prune_stale_peers(timeout)
+            except Exception:
+                logger.exception("a2a_watchdog_prune_error")
 
-            card = AgentCard.from_dict(data)
-            peer_id = card.agent_name
-            if not peer_id or peer_id == self._agent_name:
+            # A malformed-but-valid-JSON presence (a list, a string, or an
+            # object with a non-string agent_name) must not kill the whole
+            # watchdog — skip it and keep processing other peers.
+            if not isinstance(data, dict):
+                logger.warning(
+                    "a2a_presence_malformed type=%s", type(data).__name__,
+                )
                 continue
 
-            status = card.status
+            try:
+                card = AgentCard.from_dict(data)
+                peer_id = card.agent_name
+                # agent_name comes off the wire unvalidated; a non-string
+                # (e.g. a dict) would raise TypeError on the peer-table ops.
+                if not isinstance(peer_id, str) or not peer_id:
+                    continue
+                if peer_id == self._agent_name:
+                    continue
 
-            was_known = peer_id in self._peers
+                status = card.status
 
-            if status == "offline":
-                if was_known:
-                    old_card, _ = self._peers.pop(peer_id)
-                    logger.info("a2a_agent_offline id=%s", peer_id)
-                    await self._notify_agent_change(old_card, "offline")
-                continue
+                was_known = peer_id in self._peers
 
-            # Online / heartbeat
-            self._peers[peer_id] = (card, _time.monotonic())
+                if status == "offline":
+                    if was_known:
+                        old_card, _ = self._peers.pop(peer_id)
+                        logger.info("a2a_agent_offline id=%s", peer_id)
+                        await self._notify_agent_change(old_card, "offline")
+                    continue
 
-            if not was_known:
-                logger.info("a2a_agent_online id=%s", peer_id)
-                await self._notify_agent_change(card, "online")
-            else:
-                await self._notify_agent_change(card, "status_change")
+                # Online / heartbeat
+                self._peers[peer_id] = (card, _time.monotonic())
+
+                if not was_known:
+                    logger.info("a2a_agent_online id=%s", peer_id)
+                    await self._notify_agent_change(card, "online")
+                else:
+                    await self._notify_agent_change(card, "status_change")
+            except Exception:
+                # Never let one peer's presence message kill the watchdog that
+                # tracks every peer.
+                logger.exception("a2a_watchdog_message_error")
 
     async def _prune_stale_peers(self, timeout: float) -> None:
         """Remove peers we haven't heard from within *timeout* seconds."""

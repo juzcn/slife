@@ -10,9 +10,26 @@ payload mirrors the canonical shape.  There is no separate display name —
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from slife.a2a.identity import AgentName
+
+# Control characters a remote peer could use to break out of a single display
+# line in the system-prompt footer, TUI, or logs (newlines, tabs, ESC, …).
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _safe_name(value: object, limit: int = 128) -> str:
+    """Display-safe form of a remote, untrusted peer value.
+
+    Presence fields (``agent_name``, ``status``) come from the MQTT wire with
+    no validation.  Strip control characters — which would otherwise let a
+    peer inject instructions into the per-turn context footer — and cap the
+    length so a name cannot bloat the context.
+    """
+    s = _CONTROL_RE.sub(" ", str(value))
+    return " ".join(s.split())[:limit]
 
 
 @dataclass
@@ -83,10 +100,12 @@ def format_presence_line(card: "AgentCard", event: str) -> str | None:
     Used by both the TUI (:mod:`slife.ui.app`) and the per-turn context
     footer (:mod:`slife.agent.system_prompt`) so the two never drift.
     """
+    name = _safe_name(card.agent_name)
+    status = _safe_name(card.status)
     if event == "online":
-        return f"⚡ {card.agent_name} online [{card.status}]"
+        return f"⚡ {name} online [{status}]"
     if event == "offline":
-        return f"✗ {card.agent_name} offline"
+        return f"✗ {name} offline"
     if event == "timeout":
-        return f"⏱ {card.agent_name} timed out"
+        return f"⏱ {name} timed out"
     return None

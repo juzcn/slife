@@ -15,6 +15,7 @@ from slife.tools._config_io import (
     write_config,
     format_source_info,
     _ConfigPathMixin,
+    ConfigParseError,
 )
 
 
@@ -92,20 +93,39 @@ class TestReadConfig:
         result = read_config(path)
         assert result == {}
 
-    def test_parse_error_returns_empty(self, tmp_path):
+    def test_parse_error_raises(self, tmp_path):
+        """A parse error must raise — a mutating caller that went on to write
+        would wipe the whole config as an empty dict."""
         path = tmp_path / "broken.json5"
         path.write_text("{invalid json5!!!", encoding="utf-8")
-        result = read_config(path)
-        assert result == {}
+        with pytest.raises(ConfigParseError):
+            read_config(path)
 
-    def test_os_error_returns_empty(self, tmp_path):
-        """OSError (e.g. permission denied) returns empty dict."""
+    def test_os_error_raises(self, tmp_path):
+        """An OSError (e.g. permission denied) must raise — same wipe hazard."""
         path = tmp_path / "unreadable.json5"
         path.write_text('{"key": "value"}', encoding="utf-8")
-        # Simulate an OSError by making the file unreadable via mock
         with patch("pathlib.Path.read_text", side_effect=OSError("Permission denied")):
-            result = read_config(path)
-        assert result == {}
+            with pytest.raises(ConfigParseError):
+                read_config(path)
+
+    @pytest.mark.asyncio
+    async def test_mutating_tool_does_not_wipe_broken_config(self, tmp_path):
+        """Regression: a broken slife.json5 + a mutating tool used to rewrite
+        the whole file as {} (config_env_set reported [OK] while destroying
+        every provider/model).  The write must be aborted instead."""
+        from slife.tools.config import ConfigEnvSetTool
+
+        path = tmp_path / "slife.json5"
+        original = '{"providers": {"deepseek": {"base_url": "x"}}'  # unclosed brace
+        path.write_text(original, encoding="utf-8")
+
+        tool = ConfigEnvSetTool(config_path=path)
+        with pytest.raises(ConfigParseError):
+            await tool.execute(key="FOO", value="bar")
+
+        # The file must be untouched — not rewritten as an empty dict.
+        assert path.read_text(encoding="utf-8") == original
 
 
 # ── format_source_info ──────────────────────────────────────────────────────

@@ -332,3 +332,46 @@ class TestPresenceWatchdog:
                 await task
             except asyncio.CancelledError:
                 pass
+
+    @pytest.mark.asyncio
+    async def test_watchdog_survives_malformed_presence(self):
+        """A malformed-but-valid-JSON presence (a list, or a dict agent_name)
+        used to raise AttributeError/TypeError and kill the watchdog that
+        tracks every peer — it must be skipped instead."""
+        client = self._client()
+
+        class _MalformedAdapter:
+            def __init__(self):
+                self.is_connected = True
+
+            def messages(self, topic_filter):
+                async def gen():
+                    # Valid JSON, wrong shape — used to crash the loop body.
+                    yield TransportMessage(
+                        topic="Slife/evil/presence", payload="[1, 2, 3]",
+                    )
+                    yield TransportMessage(
+                        topic="Slife/evil/presence",
+                        payload=json.dumps(
+                            {"agent_name": {"a": 1}, "status": "online"},
+                        ),
+                    )
+                    await asyncio.Event().wait()
+
+                return gen()
+
+        client._adapter = _MalformedAdapter()
+
+        task = asyncio.create_task(client._peer_watchdog_loop())
+        try:
+            for _ in range(100):
+                if task.done():
+                    break
+                await asyncio.sleep(0.02)
+            assert not task.done(), "watchdog died on malformed presence"
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass

@@ -260,6 +260,33 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
 
     deadline = _time.monotonic() + min(expires_in, _POLL_TIMEOUT)
 
+    # The device-code POST above used its own short-lived client (now closed).
+    # Polling must run on a fresh client owned by this function — reusing the
+    # closed one raises RuntimeError on the first poll and wedges connect().
+    http = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+    try:
+        return await _poll_token(
+            http, server_name, token_url, poll_body, deadline, poll_interval,
+        )
+    finally:
+        await http.aclose()
+
+
+async def _poll_token(
+    http: httpx.AsyncClient,
+    server_name: str,
+    token_url: str,
+    poll_body: dict,
+    deadline: float,
+    poll_interval: float,
+) -> OAuthTokens:
+    """Poll the token endpoint until authorized or *deadline* passes.
+
+    The caller owns and closes *http*; this function only sends requests.
+    Returns the :class:`OAuthTokens` on success, raises ``RuntimeError`` on
+    a terminal error or timeout, and keeps polling on ``authorization_pending``
+    / ``slow_down`` / unknown transient errors.
+    """
     while _time.monotonic() < deadline:
         await asyncio.sleep(poll_interval)
 

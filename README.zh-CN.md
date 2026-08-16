@@ -264,8 +264,6 @@ uv run pytest --cov --cov-report=term-missing
 
 详见 **[DESIGN.md](DESIGN.md)** — 设计哲学、Agent Loop、工具系统、插件契约、MCP 网关、记忆数据库、A2A 网格、凭证安全模型和完整项目结构。
 
-最近一次代码审查发现的已知问题与改进建议：**[REVIEW.md](REVIEW.md)**。
-
 ## 许可证
 
 MIT

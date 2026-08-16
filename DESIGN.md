@@ -250,7 +250,7 @@ Approval is **model-driven** (pure model judgment). The loop injects an `_approv
 
 There is no hardcoded `requires_approval` flag on any tool or MCP server — the model decides per-call whether to ask the user. Headless (subagent) contexts have no handler and auto-approve.
 
-The inline prompt declares its own `y → approve` / `n`/`escape → deny` bindings at `priority=True`; the App's `escape → cancel` is deliberately *not* priority so Textual's priority pass (which resolves the App before the focused widget) cannot steal Esc — Esc on an approval always denies (REVIEW C7).
+The inline prompt declares its own `y → approve` / `n`/`escape → deny` bindings at `priority=True`; the App's `escape → cancel` is deliberately *not* priority so Textual's priority pass (which resolves the App before the focused widget) cannot steal Esc — Esc on an approval always denies.
 
 ### Model Switching
 
@@ -337,7 +337,7 @@ Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` 
 | **http (SSE)** | GET with `Accept: text/event-stream`, POST to message endpoint | Remote SSE endpoints (tried first for URLs) |
 | **http (streamable)** | POST JSON-RPC + `mcp-session-id` header; single-JSON **or SSE-streamed** responses | Remote Streamable HTTP endpoints (fallback) |
 
-For `url`-configured servers the gateway probes with `GET + Accept: text/event-stream`: a `text/event-stream` reply switches to **SSE** mode (the `endpoint` event yields the POST message URL); otherwise the same client falls through to **Streamable HTTP**. A Streamable response may be a single JSON body or an SSE stream — both are parsed (the first matching JSON-RPC message; later events are server-initiated notifications and are dropped). (REVIEW C9.)
+For `url`-configured servers the gateway probes with `GET + Accept: text/event-stream`: a `text/event-stream` reply switches to **SSE** mode (the `endpoint` event yields the POST message URL); otherwise the same client falls through to **Streamable HTTP**. A Streamable response may be a single JSON body or an SSE stream — both are parsed (the first matching JSON-RPC message; later events are server-initiated notifications and are dropped).
 
 Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`). Live status is reported by `check_mcp` via the harness `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is a harness tool — LLM-invisible, invoked only by the `server__tool` proxies.
 
@@ -399,7 +399,7 @@ Three indexes: FTS5 (BM25 keyword), sqlite-vec `vec0` (cosine KNN), B-tree on `c
 
 Hybrid mode uses Reciprocal Rank Fusion (RRF, k=60). Without an embedding backend, hybrid degrades to FTS5-only gracefully.
 
-Search hardening (REVIEW M5–M7): `search_grep` escapes `%`/`_` with `ESCAPE '\'`; `memory_count` honors `since`/`until` in fts5 mode; LLM-facing search clamps `limit` to `[1, 200]`; the index drainer counts only stored embeddings so it gives up on a persistently failing embedder instead of spinning. Semantic search is gated on index completeness (`SemanticManager.semantic_ready`) — hybrid degrades to FTS5 while any turn lacks an embedding. `memory_search` is a pure read of the gate (no reindex side effect); the drainer converges the index on its own and the gate re-opens when `count_unembedded() == 0`. Known remainder: the `memory_count` grep branch still emits `LIKE ?` without the `ESCAPE` clause (see REVIEW.md).
+Search hardening: `search_grep` escapes `%`/`_` with `ESCAPE '\'`; `memory_count` honors `since`/`until` in fts5 mode; LLM-facing search clamps `limit` to `[1, 200]`; the index drainer counts only stored embeddings so it gives up on a persistently failing embedder instead of spinning. Semantic search is gated on index completeness (`SemanticManager.semantic_ready`) — hybrid degrades to FTS5 while any turn lacks an embedding. `memory_search` is a pure read of the gate (no reindex side effect); the drainer converges the index on its own and the gate re-opens when `count_unembedded() == 0`. Known remainder: the `memory_count` grep branch still emits `LIKE ?` without the `ESCAPE` clause.
 
 ### Embedding
 
@@ -451,7 +451,7 @@ The A2A protocol (JSON-RPC operations `SendMessage` / `GetTask` / `CancelTask` /
 |---------|---------|--------|
 | **MQTT** | `slife.plugins.a2a` (paho-mqtt MQTTv5 → asyncio.Queue, LWT) | Fully implemented |
 
-Only MQTT is implemented.  A `transport` other than `"mqtt"` in the `a2a` config section disables A2A with a warning at config load instead of crashing startup (REVIEW C1).
+Only MQTT is implemented.  A `transport` other than `"mqtt"` in the `a2a` config section disables A2A with a warning at config load instead of crashing startup.
 
 The LLM-facing `a2a_*` tools live in the a2a plugin (one uniform prefix; the MCP proxy keeps the exact names).  Subagents are **not** part of A2A — they are local workers (see "Subagent Workers" below).
 
@@ -595,7 +595,7 @@ Not all tools are in every request. Several categories use lightweight summaries
 └──────────────────────────────────────────────┘
 ```
 
-`${VAR:-default}` fallbacks supported; resolution is recursive over strings/lists/dicts. Known gap: `${VAR:-default}` resolves from the shell env only and never consults credstore, so the fallback beats a credstore-held key for that form (see REVIEW.md).
+`${VAR:-default}` fallbacks supported; resolution is recursive over strings/lists/dicts. Known gap: `${VAR:-default}` resolves from the shell env only and never consults credstore, so the fallback beats a credstore-held key for that form.
 
 ### Credstore Backend Matrix
 
@@ -622,7 +622,7 @@ Two gates, single pattern-masking engine (`logfmt.sanitize_secrets`):
 1. **Inbound** — `Conversation.add_user_message()` on every external message
 2. **Outbound** — `AgentLoop._execute_tools()` runs `sanitize_secrets` on **every** tool result before it enters the conversation (tool-call arguments are also masked at `Conversation.add_assistant_message`). So even a tool that returns a secret verbatim (e.g. a config/env lookup) never puts a known-shaped value into the LLM context.
 
-Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bearer` tokens, and credential-named `key=value` pairs are masked with `<MASKED>`. The engine is pattern-based, so a value that matches no known shape is **not** masked at the gates either — the honest boundary is "known-shaped secrets never reach the LLM"; an exact-match denylist from credstore remains a possible hardening (see REVIEW.md).
+Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bearer` tokens, and credential-named `key=value` pairs are masked with `<MASKED>`. The engine is pattern-based, so a value that matches no known shape is **not** masked at the gates either — the honest boundary is "known-shaped secrets never reach the LLM"; an exact-match denylist from credstore remains a possible hardening.
 
 ### Config Sections
 
@@ -702,7 +702,7 @@ Three sinks, two audiences:
   attempt settles, and surfaces a one-time "tunnel unavailable" warning via
   `_show_system_message` only on a terminal `failed` state.
 
-Known gaps (see REVIEW.md): several call sites log raw user/tool/task content without sanitization, a few use prose instead of `key=value`, and the MCP wrapper stderr relay re-implements `drain_stderr` (it masks via `sanitize_secrets`, but the duplication remains).
+Known gaps: several call sites log raw user/tool/task content without sanitization, a few use prose instead of `key=value`, and the MCP wrapper stderr relay re-implements `drain_stderr` (it masks via `sanitize_secrets`, but the duplication remains).
 
 ## Project Structure
 
@@ -798,16 +798,6 @@ credstore/
 
 skills/                # On-demand SKILL.md skills (seeded to ~/.slife/skills/)
 ```
-
-## Known Gaps & Open Items
-
-The full audit, this round's fixes, and every open item are tracked in **[REVIEW.md](REVIEW.md)**. Highlights of what is **still open**:
-
-- **C9 remainder** — a Streamable HTTP server that answers the SSE-detection GET with a live notification channel but no `endpoint` event is misrouted: after a 5 s wait for the endpoint event it falls through to Streamable HTTP, which a legacy-SSE-only server usually rejects. Servers that reject the GET fall through correctly.
-- **M5 remainder** — `memory_count(query, mode="grep")` still lacks the `ESCAPE '\'` clause that `memory_search(grep)` now has.
-- **Tests/CI** — subagent process and backend wire formats untested end-to-end; the built wheel is never exercised; install scripts are never smoke-run; no coverage gate.
-
-**Resolved in the 2026-08-11 refactor/fix round** (all regression-tested; see REVIEW.md): C1 non-`"mqtt"` transport, C2 external-server health-check/reconnect + stale session-id, C4 subagent reader guards, C5 true cancel (mesh + worker via the unified inbox), C6 WeChat dedup (key now includes text), C7 approval-dialog Esc, C8 reserved plugin names, C9 SSE-streamed Streamable responses, W1/W2 wire formats, M2–M7, memfiles `_save_url` restricted to publicly reachable http(s) URLs, **watchdog extended to third-party plugins**, **config writes now atomic** (`os.replace` + in-process lock), **`switch_to_nvidia_free` tool names verified** (`list_models`/`get_model_info` on nvidia-nim-mcp v2.1.2, npx/bunx reconciled), **`skill_set_enabled` actually works** (persists to `skills:` config; `skill_list` hides and `skill_use` refuses disabled skills), plus the F-* conformance fixes (memdb English, `_sys_trim` active-conversation targeting, unified `__` filter, `rest_api_set_enabled`/`cli_set_enabled`, memfiles health-pointer refresh, worst unredacted log sites).
 
 ## License
 

@@ -55,8 +55,23 @@ def with_fetched_at(source: dict | None) -> dict | None:
     return result
 
 
+class ConfigParseError(ValueError):
+    """Raised when slife.json5 exists but cannot be parsed.
+
+    Distinct from ``FileNotFoundError`` (which :func:`read_config` treats as a
+    normal first-run state).  A mutating caller that proceeded past a parse
+    error would write back an empty dict via ``os.replace`` and destroy the
+    whole config — so the parse failure must be surfaced, not swallowed.
+    """
+
+
 def read_config(path: Path) -> dict:
-    """Read and parse a JSON5 config file. Returns an empty dict on failure."""
+    """Read and parse a JSON5 config file.
+
+    Returns ``{}`` only when the file does not exist (first run).  A file that
+    exists but cannot be parsed raises :class:`ConfigParseError` so mutating
+    callers abort instead of rewriting the config as an empty dict.
+    """
     try:
         return json5.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -64,7 +79,7 @@ def read_config(path: Path) -> dict:
         return {}
     except (ValueError, OSError) as e:
         logger.error("config_parse_error path=%s err=%s", path, e)
-        return {}
+        raise ConfigParseError(f"Cannot parse config {path}: {e}") from e
 
 
 _write_lock = threading.Lock()

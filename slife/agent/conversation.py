@@ -10,6 +10,11 @@ from slife.logfmt import sanitize_secrets
 
 logger = logging.getLogger(__name__)
 
+# Prefix of the note appended to a user message when an attached image cannot
+# be read.  Shared with the persistence layer (save_to_memory) so the note can
+# be distinguished from the user's actual text.
+IMAGE_NOTE_PREFIX = "\n\n[System note: the following image file(s)"
+
 
 class Conversation:
     """Manages the message list for an LLM conversation.
@@ -142,7 +147,7 @@ class Conversation:
                     dropped.append(str(img))
             if dropped:
                 note = (
-                    "\n\n[System note: the following image file(s) could not be "
+                    IMAGE_NOTE_PREFIX + " could not be "
                     "read and were NOT sent to the model: "
                     + ", ".join(dropped)
                     + "]"
