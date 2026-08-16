@@ -352,19 +352,22 @@ class MQTTAdapter(TransportAdapter):
             with self._state_lock:
                 queues = list(self._queues.items())
             matched = False
+            loop = self._loop
             for topic_filter, queue in queues:
                 if mq.topic_matches_sub(topic_filter, msg.topic):
                     matched = True
-                    try:
-                        queue.put_nowait(transport_msg)
-                        logger.debug(
-                            "a2a_mqtt_routed topic=%s -> filter=%s",
+                    if loop is not None:
+                        # _on_message runs on paho's background thread —
+                        # asyncio.Queue is not thread-safe, so deliver on the
+                        # loop (_put_message keeps the QueueFull policy).
+                        loop.call_soon_threadsafe(
+                            self._put_message, queue, transport_msg,
                             msg.topic, topic_filter,
                         )
-                    except asyncio.QueueFull:
-                        logger.warning(
-                            "a2a_mqtt_queue_full filter=%s topic=%s",
-                            topic_filter, msg.topic,
+                    else:
+                        # No loop reference (tests / pre-connect) — put now.
+                        self._put_message(
+                            queue, transport_msg, msg.topic, topic_filter,
                         )
             if not matched:
                 logger.debug(
@@ -375,6 +378,28 @@ class MQTTAdapter(TransportAdapter):
             # Never let a callback exception escape to paho — it re-raises
             # and kills the network thread (silent, no reconnect).
             logger.warning("a2a_mqtt_on_message_error topic=%s err=%s", msg.topic, e)
+
+    def _put_message(
+        self, queue: "asyncio.Queue[TransportMessage]",
+        transport_msg: TransportMessage, topic: str, topic_filter: str,
+    ) -> None:
+        """Deliver one message to a subscription queue (runs on the loop).
+
+        Called via ``call_soon_threadsafe`` from ``_on_message`` (paho
+        thread) — an ``asyncio.Queue`` must only be touched from the event
+        loop.  Keeps the drop-newest-on-full backpressure policy.
+        """
+        try:
+            queue.put_nowait(transport_msg)
+            logger.debug(
+                "a2a_mqtt_routed topic=%s -> filter=%s",
+                topic, topic_filter,
+            )
+        except asyncio.QueueFull:
+            logger.warning(
+                "a2a_mqtt_queue_full filter=%s topic=%s",
+                topic_filter, topic,
+            )
 
     # ── Helpers ───────────────────────────────────────────────────────
 
