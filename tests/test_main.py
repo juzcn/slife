@@ -62,7 +62,12 @@ class TestMainFunction:
                 from slife import main
                 main()
 
-                mock_app_cls.assert_called_once_with(mock_config)
+                mock_app_cls.assert_called_once()
+                args, kwargs = mock_app_cls.call_args
+                assert args[0] is mock_config
+                # console_handler is threaded from setup_logging so the TUI
+                # can mute the console while its alternate screen is up.
+                assert kwargs.get("console_handler") is not None
 
     def test_main_logs_model_info(self, mock_config):
         """main() logs model info before starting TUI."""
