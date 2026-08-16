@@ -677,6 +677,23 @@ Structured log lines: `event_name key1=value1 key2=value2 …` (see `slife/logfm
 - Plugins inherit the session id and write to per-session files via `setup_server_logging`; their stderr is relayed by the parent at DEBUG
 - No diagnostics on stdout (reserved for the TUI and the plugin port signal)
 
+### Sinks: log is for developers, TUI is for the user
+
+Three sinks, two audiences:
+
+- **Session log file** (`logs/*.log`) — full truth: DEBUG+, every level keeps
+  its real meaning.  `warning`/`error` events are *never* demoted to `info` to
+  hide them from the terminal — that corrupts the file and makes log-based
+  diagnosis (or an LLM reading the log) see "all OK" when failures occurred.
+- **Console (stderr)** — INFO band only: the console handler is capped below
+  WARNING via `_LevelCeiling` (`configure_root_logging(stderr_max_level=WARNING)`).
+  WARNING/ERROR never print there; the TUI mutes the console entirely while its
+  alternate screen is up (`SlifeApp._mute_console_logging` / `restore_logging`).
+- **TUI** — a pure business channel, decoupled from logs.  User-visible status
+  (plugin load results, memory health, tool outcomes, OAuth notifications) is
+  surfaced explicitly via `_show_system_message` / callbacks — never by leaking
+  `logger.warning` to the terminal.
+
 Known gaps (see REVIEW.md): several call sites log raw user/tool/task content without sanitization, a few use prose instead of `key=value`, and the MCP wrapper stderr relay re-implements `drain_stderr` (it masks via `sanitize_secrets`, but the duplication remains).
 
 ## Project Structure
