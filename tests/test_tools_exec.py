@@ -113,7 +113,7 @@ class TestShellToolExecute:
         mock_process.communicate = AsyncMock(return_value=(b"hello world", b""))
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_shell", AsyncMock(return_value=mock_process)):
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
             result = await tool.execute(command="echo hello")
 
         assert result == "hello world"
@@ -126,7 +126,7 @@ class TestShellToolExecute:
         mock_process.communicate = AsyncMock(return_value=(b"", b"notfound: command not found"))
         mock_process.returncode = 127
 
-        with patch("asyncio.create_subprocess_shell", AsyncMock(return_value=mock_process)):
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
             result = await tool.execute(command="notfound_cmd")
 
         assert "[stderr]" in result
@@ -141,7 +141,7 @@ class TestShellToolExecute:
         mock_process.kill = MagicMock()
         mock_process.wait = AsyncMock()
 
-        with patch("asyncio.create_subprocess_shell", AsyncMock(return_value=mock_process)):
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
             result = await tool.execute(command="sleep 999")
 
         assert "Error:" in result
@@ -158,7 +158,7 @@ class TestShellToolExecute:
         mock_process.communicate = AsyncMock(return_value=(b"stdout line", b"stderr line"))
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_shell", AsyncMock(return_value=mock_process)):
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
             result = await tool.execute(command="cmd_with_stderr")
 
         assert "stdout line" in result
@@ -173,7 +173,7 @@ class TestShellToolExecute:
         mock_process.communicate = AsyncMock(return_value=(b"my_value", b""))
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_shell", AsyncMock(return_value=mock_process)):
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
             result = await tool.execute(command="export MY_VAR=my_value && echo $MY_VAR")
 
         assert result == "my_value"
@@ -514,7 +514,7 @@ class TestErrorFormat:
         mock_process.kill = MagicMock()
         mock_process.wait = AsyncMock()
 
-        with patch("asyncio.create_subprocess_shell", AsyncMock(return_value=mock_process)):
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)):
             result = await tool.execute(command="sleep 999")
 
         assert result.startswith("Error:")

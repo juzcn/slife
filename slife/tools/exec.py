@@ -7,6 +7,8 @@ Tools:
 """
 
 import asyncio
+import base64
+import locale
 import logging
 import os
 import signal
@@ -66,12 +68,55 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
 logger = logging.getLogger(__name__)
 
 
+def _shell_argv(command: str) -> list[str]:
+    """Build argv that runs *command* in the shell the prompt claims.
+
+    ``asyncio.create_subprocess_shell`` runs ``COMSPEC`` (cmd.exe) on Windows
+    even when the detected shell is PowerShell, so the LLM's PS commands
+    failed while the prompt said ``powershell``.  Run the detected shell
+    explicitly so annotation and behaviour agree everywhere (native Windows,
+    WSL, POSIX).
+    """
+    if os.name == "nt":
+        from slife.platform import detect_current_shell
+        if detect_current_shell() == "powershell":
+            # -EncodedCommand (UTF-16LE base64) sidesteps all quoting issues
+            # with arbitrary command strings.  Prepend $ProgressPreference so
+            # PowerShell's "preparing module for first use" progress record is
+            # not serialized as CLIXML noise on stderr when stdout/stderr are
+            # pipes (no console) — it pollutes every command's stderr.
+            script = "$ProgressPreference = 'SilentlyContinue'; " + command
+            encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+            return [
+                "powershell", "-NoProfile", "-NonInteractive",
+                "-EncodedCommand", encoded,
+            ]
+        return ["cmd", "/c", command]
+    # POSIX (incl. WSL): $SHELL — the same value the prompt reports.
+    return [os.environ.get("SHELL", "/bin/sh"), "-c", command]
+
+
+def _shell_output_codec() -> str:
+    """Codec for decoding shell output bytes.
+
+    On Windows, Windows PowerShell 5.1 writes the console/OEM code page to a
+    pipe (GBK/cp936 on a zh-CN locale) — decoding as UTF-8 produces mojibake.
+    ``locale.getpreferredencoding(False)`` returns the right codec.  POSIX
+    shells emit UTF-8.
+    """
+    if os.name == "nt":
+        return locale.getpreferredencoding(False) or "utf-8"
+    return "utf-8"
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # execute_shell
 # ═══════════════════════════════════════════════════════════════════════
 
 class ShellTool(Tool):
-    """Execute a shell command via the system shell (cmd on Windows, sh on Unix)."""
+    """Execute a shell command via the detected shell (PowerShell/cmd on
+    Windows, $SHELL on POSIX incl. WSL) — matching what the system prompt
+    reports, so PS commands like ``Get-Date`` actually work."""
 
     name = "execute_shell"
     category = "Execution"
@@ -100,8 +145,11 @@ class ShellTool(Tool):
         timeout: int = kwargs.get("timeout", self.timeout)
         logger.debug("shell_exec cmd=%.200s timeout=%d", sanitize_secrets(command), timeout)
 
-        process = await asyncio.create_subprocess_shell(
-            command,
+        # Run the detected shell (not COMSPEC=cmd.exe on Windows) so the
+        # command executes in the same shell the system prompt reports.
+        argv = _shell_argv(command)
+        process = await asyncio.create_subprocess_exec(
+            *argv,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -121,8 +169,9 @@ class ShellTool(Tool):
             logger.warning("shell_timeout timeout=%ds cmd=%.200s", timeout, sanitize_secrets(command))
             return f"Error: Command timed out after {timeout}s"
 
-        output = stdout.decode("utf-8", errors="replace")
-        err_output = stderr.decode("utf-8", errors="replace")
+        codec = _shell_output_codec()
+        output = stdout.decode(codec, errors="replace")
+        err_output = stderr.decode(codec, errors="replace")
         result = output
         if err_output:
             result += f"\n[stderr]\n{err_output}"
