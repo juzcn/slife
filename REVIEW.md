@@ -87,7 +87,7 @@
 - **✅ `connection.py` connect 无握手超时 / SSE 硬 30s** — `_request`/`_request_sse` 加 `timeout` 参数（None = 调用方治理）；`initialize` 用 `asyncio.wait_for(_CONNECT_HANDSHAKE_TIMEOUT=30s)`；SSE 响应等待不再硬 30s。
 - **✅ `detect_current_shell` 过度上报 PowerShell** — cmd.exe 设 `PROMPT`、PowerShell 不设；`PROMPT` 存在 → cmd，否则看 `PSModulePath`。回归：`test_windows_cmd_launched_with_powershell_installed`。
 - **✅ `tools` 段严格 `resolve_env` KeyError 中止启动** — 改 `_resolve_env_lenient`，缺 `${VAR}` 不再中止。
-- **✅ `paths.is_dev()` CWD 脆弱** — 改为检查已加载 slife 包的 `__file__` 是否在 CWD 之下（源码树 = dev，site-packages = prod，即使用户在 checkout 目录里跑 wheel）。回归重写 TestIsDev。
+- **⚠️ `paths.is_dev()` 上轮修法在生产回归** — 只查「包 `__file__` 在 CWD 之下」把 home 下装的 uv tool 误判成 dev（`%LOCALAPPDATA%\uv\tools` 在 home 之下，home 启动即中招，数据撒进 home、35MB `~/.slife/slife.db` 被忽略）。现改为双条件：CWD 的 `pyproject.toml` 项目名为 slife **且** 已加载包父目录 == CWD（源码 `slife/` 子目录），site-packages 副本永不为 dev。两场景都覆盖：checkout 里跑 wheel、home 里跑 uv tool。回归测试补 `test_false_uv_tool_under_home` / `test_false_nested_site_packages_in_checkout`。
 - **✅ `bootstrap.setup_logging` 去重返回无人写的路径** — 返回已存在 FileHandler 的 `baseFilename`。
 - **✅ config `mcp: "foo"` 非 dict AttributeError** — 新增 `_mcp_servers_section`（非 dict 重置为 `{}`），三处 save/remove/set_enabled 共用。
 - **✅ `config.to_dict` 明文 api_key 进子代理 env** — 改经 0600 临时文件（`SLIFE_CONFIG_FILE`）传递，不再进 `/proc/<pid>/environ`；headless 优先读文件。

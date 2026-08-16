@@ -13,19 +13,38 @@ from pathlib import Path
 def is_dev() -> bool:
     """Check whether we're running from the slife source tree.
 
-    Dev = the loaded slife package is a source dir under the CWD (a repo
-    checkout), not the installed wheel in site-packages.  The old check (any
-    ``pyproject.toml`` named ``slife`` in the CWD) misclassified a production
-    install launched from inside a repo checkout as dev, scattering session
-    data into that CWD.
+    Dev = the CWD is the project root (its ``pyproject.toml`` names the
+    project) AND the loaded slife package is that checkout's source ``slife/``
+    subdir — an editable install or ``python -m slife`` from the tree.  A
+    production install (uv tool / pipx / pip) always loads from a site-packages
+    dir whose parent is not the CWD, so it stays production no matter where the
+    CWD is:
+
+    * launched from inside a checkout — the checkout's ``pyproject.toml`` is
+      in the CWD but the loaded package lives in site-packages (the old
+      pyproject-only check misfired here, scattering data into the checkout);
+    * launched from home — uv tools install under ``~/.local`` /
+      ``%LOCALAPPDATA%``, i.e. *under* the CWD, so a package-under-CWD check
+      would misfire here too (site-packages copy, not the tree).
     """
     try:
+        import tomllib
+
+        root = Path.cwd().resolve()
+        data = tomllib.loads(
+            (root / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        if data.get("project", {}).get("name") != "slife":
+            return False
+
         mod = sys.modules.get("slife")
         f = getattr(mod, "__file__", None)
         if not isinstance(f, str) or not f:
             return False
         pkg_dir = Path(f).resolve().parent
-        return pkg_dir.is_relative_to(Path.cwd().resolve())
+        # The loaded package must be this checkout's ``slife/`` subdir (editable
+        # installs point back at the tree), not a site-packages copy.
+        return pkg_dir.parent == root
     except Exception:
         return False
 

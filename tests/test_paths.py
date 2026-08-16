@@ -14,10 +14,13 @@ from slife import paths
 
 
 class TestIsDev:
-    """Tests for the is_dev helper — dev = the slife package sits under the CWD.
+    """Tests for the is_dev helper — dev = the CWD is the project root AND the
+    loaded slife package is that checkout's source ``slife/`` subdir.
 
-    The old check (any ``pyproject.toml`` named ``slife`` in the CWD)
-    misclassified a production install launched from inside a repo checkout.
+    Either condition alone is ambiguous: a production wheel run from inside a
+    checkout sees the checkout's ``pyproject.toml``, and a uv-tool install run
+    from home sits under the home dir.  Both must hold, so site-packages copies
+    are never dev regardless of where the CWD is.
     """
 
     def _fake_slife(self, monkeypatch, module_file: str | None):
@@ -32,8 +35,14 @@ class TestIsDev:
                 types.SimpleNamespace(__file__=module_file),
             )
 
-    def test_true_when_package_under_cwd(self, tmp_path, monkeypatch):
-        """The source tree's slife package is under the CWD → dev mode."""
+    def _write_project_toml(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "slife"\n', encoding="utf-8"
+        )
+
+    def test_true_source_tree_under_cwd(self, tmp_path, monkeypatch):
+        """CWD is the project root and the package is its ``slife/`` subdir."""
+        self._write_project_toml(tmp_path)
         pkg = tmp_path / "slife" / "__init__.py"
         pkg.parent.mkdir()
         pkg.touch()
@@ -42,10 +51,10 @@ class TestIsDev:
         assert paths.is_dev() is True
 
     def test_false_when_package_in_site_packages(self, tmp_path, monkeypatch):
-        """The installed wheel lives outside the CWD → production, even if a
-        checkout's pyproject.toml happens to be in the CWD."""
-        toml = tmp_path / "pyproject.toml"
-        toml.write_text('[project]\nname = "slife"\n', encoding="utf-8")
+        """A production wheel run from inside a checkout stays production:
+        the checkout's pyproject.toml is in the CWD, but the loaded package
+        lives in site-packages."""
+        self._write_project_toml(tmp_path)
         monkeypatch.chdir(tmp_path)
         self._fake_slife(
             monkeypatch, "/opt/venv/site-packages/slife/__init__.py",
@@ -56,6 +65,28 @@ class TestIsDev:
         """No loaded slife module at all means production."""
         monkeypatch.chdir(tmp_path)
         self._fake_slife(monkeypatch, None)
+        assert paths.is_dev() is False
+
+    def test_false_uv_tool_under_home(self, tmp_path, monkeypatch):
+        """A uv-tool install under the home dir launched from home stays
+        production: the package is under the CWD but the CWD has no
+        pyproject.toml (home is not the project root)."""
+        pkg = tmp_path / "site-packages" / "slife" / "__init__.py"
+        pkg.parent.mkdir(parents=True)
+        pkg.touch()
+        monkeypatch.chdir(tmp_path)
+        self._fake_slife(monkeypatch, str(pkg))
+        assert paths.is_dev() is False
+
+    def test_false_nested_site_packages_in_checkout(self, tmp_path, monkeypatch):
+        """Even inside a project root, a package under ``site-packages/`` is
+        an installed copy, not the checkout's ``slife/`` subdir."""
+        self._write_project_toml(tmp_path)
+        pkg = tmp_path / "site-packages" / "slife" / "__init__.py"
+        pkg.parent.mkdir(parents=True)
+        pkg.touch()
+        monkeypatch.chdir(tmp_path)
+        self._fake_slife(monkeypatch, str(pkg))
         assert paths.is_dev() is False
 
 
