@@ -148,9 +148,10 @@ class A2AClient:
         # Check for duplicate agent-name — collect existing presences before
         # announcing ourselves.  Peers re-publish presence every heartbeat
         # interval, so a short window can miss one that announced earlier;
-        # 5s is a best-effort compromise against blocking connect too long.
+        # 1.5s matches DESIGN.md (MQTT Mesh) and keeps plugin startup inside
+        # the parent's 30s port-signal budget.
         try:
-            async with asyncio.timeout(5.0):
+            async with asyncio.timeout(1.5):
                 async for msg in self._adapter.messages("Slife/+/presence"):
                     try:
                         card = json.loads(msg.payload)

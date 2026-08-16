@@ -143,9 +143,9 @@ class MQTTAdapter(TransportAdapter):
         c.on_message = self._on_message
         c.reconnect_delay_set(min_delay=5, max_delay=30)
         c.connect_async(host, port, keepalive=30)
+        self._loop = asyncio.get_running_loop()
         c.loop_start()
         self._client = c
-        self._loop = asyncio.get_running_loop()
 
         # Wait for the connection to complete
         try:
@@ -265,7 +265,14 @@ class MQTTAdapter(TransportAdapter):
         was_reconnect = self._ever_connected
         self._ever_connected = True
         self._connected = True
-        self._connect_event.set()
+        # _on_connect runs on paho's background thread — asyncio.Event.set()
+        # from a foreign thread doesn't reliably wake the event-loop waiter
+        # (call_soon is not thread-safe), so schedule the set on the loop.
+        loop = self._loop
+        if loop is not None:
+            loop.call_soon_threadsafe(self._connect_event.set)
+        else:
+            self._connect_event.set()
 
         try:
             if was_reconnect:
