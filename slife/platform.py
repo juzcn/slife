@@ -63,6 +63,13 @@ def detect_current_shell() -> str:
     """
     if os.name != "nt":
         return os.environ.get("SHELL", "sh")
+    # On Windows, cmd.exe sets PROMPT in the environment (default "$P$G");
+    # PowerShell does not.  A machine with PowerShell installed always has
+    # PSModulePath, so relying on it alone would misclassify a cmd.exe-launched
+    # session as PowerShell and route every shell command (cmd syntax) through
+    # the wrong shell.
+    if os.environ.get("PROMPT") is not None:
+        return "cmd"
     if os.environ.get("PSModulePath"):
         return "powershell"
     return "cmd"

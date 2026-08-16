@@ -58,11 +58,17 @@ def _guess_image_extension(data: bytes) -> str | None:
     return None
 
 
+# Temp image files handed to the UI for display; deleted when the MCP client
+# disconnects so a long session's image tool results don't accumulate.
+_temp_image_files: set[str] = set()
+
+
 def _try_save_image_bytes(data: bytes) -> str | None:
     """Save *data* to a temp file if it looks like an image.
 
     Returns the absolute path, or ``None`` if the data is not a
-    recognised image format or saving fails.
+    recognised image format or saving fails.  The file is registered for
+    deletion at client disconnect (:meth:`MCPClient.disconnect`).
     """
     ext = _guess_image_extension(data)
     if ext is None:
@@ -73,7 +79,9 @@ def _try_save_image_bytes(data: bytes) -> str | None:
         )
         tmp.write(data)
         tmp.close()
-        return str(Path(tmp.name).resolve())
+        path = str(Path(tmp.name).resolve())
+        _temp_image_files.add(path)
+        return path
     except Exception:
         return None
 
@@ -174,6 +182,14 @@ class MCPClient:
         """Disconnect from the MCP server and release all resources."""
         self._connected = False
         await self._cleanup()
+        # Remove temp images handed out for display — a long session would
+        # otherwise accumulate one per image tool result.
+        for p in list(_temp_image_files):
+            try:
+                Path(p).unlink(missing_ok=True)
+            except OSError:
+                pass
+        _temp_image_files.clear()
         logger.info("mcp_client_disconnected")
 
     async def _cleanup(self) -> None:

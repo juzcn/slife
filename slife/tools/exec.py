@@ -188,14 +188,18 @@ class ShellTool(Tool):
 # ═══════════════════════════════════════════════════════════════════════
 
 def _parse_input(input_str: str) -> tuple[str, str]:
-    """Split input into (script_or_code, json_args)."""
-    brace = input_str.find("{")
-    bracket = input_str.find("[")
-    candidates = [i for i in (brace, bracket) if i >= 0]
-    split_at = min(candidates) if candidates else len(input_str)
-    if split_at == len(input_str):
-        return input_str.strip(), ""
-    return input_str[:split_at].strip(), input_str[split_at:].strip()
+    """Split input into (script_or_code, json_args).
+
+    JSON args follow the script path after whitespace (``script.py {"a": 1}``).
+    Only a ``{``/``[`` preceded by whitespace starts the args block — a ``[``
+    *inside* the script path (``C:\\code\\my[2024]\\run.py``) is not a
+    delimiter and must not split the path.
+    """
+    for i, ch in enumerate(input_str):
+        if ch in ("{", "["):
+            if i == 0 or input_str[i - 1].isspace():
+                return input_str[:i].strip(), input_str[i:].strip()
+    return input_str.strip(), ""
 
 
 class RunPythonScriptTool(Tool):

@@ -421,12 +421,25 @@ class TestDetectCurrentShell:
 
     def test_windows_powershell(self, monkeypatch):
         if IS_WINDOWS:
+            # PowerShell-launched session: no PROMPT (cmd.exe sets it), but
+            # PSModulePath is present.
+            monkeypatch.delenv("PROMPT", raising=False)
             monkeypatch.setenv("PSModulePath", r"C:\Modules")
             assert detect_current_shell() == "powershell"
+
+    def test_windows_cmd_launched_with_powershell_installed(self, monkeypatch):
+        """Regression: cmd.exe sets PROMPT in the env; a machine with
+        PowerShell installed always has PSModulePath — the latter alone must
+        not misclassify a cmd.exe session as PowerShell."""
+        monkeypatch.setattr("os.name", "nt")
+        monkeypatch.setenv("PROMPT", "$P$G")
+        monkeypatch.setenv("PSModulePath", r"C:\Modules")
+        assert detect_current_shell() == "cmd"
 
     def test_windows_cmd_fallback(self, monkeypatch):
         monkeypatch.setattr("os.name", "nt")
         monkeypatch.delenv("PSModulePath", raising=False)
+        monkeypatch.delenv("PROMPT", raising=False)
         assert detect_current_shell() == "cmd"
 
     def test_posix_from_env(self, monkeypatch):

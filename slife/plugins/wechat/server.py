@@ -118,6 +118,7 @@ _MAX_QUEUED = 200  # keep at most 200 pending messages
 # Typing indicator keep-alive — per-conversation tasks managed by the server
 _typing_tasks: dict[str, asyncio.Task] = {}
 _TYPING_REFRESH = 8.0  # seconds between typing indicator refreshes
+_TYPING_MAX_LIFETIME = 300.0  # keepalive bound — stops if the agent never replies
 
 # QR login state (non-blocking)
 _qr_task: asyncio.Task | None = None
@@ -277,7 +278,11 @@ def _start_typing_keepalive(from_id: str, ctx_token: str) -> None:
         return
 
     async def _keep_typing(uid: str, tok: str) -> None:
-        while True:
+        # Bound the keepalive: the reply dispatch stops it for a normal turn,
+        # but if the agent never replies (crash, or the stop is missed) it must
+        # not loop forever (REVIEW §1-9).
+        deadline = asyncio.get_event_loop().time() + _TYPING_MAX_LIFETIME
+        while asyncio.get_event_loop().time() < deadline:
             try:
                 await asyncio.sleep(_TYPING_REFRESH)
                 await _client.send_typing(uid, tok, status=1)
@@ -695,6 +700,13 @@ async def wechat_check_status() -> str:
         if saved.get("bot_token"):
             try:
                 restored = await _client.try_restore_session(saved)
+                # try_restore_session only checks age — confirm the token
+                # actually works before reporting "restored"/logged_in.
+                if restored and not await _client.validate_session():
+                    logger.warning(
+                        "wechat_restore_invalid_token — re-login required",
+                    )
+                    restored = False
                 if restored:
                     # Restore last contact so the LLM knows who to message
                     ilink_uid = saved.get("ilink_user_id", "")

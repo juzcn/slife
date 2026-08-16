@@ -73,6 +73,10 @@ from slife.server_utils import (
 # ── Own port — bound by main() so the tunnel can forward to it ────────
 _PLUGIN_PORT: int = 0
 
+# Hard cap on url_save downloads — a multi-GB public URL must not OOM the
+# plugin process by buffering the whole body.
+_MAX_SAVE_BYTES = 50 * 1024 * 1024  # 50 MB
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Tunnel lifecycle — eager start on plugin startup, graceful failure
@@ -624,7 +628,19 @@ async def url_save(
                         continue
                     if resp.status != 200:
                         return f"Error: HTTP {resp.status} — {url}"
-                    raw = await resp.read()
+                    # Stream with a hard size cap — a multi-GB public URL must
+                    # not OOM the plugin by buffering the whole body in RAM.
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in resp.content.iter_chunked(65536):
+                        size += len(chunk)
+                        if size > _MAX_SAVE_BYTES:
+                            return (
+                                f"Error: file too large "
+                                f"({size // (1024 * 1024)}MB > 50MB)"
+                            )
+                        chunks.append(chunk)
+                    raw = b"".join(chunks)
                     break
     except Exception as e:
         return f"Error: download failed — {e}"

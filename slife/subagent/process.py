@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import sys
+import tempfile
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -26,6 +27,12 @@ from slife.platform import terminate_process
 # parent agent can neither forge a multi-line identity nor traverse out of the
 # log dir ("..\\..\\evil").
 _SAFE_SUBAGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+# Caps on per-worker bookkeeping — a long-lived worker with many tasks must
+# not grow these without bound.
+_MAX_TASK_RECORDS = 500
+_MAX_ASYNC_RESULTS = 200
+_MAX_CANCELLED = 500
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -67,6 +74,10 @@ class SubagentProcess:
         self._name = name
         self._config = config
         self._config_json = _json.dumps(config.to_dict(), ensure_ascii=False)
+        # Path of a 0600 temp file carrying _config_json to the child — the
+        # config contains resolved plaintext api_keys, which must not ride the
+        # process env (visible via /proc/<pid>/environ).
+        self._config_file: str | None = None
         self._context_source = context_source
         self._context_messages = context_messages
         self._process: asyncio.subprocess.Process | None = None
@@ -136,7 +147,25 @@ class SubagentProcess:
         env["SLIFE_SUBAGENT_CREATED_AT"] = (
             datetime.now().astimezone().replace(microsecond=0).isoformat()
         )
-        env["SLIFE_CONFIG"] = self._config_json
+        # The config carries resolved plaintext api_keys — hand it over via a
+        # 0600 temp file (SLIFE_CONFIG_FILE), never the process env which is
+        # visible via /proc/<pid>/environ.
+        if self._config_json:
+            fd, path = tempfile.mkstemp(
+                prefix="slife_subagent_", suffix=".json",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(self._config_json)
+                os.chmod(path, 0o600)
+            except Exception:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+                raise
+            self._config_file = path
+            env["SLIFE_CONFIG_FILE"] = path
         env["SLIFE_SUBAGENT_CONTEXT"] = self._context_source
         # The a2a plugin port (SLIFE_A2A_PORT) is inherited from os.environ
         # above — the subagent reuses the main agent's mesh channel.  The
@@ -209,6 +238,16 @@ class SubagentProcess:
                 try: await t
                 except (asyncio.CancelledError, Exception):
                     logger.debug("reader_cancel name=%s", self._name, exc_info=True)
+        self._cleanup_config_file()
+
+    def _cleanup_config_file(self) -> None:
+        """Delete the 0600 temp config file handed to the child."""
+        if self._config_file is not None:
+            try:
+                os.unlink(self._config_file)
+            except OSError:
+                pass
+            self._config_file = None
 
     async def _send_child_cancel(self, task_id: str) -> None:
         """Best-effort: tell the child to skip/cancel a task still queued or
@@ -252,6 +291,8 @@ class SubagentProcess:
             # than discarded (the tool promises the result stays retrievable)
             # or mis-routed as a fresh async completion.
             self._late_results.add(rpc_id)
+            if len(self._late_results) > _MAX_CANCELLED:
+                self._late_results.pop()
             if self._inflight > 0:
                 self._inflight -= 1
             self._record_update(rpc_id, "failed", "Error: timed out")
@@ -263,6 +304,8 @@ class SubagentProcess:
         except asyncio.CancelledError:
             self._pending.pop(rpc_id, None)
             self._cancelled.add(rpc_id)
+            if len(self._cancelled) > _MAX_CANCELLED:
+                self._cancelled.pop()
             if self._inflight > 0:
                 self._inflight -= 1
             raise
@@ -325,6 +368,8 @@ class SubagentProcess:
         rec["status"] = "cancelled"
         rec["result"] = "Cancelled by parent"
         self._cancelled.add(task_id)
+        if len(self._cancelled) > _MAX_CANCELLED:
+            self._cancelled.pop()
         if self._inflight > 0:
             self._inflight -= 1
 
@@ -353,6 +398,21 @@ class SubagentProcess:
             "result": None,
             "created_at": asyncio.get_event_loop().time(),
         }
+        if len(self._task_records) > _MAX_TASK_RECORDS:
+            # Drop the oldest record — a long-lived worker with many tasks
+            # must not grow the store without bound.
+            oldest = min(
+                self._task_records,
+                key=lambda k: self._task_records[k].get("created_at", 0),
+            )
+            self._task_records.pop(oldest, None)
+
+    def _store_async_result(self, rpc_id: str, result: str) -> None:
+        """Store a worker result for get_task_result, bounded."""
+        self._async_results[rpc_id] = result
+        if len(self._async_results) > _MAX_ASYNC_RESULTS:
+            # dict preserves insertion order — evict the oldest.
+            self._async_results.pop(next(iter(self._async_results)))
 
     def _record_update(self, rpc_id: str, status: str, result: str | None) -> None:
         """Update a worker task record on completion / failure."""
@@ -423,11 +483,11 @@ class SubagentProcess:
         if rpc_id and rpc_id in self._late_results:
             self._late_results.discard(rpc_id)
             if "error" in msg:
-                self._async_results[rpc_id] = (
-                    f"Error: {msg['error'].get('message', 'Unknown')}"
+                self._store_async_result(
+                    rpc_id, f"Error: {msg['error'].get('message', 'Unknown')}",
                 )
             else:
-                self._async_results[rpc_id] = str(msg.get("result", ""))
+                self._store_async_result(rpc_id, str(msg.get("result", "")))
             logger.debug(
                 "subagent_late_result_stored task=%s", rpc_id,
             )
@@ -458,11 +518,11 @@ class SubagentProcess:
             if self._inflight > 0: self._inflight -= 1
             if "error" in msg:
                 err = msg["error"].get("message", "Unknown")
-                self._async_results[rpc_id] = f"Error: {err}"
+                self._store_async_result(rpc_id, f"Error: {err}")
                 self._record_update(rpc_id, "failed", f"Error: {err}")
             else:
                 result_text = str(msg.get("result", ""))
-                self._async_results[rpc_id] = result_text
+                self._store_async_result(rpc_id, result_text)
                 self._record_update(rpc_id, "completed", result_text)
             # Notify the manager so it can auto-push the result to the user,
             # unless the task was sent in "poll" mode — the caller retrieves

@@ -263,6 +263,29 @@ class WechatClawbotClient:
         logger.debug("session_restored")
         return True
 
+    async def validate_session(self) -> bool:
+        """Probe the API to confirm the restored token still works.
+
+        :meth:`try_restore_session` only checks the ``saved_at`` age — a token
+        invalidated server-side (re-login elsewhere) passes and then silently
+        spins on API errors while status reports ``logged_in``.  A getupdates
+        response that is an error envelope (no ``msgs`` plus an error/errno/
+        retcode key) marks the session invalid.
+        """
+        try:
+            result = await self._api_post(
+                "ilink/bot/getupdates",
+                {"get_updates_buf": self._get_updates_buf, "base_info": _base_info()},
+            )
+            if isinstance(result, dict):
+                if "msgs" in result:
+                    return True
+                if result.get("errno") or result.get("error") or result.get("retcode"):
+                    return False
+            return True  # ambiguous envelope — don't false-revoke
+        except Exception:
+            return False
+
     def get_session_dict(self) -> dict:
         """Return current session data suitable for persistence."""
         return {

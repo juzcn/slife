@@ -220,9 +220,14 @@ class ToolCallWidget(Static):
         # controlled and may contain markup characters like `[`.
         content = content + _lit(label, style="bold #d29922")
 
-        # Primary arg preview (user data — safe path)
+        # Primary arg preview (user data — safe path).  The value is raw
+        # LLM/tool data shown in the ALWAYS-VISIBLE collapsed header, so run it
+        # through the same sanitizer the loop applies to tool results — a
+        # secret passed as an argument must not sit in the header.
         primary = _primary_arg_value(self.tool_args)
         if primary:
+            from slife.logfmt import sanitize_secrets
+            primary = sanitize_secrets(primary)
             short = primary[:_PRIMARY_ARG_MAX]
             if len(primary) > _PRIMARY_ARG_MAX:
                 short += "…"

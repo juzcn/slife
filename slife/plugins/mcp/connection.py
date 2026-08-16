@@ -37,6 +37,9 @@ _HEALTH_PING_TIMEOUT = 5.0         # a ping must answer within this window
 _RECONNECT_BACKOFF_INITIAL = 5.0   # first reconnect retry delay (s)
 _RECONNECT_BACKOFF_MAX = 60.0      # cap on exponential backoff (s)
 _RECONNECT_BACKOFF_MULTIPLIER = 2.0
+# Bound on the connect handshake (initialize) — a server that accepts the
+# transport but never answers initialize must not hang connect() forever.
+_CONNECT_HANDSHAKE_TIMEOUT = 30.0
 
 
 def _is_env_ref(value: str) -> bool:
@@ -209,12 +212,17 @@ class MCPServerConnection:
                 else:
                     await self._connect_http()
 
-                # MCP initialize handshake (transport-agnostic)
-                init_result = await self._request("initialize", {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "slife-mcp", "version": "0.1.0"},
-                })
+                # MCP initialize handshake (transport-agnostic).  Bounded so a
+                # server that accepts the transport but never answers
+                # initialize can't hang connect() indefinitely.
+                init_result = await asyncio.wait_for(
+                    self._request("initialize", {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "slife-mcp", "version": "0.1.0"},
+                    }),
+                    timeout=_CONNECT_HANDSHAKE_TIMEOUT,
+                )
 
                 server_info = init_result.get("serverInfo", {})
                 logger.debug(
@@ -397,9 +405,18 @@ class MCPServerConnection:
                 # closed there (or by its cancellation in cleanup).
                 return
             else:
-                # Non-200 or wrong content-type — consume response body
-                # so the connection can be reused, then fall through to
-                # streamable HTTP.
+                # Non-200 or wrong content-type — drain the response body
+                # (bounded) so the httpx connection is returned to the pool,
+                # then fall through to streamable HTTP.  aclose() without
+                # reading leaks the connection on every reconnect.
+                try:
+                    _n = 0
+                    async for _chunk in resp.aiter_bytes():
+                        _n += len(_chunk)
+                        if _n > 65536:
+                            break
+                except Exception:
+                    pass
                 logger.debug(
                     "mcp_sse_not_detected server=%s status=%d content_type=%s",
                     self.config.name, resp.status_code,
@@ -485,8 +502,13 @@ class MCPServerConnection:
             # Best-effort — never let setup failure block the connection
             pass
 
-    async def _request(self, method: str, params: dict) -> dict:
-        """Send a JSON-RPC request and wait for the response."""
+    async def _request(self, method: str, params: dict, timeout: float | None = None) -> dict:
+        """Send a JSON-RPC request and wait for the response.
+
+        *timeout* bounds the SSE response wait (``None`` = no inner bound —
+        enforcement lives in the agent loop's tool_timeout for tool calls, or
+        the caller's ``wait_for`` for the connect handshake).
+        """
         async with self._lock:
             self._next_id += 1
             req_id = self._next_id
@@ -501,7 +523,7 @@ class MCPServerConnection:
             if self.config.transport == "stdio":
                 return await self._request_stdio(request, req_id)
             elif self._sse_mode:
-                return await self._request_sse(request)
+                return await self._request_sse(request, timeout=timeout)
             else:
                 return await self._request_http(request)
 
@@ -583,9 +605,14 @@ class MCPServerConnection:
             except Exception:
                 pass
 
-    async def _request_sse(self, request: dict) -> dict:
+    async def _request_sse(self, request: dict, timeout: float | None = None) -> dict:
         """Send JSON-RPC via POST to SSE message endpoint, wait for
-        matching response on the SSE event stream."""
+        matching response on the SSE event stream.
+
+        *timeout* bounds the response wait; ``None`` waits indefinitely and the
+        caller (agent-loop tool_timeout / connect-handshake wait_for) governs —
+        a fixed 30s here failed legitimate SSE tool calls that ran longer.
+        """
         assert self._http_client is not None
         assert self._sse_queue is not None
 
@@ -601,9 +628,10 @@ class MCPServerConnection:
         req_id = request["id"]
         # Wait for the matching JSON-RPC response on the SSE stream
         while True:
-            entry = await asyncio.wait_for(
-                self._sse_queue.get(), timeout=30.0,
-            )
+            if timeout is None:
+                entry = await self._sse_queue.get()
+            else:
+                entry = await asyncio.wait_for(self._sse_queue.get(), timeout=timeout)
             if entry["type"] == "error":
                 raise ConnectionError(
                     f"SSE stream closed for '{self.config.name}': {entry['data']}"
@@ -761,6 +789,11 @@ class MCPServerConnection:
                 text = line.decode("utf-8", errors="replace").rstrip()
                 if text:
                     self._stderr_buffer.append(text + "\n")
+                    # Bound the buffer — only the tail is ever read (the last
+                    # 20 lines in connect()'s error path); a chatty server must
+                    # not grow it without bound.
+                    if len(self._stderr_buffer) > 500:
+                        del self._stderr_buffer[:len(self._stderr_buffer) - 500]
                     from slife.logfmt import sanitize_secrets
                     logger.debug("mcp_stderr server=%s line=%s", self.config.name, sanitize_secrets(text))
         except asyncio.CancelledError:

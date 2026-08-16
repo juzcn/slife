@@ -330,8 +330,19 @@ class TestUrlSave:
         mem_dir.mkdir()
         store = _fake_store(mem_dir)
 
+        class _Content:
+            def __init__(self, data):
+                self._data = data
+
+            async def iter_chunked(self, chunk_size):
+                if self._data:
+                    yield self._data
+
         class _Resp:
             status = 200
+            @property
+            def content(self):
+                return _Content(b"<html>Page</html>")
             async def __aenter__(self): return self
             async def __aexit__(self, *a): return None
             async def read(self): return b"<html>Page</html>"

@@ -14,32 +14,48 @@ from slife import paths
 
 
 class TestIsDev:
-    """Tests for the is_dev helper."""
+    """Tests for the is_dev helper — dev = the slife package sits under the CWD.
 
-    def test_returns_true_when_project_name_is_slife(self, tmp_path, monkeypatch):
-        """A pyproject.toml with project.name == 'slife' means dev mode."""
+    The old check (any ``pyproject.toml`` named ``slife`` in the CWD)
+    misclassified a production install launched from inside a repo checkout.
+    """
+
+    def _fake_slife(self, monkeypatch, module_file: str | None):
+        import sys
+        import types
+
+        if module_file is None:
+            monkeypatch.setitem(sys.modules, "slife", None)
+        else:
+            monkeypatch.setitem(
+                sys.modules, "slife",
+                types.SimpleNamespace(__file__=module_file),
+            )
+
+    def test_true_when_package_under_cwd(self, tmp_path, monkeypatch):
+        """The source tree's slife package is under the CWD → dev mode."""
+        pkg = tmp_path / "slife" / "__init__.py"
+        pkg.parent.mkdir()
+        pkg.touch()
+        monkeypatch.chdir(tmp_path)
+        self._fake_slife(monkeypatch, str(pkg))
+        assert paths.is_dev() is True
+
+    def test_false_when_package_in_site_packages(self, tmp_path, monkeypatch):
+        """The installed wheel lives outside the CWD → production, even if a
+        checkout's pyproject.toml happens to be in the CWD."""
         toml = tmp_path / "pyproject.toml"
         toml.write_text('[project]\nname = "slife"\n', encoding="utf-8")
         monkeypatch.chdir(tmp_path)
-        assert paths.is_dev() is True
-
-    def test_returns_false_when_project_name_differs(self, tmp_path, monkeypatch):
-        """A pyproject.toml with a different project.name is NOT dev mode."""
-        toml = tmp_path / "pyproject.toml"
-        toml.write_text('[project]\nname = "other-package"\n', encoding="utf-8")
-        monkeypatch.chdir(tmp_path)
+        self._fake_slife(
+            monkeypatch, "/opt/venv/site-packages/slife/__init__.py",
+        )
         assert paths.is_dev() is False
 
-    def test_returns_false_when_toml_missing(self, tmp_path, monkeypatch):
-        """No pyproject.toml at all means production."""
+    def test_false_when_no_slife_module(self, tmp_path, monkeypatch):
+        """No loaded slife module at all means production."""
         monkeypatch.chdir(tmp_path)
-        assert paths.is_dev() is False
-
-    def test_returns_false_when_toml_is_invalid(self, tmp_path, monkeypatch):
-        """A malformed pyproject.toml is treated as non-dev."""
-        toml = tmp_path / "pyproject.toml"
-        toml.write_text("not valid toml {{{", encoding="utf-8")
-        monkeypatch.chdir(tmp_path)
+        self._fake_slife(monkeypatch, None)
         assert paths.is_dev() is False
 
 

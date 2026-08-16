@@ -47,13 +47,22 @@ def setup_logging(
 
     root = logging.getLogger()
 
-    # Dedup: skip if handlers already set up (e.g. tests calling main() repeatedly)
+    # Dedup: skip if handlers already set up (e.g. tests calling main()
+    # repeatedly).  Return the EXISTING file handler's path — a fresh
+    # _session_log_path() would point the caller at a file nothing writes to
+    # (records go to the first session's file).
     if root.handlers:
         console = next(
             (h for h in root.handlers if isinstance(h, logging.StreamHandler)
              and getattr(h, 'stream', None) is not None),
             None
         )
+        file_handler = next(
+            (h for h in root.handlers if isinstance(h, logging.FileHandler)),
+            None,
+        )
+        if file_handler is not None:
+            return Path(file_handler.baseFilename), console or logging.NullHandler()
         if console is not None:
             return _session_log_path(agent_name), console
 

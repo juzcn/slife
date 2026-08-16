@@ -37,6 +37,13 @@ class AgentCancelled(Exception):
 #: failures during stream iteration — so we retry here, at the contract layer,
 #: for every turn source (main agent, subagents, heartbeat, WeChat, A2A).
 _LLM_STREAM_MAX_RETRIES = 2  # total attempts = 3
+
+#: Caps on the per-session caches.  Heartbeat / A2A one-shot conversations add
+#: a usage entry keyed by ``id(conversation)`` every turn and the context-date
+#: list grows per turn until a trim consumes it — without these bounds a long
+#: session (or a huge context window that never trims) grows them forever.
+_MAX_USAGE_CACHE = 1000
+_MAX_CONTEXT_DATES = 5000
 _LLM_STREAM_RETRY_BASE_DELAY = 0.5  # seconds, linear backoff: 0.5 * attempt
 
 
@@ -697,6 +704,14 @@ class AgentLoop:
         # human conversation's context measurement.
         if stream_usage.total_tokens > 0:
             self._usage_by_conv[id(conversation)] = stream_usage
+            if len(self._usage_by_conv) > _MAX_USAGE_CACHE:
+                # Drop the oldest entry (dict preserves insertion order) — a
+                # heartbeat fires every 60s and each A2A remote turn uses a
+                # fresh one-shot conversation, so the cache would otherwise
+                # grow without bound.  Evicting also makes an id()-reused
+                # conversation miss (fresh estimate) instead of reading a
+                # stale unrelated usage.
+                self._usage_by_conv.pop(next(iter(self._usage_by_conv)))
 
         return _StreamResult(
             content="".join(content_parts),
@@ -1008,22 +1023,22 @@ class AgentLoop:
 
         with request_scope(user_input[:50]):
             try:
-                # Fresh session: establish the context start (now).  "Context
-                # covers" is shown on the first turn, then only when restore
-                # or a trim advances it.
+                # Track the context time range.  "Context covers" is shown on
+                # the first turn, then only when restore or a trim advances it.
+                # Invariant: _context_time_start holds the OLDEST turn's date;
+                # _context_turn_dates holds the rest (restore seeds dates[1:]).
+                turn_start = (
+                    datetime.now().astimezone().replace(microsecond=0).isoformat()
+                )
                 if not self._context_time_start:
-                    self._context_time_start = (
-                        datetime.now().astimezone().replace(microsecond=0).isoformat()
-                    )
+                    self._context_time_start = turn_start
                 else:
-                    # Track this new turn's start time so a later trim can
-                    # advance _context_time_start correctly.  The list is
-                    # seeded by restore with the restored turns' dates; new
-                    # turns append here — otherwise it underflows on trim and
-                    # the "context covers since …" footer goes stale.
-                    self._context_turn_dates.append(
-                        datetime.now().astimezone().replace(microsecond=0).isoformat()
-                    )
+                    self._context_turn_dates.append(turn_start)
+                    if len(self._context_turn_dates) > _MAX_CONTEXT_DATES:
+                        # Keep the OLDEST dates (what a trim consumes) — a
+                        # huge window that never trims must not grow the list
+                        # without bound.
+                        del self._context_turn_dates[_MAX_CONTEXT_DATES:]
 
                 # Context usage is computed ONCE and shared: _sys_note
                 # reports it as the usage %, and the trim gate below uses
@@ -1050,6 +1065,12 @@ class AgentLoop:
                     for _ in range(removed):
                         if self._context_turn_dates:
                             self._context_time_start = self._context_turn_dates.pop(0)
+                    if removed and not self._context_turn_dates:
+                        # The trim removed every tracked turn (list exhausted —
+                        # e.g. a fresh session whose only tracked turn was in
+                        # _context_time_start).  The context now starts at the
+                        # current turn; don't leave a stale "covers since …".
+                        self._context_time_start = turn_start
                     logger.info(
                         "context_trimmed turns=%d time_start=%s",
                         removed, self._context_time_start,

@@ -119,6 +119,10 @@ class EmbeddingClient:
         self._gguf_path = gguf_path
         self._dim = dim or _guess_dim(model, gguf_path)
         self._client: Any = None        # AsyncOpenAI, Llama, or SentenceTransformer
+        # Serializes the lazy AsyncOpenAI client creation — two concurrent
+        # first-time API embeds would otherwise both create a client and leak
+        # one.
+        self._client_init_lock = asyncio.Lock()
         # In-flight load future — concurrent load() calls share one model
         # materialisation instead of each loading the local model (the
         # semantic gate calls load() from every search/check).
@@ -519,10 +523,12 @@ class EmbeddingClient:
             return None
 
         if self._client is None:
-            kwargs: dict = {"api_key": self._api_key}
-            if self._base_url:
-                kwargs["base_url"] = self._base_url
-            self._client = AsyncOpenAI(**kwargs)
+            async with self._client_init_lock:
+                if self._client is None:  # double-checked under the lock
+                    kwargs: dict = {"api_key": self._api_key}
+                    if self._base_url:
+                        kwargs["base_url"] = self._base_url
+                    self._client = AsyncOpenAI(**kwargs)
 
         response = await self._client.embeddings.create(
             model=self._model,

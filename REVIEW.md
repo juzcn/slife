@@ -1,8 +1,8 @@
 # Slife Code Review
 
-**日期:** 2026-08-16 · **基线:** 1994 tests pass（本机全绿，本地运行确认）· **范围:** 全新全库评审，8 个并行子系统（memdb / agent core / tools / a2a / mcp / ui / subagent+plugins / core-infra），高危项已逐条复核到源码（标注 ✓）。
+**日期:** 2026-08-16 · **基线:** 1996 tests pass（本机全绿，本地运行确认）· **范围:** 全新全库评审，8 个并行子系统（memdb / agent core / tools / a2a / mcp / ui / subagent+plugins / core-infra），高危项已逐条复核到源码（标注 ✓）。
 
-> 这是旧 `REVIEW.md`（2026-08-13）删除后的全新评审。**第 1 节高危（4 项）与第 2 节中危（全部）已修复**（2026-08-16，含回归测试）；唯一 deferred 是跨重连 in-flight 任务无重发（设计级）。以下第 3 节为**当前仍存在的低危项**。
+> 这是旧 `REVIEW.md`（2026-08-13）删除后的全新评审。**第 1 节高危（4 项）、第 2 节中危（全部）、第 3 节低危（全部）已修复**（2026-08-16，含回归测试）。唯一 deferred 是 A2A 跨重连 in-flight 任务无重发（设计级）；两项按信任模型接受（MCP 工具名转义、SSRF DNS-rebinding TOCTOU），见第 3 节注。
 
 ---
 
@@ -75,17 +75,30 @@
 
 ## 3. 低危（边角 / 资源增长 / 展示 / 卫生）
 
-- `_usage_by_conv` 以 `id(conversation)` 为键无界增长 + id 复用读脏（loop.py:307,475-477,692）。上一轮"无界增长仍在"原样未改；且每 60s 心跳 + 每 A2A 远端回合都新增永久条目。
-- `_context_turn_dates` 无界增长；首个 trim 下溢让 `_context_time_start` 陈旧（loop.py:954-996）。
-- a2a `_poll_tasks`、`_task_records`、`merged` 队列、`_stderr_buffer`、`health._entries`、subagent `_task_records/_async_results/_cancelled`、meta `_tasks`、memfiles `_inbound_tasks` 等均为无界/半无界增长。
-- `display._show_url` 无字节上限整读远程 body + 图片缓存永不清理（display.py:56-103）；memfiles `url_save` 整读入内存无大小帽（server.py:604-610）。
-- `exec._parse_input` 按第一个 `[`/`{` 切分，脚本路径含方括号即碎（exec.py:190-198）。
-- 工具名经 `_lit` 已修；但 `tool_display` 主参数值（原始 LLM 数据，可能含密钥）常显在折叠头行（tool_display.py:45-50,223-229）。
-- `mcp/client.py:61-78` 图片临时文件永不删除；`tool_adapter.py:103-116` 服务器提供的工具名/描述无转义（信任模型内 LOW）。
-- `mcp/process.py:124,256-282` `_log_stderr` 任务从不 cancel/await；`connection.py:404-408` 非 SSE 探测响应不读即关（每轮重连漏一个连接）；`connection.py:167-273` connect 无端到端握手超时；`connection.py:589-591` 硬 30s SSE 超时与"无读超时"架构矛盾。
-- `_seed_first_run_config` 0644；`detect_current_shell` 用 PSModulePath 推断 PowerShell 过度上报（cmd 启动的会话命令路由错）；`tools` 段严格 `resolve_env` KeyError 中止启动；`paths.is_dev()` CWD 脆弱；`bootstrap.setup_logging` 去重返回无人写的路径；config `mcp: "foo"` 非 dict 时 AttributeError；`config.to_dict` 把已解析明文 api_key 序列化进子代理 env。
-- `wechat` token 恢复不校验有效性、typing keepalive 无回复时泄漏；`memdb` FTS5 snippet 取第 3 列（tags，未总结 turn 恒空）、schema 错误吞 DEBUG、`_call_api` 懒初始化无锁、`get_first_provider_api_key` 把 `${VAR}` 占位当有效 key、CJK `max_tokens*4` 字符上限高估（bge-large 2000 字符 CJK 超 token 上限再卡 drainer）。
-- 测试质量：`test_ui_chat.py:18 test_basic_message_format` patch `__init__` 后空跑，无断言（同名类其余测试正常）；其余 ~44 个"无断言"测试多数为合法的 no-crash 检查。
+> ✅ 本节已全部修复（2026-08-16）。两项按信任模型接受未改：`tool_adapter` 服务器工具名/描述无转义（MCP 服务器即信任边界，名称由运维配置，描述走 JSON 不经 markup）；memfiles SSRF 的 DNS-rebinding TOCTOU（检查与抓取间的解析窗口，无法在单次 fetch 内完全消除）。
+
+- **✅ 无界增长全部加帽** — `_usage_by_conv`（`_MAX_USAGE_CACHE=1000`，超出弹最旧，id 复用也更可能 miss 而非读脏）；`_context_turn_dates`（`_MAX_CONTEXT_DATES=5000`，保留最旧即 trim 所需）；subagent `_task_records`（500）/`_async_results`（200）/`_cancelled`/`_late_results`（各 500）；`health._entries`（200）；mcp `_stderr_buffer`（500，只读尾 20 行）。`_poll_tasks`/`merged`/memfiles `_inbound_tasks` 本轮已在上轮加帽。
+- **✅ `display._show_url` / memfiles `url_save` 无字节上限** — 均改流式读取 + 50MB 硬帽；`display` 图片缓存超 1000 个文件时按 mtime 清理最旧。
+- **✅ `exec._parse_input` 按第一个 `[`/`{` 切分** — 只认空格前的 `{`/`[` 为 args 分隔，路径含 `C:\code\my[2024]\run.py` 不再碎。
+- **✅ `tool_display` 折叠头主参数值** — 显示前过 `sanitize_secrets`，密钥不再常显。
+- **✅ mcp `client.py` 图片临时文件** — 登记 `_temp_image_files`，`disconnect()` 时删除。
+- **✅ mcp `process._log_stderr` 从不 cancel** — 存 `_stderr_task`，`stop()` cancel+await。
+- **✅ `connection.py:404-408` 非 SSE 探测响应不读即关** — 有界 drain body 再 aclose，连接回池，不再每轮重连漏一个。
+- **✅ `connection.py` connect 无握手超时 / SSE 硬 30s** — `_request`/`_request_sse` 加 `timeout` 参数（None = 调用方治理）；`initialize` 用 `asyncio.wait_for(_CONNECT_HANDSHAKE_TIMEOUT=30s)`；SSE 响应等待不再硬 30s。
+- **✅ `detect_current_shell` 过度上报 PowerShell** — cmd.exe 设 `PROMPT`、PowerShell 不设；`PROMPT` 存在 → cmd，否则看 `PSModulePath`。回归：`test_windows_cmd_launched_with_powershell_installed`。
+- **✅ `tools` 段严格 `resolve_env` KeyError 中止启动** — 改 `_resolve_env_lenient`，缺 `${VAR}` 不再中止。
+- **✅ `paths.is_dev()` CWD 脆弱** — 改为检查已加载 slife 包的 `__file__` 是否在 CWD 之下（源码树 = dev，site-packages = prod，即使用户在 checkout 目录里跑 wheel）。回归重写 TestIsDev。
+- **✅ `bootstrap.setup_logging` 去重返回无人写的路径** — 返回已存在 FileHandler 的 `baseFilename`。
+- **✅ config `mcp: "foo"` 非 dict AttributeError** — 新增 `_mcp_servers_section`（非 dict 重置为 `{}`），三处 save/remove/set_enabled 共用。
+- **✅ `config.to_dict` 明文 api_key 进子代理 env** — 改经 0600 临时文件（`SLIFE_CONFIG_FILE`）传递，不再进 `/proc/<pid>/environ`；headless 优先读文件。
+- **✅ wechat token 恢复不校验** — 新增 `client.validate_session()`（getupdates 探测，错误信封判无效）；恢复路径校验失败则报 not_logged_in。
+- **✅ wechat typing keepalive 无回复时泄漏** — `_TYPING_MAX_LIFETIME=300s` 封顶，代理永不回复也自动停。
+- **✅ memdb FTS5 snippet 取第 3 列（tags 恒空）** — 改列 0（user_message）。
+- **✅ memdb schema 错误吞 DEBUG** — 改 `logger.error`。
+- **✅ memdb `_call_api` 懒初始化无锁** — `_client_init_lock` 双检锁。
+- **✅ memdb `get_first_provider_api_key` 把 `${VAR}` 当有效 key** — 未解析占位跳过，报"set a real API key"。
+- **✅ memdb CJK `max_tokens*4` 高估** — `_char_limit_for_tokens` 按 CJK≈1 char/token、其余≈4 chars/token 估算，bge-large 的 2000 字符 CJK 不再超 512 token。
+- **✅ 测试质量** — `test_ui_chat.py:18` 同义反复改为真断言（prefix/自定义 prefix/timestamp 三个用例）。
 
 ## 4. 测试与 CI
 
@@ -112,4 +125,4 @@
 
 - **第 1 节高危：4/4 已修复** —— OAuth 轮询、配置读失败清空、坏图片 turn 不落库、presence 注入。
 - **第 2 节中危：全部已修复**（a2a 8 项含 deferred 说明、memdb 5、agent core 6、UI 5、tools/config 8、subagent/wechat/memfiles 7、MCP 1），每项带回归测试。
-- **第 3 节低危：仍开放** —— 无界增长（`_usage_by_conv`/`_context_turn_dates`/各队列缓存）、展示与边角问题，见上。
+- **第 3 节低危：全部已修复** —— 无界增长加帽、下载大小帽、exec/tool_display、MCP 临时文件/SSE/握手、shell 探测、is_dev、bootstrap 去重、config mcp 类型守卫、子代理密钥经 0600 文件、wechat 会话校验/typing 封顶、memdb snippet/schema/懒锁/占位/CJK 上限、tautological 测试。仅两项按信任模型接受未改（见第 3 节注）。

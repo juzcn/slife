@@ -11,6 +11,23 @@ from typing import ClassVar
 
 from slife.tools.base import Tool
 
+# Bound on the downloaded-image display cache (logs/images/) — a long session
+# viewing many images must not grow the directory without bound.
+_MAX_CACHED_IMAGES = 1000
+
+
+def _prune_image_cache(images_dir, max_files: int = _MAX_CACHED_IMAGES) -> None:
+    """Remove the oldest cached images once the cache exceeds *max_files*."""
+    try:
+        files = sorted(
+            (p for p in images_dir.iterdir() if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+        )
+        for f in files[: max(0, len(files) - max_files)]:
+            f.unlink(missing_ok=True)
+    except OSError:
+        pass
+
 
 class ShowImageTool(Tool):
     """Display an image in the terminal.
@@ -67,6 +84,9 @@ class ShowImageTool(Tool):
         if not parsed.scheme or not parsed.netloc:
             return f"Error: invalid URL — {url}"
 
+        # A multi-GB URL must not be buffered whole into memory or written to
+        # the image cache — stream with a hard size cap.
+        _MAX_BYTES = 50 * 1024 * 1024  # 50 MB
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -74,8 +94,18 @@ class ShowImageTool(Tool):
                 ) as resp:
                     if resp.status != 200:
                         return f"Error: HTTP {resp.status} — {url}"
-                    raw = await resp.read()
                     content_type = resp.content_type or ""
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in resp.content.iter_chunked(65536):
+                        size += len(chunk)
+                        if size > _MAX_BYTES:
+                            return (
+                                f"Error: image too large "
+                                f"({size // (1024 * 1024)}MB > 50MB)"
+                            )
+                        chunks.append(chunk)
+                    raw = b"".join(chunks)
         except Exception as e:
             return f"Error: download failed — {e}"
 
@@ -95,6 +125,7 @@ class ShowImageTool(Tool):
         images_dir.mkdir(parents=True, exist_ok=True)
         cache = images_dir / f"{uuid.uuid4()}{ext}"
         cache.write_bytes(raw)
+        _prune_image_cache(images_dir)
 
         resolved = str(cache.resolve())
         return (

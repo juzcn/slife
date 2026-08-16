@@ -16,10 +16,23 @@ class TestUserMessage:
     """Tests for UserMessage — test string construction without Textual."""
 
     def test_basic_message_format(self):
-        """UserMessage formats text with > prefix."""
+        """UserMessage formats text with the '>' prefix."""
         from slife.ui.chat import UserMessage
-        with patch.object(UserMessage, '__init__', lambda self, text, images=None: None):
-            pass
+        msg = UserMessage("hello world", prefix="> ")
+        assert msg.render().plain == "> hello world"
+
+    def test_custom_prefix(self):
+        """A custom prefix (e.g. 'You> ') is used verbatim."""
+        from slife.ui.chat import UserMessage
+        msg = UserMessage("hi", prefix="You> ")
+        assert msg.render().plain == "You> hi"
+
+    def test_timestamp_is_prefixed(self):
+        """A timestamp is rendered as a dim [HH:MM] before the prefix."""
+        from slife.ui.chat import UserMessage
+        msg = UserMessage("hi", prefix="> ", timestamp="2026-08-16T10:00:00")
+        plain = msg.render().plain
+        assert plain.startswith("[") and "> hi" in plain
 
     def test_rendered_content(self):
         """Verify the rendered content format directly."""

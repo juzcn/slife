@@ -45,6 +45,18 @@ class _MockResponse:
     async def read(self):
         return self._data
 
+    @property
+    def content(self):
+        class _Content:
+            def __init__(self, data):
+                self._data = data
+
+            async def iter_chunked(self, chunk_size):
+                if self._data:
+                    yield self._data
+
+        return _Content(self._data)
+
     async def __aenter__(self):
         return self
 

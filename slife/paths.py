@@ -11,14 +11,21 @@ import sys
 from pathlib import Path
 
 def is_dev() -> bool:
-    """Check whether we're running from the slife source tree."""
-    try:
-        import tomllib
+    """Check whether we're running from the slife source tree.
 
-        data = tomllib.loads(
-            Path("pyproject.toml").read_text(encoding="utf-8")
-        )
-        return data.get("project", {}).get("name") == "slife"
+    Dev = the loaded slife package is a source dir under the CWD (a repo
+    checkout), not the installed wheel in site-packages.  The old check (any
+    ``pyproject.toml`` named ``slife`` in the CWD) misclassified a production
+    install launched from inside a repo checkout as dev, scattering session
+    data into that CWD.
+    """
+    try:
+        mod = sys.modules.get("slife")
+        f = getattr(mod, "__file__", None)
+        if not isinstance(f, str) or not f:
+            return False
+        pkg_dir = Path(f).resolve().parent
+        return pkg_dir.is_relative_to(Path.cwd().resolve())
     except Exception:
         return False
 

@@ -75,10 +75,20 @@ async def run_headless() -> None:
         os.getpid(),
     )
 
-    # Inherit config from the main agent via SLIFE_CONFIG env var.
-    # Subagents never read the json5 file — they get the main agent's
-    # in-memory config directly.
-    _config_json = os.environ.get("SLIFE_CONFIG", "")
+    # Inherit config from the main agent via SLIFE_CONFIG_FILE (a 0600 temp
+    # file) or the older SLIFE_CONFIG env var.  Subagents never read the json5
+    # file — they get the main agent's in-memory config directly.  The file
+    # path is preferred because the config carries resolved plaintext api_keys
+    # that must not ride the process env (visible via /proc/<pid>/environ).
+    _config_json = ""
+    _config_file = os.environ.get("SLIFE_CONFIG_FILE", "")
+    if _config_file:
+        try:
+            _config_json = Path(_config_file).read_text(encoding="utf-8")
+        except OSError:
+            _config_json = ""
+    if not _config_json:
+        _config_json = os.environ.get("SLIFE_CONFIG", "")
     if _config_json:
         import json as _json
         with elapsed("config_load", logger, level=logging.INFO, source="SLIFE_CONFIG"):

@@ -124,6 +124,24 @@ def _parse_section(raw: dict, key: str, expected_type, default):
     return value if isinstance(value, expected_type) else default
 
 
+def _mcp_servers_section(raw: dict) -> dict:
+    """Return (creating if needed) the ``mcp.servers`` dict.
+
+    A malformed config with a non-dict ``mcp`` section (e.g. ``mcp: "foo"``)
+    must not crash the config tools with an AttributeError — reset it to a
+    fresh dict so the write path repairs the structure.
+    """
+    mcp = raw.get("mcp")
+    if not isinstance(mcp, dict):
+        mcp = {}
+        raw["mcp"] = mcp
+    servers = mcp.get("servers")
+    if not isinstance(servers, dict):
+        servers = {}
+        mcp["servers"] = servers
+    return servers
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a single LLM model."""
@@ -491,7 +509,7 @@ class Config:
         if raw is None:
             return
 
-        servers = raw.setdefault("mcp", {}).setdefault("servers", {})
+        servers = _mcp_servers_section(raw)
         existing = servers.get(name, {})
 
         # ── Merge into existing entry (update) or build fresh (add) ──
@@ -535,7 +553,7 @@ class Config:
         if raw is None:
             return
 
-        servers = raw.get("mcp", {}).get("servers", {})
+        servers = _mcp_servers_section(raw)
         if name in servers:
             del servers[name]
             self._write_config(raw)
@@ -553,7 +571,7 @@ class Config:
         if raw is None:
             return
 
-        servers = raw.setdefault("mcp", {}).setdefault("servers", {})
+        servers = _mcp_servers_section(raw)
         if name in servers:
             if enabled:
                 servers[name].pop("enabled", None)
@@ -972,8 +990,10 @@ class Config:
         env_section = _parse_section(raw, "env", dict, {})
         cls._inject_env_vars(env_section)
 
-        # Tools (optional -- auto-discovery handles defaults)
-        tools = resolve_env(_parse_section(raw, "tools", list, []))
+        # Tools (optional -- auto-discovery handles defaults).  Lenient: a
+        # ${OPTIONAL_KEY} that isn't set must not abort the whole app startup —
+        # it's left as-is for a downstream resolver, like every other section.
+        tools = _resolve_env_lenient(_parse_section(raw, "tools", list, []))
 
         # MCP (built-in plugin, always enabled)
         # Resolve ${VAR} in MCP server env vars

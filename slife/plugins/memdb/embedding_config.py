@@ -89,15 +89,26 @@ def set_embedding_enabled(enabled: bool) -> bool:
 
 
 def get_first_provider_api_key() -> str:
-    """Return the api_key from the first configured provider, or ''."""
+    """Return the api_key from the first configured provider, or ''.
+
+    An unresolved ``${VAR}`` placeholder is NOT a usable key — skip it so
+    ``memory_set_embedding(backend=api)`` reports "set a real API key" instead
+    of a confusing "backend unavailable" degrade.
+    """
+    from slife.config import _resolve_secret
+
     raw = _read_raw()
     models = raw.get("models", {})
     providers = models.get("providers", {}) if isinstance(models, dict) else {}
     for _pid, pcfg in providers.items():
         if isinstance(pcfg, dict):
             key = pcfg.get("api_key", "")
-            if key:
-                return key
+            if not key:
+                continue
+            resolved = _resolve_secret(key)
+            if resolved == key and key.startswith("${"):
+                continue  # unresolved placeholder
+            return resolved
     return ""
 
 

@@ -71,6 +71,10 @@ class MCPWrapperProcess:
         self._process: asyncio.subprocess.Process | None = None
         self._running: bool = False
         self._port: int = 0
+        # The background stderr-drain task — stored so stop() can cancel it
+        # instead of letting it die via pipe EOF (or a "task was destroyed
+        # but it is pending" warning at interpreter shutdown).
+        self._stderr_task: "asyncio.Task | None" = None
 
     @property
     def is_running(self) -> bool:
@@ -121,7 +125,7 @@ class MCPWrapperProcess:
             await self._read_port_signal()
 
             # Start background stderr draining
-            asyncio.create_task(self._log_stderr())
+            self._stderr_task = asyncio.create_task(self._log_stderr())
 
         except FileNotFoundError as e:
             logger.error("wrapper_exec_not_found cmd=%s err=%s", self._command, e)
@@ -280,6 +284,15 @@ class MCPWrapperProcess:
         )
         self._process = None
         self._port = 0
+        # Cancel + await the stderr drain so its readline isn't left pending
+        # at interpreter shutdown.
+        if self._stderr_task is not None and not self._stderr_task.done():
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._stderr_task = None
 
     async def _log_stderr(self) -> None:
         """Read and log stderr from the plugin process.

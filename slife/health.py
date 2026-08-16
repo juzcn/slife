@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 #: Ordered list of status entries recorded during startup / runtime.
 _entries: list[dict] = []
+_MAX_ENTRIES = 200  # bound — a long session must not grow the list forever
 
 
 def record(
@@ -50,6 +51,8 @@ def record(
     if hint:
         entry["hint"] = hint
     _entries.append(entry)
+    if len(_entries) > _MAX_ENTRIES:
+        del _entries[:-_MAX_ENTRIES]
 
 
 def get_report() -> list[dict]:

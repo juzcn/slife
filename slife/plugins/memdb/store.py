@@ -168,7 +168,10 @@ class SessionStore:
             try:
                 await self._c.execute(stmt)
             except Exception as e:
-                logger.debug("schema_stmt_error err=%s stmt=%.80s", e, stmt)
+                # A failed CREATE TRIGGER / FTS / vec0 statement leaves the
+                # index missing with no production signal — log it loudly
+                # (DEBUG would silently hide a structurally broken DB).
+                logger.error("schema_stmt_error err=%s stmt=%.80s", e, stmt)
         await self._c.commit()
 
         # Detect and fix embedding dimension mismatch after model change.
@@ -553,7 +556,7 @@ class SessionStore:
         try:
             cursor = await self._c.execute(
                 f"""SELECT d.rowid, d.user_message, d.summary, d.tags, d.created_at,
-                          snippet(diary_fts, 3, '…', '…', '…', 40) AS snippet, rank
+                          snippet(diary_fts, 0, '…', '…', '…', 40) AS snippet, rank
                    FROM diary_fts fts
                    JOIN diary d ON fts.rowid = d.rowid
                    WHERE diary_fts MATCH ?{time_clauses}
@@ -1174,17 +1177,34 @@ def _split_chunks_to_token_limit(chunks: list[str], max_tokens: int) -> list[str
     Hard-splitting by character (never a partial code point) keeps every turn
     embeddable so the index can always complete.
     """
-    char_limit = max_tokens * 4
-    if char_limit <= 0:
+    if max_tokens <= 0:
         return chunks
     out: list[str] = []
     for c in chunks:
+        char_limit = _char_limit_for_tokens(max_tokens, c)
         while len(c) > char_limit:
             out.append(c[:char_limit])
             c = c[char_limit:]
         if c:
             out.append(c)
     return out
+
+
+def _char_limit_for_tokens(max_tokens: int, text: str) -> int:
+    """Chars that fit in *max_tokens* for a mixed CJK/Latin string.
+
+    CJK is ~1 char/token; Latin ~4 chars/token.  A fixed ``max_tokens * 4``
+    over-allocates for CJK-heavy text, so a chunk that fits by characters still
+    exceeds the model's real token limit and the embed fails — stalling the
+    drainer (the completeness gate never opens).
+    """
+    if not text:
+        return max_tokens
+    cjk = sum(1 for ch in text if _contains_cjk(ch))
+    other = len(text) - cjk
+    est_tokens = cjk + other / 4
+    per_char = est_tokens / len(text)
+    return max(1, int(max_tokens / per_char))
 
 
 def _contains_cjk(text: str) -> bool:
