@@ -18,11 +18,11 @@ import threading
 import time as _time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine
 
-if TYPE_CHECKING:
-    import paho.mqtt.client as mqtt
-    from paho.mqtt.reasoncodes import ReasonCode
+import paho.mqtt.client as mqtt
+from paho.mqtt.enums import CallbackAPIVersion
+from paho.mqtt.reasoncodes import ReasonCode
 
 from slife.a2a.transport import TransportAdapter, TransportMessage
 
@@ -34,16 +34,9 @@ _MQTT_RC_SUCCESS = 0
 # (drop the newest message with a warning) instead of unbounded growth.
 _MAX_QUEUE_SIZE = 1000
 
-#: Lazily-loaded paho-mqtt module — only imported when MQTT is actually used.
-_mqtt_mod: Any = None
-
-
 def _get_mqtt():
-    """Lazy-import paho-mqtt so it is only required when MQTT is enabled."""
-    global _mqtt_mod
-    if _mqtt_mod is None:
-        import paho.mqtt.client as _mqtt_mod
-    return _mqtt_mod
+    """Return the paho-mqtt module (paho-mqtt is a hard dependency)."""
+    return mqtt
 
 
 @dataclass
@@ -139,8 +132,8 @@ class MQTTAdapter(TransportAdapter):
             {"status": "offline", "agent_name": self._agent_name},
         )
 
-        c = mq.Client(  # type: ignore[union-attr]
-            mq.CallbackAPIVersion.VERSION2,
+        c = mq.Client(
+            CallbackAPIVersion.VERSION2,
             client_id=self._client_id,
             protocol=mq.MQTTv5,
         )
