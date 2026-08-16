@@ -1163,6 +1163,93 @@ class TestGetRecentTurns:
             await srv.get_recent_turns()
 
 
+# ── Plugin spawn cancellation cleanup ─────────────────────────────────────
+
+
+class TestSpawnPluginCancellationCleanup:
+    """A cancelled spawn (app-level required-plugin timeout) must stop the
+    child process and reset the lifecycle — otherwise the child is orphaned."""
+
+    @pytest.mark.asyncio
+    async def test_cancelled_spawn_stops_child_and_resets(self, sample_config):
+        service = AgentService(sample_config)
+        fake_process = AsyncMock()
+        client = fake_process.create_client.return_value
+        # list_tools hangs forever → the app's asyncio.timeout cancels the
+        # task mid-await; _spawn_plugin_generic must still clean up.
+        client.list_tools.side_effect = asyncio.CancelledError()
+
+        with patch(
+            "slife.mcp.process.MCPWrapperProcess", return_value=fake_process,
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await service._spawn_plugin_generic(
+                    "memdb", "slife.plugins.memdb.server",
+                )
+
+        fake_process.stop.assert_awaited()
+        assert service._plugins["memdb"].client is None
+        assert service._plugins["memdb"].process is None
+        assert service._plugins["memdb"].port == 0
+
+
+class TestSpawnPluginListToolsRetry:
+    """A list_tools timeout (stuck SSE session from the plugin-load race)
+    must reconnect with a fresh session and retry once — the plugin is
+    serving by then, so the load self-heals instead of failing."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_retries_with_fresh_session(self, sample_config):
+        service = AgentService(sample_config)
+        fake_process = AsyncMock()
+        fake_process.port = 12345
+
+        first_client = AsyncMock()
+        first_client.list_tools.side_effect = TimeoutError("list_tools timed out")
+        second_client = AsyncMock()
+        second_client.list_tools.return_value = [{
+            "name": "memdb__memory_search", "description": "d",
+            "inputSchema": {"type": "object", "properties": {}},
+        }]
+        fake_process.create_client.side_effect = [first_client, second_client]
+
+        with patch(
+            "slife.mcp.process.MCPWrapperProcess", return_value=fake_process,
+        ):
+            started = await service._spawn_plugin_generic(
+                "memdb", "slife.plugins.memdb.server",
+            )
+
+        assert started is True
+        first_client.disconnect.assert_awaited()
+        assert fake_process.create_client.call_count == 2
+        assert service._plugins["memdb"].client is second_client
+        assert service._plugins["memdb"].process is fake_process
+
+    @pytest.mark.asyncio
+    async def test_second_timeout_still_fails(self, sample_config):
+        """If the retry also times out, the spawn fails (fatal for memdb)."""
+        service = AgentService(sample_config)
+        fake_process = AsyncMock()
+
+        first_client = AsyncMock()
+        first_client.list_tools.side_effect = TimeoutError("list_tools timed out")
+        second_client = AsyncMock()
+        second_client.list_tools.side_effect = TimeoutError("list_tools timed out")
+        fake_process.create_client.side_effect = [first_client, second_client]
+
+        with patch(
+            "slife.mcp.process.MCPWrapperProcess", return_value=fake_process,
+        ):
+            with pytest.raises(TimeoutError):
+                await service._spawn_plugin_generic(
+                    "memdb", "slife.plugins.memdb.server",
+                )
+
+        first_client.disconnect.assert_awaited()
+        fake_process.stop.assert_awaited()
+
+
 # ── Memfiles tunnel readiness watch ───────────────────────────────────────
 
 

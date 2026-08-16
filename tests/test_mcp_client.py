@@ -121,6 +121,27 @@ class TestMCPClientListTools:
         assert tools[1]["name"] == "tool2"
         assert tools[1]["description"] == ""
 
+    @pytest.mark.asyncio
+    async def test_list_tools_timeout_raises(self):
+        """A hung session.list_tools surfaces as TimeoutError, not a hang.
+
+        ``asyncio.timeout`` (not ``wait_for``) breaks the stuck SSE session
+        at the deadline even when the inner task won't finish cancelling —
+        this is what makes the plugin-load race detectable.
+        """
+        client = MCPClient()
+        client._connected = True
+        client._tool_timeout = 0.05  # force the timeout quickly
+        client._session = MagicMock()
+
+        async def _hang() -> None:
+            await asyncio.sleep(3600)  # never responds
+
+        client._session.list_tools = _hang
+
+        with pytest.raises(TimeoutError, match="list_tools timed out"):
+            await client.list_tools()
+
 
 class TestMCPClientCallTool:
     """Tests for call_tool."""

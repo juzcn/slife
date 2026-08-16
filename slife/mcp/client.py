@@ -236,11 +236,14 @@ class MCPClient:
         # parent's 30s spawn timeout.
         list_timeout = min(self._tool_timeout, 20.0)
         try:
-            result = await asyncio.wait_for(
-                self._session.list_tools(),
-                timeout=list_timeout,
-            )
-        except asyncio.TimeoutError:
+            # asyncio.timeout, not asyncio.wait_for: a stuck SSE session on
+            # Windows/Proactor can defeat wait_for's cancellation (the inner
+            # task never finishes cancelling, so wait_for blocks forever).
+            # asyncio.timeout raises at the deadline without waiting for the
+            # inner task — the hang becomes a recoverable TimeoutError.
+            async with asyncio.timeout(list_timeout):
+                result = await self._session.list_tools()
+        except TimeoutError:
             raise TimeoutError(
                 f"list_tools timed out after {list_timeout}s — "
                 f"the MCP server may have a stuck SSE session"

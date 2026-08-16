@@ -1,5 +1,6 @@
 """Textual TUI application for Slife — Claude Code CLI style."""
 
+import asyncio
 import logging
 import re
 import sys
@@ -22,6 +23,13 @@ from slife.ui.restore import restore_session
 from slife.ui.tool_display import ToolCallWidget
 
 logger = logging.getLogger(__name__)
+
+# memdb is a required component — a load failure aborts startup.  Bounded
+# so a hung plugin spawn (e.g. a Streamable HTTP SSE session stuck on
+# Windows/Proactor, which a plain wait_for can't always break) surfaces as
+# a fatal error instead of limping along without memory.  Generous enough
+# for the plugin's slow first gguf model load (child-side, ~4s observed).
+_MEMDB_SPAWN_TIMEOUT = 30.0
 
 
 # ── Status bar ─────────────────────────────────────────────────────
@@ -338,16 +346,6 @@ class SlifeApp(App):
         """Quit the app — cancel the agent loop immediately, then
         clean up child processes.  Order matters: inbox/loop must
         stop first so MCP wrapper isn't mid-request during shutdown."""
-        import asyncio
-
-        async def _stop_one(name: str, coro) -> None:
-            try:
-                await asyncio.wait_for(coro, timeout=3.0)
-            except asyncio.TimeoutError:
-                logger.warning("shutdown_timeout service=%s", name)
-            except Exception:
-                pass
-
         # Cancel the agent loop RIGHT NOW — don't let it keep firing
         # tool calls into the MCP wrapper while we're trying to stop.
         self.service.inbox.cancel()
@@ -355,6 +353,25 @@ class SlifeApp(App):
         for worker in list(self.workers):
             try:
                 worker.cancel()
+            except Exception:
+                pass
+
+        await self._stop_plugins()
+        self.exit()
+
+    async def _stop_plugins(self) -> None:
+        """Stop the inbox and every plugin service with a bounded wait.
+
+        Shared by ``action_quit`` (normal exit) and the fatal
+        required-component path (memdb load failure) so child processes
+        are never orphaned when the app goes down.
+        """
+
+        async def _stop_one(name: str, coro) -> None:
+            try:
+                await asyncio.wait_for(coro, timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.warning("shutdown_timeout service=%s", name)
             except Exception:
                 pass
 
@@ -370,8 +387,6 @@ class SlifeApp(App):
             _stop_one("memfiles", self.service.stop_memfiles()),
             return_exceptions=True,
         )
-
-        self.exit()
 
     def action_cancel(self) -> None:
         """Cancel the currently running agent loop.  No-op if idle."""
@@ -527,26 +542,67 @@ class SlifeApp(App):
         ``SKIPPED`` is an expected no-op (e.g. mqtt without a running MQTT
         broker, or a plugin disabled in config) — shown as neutral info,
         never as an error warning.
+
+        ``memdb`` is special-cased: it is a required component, so a load
+        failure — including a bounded timeout on a hung spawn — aborts
+        startup instead of silently running without memory.
         """
         try:
-            status = await coro
-            if status is PluginStartStatus.STARTED:
-                self._show_system_message(
-                    f"🔌 插件已加载: {name}", color="#3fb950",
-                )
-            elif status is PluginStartStatus.SKIPPED:
-                logger.debug("plugin_skipped name=%s", name)
-                self._show_system_message(
-                    f"ℹ️ 插件未加载: {name}", color="#8b949e",
-                )
+            if name == "memdb":
+                # asyncio.timeout raises at the deadline without waiting for
+                # the inner task to finish cancelling — a hung Streamable HTTP
+                # SSE session on Windows/Proactor can defeat asyncio.wait_for,
+                # so this is the reliable way to surface the hang as a failure.
+                async with asyncio.timeout(_MEMDB_SPAWN_TIMEOUT):
+                    status = await coro
             else:
-                self._show_system_message(
-                    f"⚠ 插件启动失败: {name}", color="#d29922",
-                )
+                status = await coro
         except Exception as e:
+            if name == "memdb":
+                await self._abort_required_plugin(
+                    "memdb", f"{type(e).__name__}: {e}",
+                )
+                return
             self._show_system_message(
                 f"⚠ 插件启动失败 ({name}): {e}", color="#d29922",
             )
+            return
+        if status is PluginStartStatus.STARTED:
+            self._show_system_message(
+                f"🔌 插件已加载: {name}", color="#3fb950",
+            )
+        elif status is PluginStartStatus.SKIPPED:
+            logger.debug("plugin_skipped name=%s", name)
+            self._show_system_message(
+                f"ℹ️ 插件未加载: {name}", color="#8b949e",
+            )
+        elif name == "memdb":
+            await self._abort_required_plugin(
+                "memdb", f"status={status.name}",
+            )
+        else:
+            self._show_system_message(
+                f"⚠ 插件启动失败: {name}", color="#d29922",
+            )
+
+    async def _abort_required_plugin(self, name: str, reason: str) -> None:
+        """Abort startup because a required component failed to load.
+
+        Mirrors the memory-restore-fatal path: a red chat message plus an
+        stderr line (the TUI message never renders before exit tears the
+        app down), a bounded plugin shutdown (no orphaned children), then
+        exit — a required component missing is never silent.
+        """
+        msg = (
+            f"✗ 必要组件加载失败: {name}（{reason}）\n"
+            f"{name} 是系统核心组件 — 无法在缺少它的状态下运行，请修复后重启。"
+        )
+        logger.error("required_plugin_fatal name=%s reason=%s", name, reason)
+        chat_view = self.query_one("#chat-view", ChatView)
+        chat_view.add_system_message(msg, color="#f85149")
+        print(f"\n{msg}", file=sys.stderr)
+        await self._stop_plugins()
+        self.exit()
 
 
     # ── Input handling ────────────────────────────────────────────

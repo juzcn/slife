@@ -525,8 +525,21 @@ class AgentService:
             await process.start()
             client = await process.create_client(tool_timeout=self.config.tool_timeout)
 
-            # Discover tools
-            plugin_tools = await client.list_tools()
+            # Discover tools — retry once on a timeout.  A Streamable HTTP
+            # session established in the plugin's "signalled but not yet
+            # serving" window can hang on Windows/Proactor (memdb's slow
+            # lifespan makes this the likeliest).  By the retry the plugin is
+            # definitely serving, so a fresh session succeeds — the race
+            # self-heals instead of failing the load.
+            try:
+                plugin_tools = await client.list_tools()
+            except TimeoutError:
+                logger.warning("plugin_tools_timeout_retry name=%s", name)
+                await client.disconnect()
+                client = await process.create_client(
+                    tool_timeout=self.config.tool_timeout,
+                )
+                plugin_tools = await client.list_tools()
             logger.debug("plugin_tools name=%s count=%d names=%s",
                          name, len(plugin_tools),
                          [t["name"] for t in plugin_tools])
@@ -563,10 +576,13 @@ class AgentService:
             os.environ[f"SLIFE_{name.upper()}_PORT"] = str(process.port)
 
             return True
-        except Exception:
+        except BaseException:
             # A failed spawn must not leave the lifecycle pointing at a
             # live-but-unconnected child (watchdog stall) or an orphaned
             # process (leak) — reset and stop it before re-raising (REVIEW M2).
+            # BaseException (not just Exception) so a cancellation from the
+            # app's required-plugin timeout also stops the child instead of
+            # orphaning it.
             self._plugins[name].process = None
             self._plugins[name].client = None
             self._plugins[name].port = 0
