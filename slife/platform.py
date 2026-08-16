@@ -202,7 +202,7 @@ async def terminate_process(
                 await asyncio.wait_for(process.wait(), timeout=graceful_timeout)
                 logger.debug("process_exited pid=%s label=%s", process.pid, label)
             except asyncio.TimeoutError:
-                logger.debug("process_force_kill pid=%s label=%s", process.pid, label)
+                logger.warning("process_force_kill pid=%s label=%s", process.pid, label)
                 process.kill()
                 try:
                     await asyncio.wait_for(process.wait(), timeout=force_timeout)

@@ -32,14 +32,18 @@ def setup_logging(
 ) -> tuple[Path, logging.Handler]:
     """Configure logging to both console and file.
 
-    Console: WARNING+ only — keeps the terminal clean before Textual's
-             alternate screen activates and during TUI runtime.
+    Console: INFO band only (INFO <= level < WARNING) — the terminal sees
+             lifecycle milestones, never WARNING/ERROR.  The ceiling makes
+             this permanent: logging a warning no longer leaks to the
+             terminal, so levels keep their true meaning in the log file.
+             The TUI mutes the console entirely while its alternate screen
+             is up (:meth:`slife.ui.app.SlifeApp` lifecycle).
     File:    DEBUG+ with timestamps, session/request IDs for troubleshooting.
     Each session writes to a new ``logs/YYYYMMDD_HHMMSS_<agent_name>.log`` file.
 
     Returns:
-        (log_path, console_handler) — console is already at WARNING;
-        detailed output goes to the per-session log file.
+        (log_path, console_handler) — console is at INFO band (capped below
+        WARNING); detailed output goes to the per-session log file.
     """
     from slife.logfmt import configure_root_logging
 
@@ -59,7 +63,8 @@ def setup_logging(
     file_fmt = SessionFormatter(FILE_LOG_FORMAT)
 
     console = configure_root_logging(
-        stderr_level=logging.WARNING,
+        stderr_level=logging.INFO,
+        stderr_max_level=logging.WARNING,
         file_path=log_path,
         file_level=level,
         file_format=file_fmt,

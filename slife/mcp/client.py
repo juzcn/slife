@@ -273,7 +273,7 @@ class MCPClient:
                 f"Tool '{name}' failed: {type(e).__name__}: {e}. "
                 f"Check the MCP server status."
             )
-            logger.info("mcp_tool_error name=%s err=%s", name, e)
+            logger.warning("mcp_tool_error name=%s err=%s", name, e)
             return f"Error: {msg}"
 
         if getattr(result, "isError", False):

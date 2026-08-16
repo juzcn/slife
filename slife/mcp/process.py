@@ -288,7 +288,8 @@ class MCPWrapperProcess:
         Filters out FastMCP banner art, uvicorn startup messages,
         and subprocess log lines that already go to the plugin's
         own log file.  Everything else is relayed at DEBUG so it
-        never reaches the terminal (console handler is WARNING+).
+        stays in the session log (the console is capped below
+        WARNING and muted during the TUI).
         """
         import re
         from slife.logfmt import read_stderr_lines
@@ -316,8 +317,11 @@ class MCPWrapperProcess:
                 continue
 
             # OAuth device-flow instructions from the gateway child
-            # (slife.mcp.oauth).  Relay the box at WARNING so it's visible;
-            # fire a desktop notification for the compact URL+code action.
+            # (slife.mcp.oauth).  The full box is relayed at WARNING for the
+            # session log (the console is capped below WARNING, so it never
+            # prints to the terminal — in the TUI that box was garbled
+            # anyway); the compact URL+code line fires the desktop
+            # notification, which is the user-facing channel.
             if stripped.startswith(_OAUTH_ACTION_MARKER):
                 body = stripped[len(_OAUTH_ACTION_MARKER):].strip()
                 _notify_user("slife — OAuth authorization required", body)

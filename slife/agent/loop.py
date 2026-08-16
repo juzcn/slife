@@ -834,7 +834,7 @@ class AgentLoop:
                     result = (
                         f"Error: Tool '{tc.name}' failed: {type(e).__name__}: {e}."
                     )
-                    logger.info(
+                    logger.warning(
                         "tool_error name=%s err=%s", tc.name, e,
                     )
             else:
@@ -855,7 +855,7 @@ class AgentLoop:
                         f"Error: Tool '{tc.name}' timed out "
                         f"({effective_timeout}s)."
                     )
-                    logger.info(
+                    logger.warning(
                         "tool_timeout name=%s timeout=%ds args=%s",
                         tc.name, effective_timeout,
                         self._truncate_args(tc.arguments),
@@ -864,7 +864,7 @@ class AgentLoop:
                     result = (
                         f"Error: Tool '{tc.name}' failed: {type(e).__name__}: {e}."
                     )
-                    logger.info(
+                    logger.warning(
                         "tool_error name=%s err=%s", tc.name, e,
                     )
 

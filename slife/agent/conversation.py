@@ -84,9 +84,11 @@ class Conversation:
                         matched.add(pid)
                         pending_ids.remove(pid)
                 for tc_id in expected - matched:
-                    # Routine self-heal — keep it out of the terminal (console
-                    # is WARNING+); INFO still lands in the session log file.
-                    logger.info("conv_orphan_repair tool_call_id=%s", tc_id)
+                    # Routine self-heal — a recoverable anomaly, so WARNING
+                    # in the log.  The console is capped below WARNING, so
+                    # this never reaches the terminal (TUI surfacing is done
+                    # by the business layer explicitly).
+                    logger.warning("conv_orphan_repair tool_call_id=%s", tc_id)
                     # Insert synthetic error tool result right after the
                     # assistant message (before whatever comes next).
                     self.messages.insert(

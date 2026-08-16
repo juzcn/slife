@@ -60,7 +60,7 @@ def main(config_path: str = "slife.json5"):
     if sys.platform == "win32":
         os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-    log_path, _ = setup_logging(agent_name=agent_name)
+    log_path, console = setup_logging(agent_name=agent_name)
 
     logger.debug("log_path=%s", log_path)
     logger.debug("data_dir=%s", data_dir)
@@ -108,12 +108,15 @@ def main(config_path: str = "slife.json5"):
              f"context={active.context_window}.",
     )
 
-    # Console logging is already at WARNING via setup_logging().
-    # All messages still go to the per-session log file at DEBUG level.
+    # Console is at INFO band (capped below WARNING) via setup_logging() —
+    # warnings/errors never reach the terminal; they stay in the log file
+    # at true level and surface in the TUI as business-level system messages.
+    # The TUI mutes the console while its alternate screen is up and restores
+    # it here on exit (see SlifeApp.restore_logging).
 
     logger.debug("tui starting…")
 
-    app = SlifeApp(config)
+    app = SlifeApp(config, console_handler=console)
     try:
         app.run()
     except KeyboardInterrupt:
@@ -128,6 +131,10 @@ def main(config_path: str = "slife.json5"):
         # in raw mode (arrow keys showing ^[[A).  This is the safety net.
         if sys.platform == "win32":
             restore_windows_console()
+        # Un-mute the console back to its INFO band.  Runs here (not just
+        # on_unmount) because Textual's unmount is not guaranteed on the
+        # KeyboardInterrupt path.
+        app.restore_logging()
         # Ensure child processes are cleaned up even on crash.
         app.service.kill_child_processes()
 

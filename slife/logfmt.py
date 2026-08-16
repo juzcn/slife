@@ -370,8 +370,30 @@ def error_json(message: str, **extra: object) -> str:
 # ── Shared root-logging setup ──────────────────────────────────────────
 
 
+class _LevelCeiling(logging.Filter):
+    """Drop records at or above *exclusive_max*.
+
+    Python's ``Handler.setLevel`` is a floor only — everything at or above
+    passes.  A ceiling lets a handler show a *band* (e.g. INFO) while higher
+    levels flow only to the other handlers (the log file).  This is what
+    keeps WARNING/ERROR off the terminal without demoting them at the call
+    site — "terminal is terminal, log is log".
+
+    ``exclusive_max`` is exclusive: ``_LevelCeiling(logging.WARNING)`` keeps
+    DEBUG/INFO, drops WARNING and above.
+    """
+
+    def __init__(self, exclusive_max: int) -> None:
+        super().__init__()
+        self.exclusive_max = exclusive_max
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno < self.exclusive_max
+
+
 def configure_root_logging(
     stderr_level: int = logging.DEBUG,
+    stderr_max_level: int | None = None,
     stderr_format: logging.Formatter | None = None,
     file_path: Path | None = None,
     file_level: int = logging.DEBUG,
@@ -386,6 +408,12 @@ def configure_root_logging(
 
     Args:
         stderr_level: Log level for the stderr stream handler.
+        stderr_max_level: Optional exclusive ceiling for the stderr handler.
+            When set, WARNING+ records never reach the terminal (they flow
+            only to the file handler).  The main harness passes
+            ``logging.WARNING`` so the terminal shows the INFO band;
+            plugin/subagent paths leave it ``None`` — their stderr is a
+            diagnostic pipe to the parent, not a user terminal.
         stderr_format: Formatter for stderr output.
         file_path: If given, a ``FileHandler`` is added writing to this path.
         file_level: Log level for the file handler.
@@ -407,6 +435,8 @@ def configure_root_logging(
     stderr_handler = logging.StreamHandler()
     stderr_handler.setLevel(stderr_level)
     stderr_handler.setFormatter(stderr_format)
+    if stderr_max_level is not None:
+        stderr_handler.addFilter(_LevelCeiling(stderr_max_level))
     root.addHandler(stderr_handler)
 
     if file_path is not None:

@@ -154,7 +154,9 @@ class NotifyUserTool(Tool):
         if not message:
             return "Error: message is required."
 
-        # Log prominently
+        # Log for the session file at WARNING (the console is capped below
+        # WARNING, so this is diagnostic-only; the notification below is the
+        # user-facing channel).
         import logging
         logging.getLogger(__name__).warning(
             "USER_NOTIFICATION title=%s message=%s", title, message,

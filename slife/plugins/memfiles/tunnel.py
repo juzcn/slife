@@ -96,7 +96,7 @@ class NgrokTunnel:
         fails to start after all retries.
         """
         if self._public_url is not None:
-            logger.debug("tunnel_already_running url=%s", self._public_url)
+            logger.warning("tunnel_already_running url=%s", self._public_url)
             return self._public_url
 
         # Guard against concurrent start attempts (e.g. executor + monitor).
@@ -160,7 +160,7 @@ class NgrokTunnel:
                 last_error = e
                 if attempt < _MAX_RETRIES:
                     delay = _RETRY_DELAY * attempt
-                    logger.info(
+                    logger.warning(
                         "tunnel_retry attempt=%d/%d delay=%.1fs err=%s",
                         attempt, _MAX_RETRIES, delay, e,
                     )
@@ -180,7 +180,7 @@ class NgrokTunnel:
             self._ngrok.disconnect(self._public_url)
             logger.info("tunnel_disconnected url=%s", self._public_url)
         except Exception as e:
-            logger.debug("tunnel_disconnect_error err=%s", e)
+            logger.warning("tunnel_disconnect_error err=%s", e)
 
         self._listener = None
         self._public_url = None
@@ -234,7 +234,7 @@ class NgrokTunnel:
                 on_tunnel_up()
         except Exception as e:
             self._monitor_retries += 1
-            logger.info(
+            logger.warning(
                 "tunnel_initial_start_failed port=%s err=%s", port, e,
             )
 
