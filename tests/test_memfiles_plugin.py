@@ -43,13 +43,13 @@ def _active_tunnel(url="https://slife.ngrok-free.dev"):
     return patch.multiple(
         plugin,
         is_active=MagicMock(return_value=True),
-        public_url=MagicMock(return_value=url),
         share_url_for=MagicMock(side_effect=lambda fid: f"{url}/share/{fid}"),
+        status=MagicMock(return_value={"state": "active", "url": url}),
     )
 
 
-def _offline_tunnel():
-    """Patch the tunnel so it reports inactive.
+def _offline_tunnel(state="failed"):
+    """Patch the tunnel so it reports inactive with a terminal ``failed`` state.
 
     Also clear ``_PLUGIN_PORT`` so ``_ensure_tunnel`` short-circuits without
     a real ngrok start attempt — without this the offline test spent ~9s
@@ -58,8 +58,8 @@ def _offline_tunnel():
     return patch.multiple(
         plugin,
         is_active=MagicMock(return_value=False),
-        public_url=MagicMock(return_value=None),
         share_url_for=MagicMock(return_value=None),
+        status=MagicMock(return_value={"state": state, "url": ""}),
         _PLUGIN_PORT=0,
     )
 
@@ -579,15 +579,27 @@ class TestHarnessTools:
             raw = await getattr(plugin, "__tunnel_status")()
         data = json.loads(raw)
         assert data["active"] is True
+        assert data["state"] == "active"
         assert data["url"] == "https://slife.ngrok-free.dev"
 
     @pytest.mark.asyncio
-    async def test_tunnel_status_offline(self):
-        with _offline_tunnel():
+    async def test_tunnel_status_failed(self):
+        with _offline_tunnel(state="failed"):
             raw = await getattr(plugin, "__tunnel_status")()
         data = json.loads(raw)
         assert data["active"] is False
+        assert data["state"] == "failed"
         assert "hint" in data
+
+    @pytest.mark.asyncio
+    async def test_tunnel_status_starting(self):
+        """A start attempt still in flight is reported as 'starting', so the
+        harness waits rather than misreading it as tunnel down."""
+        with _offline_tunnel(state="starting"):
+            raw = await getattr(plugin, "__tunnel_status")()
+        data = json.loads(raw)
+        assert data["active"] is False
+        assert data["state"] == "starting"
 
     @pytest.mark.asyncio
     async def test_register_file(self, tmp_path):

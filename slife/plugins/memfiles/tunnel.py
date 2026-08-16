@@ -59,6 +59,11 @@ class NgrokTunnel:
         self._starting_at: float | None = None  # monotonic time of the in-flight start
         self._start_gen: int = 0  # bumped per accepted start attempt (stale ownership)
         self._start_lock = threading.Lock()  # serializes guard mutation only
+        # Set once a start attempt has concluded unsuccessfully (retries
+        # exhausted, missing token, SDK absent).  Cleared on a successful
+        # start or an explicit stop.  Lets the harness report "tunnel down"
+        # as a terminal state instead of racing a still-running attempt.
+        self._failed: bool = False
 
     # ── Properties ─────────────────────────────────────────────────
 
@@ -82,6 +87,26 @@ class NgrokTunnel:
         if url is None:
             return None
         return f"{url}/share/{file_id}"
+
+    # ── Status ─────────────────────────────────────────────────────
+
+    def status(self) -> dict[str, str]:
+        """Report the tunnel's current state to the harness.
+
+        ``active`` — a public URL is live; ``starting`` — a start attempt is
+        in flight (the eager start is deliberately fire-and-forget, so the
+        harness sees this transient state and waits); ``failed`` — the last
+        start attempt concluded unsuccessfully (terminal, safe to report);
+        ``idle`` — no attempt has been made (e.g. plugin loaded without a
+        port, subagent reusing the main agent's tunnel).
+        """
+        if self._public_url is not None:
+            return {"state": "active", "url": self._public_url}
+        if self._starting:
+            return {"state": "starting", "url": ""}
+        if self._failed:
+            return {"state": "failed", "url": ""}
+        return {"state": "idle", "url": ""}
 
     # ── Lifecycle ───────────────────────────────────────────────────
 
@@ -134,6 +159,11 @@ class NgrokTunnel:
         sub-agents on different machines, etc.) can share the same ngrok
         dev domain.  ngrok load-balances across all online agents.
         """
+        # Pessimistic: any exit below marks the attempt a terminal failure
+        # (missing token, SDK absent, retries exhausted).  Cleared only on
+        # success, so ``status()`` reports "failed" once the attempt ends.
+        self._failed = True
+
         token = _read_auth_token()
         if not token:
             raise RuntimeError(
@@ -151,6 +181,7 @@ class NgrokTunnel:
                 )
                 self._public_url = str(self._listener.url()).rstrip("/")
                 os.environ["SLIFE_MEMFILES_URL"] = self._public_url
+                self._failed = False
                 logger.info(
                     "tunnel_started port=%s url=%s attempt=%d",
                     port, self._public_url, attempt,
@@ -173,6 +204,9 @@ class NgrokTunnel:
 
     def stop(self) -> None:
         """Disconnect the tunnel."""
+        # A stopped tunnel is never "failed" — clear the flag even when
+        # there is nothing to disconnect (the early return below).
+        self._failed = False
         if self._public_url is None or self._ngrok is None:
             return
 
@@ -283,6 +317,10 @@ def public_url() -> str | None:
 
 def is_active() -> bool:
     return _tunnel.is_active
+
+
+def status() -> dict[str, str]:
+    return _tunnel.status()
 
 
 def start_tunnel(port: int) -> str:

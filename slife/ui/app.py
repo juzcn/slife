@@ -321,6 +321,9 @@ class SlifeApp(App):
         self.service.on_heartbeat(self._on_heartbeat)
         # Fatal memory-save failure — persistent red banner (memory is core).
         self.service.on_memory_broken(self._on_memory_broken)
+        # File-sharing tunnel down (harness-probed after memfiles loads) —
+        # warning in chat, main-process owned.
+        self.service.on_tunnel_down(self._on_tunnel_down)
 
         # A2A now starts as a plugin via the discovery loop above
         # (start_plugin_server("a2a") → start_a2a, idempotent).
@@ -480,6 +483,18 @@ class SlifeApp(App):
             f"记忆是核心功能 — 已停止处理新消息,请修复数据库后重启。",
             color="#f85149",
         )
+
+    # ── File-sharing tunnel (⚠ unavailable) ────────────────────────
+
+    def _on_tunnel_down(self, message: str) -> None:
+        """File-sharing tunnel failed to start — show a warning in chat.
+
+        Surfaced by the harness after it probes the memfiles plugin's
+        ``__tunnel_status`` (main-process owned; the plugin never talks to
+        the TUI).  ngrok free tier allows one online agent per token, so a
+        second slife instance legitimately cannot start a second tunnel.
+        """
+        self._show_system_message(message, color="#d29922")
 
     # ── Autonomous heartbeat (⚡ 自主) ──────────────────────────────
 

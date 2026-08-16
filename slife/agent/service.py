@@ -50,6 +50,15 @@ class MemoryDatabaseError(Exception):
 # new model ref string (e.g. "deepseek/deepseek-v4-flash").
 _on_model_switched: list[Callable[[str], None]] = []
 
+# ── Memfiles tunnel readiness watch ──────────────────────────────────────
+# The memfiles plugin eager-starts its ngrok tunnel on a background task, so
+# the harness's one-time probe must not race a still-running attempt: a
+# failed start retries up to 3× with 2s/4s backoff (~9s before it concludes).
+# The harness probes __tunnel_status until the plugin reports a terminal
+# state, bounded by these constants, and surfaces "tunnel down" only once.
+_TUNNEL_SETTLE_TIMEOUT = 20.0  # seconds — max wait for the eager attempt
+_TUNNEL_PROBE_INTERVAL = 1.0   # seconds — between __tunnel_status probes
+
 
 # ── Tool result compaction for permanent memory ─────────────────────────
 #
@@ -218,6 +227,11 @@ class AgentService:
         self._memory_error = ""
         # TUI callback (set by the app) → persistent red banner.
         self._on_memory_broken: "Callable[[str], None] | None" = None
+        # TUI callback (set by the app) → file-sharing tunnel unavailable.
+        # The harness owns the surfacing: the memfiles plugin never talks
+        # to the TUI — the main process probes __tunnel_status after the
+        # plugin is ready and reports a terminal failure here.
+        self._on_tunnel_down: "Callable[[str], None] | None" = None
 
         # ── Plugin lifecycle containers (replace dynamic setattr/getattr) ─
         self._plugins: dict[str, PluginLifecycle] = {
@@ -388,6 +402,10 @@ class AgentService:
                 # the main agent's memfiles plugin (no second ngrok tunnel).
                 os.environ["SLIFE_MEMFILES_PORT"] = str(self._plugins["memfiles"].port)
                 self._start_generic_watchdog(name, module)
+                # Harness-owned tunnel readiness: probe __tunnel_status once
+                # the eager ngrok attempt settles, surface "tunnel down" only
+                # on a terminal failure.  The plugin never talks to the TUI.
+                self._watch_memfiles_tunnel()
             return (
                 PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
             )
@@ -426,6 +444,65 @@ class AgentService:
                 self._tool_ctx.memfiles_client = self._plugins[name].client
 
         self._plugins[name].start_watchdog(restart_cb=_restart)
+
+    def _watch_memfiles_tunnel(self) -> None:
+        """After memfiles loads, watch its eager ngrok attempt to settle and
+        surface a TUI message when the tunnel is down.
+
+        The harness owns the surfacing (main-process side); the plugin never
+        talks to the TUI.  The tunnel is reported at most once, when it
+        reaches a terminal ``failed`` state — a live tunnel stays silent.
+        """
+        client = self._plugins["memfiles"].client
+        if client is None:
+            return
+        asyncio.create_task(self._check_memfiles_tunnel(client))
+
+    async def _check_memfiles_tunnel(self, client) -> None:
+        """Probe ``__tunnel_status`` until the eager attempt concludes, then
+        report once if the tunnel failed.
+
+        The plugin eager-starts the tunnel on a background task, so a single
+        probe at ready-time would race and misread ``starting`` as down.  We
+        follow the attempt to its terminal state (``active`` / ``failed``),
+        bounded by ``_TUNNEL_SETTLE_TIMEOUT`` — an unresolved state within
+        the window stays silent rather than guessing.
+        """
+        deadline = _time.monotonic() + _TUNNEL_SETTLE_TIMEOUT
+        while True:
+            try:
+                raw = await client.call_tool("__tunnel_status")
+                data = json.loads(raw)
+            except Exception as e:
+                logger.warning("tunnel_status_probe_failed err=%s", e)
+                return  # plugin gone/unreachable — nothing to surface
+            if data.get("active"):
+                return  # tunnel is up — nothing to surface
+            if data.get("state") == "failed":
+                self._report_tunnel_down(data.get("hint") or "")
+                return
+            if _time.monotonic() >= deadline:
+                return  # never reached a terminal state — stay silent
+            await asyncio.sleep(_TUNNEL_PROBE_INTERVAL)
+
+    def _report_tunnel_down(self, detail: str) -> None:
+        """Log the failure and surface a one-line warning to the TUI.
+
+        The message is deliberately generic (any failure cause — account
+        limit, missing token, SDK absent) and points at ``system_health``
+        for the concrete reason, matching the established convention
+        (memfiles errors reference system_health for details).
+        """
+        logger.warning("tunnel_unavailable detail=%s", detail)
+        cb = self._on_tunnel_down
+        if cb is not None:
+            try:
+                cb(
+                    "⚠ 文件分享隧道不可用：expose_file 与文件分享链接将不可用。"
+                    "可问 system_health 查看具体原因。"
+                )
+            except Exception:
+                logger.debug("surface_tunnel_down_error", exc_info=True)
 
     async def _spawn_plugin_generic(self, name: str, module: str) -> bool:
         """Spawn a plugin child, connect, and register its ``<name>__*`` tools."""
@@ -1537,6 +1614,10 @@ class AgentService:
     def on_memory_broken(self, callback) -> None:
         """Register a callback for a fatal memory-save failure (red banner)."""
         self._on_memory_broken = callback
+
+    def on_tunnel_down(self, callback) -> None:
+        """Register a callback for a file-sharing tunnel that failed to start."""
+        self._on_tunnel_down = callback
 
     async def surface_autonomous(self, text: str) -> None:
         """Deliver an autonomous message to the TUI (⚡ 自主)."""

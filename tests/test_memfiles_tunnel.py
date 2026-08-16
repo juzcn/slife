@@ -28,6 +28,74 @@ class TestNgrokTunnelInit:
         assert tunnel.public_url is None
 
 
+class TestNgrokTunnelStatus:
+    """Tests for NgrokTunnel.status() — terminal state for the harness."""
+
+    def test_idle_never_started(self, monkeypatch):
+        """A fresh tunnel (no attempt) reports 'idle', not 'failed'."""
+        monkeypatch.delenv("SLIFE_MEMFILES_URL", raising=False)
+        tunnel = NgrokTunnel()
+        assert tunnel.status() == {"state": "idle", "url": ""}
+
+    def test_active_when_public_url_set(self):
+        """A live tunnel reports 'active' with its public URL."""
+        tunnel = NgrokTunnel()
+        tunnel._public_url = "https://test.ngrok.io"
+        assert tunnel.status() == {"state": "active", "url": "https://test.ngrok.io"}
+
+    def test_starting_while_attempt_in_flight(self):
+        """A start attempt in flight reports 'starting', not 'failed'."""
+        tunnel = NgrokTunnel()
+        tunnel._starting = True
+        assert tunnel.status()["state"] == "starting"
+
+    def test_failed_after_all_retries(self):
+        """start() exhausting its retries leaves a terminal 'failed' state."""
+        mock_ngrok = MagicMock()
+        mock_ngrok.forward.side_effect = ConnectionError("persistent error")
+
+        with patch.object(tmod, "_read_auth_token", return_value="token"), \
+             patch.object(tmod, "_import_ngrok", return_value=mock_ngrok), \
+             patch("time.sleep"):
+            tunnel = NgrokTunnel()
+            with pytest.raises(RuntimeError, match="3 attempts"):
+                tunnel.start(9090)
+
+        assert tunnel.status() == {"state": "failed", "url": ""}
+
+    def test_failed_when_token_missing(self):
+        """A missing auth token is a terminal failure, not a transient one."""
+        with patch.object(tmod, "_read_auth_token", return_value=None):
+            tunnel = NgrokTunnel()
+            with pytest.raises(RuntimeError, match="auth token not found"):
+                tunnel.start(8080)
+
+        assert tunnel.status()["state"] == "failed"
+
+    def test_success_clears_failed(self):
+        """A successful start clears the failed flag (active state)."""
+        mock_ngrok = MagicMock()
+        mock_listener = MagicMock()
+        mock_listener.url.return_value = "https://test.ngrok.io/"
+        mock_ngrok.forward.return_value = mock_listener
+
+        with patch.object(tmod, "_read_auth_token", return_value="token"), \
+             patch.object(tmod, "_import_ngrok", return_value=mock_ngrok):
+            tunnel = NgrokTunnel()
+            tunnel.start(8080)
+
+        assert tunnel._failed is False
+        assert tunnel.status()["state"] == "active"
+
+    def test_stop_clears_failed(self):
+        """An explicit stop returns the tunnel to a clean (idle) state."""
+        tunnel = NgrokTunnel()
+        tunnel._failed = True
+        tunnel.stop()
+        assert tunnel._failed is False
+        assert tunnel.status()["state"] == "idle"
+
+
 class TestNgrokTunnelIsActive:
     """Tests for NgrokTunnel.is_active."""
 

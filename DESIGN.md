@@ -693,7 +693,12 @@ Three sinks, two audiences:
 - **TUI** — a pure business channel, decoupled from logs.  User-visible status
   (plugin load results, memory health, tool outcomes, OAuth notifications) is
   surfaced explicitly via `_show_system_message` / callbacks — never by leaking
-  `logger.warning` to the terminal.
+  `logger.warning` to the terminal.  The plugin never talks to the TUI: the
+  harness owns surfacing.  E.g. the memfiles ngrok tunnel is eager-started on a
+  background task inside the plugin process; after the plugin loads, the harness
+  probes `__tunnel_status` (state `active`/`starting`/`failed`) until the
+  attempt settles, and surfaces a one-time "tunnel unavailable" warning via
+  `_show_system_message` only on a terminal `failed` state.
 
 Known gaps (see REVIEW.md): several call sites log raw user/tool/task content without sanitization, a few use prose instead of `key=value`, and the MCP wrapper stderr relay re-implements `drain_stderr` (it masks via `sanitize_secrets`, but the duplication remains).
 

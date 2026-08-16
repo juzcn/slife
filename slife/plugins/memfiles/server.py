@@ -56,10 +56,10 @@ from slife.plugins.memdb.semantic import SemanticManager
 from slife.plugins.memfiles.store import MemfilesStore, _slugify, _unique_path
 from slife.plugins.memfiles.tunnel import (
     is_active,
-    public_url,
     share_url_for,
     start_monitor,
     start_tunnel,
+    status,
     stop_monitor,
     stop_tunnel,
 )
@@ -321,14 +321,24 @@ async def handle_share(request: Request) -> Response:
 
 @mcp.tool(name="__tunnel_status", description="File-sharing tunnel status as JSON.")
 async def __tunnel_status() -> str:
-    """Return ``{active, url, hint}`` for the harness health check."""
-    if is_active():
+    """Return ``{active, state, url, hint}`` for the harness health check.
+
+    ``state`` distinguishes the harness-relevant cases: ``active`` (a public
+    URL is live), ``starting`` (an eager start attempt is still in flight —
+    the harness waits for it to conclude), ``failed`` (terminal — safe to
+    report the tunnel down), ``idle`` (no attempt made, e.g. subagent
+    reusing the main agent's tunnel).
+    """
+    st = status()
+    if st["state"] == "active":
         return json.dumps(
-            {"active": True, "url": public_url() or ""}, ensure_ascii=False,
+            {"active": True, "state": "active", "url": st["url"]},
+            ensure_ascii=False,
         )
     return json.dumps(
         {
             "active": False,
+            "state": st["state"],
             "url": "",
             "hint": (
                 "File sharing tunnel unavailable. "

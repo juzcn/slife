@@ -1161,3 +1161,95 @@ class TestGetRecentTurns:
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
         with pytest.raises(MemoryDatabaseError):
             await srv.get_recent_turns()
+
+
+# ── Memfiles tunnel readiness watch ───────────────────────────────────────
+
+
+class TestMemfilesTunnelWatch:
+    """Tests for the harness-owned tunnel readiness watch (main process
+    probes __tunnel_status after memfiles loads; the plugin never talks to
+    the TUI)."""
+
+    @pytest.mark.asyncio
+    async def test_surfaces_when_failed(self, sample_config):
+        """A terminal 'failed' state fires the on_tunnel_down callback once."""
+        service = AgentService(sample_config)
+        cb = MagicMock()
+        service.on_tunnel_down(cb)
+        client = AsyncMock()
+        client.call_tool.return_value = _json.dumps({
+            "active": False, "state": "failed", "url": "",
+            "hint": "File sharing tunnel unavailable.",
+        })
+
+        await service._check_memfiles_tunnel(client)
+
+        cb.assert_called_once()
+        client.call_tool.assert_called_once_with("__tunnel_status")
+
+    @pytest.mark.asyncio
+    async def test_silent_when_active(self, sample_config):
+        """A live tunnel fires nothing."""
+        service = AgentService(sample_config)
+        cb = MagicMock()
+        service.on_tunnel_down(cb)
+        client = AsyncMock()
+        client.call_tool.return_value = _json.dumps({
+            "active": True, "state": "active", "url": "https://x.ngrok-free.dev",
+        })
+
+        await service._check_memfiles_tunnel(client)
+
+        cb.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_waits_while_starting_then_surfaces_failed(self, sample_config):
+        """A still-starting attempt is not misread as down — the watch follows
+        it to the terminal failed state and surfaces once."""
+        service = AgentService(sample_config)
+        cb = MagicMock()
+        service.on_tunnel_down(cb)
+        client = AsyncMock()
+        client.call_tool.side_effect = [
+            _json.dumps({"active": False, "state": "starting", "url": ""}),
+            _json.dumps({"active": False, "state": "failed", "url": "",
+                         "hint": "already online"}),
+        ]
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await service._check_memfiles_tunnel(client)
+
+        cb.assert_called_once()
+        assert client.call_tool.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_probe_error_is_silent(self, sample_config):
+        """If the plugin is unreachable mid-watch, nothing is surfaced."""
+        service = AgentService(sample_config)
+        cb = MagicMock()
+        service.on_tunnel_down(cb)
+        client = AsyncMock()
+        client.call_tool.side_effect = RuntimeError("client gone")
+
+        await service._check_memfiles_tunnel(client)
+
+        cb.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_timeout_without_terminal_state_is_silent(self, sample_config):
+        """Never reaching a terminal state within the bounded window stays
+        silent rather than guessing."""
+        service = AgentService(sample_config)
+        cb = MagicMock()
+        service.on_tunnel_down(cb)
+        client = AsyncMock()
+        client.call_tool.return_value = _json.dumps({
+            "active": False, "state": "starting", "url": "",
+        })
+
+        with patch("asyncio.sleep", new=AsyncMock()), \
+             patch("slife.agent.service._TUNNEL_SETTLE_TIMEOUT", 0.0):
+            await service._check_memfiles_tunnel(client)
+
+        cb.assert_not_called()
