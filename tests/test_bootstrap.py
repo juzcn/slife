@@ -116,21 +116,19 @@ class TestSetupLogging:
             h.close()
         root.handlers.clear()
 
-    def test_console_is_info_band_capped_below_warning(self):
-        """Terminal shows the INFO band only — WARNING/ERROR never leak."""
-        from slife.logfmt import _LevelCeiling
+    def test_console_never_emits(self):
+        """Logs never reach the terminal — the console handler is a no-op.
 
+        Terminal belongs to the TUI; user-visible status is surfaced there
+        by the business layer.  The console StreamHandler exists structurally
+        but sits at CRITICAL+1 so no log record ever prints.
+        """
         root = logging.getLogger()
         root.handlers.clear()
 
         try:
             log_path, console = bootstrap.setup_logging()
-            assert console.level == logging.INFO
-            assert any(
-                isinstance(f, _LevelCeiling)
-                and f.exclusive_max == logging.WARNING
-                for f in console.filters
-            )
+            assert console.level == logging.CRITICAL + 1
         finally:
             for h in root.handlers:
                 h.close()

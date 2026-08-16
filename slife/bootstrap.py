@@ -30,20 +30,18 @@ def setup_logging(
     agent_name: str = "slife",
     level: int = logging.DEBUG,
 ) -> tuple[Path, logging.Handler]:
-    """Configure logging to both console and file.
+    """Configure logging to a per-session file (logs never reach the terminal).
 
-    Console: INFO band only (INFO <= level < WARNING) — the terminal sees
-             lifecycle milestones, never WARNING/ERROR.  The ceiling makes
-             this permanent: logging a warning no longer leaks to the
-             terminal, so levels keep their true meaning in the log file.
-             The TUI mutes the console entirely while its alternate screen
-             is up (:meth:`slife.ui.app.SlifeApp` lifecycle).
+    Logs are for developers, the TUI is for the user: the console stderr
+    handler is set to ``CRITICAL + 1`` so no log record ever prints to the
+    terminal — the terminal belongs entirely to the TUI, and user-visible
+    status is surfaced there through the business layer (not logging).
     File:    DEBUG+ with timestamps, session/request IDs for troubleshooting.
     Each session writes to a new ``logs/YYYYMMDD_HHMMSS_<agent_name>.log`` file.
 
     Returns:
-        (log_path, console_handler) — console is at INFO band (capped below
-        WARNING); detailed output goes to the per-session log file.
+        (log_path, console_handler) — console is a silent no-op handler;
+        all output goes to the per-session log file.
     """
     from slife.logfmt import configure_root_logging
 
@@ -63,8 +61,9 @@ def setup_logging(
     file_fmt = SessionFormatter(FILE_LOG_FORMAT)
 
     console = configure_root_logging(
-        stderr_level=logging.INFO,
-        stderr_max_level=logging.WARNING,
+        # CRITICAL+1: no log record ever reaches the user terminal.  Logs
+        # are for developers (the file), the TUI is for the user.
+        stderr_level=logging.CRITICAL + 1,
         file_path=log_path,
         file_level=level,
         file_format=file_fmt,

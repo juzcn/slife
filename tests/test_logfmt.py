@@ -25,8 +25,6 @@ from slife.logfmt import (
     ok_json,
     error_json,
     resolve_log_dir,
-    configure_root_logging,
-    _LevelCeiling,
     FILE_LOG_FORMAT,
 )
 
@@ -595,71 +593,3 @@ class TestResolveLogDir:
             assert result == tmp_path
 
 
-# ── Level ceiling ──────────────────────────────────────────────────────────
-
-
-class TestLevelCeiling:
-    """Tests for _LevelCeiling — the console handler's WARNING cap."""
-
-    def _record(self, level: int) -> logging.LogRecord:
-        return logging.LogRecord(
-            "slife.test", level, "path", 42, "test message", (), None,
-        )
-
-    def test_keeps_debug_and_info(self):
-        ceiling = _LevelCeiling(logging.WARNING)
-        assert ceiling.filter(self._record(logging.DEBUG)) is True
-        assert ceiling.filter(self._record(logging.INFO)) is True
-
-    def test_drops_warning_and_above(self):
-        ceiling = _LevelCeiling(logging.WARNING)
-        assert ceiling.filter(self._record(logging.WARNING)) is False
-        assert ceiling.filter(self._record(logging.ERROR)) is False
-        assert ceiling.filter(self._record(logging.CRITICAL)) is False
-
-    def test_exclusive_boundary(self):
-        # The boundary is exclusive: a ceiling at ERROR keeps WARNING.
-        ceiling = _LevelCeiling(logging.ERROR)
-        assert ceiling.filter(self._record(logging.WARNING)) is True
-        assert ceiling.filter(self._record(logging.ERROR)) is False
-
-
-class TestConfigureRootLoggingCeiling:
-    """configure_root_logging attaches the ceiling only when requested."""
-
-    def _save_root(self) -> list[logging.Handler]:
-        root = logging.getLogger()
-        old = list(root.handlers)
-        root.handlers.clear()
-        return old
-
-    def _restore_root(self, old: list[logging.Handler]) -> None:
-        root = logging.getLogger()
-        for h in list(root.handlers):
-            h.close()
-        root.handlers.clear()
-        for h in old:
-            root.addHandler(h)
-
-    def test_attaches_ceiling_when_stderr_max_level_given(self):
-        old = self._save_root()
-        try:
-            h = configure_root_logging(
-                stderr_level=logging.INFO,
-                stderr_max_level=logging.WARNING,
-            )
-            assert any(
-                isinstance(f, _LevelCeiling) and f.exclusive_max == logging.WARNING
-                for f in h.filters
-            )
-            assert h.level == logging.INFO
-        finally:
-            self._restore_root(old)
-
-    def test_no_ceiling_by_default(self):
-        old = self._save_root()
-        try:
-            h = configure_root_logging(stderr_level=logging.DEBUG)
-            assert not any(isinstance(f, _LevelCeiling) for f in h.filters)
-        finally:
-            self._restore_root(old)

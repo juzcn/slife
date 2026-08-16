@@ -214,18 +214,9 @@ class SlifeApp(App):
         Binding("end", "scroll_end", "Scroll to bottom", priority=True),
     ]
 
-    def __init__(
-        self,
-        config: Config,
-        console_handler: logging.Handler | None = None,
-    ):
+    def __init__(self, config: Config):
         super().__init__()
         self.service = AgentService(config)
-
-        # Console StreamHandler from setup_logging() — muted while the TUI
-        # owns the terminal (INFO band would garble the alternate screen),
-        # restored to INFO on exit so the session summary prints.
-        self._console_handler = console_handler
 
         # Resolve assistant name prefix once (set on first user message)
         self._agent_name: str = config.agent_name
@@ -264,12 +255,6 @@ class SlifeApp(App):
         wechat) get their post-connect hooks; third-party plugins are
         started with the generic :meth:`AgentService.start_plugin_server`.
         """
-        # Terminal belongs to the TUI now — mute the console's INFO band
-        # (its lines would garble the alternate screen).  Business-level
-        # status (plugin loads, memory, tool results) is surfaced explicitly
-        # via _show_system_message, so nothing fails silently.
-        self._mute_console_logging()
-
         from slife.plugins import discover_plugins
 
         status = self.query_one("#status-bar", StatusBar)
@@ -343,38 +328,6 @@ class SlifeApp(App):
             self.service.start_subagent(),
             exclusive=False, group="subagent-startup",
         )
-
-    # ── Terminal/log ownership ─────────────────────────────────────
-
-    def _mute_console_logging(self) -> None:
-        """Mute the console handler while the TUI owns the terminal.
-
-        The console is at the INFO band (capped below WARNING); even INFO
-        lines would garble Textual's alternate screen, so it is silenced for
-        the TUI's lifetime.  Business-level status is surfaced explicitly
-        via ``_show_system_message`` (see ``_start_plugin_safe``) — the log
-        pipeline is for the log file, the terminal belongs to the TUI.
-        """
-        if self._console_handler is not None:
-            # CRITICAL+1: no record reaches it — the alternate screen is up.
-            self._console_handler.setLevel(logging.CRITICAL + 1)
-
-    def restore_logging(self) -> None:
-        """Un-mute the console back to its INFO band.
-
-        Idempotent — called from both ``on_unmount`` (normal exit) and
-        ``main()``'s finally (the KeyboardInterrupt path, where Textual's
-        unmount is not guaranteed to fire).
-        """
-        if self._console_handler is not None:
-            # Back to the INFO band so the session summary prints after
-            # the TUI exits.
-            self._console_handler.setLevel(logging.INFO)
-
-    async def on_unmount(self) -> None:
-        """Normal-exit cleanup of terminal/log ownership."""
-        self.restore_logging()
-
 
     # ── Actions ──────────────────────────────────────────────────
 

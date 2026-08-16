@@ -685,10 +685,11 @@ Three sinks, two audiences:
   its real meaning.  `warning`/`error` events are *never* demoted to `info` to
   hide them from the terminal — that corrupts the file and makes log-based
   diagnosis (or an LLM reading the log) see "all OK" when failures occurred.
-- **Console (stderr)** — INFO band only: the console handler is capped below
-  WARNING via `_LevelCeiling` (`configure_root_logging(stderr_max_level=WARNING)`).
-  WARNING/ERROR never print there; the TUI mutes the console entirely while its
-  alternate screen is up (`SlifeApp._mute_console_logging` / `restore_logging`).
+- **Console (stderr)** — never emits: the main harness runs its stderr
+  handler at `CRITICAL + 1` (a no-op), so no log record ever prints to the
+  terminal — the terminal belongs entirely to the TUI.  (Plugin/subagent
+  processes run stderr at DEBUG, but that is a diagnostic pipe to the parent,
+  not a user terminal.)
 - **TUI** — a pure business channel, decoupled from logs.  User-visible status
   (plugin load results, memory health, tool outcomes, OAuth notifications) is
   surfaced explicitly via `_show_system_message` / callbacks — never by leaking
