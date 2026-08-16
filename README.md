@@ -162,7 +162,7 @@ Built-in plugin tools that already carry their server as a name prefix (`mcp_set
 
 Every conversation turn is permanently recorded in SQLite (`~/.slife/<agent>.db`). Hybrid search across four modes:
 
-**Memory is a core feature — the agent never runs silently without it.** If the memory DB is broken (missing column, corruption, disk error), the agent fails loudly instead of pretending: a session that can't restore aborts at startup with the error; a turn that can't be saved freezes the inbox and shows a red banner — new turns stop until the DB is fixed and the agent is restarted.
+**Memory is a core feature — the agent never runs silently without it.** If the memory DB is broken (missing column, corruption, disk error), the agent fails loudly instead of pretending: a session that can't restore aborts at startup with the error; a turn that can't be saved freezes the inbox and shows a red banner — new turns stop until the DB is fixed and the agent is restarted. A memdb plugin that fails to load likewise aborts startup.
 
 | Mode | Best for |
 |------|----------|
