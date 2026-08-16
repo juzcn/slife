@@ -343,6 +343,24 @@ class TestRunPythonScriptToolExecute:
         assert result == "script output"
 
     @pytest.mark.asyncio
+    async def test_script_runs_in_utf8_mode(self):
+        """The child Python runs with -X utf8 so non-ASCII output is UTF-8,
+        not the locale code page (GBK on zh-CN) — matching the UTF-8 decode."""
+        tool = RunPythonScriptTool()
+        mock_process = MagicMock()
+        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
+        mock_process.returncode = 0
+
+        with patch("slife.tools.exec._resolve_skill_script", return_value="/fake/script.py"):
+            with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as mock_exec:
+                await tool.execute(script="script.py")
+
+        call_args = mock_exec.call_args[0]
+        assert call_args[1] == "-X"
+        assert call_args[2] == "utf8"
+        assert call_args[3] == "/fake/script.py"
+
+    @pytest.mark.asyncio
     async def test_successful_inline_code(self):
         """Inline code with -c flag runs and returns result."""
         tool = RunPythonScriptTool()
@@ -389,8 +407,11 @@ class TestRunPythonScriptToolExecute:
         assert result == "openpyxl 3.1.5"
         # The code handed to python -c must not carry the wrapping quotes.
         call_args = mock_exec.call_args[0]
-        assert call_args[1] == "-c"
-        assert call_args[2] == "import openpyxl; print('openpyxl', openpyxl.__version__)"
+        # -X utf8 forces the child's stdout to UTF-8 (locale-independent).
+        assert call_args[call_args.index("-c") + 1] == (
+            "import openpyxl; print('openpyxl', openpyxl.__version__)"
+        )
+        assert "-X" in call_args and "utf8" in call_args
 
     @pytest.mark.asyncio
     async def test_inline_code_with_single_quote_wrapping(self):
@@ -406,7 +427,7 @@ class TestRunPythonScriptToolExecute:
 
         assert result == "ok"
         call_args = mock_exec.call_args[0]
-        assert call_args[2] == 'print("hi")'
+        assert call_args[call_args.index("-c") + 1] == 'print("hi")'
 
     @pytest.mark.asyncio
     async def test_syntax_error(self):

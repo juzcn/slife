@@ -228,12 +228,12 @@ class RunPythonScriptTool(Tool):
             # expression and silently does nothing (exit 0, no output).
             if len(code) >= 2 and code[0] == code[-1] and code[0] in "\"'":
                 code = code[1:-1]
-            argv = [sys.executable, "-c", code]
+            argv = [sys.executable, "-X", "utf8", "-c", code]
             logger.debug("run_python_script argv=%s", sanitize_secrets(str(argv)))
         else:
             script, args = _parse_input(input_str)
             script = _resolve_skill_script(script)
-            argv = [sys.executable, script]
+            argv = [sys.executable, "-X", "utf8", script]
             if args:
                 argv.append(args)
             logger.debug("run_python_script argv=%s", sanitize_secrets(str(argv)))
