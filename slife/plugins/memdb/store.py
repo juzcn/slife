@@ -379,7 +379,8 @@ class SessionStore:
         Returns {total, filtered, since, until, query, mode}.
         """
         row = await self._c.execute("SELECT COUNT(*) FROM diary")
-        total = (await row.fetchone())[0]
+        count_row = await row.fetchone()
+        total = count_row[0] if count_row else 0
 
         if query and query.strip():
             mode = mode.lower()
@@ -416,7 +417,8 @@ class SessionStore:
                         WHERE diary_fts MATCH ?{time_clauses}""",
                     (fts_query, *time_params),
                 )
-                filtered = (await row2.fetchone())[0]
+                count_row = await row2.fetchone()
+                filtered = count_row[0] if count_row else 0
                 return {"total": total, "filtered": filtered,
                         "query": query, "mode": mode,
                         "since": since, "until": until}
@@ -432,7 +434,8 @@ class SessionStore:
             row2 = await self._c.execute(
                 f"SELECT COUNT(*) FROM diary WHERE {where}", params,
             )
-            filtered = (await row2.fetchone())[0]
+            count_row = await row2.fetchone()
+            filtered = count_row[0] if count_row else 0
         elif since or until:
             clauses: list[str] = []
             params = []
@@ -448,7 +451,8 @@ class SessionStore:
             row2 = await self._c.execute(
                 f"SELECT COUNT(*) FROM diary WHERE {where}", params,
             )
-            filtered = (await row2.fetchone())[0]
+            count_row = await row2.fetchone()
+            filtered = count_row[0] if count_row else 0
         else:
             filtered = total
 

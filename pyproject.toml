@@ -120,7 +120,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["slife"]
+source = ["slife", "credstore"]
 branch = true
 omit = ["tests/*", "credstore/tests/*"]
 
@@ -137,10 +137,13 @@ skip_covered = false
 [tool.pyright]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
-include = ["slife"]
-exclude = ["**/__pycache__/**", "**/.venv/**", ".venv/**", "tests/**", "credstore/**"]
+include = ["slife", "credstore"]
+exclude = ["**/__pycache__/**", "**/.venv/**", ".venv/**", "tests/**", "credstore/tests/**", "**/node_modules", "**/.*"]
+extraPaths = ["credstore"]
 reportMissingImports = true
 reportMissingTypeStubs = false
-reportOptionalSubscript = false
-reportInvalidTypeForm = false
+reportOptionalSubscript = true
+reportInvalidTypeForm = true
+reportUnusedImport = "error"     # 抓未用导入(比如 mqtt.py 的 AgentName)
+reportUnusedVariable = "error"   # 抓未用变量
 

@@ -18,11 +18,12 @@ import threading
 import time as _time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
-import paho.mqtt.client as mqtt
+if TYPE_CHECKING:
+    import paho.mqtt.client as mqtt
+    from paho.mqtt.reasoncodes import ReasonCode
 
-from slife.a2a.identity import AgentName
 from slife.a2a.transport import TransportAdapter, TransportMessage
 
 logger = logging.getLogger(__name__)
@@ -34,15 +35,15 @@ _MQTT_RC_SUCCESS = 0
 _MAX_QUEUE_SIZE = 1000
 
 #: Lazily-loaded paho-mqtt module — only imported when MQTT is actually used.
-mqtt: Any = None
+_mqtt_mod: Any = None
 
 
 def _get_mqtt():
     """Lazy-import paho-mqtt so it is only required when MQTT is enabled."""
-    global mqtt
-    if mqtt is None:
-        import paho.mqtt.client as mqtt
-    return mqtt
+    global _mqtt_mod
+    if _mqtt_mod is None:
+        import paho.mqtt.client as _mqtt_mod
+    return _mqtt_mod
 
 
 @dataclass
@@ -265,7 +266,7 @@ class MQTTAdapter(TransportAdapter):
         client: mqtt.Client,
         userdata: Any,
         flags: mqtt.ConnectFlags,
-        reason_code: mqtt.ReasonCode,
+        reason_code: ReasonCode,
         properties: Any,
     ) -> None:
         was_reconnect = self._ever_connected
@@ -312,7 +313,7 @@ class MQTTAdapter(TransportAdapter):
         client: mqtt.Client,
         userdata: Any,
         flags: mqtt.DisconnectFlags,
-        reason_code: mqtt.ReasonCode,
+        reason_code: ReasonCode,
         properties: Any,
     ) -> None:
         try:

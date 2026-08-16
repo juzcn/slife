@@ -259,7 +259,7 @@ uv run slife
 
 # Tests
 uv run pytest
-uv run pytest --cov=slife --cov=credstore --cov-report=term-missing
+uv run pytest --cov --cov-report=term-missing
 ```
 
 Dev mode auto-detects (via `pyproject.toml` in CWD): data files stay in the project directory. Production installs use `~/.slife/`. CI runs the test suite on Ubuntu, macOS, and Windows with Python 3.13.

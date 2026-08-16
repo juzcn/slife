@@ -1081,3 +1081,6 @@ class AgentLoop:
                 # Re-raise so the caller (inbox) handles the error as before;
                 # the conversation is repaired at the save point.
                 raise
+        # Unreachable: the loop above only exits via return or raise, but
+        # Pylance can't see that itertools.count() is infinite.
+        raise RuntimeError("agent loop exited without a result")

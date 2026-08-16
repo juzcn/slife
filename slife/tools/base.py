@@ -192,7 +192,6 @@ class Tool(ABC):
         runtime references (registry, config, MCP client, conversation).
         Tools that need any of these store it as ``self._ctx``.
         """
-        from slife.tools.context import ToolContext  # noqa: F811
         tool = cls()
         if ctx is not None:
             object.__setattr__(tool, "_ctx", ctx)

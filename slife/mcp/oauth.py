@@ -22,7 +22,7 @@ import json
 import logging
 import sys
 import time as _time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import httpx
 
@@ -346,7 +346,6 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
             f"OAuth config for '{server_name}' missing token_url for refresh."
         )
 
-    existing = get_valid_token(server_name)
     # Even if expired, try to load the stored data for the refresh_token
     try:
         from credstore import get_credential

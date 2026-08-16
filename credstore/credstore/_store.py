@@ -92,8 +92,6 @@ class CredentialStore:
         """Delete from system keyring only.
 
         Cryptfile cleanup is handled by the CLI layer (needs master key)."""
-        from credstore._backend import get_system_keyring
-
         existed = False
 
         sk = _be.get_system_keyring()

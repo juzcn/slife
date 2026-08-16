@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from slife.mcp.client import MCPClient
 
 from slife.logfmt import get_session_id, sanitize_secrets
-from slife.platform import IS_WINDOWS, terminate_process
+from slife.platform import terminate_process
 
 logger = logging.getLogger(__name__)
 

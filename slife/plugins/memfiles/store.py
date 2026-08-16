@@ -596,6 +596,7 @@ class MemfilesStore:
             key_hits = await self._keyword_search_kind(k, query, limit)
             sem_hits: list[dict] = []
             if use_semantic:
+                assert embed_query is not None  # guaranteed by use_semantic
                 sem_hits = await self._semantic_search_kind(k, embed_query, limit)
             out.extend(merge_hybrid(key_hits, sem_hits, key_field="id"))
         out.sort(key=lambda r: r.get("rrf_score", 0.0), reverse=True)

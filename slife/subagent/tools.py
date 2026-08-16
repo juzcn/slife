@@ -19,3 +19,14 @@ from slife.tools.subagent import (  # noqa: F401
     SubagentSendTaskAsyncTool,
     SubagentSendTaskTool,
 )
+
+__all__ = [
+    "ListSubagentsTool",
+    "SpawnSubagentTool",
+    "StopSubagentTool",
+    "SubagentCancelTaskTool",
+    "SubagentGetTaskResultTool",
+    "SubagentListTasksTool",
+    "SubagentSendTaskAsyncTool",
+    "SubagentSendTaskTool",
+]

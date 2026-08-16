@@ -255,7 +255,7 @@ uv run slife
 
 # 测试
 uv run pytest
-uv run pytest --cov=slife --cov=credstore --cov-report=term-missing
+uv run pytest --cov --cov-report=term-missing
 ```
 
 开发模式自动检测（通过 CWD 中的 `pyproject.toml`）：数据文件保留在项目目录中。生产安装使用 `~/.slife/`。CI 在 Ubuntu、macOS 和 Windows 上使用 Python 3.13 运行测试。
