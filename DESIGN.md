@@ -704,6 +704,25 @@ Three sinks, two audiences:
 
 Known gaps: several call sites log raw user/tool/task content without sanitization, a few use prose instead of `key=value`, and the MCP wrapper stderr relay re-implements `drain_stderr` (it masks via `sanitize_secrets`, but the duplication remains).
 
+## Dev vs. Production Data Directory
+
+`slife/paths.py` decides where session data (config, `*.db`, `*.files`, `logs/`) lives. Two modes only:
+
+- **Production** (default): everything under `~/.slife/`.
+- **Dev**: the project root (CWD) — `pyproject.toml` beside the source tree.
+
+`is_dev()` requires **both** conditions to hold:
+
+1. the CWD's `pyproject.toml` declares `project.name == "slife"` — the CWD *is* the project root; and
+2. the loaded `slife` package's parent directory **is the CWD** — i.e. the source `slife/` subdir of that checkout, not a site-packages copy (an editable install, or `python -m slife` from the tree, both satisfy this).
+
+A production install always loads from a site-packages dir whose parent is never the CWD, so it stays production no matter where it is launched from:
+
+- **inside a checkout** — the checkout's `pyproject.toml` is in the CWD, but the loaded package is site-packages (a pyproject-only check would misfire here, scattering data into the checkout);
+- **the home directory** — uv tools install under `~/.local` / `%LOCALAPPDATA%`, i.e. *under* the home dir, so a package-under-CWD check would misfire here too (seeding a fresh config and empty DB in home while ignoring the existing `~/.slife/` data).
+
+Either condition alone is ambiguous; both must hold.
+
 ## Project Structure
 
 ```

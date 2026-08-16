@@ -158,6 +158,8 @@ Every tool additionally accepts three harness meta-parameters: `_timeout` (per-c
 
 Built-in plugin tools that already carry their server as a name prefix (`mcp_set`, `wechat_login`) are registered as-is; the rest are namespaced `{server}__{tool}`. External MCP servers configured in `slife.json5` → `mcp.servers` always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
 
+**Windows execution.** `execute_shell` runs in the detected shell — PowerShell or cmd (the same value the system prompt reports, so the LLM's syntax actually executes) — and its output is decoded with the system code page (GBK/cp936 on Chinese Windows). `run_python_script` forces the child Python to UTF-8 (`-X utf8`) so non-ASCII output can't crash the child.
+
 ### Memory — Always On
 
 Every conversation turn is permanently recorded in SQLite (`~/.slife/<agent>.db`). Hybrid search across four modes:
@@ -262,7 +264,7 @@ uv run pytest
 uv run pytest --cov --cov-report=term-missing
 ```
 
-Dev mode auto-detects (via `pyproject.toml` in CWD): data files stay in the project directory. Production installs use `~/.slife/`. CI runs the test suite on Ubuntu, macOS, and Windows with Python 3.13.
+Dev mode auto-detects when you run from the source tree: data files stay in the project directory. Production installs (uv tool / pipx / pip) always use `~/.slife/` — even when launched from inside a checkout or from the home directory. CI runs the test suite on Ubuntu, macOS, and Windows with Python 3.13.
 
 ## Architecture
 

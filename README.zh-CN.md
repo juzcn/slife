@@ -156,6 +156,8 @@ active_model: "deepseek/deepseek-v4-pro",
 
 内置插件工具若已自带服务器名前缀（`mcp_set`、`wechat_login`）则原样注册，其余按 `{server}__{tool}` 命名。外部 MCP 服务器（`slife.json5` → `mcp.servers`）一律以 `{server}__{tool}` 出现（如 `filesystem__read_file`）。
 
+**Windows 下的命令执行。** `execute_shell` 在检测到的 shell 中运行——PowerShell 或 cmd（与系统提示报告的值一致，保证 LLM 写的语法真的能执行）——并用系统代码页解码输出（简体中文 Windows 为 GBK/cp936）。`run_python_script` 强制子 Python 以 UTF-8 运行（`-X utf8`），非 ASCII 输出不会导致子进程崩溃。
+
 ### 记忆 — 始终开启
 
 每轮对话永久记录在 SQLite（`~/.slife/<agent>.db`）。四种搜索模式：
@@ -258,7 +260,7 @@ uv run pytest
 uv run pytest --cov --cov-report=term-missing
 ```
 
-开发模式自动检测（通过 CWD 中的 `pyproject.toml`）：数据文件保留在项目目录中。生产安装使用 `~/.slife/`。CI 在 Ubuntu、macOS 和 Windows 上使用 Python 3.13 运行测试。
+开发模式自动检测（从源码树运行时）：数据文件保留在项目目录中。生产安装（uv tool / pipx / pip）一律使用 `~/.slife/`——即使在 checkout 目录或 home 目录下启动也不会误判。CI 在 Ubuntu、macOS 和 Windows 上使用 Python 3.13 运行测试。
 
 ## 架构
 
