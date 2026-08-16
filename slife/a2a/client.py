@@ -572,8 +572,11 @@ class A2AClient:
             inbox_filter, result_filter,
         )
 
-        # Merge both streams into a single queue we can select on
-        merged: "asyncio.Queue[TransportMessage]" = asyncio.Queue()
+        # Merge both streams into a single queue we can select on.  Cap it so a
+        # slow on_incoming_task handler can't grow it without bound — the
+        # forward task blocks on a full queue, which propagates backpressure to
+        # the (also capped, drop-newest) subscription queues.
+        merged: "asyncio.Queue[TransportMessage]" = asyncio.Queue(maxsize=1000)
 
         async def forward(adapter, topic_filter):
             """Forward every message from *topic_filter* into *merged*."""
@@ -701,6 +704,17 @@ class A2AClient:
                 get_store().record_result(corr_id, result_text)
             logger.debug("a2a_result_resolved corr_id=%s", corr_id)
         else:
+            # No synchronous waiter.  Either this is an async task whose result
+            # should be stored for polling, or a late result for a task that
+            # already timed out (record already failed).  A timed-out task must
+            # not be resurrected into _completed_tasks or auto-pushed as a
+            # success the caller was already told failed.
+            rec = get_store().get(corr_id)
+            if rec is not None and rec.status == "failed":
+                logger.warning(
+                    "a2a_late_result_after_failure corr_id=%s", corr_id,
+                )
+                return
             # Store for async retrieval — no synchronous waiter.  Cap the
             # cache so a session that never polls results doesn't grow it
             # without bound (oldest evicted first).

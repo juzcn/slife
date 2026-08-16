@@ -31,6 +31,27 @@ logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 3
 _RETRY_DELAY = 2.0  # seconds
+_HEALTH_INTERVAL = 30.0  # seconds between liveness probes
+
+
+def _tunnel_alive(public_url: str) -> bool:
+    """True if ngrok still lists *public_url* as a live tunnel.
+
+    The embedded SDK does NOT report a server-side teardown (free-tier
+    sessions get recycled by ngrok), so the monitor probes the API for our
+    public URL.  Any probe error returns True — don't flap on transient API
+    trouble.
+    """
+    try:
+        ngrok = _import_ngrok()
+        if ngrok is None:
+            return True
+        get_tunnels = getattr(ngrok, "get_tunnels", None)
+        if get_tunnels is None:
+            return True
+        return any(t.public_url == public_url for t in get_tunnels())
+    except Exception:
+        return True
 
 # A start attempt stuck longer than this is considered dead (its daemon
 # thread is hung in credstore/forward) — a fresh attempt may supersede it.
@@ -242,35 +263,46 @@ class NgrokTunnel:
             self._monitor_task = None
 
     async def _run_monitor(self, port: int, on_tunnel_up=None) -> None:
-        """Background task: one-shot retry if the initial start failed."""
-        await asyncio.sleep(2.0)  # let the daemon-thread handshake finish
+        """Background health loop: keep the tunnel up, restarting if it drops.
 
-        # Only retry if the initial start failed — the embedded SDK cannot
-        # silently crash, so no continuous health-ping is needed.
-        if self._public_url is not None:
-            return
-
-        if self._monitor_retries > 0:
-            return
-
-        logger.info(
-            "tunnel_monitor_retry port=%s phase=initial_start", port,
-        )
+        The embedded SDK does NOT report server-side teardowns (free-tier
+        sessions get recycled by ngrok), so instead of trusting ``_public_url``
+        the loop periodically probes the tunnel via :func:`_tunnel_alive` and
+        restarts when it is gone.  Runs until the monitor is cancelled
+        (``stop_monitor`` / shutdown).
+        """
         from slife.threads import run_daemon
-        try:
-            await run_daemon(self.start, port, name="ngrok-tunnel-retry")
-            logger.info(
-                "tunnel_initial_start_ok port=%s url=%s",
-                port, self._public_url,
-            )
-            self._monitor_retries = 0
-            if on_tunnel_up:
-                on_tunnel_up()
-        except Exception as e:
-            self._monitor_retries += 1
-            logger.warning(
-                "tunnel_initial_start_failed port=%s err=%s", port, e,
-            )
+
+        await asyncio.sleep(_RETRY_DELAY)  # let the daemon-thread handshake finish
+
+        while True:
+            if self._public_url is not None:
+                alive = await run_daemon(_tunnel_alive, self._public_url)
+                if alive:
+                    await asyncio.sleep(_HEALTH_INTERVAL)
+                    continue
+                logger.warning(
+                    "tunnel_lost url=%s — restarting", self._public_url,
+                )
+                self._public_url = None
+                os.environ.pop("SLIFE_MEMFILES_URL", None)
+
+            # No tunnel — (re)start.
+            try:
+                await run_daemon(self.start, port, name="ngrok-tunnel-health")
+            except Exception as e:
+                self._monitor_retries += 1
+                logger.warning(
+                    "tunnel_restart_failed port=%s err=%s retries=%d",
+                    port, e, self._monitor_retries,
+                )
+                await asyncio.sleep(_RETRY_DELAY)
+                continue
+            if self._public_url is not None:
+                self._monitor_retries = 0
+                if on_tunnel_up is not None:
+                    on_tunnel_up()
+            await asyncio.sleep(_HEALTH_INTERVAL)
 
 
 # ── Internal helpers ───────────────────────────────────────────────────

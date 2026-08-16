@@ -58,8 +58,14 @@ except Exception:
 # ═══════════════════════════════════════════════════════════════════════
 
 def _fallback_widget(file_path: str, *, broken: bool = False) -> Static:
+    from rich.markup import escape
+
     path = Path(file_path)
-    name = path.name
+    # The filename can be a user/agent-supplied path — escape Rich markup so
+    # a `[` (e.g. "photo[1].png") can't raise MarkupError or inject styling,
+    # which used to kill the whole turn via safe_image_widget's "never raises"
+    # contract.
+    name = escape(path.name)
     prefix = "⚠" if broken else "\U0001f5bc"
     try:
         size_bytes = path.stat().st_size

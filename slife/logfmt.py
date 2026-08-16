@@ -290,22 +290,35 @@ _SECRET_PATTERNS: list[re.Pattern] = [
     # Baidu Qianfan (bce-v3/ALTAK-...)
     re.compile(r"\bbce-v3/ALTAK-[A-Za-z0-9/_-]{20,}\b"),
     # ── Generic service tokens ──────────────────────────────────────
-    # GitHub
+    # GitHub classic PATs (ghp_/ghs_/ghu_) and fine-grained PATs (github_pat_)
     re.compile(r"\bgh[psu]_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
     # Google OAuth
     re.compile(r"\bya29\.[A-Za-z0-9._-]{20,}\b"),
     # PyPI
     re.compile(r"\bpypi-[A-Za-z0-9._-]{20,}\b"),
     # ── Header / key=value patterns ─────────────────────────────────
-    # Authorization: Bearer <token>
-    re.compile(r"(?:Authorization|Bearer)\s+([A-Za-z0-9+/=._-]{20,})", re.IGNORECASE),
+    # Authorization: Bearer|Basic|Token <credential> (and bare Bearer/Token).
+    # The old pattern required the keyword directly before the token, so
+    # "Authorization: Basic dXNlcjpwYXNz" and "Authorization: Token …"
+    # slipped through unmasked.  Lower floor (8) is fine here — the header
+    # context is specific enough that false positives are unlikely.
+    re.compile(
+        r"(?:Authorization\s*:\s*)?(?:Basic|Bearer|Token)\s+"
+        r"([A-Za-z0-9+/=._-]{8,})",
+        re.IGNORECASE,
+    ),
     # key=value pairs — whole words (api_key, token, password, …) and
     # compound names (AWS_SECRET_ACCESS_KEY, STRIPE_SECRET_KEY,
     # aws_access_key_id).  Value floor 6 chars so short secrets mask too.
+    # The value class excludes quotes/braces/brackets so JSON like
+    # {"api_key": "sk-…"} masks just the value instead of swallowing the
+    # closing braces and corrupting the line.
     re.compile(
         r"(?:api[_-]?key|apikey|token|password|auth[_-]?token|"
         r"[A-Za-z0-9_]*secret[A-Za-z0-9_]*|"
-        r"[A-Za-z0-9_]*access[_-]?key[A-Za-z0-9_]*)\s*[=:]\s*([^\s]{6,})",
+        r"[A-Za-z0-9_]*access[_-]?key[A-Za-z0-9_]*)\s*[=:]\s*"
+        r"([^\s\"'{}()\[\];,]{6,})",
         re.IGNORECASE,
     ),
 ]
@@ -313,8 +326,10 @@ _SECRET_PATTERNS: list[re.Pattern] = [
 _MASKED = "<MASKED>"
 
 # Connection-string credentials: scheme://user:password@host — mask just the
-# password, keeping the rest of the URL readable.
-_URL_CREDENTIAL_PATTERN = re.compile(r"(://[^/\s@]*:)[^@\s]+(@)")
+# password, keeping the rest of the URL readable.  The password class excludes
+# `/` so "https://host:8080/user@domain" (a port + path, NOT credentials) is
+# no longer corrupted by swallowing "8080/user".
+_URL_CREDENTIAL_PATTERN = re.compile(r"(://[^/\s@]*:)[^@\s/]+(@)")
 
 
 def sanitize_secrets(text: str) -> str:

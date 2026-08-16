@@ -100,7 +100,17 @@ async def _ensure_connected() -> A2AClient:
         client.on_incoming_cancel(_on_incoming_cancel)
         client.on_agent_change(_on_agent_change)
         client.on_task_result(_on_task_result)
-        await client.connect()
+        try:
+            await client.connect()
+        except Exception:
+            # connect() can fail AFTER the adapter is already up (duplicate
+            # agent name, subscribe error, refused CONNACK) — never leak the
+            # connected paho thread on retry.
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            raise
         _client = client
         logger.info("a2a_plugin_client_connected id=%s", client.agent_name)
     return _client
@@ -111,6 +121,11 @@ async def _ensure_connected() -> A2AClient:
 
 async def _on_incoming_task(msg: AgentMessage) -> None:
     if len(_inbound_tasks) >= _MAX_QUEUED:
+        # Queue full — drop the oldest rather than block the mesh; at least
+        # surface it (the remote sender only learns via its task_timeout).
+        logger.warning(
+            "a2a_inbound_overflow dropped=1 type=task",
+        )
         _inbound_tasks.pop(0)
     _inbound_tasks.append({
         "type": "task",
@@ -142,6 +157,7 @@ async def _on_task_result(corr_id: str, result: str, cancelled: bool) -> None:
         _poll_tasks.discard(corr_id)
         return
     if len(_task_completions) >= _MAX_QUEUED:
+        logger.warning("a2a_inbound_overflow dropped=1 type=task_completion")
         _task_completions.pop(0)
     _task_completions.append({
         "corr_id": corr_id, "result": result,
@@ -173,12 +189,14 @@ async def _on_incoming_cancel(corr_id: str) -> None:
                         pass
                 break
     if len(_cancellations) >= _MAX_QUEUED:
+        logger.warning("a2a_inbound_overflow dropped=1 type=cancel")
         _cancellations.pop(0)
     _cancellations.append({"type": "cancel", "corr_id": corr_id})
 
 
 async def _on_agent_change(card: AgentCard, event: str) -> None:
     if len(_presence_events) >= _MAX_QUEUED:
+        logger.warning("a2a_inbound_overflow dropped=1 type=presence")
         _presence_events.pop(0)
     _presence_events.append({
         "type": "presence",
@@ -238,6 +256,11 @@ async def a2a_send_task_async(agent_name: str, task: str, mode: str = "auto") ->
     client = await _ensure_connected()
     corr_id = await client.send_task_async(AgentName(agent_name), task)
     if mode == "poll":
+        if len(_poll_tasks) >= _MAX_QUEUED:
+            # Bound the poll-tracking set — a silent peer would otherwise
+            # accumulate ids forever (each id is only removed when its result
+            # arrives).
+            _poll_tasks.pop()
         _poll_tasks.add(corr_id)
         return (
             f"{corr_id}\n[auto-delivery disabled (mode=poll) — retrieve with "

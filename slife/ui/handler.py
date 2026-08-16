@@ -194,12 +194,26 @@ class TUIHandler:
         """
         from slife.ui.approval_prompt import ApprovalPrompt
 
+        # If the model picker is open, it would hold focus — this prompt's
+        # focus() would steal it and the picker's future would never resolve
+        # (leaked task, Ctrl+S dead forever).  Dismiss the picker first.
+        if getattr(self._app, "_model_picker_open", False):
+            self._app._dismiss_model_picker()
+
         future: asyncio.Future[bool] = asyncio.Future()
         prompt = ApprovalPrompt(tool_call, future)
         self._chat_view.mount(prompt)
         self._chat_view.scroll_end(animate=False)
         prompt.focus()
-        approved = await future
+        try:
+            approved = await future
+        except asyncio.CancelledError:
+            # The turn was cancelled (Esc) while the prompt was open — the
+            # loop's approval-wait cancels this coroutine.  Resolve the prompt
+            # as denied so its future doesn't dangle, then re-raise so the
+            # loop's cancel flow proceeds.
+            prompt._decide(approved=False)
+            raise
         self._refocus_input()
         return approved
 

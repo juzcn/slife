@@ -245,6 +245,7 @@ class SlifeApp(App):
         # Model picker re-entry guard — a second Ctrl+S while one is open
         # would stack a second picker and leak the first's await-task.
         self._model_picker_open = False
+        self._model_picker_future: "asyncio.Future | None" = None
 
     def compose(self) -> ComposeResult:
         """Minimal layout: chat fills screen, input + status docked at bottom."""
@@ -443,6 +444,17 @@ class SlifeApp(App):
 
         from slife.ui.model_picker import ModelPicker
 
+        # A pending approval prompt must not be left blocking the agent loop
+        # while the picker takes focus (its Esc would now hit the picker, and
+        # the loop would hang on the approval future forever).  Deny it first.
+        try:
+            prompt = self.query_one(".approval-prompt")
+            decide = getattr(prompt, "_decide", None)
+            if decide is not None:
+                decide(approved=False)
+        except Exception:
+            pass
+
         models = list(self.service.config.models)
         if not models:
             self.query_one("#chat-view", ChatView).add_system_message(
@@ -466,13 +478,29 @@ class SlifeApp(App):
         chat_view.call_after_refresh(chat_view.scroll_end, animate=False)
         picker.focus()
         self._model_picker_open = True
+        self._model_picker_future = future
 
         asyncio.create_task(self._finish_model_switch(chat_view, future))
+
+    def _dismiss_model_picker(self) -> None:
+        """Cancel an open model picker so its future resolves.
+
+        Called when an approval prompt is about to take focus while the picker
+        is open — without this the picker's future never resolves, the
+        ``_finish_model_switch`` task leaks, and ``_model_picker_open`` stays
+        True so every later Ctrl+S is dead.
+        """
+        fut = self._model_picker_future
+        if fut is not None and not fut.done():
+            fut.set_result(None)
+        self._model_picker_open = False
+        self._model_picker_future = None
 
     async def _finish_model_switch(self, chat_view, future) -> None:
         """Apply the picker's decision off the key-event handler."""
         model = await future
         self._model_picker_open = False
+        self._model_picker_future = None
         self.query_one("#user-input").focus()
         if model is None:
             return  # canceled — the picker already shows the status
@@ -744,8 +772,6 @@ class SlifeApp(App):
         turn_time: datetime | None = None,
     ) -> None:
         """Run the agent loop and stream results to the TUI."""
-        self._tool_widgets.clear()
-
         handler = TUIHandler(
             self, assistant_prefix=self._assistant_prefix, timestamp=turn_time,
         )
@@ -760,3 +786,10 @@ class SlifeApp(App):
         except Exception as e:
             handler.finalize_current()
             chat_view.add_system_message(f"✗ Error: {e}", color="#f85149")
+        finally:
+            # Clear the tool-widget map only after this turn has finished —
+            # clearing at enqueue time (a follow-up worker can start while the
+            # previous turn is still streaming) orphaned the in-flight tool
+            # widgets, leaving their rows stuck on "◌ running" with the
+            # results silently dropped.
+            self._tool_widgets.clear()

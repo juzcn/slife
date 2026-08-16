@@ -104,6 +104,10 @@ class MCPServerConnection:
         self._next_id: int = 0
         self._lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()  # serializes connect() (REVIEW §1-6)
+        # Set by disconnect() so an in-flight connect aborts at its next check
+        # point instead of resuming after cleanup and spawning an orphaned
+        # transport + health monitor.
+        self._disconnecting = False
         self._notify_tasks: "set[asyncio.Task]" = set()  # fire-and-forget _notify posts
         self._tools_cache: list[dict] = []
         self._error: str | None = None
@@ -173,6 +177,10 @@ class MCPServerConnection:
         # and mcp_set_enabled can otherwise each spawn their own transport,
         # orphaning the loser (and starting duplicate monitors) (REVIEW §1-6).
         async with self._connect_lock:
+            # A disconnect() that raced an in-flight connect must not be
+            # undone by this fresh connect.
+            if self._disconnecting:
+                return
             self._status = ServerStatus.CONNECTING
             self._error = None
             self._stderr_buffer.clear()
@@ -185,6 +193,8 @@ class MCPServerConnection:
             # ── OAuth pre-check ───────────────────────────────────────
             if self.config.auth and self.config.auth.get("type") == "oauth":
                 await self._ensure_oauth_token()
+            if self._disconnecting:
+                return  # disconnect() ran mid-OAuth — don't spawn a transport
 
             t0 = _time.monotonic()
             transport = self.config.transport
@@ -237,6 +247,11 @@ class MCPServerConnection:
 
                 # Start the health monitor once per connection object — a running
                 # monitor is reused across reconnects, so never spawn a second.
+                # A disconnect() that landed mid-connect must not leave an
+                # orphaned monitor pinging a transport that is being torn down.
+                if self._disconnecting:
+                    self._status = ServerStatus.DISCONNECTED
+                    return
                 if self._health_task is None or self._health_task.done():
                     self._health_task = asyncio.create_task(self._health_monitor())
 
@@ -753,21 +768,28 @@ class MCPServerConnection:
 
     async def disconnect(self) -> None:
         logger.info("mcp_disconnect server=%s", self.config.name)
-        self._status = ServerStatus.DISCONNECTED
-        # Stop the health monitor first — it must not keep pinging a
-        # deliberately-disconnected server.  The monitor is the only task
-        # that reconnects, so cancelling it here (and only here) prevents
-        # self-cancellation from ``_cleanup_resources``.
-        if self._health_task is not None and not self._health_task.done():
-            self._health_task.cancel()
-            try:
-                await self._health_task
-            except asyncio.CancelledError:
-                pass
-            self._health_task = None
-        await self._cleanup_resources()
-        self._tools_cache = []
-        self._session_id = None
+        # Flag any in-flight connect to abort at its next check point, then
+        # serialize with it under the connect lock — otherwise a slow connect
+        # (OAuth, HTTP handshake) resumes after this cleanup and spawns an
+        # orphaned transport + health monitor that nothing references.
+        self._disconnecting = True
+        async with self._connect_lock:
+            self._status = ServerStatus.DISCONNECTED
+            # Stop the health monitor first — it must not keep pinging a
+            # deliberately-disconnected server.  The monitor is the only task
+            # that reconnects, so cancelling it here (and only here) prevents
+            # self-cancellation from ``_cleanup_resources``.
+            if self._health_task is not None and not self._health_task.done():
+                self._health_task.cancel()
+                try:
+                    await self._health_task
+                except asyncio.CancelledError:
+                    pass
+                self._health_task = None
+            await self._cleanup_resources()
+            self._tools_cache = []
+            self._session_id = None
+        self._disconnecting = False
         logger.info("mcp_disconnected server=%s", self.config.name)
 
     async def _cleanup_resources(self) -> None:

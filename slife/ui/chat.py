@@ -141,10 +141,28 @@ class ChatView(VerticalScroll):
         msg = UserMessage(text, images=images, prefix=prefix, timestamp=timestamp)
         self.mount(msg)
         if images:
-            for img_path in images:
-                self.add_image_to_chat(img_path, thumb=True)
+            self._schedule_thumbnails(images)
         self._follow()
         return msg
+
+    def _schedule_thumbnails(self, images: list[str], gap: float = 0.06) -> None:
+        """Mount thumbnails one per compositor cycle.
+
+        ``textual-image`` only paints an image mounted in its own compositor
+        cycle — mounting several in one pass (the live path, or inside a
+        restore ``batch_update``) lays them out but paints at most the last
+        one.  Each mount schedules the next from inside its own callback so
+        every image gets its own tick.
+        """
+
+        def _next(i: int) -> None:
+            if i >= len(images):
+                return
+            self.add_image_to_chat(images[i], thumb=True)
+            if i < len(images) - 1:
+                self.set_timer(gap, lambda: _next(i + 1))
+
+        self.set_timer(gap, lambda: _next(0))
 
     def add_image_to_chat(
         self, file_path: str, *, thumb: bool = False

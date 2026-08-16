@@ -330,11 +330,17 @@ class AgentService:
         # Drop stale per-conversation token caches (keyed by the old model's
         # prompt-token footprint) so the status bar stops reporting it.
         self.agent_loop._usage_by_conv.clear()
+        # Also drop the restore-time fallback estimate — after a 32K→200K
+        # switch the status bar / trim gate must not report the old window's
+        # reading until the first API call under the new model.
+        self.agent_loop._last_usage = TokenUsage()
 
-        # Rebuild system prompt with updated model info
+        # Rebuild system prompt with updated model info — for the human
+        # conversation AND every persistent one (WeChat) and future ones.
         new_system = build_system_prompt(self.config)
         if self.conversation.messages and self.conversation.messages[0]["role"] == "system":
             self.conversation.messages[0]["content"] = new_system
+        self.inbox._conversations.update_system_prompt(new_system)
 
     @property
     def mcp_enabled(self) -> bool:

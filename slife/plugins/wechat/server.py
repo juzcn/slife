@@ -106,7 +106,13 @@ _work_dir: Path = _get_data_dir()
 # Background polling
 _poll_task: asyncio.Task | None = None
 _pending: deque[dict] = deque()
-_seen_keys: set[str] = set()
+# Dedup key → last-seen monotonic time.  A windowed set: a repeated key is
+# only a "re-delivery" (WeChat re-sends recent messages until the sync buffer
+# advances) if seen within the window — a genuine repeat message sent later
+# (e.g. "收到" twice minutes apart) is NOT dropped.  The old forever-set
+# dropped every same-text repeat after the first, across polls.
+_seen_keys: dict[str, float] = {}
+_DEDUP_WINDOW = 30.0  # seconds — re-deliveries arrive well within this
 _MAX_QUEUED = 200  # keep at most 200 pending messages
 
 # Typing indicator keep-alive — per-conversation tasks managed by the server
@@ -172,10 +178,16 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
                     continue
 
                 key = _msg_key(m, text)
-                if key in _seen_keys and key not in batch_seen:
-                    continue  # true re-delivery seen in an earlier poll
+                now = time.monotonic()
+                last_seen = _seen_keys.get(key)
+                if (
+                    last_seen is not None
+                    and now - last_seen <= _DEDUP_WINDOW
+                    and key not in batch_seen
+                ):
+                    continue  # true re-delivery seen within the window
                 batch_seen.add(key)
-                _seen_keys.add(key)
+                _seen_keys[key] = now
 
                 from_id = m.get("from_user_id", "")
                 ctx_token = m.get("context_token", "")
@@ -198,11 +210,10 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
             while len(_pending) > _MAX_QUEUED:
                 _pending.popleft()
             while len(_seen_keys) > _MAX_QUEUED * 3:
-                # Keep the set from growing unbounded
-                # Remove oldest ~half
-                to_remove = list(_seen_keys)[:_MAX_QUEUED]
-                for k in to_remove:
-                    _seen_keys.discard(k)
+                # Keep the map from growing unbounded — dict preserves
+                # insertion order, so the oldest entries are first.
+                for k in list(_seen_keys)[:_MAX_QUEUED]:
+                    _seen_keys.pop(k, None)
 
             if new_count:
                 logger.debug("poll_new msgs=%d queued=%d", new_count, len(_pending))

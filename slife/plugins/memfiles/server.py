@@ -48,7 +48,7 @@ from pathlib import Path
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 from slife.paths import get_memfiles_dir
 from slife.plugins.memdb.embeddings import EmbeddingClient
@@ -600,16 +600,36 @@ async def url_save(
     if err:
         return f"Error: refusing URL — {err}"
 
+    raw: bytes | None = None
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status != 200:
-                    return f"Error: HTTP {resp.status} — {url}"
-                raw = await resp.read()
+            current = url
+            # Follow redirects manually, re-running the SSRF guard on every
+            # hop — a public URL that 302s to 169.254.169.254 (cloud metadata)
+            # must not be fetched and published.  Bounded chain, no loop.
+            for _ in range(5):
+                err = await run_daemon(_reject_non_public_url, current)
+                if err:
+                    return f"Error: refusing URL — {err}"
+                async with session.get(
+                    current,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                    allow_redirects=False,
+                ) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("Location")
+                        if not location:
+                            return f"Error: redirect without Location — {url}"
+                        current = urljoin(current, location)
+                        continue
+                    if resp.status != 200:
+                        return f"Error: HTTP {resp.status} — {url}"
+                    raw = await resp.read()
+                    break
     except Exception as e:
         return f"Error: download failed — {e}"
+    if raw is None:
+        return f"Error: too many redirects — {url}"
 
     url_name = parsed.path.rsplit("/", 1)[-1] if parsed.path else ""
     display_title = title or url_name or "untitled"

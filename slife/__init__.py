@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from slife.bootstrap import restore_windows_console, seed_skills, setup_logging
-from slife.config import Config, parse_cli_agent
+from slife.config import Config, parse_cli_agent, parse_cli_config_path
 from slife.logfmt import init_session_id
 from slife.paths import get_config_path, get_data_dir, get_skills_dir
 from slife.ui.app import SlifeApp
@@ -22,22 +22,26 @@ from slife.ui.app import SlifeApp
 logger = logging.getLogger("slife")
 
 
-def main(config_path: str = "slife.json5"):
+def main(config_path: str | None = None):
     """Entry point for the Slife TUI application.
 
     Dev mode (detected via pyproject.toml): data files stay in CWD.
-    Otherwise: everything lives in ``~/.slife/``.
+    Otherwise: everything lives in ``~/.slife/``.  An explicit config path
+    (positional CLI arg or the *config_path* parameter) is honored — its
+    parent directory becomes the data dir.
     """
     agent_name = parse_cli_agent(sys.argv)
+    explicit = config_path or parse_cli_config_path(sys.argv)
 
     # Resolve data dir BEFORE logging setup so logs go to the right place.
     # Only two modes:
     #   1. Dev (pyproject.toml in CWD): everything in CWD
     #   2. Production: everything in ~/.slife/
     # Unless the user passes an explicit config path — then use its parent.
-    _cp = Path(config_path).expanduser()
-    if _cp.is_absolute():
-        # Explicit path given — use its parent as data dir
+    if explicit:
+        _cp = Path(explicit).expanduser()
+        if not _cp.is_absolute():
+            _cp = Path.cwd() / _cp
         data_dir = str(_cp.parent.resolve())
     else:
         data_dir = str(get_data_dir())
@@ -76,7 +80,7 @@ def main(config_path: str = "slife.json5"):
     from slife.health import record
     record(
         "config", "ok",
-        key="path", value=config_path,
+        key="path", value=str(_cp),
         hint=f"Config loaded: {len(config.models)} models, "
              f"{len(config.mcp_config.servers) if config.mcp_config else 0} MCP servers, "
              f"memory={'enabled' if config.memdb_config else 'disabled'}.",
@@ -86,15 +90,22 @@ def main(config_path: str = "slife.json5"):
     from slife.health import check_external_deps
     check_external_deps()
 
-    # Log env vars from config (already applied to os.environ by Config.from_json5)
+    # Log env vars from config (already applied to os.environ by Config.from_json5).
+    # Every value goes through the shared sanitizer first — this catches
+    # connection strings (DATABASE_URL=postgres://user:pass@host/db) whose
+    # password is embedded in the value, and known key shapes.  The key-name
+    # heuristic is a fallback for credential-named keys whose value matched no
+    # known shape (short secret, arbitrary token).
     if config.env:
+        from slife.logfmt import sanitize_secrets
         for key, value in config.env.items():
-            # Mask API key values: only log the key name and first/last chars
-            if any(hint in key.upper() for hint in ("KEY", "SECRET", "TOKEN", "PASSWORD")):
+            s = sanitize_secrets(str(value))
+            if s == str(value) and any(
+                hint in key.upper() for hint in ("KEY", "SECRET", "TOKEN", "PASSWORD")
+            ):
                 masked = str(value)[:4] + "…" + str(value)[-4:] if len(str(value)) > 8 else "***"
-                logger.debug("env %s=%s", key, masked)
-            else:
-                logger.debug("env %s=%s", key, value)
+                s = masked
+            logger.debug("env %s=%s", key, s)
 
     active = config.active_model
     logger.debug("model=%s provider=%s", active.ref, active.display_name)

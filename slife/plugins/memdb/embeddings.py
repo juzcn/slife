@@ -425,6 +425,7 @@ class EmbeddingClient:
             return True
         if self._loading is not None:
             return await self._loading  # share the in-flight load
+        ok = False
         self._loading = asyncio.get_running_loop().create_future()
         try:
             if self._backend == "transformer":
@@ -436,10 +437,14 @@ class EmbeddingClient:
             logger.warning(
                 "embedding_load_failed backend=%s err=%s", self._backend, e,
             )
-            ok = False
-        if not self._loading.done():
-            self._loading.set_result(ok)
-        self._loading = None
+        finally:
+            # Always resolve the shared future and clear the slot.  A
+            # CancelledError (a BaseException, not caught above) must not leave
+            # _loading pointing at a future that never resolves — every later
+            # load()/enable() would hang forever.
+            if not self._loading.done():
+                self._loading.set_result(ok)
+            self._loading = None
         return ok
 
     async def _call_gguf(self, texts: list[str]) -> list[list[float]] | None:

@@ -336,7 +336,7 @@ class TestUrlSave:
             async def __aexit__(self, *a): return None
             async def read(self): return b"<html>Page</html>"
 
-        def _fake_get(url, timeout=None):
+        def _fake_get(url, timeout=None, **kwargs):
             # sync: url_save does ``async with session.get(...)``
             return _Resp()
 

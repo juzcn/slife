@@ -85,8 +85,8 @@ class TestPollLoopDedup:
             _msg("u1", "ctx1", "hello"),
         ]])
         assert [q["text"] for q in queued] == ["hello"]
-        # Only the text message recorded its key.
-        assert ws._seen_keys == {"u1::ctx1::hello"}
+        # Only the text message recorded its key (the map value is a timestamp).
+        assert set(ws._seen_keys) == {"u1::ctx1::hello"}
 
     @pytest.mark.asyncio
     async def test_cross_poll_redelivery_still_deduped(self):

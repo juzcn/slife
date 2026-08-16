@@ -296,8 +296,8 @@ class TestSubagentSendTaskTool:
         mock_mgr.send_task.assert_awaited_once_with("sub-1", "do X")
 
     @pytest.mark.asyncio
-    async def test_send_timeout_reports_task_still_running(self):
-        """A sync timeout does not cancel the task — the tool says so."""
+    async def test_send_timeout_reports_preempted(self):
+        """A sync timeout preempts the stuck task and reports it honestly."""
         mock_mgr = MagicMock()
         mock_mgr.is_busy = MagicMock(return_value=False)
         mock_mgr.send_task = AsyncMock(side_effect=TimeoutError("timeout"))
@@ -305,8 +305,8 @@ class TestSubagentSendTaskTool:
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentSendTaskTool()
             result = await tool.execute(subagent_name="sub-1", task="do X")
-        assert "still running" in result
-        assert "delivered automatically" in result
+        assert "Timed out" in result
+        assert "NOT delivered automatically" in result
 
     @pytest.mark.asyncio
     async def test_send_busy_converts_to_async(self):

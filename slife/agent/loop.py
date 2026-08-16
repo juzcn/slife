@@ -389,6 +389,13 @@ class AgentLoop:
                     else {}
                 )
             except json.JSONDecodeError:
+                # Truncated by max_tokens / provider mid-argument — surface it
+                # instead of silently running the tool with no arguments (a
+                # destructive command would otherwise become a confusing no-op).
+                logger.warning(
+                    "tool_args_malformed id=%s name=%s raw=%.120s",
+                    acc["id"], acc["name"], acc["arguments"],
+                )
                 args = {}
             result.append(
                 ToolCallInfo(
@@ -700,6 +707,32 @@ class AgentLoop:
 
     # ── Tool execution ─────────────────────────────────────────────
 
+    async def _await_approval(self, handler, tc) -> bool:
+        """Wait for the user's approval decision OR the turn's cancellation.
+
+        Esc-cancel (``_cancel_event``) must not leave the loop blocked forever
+        on an approval prompt that may have lost focus (e.g. the model picker
+        stole it) — every later message would queue behind it.  On cancel the
+        prompt is denied and the turn's cancellation proceeds.
+        """
+        cancel_wait = asyncio.create_task(self._cancel_event.wait())
+        approve_wait = asyncio.create_task(handler.on_tool_approval(tc))
+        pending: set = set()
+        try:
+            done, pending = await asyncio.wait(
+                {cancel_wait, approve_wait},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            if cancel_wait in pending:
+                cancel_wait.cancel()
+        if approve_wait in done:
+            return approve_wait.result()
+        # Cancelled while the prompt was open — deny it.  on_tool_approval
+        # resolves its own prompt future on cancellation so nothing dangles.
+        approve_wait.cancel()
+        return False
+
     async def _execute_tools(
         self,
         tool_calls: list[ToolCallInfo],
@@ -783,7 +816,10 @@ class AgentLoop:
             # concurrent approval dialogs never overlap.
             if approve_requested:
                 async with _approval_lock:
-                    approved = await handler.on_tool_approval(tc) if handler else True
+                    if handler:
+                        approved = await self._await_approval(handler, tc)
+                    else:
+                        approved = True
                 if not approved:
                     result = "Error: Tool execution was denied by user."
                     result = sanitize_secrets(result)
@@ -808,7 +844,27 @@ class AgentLoop:
                 # ── Async: schedule background task ─────────────
                 from slife.tools.meta import schedule as schedule_async
 
-                coro = self.tool_registry.execute(tc.name, **actual_args)
+                if _ctx is not None:
+                    # The background task runs AFTER _execute_tools' finally
+                    # restores ctx.conversation — a tool that reads it (e.g.
+                    # include_image) would otherwise target the wrong
+                    # conversation.  Pin it to the one this turn is processing.
+                    _run_conv = conversation
+                    _run_ctx = _ctx
+
+                    async def _run_with_conv():
+                        _saved = _run_ctx.conversation
+                        _run_ctx.conversation = _run_conv
+                        try:
+                            return await self.tool_registry.execute(
+                                tc.name, **actual_args,
+                            )
+                        finally:
+                            _run_ctx.conversation = _saved
+
+                    coro = _run_with_conv()
+                else:
+                    coro = self.tool_registry.execute(tc.name, **actual_args)
                 task_id = schedule_async(coro)
                 result = (
                     f"✓ Async task started.\n"

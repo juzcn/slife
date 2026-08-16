@@ -20,6 +20,30 @@ logger = logging.getLogger(__name__)
 _PLACEHOLDER_PREFIX = "<YOUR_"
 
 
+def _immediate_env_value(value: str) -> str | None:
+    """The value to put into ``os.environ`` for an immediate effect.
+
+    A bare ``${VAR}`` ref resolves through os.environ → credstore; an
+    unresolvable ref returns ``None`` so the caller leaves ``os.environ``
+    untouched (the config file keeps the ref, resolved at next startup).
+    Plaintext passes through.  Without this, writing the literal ``${VAR}``
+    template into ``os.environ`` hands API clients the template string and
+    the "takes effect immediately" promise breaks for the recommended secret
+    form.
+    """
+    if value.startswith("${") and value.endswith("}"):
+        from slife.config import _resolve_secret
+        resolved = _resolve_secret(value)
+        return resolved if resolved != value else None
+    if "${" in value:
+        from slife.env import resolve_env
+        try:
+            return resolve_env(value)
+        except Exception:
+            return value
+    return value
+
+
 def _env_section(raw: dict) -> dict:
     env = raw.setdefault("env", {})
     if not isinstance(env, dict):
@@ -105,7 +129,9 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
         env = _env_section(raw)
         if value:
             env[key] = value
-            os.environ[key] = str(value)
+            immediate = _immediate_env_value(value)
+            if immediate is not None:
+                os.environ[key] = immediate
             write_config(self._config_path, raw)
             logger.info("env_set key=%s", key)
             return f"[OK] {key} = {value}"

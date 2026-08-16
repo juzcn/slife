@@ -44,12 +44,33 @@ class OpenAIBackend:
 
     # ── Build kwargs ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _normalize_messages(messages: list[dict]) -> list[dict]:
+        """Return a wire-safe copy of *messages*.
+
+        A persisted assistant turn with empty text and no tool calls (e.g. a
+        reasoning-only / max_tokens-cut response) is rejected by OpenAI-format
+        providers as an empty-content assistant message — give it a visible
+        placeholder so the request doesn't 400 on the next turn.  The stored
+        conversation is untouched (this is a copy).
+        """
+        out: list[dict] = []
+        for msg in messages:
+            if (
+                msg.get("role") == "assistant"
+                and not msg.get("content")
+                and not msg.get("tool_calls")
+            ):
+                msg = {**msg, "content": "…"}
+            out.append(msg)
+        return out
+
     def _build_kwargs(
         self, messages: list[dict], tools: list[dict] | None
     ) -> dict:
         kwargs: dict = {
             "model": self.model_config.api_model,
-            "messages": messages,
+            "messages": self._normalize_messages(messages),
             "max_tokens": self.model_config.max_tokens,
             "temperature": self.model_config.temperature,
             "top_p": self.model_config.top_p,

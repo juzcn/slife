@@ -367,7 +367,19 @@ class Conversation:
         total = 0
         for msg in self.messages:
             content = msg.get("content") or ""
-            total += len(content) // 3  # ~3 chars/token for CJK+code mix
+            if isinstance(content, list):
+                # Multimodal message — sum text parts and give each image a
+                # flat per-image estimate.  The base64 data URI itself must not
+                # be counted as text, or a single image would dominate the
+                # whole window estimate.
+                for part in content:
+                    ptype = part.get("type")
+                    if ptype == "text":
+                        total += len(part.get("text", "")) // 3
+                    elif ptype == "image_url":
+                        total += 200  # rough per-image token estimate
+            else:
+                total += len(str(content)) // 3  # ~3 chars/token for CJK+code mix
             # Tool calls add significant overhead
             if msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:

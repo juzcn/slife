@@ -204,6 +204,7 @@ class Inbox:
         conversation = None
         handler = None
         result = None
+        rolled_back = False
         try:
             # Reset cancel state for the new message
             self._agent_loop.reset_cancel()
@@ -288,6 +289,12 @@ class Inbox:
             ):
                 try:
                     conversation.pop_last_turn()
+                    # The rejected turn was rolled back — the finally must NOT
+                    # re-save it.  The backward text match in save_to_memory
+                    # would otherwise match an earlier turn with identical text
+                    # (heartbeat content is constant) and duplicate it as a
+                    # fresh diary row.
+                    rolled_back = True
                 except Exception:
                     pass
             # Notify TUI so the user sees the error in chat
@@ -323,8 +330,11 @@ class Inbox:
         finally:
             # ★ Persist turn unconditionally — even on cancel, error,
             # or max-iterations.  Preserves everything that was produced
-            # so far so the conversation and images are never lost.
-            if self._on_turn_complete and conversation is not None:
+            # so far so the conversation and images are never lost.  The
+            # one exception: a content-policy / bad-request rollback, whose
+            # rejected turn must not be saved (re-saving would also match an
+            # earlier identical turn and duplicate it).
+            if self._on_turn_complete and conversation is not None and not rolled_back:
                 try:
                     token_count = 0
                     if result is not None and hasattr(result, "usage"):
@@ -447,6 +457,20 @@ class ConversationStore:
 
         # One-shot conversation for remote agents
         return Conversation(system_prompt=self._system_prompt)
+
+    def update_system_prompt(self, new_prompt: str) -> None:
+        """Rebuild the system prompt for existing persistent conversations and
+        for ones created later.
+
+        Called after a model switch: without it, the persistent WeChat
+        conversation (and any conversation created after the switch) keeps
+        running on the old model's system prompt (stale model name, vision
+        flag, context window, A2A config).
+        """
+        self._system_prompt = new_prompt
+        for conv in self._convs.values():
+            if conv.messages and conv.messages[0]["role"] == "system":
+                conv.messages[0]["content"] = new_prompt
 
     def clear(self, source: AgentName) -> None:
         """Clear conversation history for *source*."""

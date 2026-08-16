@@ -161,7 +161,18 @@ class MQTTAdapter(TransportAdapter):
                 pass
             raise
 
-        self._connected = True
+        if not self._connected:
+            # Broker refused the CONNECT (bad auth / not authorized) — paho
+            # surfaced a failed CONNACK.  Clean up and fail loudly rather than
+            # report "connected" while no session exists.
+            self._client = None
+            try:
+                c.loop_stop()
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"MQTT broker refused connection for agent '{self._agent_name}'"
+            )
         self._last_publish_time = _time.monotonic()
         logger.info(
             "a2a_mqtt_connected id=%s host=%s port=%d",
@@ -262,6 +273,28 @@ class MQTTAdapter(TransportAdapter):
         reason_code: ReasonCode,
         properties: Any,
     ) -> None:
+        if self._closed or client is not self._client:
+            # A stale connect callback from a closed/admired adapter (e.g.
+            # queued just as disconnect() ran) must not resurrect _connected
+            # and point it at a dead client.
+            return
+        if reason_code.is_failure:
+            # Broker refused the CONNECT (bad auth / not authorized / server
+            # unavailable).  No session exists — report not-connected and wake
+            # the waiter so connect() fails loudly instead of the mesh silently
+            # running without us.
+            self._connected = False
+            logger.warning(
+                "a2a_mqtt_connack_failed id=%s rc=%s",
+                self._client_id, reason_code,
+            )
+            loop = self._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(self._connect_event.set)
+            else:
+                self._connect_event.set()
+            return
+
         was_reconnect = self._ever_connected
         self._ever_connected = True
         self._connected = True

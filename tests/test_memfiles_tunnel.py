@@ -299,29 +299,99 @@ class TestNgrokTunnelStartMonitor:
 
     @pytest.mark.asyncio
     async def test_callback_called_on_retry_success(self):
-        """_run_monitor calls on_tunnel_up after a successful start retry."""
+        """_run_monitor restarts a missing tunnel and calls on_tunnel_up."""
         tunnel = NgrokTunnel()
         callback = MagicMock()
 
-        async def fake_sleep(_duration: float) -> None:
-            pass
+        real_sleep = asyncio.sleep
 
-        with patch("asyncio.sleep", side_effect=fake_sleep), \
-             patch.object(tunnel, "start", return_value="https://monitor.ngrok.io"):
-            await tunnel._run_monitor(8080, on_tunnel_up=callback)
+        async def fast_sleep(_d):
+            await real_sleep(0.01)
 
-        callback.assert_called_once()
+        def fake_start(port):
+            tunnel._public_url = "https://monitor.ngrok.io"
+            return tunnel._public_url
+
+        with patch("asyncio.sleep", side_effect=fast_sleep), \
+             patch("slife.plugins.memfiles.tunnel._tunnel_alive", return_value=True), \
+             patch.object(tunnel, "start", side_effect=fake_start):
+            task = asyncio.create_task(tunnel._run_monitor(8080, on_tunnel_up=callback))
+            try:
+                for _ in range(200):
+                    await real_sleep(0.02)
+                    if callback.called:
+                        break
+                callback.assert_called_once()
+            finally:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
     @pytest.mark.asyncio
     async def test_skips_when_already_connected(self):
-        """_run_monitor returns early when the tunnel is already up."""
+        """_run_monitor does NOT restart a live tunnel (callback not fired)."""
         tunnel = NgrokTunnel()
         tunnel._public_url = "https://already-up.ngrok.io"
         callback = MagicMock()
 
-        await tunnel._run_monitor(8080, on_tunnel_up=callback)
+        real_sleep = asyncio.sleep
 
-        callback.assert_not_called()
+        async def fast_sleep(_d):
+            await real_sleep(0.01)
+
+        with patch("asyncio.sleep", side_effect=fast_sleep), \
+             patch("slife.plugins.memfiles.tunnel._tunnel_alive", return_value=True), \
+             patch.object(tunnel, "start", return_value="https://already-up.ngrok.io"):
+            task = asyncio.create_task(tunnel._run_monitor(8080, on_tunnel_up=callback))
+            try:
+                for _ in range(20):
+                    await real_sleep(0.02)
+                callback.assert_not_called()
+            finally:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_restarts_when_tunnel_dropped(self):
+        """Regression: a tunnel dropped server-side (ngrok recycles free-tier
+        sessions) must be detected by the health probe and restarted — not
+        reported 'active' forever."""
+        tunnel = NgrokTunnel()
+        tunnel._public_url = "https://dropped.ngrok.io"
+        alive_results = iter([False, True])  # dead on first probe, alive after restart
+
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(_d):
+            await real_sleep(0.01)
+
+        def fake_start(port):
+            tunnel._public_url = "https://restarted.ngrok.io"
+            return tunnel._public_url
+
+        with patch("asyncio.sleep", side_effect=fast_sleep), \
+             patch("slife.plugins.memfiles.tunnel._tunnel_alive",
+                   side_effect=lambda _u: next(alive_results)), \
+             patch.object(tunnel, "start", side_effect=fake_start) as mock_start:
+            task = asyncio.create_task(tunnel._run_monitor(8080))
+            try:
+                for _ in range(200):
+                    await real_sleep(0.02)
+                    if tunnel._public_url == "https://restarted.ngrok.io":
+                        break
+                assert tunnel._public_url == "https://restarted.ngrok.io"
+                mock_start.assert_called_once()
+            finally:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
 
 # ── Module-level functions ────────────────────────────────────────────────────

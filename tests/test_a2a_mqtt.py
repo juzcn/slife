@@ -87,6 +87,7 @@ class TestMQTTAdapterConnect:
             task = asyncio.create_task(adapter.connect("localhost", 1883))
             await asyncio.sleep(0)
             # Simulate the _on_connect callback being called by paho
+            adapter._connected = True
             adapter._connect_event.set()
             await task
 
@@ -119,6 +120,7 @@ class TestMQTTAdapterConnect:
 
         task = asyncio.create_task(adapter.connect("localhost", 1883))
         await asyncio.sleep(0)
+        adapter._connected = True
         adapter._connect_event.set()
         await task
 
@@ -129,6 +131,28 @@ class TestMQTTAdapterConnect:
             qos=1,
             retain=False,
         )
+
+    @pytest.mark.asyncio
+    @patch("slife.a2a.mqtt.mqtt")
+    async def test_connect_refused_raises(self, mock_mqtt):
+        """Regression: a refused CONNACK (bad auth / not authorized) must make
+        connect() fail loudly and clean up the paho thread — not report
+        'connected' while no session exists."""
+        mock_client = Mock()
+        mock_mqtt.Client.return_value = mock_client
+
+        adapter = MQTTAdapter("agent-01")
+
+        task = asyncio.create_task(adapter.connect("localhost", 1883))
+        await asyncio.sleep(0)
+        # _on_connect fired with a failed reason_code: _connected stays False
+        adapter._connect_event.set()
+        with pytest.raises(RuntimeError, match="refused"):
+            await task
+
+        assert not adapter.is_connected
+        assert adapter._client is None
+        mock_client.loop_stop.assert_called_once()
 
 
 # ── MQTTAdapter disconnect ───────────────────────────────────────────────
@@ -290,8 +314,29 @@ class TestMQTTAdapterCallbacks:
     def test_on_connect(self):
         adapter = MQTTAdapter("test")
         adapter._connect_event = asyncio.Event()
+        mock_client = Mock()
+        adapter._client = mock_client
+        reason_code = Mock()
+        reason_code.is_failure = False
 
-        adapter._on_connect(None, None, None, None, None)
+        adapter._on_connect(mock_client, None, None, reason_code, None)
+        assert adapter._connect_event.is_set()
+
+    def test_on_connect_connack_failure_not_connected(self):
+        """Regression: a broker refusing the CONNECT (bad auth / not
+        authorized) must not report the adapter as connected — paho surfaces a
+        failed reason_code and no session exists."""
+        adapter = MQTTAdapter("test")
+        adapter._connect_event = asyncio.Event()
+        mock_client = Mock()
+        adapter._client = mock_client
+        reason_code = Mock()
+        reason_code.is_failure = True
+
+        adapter._on_connect(mock_client, None, None, reason_code, None)
+
+        assert not adapter.is_connected
+        # The waiter is still woken so connect() can fail loudly.
         assert adapter._connect_event.is_set()
 
     def test_on_disconnect(self):
@@ -322,8 +367,11 @@ class TestMQTTAdapterReconnect:
             "Slife/test/tasks/inbox": 1,
         }
         mock_client = Mock()
+        adapter._client = mock_client
+        reason_code = Mock()
+        reason_code.is_failure = False
 
-        adapter._on_connect(mock_client, None, None, None, None)
+        adapter._on_connect(mock_client, None, None, reason_code, None)
 
         assert adapter.is_connected
         assert mock_client.subscribe.call_count == 2
@@ -335,8 +383,11 @@ class TestMQTTAdapterReconnect:
         adapter._connect_event = asyncio.Event()
         adapter._subscriptions = {"Slife/+/presence": 1}
         mock_client = Mock()
+        adapter._client = mock_client
+        reason_code = Mock()
+        reason_code.is_failure = False
 
-        adapter._on_connect(mock_client, None, None, None, None)
+        adapter._on_connect(mock_client, None, None, reason_code, None)
 
         assert adapter.is_connected
         assert adapter._ever_connected
@@ -355,7 +406,11 @@ class TestMQTTAdapterReconnect:
         # Disconnect + reconnect (as paho would do automatically).
         adapter._on_disconnect(None, None, None, None, None)
         assert not adapter.is_connected
-        adapter._on_connect(Mock(), None, None, None, None)
+        mock_client = Mock()
+        adapter._client = mock_client
+        reason_code = Mock()
+        reason_code.is_failure = False
+        adapter._on_connect(mock_client, None, None, reason_code, None)
         assert adapter.is_connected
 
         # The generator never exited — it still delivers.
@@ -380,7 +435,11 @@ class TestMQTTAdapterReconnect:
             fired.set()
         adapter.on_reconnect = cb
 
-        adapter._on_connect(Mock(), None, None, None, None)
+        mock_client = Mock()
+        adapter._client = mock_client
+        reason_code = Mock()
+        reason_code.is_failure = False
+        adapter._on_connect(mock_client, None, None, reason_code, None)
 
         await asyncio.wait_for(fired.wait(), timeout=1)
         assert fired.is_set()

@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from collections.abc import Callable
@@ -19,6 +20,12 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from slife.platform import terminate_process
+
+# A subagent_name is rendered into the child's system prompt identity line and
+# into its log filename — restrict it to a safe identifier so an injected
+# parent agent can neither forge a multi-line identity nor traverse out of the
+# log dir ("..\\..\\evil").
+_SAFE_SUBAGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -80,6 +87,10 @@ class SubagentProcess:
         # task_ids the parent has cancelled — the child skips them if still
         # queued; any late response is ignored.
         self._cancelled: set[str] = set()
+        # Sync tasks that timed out but the child is still processing — their
+        # late result is STORED for get_task_result, not discarded (the tool
+        # promises the result remains retrievable).
+        self._late_results: set[str] = set()
 
     @property
     def name(self) -> str: return self._name
@@ -199,6 +210,21 @@ class SubagentProcess:
                 except (asyncio.CancelledError, Exception):
                     logger.debug("reader_cancel name=%s", self._name, exc_info=True)
 
+    async def _send_child_cancel(self, task_id: str) -> None:
+        """Best-effort: tell the child to skip/cancel a task still queued or
+        running (worker/cancel is a notification — no response expected)."""
+        try:
+            if self._process is not None and self._process.stdin is not None:
+                req = json.dumps(
+                    {"jsonrpc": "2.0", "method": "worker/cancel",
+                     "params": {"task_id": task_id}, "id": None},
+                ) + "\n"
+                async with self._stdin_lock:
+                    self._process.stdin.write(req.encode())
+                    await self._process.stdin.drain()
+        except Exception:
+            pass
+
     async def send_task(self, task: str, timeout: float = 120.0) -> str:
         if not self.is_running or not self._process or not self._process.stdin:
             raise RuntimeError(f"Subagent '{self._name}' not running")
@@ -221,13 +247,18 @@ class SubagentProcess:
             # Release the in-flight slot and mark the record failed — otherwise
             # a worker whose task never resolves stays busy forever, every
             # later send auto-queues async, and records pile up (REVIEW §1-8).
-            # Also mark it cancelled so the child's eventual late response is
-            # discarded, not mis-routed as a fresh async completion (which
-            # would double-decrement _inflight and surface a stale result).
-            self._cancelled.add(rpc_id)
+            # Mark it late-arriving: the child keeps processing it serially,
+            # and its eventual response is STORED for get_task_result rather
+            # than discarded (the tool promises the result stays retrievable)
+            # or mis-routed as a fresh async completion.
+            self._late_results.add(rpc_id)
             if self._inflight > 0:
                 self._inflight -= 1
             self._record_update(rpc_id, "failed", "Error: timed out")
+            # Preempt the abandoned task in the child — the worker processes
+            # tasks serially, so without this a genuinely stuck task blocks
+            # every subsequent one forever (no timeout-driven recovery).
+            await self._send_child_cancel(rpc_id)
             raise TimeoutError(f"Task to '{self._name}' timed out after {timeout}s")
         except asyncio.CancelledError:
             self._pending.pop(rpc_id, None)
@@ -298,17 +329,7 @@ class SubagentProcess:
             self._inflight -= 1
 
         # Notify the child so it skips a still-queued task (best-effort).
-        try:
-            if self._process is not None and self._process.stdin is not None:
-                req = json.dumps(
-                    {"jsonrpc": "2.0", "method": "worker/cancel",
-                     "params": {"task_id": task_id}, "id": None},
-                ) + "\n"
-                async with self._stdin_lock:
-                    self._process.stdin.write(req.encode())
-                    await self._process.stdin.drain()
-        except Exception:
-            pass
+        await self._send_child_cancel(task_id)
         return True
 
     def list_task_records(self) -> list[dict]:
@@ -373,7 +394,10 @@ class SubagentProcess:
         finally:
             # The reader is done (stop / EOF / error) — resolve any leftover
             # sync waiters so send_task fails fast instead of hanging until
-            # its own timeout.
+            # its own timeout.  Also zero the in-flight count: a dead reader
+            # means no task can ever resolve, so is_busy would otherwise stay
+            # True forever and every later send would be auto-queued async
+            # against a worker that can never reply.
             for rpc_id, f in list(self._pending.items()):
                 if not f.done():
                     f.set_exception(RuntimeError(
@@ -381,6 +405,7 @@ class SubagentProcess:
                         f"'{rpc_id}' was resolved"
                     ))
             self._pending.clear()
+            self._inflight = 0
 
     def _dispatch_message(self, msg: dict) -> None:
         """Handle one decoded JSON-RPC line from the worker's stdout.
@@ -391,6 +416,22 @@ class SubagentProcess:
         the reader alive.
         """
         rpc_id = msg.get("id")
+        # Late response for a timed-out sync task — store it for retrieval via
+        # get_task_result, but do NOT auto-push or flip the record: the caller
+        # was already told it timed out.  _inflight was already decremented at
+        # the timeout, so don't decrement again.
+        if rpc_id and rpc_id in self._late_results:
+            self._late_results.discard(rpc_id)
+            if "error" in msg:
+                self._async_results[rpc_id] = (
+                    f"Error: {msg['error'].get('message', 'Unknown')}"
+                )
+            else:
+                self._async_results[rpc_id] = str(msg.get("result", ""))
+            logger.debug(
+                "subagent_late_result_stored task=%s", rpc_id,
+            )
+            return
         # Late response for a cancelled task — discard it (the local waiter
         # was already cleaned up by cancel_task).
         if rpc_id and rpc_id in self._cancelled:
@@ -502,6 +543,15 @@ class SubagentManager:
         if not name or not name.strip():
             raise ValueError("subagent_name is required")
         name = name.strip()
+        if not _SAFE_SUBAGENT_NAME.match(name):
+            # The name lands in the child's system prompt ("You are {name}")
+            # and its log filename — a bare `.strip()` let an injected parent
+            # forge the identity line or traverse out of the log dir ("..\..").
+            raise ValueError(
+                "subagent_name must be a safe identifier "
+                "(letters/digits/_/. with a letter/digit start, max 64 chars) — "
+                f"got {name!r}"
+            )
         if name in self._subagents and self._subagents[name].is_running: return name
         proc = SubagentProcess(
             name, self._config,

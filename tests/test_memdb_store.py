@@ -627,6 +627,51 @@ class TestSessionStoreCountTurns:
         assert "d.created_at >=" in sql and "d.created_at <=" in sql
         assert len(params) == 3  # fts_query + since + until
 
+    @pytest.mark.asyncio
+    async def test_count_fts5_with_cjk_routes_to_like(self):
+        """Regression: FTS5 unicode61 can't match whole-sentence CJK, so an
+        fts5-mode count must route CJK to the LIKE path — otherwise count and
+        search disagree (memory_count=0 while memory_search returns hits)."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        call_count = [0]
+
+        async def _execute_side_effect(*args, **kwargs):
+            call_count[0] += 1
+            cursor = AsyncMock()
+            cursor.fetchone = AsyncMock(return_value=(3,))
+            return cursor
+
+        mock_conn.execute = AsyncMock(side_effect=_execute_side_effect)
+        store._conn = mock_conn
+
+        await store.count_turns(query="今天天气怎么样", mode="fts5")
+
+        sql = mock_conn.execute.call_args_list[1][0][0]
+        assert "MATCH" not in sql
+        assert "LIKE" in sql
+        assert "ESCAPE" in sql
+
+    @pytest.mark.asyncio
+    async def test_count_unembedded_excludes_empty_turns(self):
+        """Regression: a turn with no user text and no messages can never be
+        embedded — it must not count as unembedded or the semantic gate stalls
+        forever on the same zero-text rows."""
+        store = SessionStore(Path("/tmp/test.db"))
+        store._embedding_dim = 1536
+        mock_conn = AsyncMock()
+        cursor = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(2,))
+        mock_conn.execute = AsyncMock(return_value=cursor)
+        store._conn = mock_conn
+
+        count = await store.count_unembedded()
+
+        sql = mock_conn.execute.call_args[0][0]
+        assert "NOT IN" in sql
+        assert "trim(COALESCE(d.user_message, ''))" in sql
+        assert count == 2
+
 
 class TestSessionStoreListRecent:
     """Tests for list_recent."""

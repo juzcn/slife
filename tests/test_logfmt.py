@@ -419,6 +419,44 @@ class TestSanitizeSecrets:
         url = "https://example.com:8080/path"
         assert sanitize_secrets(url) == url
 
+    def test_basic_auth_header_redacted(self):
+        """Regression: 'Authorization: Basic …' used to slip through unmasked
+        (the header pattern required the token right after the keyword)."""
+        result = sanitize_secrets("Authorization: Basic dXNlcjpwYXNzd29yZA==")
+        assert "dXNlcjpwYXNzd29yZA==" not in result
+        assert "<MASKED>" in result
+
+    def test_token_auth_header_redacted(self):
+        """Regression: 'Authorization: Token …' used to slip through."""
+        result = sanitize_secrets("Authorization: Token abcdef1234567890abcdef123456")
+        assert "abcdef1234567890abcdef123456" not in result
+
+    def test_authorization_bearer_with_colon_redacted(self):
+        """'Authorization: Bearer …' masks the token even with the colon."""
+        result = sanitize_secrets(
+            "Authorization: Bearer sk-ant-api03-abcdefghijklmnopqrstuvwx",
+        )
+        assert "sk-ant-api03-abcdefghijklmnopqrstuvwx" not in result
+
+    def test_github_finegrained_pat_redacted(self):
+        """Regression: GitHub fine-grained PATs (github_pat_…) used to pass
+        the gh[psu]_ pattern."""
+        pat = "github_pat_11ABCDEF0123456789abcdef"
+        assert "github_pat_" not in sanitize_secrets(f"token={pat}")
+
+    def test_port_url_not_corrupted(self):
+        """Regression: a host:port/path URL (not credentials) must not have
+        its port+path swallowed as if it were a password."""
+        url = "https://host:8080/user@domain.com"
+        assert sanitize_secrets(url) == url
+
+    def test_json_api_key_not_mangled(self):
+        """Regression: the key=value value class must not swallow the closing
+        quotes/braces of JSON and corrupt the line."""
+        result = sanitize_secrets('{"api_key": "sk-abcdefghijklmnopqrstuvwx"}')
+        assert "<MASKED>" in result
+        assert '}' in result  # closing brace survives
+
     def test_hex_token_32_chars_redacted(self):
         """Generic 32+ char hex-ish tokens are redacted."""
         result = sanitize_secrets(

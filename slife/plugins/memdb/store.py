@@ -7,6 +7,7 @@ Restore loads the most recent N turns by rowid.
 Agent isolation is at the file level — each agent_name has its own .db file.
 """
 
+import asyncio
 import json
 import logging
 import struct
@@ -50,6 +51,12 @@ class SessionStore:
         self._conn: aiosqlite.Connection | None = None
         self._embedding_dim = DEFAULT_EMBEDDING_DIM
         self._vec_available = False  # sqlite-vec loaded? embeddings are optional
+        # Serializes every mutating statement on the shared connection.  All
+        # writers commit on the same aiosqlite connection; without this, one
+        # coroutine's commit() can land between another's multi-statement
+        # transaction (e.g. the drainer's delete-then-insert replace) and split
+        # it — leaving a half-committed chunk set.
+        self._write_lock = asyncio.Lock()
 
     @property
     def _c(self):
@@ -316,15 +323,16 @@ class SessionStore:
         messages_json = json.dumps(messages or [], ensure_ascii=False)
         images_json = json.dumps(images or [], ensure_ascii=False)
 
-        cursor = await self._c.execute(
-            """INSERT INTO diary (user_message, messages, images, summary, tags,
-                                  channel, created_at, completed_at,
-                                  who_helped, what_model, token_count)
-               VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?, ?)""",
-            (user_message, messages_json, images_json, channel, now, done,
-             who_helped, what_model, token_count),
-        )
-        await self._c.commit()
+        async with self._write_lock:
+            cursor = await self._c.execute(
+                """INSERT INTO diary (user_message, messages, images, summary, tags,
+                                      channel, created_at, completed_at,
+                                      who_helped, what_model, token_count)
+                   VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?, ?)""",
+                (user_message, messages_json, images_json, channel, now, done,
+                 who_helped, what_model, token_count),
+            )
+            await self._c.commit()
         rowid = cursor.lastrowid
         assert rowid is not None  # insert just succeeded
         logger.debug("turn_saved rowid=%s", rowid)
@@ -384,6 +392,12 @@ class SessionStore:
 
         if query and query.strip():
             mode = mode.lower()
+            if mode == "fts5" and _contains_cjk(query):
+                # FTS5 unicode61 cannot match a whole-sentence CJK query —
+                # search_keyword routes CJK to the LIKE fallback, so the count
+                # must do the same or count/search disagree (memory_count=0
+                # while memory_search returns hits).
+                mode = "grep"
             if mode == "grep":
                 # Escape LIKE metacharacters so a pattern containing %/_ matches
                 # them literally; the ESCAPE '\' clause is required or the
@@ -493,11 +507,12 @@ class SessionStore:
         if not updates:
             return
         params.append(rowid)
-        await self._c.execute(
-            f"UPDATE diary SET {', '.join(updates)} WHERE rowid = ?",
-            params,
-        )
-        await self._c.commit()
+        async with self._write_lock:
+            await self._c.execute(
+                f"UPDATE diary SET {', '.join(updates)} WHERE rowid = ?",
+                params,
+            )
+            await self._c.commit()
 
     async def latest_rowid(self) -> int | None:
         """Rowid of the newest turn, or None if the diary is empty."""
@@ -789,23 +804,24 @@ class SessionStore:
         tags = doc.get("tags", "")
         created_at = doc.get("created_at", "")
         vec_blobs = [_serialize_f32(emb) for emb in embeddings]
-        try:
-            await self._c.execute(
-                "DELETE FROM diary_semantic WHERE diary_rowid = ?",
-                (diary_rowid,),
-            )
-            for idx, blob in enumerate(vec_blobs):
+        async with self._write_lock:
+            try:
                 await self._c.execute(
-                    """INSERT INTO diary_semantic
-                       (turn_embedding, diary_rowid, chunk_index,
-                        summary, tags, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (blob, diary_rowid, idx, summary, tags, created_at),
+                    "DELETE FROM diary_semantic WHERE diary_rowid = ?",
+                    (diary_rowid,),
                 )
-            await self._c.commit()
-        except Exception:
-            await self._c.rollback()
-            raise
+                for idx, blob in enumerate(vec_blobs):
+                    await self._c.execute(
+                        """INSERT INTO diary_semantic
+                           (turn_embedding, diary_rowid, chunk_index,
+                            summary, tags, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (blob, diary_rowid, idx, summary, tags, created_at),
+                    )
+                await self._c.commit()
+            except Exception:
+                await self._c.rollback()
+                raise
         logger.debug(
             "embedding_chunks_replaced diary_rowid=%s chunks=%d",
             diary_rowid, len(vec_blobs),
@@ -813,11 +829,21 @@ class SessionStore:
 
     async def _clear_chunks(self, diary_rowid: int) -> None:
         """Delete all embedding chunks for a turn (prep for re-embed)."""
-        await self._c.execute(
-            "DELETE FROM diary_semantic WHERE diary_rowid = ?",
-            (diary_rowid,),
-        )
-        await self._c.commit()
+        async with self._write_lock:
+            await self._c.execute(
+                "DELETE FROM diary_semantic WHERE diary_rowid = ?",
+                (diary_rowid,),
+            )
+            await self._c.commit()
+
+    # A turn is "embeddable" when it has any text worth embedding.  Turns with
+    # no user text AND no messages (or an empty message list) can never be
+    # embedded — excluding them from the unembedded count lets the semantic
+    # gate open instead of stalling forever on the same zero-text rows.
+    _EMBEDDABLE_TEXT = (
+        "trim(COALESCE(d.user_message, '')) != '' "
+        "OR (d.messages IS NOT NULL AND trim(d.messages) NOT IN ('', '[]'))"
+    )
 
     async def get_unembedded_docs(self, limit: int = 100) -> list[dict]:
         """Return documents (turns) that have no embedding in diary_semantic.
@@ -830,12 +856,13 @@ class SessionStore:
         if self._embedding_dim <= 0:
             return []
         cursor = await self._c.execute(
-            """SELECT d.rowid AS doc_id, d.user_message, d.messages, d.summary,
+            f"""SELECT d.rowid AS doc_id, d.user_message, d.messages, d.summary,
                       d.tags, d.created_at
                FROM diary d
                WHERE d.rowid NOT IN (
                    SELECT DISTINCT diary_rowid FROM diary_semantic
                )
+                 AND ({self._EMBEDDABLE_TEXT})
                ORDER BY d.rowid
                LIMIT ?""",
             (limit,),
@@ -859,10 +886,11 @@ class SessionStore:
         if self._embedding_dim <= 0:
             return 0
         cursor = await self._c.execute(
-            """SELECT COUNT(*) FROM diary d
+            f"""SELECT COUNT(*) FROM diary d
                WHERE d.rowid NOT IN (
                    SELECT DISTINCT diary_rowid FROM diary_semantic
-               )""",
+               )
+                 AND ({self._EMBEDDABLE_TEXT})""",
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
@@ -879,11 +907,12 @@ class SessionStore:
 
     async def clear_all_embeddings(self) -> int:
         """Delete all rows from diary_semantic. Returns count deleted."""
-        cursor = await self._c.execute("SELECT COUNT(*) FROM diary_semantic")
-        row = await cursor.fetchone()
-        count = row[0] if row else 0
-        await self._c.execute("DELETE FROM diary_semantic")
-        await self._c.commit()
+        async with self._write_lock:
+            cursor = await self._c.execute("SELECT COUNT(*) FROM diary_semantic")
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+            await self._c.execute("DELETE FROM diary_semantic")
+            await self._c.commit()
         logger.info("embeddings_cleared count=%d", count)
         return count
 

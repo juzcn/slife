@@ -119,15 +119,15 @@ class TaskStore:
     def record_result(self, task_id: str, result: str) -> TaskRecord | None:
         """Mark a task as completed and store its result.
 
-        A task that was already cancelled stays cancelled — a result arriving
-        from a peer that ignored the CancelTask must not flip the record back
-        to completed and contradict the cancel the caller was told about
-        (REVIEW §1-12).
+        A task that is already in a terminal state (cancelled or failed) stays
+        there — a result arriving from a peer after the caller was told about a
+        cancel or a timeout must not flip the record back to completed and
+        contradict what the caller saw (REVIEW §1-12).
         """
         rec = self._records.get(task_id)
         if rec is None:
             return None
-        if rec.status == "cancelled":
+        if rec.status in ("cancelled", "failed"):
             return rec
         rec.status = "completed"
         rec.completed_at = _time.monotonic()

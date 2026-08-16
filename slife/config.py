@@ -96,6 +96,27 @@ def parse_cli_agent(argv: list[str]) -> str:
     return "slife"
 
 
+def parse_cli_config_path(argv: list[str]) -> str | None:
+    """Extract the first positional CLI arg as an explicit config path.
+
+    ``python -m slife myconf.json5`` must use ``myconf.json5`` (the docstring
+    promises it); flags (``--headless``, ``--agent <id>``) are skipped.
+    Returns ``None`` when no positional path is given.
+    """
+    args = argv[1:]
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("-"):
+            if a == "--agent" and i + 1 < len(args):
+                i += 2
+                continue
+            i += 1
+            continue
+        return a
+    return None
+
+
 def _parse_section(raw: dict, key: str, expected_type, default):
     """Safely extract a typed section from parsed JSON5, returning
     *default* if the value is missing or of the wrong type."""
@@ -829,6 +850,13 @@ class Config:
             )
 
         shutil.copy(pkg_template, path)
+        # The template ships 0644 and shutil.copy preserves that mode, but the
+        # config is where plaintext API keys end up — tighten to owner-only on
+        # POSIX so other local accounts can't read it.
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass  # non-POSIX or filesystem without chmod — best effort
         logger.info("config_seeded from=%s to=%s", pkg_template, path)
         print(f"\n  First run — created: {path}")
 

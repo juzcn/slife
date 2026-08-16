@@ -244,7 +244,29 @@ class SemanticManager:
             self._semantic_ready = False
             self._state = "indexing"
             self._reason = _DRAIN_INDEXING_REASON
-            result = await self._process_batch()
+            try:
+                result = await self._process_batch()
+            except Exception as e:
+                # An unexpected error (e.g. a row whose messages JSON is
+                # malformed) must not kill the drainer task silently — count it
+                # as no-progress so the M7 bound stops the loop loudly instead
+                # of leaving the semantic gate off with no trace.
+                self._no_progress += 1
+                logger.warning(
+                    "drainer_batch_error no_progress=%d err=%s",
+                    self._no_progress, e,
+                )
+                if self._no_progress >= MAX_REINDEX_NO_PROGRESS:
+                    self._state = "stalled"
+                    self._semantic_ready = False
+                    self._enabled = False
+                    logger.warning(
+                        "drainer_stalled — _process_batch failing persistently, "
+                        "giving up",
+                    )
+                    return
+                await asyncio.sleep(0)
+                continue
             if result.get("complete"):
                 self._no_progress = 0
                 continue  # re-check → gate ON next iteration

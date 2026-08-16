@@ -23,10 +23,18 @@ def resolve_env(value: Any) -> Any:
     if isinstance(value, str):
         def _replace(m):
             var_name = m.group(1)
-            default = m.group(2)
             env_val = os.environ.get(var_name)
             if env_val is not None:
                 return env_val
+            # credstore BEFORE the literal default — the documented order is
+            # "shell env > credstore > literal".  Without this, ${VAR:-default}
+            # resolves to the default even when the key is held in credstore,
+            # so the stored secret never wins (REVIEW §1).
+            from slife.config import _try_credstore_lookup
+            cred_val = _try_credstore_lookup(var_name)
+            if cred_val is not None:
+                return cred_val
+            default = m.group(2)
             if default is not None:
                 return default
             raise KeyError(

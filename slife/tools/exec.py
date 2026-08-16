@@ -293,8 +293,11 @@ class InstallPythonPackageTool(Tool):
             return "Error: no package names provided."
         logger.info("pip_install packages=%s", packages)
 
+        # The `--` separator ends uv's option parsing: a package spec that
+        # begins with `-` (e.g. "--index-url https://attacker") would otherwise
+        # be consumed as a uv flag and redirect the install to a hostile index.
         proc = await asyncio.create_subprocess_exec(
-            "uv", "pip", "install", "--python", sys.executable, *packages,
+            "uv", "pip", "install", "--python", sys.executable, "--", *packages,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             # Own process group so timeout/cancel can kill the whole tree —

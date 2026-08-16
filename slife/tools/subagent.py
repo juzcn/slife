@@ -273,8 +273,9 @@ class SubagentSendTaskTool(Tool):
         except TimeoutError:
             return (
                 f"Timed out waiting for task to '{subagent_name}' after the worker "
-                "timeout. The task is still running on the worker — its result "
-                "will be delivered automatically when complete."
+                "timeout. The task was preempted on the worker so it does not "
+                "block later tasks; its eventual result, if any, is NOT "
+                "delivered automatically."
             )
         except Exception as e:
             return f"Error sending task to subagent '{subagent_name}': {e}"
