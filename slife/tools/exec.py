@@ -31,7 +31,7 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
     (children are spawned with ``start_new_session=True``).
 
     Runs even when the direct child already exited — its grandchildren may
-    still be alive as orphans (REVIEW M4).  ``taskkill``/``killpg`` on a dead
+    still be alive as orphans. ``taskkill``/``killpg`` on a dead
     pid is harmless (errors are swallowed).
     """
     if process is None:
@@ -52,7 +52,7 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
                 os.killpg(pgid, signal.SIGKILL)
             else:
                 # Child shares our process group — killing the group would
-                # SIGKILL us too.  Kill only the direct child (REVIEW H8 fix).
+                # SIGKILL us too. Kill only the direct child.
                 os.kill(process.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass

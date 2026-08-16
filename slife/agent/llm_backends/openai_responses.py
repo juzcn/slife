@@ -44,7 +44,7 @@ class OpenAIResponsesBackend:
         Returns (instructions, input_items).
 
         The Responses API ``input`` is a flat list of items; a tool turn
-        uses the API's native item shapes (REVIEW W2), NOT the
+        uses the API's native item shapes , NOT the
         Chat-Completions ``role:"tool"`` / ``tool_calls``-on-assistant
         shape:
           - assistant text → ``{"role": "assistant", "content": ...}``
@@ -191,7 +191,7 @@ class OpenAIResponsesBackend:
         stream = await self.client.responses.create(**kwargs)
         # Function-call metadata keyed by item_id (fc_…): the name and the
         # call_id only arrive on response.output_item.{added,done} — the
-        # function_call_arguments.delta event carries neither (REVIEW H4).
+        # function_call_arguments.delta event carries neither.
         _tool_meta: dict[str, dict] = {}
         _tool_index: dict[str, int] = {}
         _next_index = 0
@@ -230,7 +230,7 @@ class OpenAIResponsesBackend:
                         # A function call that never emits an arguments.delta
                         # (empty/auto-filled args) would otherwise be dropped —
                         # emit it with empty arguments when its item completes
-                        # without having been indexed (REVIEW §1-14).
+                        # without having been indexed.
                         if (
                             etype == "response.output_item.done"
                             and item_id not in _tool_index

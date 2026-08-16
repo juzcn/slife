@@ -54,7 +54,7 @@ class ModelPicker(Static):
 
     # Priority bindings fire in Textual's priority pass (App → … → this
     # widget) BEFORE ChatView's printable-key redirect and the App's
-    # non-priority escape -> cancel (REVIEW C7) — same as ApprovalPrompt.
+    # non-priority escape -> cancel — same as ApprovalPrompt.
     BINDINGS = [
         Binding("1", "pick(0)", "1", priority=True),
         Binding("2", "pick(1)", "2", priority=True),

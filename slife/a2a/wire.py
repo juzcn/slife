@@ -180,7 +180,7 @@ class Task:
         """Build a cancelled task (state=CANCELLED) carrying *result_text*.
 
         Used by the receiver of a ``CancelTask`` to tell a waiting sender
-        the task was cancelled rather than completed (REVIEW C5).
+        the task was cancelled rather than completed.
         """
         return cls(
             id=task_id,

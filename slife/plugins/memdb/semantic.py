@@ -30,7 +30,7 @@ from slife.plugins.memdb.embedding_config import read_embedding_config
 
 logger = logging.getLogger(__name__)
 
-#: Max consecutive zero-progress drain batches before giving up (REVIEW M7) —
+#: Max consecutive zero-progress drain batches before giving up —
 #: a persistently failing embedder must not spin forever.
 MAX_REINDEX_NO_PROGRESS = 20
 REINDEX_BATCH_LIMIT = 5

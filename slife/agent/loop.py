@@ -530,7 +530,7 @@ class AgentLoop:
             self._last_context_time_start = self._context_time_start
         # presence_events are NOT drained here — _auto_invoke reads them only
         # when the note is actually recorded, so a cancelled turn doesn't lose
-        # them (REVIEW §1-12).
+        # them.
         return kwargs
 
     async def _auto_invoke(
@@ -553,7 +553,7 @@ class AgentLoop:
         if name == "_sys_note" and self._presence_provider is not None:
             # Drain pending peer-presence events only now that the note will
             # actually be recorded — draining them in the _footer_kwargs args
-            # expression while cancelled would lose them (REVIEW §1-12).
+            # expression while cancelled would lose them.
             args = dict(args)
             args["presence_events"] = self._presence_provider()
         tool = self.tool_registry.get(name)
@@ -777,7 +777,7 @@ class AgentLoop:
         # must see the conversation this loop is processing — not the startup
         # human conversation — while a WeChat/remote-agent turn is running.
         # All native tools share one ToolContext, so a single swap covers the
-        # concurrent batch; it is restored in the finally below (REVIEW §1-5).
+        # concurrent batch; it is restored in the finally below.
         _ctx = None
         for _tc in tool_calls:
             _t = self.tool_registry.get(_tc.name)

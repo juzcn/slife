@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ── User-facing output channel ─────────────────────────────────────────
 # The device flow runs inside the slife-mcp gateway child, whose stdout is
 # CLOSED right after the port signal (server_utils.signal_port) — printing
-# there raised "ValueError: I/O operation on closed file" (REVIEW H7).
+# there raised "ValueError: I/O operation on closed file".
 # All user instructions go to stderr instead, prefixed so the parent's
 # MCPWrapperProcess._log_stderr can surface them.
 _OAUTH_MARKER = "[OAUTH]"
@@ -331,9 +331,8 @@ async def _poll_token(
             "unsupported_grant_type",
         ):
             # RFC 8628 §3.5 terminal errors — the user denied, or the grant
-            # is dead.  Abort immediately instead of polling to the deadline
-            # (REVIEW S6).  invalid_grant/invalid_client also invalidate the
-            # stored tokens.
+            # is dead.  Abort immediately instead of polling to the deadline.
+            # invalid_grant/invalid_client also invalidate the stored tokens.
             if error in ("invalid_grant", "invalid_client"):
                 _delete_tokens(server_name)
             raise RuntimeError(
@@ -423,7 +422,7 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
             ) from e
         except httpx.HTTPError as e:
             # Transient transport failure (connection reset, timeout) — keep
-            # the stored refresh token so the next refresh can succeed (REVIEW S6).
+            # the stored refresh token so the next refresh can succeed.
             raise RuntimeError(
                 f"Token refresh failed for '{server_name}': {e}."
             ) from e

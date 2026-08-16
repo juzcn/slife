@@ -142,7 +142,7 @@ class PluginLifecycle:
         except Exception:
             # A failed spawn must not leave the lifecycle pointing at a
             # live-but-unconnected child — the watchdog would block on its
-            # wait() forever instead of backing off and retrying (REVIEW M2).
+            # wait() forever instead of backing off and retrying.
             self.process = None
             self.port = 0
             self.client = None
@@ -206,7 +206,7 @@ class PluginLifecycle:
         fallback path (``spawn`` from the saved ``_module``) also works for
         plugins started without a ``restart_cb``, e.g. memdb — previously
         the ``_harness_tools is not None`` guard made it exit instead
-        (REVIEW H5).
+
         """
         backoff = _WATCHDOG_BACKOFF_INITIAL
 
@@ -237,7 +237,7 @@ class PluginLifecycle:
                 # the as-is registered plugin tools that already carry the
                 # server prefix ("mcp_set", "wechat_*", "a2a_*") — the latter
                 # never had a "__", so "{name}__" alone left them registered,
-                # pointing at the dead client (REVIEW §1-3).
+                # pointing at the dead client.
                 try:
                     removed = self._service.tool_registry.unregister_by_prefix(
                         f"{self.name}_",

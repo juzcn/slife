@@ -55,7 +55,7 @@ class AnthropicBackend:
         cached across turns).
 
         *anthropic_messages* strictly alternates ``user`` / ``assistant``
-        (REVIEW W1).  The Anthropic API requires this: an OpenAI-format
+        The Anthropic API requires this: an OpenAI-format
         batch emits one ``tool`` message per tool call, and each must not
         become its own ``user`` block (consecutive ``user`` messages 400 on
         strict-alternation endpoints such as Bedrock / Bailian/Qwen).  All

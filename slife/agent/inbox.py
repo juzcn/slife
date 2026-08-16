@@ -87,7 +87,7 @@ class Inbox:
 
     def cancel_correlation(self, corr_id: str) -> None:
         """Cancel the task carrying *corr_id* — Esc-equivalent for a remote
-        A2A / subagent task (REVIEW C5).
+        A2A / subagent task.
 
         Drops the message if it is still queued (never runs); otherwise, if
         it is the message currently being processed, stops the running agent
@@ -257,7 +257,7 @@ class Inbox:
 
             # Route reply to originating channel (WeChat, etc.).  Pass the
             # cancelled flag so the channel can signal cancellation to the
-            # sender (REVIEW C5); callbacks with the older text-only
+            # sender ; callbacks with the older text-only
             # signature fall back gracefully.
             if msg.on_reply is not None:
                 reply_text = result.text if hasattr(result, "text") else str(result)

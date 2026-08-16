@@ -433,7 +433,7 @@ class AgentService:
 
         Covers both the built-ins and auto-discovered third-party plugins —
         ``_spawn_plugin_generic`` creates a ``PluginLifecycle`` for the latter,
-        so every plugin is managed via ``self._plugins`` (REVIEW §1-1).  The
+        so every plugin is managed via ``self._plugins``. The
         restart callback re-invokes the generic spawn; ``_spawn_plugin_generic``
         itself never starts a watchdog, so a restart never stacks a second
         monitor.
@@ -518,7 +518,6 @@ class AgentService:
 
         # Auto-discovered third-party plugins get a PluginLifecycle too, so the
         # crash watchdog and shutdown manage them exactly like the built-ins
-        # (REVIEW §1-1).
         if name not in self._plugins:
             from slife.agent.plugins import PluginLifecycle
             self._plugins[name] = PluginLifecycle(name, self)
@@ -585,7 +584,7 @@ class AgentService:
         except BaseException:
             # A failed spawn must not leave the lifecycle pointing at a
             # live-but-unconnected child (watchdog stall) or an orphaned
-            # process (leak) — reset and stop it before re-raising (REVIEW M2).
+            # process (leak) — reset and stop it before re-raising.
             # BaseException (not just Exception) so a cancellation from the
             # app's required-plugin timeout also stops the child instead of
             # orphaning it.
@@ -752,7 +751,6 @@ class AgentService:
             # A failed connect must not leave the lifecycle pointing at a
             # live-but-unconnected child — the mcp watchdog would block on
             # its wait() forever instead of backing off and retrying
-            # (REVIEW M2).
             self._plugins["mcp"].process = None
             self._plugins["mcp"].port = 0
             self._plugins["mcp"].client = None
@@ -1805,7 +1803,7 @@ class AgentService:
         """Cancel and clear a plugin's background task (e.g. the WeChat/A2A
         poll loop) so a watchdog restart never stacks a second concurrent
         loop. Cancellation is safe: both poll loops catch ``CancelledError``
-        and exit (REVIEW §1-4)."""
+        and exit."""
         plugin = self._plugins.get(name)
         if plugin is None:
             return
@@ -1837,7 +1835,7 @@ class AgentService:
 
                 # A peer cancelled a task — drop it if still queued, or stop
                 # the running loop if it is the message being processed
-                # (Esc-equivalent, REVIEW C5).
+                # (Esc-equivalent).
                 for cev in data.get("cancellations", []):
                     cid = cev.get("corr_id", "")
                     if cid:

@@ -39,7 +39,7 @@ class AgentMessage:
     correlation_id: str | None = None
     metadata: dict = field(default_factory=dict)
     # Text reply callback, optionally taking ``cancelled: bool = False``
-    # (REVIEW C5) so channels can signal cancellation to the sender.
+    # so channels can signal cancellation to the sender.
     on_reply: "Callable[..., Awaitable[None]] | None" = None
     """Async callback invoked with the agent's response text.
     Set by input channels (WeChat, Telegram, etc.) to route replies

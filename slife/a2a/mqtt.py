@@ -84,7 +84,7 @@ class MQTTAdapter(TransportAdapter):
         # permanent message loss — no reconnect).  All access takes this lock.
         self._state_lock = threading.Lock()
 
-        # ── Reconnect support (REVIEW H6) ─────────────────────────
+        # ── Reconnect support ─────────────────────────
         # Subscriptions tracked so they can be re-issued on reconnect
         # (clean_start=True drops them on the broker side).
         self._subscriptions: dict[str, int] = {}
@@ -255,7 +255,7 @@ class MQTTAdapter(TransportAdapter):
         # Loop on _closed (deliberate shutdown), NOT _connected: a transient
         # disconnect must not end the generator — after paho reconnects,
         # _on_connect restores _connected and re-subscribes, and the same
-        # iterator keeps delivering (REVIEW H6).
+        # iterator keeps delivering.
         while not self._closed:
             try:
                 msg = await asyncio.wait_for(queue.get(), timeout=1.0)

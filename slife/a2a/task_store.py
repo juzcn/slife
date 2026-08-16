@@ -122,7 +122,7 @@ class TaskStore:
         A task that is already in a terminal state (cancelled or failed) stays
         there — a result arriving from a peer after the caller was told about a
         cancel or a timeout must not flip the record back to completed and
-        contradict what the caller saw (REVIEW §1-12).
+        contradict what the caller saw.
         """
         rec = self._records.get(task_id)
         if rec is None:
@@ -196,7 +196,7 @@ class TaskStore:
     def _maybe_prune(self) -> None:
         """Drop oldest entries when over max — terminal status first, then the
         oldest pending so a burst of async sends to slow/hung peers can't grow
-        the in-memory store past the cap (REVIEW §1-12)."""
+        the in-memory store past the cap."""
         if len(self._records) <= self.MAX_RECORDS:
             return
         excess = len(self._records) - self.MAX_RECORDS + 50

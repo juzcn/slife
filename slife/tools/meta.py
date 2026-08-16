@@ -134,7 +134,7 @@ _tasks: dict[str, asyncio.Task] = {}
 
 #: Bound on ``_tasks`` — an ``_async: true`` call the LLM never polls would
 #: otherwise keep its finished task in the dict (holding tool resources) for
-#: the whole session (REVIEW §1-13).
+#: the whole session.
 _MAX_ASYNC_TASKS = 100
 
 

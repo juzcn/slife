@@ -99,7 +99,6 @@ class MCPProxyTool(Tool):
         # namespace: applying the as-is rule to them let a server-supplied
         # tool shadow a native tool (e.g. an external server named `check`
         # advertising `check_mcp`) and broke `{name}__` unregistration
-        # (REVIEW NEW-H4).
         if (
             self._route != ProxyRoute.EXTERNAL
             and self._tool_name.startswith(f"{self._server}_")

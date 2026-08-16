@@ -118,7 +118,7 @@
 ## 6. Repo 卫生
 
 - `REVIEW.md` 已按本轮全新重写；README/DESIGN 中旧评审引用已全部清除。
-- 源码里仍散落 ~70 处 `(REVIEW §…/C…/H…/M…)` 注释指向已删除的旧文档 —— 悬空引用，建议随改动逐步清理（未在本轮动，避免污染评审 diff）。
+- 源码里 ~70 处 `(REVIEW §…/C…/H…/M…)` 悬空注释已全部清理（2026-08-16），`grep REVIEW slife/` 无残留（仅 `MAX_PREVIEW_LEN` 变量名含 PREVIEW）。
 - `slife.db(-wal/-shm)`、`.coverage`、`credentials.crypt`、`logs/`、`Jack.db*` 均为本地未跟踪数据，保持不提交。
 
 ## 修复进度（2026-08-16）

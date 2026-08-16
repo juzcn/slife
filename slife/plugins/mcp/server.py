@@ -22,7 +22,7 @@ async def _mcp_lifespan(_app):
     Runs on the server's event loop (uvicorn lifespan), so the pool's async
     HTTP/SSE clients, stdio processes and health-monitor tasks are closed on
     the same loop that created them — otherwise connections leak on exit
-    (REVIEW M3).
+
     """
     try:
         yield
@@ -49,7 +49,7 @@ _pool = ConnectionPool()
 
 # Built-in plugin server names — reserved: an external MCP server must not
 # take one of these, or its tools would collide / misroute in the harness
-# namespace (REVIEW C8).
+# namespace.
 _RESERVED_SERVER_NAMES = frozenset({"mcp", "memdb", "wechat", "memfiles", "a2a"})
 
 # ═══════════════════════════════════════════════════════════════════════

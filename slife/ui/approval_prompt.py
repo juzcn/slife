@@ -57,7 +57,7 @@ class ApprovalPrompt(Static):
 
     # Priority bindings: while focused they fire in Textual's priority pass
     # (App → … → this widget) BEFORE ChatView's printable-key redirect and
-    # the App's non-priority ``escape -> cancel`` (REVIEW C7), so Y/N/Esc
+    # the App's non-priority ``escape -> cancel`` , so Y/N/Esc
     # really decide here instead of typing into the input bar or cancelling
     # the whole agent loop.
     BINDINGS = [

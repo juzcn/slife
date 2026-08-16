@@ -155,7 +155,7 @@ class MCPClient:
             except asyncio.CancelledError:
                 # Cancellation is a control-flow signal, not a retryable
                 # transport error — clean up and propagate so the caller's
-                # wait_for can actually cancel the connect (REVIEW §1-6).
+                # wait_for can actually cancel the connect.
                 await self._cleanup()
                 raise
             except Exception as e:

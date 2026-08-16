@@ -36,7 +36,7 @@ def _clamp_limit(limit: int) -> int:
     """Clamp a search limit to a sane positive range.
 
     SQLite treats a negative LIMIT as unlimited — a malformed/negative limit
-    from the LLM would otherwise scan the whole table (REVIEW M6).
+    from the LLM would otherwise scan the whole table.
     """
     if limit is None or limit < 1:
         return 20
@@ -405,7 +405,7 @@ class SessionStore:
                 # Escape LIKE metacharacters so a pattern containing %/_ matches
                 # them literally; the ESCAPE '\' clause is required or the
                 # escapes are a no-op. Backslashes must be doubled first — the
-                # same rules as search_grep (REVIEW M5).
+                # same rules as search_grep.
                 safe = (
                     query.replace("\\", r"\\")
                          .replace("%", r"\%")
@@ -417,7 +417,7 @@ class SessionStore:
             else:
                 fts_query = _to_fts5_query(query)
                 # FTS5 has no created_at — join the diary rowid so since/until
-                # filter the same way as grep/time (REVIEW M6).
+                # filter the same way as grep/time.
                 time_clauses = ""
                 time_params: list[str] = []
                 if since:
@@ -590,7 +590,7 @@ class SessionStore:
         and_clauses: list[str] = []
         params: list[str | int] = [words[0]]  # instr context anchors on the first word
         for w in words:
-            # Escape LIKE metacharacters so %/_ match literally (REVIEW M5) —
+            # Escape LIKE metacharacters so %/_ match literally —
             # same escaping as search_grep.
             safe = (
                 w.replace("\\", r"\\")
@@ -651,7 +651,7 @@ class SessionStore:
         # nearest-neighbour — it cannot constrain the search inside the time
         # window — so the window is filtered in Python afterwards.  The wider
         # pool reduces the chance that the in-window turns are all outside the
-        # fetched KNN results (REVIEW §1-10).
+        # fetched KNN results.
         fetch_limit = (limit * 8) if (since or until) else (limit * 2)
         # sqlite-vec forbids ANY auxiliary-column constraint — including a
         # JOIN ON — inside a KNN query ("illegal WHERE constraint on a vec0
@@ -734,7 +734,7 @@ class SessionStore:
         limit = _clamp_limit(limit)
         # Escape LIKE metacharacters so a pattern containing %/_ matches them
         # literally.  The ESCAPE '\' clause is required or the escapes are a
-        # no-op (REVIEW M5); backslashes themselves must be doubled first.
+        # no-op ; backslashes themselves must be doubled first.
         safe = (
             pattern.replace("\\", r"\\")
                    .replace("%", r"\%")

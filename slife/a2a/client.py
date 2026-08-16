@@ -138,7 +138,7 @@ class A2AClient:
         await self._adapter.connect(host, port)
 
         # On a paho auto-reconnect, re-announce presence so peers (which
-        # saw our LWT "offline") mark us online again (REVIEW H6).
+        # saw our LWT "offline") mark us online again.
         self._adapter.on_reconnect = self._publish_presence
 
         # Subscribe to peer presence before publishing our own,
@@ -326,7 +326,7 @@ class A2AClient:
         except asyncio.CancelledError:
             # A cancelled wait (loop tool_timeout, or a2a_cancel_task cancelling
             # the waiter) must not leak the pending future — drop it so a late
-            # peer result can't resolve a future nobody awaits (REVIEW §1-8).
+            # peer result can't resolve a future nobody awaits.
             self._pending_tasks.pop(corr_id, None)
             # Mark the store record terminal so a cancelled waiter doesn't
             # leave it "pending" forever.  If a2a_cancel_task already marked
@@ -379,7 +379,7 @@ class A2AClient:
         Returns ``"cancelled"``, ``"completed"``, ``"failed"``, or
         ``"not_found"``.  A task that already finished (completed/failed) is
         **never** reported as cancelled and its result is never discarded —
-        it stays retrievable via :meth:`get_task_result` (REVIEW C5).  A
+        it stays retrievable via :meth:`get_task_result`. A
         still-pending task's local waiter is cancelled, the store record is
         marked cancelled, and a ``CancelTask`` request is published to
         *target* (the peer decides whether to honour it).
@@ -687,7 +687,7 @@ class A2AClient:
         result_block = data.get("result", {}) if isinstance(data.get("result"), dict) else {}
         result_text = wire.task_result_text(result_block.get("task", {}))
         # A peer that honoured a CancelTask returns a CANCELLED task — record
-        # the store status accordingly (REVIEW C5).
+        # the store status accordingly.
         task_state = (
             (result_block.get("task") or {}).get("status") or {}
         ).get("state", "")

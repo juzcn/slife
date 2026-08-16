@@ -22,7 +22,7 @@ _REST_APIS_KEY = "rest_apis"
 
 
 def _validate_http_url(url: str, what: str) -> str:
-    """Require *url* to be an ``http(s)`` URL with a host (REVIEW S2).
+    """Require *url* to be an ``http(s)`` URL with a host.
 
     ``spec_url`` / ``base_url`` are handed to ``anyapi-mcp-server``, which
     fetches them — an LLM-supplied ``file://`` or internal-host URL would
@@ -121,7 +121,7 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         name: str = kwargs["name"]
         # Validate before persisting or spawning anyapi-mcp-server — an
         # LLM-supplied file:// or internal URL would be fetched by the npx
-        # child (REVIEW S2).
+        # child.
         spec_url: str = _validate_http_url(kwargs["spec_url"], "spec_url")
         base_url: str = _validate_http_url(kwargs["base_url"], "base_url")
         api_key: str = kwargs.get("api_key", "")
@@ -151,7 +151,7 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
             if description:
                 entry["description"] = description
             if old_enabled is not None:
-                # Preserve the enable/disable flag across an update (REVIEW §1-13).
+                # Preserve the enable/disable flag across an update.
                 entry["enabled"] = old_enabled
             section[name] = entry
             write_config(self._config_path, raw)

@@ -169,7 +169,7 @@ async def _on_incoming_cancel(corr_id: str) -> None:
     """A peer cancelled a task.  Drop it if still queued here (replying with
     a CANCELLED result so a waiting sender resolves), and always queue the
     cancel for the harness — the task may already have been drained to the
-    agent loop, which needs to preempt it (Esc-equivalent, REVIEW C5).
+    agent loop, which needs to preempt it (Esc-equivalent).
     """
     if corr_id:
         for i, t in enumerate(_inbound_tasks):
@@ -314,7 +314,7 @@ async def a2a_cancel_task(agent_name: str, task_id: str) -> str:
 
     Returns the task's resulting status — a task that already finished is
     reported as ``completed``/``failed`` (never ``cancelled``) and its result
-    stays retrievable (REVIEW C5).
+    stays retrievable.
 
     Args:
         agent_name: Remote peer's agent_name (from a2a_list_agents).
@@ -469,7 +469,7 @@ async def __a2a_dispatch_result(
 
     The payload is the official JSON-RPC response envelope carrying a
     completed :class:`Task`, or a CANCELLED one when *cancelled* is true
-    (REVIEW C5).
+
     """
     client = await _ensure_connected()
     task = (

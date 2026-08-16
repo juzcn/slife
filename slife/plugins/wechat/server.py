@@ -34,7 +34,7 @@ SESSION_MAX_AGE = WechatClawbotClient.SESSION_MAX_AGE
 @asynccontextmanager
 async def _wechat_lifespan(_app):
     """Graceful shutdown: stop the poll / QR / typing background tasks
-    (REVIEW §1-10)."""
+   ."""
     try:
         yield
     finally:
@@ -134,7 +134,7 @@ _QR_MAX_REFRESH = 3
 
 
 def _msg_key(msg: dict, text: str) -> str:
-    """Dedup key: ``from_user_id + context_token + text`` (REVIEW C6).
+    """Dedup key: ``from_user_id + context_token + text``.
 
     ``context_token`` is per-conversation, so sender+token alone collides
     across every message in one conversation — a second real message would be
@@ -163,7 +163,7 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
             new_count = 0
             # Keys seen in THIS poll — two genuine same-text messages in one
             # poll must both be delivered (a user sending "ok" twice in a row),
-            # so only re-deliveries across polls are deduped (REVIEW §1-9).
+            # so only re-deliveries across polls are deduped.
             batch_seen: set[str] = set()
             for m in msgs:
                 text = ""
@@ -174,7 +174,7 @@ async def _poll_loop(poll_interval: float = 3.0) -> None:
 
                 # Non-text items (empty text) are skipped BEFORE the dedup key
                 # is recorded — otherwise they'd burn the conversation key and
-                # drop the next real message (REVIEW C6).
+                # drop the next real message.
                 if not text.strip():
                     continue
 
@@ -280,7 +280,7 @@ def _start_typing_keepalive(from_id: str, ctx_token: str) -> None:
     async def _keep_typing(uid: str, tok: str) -> None:
         # Bound the keepalive: the reply dispatch stops it for a normal turn,
         # but if the agent never replies (crash, or the stop is missed) it must
-        # not loop forever (REVIEW §1-9).
+        # not loop forever.
         deadline = asyncio.get_event_loop().time() + _TYPING_MAX_LIFETIME
         while asyncio.get_event_loop().time() < deadline:
             try:

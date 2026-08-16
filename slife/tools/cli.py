@@ -138,7 +138,7 @@ class CliSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleM
             if old_enabled is not None:
                 # Preserve the enable/disable flag across an update — the
                 # "idempotent upsert" contract must not silently re-enable a
-                # deliberately-disabled tool (REVIEW §1-13).
+                # deliberately-disabled tool.
                 entry["enabled"] = old_enabled
             cli_tools[name] = entry
             write_config(self._config_path, raw)

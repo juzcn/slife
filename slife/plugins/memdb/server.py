@@ -321,7 +321,7 @@ async def memory_search(
     # Clamp before use — the store methods clamp internally, but the hybrid
     # final slice (`merged[:limit]`) and time mode use the raw LLM value, so a
     # limit of 0 (→ []) or a negative (→ slices from the tail) would slip
-    # through (REVIEW §1-10).
+    # through.
     limit = _clamp_limit(limit)
 
     if mode == "time":

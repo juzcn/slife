@@ -90,7 +90,7 @@ def write_config(path: Path, raw: dict) -> None:
 
     Writes to a temp file in the same directory then ``os.replace()`` — a
     reader never sees a truncated/interleaved file and a crash mid-write
-    can't corrupt the config (REVIEW §1-2).  The lock serializes writers in
+    can't corrupt the config. The lock serializes writers in
     this process; atomic replace is the cross-process guarantee.
     """
     text = json5.dumps(raw, indent=2, trailing_commas=False, ensure_ascii=False)

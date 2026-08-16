@@ -106,7 +106,7 @@ class MCPServerConnection:
         self._session_id: str | None = None
         self._next_id: int = 0
         self._lock = asyncio.Lock()
-        self._connect_lock = asyncio.Lock()  # serializes connect() (REVIEW §1-6)
+        self._connect_lock = asyncio.Lock() # serializes connect()
         # Set by disconnect() so an in-flight connect aborts at its next check
         # point instead of resuming after cleanup and spawning an orphaned
         # transport + health monitor.
@@ -178,7 +178,7 @@ class MCPServerConnection:
 
         # Serialize connects — the health monitor, call_tool's lazy reconnect,
         # and mcp_set_enabled can otherwise each spawn their own transport,
-        # orphaning the loser (and starting duplicate monitors) (REVIEW §1-6).
+        # orphaning the loser (and starting duplicate monitors).
         async with self._connect_lock:
             # A disconnect() that raced an in-flight connect must not be
             # undone by this fresh connect.
@@ -190,7 +190,7 @@ class MCPServerConnection:
             # A fresh transport must initialize with no session id — a stale one
             # from the previous connection (only cleared here; _cleanup_resources
             # intentionally doesn't) would be sent on the new initialize and a
-            # session-enforcing server would reject every reconnect (REVIEW C2).
+            # session-enforcing server would reject every reconnect.
             self._session_id = None
 
             # ── OAuth pre-check ───────────────────────────────────────
@@ -270,7 +270,7 @@ class MCPServerConnection:
                 # A cancelled connect must not leave the status stuck in
                 # CONNECTING — the monitor would skip it forever and call_tool
                 # would raise "not connected (connecting)" with no recovery.
-                # Reset to DISCONNECTED so both paths retry (REVIEW §1-6).
+                # Reset to DISCONNECTED so both paths retry.
                 if self._status == ServerStatus.CONNECTING:
                     self._status = ServerStatus.DISCONNECTED
                 raise
@@ -341,7 +341,7 @@ class MCPServerConnection:
         # loop's tool_timeout (per the timeout architecture).  A fixed 30s
         # here would abort a legitimately slow external tool call and spuriously
         # trigger the reconnect path.  Only connect/pool are bounded so a dead
-        # endpoint can't hang the handshake (REVIEW §1-7); ping carries its own
+        # endpoint can't hang the handshake; ping carries its own
         # 5s wait_for.
         self._http_client = httpx.AsyncClient(
             headers=headers,
@@ -356,7 +356,6 @@ class MCPServerConnection:
         # handed to ``_read_sse_stream`` the response is owned by that task
         # (it closes it), so it must stay open here — a context-managed
         # ``stream()`` would ``aclose()`` it on exit and kill the reader
-        # (REVIEW H1).
         request = self._http_client.build_request(
             "GET", url,
             headers={"Accept": "text/event-stream", **headers},
@@ -557,7 +556,7 @@ class MCPServerConnection:
         into ``_sse_queue``.
 
         Owns ``response`` — it is closed here when the stream ends or the
-        task is cancelled, never by the caller (REVIEW H1).
+        task is cancelled, never by the caller.
         """
         import json as _json
         event_type = ""
@@ -583,7 +582,7 @@ class MCPServerConnection:
                     continue  # SSE comment
                 # Accept both "field: value" and "field:value" (the space after
                 # the colon is optional per the SSE spec); multi-line data
-                # joins with a newline (REVIEW §1-11).
+                # joins with a newline.
                 if ":" in line:
                     field, _, value = line.partition(":")
                     value = value.lstrip()
@@ -722,7 +721,7 @@ class MCPServerConnection:
                 if line.startswith(":"):
                     continue  # SSE comment
                 # Accept "data: value" and "data:value"; join multi-line data
-                # with a newline (REVIEW §1-11).
+                # with a newline.
                 if ":" in line:
                     field, _, value = line.partition(":")
                     value = value.lstrip()
@@ -762,7 +761,7 @@ class MCPServerConnection:
                 )
             )
             # Track so teardown cancels them — a closed client would otherwise
-            # surface unretrieved task exceptions (REVIEW §1-11).
+            # surface unretrieved task exceptions.
             self._notify_tasks.add(task)
             task.add_done_callback(self._notify_tasks.discard)
         else:
@@ -846,7 +845,6 @@ class MCPServerConnection:
             # terminate_process kills only the direct child — npx/uvx spawn
             # grandchildren that outlive it on Windows.  Kill the whole tree
             # first, then terminate_process cleans up the pipe transports
-            # (REVIEW M4).
             from slife.tools.exec import _kill_process_tree
             await _kill_process_tree(self._process)
             await terminate_process(self._process, label=f"mcp_conn:{self.config.name}")
@@ -944,7 +942,7 @@ class MCPServerConnection:
                 # Healthy paths wait the full check interval; a failed
                 # reconnect sleeps ONLY its backoff (5s→60s) instead of
                 # interval + backoff, so a down server isn't polled ~30s
-                # later than the documented backoff promises (REVIEW §1-11).
+                # later than the documented backoff promises.
                 wait = _HEALTH_CHECK_INTERVAL
                 if not self.config.enabled:
                     return

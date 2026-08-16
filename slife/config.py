@@ -1023,7 +1023,7 @@ class Config:
 
         # A2A — always parse config; enabled at runtime after mosquitto probe.
         # The json5 section was renamed "mqtt" → "a2a"; accept the old key as
-        # a deprecated alias so existing configs keep working (REVIEW compat).
+        # a deprecated alias so existing configs keep working.
         a2a_raw = raw.get("a2a")
         if a2a_raw is None and "mqtt" in raw:
             logger.warning(

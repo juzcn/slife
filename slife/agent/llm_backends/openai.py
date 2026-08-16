@@ -145,7 +145,7 @@ class OpenAIBackend:
                 # block must come BEFORE the choices guard — otherwise the
                 # OpenAI/DeepSeek/Ollama backend never emits a usage chunk and
                 # context accounting collapses to the chars/3 estimate with
-                # token_count=0 persisted (REVIEW NEW-H3).
+                # token_count=0 persisted.
                 if hasattr(event, "usage") and event.usage:
                     usage = self._usage_from_response(event.usage)
                     elapsed = (_time.monotonic() - t0) * 1000

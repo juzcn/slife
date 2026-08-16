@@ -29,7 +29,7 @@ def resolve_env(value: Any) -> Any:
             # credstore BEFORE the literal default — the documented order is
             # "shell env > credstore > literal".  Without this, ${VAR:-default}
             # resolves to the default even when the key is held in credstore,
-            # so the stored secret never wins (REVIEW §1).
+            # so the stored secret never wins.
             from slife.config import _try_credstore_lookup
             cred_val = _try_credstore_lookup(var_name)
             if cred_val is not None:

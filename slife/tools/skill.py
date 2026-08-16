@@ -378,7 +378,7 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
                 shutil.rmtree(skill_dir, ignore_errors=True)
             else:
                 # Updating an existing skill failed — keep the previous
-                # version intact instead of destroying it (REVIEW §1-13).
+                # version intact instead of destroying it.
                 logger.warning("skill_update_failed name=%s err=%s", name, e)
             logger.exception("skill_install_failed name=%s", name)
             return f"[FAIL] Error installing skill '{name}': {e}"
@@ -555,7 +555,7 @@ class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompati
 
         # The skill must exist on disk (frontmatter name or directory name) —
         # the toggle records into the ``skills:`` config section, which
-        # skill_list / skill_use read (REVIEW §1-4).
+        # skill_list / skill_use read.
         exists = any(
             fm.get("name") == name or d.name == name
             for d, fm, _ in _iter_skills(self.skills_dir)

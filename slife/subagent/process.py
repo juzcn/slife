@@ -285,7 +285,7 @@ class SubagentProcess:
             self._pending.pop(rpc_id, None)
             # Release the in-flight slot and mark the record failed — otherwise
             # a worker whose task never resolves stays busy forever, every
-            # later send auto-queues async, and records pile up (REVIEW §1-8).
+            # later send auto-queues async, and records pile up.
             # Mark it late-arriving: the child keeps processing it serially,
             # and its eventual response is STORED for get_task_result rather
             # than discarded (the tool promises the result stays retrievable)
@@ -440,7 +440,7 @@ class SubagentProcess:
                 except Exception:
                     # A malformed/unhandled message must not kill the reader —
                     # that would strand the _pending sync futures until
-                    # send_task's own timeout (REVIEW C4).  Log and move on.
+                    # send_task's own timeout. Log and move on.
                     logger.warning(
                         "subagent_msg_error name=%s line=%.200s",
                         self._name, line, exc_info=True,

@@ -28,7 +28,7 @@ _DEFAULT_SERVER_MODULE = "slife.plugins.mcp.server"
 
 # stderr markers emitted by the OAuth device flow inside the gateway child
 # (slife.mcp.oauth) — the gateway's stdout is closed after the port signal,
-# so user instructions come over stderr (REVIEW H7).
+# so user instructions come over stderr.
 _OAUTH_MARKER = "[OAUTH]"
 _OAUTH_ACTION_MARKER = "[OAUTH-ACTION]"
 
@@ -146,7 +146,7 @@ class MCPWrapperProcess:
         Reads up to *max_lines* lines, each with its own 1s timeout — never
         blocking to EOF.  A live-but-silent child would otherwise hang
         ``start()`` forever on the port-signal timeout path and leak the
-        process (REVIEW H8).
+        process.
         """
         if not self._process or not self._process.stderr:
             return "(stderr not available)"

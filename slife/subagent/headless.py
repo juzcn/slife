@@ -194,7 +194,7 @@ async def run_headless() -> None:
     # ── Unified inbox (the same machinery as the main agent) ──────────
     # The subagent is a headless agent worker: identical loop, identical
     # Esc-equivalent cancel.  The only differences are no TUI handler and
-    # no turn persistence (REVIEW C5).  worker/send → inbox.post; the
+    # no turn persistence. worker/send → inbox.post; the
     # reader stays live while a task runs, so worker/cancel can preempt
     # the running loop via inbox.cancel_correlation (→ agent_loop.cancel).
     from slife.agent.conversation import Conversation

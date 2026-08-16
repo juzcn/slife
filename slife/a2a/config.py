@@ -94,7 +94,7 @@ class A2AConfig:
         if transport != "mqtt":
             # Only MQTT is implemented.  A config requesting any other
             # transport must not crash startup — parse the section,
-            # disable A2A, and surface a warning (REVIEW C1).
+            # disable A2A, and surface a warning.
             logger.warning(
                 "a2a_transport_unsupported transport=%s action=a2a_disabled "
                 "supported=('mqtt',)",

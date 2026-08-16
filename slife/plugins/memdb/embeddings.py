@@ -130,7 +130,7 @@ class EmbeddingClient:
         # Serialises model inference — llama-cpp / sentence-transformers
         # instances are NOT safe for concurrent encode calls, and concurrent
         # searches (main agent + subagent) would otherwise crash the process
-        # (REVIEW: gguf concurrent create_embedding → native abort).
+        # (gguf concurrent create_embedding → native abort).
         self._embed_lock = threading.Lock()
         self._backend: str = ""         # "gguf" | "transformer" | "api" | ""
         self._available = False
@@ -322,7 +322,7 @@ class EmbeddingClient:
         once the model loads, whereas gguf/api dimensions are known up front.
         Call before the vec0 table is created so the schema uses the real
         width: a guessed dimension silently drops every embedding of a
-        different width (REVIEW §1-10).
+        different width.
         """
         if self._backend == "transformer" and self._client is None:
             try:
