@@ -10,7 +10,8 @@ from pathlib import Path
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Input, Static
+from textual.message import Message
+from textual.widgets import Static, TextArea
 
 from slife.config import Config
 from slife.a2a.card import format_presence_line
@@ -87,21 +88,42 @@ class StatusBar(Static):
         self.update("  ".join(parts))
 
 
-# ── History-aware Input ────────────────────────────────────────────
+# ── History-aware input (multi-line TextArea) ─────────────────────
 
 
-class HistoryInput(Input):
-    """Single-line input with up/down history navigation (like readline).
+class HistoryInput(TextArea):
+    """Multi-line prompt with up/down history navigation (like readline).
 
-    Stores submitted entries in a bounded list.  Up arrow cycles to older
-    entries; down arrow returns to newer entries and eventually restores
-    the in-progress draft.
+    Built on TextArea instead of the single-line Input because Input swallows
+    everything after the first newline on paste — long multi-line text was
+    silently truncated.  Enter submits; Shift+Enter inserts a literal newline
+    so pasted / composed text can span lines.
     """
+
+    BINDINGS = [
+        Binding("shift+enter", "insert_newline", "Insert newline", show=False),
+        Binding("up", "up_or_history", show=False),
+        Binding("down", "down_or_history", show=False),
+    ]
 
     _MAX_HISTORY: int = 256
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    class Submitted(Message):
+        """Carries the submitted message text (mirrors ``Input.Submitted``)."""
+
+        def __init__(self, input: "HistoryInput", value: str) -> None:
+            super().__init__()
+            self.input = input
+            self.value = value
+
+    def __init__(self, placeholder: str = "", **kwargs):
+        super().__init__(
+            placeholder=placeholder,
+            # Keep Tab as focus movement and leave Escape un-consumed so the
+            # app-level Esc→cancel binding still fires while typing.
+            tab_behavior="focus",
+            **kwargs,
+        )
         self._input_history: list[str] = []
         self._history_idx: int = -1    # -1 = not navigating; 0+ = offset from newest
         self._saved_draft: str = ""    # what was typed before pressing ↑
@@ -118,38 +140,64 @@ class HistoryInput(Input):
             self._input_history = self._input_history[-self._MAX_HISTORY:]
         self._history_idx = -1
 
+    def action_insert_newline(self) -> bool:
+        """Shift+Enter inserts a literal newline (Enter submits instead)."""
+        start, end = self.selection
+        self._replace_via_keyboard("\n", start, end)
+        return True
+
     async def _on_key(self, event: events.Key) -> None:
-        """Intercept up/down for history navigation; delegate rest to Input."""
-        if event.key == "up":
-            if not self._input_history:
-                event.stop()
-                return
-            if self._history_idx < len(self._input_history) - 1:
-                if self._history_idx == -1:
-                    self._saved_draft = self.value
-                self._history_idx += 1
-                self.value = self._input_history[-(self._history_idx + 1)]
-                self.cursor_position = len(self.value)
+        """Enter submits the message; everything else goes to TextArea.
+
+        TextArea consumes Enter in its own ``_on_key`` (inserts a newline)
+        before any binding could fire, so submission must be intercepted here.
+        """
+        if event.key == "enter":
             event.stop()
+            value = self.text
+            if value.strip():
+                self.post_message(self.Submitted(self, value))
             return
-
-        if event.key == "down":
-            if self._history_idx > 0:
-                self._history_idx -= 1
-                self.value = self._input_history[-(self._history_idx + 1)]
-                self.cursor_position = len(self.value)
-                event.stop()
-                return
-            if self._history_idx == 0:
-                self._history_idx = -1
-                self.value = self._saved_draft
-                self.cursor_position = len(self.value)
-                self._saved_draft = ""
-                event.stop()
-                return
-            # Not navigating — let Input handle down normally
-
         await super()._on_key(event)
+
+    def action_up_or_history(self) -> bool:
+        """Up on the first line walks history; otherwise moves the cursor."""
+        if self.cursor_location[0] == 0:
+            self._history_previous()
+        else:
+            self.action_cursor_up()
+        self.focus()
+        return True
+
+    def action_down_or_history(self) -> bool:
+        """Down on the last line walks history; otherwise moves the cursor."""
+        if self.cursor_location[0] == self.document.line_count - 1:
+            self._history_next()
+        else:
+            self.action_cursor_down()
+        self.focus()
+        return True
+
+    def _history_previous(self) -> None:
+        if not self._input_history:
+            return
+        if self._history_idx < len(self._input_history) - 1:
+            if self._history_idx == -1:
+                self._saved_draft = self.text
+            self._history_idx += 1
+            self.text = self._input_history[-(self._history_idx + 1)]
+            self.move_cursor(self.document.end)
+
+    def _history_next(self) -> None:
+        if self._history_idx > 0:
+            self._history_idx -= 1
+            self.text = self._input_history[-(self._history_idx + 1)]
+            self.move_cursor(self.document.end)
+        elif self._history_idx == 0:
+            self._history_idx = -1
+            self.text = self._saved_draft
+            self.move_cursor(self.document.end)
+            self._saved_draft = ""
 
 
 # ── Image attachment parsing ──────────────────────────────────────
@@ -635,7 +683,7 @@ class SlifeApp(App):
 
     # ── Input handling ────────────────────────────────────────────
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_history_input_submitted(self, event: HistoryInput.Submitted) -> None:
         """Handle user pressing Enter in the input field.
 
         Posts the message to the unified inbox queue — never cancels
