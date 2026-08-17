@@ -36,6 +36,7 @@ _MEMDB_SERVER = "memdb"       # built-in memdb service
 _WECHAT_SERVER = "wechat"     # built-in WeChat messaging plugin
 _MEMFILES_SERVER = "memfiles"  # built-in file cabinet / public sharing plugin
 _A2A_SERVER = "a2a"           # built-in A2A mesh plugin (MQTT binding)
+_MEDIA_SERVER = "media"       # built-in media generation plugin (image/video/TTS/ASR)
 _MCP_SET = "mcp_set"
 _MCP_SET_ENABLED = "mcp_set_enabled"
 _MCP_REMOVE = "mcp_remove"
@@ -243,7 +244,8 @@ def _route_for_server(server: str) -> ProxyRoute:
     no more magic-string matching scattered across the codebase.
     """
     # Built-in plugins that have their own standalone MCP client
-    if server in (_MEMDB_SERVER, _WECHAT_SERVER, _MEMFILES_SERVER, _A2A_SERVER):
+    if server in (_MEMDB_SERVER, _WECHAT_SERVER, _MEMFILES_SERVER, _A2A_SERVER,
+                  _MEDIA_SERVER):
         return ProxyRoute.DIRECT
     # MCP wrapper — has extra config persistence hooks
     if server == _MCP_SERVER:

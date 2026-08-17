@@ -79,6 +79,31 @@
       },
     },
   },
+  // Non-chat generation models (image / video / TTS / ASR), consumed by the
+  // slife-media plugin (tools: media__generate_image / generate_video /
+  // text_to_speech / transcribe_audio).  kind = capability, api = wire
+  // adapter (dashscope-aigc for Aliyun Bailian, openai-images for
+  // OpenAI-compatible providers).  Artifacts land in {agent}.files/media/.
+  "media": {
+    "defaults": {
+      "image": "bailian_personal/wan2.7-image",
+      "video": "bailian_personal/happyhorse-1.1-t2v",
+    },
+    "providers": {
+      "bailian_personal": {
+        "api": "dashscope-aigc",
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1",
+        "api_key": "${QWEN_TOKEN_PLAN_PERSONAL}",
+        "models": [
+          { "model": "wan2.7-image", "kind": "image" },
+          { "model": "happyhorse-1.1-t2v", "kind": "video",
+            "params": { "resolution": "720P", "ratio": "16:9", "duration": 5 } },
+          { "model": "qwen-audio-3.0-tts-plus", "kind": "tts", "voice": "longxiaochun" },
+          { "model": "qwen-audio-3.0-asr-flash", "kind": "asr" },
+        ],
+      },
+    },
+  },
   "active_model": "deepseek/deepseek-v4-flash",
   "mcp": {
     "servers": {

@@ -50,7 +50,7 @@ _pool = ConnectionPool()
 # Built-in plugin server names — reserved: an external MCP server must not
 # take one of these, or its tools would collide / misroute in the harness
 # namespace.
-_RESERVED_SERVER_NAMES = frozenset({"mcp", "memdb", "wechat", "memfiles", "a2a"})
+_RESERVED_SERVER_NAMES = frozenset({"mcp", "memdb", "wechat", "memfiles", "a2a", "media"})
 
 # ═══════════════════════════════════════════════════════════════════════
 # Management tools

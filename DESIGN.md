@@ -275,7 +275,7 @@ The agent is otherwise purely user-driven — no input, no activity. A heartbeat
 
 ## Plugin Architecture
 
-Five built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) for all of them — the memfiles plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`), but its control surface is pure MCP.
+Six built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) for all of them — the memfiles plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`), but its control surface is pure MCP.
 
 **WSL note:** Custom env vars set via `create_subprocess_exec(env=…)` are NOT forwarded to Windows `.exe` processes through WSL interop. `WSLENV` is only read by the WSL `/init` at session start, not by child processes. Therefore, **all MCP server runtimes on WSL must be Linux-native binaries** — the install script enforces this by detecting `/mnt/*` paths and installing native versions.
 
@@ -302,7 +302,7 @@ Each plugin runs with a **watchdog** background task that monitors the child pro
 | Backoff | Exponential: 1 s → 2 s → 4 s → … → 30 s max |
 | Max restarts | 5 consecutive failures → watchdog gives up and logs an error |
 | Success reset | A successful restart resets the backoff and retry counter |
-| Scope | **mcp** (respawns wrapper + reconnects external servers), **memdb**, **wechat** (restores poll loop), **memfiles**, **a2a** |
+| Scope | **mcp** (respawns wrapper + reconnects external servers), **memdb**, **wechat** (restores poll loop), **memfiles**, **a2a**, **media** |
 
 Auto-discovered third-party plugins get the same watchdog: `_spawn_plugin_generic` creates a `PluginLifecycle` for any plugin not in the built-in set, so a crash restarts it with the same backoff as the built-ins.
 
@@ -314,7 +314,7 @@ Processes communicate through environment variables:
 |----------|---------|
 | `SLIFE_SESSION_ID` / `SLIFE_AGENT_NAME` | Log correlation, agent identity |
 | `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` | Directory overrides |
-| `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES / MQTT) |
+| `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES / MQTT / MEDIA) |
 | `SLIFE_MEMFILES_URL` | Public ngrok URL (set inside the memfiles plugin process) |
 
 ### Built-in Plugins
@@ -326,6 +326,7 @@ Processes communicate through environment variables:
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
 | **slife-memfiles** | Streamable HTTP + `/share` route | Notes/diary/files cabinet + public sharing. MCP tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `search`, `read`, `expose_file`, `embedding_check`), harness tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel, the in-process token registry, and a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. |
 | **slife-a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools; only the drain/dispatch harness tools (`__a2a_*`) stay `__`-prefixed. |
+| **slife-media** | Streamable HTTP | Non-chat AI generation (image, video, TTS, ASR) from any provider. Owns the `media:` config section (plugin-read, ignored by the main `Config` parser) and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` (namespaced `media__*`). Long renders use the harness's universal `_async: true` + `check_async`. Artifacts land in `{agent}.files/media/{kind}/`. |
 
 ### slife-mcp — External MCP Gateway
 

@@ -92,7 +92,7 @@ class TestAddServerToolRegistration:
         import json as _json
 
         srv = _import_mcp_server()
-        for reserved in ("mcp", "memdb", "wechat", "memfiles", "a2a"):
+        for reserved in ("mcp", "memdb", "wechat", "memfiles", "a2a", "media"):
             result = await getattr(srv, "mcp_set")(name=reserved, command="echo")
             parsed = _json.loads(result)
             assert parsed.get("status") == "error", reserved
