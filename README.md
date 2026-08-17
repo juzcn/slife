@@ -9,7 +9,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: up to 50 native tools in 14 categories (plus 2 harness tools), five built-in plugin services, always-on memory with hybrid search, inline images, runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: up to 50 native tools in 14 categories (plus 2 harness tools), six built-in plugin services, always-on memory with hybrid search, inline images, runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -193,7 +193,7 @@ Two-tier rendering: **Sixel** (full-colour on Windows Terminal / WezTerm / iTerm
 
 ### Plugins
 
-Five built-in plugins as independent child processes:
+Six built-in plugins as independent child processes:
 
 | Plugin | Role |
 |--------|------|
@@ -202,6 +202,7 @@ Five built-in plugins as independent child processes:
 | **slife-wechat** | Bidirectional WeChat messaging |
 | **slife-memfiles** | Notes / diary / files cabinet + public sharing (Streamable HTTP, `/share` route on the same port; ngrok tunnel owned by the plugin). Notes & diary dual-written to markdown + a SQLite hybrid index |
 | **slife-a2a** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
+| **slife-media** | Non-chat AI generation (image, video, TTS, ASR) from any provider — owns the `media:` config section and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` (`media__*`) |
 
 External MCP servers configured in `slife.json5` → `mcp.servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled).
 

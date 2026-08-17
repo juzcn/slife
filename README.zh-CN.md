@@ -9,7 +9,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：14 个类别最多 50 个原生工具（另有 2 个 harness 工具）、五个内置插件服务、始终开启的混合搜索记忆、终端内联图片、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：14 个类别最多 50 个原生工具（另有 2 个 harness 工具）、六个内置插件服务、始终开启的混合搜索记忆、终端内联图片、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -189,7 +189,7 @@ active_model: "deepseek/deepseek-v4-pro",
 
 ### 插件
 
-五个内置插件，独立进程运行：
+六个内置插件，独立进程运行：
 
 | 插件 | 角色 |
 |------|------|
@@ -198,6 +198,7 @@ active_model: "deepseek/deepseek-v4-pro",
 | **slife-wechat** | 双向微信消息 |
 | **slife-memfiles** | 笔记 / 日记 / 文件柜 + 公开分享（Streamable HTTP 插件，`/share` 路由在同一端口；ngrok 隧道由插件自持）。笔记与日记双写为 markdown + SQLite 混合索引 |
 | **slife-a2a** | A2A 网格通道（MQTT binding；仅在 broker 可达时启动） |
+| **slife-media** | 非聊天类 AI 生成（图片 / 视频 / TTS / ASR），对接任意提供商——自持 `media:` 配置段与提供商无关的适配层（`dashscope-aigc`、`openai-images`）。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio`（`media__*`） |
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。
 
