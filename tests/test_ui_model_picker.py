@@ -36,6 +36,10 @@ class TestModelPicker:
         assert "Alpha One" in text
         assert "Gamma & [Three]" in text  # markup-hazardous name renders literally
         assert "beta/m2" in text
+        # Provider id shown next to each display name.
+        assert "Alpha One  alpha" in text
+        assert "Beta Two  beta" in text
+        assert "Gamma & [Three]  gamma" in text
         # Capability flags as text labels, not emojis.
         assert "vision" in text  # Beta Two supports vision
         assert "thinking" in text  # Gamma has thinking enabled
@@ -68,6 +72,7 @@ class TestModelPicker:
         assert future.result().ref == "alpha/m1"
         assert "Switched" in str(picker.render())
         assert "Alpha One" in str(picker.render())
+        assert "Alpha One  alpha" in str(picker.render())  # provider in status line
 
     @pytest.mark.asyncio
     async def test_action_pick_out_of_range_noop(self):

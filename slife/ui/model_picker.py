@@ -115,7 +115,7 @@ class ModelPicker(Static):
             content = content + _lit(
                 f"\n  {i}. {star}{m.display_name}",
                 "bold" if m.ref == self._active_ref else "",
-            )
+            ) + _lit(f"  {m.provider}", "#8b949e")
             meta = self._meta_line(m)
             if meta:
                 content = content + _lit("\n     " + meta, "#8b949e")
@@ -152,5 +152,6 @@ class ModelPicker(Static):
                 _mc("[bold #3fb950]✓ Switched[/bold #3fb950]")
                 + _mc(" — ")
                 + _lit(self._choice.display_name, "bold")
+                + _lit(f"  {self._choice.provider}", "#8b949e")
             )
         return _mc("[bold #f85149]✗ Canceled[/bold #f85149]")
