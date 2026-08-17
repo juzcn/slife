@@ -13,7 +13,47 @@ from slife.ui.restore import (
     _mount_resolved_image,
     _schedule_image_mounts,
     resolve_pending_images,
+    tool_result_is_error,
 )
+
+
+# ── Tool error state on restore ─────────────────────────────────────
+
+
+class TestToolResultIsError:
+    """Persisted ``is_error`` flag wins; legacy turns fall back to the
+    live loop's heuristic so pre-flag errors don't render as done."""
+
+    def test_flag_true_wins_over_content(self):
+        msg = {"role": "tool", "content": "all good", "is_error": True}
+        assert tool_result_is_error(msg) is True
+
+    def test_flag_false_wins_over_error_text(self):
+        # The loop's recorded verdict is authoritative even when the
+        # content happens to start with "Error".
+        msg = {"role": "tool", "content": "Error-looking stdout", "is_error": False}
+        assert tool_result_is_error(msg) is False
+
+    def test_legacy_error_content_detected(self):
+        msg = {"role": "tool", "content": "Error: Edit 1: old_string not found."}
+        assert tool_result_is_error(msg) is True
+
+    def test_legacy_ok_content_not_error(self):
+        msg = {"role": "tool", "content": "Search results here."}
+        assert tool_result_is_error(msg) is False
+
+    def test_legacy_empty_content(self):
+        msg = {"role": "tool", "content": ""}
+        assert tool_result_is_error(msg) is False
+
+    def test_interrupted_marker_marked_by_repair(self):
+        # _ensure_turn_consistent tags synthetic results with the flag.
+        msg = {
+            "role": "tool",
+            "content": "(Tool execution interrupted)",
+            "is_error": True,
+        }
+        assert tool_result_is_error(msg) is True
 
 
 # ── Resolution ──────────────────────────────────────────────────────────

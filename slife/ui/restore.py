@@ -108,6 +108,20 @@ def _safe_parse_args(raw: str) -> dict:
         return {"_raw": raw}
 
 
+def tool_result_is_error(msg: dict) -> bool:
+    """Error state of a restored ``tool`` message.
+
+    The persisted ``is_error`` flag wins — it is the loop's recorded
+    verdict.  Legacy turns (saved before the flag existed) fall back to
+    the same heuristic the live loop uses, so old errors don't render
+    as successful.
+    """
+    if "is_error" in msg:
+        return bool(msg["is_error"])
+    content = msg.get("content", "") or ""
+    return isinstance(content, str) and content.startswith("Error")
+
+
 # ── Chained image restore ─────────────────────────────────────────────
 
 
@@ -309,7 +323,7 @@ async def restore_session(
                 if tcid:
                     content = msg.get("content", "") or ""
                     tool_results[tcid] = content
-                    tool_errors[tcid] = msg.get("is_error", False)
+                    tool_errors[tcid] = tool_result_is_error(msg)
                     # Extract markers WITHOUT an existence check —
                     # resolve_pending_images later resolves each path
                     # against the filesystem (file exists → render,

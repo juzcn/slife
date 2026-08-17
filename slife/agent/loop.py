@@ -588,7 +588,10 @@ class AgentLoop:
         except Exception as e:
             result = f"Error: Tool '{name}' failed: {type(e).__name__}: {e}."
             logger.warning("auto_invoke_error name=%s err=%s", name, e)
-        conversation.add_tool_result(tc.id, sanitize_secrets(result))
+        conversation.add_tool_result(
+            tc.id, sanitize_secrets(result),
+            is_error=result.startswith("Error"),
+        )
 
     # ── Stream processing ──────────────────────────────────────────
 
@@ -840,7 +843,7 @@ class AgentLoop:
                     result = sanitize_secrets(result)
                     if handler:
                         await handler.on_tool_result(tc.id, result, is_error=True)
-                    conversation.add_tool_result(tc.id, result)
+                    conversation.add_tool_result(tc.id, result, is_error=True)
                     return
 
             # ── Handler notification — after the approval gate ────
@@ -967,7 +970,7 @@ class AgentLoop:
             if handler:
                 await handler.on_tool_result(tc.id, result, is_error)
 
-            conversation.add_tool_result(tc.id, result)
+            conversation.add_tool_result(tc.id, result, is_error=is_error)
 
         try:
             await asyncio.gather(*(_run_one(tc) for tc in tool_calls))

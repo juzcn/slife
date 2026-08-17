@@ -164,6 +164,17 @@ class TestAddToolResult:
         assert conv.messages[0]["tool_call_id"] == "call_abc"
         assert conv.messages[0]["content"] == "Search results here."
 
+    def test_is_error_defaults_to_false(self):
+        conv = Conversation()
+        conv.add_tool_result("call_abc", "ok output")
+        assert conv.messages[0]["is_error"] is False
+
+    def test_is_error_stored_when_true(self):
+        """The error flag is persisted so restore can render it."""
+        conv = Conversation()
+        conv.add_tool_result("call_abc", "Error: boom.", is_error=True)
+        assert conv.messages[0]["is_error"] is True
+
 
 # ── to_openai_messages ───────────────────────────────────────────────
 
@@ -209,6 +220,22 @@ class TestToOpenAIMessages:
         assert len(msgs) == 4
         roles = [m["role"] for m in msgs]
         assert roles == ["user", "assistant", "tool", "assistant"]
+
+    def test_is_error_stripped_from_wire(self):
+        """is_error is an internal field — never sent to the API."""
+        conv = Conversation()
+        conv.add_user_message("run it")
+        conv.add_assistant_message(
+            None,
+            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "x", "arguments": "{}"}}],
+        )
+        conv.add_tool_result("c1", "Error: failed.", is_error=True)
+        conv.add_assistant_message("done")
+
+        msgs = conv.to_openai_messages()
+        tool_msg = next(m for m in msgs if m["role"] == "tool")
+        assert "is_error" not in tool_msg
+        assert tool_msg["content"] == "Error: failed."
 
 
 # ── clear ─────────────────────────────────────────────────────────────
@@ -295,6 +322,9 @@ class TestRepairOrphanedToolCalls:
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["tool_call_id"] == "orphan1"
         assert "interrupted" in tool_msgs[0]["content"].lower()
+        # An interrupted execution is an error — restore must not render
+        # it as a successful "done".
+        assert tool_msgs[0]["is_error"] is True
         # closing assistant keeps the wire alternating
         assert conv.messages[-1]["role"] == "assistant"
 

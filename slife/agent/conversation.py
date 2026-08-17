@@ -102,6 +102,10 @@ class Conversation:
                             "role": "tool",
                             "tool_call_id": tc_id,
                             "content": "(Tool execution interrupted)",
+                            # An interrupted execution is not "done" —
+                            # restore must render it as an error, matching
+                            # the content the LLM context carries.
+                            "is_error": True,
                         },
                     )
                     repaired += 1
@@ -199,12 +203,23 @@ class Conversation:
             logger.debug("conv_assistant text_len=%d think=%d", len(content or ""), len(thinking or ""))
         self.messages.append(msg)
 
-    def add_tool_result(self, tool_call_id: str, content: str) -> None:
-        """Add a tool result message."""
+    def add_tool_result(
+        self, tool_call_id: str, content: str, is_error: bool = False,
+    ) -> None:
+        """Add a tool result message.
+
+        ``is_error`` records whether the execution failed (timeout,
+        exception, denial).  It is persisted with the turn so session
+        restore renders the same error state the live TUI showed —
+        re-deriving it from the content text would duplicate the loop's
+        detection rule in a second component.  Stripped from the wire
+        format by :meth:`to_openai_messages` (not an OpenAI field).
+        """
         self.messages.append({
             "role": "tool",
             "tool_call_id": tool_call_id,
             "content": content,
+            "is_error": is_error,
         })
 
     def inject_images_to_last_user(
@@ -258,6 +273,7 @@ class Conversation:
                 # never carried reasoning.
                 m["reasoning_content"] = ""
             m.pop("images", None)  # internal attachment tracking
+            m.pop("is_error", None)  # internal error flag, not an OpenAI field
             cleaned.append(m)
 
         return cleaned
