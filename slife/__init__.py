@@ -74,9 +74,13 @@ def main(config_path: str | None = None):
     with _elapsed("config_load", logger, level=logging.DEBUG, path=str(_cp)):
         try:
             config = Config.from_json5(str(_cp), agent_name=agent_name)
-        except Exception:
-            logger.exception("config_load_failed path=%s", config_path)
-            raise
+        except Exception as exc:
+            # Terminal belongs to the user — one actionable line, never a
+            # traceback.  Full exception details stay in the session log.
+            logger.exception("config_load_failed path=%s", _cp)
+            print(f"Config error: {exc}", file=sys.stderr)
+            print(f"Config: {_cp}  Log: {log_path}", file=sys.stderr)
+            raise SystemExit(1)
     from slife.health import record
     record(
         "config", "ok",

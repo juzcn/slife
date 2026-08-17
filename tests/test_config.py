@@ -224,6 +224,29 @@ class TestConfigFromJSON5:
         config = Config.from_json5(str(cfg_path))
         assert config.active_model.ref == "openai/gpt-4o"
 
+    def test_stale_active_model_falls_back(self, tmp_path, caplog):
+        """Stale active_model ref falls back to first model, no crash."""
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {
+                "providers": {
+                    "deepseek": {
+                        "api_key": "sk-key",
+                        "models": [
+                            {"model": "v4-flash", "name": "Flash"},
+                            {"model": "v4-pro", "name": "Pro"},
+                        ],
+                    },
+                }
+            },
+            "active_model": "removed-provider/gone-model",
+        }))
+        with caplog.at_level(logging.WARNING, logger="slife.config"):
+            config = Config.from_json5(str(cfg_path))
+        assert config.active_model_ref == "deepseek/v4-flash"
+        assert config.active_model.ref == "deepseek/v4-flash"
+        assert "config_active_model_stale" in caplog.text
+
     def test_no_models_raises(self, tmp_path):
         """Empty models section raises ValueError."""
         cfg_path = tmp_path / "slife.json5"

@@ -1052,9 +1052,20 @@ class Config:
         rest_apis = _parse_section(raw, "rest_apis", dict, {})
         cli_tools = _parse_section(raw, "cli_tools", dict, {})
 
+        # Active model — a stale ref (provider renamed/removed) must not
+        # crash startup; fall back to the first model.  Switching models in
+        # the TUI persists the corrected ref.
+        active_ref = raw.get("active_model", all_models[0].ref)
+        if not any(m.ref == active_ref for m in all_models):
+            logger.warning(
+                "config_active_model_stale ref=%s fallback=%s",
+                active_ref, all_models[0].ref,
+            )
+            active_ref = all_models[0].ref
+
         config = Config(
             models=all_models,
-            active_model_ref=raw.get("active_model", all_models[0].ref),
+            active_model_ref=active_ref,
             tools=tools,
             env=env_section,
             max_iterations=max_iterations,
