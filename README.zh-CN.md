@@ -173,6 +173,8 @@ active_model: "deepseek/deepseek-v4-pro",
 
 每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。`completed_at` 之前的旧库运行一次 `python scripts/migrate_memdb_completed_at.py` 迁移（插件内无 ALTER 迁移代码）；新库自动带该列。
 
+用户消息会带一条紧凑的 **`[Turn: N · 开始 → 结束]`** 脚注（记忆 rowid 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 rowid 引用（`memdb__memory_open` / `memdb__memory_turn_summarize`），用户在 TUI 里也能读到同一行。恢复的轮在启动恢复时注入；刚完成的 live 轮在保存拿到 rowid 后补上（下一轮就能精确引用）；当前进行中的轮没有。机器注解统一采用 `[类别: …]` 形式——`[Image: …]`（附件无法读取、未发送）和 `[Heartbeat]`（自主心跳触发，不是用户提问）。
+
 ### 自主心跳
 
 空闲时，agent 按 `agent.heartbeat_interval` 秒（默认 60）获得一次自主思考/行动的窗口。它作为一个正常 turn 运行（独立会话，存入记忆）；回复契约：有值得说的话就输出内容，否则只输出一个 `.`。单独的 `.` 回复统一表示**沉默**——无论来自心跳、A2A 异步完成通知还是任何事件，都不会在聊天或会话恢复中显示；`[Heartbeat]` 触发消息被过滤，真正的自主回复显示为 `⚡ 自主`。这是涌现自发性行为的前提。

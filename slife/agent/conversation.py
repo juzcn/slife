@@ -10,10 +10,63 @@ from slife.logfmt import sanitize_secrets
 
 logger = logging.getLogger(__name__)
 
-# Prefix of the note appended to a user message when an attached image cannot
-# be read.  Shared with the persistence layer (save_to_memory) so the note can
-# be distinguished from the user's actual text.
-IMAGE_NOTE_PREFIX = "\n\n[System note: the following image file(s)"
+# Machine-injected annotations inside a user message share one `[<Kind>: …]`
+# shape.  Only the dropped-image note is a separate text part — appended at
+# live-add time so derived user text and the save-path match can tell it apart
+# from the user's actual words:
+#   - IMAGE_NOTE_PREFIX — appended when an attached image cannot be read.
+#     Shared with the persistence layer (save_to_memory) so the note can be
+#     distinguished from the user's actual text.
+#   - restore turn headers — concatenated as a trailing footnote into the
+#     restored user-message text (see ``slife.ui.restore._turn_header``) so
+#     the LLM can tell which turn (rowid) a restored message belongs to and
+#     when it happened.  Deliberately NOT excluded from the TUI — the human
+#     reads it too.
+# Heartbeat is NOT an annotation: `[Heartbeat]` is a stored turn identity
+# (old diary rows start with it), so it stays a distinct sentinel.
+ANNOTATION_PREFIXES = ("[Image:",)
+IMAGE_NOTE_PREFIX = "\n\n[Image: the following file(s)"
+#: Kind tag of the turn footnote (``[Turn: N · start → end]``).  Shared by
+#: the restore path, the save path, and the TUI ``UserMessage`` styler.
+TURN_HEADER_PREFIX = "[Turn: "
+
+
+def _format_turn_dt(value) -> str:
+    """ISO stored timestamp → 'YYYY-MM-DD HH:MM' (minute precision)."""
+    if not value:
+        return ""
+    return str(value)[:16].replace("T", " ")
+
+
+def turn_header(turn: dict) -> str:
+    """Compact turn identity: ``[Turn: N · start → end]``.
+
+    Only the id, start time and end time — the conversation carries the
+    content.  Returns ``""`` when neither id nor timestamps are known
+    (legacy turns), so the message stays plain.
+    """
+    rowid = turn.get("rowid")
+    start = _format_turn_dt(turn.get("created_at"))
+    end = _format_turn_dt(turn.get("completed_at"))
+    if start and end and end != start:
+        # Same day → end time only; otherwise full end datetime.
+        if end[:10] == start[:10]:
+            end = end[11:]
+        span = f"{start} → {end}"
+    else:
+        span = start or end
+    bits = ([str(rowid)] if rowid is not None else []) + ([span] if span else [])
+    return f"{TURN_HEADER_PREFIX}{' · '.join(bits)}]" if bits else ""
+
+
+def is_annotation_text(text: str) -> bool:
+    """True for a machine-injected annotation part in a user message.
+
+    Currently only the dropped-image note (``\n\n[Image: …``), so derived
+    user text skips it.  The restore turn header is concatenated into the
+    message text instead of being a separate part, so it is not covered.
+    """
+    return isinstance(text, str) and text.lstrip().startswith(ANNOTATION_PREFIXES)
 
 
 class Conversation:
@@ -449,6 +502,7 @@ class Conversation:
                         p.get("text", "")
                         for p in content
                         if p.get("type") == "text"
+                        and not is_annotation_text(p.get("text", ""))
                     )
                 else:
                     current_user_msg = str(content) if content else ""

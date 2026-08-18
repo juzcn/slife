@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from slife.agent.conversation import turn_header
 from slife.agent.heartbeat import HEARTBEAT_MARK
 from slife.agent.llm_client import TokenUsage
 from slife.agent.loop import extract_image_markers
@@ -47,6 +48,19 @@ def estimate_turn_tokens(turn: dict) -> int:
         else str(messages)
     )
     return max(len(user) // 3 + len(body) // 3, 1)
+
+
+# ── Turn header (restore-time annotation) ────────────────────────────
+#
+# Every restored user message gets a compact `[Turn: N · …]` footnote,
+# concatenated into the message text — the LLM needs to tell old turns
+# apart: which turn (rowid), when it started, when it finished.  Without
+# it the whole restored history reads as "just happened".  The builder
+# lives in ``conversation.turn_header`` so the save path annotates
+# completed live turns with the same format.  The current in-flight turn
+# gets nothing (it is the one that IS now), and the human reads the
+# footnote in the TUI.  Heartbeat turns are excluded: their user message
+# is a synthetic `[Heartbeat]` trigger, not a real query.
 
 
 # ── Prefix mapping ────────────────────────────────────────────────────
@@ -299,11 +313,21 @@ async def restore_session(
                 if isinstance(images_json, str) and images_json
                 else []
             )
+            # Heartbeat turns carry a synthetic "[Heartbeat]…" trigger as the
+            # user message, not a real query — no turn header (restore also
+            # filters them from the TUI).
+            header = (
+                "" if user_msg_text.startswith(HEARTBEAT_MARK)
+                else turn_header(turn)
+            )
+            # The turn header is an inline footnote concatenated onto the end
+            # of the user-message text (not a separate part or line) — so
+            # both the LLM context and the restored TUI bubble carry it,
+            # reading as metadata right after the user's words.
+            if header:
+                user_msg_text = user_msg_text + " " + header
             user_msg: dict
             if images:
-                # Rebuild multimodal content (text + image blocks) so the
-                # restored LLM context sees the attachments; keep the original
-                # paths on `images` so the TUI can render thumbnails.
                 parts: list[dict] = [{"type": "text", "text": user_msg_text}]
                 for img in images:
                     block = include_image_url(img)

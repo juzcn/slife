@@ -15,6 +15,10 @@
 **Memory & Context**
 1. Conversation history
    - Completed turns are persisted to SQLite and retained across sessions; on context overflow the oldest are evicted from context (via `_sys_trim`) but remain searchable via `memdb__memory_search` (full-text / vector).
+   - Machine annotations in user messages — always machine-generated, read as metadata, not the user's words:
+     - `[Turn: N · start → end]` — a trailing footnote on a turn from memory: N is the memory rowid (reference it with `memdb__memory_open` / `memdb__memory_turn_summarize`), followed by when it happened. Restored turns carry it, and a just-completed turn gets it once saved; the current in-flight turn has none.
+     - `[Image: …]` — an attached image could not be read and was NOT sent to the model.
+     - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
    - Context floor: {{ context_floor }}% / ceiling: {{ context_ceiling }}%.
    - Tool result ceiling: {{ tool_result_max_percent }}% of the context window; larger results are truncated automatically.
 2. Persistent memory

@@ -341,3 +341,96 @@ class TestRestoreSkipsEmptyAssistantMessages:
         # The tool iteration rendered its tool widget, not a message widget.
         mounts = [c.args[0] for c in chat_view.mount.call_args_list]
         assert [w.tool_name for w in mounts] == ["read_file"]
+
+
+# ── Turn headers on restore ──────────────────────────────────────────
+
+
+class TestRestoreTurnHeader:
+    """Each restored user message carries a ``[Turn: N · …]`` footnote — id +
+    created → completed — concatenated into the message text so the LLM can
+    tell old turns apart and reference them by rowid, and the human reads it
+    in the TUI.  Generated at restore only; heartbeat turns get none."""
+
+    @staticmethod
+    def _turn(user, rowid=27, created="2026-08-10T14:03:05+08:00",
+              completed="2026-08-10T14:05:12+08:00", channel="human",
+              msgs=None):
+        return {
+            "rowid": rowid,
+            "user_message": user,
+            "messages": json.dumps(msgs or [
+                {"role": "assistant", "content": "ok"},
+            ], ensure_ascii=False),
+            "images": "",
+            "channel": channel,
+            "created_at": created,
+            "completed_at": completed,
+        }
+
+    def _build(self):
+        app = MagicMock()
+        chat_view = app.query_one.return_value
+        am = MagicMock()
+        chat_view.add_assistant_message.return_value = am
+        conv = Conversation(system_prompt=None)
+        config = MagicMock()
+        config.active_model.context_window = 100_000
+        config.context_ceiling = 0.8
+        return app, conv, config, chat_view
+
+    async def _restore(self, app, conv, config, turns):
+        await restore_session(
+            app, {"turns": turns, "budget": 1_000_000},
+            conv, config, "agent", "Jack> ",
+        )
+
+    @pytest.mark.asyncio
+    async def test_header_injected_into_restored_user_message(self):
+        app, conv, config, chat_view = self._build()
+        await self._restore(app, conv, config, [self._turn("switch model")])
+
+        user = conv.messages[0]
+        assert user["role"] == "user"
+        # Concatenated inline footnote — one text part, no separate marker.
+        assert user["content"] == (
+            "switch model [Turn: 27 · 2026-08-10 14:03 → 14:05]"
+        )
+        # TUI bubble shows the same footnote the model sees.
+        chat_view.add_user_message.assert_called_once()
+        assert chat_view.add_user_message.call_args.args[0] == user["content"]
+
+    @pytest.mark.asyncio
+    async def test_header_without_completed_at(self):
+        app, conv, config, chat_view = self._build()
+        turn = self._turn("hi")
+        del turn["completed_at"]
+        await self._restore(app, conv, config, [turn])
+
+        assert conv.messages[0]["content"] == (
+            "hi [Turn: 27 · 2026-08-10 14:03]"
+        )
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_turn_gets_no_header(self):
+        app, conv, config, chat_view = self._build()
+        await self._restore(app, conv, config, [
+            self._turn("[Heartbeat] click.  Reply per your contract."),
+        ])
+
+        assert conv.messages[0]["content"] == (
+            "[Heartbeat] click.  Reply per your contract."
+        )
+        # Heartbeat turns render nowhere in the chat.
+        chat_view.add_user_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_legacy_turn_without_identity_stays_plain(self):
+        app, conv, config, chat_view = self._build()
+        turn = self._turn("hi")
+        del turn["rowid"]
+        del turn["created_at"]
+        del turn["completed_at"]
+        await self._restore(app, conv, config, [turn])
+
+        assert conv.messages[0]["content"] == "hi"

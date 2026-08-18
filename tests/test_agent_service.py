@@ -414,6 +414,76 @@ class TestAgentServiceMemory:
         assert persisted_tool["content"] == small
 
     @pytest.mark.asyncio
+    async def test_saved_turn_annotated_with_footnote(self, sample_config):
+        """After a successful save, the turn's user message gets the inline
+        `[Turn: N · …]` footnote so the next LLM call can reference it by
+        rowid (and memory_turn_summarize need not race latest_rowid)."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(
+            return_value=_json.dumps({"rowid": 42, "status": "saved"}),
+        )
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.conversation
+        conv.add_user_message("hi")
+        conv.add_assistant_message("hello back")
+
+        await service.save_to_memory(user_message="hi", conversation=conv)
+
+        content = conv.messages[1]["content"]  # [0] is the system prompt
+        assert content.startswith("hi [Turn: 42 · ")
+        assert content.endswith("]")
+        # Runtime-only invariant: the footnote is appended AFTER the DB write,
+        # so the stored user_message stays the clean original.
+        _, args = mock_client.call_tool.await_args.args
+        assert args["user_message"] == "hi"
+        assert "[Turn:" not in args["user_message"]
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_turn_not_annotated(self, sample_config):
+        """Heartbeat turns (synthetic triggers) never get a footnote."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(
+            return_value=_json.dumps({"rowid": 42, "status": "saved"}),
+        )
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.conversation
+        conv.add_user_message("[Heartbeat] click.  Reply per your contract.")
+        conv.add_assistant_message(".")
+
+        await service.save_to_memory(
+            user_message="[Heartbeat] click.  Reply per your contract.",
+            conversation=conv,
+        )
+
+        assert conv.messages[1]["content"] == (  # [0] is the system prompt
+            "[Heartbeat] click.  Reply per your contract."
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_rowid_no_footnote(self, sample_config):
+        """No rowid in the response (e.g. a timeout whose row may still be
+        written server-side) → the message stays unannotated."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(return_value="{}")
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.conversation
+        conv.add_user_message("hi")
+        conv.add_assistant_message("hello back")
+
+        await service.save_to_memory(user_message="hi", conversation=conv)
+
+        assert conv.messages[1]["content"] == "hi"  # [0] is the system prompt
+
+    @pytest.mark.asyncio
     async def test_stop_memdb_noop_when_disabled(self, sample_config):
         service = AgentService(sample_config)
         await service.stop_memdb()  # Should not raise

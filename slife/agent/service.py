@@ -25,7 +25,8 @@ from pathlib import Path
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
-from slife.agent.conversation import Conversation, IMAGE_NOTE_PREFIX
+from slife.agent.conversation import Conversation, IMAGE_NOTE_PREFIX, turn_header
+from slife.agent.heartbeat import HEARTBEAT_MARK
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
 from slife.agent.inbox import Inbox, ConversationStore
 from slife.agent.plugins import PluginLifecycle, PluginStartStatus
@@ -1444,6 +1445,7 @@ class AgentService:
         target = sanitize_secrets(user_message)
         all_messages = list(conv.messages)
         turn_messages: list[dict] | None = None
+        user_idx = -1  # index of the matched user message (for the footnote)
         for i in range(len(all_messages) - 1, -1, -1):
             msg = all_messages[i]
             if msg.get("role") != "user":
@@ -1451,12 +1453,12 @@ class AgentService:
             content = msg.get("content")
             if isinstance(content, str) and content == target:
                 turn_messages = all_messages[i + 1:]
+                user_idx = i
                 break
             if isinstance(content, list):
-                # Exclude the "[System note: … image could not be read …]"
-                # part that add_user_message appends for dropped attachments —
-                # it is not the user's text, and including it breaks the match
-                # so the whole turn silently fails to persist.
+                # Exclude the "[Image: …]" note that add_user_message appends
+                # for dropped attachments — it is not the user's text, and
+                # including it breaks the match so the turn silently fails.
                 text = "".join(
                     p.get("text", "") for p in content
                     if p.get("type") == "text"
@@ -1464,6 +1466,7 @@ class AgentService:
                 )
                 if text == target:
                     turn_messages = all_messages[i + 1:]
+                    user_idx = i
                     break
 
         if turn_messages is None:
@@ -1547,6 +1550,74 @@ class AgentService:
                         self._on_memory_broken(self._memory_error)
                     except Exception:
                         pass
+            elif isinstance(parsed, dict):
+                # The turn now has a rowid — annotate its user message so the
+                # next LLM call can reference it precisely (and the
+                # memory_turn_summarize default no longer needs the racy
+                # latest_rowid fallback).  Live TUI bubbles are NOT
+                # retro-updated: their lack of the footnote is itself the
+                # "current session" signal.  Best-effort — a failure only
+                # leaves the message unannotated.
+                try:
+                    self._annotate_saved_turn(
+                        conv, user_idx, rowid=parsed.get("rowid"),
+                        created_at=created_at, completed_at=now,
+                    )
+                except Exception:
+                    logger.debug("turn_annotation_skipped", exc_info=True)
+
+    def _annotate_saved_turn(
+        self,
+        conversation: "Conversation",
+        user_idx: int,
+        rowid: int | None,
+        created_at: "datetime | str | None",
+        completed_at: datetime,
+    ) -> None:
+        """Append the turn footnote to the just-saved turn's user message.
+
+        Called after a successful ``__memory_save_turn`` so the rowid is
+        known: the next LLM call sees ``[Turn: N · start → end]`` and can
+        reference the turn precisely.  Heartbeat turns are skipped (their
+        user message is a synthetic trigger).  Purely additive and
+        best-effort — a failure leaves the message unannotated.
+        """
+        if rowid is None:
+            return
+        msgs = conversation.messages
+        if not (0 <= user_idx < len(msgs)) or msgs[user_idx].get("role") != "user":
+            return
+        content = msgs[user_idx].get("content", "")
+        if isinstance(content, str):
+            if content.startswith(HEARTBEAT_MARK):
+                return
+        elif isinstance(content, list):
+            joined = "".join(
+                p.get("text", "") for p in content if p.get("type") == "text"
+            )
+            if joined.startswith(HEARTBEAT_MARK):
+                return
+        else:
+            return
+
+        def _iso(value) -> str:
+            if isinstance(value, datetime):
+                return value.astimezone().isoformat(timespec="seconds")
+            return value or ""
+
+        header = turn_header({
+            "rowid": rowid,
+            "created_at": _iso(created_at),
+            "completed_at": _iso(completed_at),
+        })
+        if not header:
+            return
+        if isinstance(content, str):
+            msgs[user_idx]["content"] = content + " " + header
+        else:
+            msgs[user_idx]["content"] = list(content) + [
+                {"type": "text", "text": " " + header}
+            ]
 
     async def get_recent_turns(self, limit: int = 20) -> tuple[list[dict], int, int]:
         """Load recent turns for restore. Returns ([], 0, budget) if no turns.

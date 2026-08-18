@@ -10,6 +10,7 @@ from textual.content import Content
 from textual.events import Key
 from textual.widgets import Static
 
+from slife.agent.conversation import TURN_HEADER_PREFIX
 from slife.agent.llm_client import TokenUsage
 from slife.ui.image_utils import safe_image_widget
 
@@ -257,6 +258,16 @@ class UserMessage(Static):
         content = content.stylize(
             "bold #d97706", start=len(time_str), end=len(time_str) + prefix_len
         )
+        # A restored turn's footnote (`[Turn: N · …]`) renders dim/italic —
+        # the same style as thinking text — inline, right after the user's
+        # words, so it reads as machine metadata, not part of the message.
+        footnote = text.rfind(TURN_HEADER_PREFIX)
+        if footnote != -1:
+            content = content.stylize(
+                "dim italic",
+                start=len(time_str) + len(prefix) + footnote,
+                end=len(time_str) + len(prefix) + len(text),
+            )
         # Image rendering is handled by ChatView.add_user_message()
         # which mounts InlineImage siblings — no text fallback here.
         super().__init__(content)

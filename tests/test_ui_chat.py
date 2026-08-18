@@ -34,6 +34,28 @@ class TestUserMessage:
         plain = msg.render().plain
         assert plain.startswith("[") and "> hi" in plain
 
+    def test_turn_footnote_styled_dim_italic(self):
+        """A restored turn's `[Turn: N · …]` footnote renders dim/italic
+        (the thinking style) inline, right after the user's words — readable,
+        but clearly machine metadata, not part of the message."""
+        from slife.ui.chat import UserMessage
+        text = "switch model [Turn: 30 · 2026-08-18 17:24 → 17:25]"
+        rendered = UserMessage(text, prefix="> ").render()
+        # Text is intact; the footnote sits right after the user's words.
+        assert rendered.plain == "> " + text
+        foot = rendered.plain.index("[Turn: ")
+        covering = [s for s in rendered.spans if s.start <= foot < s.end]
+        assert covering, "footnote carries no style span"
+        assert covering[0].style == "dim italic"
+
+    def test_no_footnote_plain_message(self):
+        """A message without a turn footnote gets no dim/italic styling."""
+        from slife.ui.chat import UserMessage
+        rendered = UserMessage("just a message", prefix="> ").render()
+        styled = [s for s in rendered.spans
+                  if "dim" in s.style or "italic" in s.style]
+        assert styled == []
+
     def test_rendered_content(self):
         """Verify the rendered content format directly."""
         parts = ["[bold #d97706]>[/bold #d97706] Hello world"]

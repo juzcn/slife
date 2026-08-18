@@ -71,7 +71,7 @@ class TestAddUserMessage:
         # Original text + dropped-image note = 2 parts
         assert len(parts) == 2
         assert parts[0] == {"type": "text", "text": "Describe"}
-        assert "System note" in parts[1]["text"]
+        assert parts[1]["text"].startswith("\n\n[Image: the following file(s)")
         assert "/fake/img.png" in parts[1]["text"]
         assert "NOT sent" in parts[1]["text"]
 

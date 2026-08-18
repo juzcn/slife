@@ -152,7 +152,7 @@ UI的调整，bug的修复当前是在Agent之外做的，因为它自己改自�
 
 6.1 ✅ 启动改为退出时的上下文，用户可以用clear context，做一个fresh start。（2026-08 已实现，见 5.1）
 
-6.2 轮次id没有进上下文，当前轮的id是save的时候产生的，会话历史中怎么注入轮次。同样类似的问题是 sys_note, 如果注入到user中可能比较优雅。
+6.2 ✅ 轮次 id 注入会话历史（2026-08 已实现）。把 `[Turn: N · 开始 → 结束]`（rowid + created_at → completed_at，只要 id 和起止时间，无文本/摘要）拼接到 user 消息文本末尾做脚注，LLM 和 TUI 都能读到。恢复的轮在 restore 时注入；刚完成的 live 轮在 save 拿到 rowid 后补上（`save_to_memory` → `_annotate_saved_turn`），下一轮就能按 rowid 精确引用/总结；当前进行中的轮没有。live 的 TUI 气泡不 retro 更新——没有脚注本身就是"当前 session"的信号。机器注解统一 `[类别: …]` 形式；只有图片读取失败注记 `[Image: …]` 是独立 text part（conversation.py `ANNOTATION_PREFIXES` / `is_annotation_text`，trim 摘要会排除它）；`[Heartbeat]` 保持独立哨兵（旧库 user_message 以它开头，改名会让 restore 错判）。sys_note 仍走 footer（context_status.j2），不参与注入。
 
 
 
