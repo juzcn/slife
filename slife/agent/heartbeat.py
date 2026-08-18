@@ -84,6 +84,9 @@ class _SilentHandler:
     async def on_max_iterations(self, iterations: int) -> None:
         pass
 
+    async def on_memory_save_warning(self, message: str) -> None:
+        pass
+
     def finalize_current(self) -> None:
         pass
 

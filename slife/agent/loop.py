@@ -183,6 +183,15 @@ class AgentEventHandler(Protocol):
         """
         ...
 
+    async def on_memory_save_warning(self, message: str) -> None:
+        """Called when a turn's diary save could not be confirmed.
+
+        The MCP channel returned something the save path could not parse,
+        so the turn may or may not have been persisted.  The handler can
+        surface this to the user.  Default is a no-op.
+        """
+        ...
+
     def finalize_current(self) -> None:
         """Mark the current (last incomplete) assistant message as complete.
 

@@ -360,6 +360,107 @@ class TestAgentServiceMemory:
         assert "记忆保存失败" in service.inbox._frozen_reason
 
     @pytest.mark.asyncio
+    async def test_save_to_memory_unparsable_response_warns(self, sample_config):
+        """A channel response that is neither a save ack nor an error object
+        (non-JSON text, or JSON that isn't an object) must NOT be silently
+        swallowed — the user gets a visible warning via on_memory_save_warning
+        (same style as the max-iterations notice), and it is not treated as a
+        hard DB failure (no freeze)."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(
+            return_value="<html>502 Bad Gateway</html>",
+        )
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.conversation
+        conv.add_user_message("hi")
+        conv.add_assistant_message("hello back")
+
+        seen: list[str] = []
+
+        class FakeHandler:
+            async def on_memory_save_warning(self, message: str) -> None:
+                seen.append(message)
+
+        await service.save_to_memory(
+            user_message="hi", token_count=10, conversation=conv,
+            handler=FakeHandler(),
+        )
+
+        assert seen == ["记忆保存未能确认：返回了无法解析的响应，本轮可能未写入记忆"]
+        # Soft failure — not the DB-hard-stop path: inbox stays open, no
+        # memory-broken flag, and no turn footnote (no rowid was known).
+        assert service.inbox._frozen is False
+        assert service._memory_broken is False
+        user_msg = next(m for m in conv.messages if m.get("role") == "user")
+        assert user_msg["content"] == "hi"
+
+    @pytest.mark.asyncio
+    async def test_save_to_memory_timeout_warns(self, sample_config):
+        """A 10s timeout on the save call surfaces the same TUI warning as the
+        other soft save failures — the row may or may not be written
+        server-side, so the user is told it's unconfirmed, not silently
+        skipped.  Soft failure: no freeze, no memory-broken flag."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(side_effect=asyncio.TimeoutError())
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.conversation
+        conv.add_user_message("hi")
+        conv.add_assistant_message("hello back")
+
+        seen: list[str] = []
+
+        class FakeHandler:
+            async def on_memory_save_warning(self, message: str) -> None:
+                seen.append(message)
+
+        await service.save_to_memory(
+            user_message="hi", token_count=10, conversation=conv,
+            handler=FakeHandler(),
+        )
+
+        assert seen == ["记忆保存超时：未能确认本轮已写入记忆"]
+        assert service.inbox._frozen is False
+        assert service._memory_broken is False
+
+    @pytest.mark.asyncio
+    async def test_save_to_memory_channel_error_warns(self, sample_config):
+        """A raised call_tool (transient MCP/channel failure) surfaces the same
+        TUI warning instead of being silently logged.  Soft failure: no
+        freeze, no memory-broken flag."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(
+            side_effect=RuntimeError("channel dropped"),
+        )
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.conversation
+        conv.add_user_message("hi")
+        conv.add_assistant_message("hello back")
+
+        seen: list[str] = []
+
+        class FakeHandler:
+            async def on_memory_save_warning(self, message: str) -> None:
+                seen.append(message)
+
+        await service.save_to_memory(
+            user_message="hi", token_count=10, conversation=conv,
+            handler=FakeHandler(),
+        )
+
+        assert seen == ["记忆保存失败（通道错误）：未能确认本轮已写入记忆"]
+        assert service.inbox._frozen is False
+        assert service._memory_broken is False
+
+    @pytest.mark.asyncio
     async def test_save_to_memory_compacts_oversized_tool_result(self, sample_config):
         """An oversized tool result is compacted to a head+tail digest in the
         DIARY copy, while the live conversation keeps the full output (the

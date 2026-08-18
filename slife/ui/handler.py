@@ -135,6 +135,14 @@ class TUIHandler:
             color="#f85149",
         )
 
+    async def on_memory_save_warning(self, message: str) -> None:
+        """Surface a diary-save warning — same style as the max-iterations
+        notice: a red ✗ system line, since the save may not have landed."""
+        self._chat_view.add_system_message(
+            f"✗ {message}",
+            color="#f85149",
+        )
+
     # ── AgentEventHandler implementation ─────────────────────────────
 
     async def on_thinking_chunk(self, chunk: str) -> None:

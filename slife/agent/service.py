@@ -1563,11 +1563,17 @@ class AgentService:
             # channel itself is slow, not a first-save model load.  The row
             # may still be written server-side.
             logger.warning("memdb_save_timeout reason=save_call_exceeded_timeout")
+            await self._warn_memory_save(
+                handler, "记忆保存超时：未能确认本轮已写入记忆",
+            )
             return
         except Exception as e:
             # A raised call_tool is a transient MCP/channel failure (the
             # plugin returns {"error": ...} for DB-side failures instead).
             logger.warning("memdb_save_error err=%s", e)
+            await self._warn_memory_save(
+                handler, "记忆保存失败（通道错误）：未能确认本轮已写入记忆",
+            )
             return
 
         # The plugin returns {"error": ...} on a persistent DB failure
@@ -1604,6 +1610,36 @@ class AgentService:
                     )
                 except Exception:
                     logger.debug("turn_annotation_skipped", exc_info=True)
+            else:
+                # The channel returned something that is neither a save
+                # ack nor an error object (non-JSON text, or JSON that
+                # isn't an object) — the save may or may not have landed
+                # and there is no way to tell.  Don't swallow it silently:
+                # log it and surface a user-visible warning in the same
+                # style as the max-iterations notice.
+                logger.warning("memdb_save_unparsable response=%.120r", result)
+                await self._warn_memory_save(
+                    handler, "记忆保存未能确认：返回了无法解析的响应，本轮可能未写入记忆",
+                )
+
+    async def _warn_memory_save(
+        self, handler, message: str,
+    ) -> None:
+        """Best-effort TUI warning for a failed memory save.
+
+        Every soft save-failure path (timeout, channel raise, unparseable
+        response) funnels through here so the user gets the same ✗ red
+        system line as the max-iterations notice.  The persistent DB
+        failure is the one exception — it keeps its own freezing banner
+        (see ``on_memory_broken``).  Never raises: a failing handler must
+        not break the turn flow.
+        """
+        warn = getattr(handler, "on_memory_save_warning", None)
+        if warn is not None:
+            try:
+                await warn(message)
+            except Exception:
+                pass
 
     def _annotate_saved_turn(
         self,
