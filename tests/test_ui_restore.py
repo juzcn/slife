@@ -11,6 +11,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 from unittest.mock import MagicMock
 
+from slife.agent.conversation import Conversation
 from slife.ui.restore import (
     _mount_resolved_image,
     _schedule_image_mounts,
@@ -293,3 +294,50 @@ class TestRestoreSkipsEmptyAssistantMessages:
         chat_view.add_assistant_message.assert_called_once()
         am.append_thinking.assert_called_once_with("inner reasoning")
         am.append_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_interrupted_turn_renders_turn_interrupted(self):
+        """An interrupted tool turn is repaired by _ensure_turn_consistent,
+        which closes it with an explicit ``(Turn interrupted)`` message —
+        content is non-empty, so it renders on restore (not silence, and
+        not the ``…`` placeholder).  Only the text-less tool iteration
+        skips its (already widget-less) message.
+        """
+        app = MagicMock()
+        chat_view = app.query_one.return_value
+        am = MagicMock()
+        chat_view.add_assistant_message.return_value = am
+        conv = Conversation(system_prompt=None)  # real — exercises the repair
+        config = MagicMock()
+        config.active_model.context_window = 100_000
+        config.context_ceiling = 0.8
+
+        tool_call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        }
+        # Orphaned tool call, no result — the turn was interrupted mid-tool.
+        turns = [self._turn([
+            {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+        ])]
+        await self._restore(app, conv, config, turns)
+
+        # The repair closed the conversation in place.
+        assert conv.messages[-1]["role"] == "assistant"
+        assert conv.messages[-1]["content"] == "(Turn interrupted)"
+        # …and tagged the synthetic tool result as the interruption error.
+        assert [m for m in conv.messages if m.get("role") == "tool"] \
+            == [{
+                "role": "tool", "tool_call_id": "call_1",
+                "content": "(Tool execution interrupted)", "is_error": True,
+            }]
+
+        # "(Turn interrupted)" is the one rendered message widget.
+        chat_view.add_assistant_message.assert_called_once()
+        am.append_text.assert_called_once_with("(Turn interrupted)")
+        am.finalize.assert_called_once_with(intermediate=False)
+        am.append_thinking.assert_not_called()
+        # The tool iteration rendered its tool widget, not a message widget.
+        mounts = [c.args[0] for c in chat_view.mount.call_args_list]
+        assert [w.tool_name for w in mounts] == ["read_file"]
