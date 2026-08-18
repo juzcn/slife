@@ -5,6 +5,8 @@ on disk.  Resolution is a simple existence check — file there → render,
 file gone → placeholder.
 """
 
+import json
+
 import pytest; pytestmark = pytest.mark.unit
 
 from unittest.mock import MagicMock
@@ -13,6 +15,7 @@ from slife.ui.restore import (
     _mount_resolved_image,
     _schedule_image_mounts,
     resolve_pending_images,
+    restore_session,
     tool_result_is_error,
 )
 
@@ -178,3 +181,115 @@ class TestScheduleImageMounts:
         cv.scroll_end.assert_called_once_with(animate=False)
         app.set_timer.assert_not_called()
         cv.call_after_refresh.assert_not_called()
+
+
+# ── Empty assistant messages on restore ──────────────────────────────
+
+
+class TestRestoreSkipsEmptyAssistantMessages:
+    """An assistant message persisted with no text and no thinking is an
+    intermediate tool-iteration — it exists in storage only so the LLM
+    context stays correct.  Live streaming never created a message widget
+    for it (``on_tool_call`` mounts just a ToolCallWidget), so restore
+    must not render the empty ``…`` placeholder either — the ToolCallWidgets
+    alone show the work.  Non-reasoning models hit this on every
+    tool-iteration; reasoning models mask it because ``thinking`` renders.
+    """
+
+    @staticmethod
+    def _turn(msgs, user="hi"):
+        return {
+            "user_message": user,
+            "messages": json.dumps(msgs, ensure_ascii=False),
+            "images": "",
+            "channel": "human",
+        }
+
+    def _build(self):
+        app = MagicMock()
+        chat_view = app.query_one.return_value
+        am = MagicMock()
+        chat_view.add_assistant_message.return_value = am
+        conv = MagicMock()
+        conv.messages = []
+        conv._ensure_turn_consistent.return_value = 0
+        config = MagicMock()
+        config.active_model.context_window = 100_000
+        config.context_ceiling = 0.8
+        return app, conv, config, chat_view, am
+
+    async def _restore(self, app, conv, config, turns):
+        await restore_session(
+            app, {"turns": turns, "budget": 1_000_000},
+            conv, config, "agent", "Jack> ",
+        )
+
+    @pytest.mark.asyncio
+    async def test_textless_tool_iteration_shows_only_tool_widget(self):
+        """Empty tool-iteration message → no ``…`` widget, tool widget only."""
+        app, conv, config, chat_view, am = self._build()
+        tool_call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        }
+        turns = [self._turn([
+            {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "42",
+             "is_error": False},
+            {"role": "assistant", "content": "The answer is 42."},
+        ])]
+        await self._restore(app, conv, config, turns)
+
+        # Only the text-bearing final message gets a message widget.
+        chat_view.add_assistant_message.assert_called_once()
+        am.append_thinking.assert_not_called()
+        am.append_text.assert_called_once_with("The answer is 42.")
+        am.finalize.assert_called_once_with(intermediate=False)
+
+        # The tool iteration still renders its tool widget.
+        mounts = [c.args[0] for c in chat_view.mount.call_args_list]
+        assert [w.tool_name for w in mounts] == ["read_file"]
+
+    @pytest.mark.asyncio
+    async def test_fully_empty_message_skipped(self):
+        """No text, no thinking, no tool calls → nothing at all."""
+        app, conv, config, chat_view, am = self._build()
+        turns = [self._turn([
+            {"role": "assistant", "content": "", "tool_calls": []},
+        ])]
+        await self._restore(app, conv, config, turns)
+
+        chat_view.add_assistant_message.assert_not_called()
+        chat_view.mount.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_harness_message_still_skipped(self):
+        """``_sys_note``/``_sys_trim`` are context-only — never widgets."""
+        app, conv, config, chat_view, am = self._build()
+        tcs = [{
+            "id": "h1", "type": "function",
+            "function": {"name": "_sys_note", "arguments": "{}"},
+        }]
+        turns = [self._turn([
+            {"role": "assistant", "content": "", "tool_calls": tcs},
+            {"role": "tool", "tool_call_id": "h1", "content": "ok",
+             "is_error": False},
+        ])]
+        await self._restore(app, conv, config, turns)
+
+        chat_view.add_assistant_message.assert_not_called()
+        chat_view.mount.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thinking_only_message_still_shows_widget(self):
+        """Reasoning models: empty text but real thinking still renders."""
+        app, conv, config, chat_view, am = self._build()
+        turns = [self._turn([
+            {"role": "assistant", "content": "", "thinking": "inner reasoning"},
+        ])]
+        await self._restore(app, conv, config, turns)
+
+        chat_view.add_assistant_message.assert_called_once()
+        am.append_thinking.assert_called_once_with("inner reasoning")
+        am.append_text.assert_not_called()

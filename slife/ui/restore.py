@@ -416,18 +416,20 @@ async def restore_session(
                 # notification, or anything else).
                 if (msg.get("content") or "").strip() == ".":
                     continue
-                # Harness messages (_sys_note, _sys_trim) exist so the
-                # LLM sees system status in context.  They are never
-                # visible in the live TUI — skip their widgets here.
+                # Nothing to show → skip.  Covers harness messages
+                # (_sys_note, _sys_trim — LLM context only, never in the live
+                # TUI) AND genuinely empty messages.  An empty tool-iteration
+                # message with REAL tool calls stays: its ToolCallWidgets
+                # render the work even without a message body.
                 tcs = msg.get("tool_calls") or []
+                visible_calls = [
+                    tc for tc in tcs
+                    if not tc.get("function", {}).get("name", "").startswith("_")
+                ]
                 if (
-                    msg.get("content") in (None, "")
-                    and not msg.get("thinking")
-                    and tcs
-                    and all(
-                        tc.get("function", {}).get("name", "").startswith("_")
-                        for tc in tcs
-                    )
+                    not (msg.get("content") or "")
+                    and not (msg.get("thinking") or "")
+                    and not visible_calls
                 ):
                     continue
                 if is_heartbeat:
@@ -531,17 +533,23 @@ async def restore_session(
                     timestamp=op.get("created_at"),
                 )
             elif op["type"] == "assistant":
-                am = chat_view.add_assistant_message(
-                    name_prefix=op.get("name_prefix"),
-                    timestamp=op.get("completed_at"),
-                )
+                # Live semantics: a message widget exists only once thinking
+                # or text streamed.  A tool-iteration message without either
+                # is kept in storage purely for the LLM context — render its
+                # tool widgets, but never an empty "…" placeholder the live
+                # TUI couldn't have shown.
                 thinking = op.get("thinking", "")
-                if thinking:
-                    am.append_thinking(thinking)
                 text = op.get("content", "")
-                if text:
-                    am.append_text(text)
-                am.finalize(intermediate=not op.get("is_final", False))
+                if thinking or text:
+                    am = chat_view.add_assistant_message(
+                        name_prefix=op.get("name_prefix"),
+                        timestamp=op.get("completed_at"),
+                    )
+                    if thinking:
+                        am.append_thinking(thinking)
+                    if text:
+                        am.append_text(text)
+                    am.finalize(intermediate=not op.get("is_final", False))
 
                 for tc in op.get("tool_calls", []):
                     # Skip harness notifications (_trim_context, _context_status).
