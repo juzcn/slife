@@ -235,6 +235,7 @@ class AgentService:
         # client degrades to "skip" rather than raising.
         self._tool_ctx.advance_context_start = self.advance_context_start
         self._tool_ctx.set_context_start_latest = self.set_context_start_latest
+        self._tool_ctx.reset_context_time = self.agent_loop.reset_context_time
         self.session_usage = TokenUsage()
 
         # Autonomous heartbeat — background idle task + TUI surfacing hooks.

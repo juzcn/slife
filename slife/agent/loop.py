@@ -353,6 +353,17 @@ class AgentLoop:
         """Clear the cancel signal for the next run."""
         self._cancel_event.clear()
 
+    def reset_context_time(self) -> None:
+        """Clear the tracked context time range (after ``clear_context``).
+
+        The next turn re-seeds ``_context_time_start`` from its own start,
+        so "Context covers" reflects the fresh context instead of the
+        pre-clear range.
+        """
+        self._context_time_start = ""
+        self._context_turn_dates = []
+        self._last_context_time_start = ""
+
     # ── Tool call helpers ──────────────────────────────────────────
 
     @staticmethod
@@ -1036,9 +1047,9 @@ class AgentLoop:
                 # the first turn, then only when restore or a trim advances it.
                 # Invariant: _context_time_start holds the OLDEST turn's date;
                 # _context_turn_dates holds the rest (restore seeds dates[1:]).
-                turn_start = (
-                    datetime.now().astimezone().replace(microsecond=0).isoformat()
-                )
+                # Same 'YYYY-MM-DD HH:MM:SS' wall-clock format restore seeds
+                # (_context_time_start), so "Context covers" never flips format.
+                turn_start = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
                 if not self._context_time_start:
                     self._context_time_start = turn_start
                 else:

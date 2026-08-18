@@ -523,6 +523,31 @@ class TestClearContextTool:
         finally:
             tool._ctx = None
 
+    @pytest.mark.asyncio
+    async def test_resets_context_time(self):
+        """Clearing context restarts the "Context covers" range — otherwise
+        the next _sys_note would keep reporting the pre-clear start."""
+        from slife.agent.conversation import Conversation
+        from slife.tools.context import ToolContext
+        tool = ClearContextTool()
+        conv = Conversation(system_prompt="You are helpful.")
+        conv.add_user_message("old question")
+        conv.add_assistant_message(content="old answer")
+        conv.add_user_message("current question")
+        conv.add_assistant_message(content="current answer")
+
+        reset_called = []
+        try:
+            tool._ctx = ToolContext(
+                conversation=conv,
+                reset_context_time=lambda: reset_called.append(True),
+            )
+            result = await tool.execute()
+            assert "Cleared" in result
+            assert reset_called == [True]
+        finally:
+            tool._ctx = None
+
 
 # ── SetMaxIterationsTool ─────────────────────────────────────────────
 

@@ -257,6 +257,14 @@ class ClearContextTool(Tool):
                 await set_latest()
             except Exception:
                 logger.exception("context_start_latest_failed")
+        # Restart the "Context covers" range — otherwise the next _sys_note
+        # would keep reporting the pre-clear start.
+        reset_time = getattr(ctx, "reset_context_time", None)
+        if reset_time is not None:
+            try:
+                reset_time()
+            except Exception:
+                logger.exception("context_time_reset_failed")
         remaining = len(conv.messages)
         logger.info("clear_context removed=%d remaining=%d", removed, remaining)
         return f"[OK] Cleared {removed} old message(s); {remaining} remaining (system prompt + current turn)."
