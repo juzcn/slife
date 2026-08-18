@@ -174,8 +174,12 @@ class Conversation:
         """Add an assistant message, optionally with tool calls and thinking.
 
         The ``thinking`` field stores the model's reasoning process for
-        permanent memory, but is stripped before sending to the API
-        (not a standard OpenAI message field).
+        permanent memory.  It is not stripped on the wire:
+        :meth:`to_openai_messages` renames it to ``reasoning_content``
+        (DeepSeek/Qwen's wire field), so the openai-completions backend
+        re-sends it and the model sees its prior reasoning on later turns.
+        The anthropic-messages and openai-responses backends drop it during
+        format conversion, so there it never re-enters the model's context.
         """
         msg: dict = {"role": "assistant"}
         msg["content"] = content if content is not None else ""
