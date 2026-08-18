@@ -333,9 +333,11 @@ class SlifeApp(App):
         # get_recent_turns reads the DB directly via aiosqlite —
         # completely independent of the memory plugin process.
         try:
-            turns, skipped = await self.service.get_recent_turns()
+            turns, skipped, budget = await self.service.get_recent_turns()
             if turns:
-                self._recovery_info = {"turns": turns, "skipped": skipped}
+                self._recovery_info = {
+                    "turns": turns, "skipped": skipped, "budget": budget,
+                }
                 await self._restore_session()
         except MemoryDatabaseError as e:
             # Memory is core — a broken memory DB must not start a

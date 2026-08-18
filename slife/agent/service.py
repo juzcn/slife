@@ -195,6 +195,13 @@ class AgentService:
         self._tool_ctx.conversation = self.conversation
         # Runtime iteration-cap hook for the set_max_iterations meta tool.
         self._tool_ctx.set_max_iterations = self.agent_loop.set_max_iterations
+        # Live-context boundary hooks — _sys_trim advances the boundary so a
+        # restart rebuilds the exit-time context; clear_context flushes it
+        # for a fresh start.  Bound methods resolve the memdb client at call
+        # time (it is not connected during __init__), so a missing/unready
+        # client degrades to "skip" rather than raising.
+        self._tool_ctx.advance_context_start = self.advance_context_start
+        self._tool_ctx.set_context_start_latest = self.set_context_start_latest
         self.session_usage = TokenUsage()
 
         # Autonomous heartbeat — background idle task + TUI surfacing hooks.
@@ -1541,20 +1548,30 @@ class AgentService:
                     except Exception:
                         pass
 
-    async def get_recent_turns(self, limit: int = 20) -> tuple[list[dict], int]:
-        """Load recent turns for restore. Returns ([], 0) if no turns.
+    async def get_recent_turns(self, limit: int = 20) -> tuple[list[dict], int, int]:
+        """Load recent turns for restore. Returns ([], 0, budget) if no turns.
+
+        Restores the **exit-time context**: it reads the persisted
+        live-context start boundary (:meth:`SessionStore.get_context_start`,
+        maintained by ``_sys_trim`` / ``clear_context``) and returns every
+        turn recorded after it — the exact slice the agent was working with
+        when it exited — instead of re-slicing an arbitrary percentage.
 
         Fetches newest-first in batches of *limit* (each batch already
         newest-first, so appending stays globally newest-first), selects the
-        newest turns that fit the configured context floor (default 20%),
-        and returns them **oldest-first** so the restore rebuilds the
+        newest turns that fit the configured context **ceiling** (default
+        80%) as a hard safety cap (the budget the live session itself could
+        never exceed, leaving room for tool schemas on the wire), and
+        returns them **oldest-first** so the restore rebuilds the
         conversation chronologically.  Heartbeat turns are included — they
         restore as ⚡ 自主, consistent with the live TUI.
 
-        Returns ``(selected, skipped)`` — *skipped* is how many fetched
-        turns were dropped for the budget, so the TUI can report
-        "已恢复最近 N 轮（M 轮旧记录未加载）".  The trimming happens here
-        (not in the restore), so the count must originate here.
+        Returns ``(selected, skipped, budget)`` — *skipped* is how many
+        fetched turns were dropped for the budget, so the TUI can report
+        "已恢复最近 N 轮（M 轮旧记录未加载）"; *budget* is the token budget
+        used, so the restore reports and estimates consistently.  The
+        selection happens here (not in the restore), so the count must
+        originate here.
 
         Reads directly from SQLite — independent of the memory plugin / MCP.
         """
@@ -1566,20 +1583,25 @@ class AgentService:
 
             db_path = self._get_memory_db_path()
             if not (db_path and db_path.is_file()):
-                return [], 0
+                return [], 0, 0
             budget = int(
-                self.config.active_model.context_window * self.config.context_floor
+                self.config.active_model.context_window
+                * self.config.context_ceiling
             )
             store = SessionStore(db_path)
             await store.setup(embedding_dim=0)
+            start_rowid = await store.get_context_start()
 
-            # Accumulate newest-first batches until the estimate reaches the
-            # budget (coarse stop — the exact selection below trims).
+            # Accumulate newest-first batches after the live-context boundary
+            # until the estimate reaches the budget (coarse stop — the exact
+            # selection below trims).
             all_turns: list[dict] = []
             total = 0
             offset = 0
             while total < budget:
-                batch = await store.get_recent_turns(limit=limit, offset=offset)
+                batch = await store.get_recent_turns(
+                    limit=limit, offset=offset, after_rowid=start_rowid,
+                )
                 if not batch:
                     break
                 all_turns.extend(batch)
@@ -1598,7 +1620,7 @@ class AgentService:
                 selected.append(t)
             selected.reverse()  # oldest-first for restore
             skipped = len(all_turns) - len(selected)
-            return selected, skipped
+            return selected, skipped, budget
         except Exception as e:
             # A present-but-broken memory DB (missing column, corruption,
             # disk error) must NOT start a memory-less session silently —
@@ -1615,6 +1637,57 @@ class AgentService:
                     await store.close()
                 except Exception:
                     pass
+
+    async def advance_context_start(self, count: int) -> bool:
+        """Persist the live-context boundary after a trim removed *count*.
+
+        Called by ``_sys_trim`` right after it evicts the oldest turns, so a
+        restart rebuilds the exit-time context from exactly where the live
+        one stood.  Best-effort — if the memdb channel is unreachable the
+        boundary just stays stale, which makes the next restore a
+        *superset* (old trimmed turns come back searchable in context), never
+        a loss.
+        """
+        if count <= 0 or not self.memdb_enabled:
+            return False
+        plugin = self._plugins.get("memdb")
+        client = getattr(plugin, "client", None) if plugin else None
+        if client is None:
+            return False
+        try:
+            await asyncio.wait_for(
+                client.call_tool(
+                    "__memory_context_start_advance", {"count": count},
+                ),
+                timeout=10.0,
+            )
+            return True
+        except (asyncio.TimeoutError, Exception):
+            logger.warning("context_start_advance_skipped count=%d", count)
+            return False
+
+    async def set_context_start_latest(self) -> bool:
+        """Flush the live-context boundary to the latest saved turn.
+
+        Called by ``clear_context`` so the next restore is a genuine fresh
+        start (only turns saved afterwards come back).  Best-effort — a
+        stale boundary only over-restores.
+        """
+        if not self.memdb_enabled:
+            return False
+        plugin = self._plugins.get("memdb")
+        client = getattr(plugin, "client", None) if plugin else None
+        if client is None:
+            return False
+        try:
+            await asyncio.wait_for(
+                client.call_tool("__memory_context_start_latest", {}),
+                timeout=10.0,
+            )
+            return True
+        except (asyncio.TimeoutError, Exception):
+            logger.warning("context_start_latest_skipped")
+            return False
 
     def _get_memory_db_path(self) -> Path | None:
         """Return the memory database path."""

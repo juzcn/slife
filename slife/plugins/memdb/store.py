@@ -351,13 +351,18 @@ class SessionStore:
         return dict(row) if row else None
 
     async def get_recent_turns(
-        self, limit: int = 50, offset: int = 0
+        self, limit: int = 50, offset: int = 0, after_rowid: int = 0
     ) -> list[dict]:
         """Return the most recent N turns (from *offset*), newest-first.
 
         ``offset`` enables batched pagination: the caller fetches 20 at a
         time (newest batch first) and accumulates — each batch is already
         newest-first, so appending batches stays globally newest-first.
+
+        ``after_rowid`` is the persisted live-context boundary (exclusive):
+        only turns strictly after it are returned.  Restore passes the
+        boundary stored by :meth:`get_context_start` so startup rebuilds
+        exactly the context that was live at exit.
         """
         cursor = await self._c.execute(
             """SELECT rowid, user_message, messages, images, summary, tags,
@@ -366,12 +371,98 @@ class SessionStore:
                FROM diary
                WHERE rowid IN (
                    SELECT rowid FROM diary
+                   WHERE rowid > ?
                    ORDER BY rowid DESC LIMIT ? OFFSET ?
                )
                ORDER BY rowid DESC""",
-            (limit, offset),
+            (after_rowid, limit, offset),
         )
         return [dict(row) for row in await cursor.fetchall()]
+
+    # ── Live-context boundary ────────────────────────────────────────
+    #
+    # The diary is the whole session history; the *live context* is the
+    # slice the agent was actually working with (bounded to the window by
+    # _sys_trim).  ``context_start`` (stored in ``diary_meta``) marks the
+    # boundary — every turn with ``rowid <= context_start`` is outside the
+    # live context (trimmed or cleared), every newer turn is inside.
+    # Restore reads from the boundary so startup rebuilds the exact
+    # exit-time context instead of re-slicing an arbitrary percentage.
+    # 0 (the default) means "everything" — the first-ever session.
+
+    _CONTEXT_START_KEY = "context_start"
+
+    async def get_context_start(self) -> int:
+        """Return the persisted live-context start boundary (exclusive).
+
+        Turns with ``rowid <= boundary`` are outside the live context.
+        Absent (fresh DB) or non-numeric → 0 (restore everything).
+        """
+        cursor = await self._c.execute(
+            "SELECT value FROM diary_meta WHERE key = ?",
+            (self._CONTEXT_START_KEY,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return 0
+        try:
+            return max(int(row[0]), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    async def set_context_start(self, rowid: int) -> None:
+        """Write the live-context start boundary (exclusive)."""
+        async with self._write_lock:
+            await self._c.execute(
+                "INSERT OR REPLACE INTO diary_meta (key, value) "
+                "VALUES (?, ?)",
+                (self._CONTEXT_START_KEY, str(max(int(rowid), 0))),
+            )
+            await self._c.commit()
+
+    async def advance_context_start(self, count: int) -> int:
+        """Advance the boundary past *count* diary rows; return new boundary.
+
+        Moves the live-context start forward by *count* rows strictly after
+        the current boundary and records the result.  Used by ``_sys_trim``,
+        which removed that many oldest complete turns from the conversation.
+
+        Clamps when fewer than *count* rows remain (a trim after a rollback
+        can overshoot by dead rows) — the boundary never overshoots the
+        latest row, so restore can only ever under-restore by a bounded,
+        searchable margin.
+
+        Callers wanting to flush the whole history (``clear_context``) pass
+        a count large enough to clamp to the latest row.
+        """
+        current = await self.get_context_start()
+        if count <= 0:
+            return current
+        cursor = await self._c.execute(
+            "SELECT rowid FROM diary WHERE rowid > ? "
+            "ORDER BY rowid ASC LIMIT ?",
+            (current, count),
+        )
+        rows = [r[0] for r in await cursor.fetchall()]
+        # Exactly `count` rows after the boundary → those are the trimmed
+        # turns, the last one becomes the new (exclusive) boundary.  Fewer
+        # rows remain → clamp to the latest row (see docstring).
+        boundary = rows[-1] if len(rows) == count else (await self.latest_rowid() or 0)
+        await self.set_context_start(boundary)
+        logger.info(
+            "context_start_advanced boundary=%s count=%d rows=%d",
+            boundary, count, len(rows),
+        )
+        return boundary
+
+    async def set_context_start_latest(self) -> int:
+        """Move the boundary to the latest row — everything saved is outside
+        the live context.  ``clear_context`` guarantees the next restore is
+        a fresh start (only turns saved afterwards come back)."""
+        boundary = await self.latest_rowid() or 0
+        await self.set_context_start(boundary)
+        logger.info("context_start_latest boundary=%s", boundary)
+        return boundary
 
     async def has_turns(self) -> bool:
         """Check if there are any turns."""

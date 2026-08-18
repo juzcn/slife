@@ -185,13 +185,52 @@ async def __memory_save_turn(
 
 
 @mcp.tool(name="__memory_get_recent_turns", description="Load recent turns for restore. Harness-only.")
-async def __memory_get_recent_turns(limit: int = 50) -> str:
+async def __memory_get_recent_turns(limit: int = 50, after_rowid: int = 0) -> str:
     store = await _ensure_store()
     try:
-        turns = await store.get_recent_turns(limit=limit)
+        turns = await store.get_recent_turns(limit=limit, after_rowid=after_rowid)
         return json.dumps({"turns": turns}, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("get_recent_turns_failed limit=%d", limit)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__memory_context_start_advance",
+    description="Advance the persisted live-context start by count rows. Harness-only.",
+)
+async def __memory_context_start_advance(count: int) -> str:
+    """Persist the live-context boundary after ``_sys_trim`` removed
+    *count* oldest turns.  Restore starts where the boundary points, so
+    startup rebuilds the exit-time context instead of re-slicing 20%."""
+    try:
+        async with _get_init_lock():
+            store = await _ensure_store_locked()
+            boundary = await store.advance_context_start(count)
+            if _manager is not None:
+                _manager.on_saved()
+        return json.dumps({"context_start": boundary}, ensure_ascii=False)
+    except Exception as e:
+        logger.exception("context_start_advance_failed count=%d", count)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__memory_context_start_latest",
+    description="Move the live-context start to the latest saved turn. Harness-only.",
+)
+async def __memory_context_start_latest() -> str:
+    """Flush the boundary to the latest row — the fresh start after
+    ``clear_context``.  Only turns saved afterwards come back on restore."""
+    try:
+        async with _get_init_lock():
+            store = await _ensure_store_locked()
+            boundary = await store.set_context_start_latest()
+            if _manager is not None:
+                _manager.on_saved()
+        return json.dumps({"context_start": boundary}, ensure_ascii=False)
+    except Exception as e:
+        logger.exception("context_start_latest_failed")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

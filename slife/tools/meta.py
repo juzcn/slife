@@ -240,14 +240,23 @@ class ClearContextTool(Tool):
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
-        conv = getattr(self, "_ctx", None)
-        if conv is not None:
-            conv = conv.conversation
+        ctx = getattr(self, "_ctx", None)
+        conv = ctx.conversation if ctx is not None else None
         if conv is None:
             return "Conversation is not yet initialised. This tool must be called after the agent service has started."
         removed = conv.clear_history()
         if removed == 0:
             return "Context is already clean — no old turns to remove."
+        # Flush the persisted live-context boundary to the latest saved
+        # turn, so the next restore is a genuine fresh start (only turns
+        # saved afterwards come back).  Best-effort: an unreachable memdb
+        # only makes the next restore a superset, never a loss.
+        set_latest = getattr(ctx, "set_context_start_latest", None)
+        if set_latest is not None:
+            try:
+                await set_latest()
+            except Exception:
+                logger.exception("context_start_latest_failed")
         remaining = len(conv.messages)
         logger.info("clear_context removed=%d remaining=%d", removed, remaining)
         return f"[OK] Cleared {removed} old message(s); {remaining} remaining (system prompt + current turn)."

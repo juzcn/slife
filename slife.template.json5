@@ -10,10 +10,17 @@
   ],
   agent: {
     max_iterations: 30,
+    // Context-window management, as fractions of context_window.
+    //   context_floor:   _sys_trim compacts the oldest turns down to this ratio
+    //                    when context hits the ceiling.
+    //   context_ceiling: the usage ratio that triggers _sys_trim.  It is
+    //                    ALSO the restore cap: startup rebuilds the exit-time
+    //                    context (turns beyond the persisted live-context
+    //                    boundary) up to this limit — never the floor.
     context_floor: 0.2,
     context_ceiling: 0.8,
     tool_timeout: 60,
-    heartbeat_interval: 300
+    heartbeat_interval: 600
   },
   models: {
     mode: "merge",

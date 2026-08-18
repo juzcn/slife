@@ -8,6 +8,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiosqlite
+
 import pytest
 
 from slife.plugins.memdb.store import (
@@ -23,6 +25,29 @@ from slife.plugins.memdb.store import (
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+async def _create_diary_table(conn) -> None:
+    """Create the real diary schema (all columns non-NULL defaults) on an
+    already-open aiosqlite connection.
+
+    Matches ``schema.sql``; the full column list is required because
+    ``get_recent_turns`` SELECTs every column.
+    """
+    await conn.execute("""\
+        CREATE TABLE IF NOT EXISTS diary (
+            user_message   TEXT NOT NULL DEFAULT '',
+            messages       TEXT NOT NULL DEFAULT '[]',
+            summary        TEXT DEFAULT '',
+            tags           TEXT DEFAULT '',
+            images         TEXT NOT NULL DEFAULT '',
+            created_at     TEXT NOT NULL,
+            completed_at   TEXT,
+            channel        TEXT DEFAULT '',
+            who_helped     TEXT DEFAULT '',
+            what_model     TEXT DEFAULT '',
+            token_count    INTEGER NOT NULL DEFAULT 0
+        )""")
 
 
 class TestNow:
@@ -525,6 +550,137 @@ class TestSessionStoreGetRecentTurns:
         assert len(all_result) == 5
         assert all_result[0]["user_message"] == "User message 5"
         assert all_result[4]["user_message"] == "User message 1"
+
+        # after_rowid (persisted live-context boundary) — only newer rows
+        boundary_result = await store.get_recent_turns(limit=50, after_rowid=2)
+        assert len(boundary_result) == 3
+        assert boundary_result[0]["user_message"] == "User message 5"
+        assert boundary_result[-1]["user_message"] == "User message 3"
+
+        await store._conn.close()
+
+
+class TestSessionStoreContextStart:
+    """Live-context boundary on diary_meta — the exclusive-start rowid
+    that makes restore rebuild the exit-time context."""
+
+    @pytest.mark.asyncio
+    async def test_fresh_db_defaults_to_zero(self, tmp_path):
+        """No meta row → boundary 0 → restore everything."""
+        db_path = tmp_path / "memory.db"
+        store = SessionStore(db_path)
+        store._conn = await aiosqlite.connect(str(db_path))
+        store._conn.row_factory = aiosqlite.Row
+        # diary_meta exists via schema.sql — just create the table bare.
+        await store._conn.execute(
+            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        await store._conn.execute("CREATE TABLE diary (user_message TEXT)")
+
+        assert await store.get_context_start() == 0
+        assert not await store.latest_rowid(), "empty diary → no latest row"
+
+        await store._conn.close()
+
+    @pytest.mark.asyncio
+    async def test_set_and_get_roundtrip(self, tmp_path):
+        db_path = tmp_path / "memory.db"
+        store = SessionStore(db_path)
+        store._conn = await aiosqlite.connect(str(db_path))
+        store._conn.row_factory = aiosqlite.Row
+        await store._conn.execute(
+            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+
+        await store.set_context_start(7)
+        assert await store.get_context_start() == 7
+
+        await store._conn.close()
+
+    @pytest.mark.asyncio
+    async def test_advance_skips_count_rows(self, tmp_path):
+        """advance(count) moves the exclusive boundary past count rows."""
+        db_path = tmp_path / "memory.db"
+        store = SessionStore(db_path)
+        store._conn = await aiosqlite.connect(str(db_path))
+        store._conn.row_factory = aiosqlite.Row
+        await store._conn.execute(
+            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        await _create_diary_table(store._conn)
+        await store._conn.execute(
+            "INSERT INTO diary (user_message, created_at) VALUES "
+            "('a','2026-08-12T00:00:00+08:00'),"
+            "('b','2026-08-12T00:01:00+08:00'),"
+            "('c','2026-08-12T00:02:00+08:00'),"
+            "('d','2026-08-12T00:03:00+08:00'),"
+            "('e','2026-08-12T00:04:00+08:00')"
+        )
+        await store._conn.commit()
+        await store.set_context_start(1)  # everything from rowid 2 on is in-context
+
+        boundary = await store.advance_context_start(2)  # trim turns 2,3
+
+        assert boundary == 3          # exclusive: rows 2,3 out, 4+ in
+        assert await store.get_context_start() == 3
+        # get_recent_turns sees only the in-context suffix
+        turns = await store.get_recent_turns(after_rowid=boundary)
+        assert [t["rowid"] for t in turns] == [5, 4], "newest-first, only after boundary"
+
+        await store._conn.close()
+
+    @pytest.mark.asyncio
+    async def test_advance_clamps_to_latest_when_short(self, tmp_path):
+        """Fewer than count rows remain → clamp to the latest row, never
+        overshoot — a restore can under-restore, never skip forward."""
+        db_path = tmp_path / "memory.db"
+        store = SessionStore(db_path)
+        store._conn = await aiosqlite.connect(str(db_path))
+        store._conn.row_factory = aiosqlite.Row
+        await store._conn.execute(
+            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        await store._conn.execute(
+            "CREATE TABLE diary (user_message TEXT)"
+        )
+        await store._conn.execute(
+            "INSERT INTO diary (user_message) VALUES ('a'),('b')"
+        )
+
+        boundary = await store.advance_context_start(50)
+
+        assert boundary == 2, "clamped at the latest row"
+
+        await store._conn.close()
+
+    @pytest.mark.asyncio
+    async def test_set_context_start_latest_flushes_history(self, tmp_path):
+        """clear_context semantics: move the boundary to the latest row so
+        only turns saved afterwards come back on restore."""
+        db_path = tmp_path / "memory.db"
+        store = SessionStore(db_path)
+        store._conn = await aiosqlite.connect(str(db_path))
+        store._conn.row_factory = aiosqlite.Row
+        await store._conn.execute(
+            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        await _create_diary_table(store._conn)
+        await store._conn.execute(
+            "INSERT INTO diary (user_message, created_at) VALUES "
+            "('a','2026-08-12T00:00:00+08:00'),"
+            "('b','2026-08-12T00:01:00+08:00'),"
+            "('c','2026-08-12T00:02:00+08:00')"
+        )
+
+        assert await store.set_context_start_latest() == 3
+        # a turn saved afterwards (rowid 4) is the only in-context content
+        await store._conn.execute(
+            "INSERT INTO diary (user_message, created_at) "
+            "VALUES ('d', '2026-08-12T00:03:00+08:00')"
+        )
+        await store._conn.commit()
+        turns = await store.get_recent_turns(after_rowid=3)
+        assert [t["rowid"] for t in turns] == [4]
 
         await store._conn.close()
 

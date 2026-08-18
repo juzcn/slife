@@ -321,6 +321,12 @@ class AgentLoop:
         self._context_time_start: str = ""  # earliest turn date in context; set by restore, advanced by trim
         self._last_context_time_start: str = ""  # for change-detection in the footer
         self._context_turn_dates: list[str] = []  # dates of restored turns, oldest-first; consumed by trim
+        #: ``id(conversation)`` whose restore must not be immediately
+        #: shredded by the ceiling trim.  Restore primes the conversation
+        #: up to the ceiling; the first replacement turn would otherwise
+        #: compact it straight back to the floor before the user got to
+        #: use it.  Consumed on that turn (see :meth:`run`).
+        self._just_restored_conv: int | None = None
 
     def set_max_iterations(self, max_iterations: int) -> str:
         """Change the per-turn iteration cap at runtime (0 = unlimited).
@@ -1052,8 +1058,17 @@ class AgentLoop:
                 )
                 # Trigger _sys_trim when the reported usage hits the
                 # configured ceiling (context_ceiling) — the same
-                # percentage _sys_note just showed.
-                if current >= int(self.context_window * self.context_ceiling):
+                # percentage _sys_note just showed.  A freshly-restored
+                # conversation is a legitimate pre-exit state, not growth —
+                # never shred it on the very first turn.  Consume the
+                # marker, so from the second turn on the live rules apply.
+                just_restored = self._just_restored_conv == id(conversation)
+                if just_restored:
+                    self._just_restored_conv = None
+                if (
+                    current >= int(self.context_window * self.context_ceiling)
+                    and not just_restored
+                ):
                     users_before = sum(
                         1 for m in conversation.messages if m.get("role") == "user"
                     )

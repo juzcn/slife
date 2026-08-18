@@ -1110,10 +1110,11 @@ class TestSwitchModel:
 
 
 class TestGetRecentTurns:
-    """Restore fetch: page-by-page (batch), select newest within budget,
+    """Restore fetch: page-by-page (batch), start from the persisted
+    live-context boundary, select newest within the context-ceiling budget,
     return oldest-first so the conversation rebuilds chronologically."""
 
-    def _make_db(self, tmp_path, n):
+    def _make_db(self, tmp_path, n, context_start=None):
         import sqlite3
 
         db = tmp_path / "test.db"
@@ -1123,6 +1124,9 @@ class TestGetRecentTurns:
             "tags TEXT, images TEXT NOT NULL DEFAULT '', channel TEXT, "
             "created_at TEXT, completed_at TEXT, "
             "who_helped TEXT, what_model TEXT, token_count INT)"
+        )
+        con.execute(
+            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
         for i in range(1, n + 1):
             con.execute(
@@ -1135,29 +1139,107 @@ class TestGetRecentTurns:
                     100 + i,
                 ),
             )
+        if context_start is not None:
+            con.execute(
+                "INSERT INTO diary_meta (key, value) VALUES ('context_start', ?)",
+                (str(context_start),),
+            )
         con.commit()
         con.close()
         return db
 
     @pytest.mark.asyncio
-    async def test_batches_newest_within_budget_oldest_first(
+    async def test_all_turns_selected_within_ceiling_budget(
         self, sample_config, tmp_path, monkeypatch
     ):
+        """Budget is the context ceiling (max the live session could hold) —
+        a small session restores whole, not re-sliced at the floor."""
         from slife.agent.service import AgentService
 
         db = self._make_db(tmp_path, 5)
         srv = AgentService(sample_config)
-        # Small budget: each turn ~41 tokens (est), budget 200 fits 4.
         srv.config.active_model.context_window = 1000
-        srv.config.context_floor = 0.2
+        srv.config.context_ceiling = 0.8
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
 
-        turns, skipped = await srv.get_recent_turns(limit=2)  # batches of 2 → 3 pages
+        turns, skipped, budget = await srv.get_recent_turns(limit=2)
 
         ids = [t["rowid"] for t in turns]
         assert ids == sorted(ids), "must be oldest-first for the restore"
-        assert ids == [2, 3, 4, 5], "newest 4 within the budget, oldest-first"
-        assert skipped == 1, "5 fetched turns, budget fits 4 → 1 dropped"
+        assert ids == [1, 2, 3, 4, 5], "all turns fit the 80% ceiling budget"
+        assert skipped == 0
+        assert budget == 800
+
+    @pytest.mark.asyncio
+    async def test_restore_starts_at_persisted_boundary(
+        self, sample_config, tmp_path, monkeypatch
+    ):
+        """Turning the context_floor off must not matter: restore reads the
+        persisted live-context start, so turns evicted by _sys_trim or
+        clear_context do not come back."""
+        from slife.agent.service import AgentService
+
+        db = self._make_db(tmp_path, 8, context_start=4)
+        srv = AgentService(sample_config)
+        srv.config.active_model.context_window = 1000000
+        srv.config.context_ceiling = 0.8
+        monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
+
+        turns, skipped, budget = await srv.get_recent_turns(limit=2)
+
+        ids = [t["rowid"] for t in turns]
+        assert ids == [5, 6, 7, 8], "only rows after the boundary are restored"
+        assert skipped == 0
+        assert budget == 800000
+
+    @pytest.mark.asyncio
+    async def test_budget_cap_at_ceiling_drops_oldest(
+        self, sample_config, tmp_path, monkeypatch
+    ):
+        """Monster history over the ceiling cap: newest fits, the overflow
+        (oldest in-window turns) is dropped and reported as skipped."""
+        from slife.agent.service import AgentService
+
+        db = tmp_path / "big.db"
+        import sqlite3
+
+        con = sqlite3.connect(str(db))
+        con.execute(
+            "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
+            "tags TEXT, images TEXT NOT NULL DEFAULT '', channel TEXT, "
+            "created_at TEXT, completed_at TEXT, "
+            "who_helped TEXT, what_model TEXT, token_count INT)"
+        )
+        con.execute(
+            "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        for i in range(1, 7):
+            # ~145 est-tokens per turn (user 5 chars + 400-char reply)…
+            con.execute(
+                "INSERT INTO diary (user_message, messages, channel, created_at, token_count) "
+                "VALUES (?, ?, 'human', ?, ?)",
+                (
+                    f"msg {i}",
+                    _json.dumps([{"role": "assistant", "content": "x" * 400}]),
+                    f"2026-08-12T{i:02d}:00:00+08:00",
+                    1000 + i,
+                ),
+            )
+        con.commit()
+        con.close()
+
+        srv = AgentService(sample_config)
+        srv.config.active_model.context_window = 1000
+        srv.config.context_ceiling = 0.8  # budget 800 < 6 × ~145 ≈ 870
+        monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
+
+        turns, skipped, budget = await srv.get_recent_turns(limit=3)
+
+        ids = [t["rowid"] for t in turns]
+        assert ids == sorted(ids), "must be oldest-first for the restore"
+        assert ids == [2, 3, 4, 5, 6], "newest 5 within the ceiling budget"
+        assert skipped == 1, "the 6th would overshoot the budget → dropped"
+        assert len(turns) == 5
 
     @pytest.mark.asyncio
     async def test_broken_db_raises_memory_error(

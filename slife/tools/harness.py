@@ -16,7 +16,11 @@ Language policy: descriptions / parameter docs / result strings are English
 
 from __future__ import annotations
 
+import logging
+
 from slife.tools.base import Tool, make_params
+
+logger = logging.getLogger(__name__)
 
 #: Optional render kwargs the loop passes to ``_sys_note`` each turn.
 #: All optional — the tool degrades to a default status if called bare.
@@ -100,6 +104,19 @@ class SysTrimTool(Tool):
         turns_summary = "\n".join(summary_parts)
         if len(turns_summary) > 2000:
             turns_summary = turns_summary[:2000] + "\n... (summary truncated)"
+
+        # Advance the persisted live-context boundary past the removed
+        # turns, so a restart rebuilds the exit-time context from exactly
+        # where the live one now stands.  Best-effort: an unreachable memdb
+        # only leaves the boundary stale (restore becomes a superset).
+        advance = getattr(ctx, "advance_context_start", None)
+        if advance is not None:
+            try:
+                await advance(len(turns))
+            except Exception:
+                logger.exception(
+                    "context_start_advance_failed count=%d", len(turns),
+                )
 
         if memory_saved:
             head = (

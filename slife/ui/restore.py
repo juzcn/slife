@@ -225,8 +225,11 @@ async def restore_session(
 ) -> None:
     """Restore a previous session from turn-based memory.
 
-    Loads only the most recent turns that fit within ``context_floor``
-    of the model's context window.  Older turns stay in the memory DB
+    Rebuilds the **exit-time context**: ``get_recent_turns`` already
+    selected the turns recorded after the persisted live-context boundary,
+    within the context-ceiling token budget.  This re-select pass only
+    guards legacy ``recovery_info`` that carries an untrimmed list; the
+    current path arrives pre-fitted.  Older turns stay in the memory DB
     and can be retrieved via ``memory_search`` if needed.
 
     This function is self-contained — it reads recovery_info, rebuilds
@@ -236,10 +239,16 @@ async def restore_session(
     if not all_turns:
         return
 
-    # ── Select turns within token budget (newest-first, cap at floor) ──
+    # ── Select turns within token budget (newest-first, cap at ceiling) ──
+    # Budget = the context ceiling (max the live session itself could hold) —
+    # never the floor: startup must restore what was live at exit, not
+    # re-slice an arbitrary 20%.  Falls back to the ceiling formula for
+    # legacy recovery_info that predates the budget field.
     context_window = config.active_model.context_window
-    context_floor = config.context_floor
-    token_budget = int(context_window * context_floor)
+    context_ceiling = config.context_ceiling
+    token_budget = recovery_info.get(
+        "budget", int(context_window * context_ceiling),
+    )
 
     turns: list[dict] = []
     tokens_selected = 0
@@ -480,6 +489,12 @@ async def restore_session(
     # tool-result lookup was built, so the UI and LLM context agree.)
     conversation.messages = all_messages
 
+    # The restored context is a legitimate pre-exit state, not growth —
+    # mark it so the loop does NOT compact it to the floor on the very
+    # first replacement turn (the marker is consumed in AgentLoop.run).
+    if turns:
+        app.service.agent_loop._just_restored_conv = id(conversation)
+
     # Prime the context time range so _sys_note shows the LLM
     # what time window its current context covers.  The start date is
     # advanced by the agent loop after each trim.
@@ -557,12 +572,11 @@ async def restore_session(
     if skipped > 0:
         _show_system_message(
             app,
-            f"✅ 已恢复最近 {len(turns)} 轮对话"
-            f"（{skipped} 轮旧记录未加载，可用 memory_search 查找）",
+            f"✅ 已恢复退出时的上下文（{len(turns)} 轮；{skipped} 轮更早记录未载入，可用 memory_search 查找）",
             color="#3fb950",
         )
     else:
-        _show_system_message(app, "✅ 已恢复对话，继续吧", color="#3fb950")
+        _show_system_message(app, "✅ 已恢复退出时的上下文，继续吧", color="#3fb950")
 
     # Auto-scroll is live again; settle the view with ONE scroll.
     chat_view._autoscroll = True

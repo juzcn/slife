@@ -112,13 +112,13 @@ UI的调整，bug的修复当前是在Agent之外做的，因为它自己改自�
 
 两个点是：1）怎么自我修复 2）怎么增加新的工具。
 
-5 Experimental and options
+5. Experimental and options
 
 5.1 上下文管理
 
-现在的上下文恢复到20%， 也就是每次退出和进入，恢复的上下文可能是不一样的。有clear context工具，如果用户启动后不想有会话历史。
+✅ 已实现"恢复到退出前"（2026-08）。启动恢复为退出时的上下文：diary_meta 中持久化 live-context 边界（context_start，排他 rowid），_sys_trim 每次移出后推进边界，clear_context 把边界推到最新一行（fresh start），启动时从边界读起、只以 context_ceiling(80%) 为安全上限。见 DESIGN.md Session Restore。
 
-有选项考虑： 一是fresh start， 即恢复0%， 二是恢复到一个固定的百分比20%, 三是恢复到退出前。恢复到20%相当于有个2次trim。
+当初的三个候选：一是fresh start， 即恢复0%， 二是恢复到一个固定的百分比20%, 三是恢复到退出前。恢复到20%相当于有个2次trim。此前选的是二（20%），每次退出和进入恢复都不一样，随机感强。
 
 还有一个点是：是不是原样恢复，还是恢复的记录做某种compacting，一种是压缩掉工具输出，大模型则知道
 
@@ -135,6 +135,26 @@ UI的调整，bug的修复当前是在Agent之外做的，因为它自己改自�
 5.4 关于tool output的澄清
 
 当前tool output有个截断，但截断是相当富裕的，考虑到它可能会读取大文件。tool output的当前轮的工具基础，只是它跨轮次的作用值得讨论。就像thinking一样。知道曾经的工具输出是什么，曾经做个什么思考，多当前轮工作既有启发也有污染。
+
+对历史会话的上下文处理有几个选项：
+
+- raw 保持所有内容
+- 去掉thingking
+- 所有tool out改为execution suceeded or execution failed.
+- 保留user和assitant， 有个turn summary tool pair。
+- 只保留user和assistant。
+
+5.5 与我们设计理念的冲突。
+
+只是针对节省token的设计，都会是暂时性的。压缩上下文是不得不，而不是优雅的做法。但当前的约束也是需要考虑的。
+
+6. To do list
+
+6.1 ✅ 启动改为退出时的上下文，用户可以用clear context，做一个fresh start。（2026-08 已实现，见 5.1）
+
+6.2 轮次id没有进上下文，当前轮的id是save的时候产生的，会话历史中怎么注入轮次。同样类似的问题是 sys_note, 如果注入到user中可能比较优雅。
+
+
 
 
 

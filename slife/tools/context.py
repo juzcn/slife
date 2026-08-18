@@ -9,7 +9,7 @@ no implicit initialisation order.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -56,3 +56,13 @@ class ToolContext:
     """Runtime hook to change the agent loop's per-turn iteration cap
     (0 = unlimited).  Populated by AgentService after the loop is built;
     used by the ``set_max_iterations`` meta tool."""
+
+    advance_context_start: Callable[[int], Awaitable[bool]] | None = None
+    """Persist the live-context start boundary after a trim evicted
+    *count* oldest turns, so restart rebuilds the exit-time context.
+    Populated by AgentService; used by ``_sys_trim``."""
+
+    set_context_start_latest: Callable[[], Awaitable[bool]] | None = None
+    """Flush the live-context boundary to the latest saved turn, so the
+    next restore is a fresh start.  Populated by AgentService; used by
+    ``clear_context``."""
