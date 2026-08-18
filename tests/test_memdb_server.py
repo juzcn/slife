@@ -177,52 +177,98 @@ class TestStoreLifecycleLocking:
 
 
 class TestTurnSummarize:
-    """memory_turn_summarize — rowid defaults to the most recent turn."""
+    """memory_turn_summarize — explicit rowid annotates a past turn;
+    rowid=None captures the current (in-flight) turn for save time."""
 
-    def _server(self, latest: int | None):
+    def _server(self):
         srv = _import_memdb_server()
         store = AsyncMock()
-        store.latest_rowid = AsyncMock(return_value=latest)
         store.update_summary = AsyncMock()
         srv._store = store
         return srv, store
 
     @pytest.mark.asyncio
-    async def test_defaults_to_latest_rowid(self, restore_root_logger):
+    async def test_rowid_none_captures_current_turn(self, restore_root_logger):
         import json
 
-        srv, store = self._server(latest=7)
+        srv, store = self._server()
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
             out = await srv.memory_turn_summarize(summary="sum", tags="a,b")
 
         data = json.loads(out)
-        assert data["rowid"] == 7
-        store.update_summary.assert_awaited_once_with(
-            rowid=7, summary="sum", tags="a,b",
-        )
+        assert data["status"] == "captured"
+        assert data["rowid"] is None
+        # No write and no latest_rowid lookup — applied at save time instead.
+        store.update_summary.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_explicit_rowid_skips_lookup(self, restore_root_logger):
+    async def test_explicit_rowid_updates_immediately(self, restore_root_logger):
         import json
 
-        srv, store = self._server(latest=7)
+        srv, store = self._server()
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
             out = await srv.memory_turn_summarize(rowid=3, summary="sum")
 
         data = json.loads(out)
+        assert data["status"] == "updated"
         assert data["rowid"] == 3
         store.update_summary.assert_awaited_once_with(
             rowid=3, summary="sum", tags=None,
         )
-        store.latest_rowid.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_empty_diary_is_an_error_not_a_write(self, restore_root_logger):
+    async def test_save_applies_captured_annotation(self, restore_root_logger):
+        """__memory_save_turn applies summary/tags to the row it just wrote."""
         import json
 
-        srv, store = self._server(latest=None)
-        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
-            out = await srv.memory_turn_summarize(summary="sum")
+        srv, store = self._server()
+        store.save_turn = AsyncMock(return_value=9)
+        with patch.object(
+            srv, "_ensure_store_locked", AsyncMock(return_value=store),
+        ):
+            out = await getattr(srv, "__memory_save_turn")(
+                user_message="hi", summary="sum", tags="a,b",
+            )
 
-        assert "error" in json.loads(out)
+        assert json.loads(out)["rowid"] == 9
+        store.update_summary.assert_awaited_once_with(
+            rowid=9, summary="sum", tags="a,b",
+        )
+
+    @pytest.mark.asyncio
+    async def test_save_without_captured_annotation_writes_nothing_extra(
+        self, restore_root_logger,
+    ):
+        import json
+
+        srv, store = self._server()
+        store.save_turn = AsyncMock(return_value=9)
+        with patch.object(
+            srv, "_ensure_store_locked", AsyncMock(return_value=store),
+        ):
+            out = await getattr(srv, "__memory_save_turn")(user_message="hi")
+
+        assert json.loads(out)["rowid"] == 9
         store.update_summary.assert_not_awaited()
+
+
+class TestListTurns:
+    """memory_list_turns — rowid-anchored lightweight listing."""
+
+    @pytest.mark.asyncio
+    async def test_passes_rowid_window_to_store(self, restore_root_logger):
+        import json
+
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        store.list_recent = AsyncMock(return_value=[
+            {"rowid": 2, "user_message": "x"},
+        ])
+        srv._store = store
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.memory_list_turns(before_rowid=10, limit=5)
+
+        store.list_recent.assert_awaited_once_with(
+            limit=5, before_rowid=10, after_rowid=None,
+        )
+        assert json.loads(out)[0]["rowid"] == 2

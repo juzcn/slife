@@ -570,16 +570,36 @@ class SessionStore:
 
     # ── Browse ─────────────────────────────────────────────────────
 
-    async def list_recent(self, limit: int = 20) -> list[dict]:
-        """List recent turns, newest first. Lightweight — no full messages."""
+    async def list_recent(
+        self, limit: int = 20,
+        before_rowid: int | None = None,
+        after_rowid: int | None = None,
+    ) -> list[dict]:
+        """List turns, newest first. Lightweight — no full messages.
+
+        ``before_rowid`` / ``after_rowid`` anchor the window by rowid
+        (exclusive) so the LLM can page the diary from a ``[Turn: N · …]``
+        footnote: ``before_rowid`` = older turns only, ``after_rowid`` =
+        newer turns only.
+        """
         limit = _clamp_limit(limit)
+        clauses: list[str] = []
+        params: list = []
+        if before_rowid is not None:
+            clauses.append("rowid < ?")
+            params.append(before_rowid)
+        if after_rowid is not None:
+            clauses.append("rowid > ?")
+            params.append(after_rowid)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
         cursor = await self._c.execute(
-            """SELECT rowid, user_message, summary, tags, created_at,
+            f"""SELECT rowid, user_message, summary, tags, created_at,
                       token_count, who_helped, what_model
-               FROM diary
+               FROM diary{where}
                ORDER BY rowid DESC
                LIMIT ?""",
-            (limit,),
+            params,
         )
         return [dict(row) for row in await cursor.fetchall()]
 

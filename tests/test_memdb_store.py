@@ -849,6 +849,37 @@ class TestSessionStoreListRecent:
         # Newest first
         assert result[0]["rowid"] == 2
 
+    @pytest.mark.asyncio
+    async def test_list_recent_windowed_by_rowid(self):
+        """before_rowid / after_rowid anchor the window (exclusive)."""
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        await store.list_recent(limit=5, before_rowid=3)
+        sql, params = mock_conn.execute.await_args.args
+        assert "rowid < ?" in sql and "rowid > ?" not in sql
+        assert 3 in params
+
+        await store.list_recent(limit=5, after_rowid=1)
+        sql, params = mock_conn.execute.await_args.args
+        assert "rowid > ?" in sql and "rowid < ?" not in sql
+        assert 1 in params
+
+        await store.list_recent(limit=5, before_rowid=5, after_rowid=1)
+        sql, params = mock_conn.execute.await_args.args
+        assert "rowid < ?" in sql and "rowid > ?" in sql
+        assert params[:2] == [5, 1]
+
+        # No anchors → plain query, no WHERE.
+        await store.list_recent(limit=5)
+        sql, params = mock_conn.execute.await_args.args
+        assert "WHERE" not in sql
+        assert params == [5]
+
 
 class TestSessionStoreUpdateSummary:
     """Tests for update_summary."""

@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from slife.agent.service import AgentService, compact_tool_results
+from slife.agent.service import (
+    AgentService,
+    _extract_turn_annotation,
+    compact_tool_results,
+)
 from slife.agent.plugins import PluginStartStatus
 from slife.agent.llm_client import TokenUsage
 from slife.a2a.identity import HUMAN, WECHAT
@@ -484,6 +488,38 @@ class TestAgentServiceMemory:
         assert conv.messages[1]["content"] == "hi"  # [0] is the system prompt
 
     @pytest.mark.asyncio
+    async def test_save_rides_captured_current_turn_annotation(self, sample_config):
+        """A rowid-less memory_turn_summarize called mid-turn rides the save:
+        its summary/tags land on the new row (no latest_rowid race)."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(
+            return_value=_json.dumps({"rowid": 42, "status": "saved"}),
+        )
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.conversation
+        conv.add_user_message("hi")
+        conv.add_assistant_message(
+            "", tool_calls=[{
+                "id": "c1", "type": "function",
+                "function": {
+                    "name": "memdb__memory_turn_summarize",
+                    "arguments": '{"summary": "switched model", "tags": "model,vision"}',
+                },
+            }],
+        )
+        conv.add_tool_result("c1", '{"status": "captured"}')
+        conv.add_assistant_message("done")
+
+        await service.save_to_memory(user_message="hi", conversation=conv)
+
+        _, args = mock_client.call_tool.await_args.args
+        assert args["summary"] == "switched model"
+        assert args["tags"] == "model,vision"
+
+    @pytest.mark.asyncio
     async def test_stop_memdb_noop_when_disabled(self, sample_config):
         service = AgentService(sample_config)
         await service.stop_memdb()  # Should not raise
@@ -534,6 +570,51 @@ class TestCompactToolResults:
         n = compact_tool_results(messages, budget_chars=100)
         assert n == 1
         assert "by re-running the tool" in messages[0]["content"]
+
+
+class TestExtractTurnAnnotation:
+    """_extract_turn_annotation — rowid-less memory_turn_summarize calls."""
+
+    @staticmethod
+    def _call(args_json: str):
+        return [{
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "memdb__memory_turn_summarize",
+                             "arguments": args_json},
+            }],
+        }]
+
+    def test_rowidless_captures_summary_and_tags(self):
+        msgs = self._call('{"summary": "switched model", "tags": "model,vision"}')
+        assert _extract_turn_annotation(msgs) == ("switched model", "model,vision")
+
+    def test_explicit_rowid_is_ignored(self):
+        # The tool already wrote it — the save must not duplicate.
+        msgs = self._call('{"rowid": 3, "summary": "x"}')
+        assert _extract_turn_annotation(msgs) == (None, None)
+
+    def test_bare_prefix_name_still_matches(self):
+        msgs = [{
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "memory_turn_summarize",
+                             "arguments": '{"tags": "a,b"}'},
+            }],
+        }]
+        assert _extract_turn_annotation(msgs) == (None, "a,b")
+
+    def test_unrelated_tools_ignored(self):
+        msgs = [{
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        }]
+        assert _extract_turn_annotation(msgs) == (None, None)
 
 
 # ── AgentService A2A ────────────────────────────────────────────────────────

@@ -58,7 +58,7 @@ mcp, _log_path, logger = create_plugin_server(
     instructions=(
         "slife-memdb — turn-based long-term knowledge. "
         "Every turn (user question + your response) is one row. "
-        "LLM-visible tools: memory_list_recent, memory_search (grep/fts5/hybrid/time), "
+        "LLM-visible tools: memory_list_turns, memory_search (grep/fts5/hybrid/time), "
         "memory_open, memory_turn_summarize, memory_check/set/remove_embedding. "
         "All data is automatically scoped to the current agent."
     ),
@@ -161,6 +161,8 @@ async def __memory_save_turn(
     channel: str = "",
     created_at: str | None = None,
     completed_at: str | None = None,
+    summary: str | None = None,
+    tags: str | None = None,
 ) -> str:
     try:
         # Hold the lifecycle lock across the save so a concurrent store
@@ -174,6 +176,12 @@ async def __memory_save_turn(
                 channel=channel, created_at=created_at,
                 completed_at=completed_at,
             )
+            # A rowid-less memory_turn_summarize captured the current turn's
+            # annotation — apply it to the row just written (best-effort).
+            if summary is not None or tags is not None:
+                await store.update_summary(
+                    rowid=rowid, summary=summary, tags=tags,
+                )
         # A saved turn is new work for the index drainer — wake it
         # (non-blocking event.set(), no DB work).
         if _manager is not None:
@@ -240,21 +248,32 @@ async def __memory_context_start_latest() -> str:
 
 
 @mcp.tool(
-    name="memory_list_recent",
+    name="memory_list_turns",
     description=(
-        "List recent memories (newest first): rowid, truncated user_message, "
-        "summary, tags, created_at. Use memory_open for full content."
+        "List turns (newest first): rowid, truncated user_message, summary, "
+        "tags, created_at. Use memory_open for full content. "
+        "before_rowid / after_rowid anchor the window by rowid (exclusive): "
+        "page older than a [Turn: N · …] footnote with before_rowid, newer "
+        "with after_rowid."
     ),
 )
-async def memory_list_recent(limit: int = 20) -> str:
-    """List recent memories, newest first.
+async def memory_list_turns(
+    limit: int = 20,
+    before_rowid: int | None = None,
+    after_rowid: int | None = None,
+) -> str:
+    """List turns, newest first.
 
     Args:
-        limit: Maximum number of memories to return.
+        limit: Maximum number of turns to return.
+        before_rowid: Only turns with rowid < this (older) — page back from a turn you can see in context.
+        after_rowid: Only turns with rowid > this (newer).
     """
     store = await _ensure_store()
     try:
-        entries = await store.list_recent(limit=limit)
+        entries = await store.list_recent(
+            limit=limit, before_rowid=before_rowid, after_rowid=after_rowid,
+        )
         for e in entries:
             um = e.get("user_message", "")
             if len(um) > 200:
@@ -302,14 +321,14 @@ async def memory_count(
     name="memory_open",
     description=(
         "Load a memory by rowid: full messages (OpenAI JSON) incl. thinking, "
-        "tool calls, tool results. rowid from memory_list_recent / memory_search."
+        "tool calls, tool results. rowid from memory_list_turns / memory_search."
     ),
 )
 async def memory_open(rowid: int) -> str:
     """Load a full memory turn by rowid.
 
     Args:
-        rowid: The memory rowid, from memory_list_recent / memory_search.
+        rowid: The memory rowid, from memory_list_turns / memory_search.
     """
     store = await _ensure_store()
     try:
@@ -442,8 +461,9 @@ async def memory_search(
     description=(
         "Write a summary (1-2 sentences) and comma-separated tags for a turn, "
         "making it findable via keyword search. Both optional. "
-        "rowid defaults to the most recent turn. "
-        "Does NOT touch the semantic index — the turn keeps its full-text vectors."
+        "rowid: the turn to annotate — omit it to annotate the CURRENT turn "
+        "(applied when it completes; call during the turn). "
+        "Does NOT touch the semantic index."
     ),
 )
 async def memory_turn_summarize(
@@ -453,19 +473,26 @@ async def memory_turn_summarize(
     """Write a summary and tags for a turn, making it findable by keyword search.
 
     Args:
-        rowid: The turn rowid to summarize (default: the most recent turn).
+        rowid: The turn rowid to annotate. Omit to annotate the current
+            (in-flight) turn — the summary/tags are applied when the turn
+            completes and is saved.
         summary: A 1-2 sentence summary of the turn.
         tags: Comma-separated tags for keyword search.
     """
     store = await _ensure_store()
     try:
         if rowid is None:
-            rowid = await store.latest_rowid()
-            if rowid is None:
-                return json.dumps(
-                    {"error": "no turns saved yet — nothing to summarize"},
-                    ensure_ascii=False, indent=2,
-                )
+            # Current turn — captured at save time: save_to_memory extracts
+            # this call and passes summary/tags to __memory_save_turn.  No
+            # latest_rowid lookup (cross-source race), no write here.
+            return json.dumps({
+                "status": "captured",
+                "rowid": None,
+                "message": (
+                    "annotation captured for the current turn — applied when "
+                    "the turn completes"
+                ),
+            }, ensure_ascii=False, indent=2)
         await store.update_summary(rowid=rowid, summary=summary, tags=tags)
         return json.dumps({"status": "updated", "rowid": rowid}, ensure_ascii=False, indent=2)
     except Exception as e:

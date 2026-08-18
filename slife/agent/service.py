@@ -126,6 +126,38 @@ def compact_tool_results(turn_messages: list[dict], budget_chars: int) -> int:
     return compacted
 
 
+def _extract_turn_annotation(
+    turn_messages: list[dict],
+) -> tuple[str | None, str | None]:
+    """Extract a rowid-less ``memory_turn_summarize`` call (the current turn).
+
+    The model annotates the in-flight turn by calling ``memory_turn_summarize``
+    without a rowid; the tool returns "captured" without writing.  The
+    summary/tags are applied here, at the single save point, so the annotation
+    lands on exactly the turn being saved — no ``latest_rowid()`` race, no
+    cross-process pending state, and a rolled-back turn simply never applies.
+    Explicit-rowid calls are ignored (the tool already wrote them).
+    """
+    summary: str | None = None
+    tags: str | None = None
+    for msg in turn_messages:
+        for tc in msg.get("tool_calls") or []:
+            name = tc.get("function", {}).get("name", "")
+            if name.split("__")[-1] != "memory_turn_summarize":
+                continue
+            try:
+                args = json.loads(tc.get("function", {}).get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if "rowid" in args and args.get("rowid") is not None:
+                continue  # explicit rowid — the tool handled it already
+            if args.get("summary"):
+                summary = args["summary"]
+            if args.get("tags"):
+                tags = args["tags"]
+    return summary, tags
+
+
 class AgentService:
     """Wires together LLM client, tools, conversation, and agent loop.
 
@@ -1510,6 +1542,12 @@ class AgentService:
                 else created_at
             )
         save_args["completed_at"] = now.isoformat(timespec="seconds")
+        # A rowid-less memory_turn_summarize captured the current turn's
+        # summary/tags — ride them on the save so they land on the new row.
+        summary, tags = _extract_turn_annotation(turn_messages)
+        if summary is not None or tags is not None:
+            save_args["summary"] = summary
+            save_args["tags"] = tags
         try:
             result = await asyncio.wait_for(
                 self._plugins["memdb"].client.call_tool(

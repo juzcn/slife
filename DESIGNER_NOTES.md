@@ -154,6 +154,8 @@ UI的调整，bug的修复当前是在Agent之外做的，因为它自己改自�
 
 6.2 ✅ 轮次 id 注入会话历史（2026-08 已实现）。把 `[Turn: N · 开始 → 结束]`（rowid + created_at → completed_at，只要 id 和起止时间，无文本/摘要）拼接到 user 消息文本末尾做脚注，LLM 和 TUI 都能读到。恢复的轮在 restore 时注入；刚完成的 live 轮在 save 拿到 rowid 后补上（`save_to_memory` → `_annotate_saved_turn`），下一轮就能按 rowid 精确引用/总结；当前进行中的轮没有。live 的 TUI 气泡不 retro 更新——没有脚注本身就是"当前 session"的信号。机器注解统一 `[类别: …]` 形式；只有图片读取失败注记 `[Image: …]` 是独立 text part（conversation.py `ANNOTATION_PREFIXES` / `is_annotation_text`，trim 摘要会排除它）；`[Heartbeat]` 保持独立哨兵（旧库 user_message 以它开头，改名会让 restore 错判）。sys_note 仍走 footer（context_status.j2），不参与注入。
 
+6.3 ✅ recall 工具集随 turn id 完善（2026-08 已实现）。`memory_turn_summarize` 的 rowid=None 语义改为"当前轮"：大模型在循环结束前调用，save 时 `_extract_turn_annotation` 把 summary/tags 落到新行，不再 `latest_rowid()` 竞态（显式 rowid 照旧即时更新）。`memory_list_recent` 改名 `memory_list_turns`，支持 before_rowid / after_rowid 按 rowid 锚点翻页（从脚注锚点往前看上下文之外的旧轮）。
+
 
 
 
