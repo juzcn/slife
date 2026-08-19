@@ -3,7 +3,10 @@
 ``include_image`` is a helper for building the image content block a
 vision model sees.  It takes a local file path or HTTPS URL and injects
 the resulting image block into the active conversation (works exactly
-like the ``@`` syntax in chat).
+like the ``@`` syntax in chat).  It feeds the vision API only — nothing
+is ever rendered in the terminal.  To *show* a file to the user, hand
+them a path / URL (opened with the OS) or publish it via
+``memfiles__expose_file``.
 
 This is an agent-loop concern (it mutates in-conversation state), so it
 stays a native tool in the main process — unrelated to the memfiles

@@ -105,7 +105,7 @@ class TestBuild:
         assert "Logs:" in result
         assert "Database:" in result
         assert "Skills:" in result
-        assert "Image cache:" in result
+        assert "File cabinet:" in result
 
     def test_mcp_tool_prefix(self, cfg):
         from slife.agent.system_prompt import build

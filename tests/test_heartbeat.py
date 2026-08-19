@@ -30,7 +30,6 @@ class TestSilentHandler:
         assert await h.on_tool_approval(None) is True
         await h.on_tool_result("1", "result", False)
         await h.on_token_usage(None)
-        await h.on_image("x.png")
         h.finalize_current()
 
 

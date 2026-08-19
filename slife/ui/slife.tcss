@@ -128,34 +128,3 @@ StatusBar {
     text-style: none;
 }
 
-/* ── Inline images ────────────────────────────────────────────── */
-/* Halfcell size is capped to limit unique (fg,bg) color pairs.
-   Each cell = one texture atlas entry in xterm.js.  Large images
-   (>500 pairs) trigger xtermjs/xterm.js#4484 atlas corruption.
-   Sixel bypasses this — no per-cell atlas entries.              */
-
-.chat-image {
-    overflow: hidden;
-    margin: 1 0 1 0;
-    padding: 0 1;
-    width: 32;
-    max-width: 32;
-    height: auto;
-    max-height: 16;
-}
-
-.chat-image-thumb {
-    overflow: hidden;
-    margin: 0 0 0 2;
-    padding: 0;
-    width: 20;
-    max-width: 20;
-    height: auto;
-    max-height: 10;
-}
-
-.chat-image-fallback {
-    margin: 0 0 0 2;
-    padding: 0 1;
-    height: 1;
-}

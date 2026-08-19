@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from slife.agent.conversation import turn_header
 from slife.agent.heartbeat import HEARTBEAT_MARK
 from slife.agent.llm_client import TokenUsage
-from slife.agent.loop import extract_image_markers
 from slife.agent.multimodal import include_image_url
 from slife.ui.chat import ChatView
 from slife.ui.tool_display import ToolCallWidget
@@ -84,33 +82,6 @@ def restore_prefix(channel: str | None, _agent_name: str) -> str:
     return "You> "
 
 
-# ── Image restore (file-exists only — no BLOBs) ──────────────────────
-#
-# Image markers (``[image: <path>]``) point at files on disk.  On
-# session restore the file either still exists → render, or it doesn't
-# → text placeholder.  No BLOB table, no DB round-trip.
-
-
-async def resolve_pending_images(
-    pending: list[tuple[str, "ChatView", "ToolCallWidget"]],
-) -> list[tuple[str | None, str, "ChatView", "ToolCallWidget"]]:
-    """Resolve image markers — file exists → path, otherwise → None."""
-    if not pending:
-        return []
-
-    result: list[tuple[str | None, str, "ChatView", "ToolCallWidget"]] = []
-    for marker, cv, aw in pending:
-        p = Path(marker)
-        if p.exists() and p.is_file():
-            resolved = str(p.resolve())
-            result.append((resolved, marker, cv, aw))
-            logger.info("restore_image_resolved marker=%s → file", marker)
-        else:
-            logger.info("restore_image_missing marker=%s — no file on disk", marker)
-            result.append((None, marker, cv, aw))
-    return result
-
-
 # ── Safe arg parse ────────────────────────────────────────────────────
 
 
@@ -134,96 +105,6 @@ def tool_result_is_error(msg: dict) -> bool:
         return bool(msg["is_error"])
     content = msg.get("content", "") or ""
     return isinstance(content, str) and content.startswith("Error")
-
-
-# ── Chained image restore ─────────────────────────────────────────────
-
-
-def _mount_resolved_image(
-    resolved_path: str | None,
-    marker_path: str,
-    chat_view: "ChatView",
-    after_widget: "ToolCallWidget | None",
-) -> None:
-    """Mount one restored image (or its placeholder) in the chat view.
-
-    ``resolved_path=None`` mounts the broken-file placeholder from
-    ``safe_image_widget`` using the marker path, so an image that has
-    no BLOB and no file still shows as ``⚠ <filename>`` instead of
-    silently disappearing.
-
-    Does NOT scroll — the single restore scroll happens once, after the
-    last image mounts (see :func:`_schedule_image_mounts`).
-    """
-    from slife.ui.image_utils import safe_image_widget
-
-    widget = safe_image_widget(
-        resolved_path or marker_path, css_class="chat-image",
-    )
-    if after_widget is not None:
-        chat_view.mount(widget, after=after_widget)
-        # Mounting with 'after=' can leave HalfcellImage at zero
-        # height because the surrounding layout wasn't invalidated
-        # for the insert position.  Explicit refresh fixes it.
-        widget.refresh(layout=True)
-    else:
-        chat_view.mount(widget)
-    logger.info(
-        "image_mount widget=%s resolved=%s",
-        type(widget).__name__, bool(resolved_path),
-    )
-
-
-def _schedule_image_mounts(
-    app: "SlifeApp",
-    chat_view: "ChatView",
-    resolved: list[tuple[str | None, str, "ChatView", "ToolCallWidget"]],
-) -> None:
-    """Mount restored images one per compositor cycle, then scroll ONCE.
-
-    ``textual-image`` only paints an image if it gets its own compositor
-    cycle — mounting several images in a single pass lays them out but
-    paints at most the last one (they never echo).
-
-    Timers scheduled all-at-once can still land in the same message-pump
-    batch.  Instead, each mount schedules the *next* timer from within
-    its own callback.  This guarantees each ``HalfcellImage`` is mounted
-    in a separate event-loop tick, giving Textual idle time for a
-    compositor cycle between images.
-
-    Jitter is avoided by NOT scrolling per image: the caller has already
-    suppressed ``ChatView`` auto-scroll, so these mounts do not move the
-    viewport at all.  Exactly one scroll-to-end is scheduled after the
-    final image mounts.
-
-    All DB I/O already happened in the resolve phase — callbacks only
-    mount pre-resolved widgets.  Does NOT block.
-    """
-    n = len(resolved)
-    _GAP = 0.06  # seconds between mounts — enough for a compositor tick
-
-    def _schedule_next(i: int) -> None:
-        if i >= n:
-            return
-        path, marker, _cv, after_widget = resolved[i]
-        is_last = (i == n - 1)
-        logger.info(
-            "restore_mount_step i=%d/%d path=%s is_last=%s",
-            i + 1, n, path, is_last,
-        )
-        _mount_resolved_image(path, marker, chat_view, after_widget)
-        if is_last:
-            chat_view.call_after_refresh(
-                chat_view.scroll_end, animate=False,
-            )
-        else:
-            app.set_timer(_GAP, lambda: _schedule_next(i + 1))
-
-    if n > 0:
-        logger.info("restore_mount_start count=%d gap=%.2fs", n, _GAP)
-        _schedule_next(0)
-    else:
-        chat_view.scroll_end(animate=False)
 
 
 # ── Main restore orchestrator ─────────────────────────────────────────
@@ -324,7 +205,6 @@ async def restore_session(
         # Build tool-result lookup
         tool_results: dict[str, str] = {}
         tool_errors: dict[str, bool] = {}
-        tool_images: dict[str, list[str]] = {}
         for msg in all_messages:
             if msg.get("role") == "tool":
                 tcid = msg.get("tool_call_id", "")
@@ -332,17 +212,6 @@ async def restore_session(
                     content = msg.get("content", "") or ""
                     tool_results[tcid] = content
                     tool_errors[tcid] = tool_result_is_error(msg)
-                    # Extract markers WITHOUT an existence check —
-                    # resolve_pending_images later resolves each path
-                    # against the filesystem (file exists → render,
-                    # file gone → ⚠ placeholder).
-                    imgs = extract_image_markers(content)
-                    if imgs:
-                        tool_images[tcid] = imgs
-                        logger.info(
-                            "restore_markers_found tcid=%s count=%d paths=%s",
-                            tcid, len(imgs), imgs,
-                        )
 
         # Build UI ops
         ui_ops: list[dict] = []
@@ -517,17 +386,11 @@ async def restore_session(
     # restore jitter.
     chat_view._autoscroll = False
 
-    # Collect image paths to render one-at-a-time after the batch.
-    # textual-image needs its own refresh cycle per image — mounting
-    # several in a single pass paints at most the last one.
-    _pending_images: list[tuple[str, "ChatView", "ToolCallWidget"]] = []
-
     with app.batch_update():
         for op in ui_ops:
             if op["type"] == "user":
                 chat_view.add_user_message(
                     op["content"],
-                    images=op.get("images"),
                     prefix=op["prefix"],
                     timestamp=op.get("created_at"),
                 )
@@ -566,12 +429,6 @@ async def restore_session(
                     )
                     chat_view.mount(widget)
                     widget.set_complete(result, is_error)
-                    for img_path in tool_images.get(tcid, []):
-                        _pending_images.append((img_path, chat_view, widget))
-                    logger.debug(
-                        "restore_pending_add tcid=%s tool=%s imgs=%d",
-                        tcid, tc.get("name", "?"), len(tool_images.get(tcid, [])),
-                    )
 
     # ── Post-restore setup ────────────────────────────────────────────
     # Still under suppressed auto-scroll — the system message must not
@@ -588,19 +445,7 @@ async def restore_session(
 
     # Auto-scroll is live again; settle the view with ONE scroll.
     chat_view._autoscroll = True
-    if _pending_images:
-        logger.info(
-            "restore_pending_total count=%d paths=%s",
-            len(_pending_images),
-            [p for p, _, _ in _pending_images],
-        )
-        # Phase 3b: resolve markers, then stagger-mount the images (one
-        # compositor cycle each so textual-image paints them); the last
-        # mount performs the single scroll-to-end.
-        resolved_images = await resolve_pending_images(_pending_images)
-        _schedule_image_mounts(app, chat_view, resolved_images)
-    else:
-        chat_view.scroll_end(animate=False)
+    chat_view.scroll_end(animate=False)
 
     # Reset session token counter — session starts fresh
     app.service.session_usage.total_tokens = 0

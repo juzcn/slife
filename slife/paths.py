@@ -104,18 +104,6 @@ def get_skills_dir() -> Path:
     return get_data_dir() / "skills"
 
 
-def get_images_dir() -> Path:
-    """Directory for cached image files.
-
-    Images are written here by ``show_image`` / MCP tools for immediate
-    TUI rendering.  Lives under ``logs/`` so it is git-ignored and treated
-    as ephemeral runtime output alongside session logs.  On session restore
-    images are re‑resolved from disk — files that no longer exist show a
-    ``⚠`` placeholder.
-    """
-    return get_data_dir() / "logs" / "images"
-
-
 def get_memfiles_dir(agent_name: str = "slife") -> Path:
     """Directory for user-saved files — one per agent.
 

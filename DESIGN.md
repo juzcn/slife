@@ -15,7 +15,7 @@ The model input should read uniformly, so text that Slife authors is English:
 ┌──────────────────────────────────────────────────────────────────────┐
 │  UI (Textual TUI)                                                    │
 │  slife/ui/app.py, chat.py, handler.py, tool_display.py,              │
-│  image_utils.py, restore.py, approval_prompt.py                      │
+│  restore.py, approval_prompt.py                                      │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Agent Service                                                       │
 │  slife/agent/service.py — wires client + tools + loop + plugins      │
@@ -205,7 +205,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Category | File | Tools |
 |----------|------|-------|
 | System | `system.py` | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_a2a`, `check_watchdog` |
-| Display | `display.py` | `show_image`, `notify_user` |
+| Display | `notify.py` | `notify_user` |
 | Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill.py` | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli.py` | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
@@ -513,7 +513,7 @@ User attaches with `@path` / `@url` syntax (quoted paths supported):
 Check this screenshot @D:\Downloads\error.png and tell me what's wrong
 ```
 
-The TUI extracts attachments; `include_image_url()` turns each into a vision content block — HTTP(S) URLs pass through, local files are read and base64-encoded as `data:` URIs. The agent can attach images mid-conversation with the `include_image` tool (injects into the last user message). Tool results may embed `[image: <path>]` markers; the loop scans for them after each batch and renders them in the UI. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`).
+The TUI extracts attachments; `include_image_url()` turns each into a vision content block — HTTP(S) URLs pass through, local files are read and base64-encoded as `data:` URIs. The agent can attach images mid-conversation with the `include_image` tool (injects into the last user message). Nothing is rendered in-terminal — files open with the OS default app (clickable paths/URLs in the chat), and `memfiles__expose_file` publishes any local file as a public HTTPS link. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`).
 
 ### Image Display
 
@@ -763,7 +763,7 @@ slife/
     config.py          #   Config env var + native tool toggles
     credentials.py     #   Credential check/inject/uninject
     vision.py          #   include_image — vision helper (native, conversation-scoped)
-    display.py         #   show_image + notify_user (pure UI)
+    notify.py          #   notify_user (pure UI)
     meta.py            #   list_tools, check_async, cancel_async, clear_context
   plugins/             # Built-in plugins (auto-discovered server.py packages)
     mcp/               #   External MCP gateway (raw JSON-RPC: stdio/SSE/streamable)
@@ -792,10 +792,9 @@ slife/
     process.py         #   SubagentProcess + SubagentManager
   ui/                  # Textual TUI
     app.py             #   Textual App, bindings, HistoryInput, StatusBar
-    chat.py            #   Chat message widgets
+    chat.py            #   Chat message widgets (clickable paths/URLs)
     handler.py         #   TUIHandler (bridges events → widgets)
     tool_display.py    #   ToolCallWidget + display helpers
-    image_utils.py     #   Image rendering (Sixel/Halfcell/fallback)
     restore.py         #   Session restore (rebuilds UI from diary)
     approval_prompt.py #   Inline tool approval (Y/N/Esc, no modal)
     slife.tcss         #   Textual CSS

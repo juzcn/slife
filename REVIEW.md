@@ -47,8 +47,7 @@
 ### UI
 - **✅ `_tool_widgets.clear()` 孤儿化进行中工具行** — clear 移到 `_process_message` 的 `finally`（回合真正结束后），跟随消息的 worker 不再清掉前一回合仍在流式的 widget。
 - **✅ model picker 与审批框焦点互抢** — 双向防护：`on_tool_approval` 打开前若 picker 开着则 `_dismiss_model_picker()`（resolve None + 复位标志）；`action_switch_model` 打开 picker 前先 `_decide(False)` 关掉挂起的审批框。
-- **✅ `image_utils.py:69` 文件名经 `Content.from_markup`** — `_fallback_widget` 用 `rich.markup.escape(path.name)`，`[` 不再抛 `MarkupError` 杀死整轮。
-- **✅ 多条用户图片只画最后一张** — `ChatView._schedule_thumbnails` 逐 compositor 周期挂载（首个也延迟一个 gap），live 与 restore 共用 `add_user_message` 路径一并修复。
+- **✅ `image_utils.py` 已删除** — 整个终端图片渲染栈移除（`show_image`、`[image: …]` 标记、Sixel/Halfcell、`_schedule_thumbnails`、`resolve_pending_images`）。文件用系统默认程序打开，终端内不渲染图片。
 - **✅ 审批框可无限阻塞 loop；Esc 取消不清 pending 审批** — loop 新增 `_await_approval`：`asyncio.wait({approval, cancel_event})`，取消先到则 deny 并让取消流程继续；`on_tool_approval` 捕获 CancelledError 时 resolve 自身 prompt 为 denied，不留悬空 future。
 
 ### tools / 配置

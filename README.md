@@ -164,7 +164,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch` |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `include_image` (injects a local image or URL into the conversation) |
-| Display | `show_image`, `notify_user` |
+| Display | `notify_user` |
 | Harness | `_sys_note` (context status) — auto-invoked, not for LLM use |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
@@ -212,13 +212,13 @@ While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_
 
 ### Image & Vision
 
-Attach images with `@path` / `@url` syntax (quotes supported for paths with spaces), displayed inline in the terminal:
+Attach images with `@path` / `@url` syntax (quotes supported for paths with spaces) to feed them to a vision-capable model:
 
 ```
 Check this screenshot @D:\Downloads\error.png
 ```
 
-Two-tier rendering: **Sixel** (full-colour on Windows Terminal / WezTerm / iTerm2 / Kitty) → **HalfcellImage** (coloured Unicode half-blocks on any true-colour terminal) → text placeholder. Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `include_image` tool lets the agent attach images mid-conversation, and `memfiles__expose_file` publishes any local file as a public HTTPS link via the ngrok tunnel (returns a graceful error while the tunnel is offline).
+Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `include_image` tool lets the agent attach images mid-conversation. Nothing is ever rendered in the terminal — files open with the OS default app, and `memfiles__expose_file` publishes any local file as a public HTTPS link via the ngrok tunnel (returns a graceful error while the tunnel is offline).
 
 ### Plugins
 

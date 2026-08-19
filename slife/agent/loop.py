@@ -6,12 +6,10 @@ import itertools
 import json
 import logging
 import os
-import re
 import time as _time
 from datetime import datetime
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
 
 from slife.agent.llm_client import LLMClient, TokenUsage
@@ -156,14 +154,6 @@ class AgentEventHandler(Protocol):
         """Called with cumulative token usage after each LLM call."""
         ...
 
-    async def on_image(self, source: str) -> None:
-        """Called when an image is produced (e.g. in tool results).
-
-        *source* is a local file path or base64 data URI.
-        Default is a no-op — handlers opt in by implementing this method.
-        """
-        ...
-
     async def on_stream_retry(self) -> None:
         """Discard any partial text/thinking shown for a retried LLM request.
 
@@ -215,58 +205,6 @@ class _StreamResult:
 
 
 # ── Agent loop ─────────────────────────────────────────────────────
-
-
-# ── Image detection in tool results ────────────────────────────────
-
-# Matches [image: /path/to/file.png] markers from include_image tool and MCP client.
-_IMAGE_MARKER_RE = re.compile(r"\[image:\s*(.+?)\]")
-
-
-def extract_image_markers(text: str) -> list[str]:
-    """Extract ``[image: <path>]`` markers from text — no existence check.
-
-    Pure marker extraction + dedup.  Callers decide whether file
-    existence matters: the live agent loop filters down to files that
-    exist on disk (:func:`_scan_for_images`), while session restore
-    resolves markers against the filesystem (file exists → render,
-    file gone → ``⚠`` placeholder) — see ``slife.ui.restore``.
-
-    Returns deduplicated marker paths in order of appearance.
-    """
-    found: list[str] = []
-    seen: set[str] = set()
-
-    for match in _IMAGE_MARKER_RE.finditer(text):
-        path_str = match.group(1).strip()
-        if path_str and path_str not in seen:
-            found.append(path_str)
-            seen.add(path_str)
-
-    return found
-
-
-def _scan_for_images(text: str) -> list[str]:
-    """Scan tool result text for ``[image: <path>]`` markers pointing at real files.
-
-    Only detects the explicit marker — no heuristic path matching.
-    Tools (``include_image``, MCP binary data handler) are responsible
-    for producing the marker when they have a real image to display.
-
-    Returns deduplicated list of absolute paths that exist on disk.
-    """
-    found: list[str] = []
-    seen: set[str] = set()
-
-    for path_str in extract_image_markers(text):
-        p = Path(path_str)
-        if p.exists() and p.is_file():
-            resolved = str(p.resolve())
-            if resolved not in seen:
-                found.append(resolved)
-                seen.add(resolved)
-
-    return found
 
 
 class AgentLoop:
@@ -1086,16 +1024,6 @@ class AgentLoop:
                 )
                 logger.debug("tool_result_truncated name=%s original=%d truncated=%d", tc.name, original_len, max_chars)
             is_error = result.startswith("Error")
-
-            # ── Scan for images in tool output ──────────────────
-            # Detect [image: path] markers from MCP binary data
-            # and file paths that exist on disk.
-            if handler:
-                imgs = _scan_for_images(result)
-                if imgs:
-                    logger.info("tool_images_found tool=%s count=%d paths=%s", tc.name, len(imgs), imgs)
-                for img_path in imgs:
-                    await handler.on_image(img_path)
 
             if handler:
                 await handler.on_tool_result(tc.id, result, is_error)

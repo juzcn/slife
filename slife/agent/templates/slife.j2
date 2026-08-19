@@ -10,7 +10,7 @@
    - Logs: {{ logs_dir }}
    - Database: {{ db_path }}
    - Skills: {{ skills_directory }}
-   - Image cache: {{ images_dir }}
+   - File cabinet: {{ memfiles_dir }}
 
 **Memory & Context**
 1. Conversation history
@@ -30,7 +30,7 @@
    - Vision support: {{ "enabled" if has_vision else "disabled" }}
    - `include_image` adds a local image or HTTPS URL to the conversation (same syntax as `@`); vision models only.
    - `memfiles__expose_file` publishes a local path as an HTTPS URL that multimodal LLMs can read directly — preferred for local images/files to vision models.
-   - `[image:<path>]` is a UI rendering marker — do not feed it to the vision API.
+   - To show a file or image, hand the user a path or URL — it opens with the OS; files are never rendered in-terminal.
 2. Credential resolution chain
    - Syntax: `${VAR}` and `${VAR:-default}`
    - Resolution order: `os.environ` → credential backend (currently active: {{ credstore_backend }})

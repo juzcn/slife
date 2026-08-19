@@ -19,7 +19,6 @@ from slife.agent.service import AgentService, MemoryDatabaseError
 from slife.agent.plugins import PluginStartStatus
 from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
-from slife.ui.image_utils import is_image_file
 from slife.ui.restore import restore_session
 from slife.ui.tool_display import ToolCallWidget
 
@@ -231,10 +230,10 @@ def _parse_images_from_input(raw: str) -> tuple[str, list[str]]:
             images.append(value)
         else:
             p = Path(value)
-            if p.exists() and p.is_file() and is_image_file(value):
+            if p.exists() and p.is_file():
                 images.append(str(p.resolve()))
             else:
-                # Not a valid image — leave the @directive as-is
+                # Not a valid file — leave the @directive as-is
                 parts.append(raw[match.start():match.end()])
         last_end = match.end()
 
@@ -714,7 +713,7 @@ class SlifeApp(App):
         # assistant reply (and restore) show the same time.
         now = datetime.now().astimezone()
         chat_view.add_user_message(
-            raw, images=image_paths or None, prefix="You> ", timestamp=now,
+            raw, prefix="You> ", timestamp=now,
         )
 
         # _process_message just enqueues and returns immediately

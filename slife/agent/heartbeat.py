@@ -75,9 +75,6 @@ class _SilentHandler:
     async def on_token_usage(self, usage: "TokenUsage") -> None:
         pass
 
-    async def on_image(self, source: str) -> None:
-        pass
-
     async def on_stream_retry(self) -> None:
         pass
 

@@ -162,7 +162,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch` |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `include_image`（把本地图片或 URL 注入对话） |
-| Display | `show_image`, `notify_user` |
+| Display | `notify_user` |
 | Harness | `_sys_note`（上下文状态）——自主调用，LLM 不可用 |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
@@ -208,13 +208,13 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 ### 图片与视觉
 
-用 `@path` / `@url` 语法附加图片（带空格的路径可加引号），终端内联显示：
+用 `@path` / `@url` 语法附加图片（带空格的路径可加引号），喂给支持视觉的模型：
 
 ```
 看看这张截图 @D:\Downloads\error.png
 ```
 
-两级渲染：**Sixel**（全彩，Windows Terminal / WezTerm / iTerm2 / Kitty）→ **HalfcellImage**（彩色 Unicode 半块字符，任何真彩终端）→ 文本占位符。支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 直接透传；`include_image` 工具允许智能体在对话中途附加图片，`memfiles__expose_file` 则通过 ngrok 隧道把任意本地文件发布为公开 HTTPS 链接（隧道离线时返回优雅错误）。
+支持视觉的模型以 base64 data URI 接收本地文件，HTTP(S) URL 直接透传；`include_image` 工具允许智能体在对话中途附加图片。所有文件均不在终端内渲染——用系统默认程序打开，`memfiles__expose_file` 则通过 ngrok 隧道把任意本地文件发布为公开 HTTPS 链接（隧道离线时返回优雅错误）。
 
 ### 插件
 

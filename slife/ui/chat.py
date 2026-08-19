@@ -12,7 +12,6 @@ from textual.widgets import Static
 
 from slife.agent.conversation import TURN_HEADER_PREFIX
 from slife.agent.llm_client import TokenUsage
-from slife.ui.image_utils import safe_image_widget
 
 # ── Clickable link detection ──────────────────────────────────────────
 # Detects URIs and absolute paths in assistant output so links are
@@ -124,14 +123,10 @@ class ChatView(VerticalScroll):
     def add_user_message(
         self,
         text: str,
-        images: list[str] | None = None,
         prefix: str = "> ",
         timestamp=None,
     ) -> "UserMessage":
         """Add and return a user message widget.
-
-        Image attachments are mounted as sibling widgets below the
-        message text so they render inline in the chat scroll.
 
         Args:
             timestamp: Turn timestamp (datetime or ISO-8601 str) rendered
@@ -139,51 +134,10 @@ class ChatView(VerticalScroll):
                        human message this is the Enter-press moment.
                        ``None`` means no time is shown.
         """
-        msg = UserMessage(text, images=images, prefix=prefix, timestamp=timestamp)
+        msg = UserMessage(text, prefix=prefix, timestamp=timestamp)
         self.mount(msg)
-        if images:
-            self._schedule_thumbnails(images)
         self._follow()
         return msg
-
-    def _schedule_thumbnails(self, images: list[str], gap: float = 0.06) -> None:
-        """Mount thumbnails one per compositor cycle.
-
-        ``textual-image`` only paints an image mounted in its own compositor
-        cycle — mounting several in one pass (the live path, or inside a
-        restore ``batch_update``) lays them out but paints at most the last
-        one.  Each mount schedules the next from inside its own callback so
-        every image gets its own tick.
-        """
-
-        def _next(i: int) -> None:
-            if i >= len(images):
-                return
-            self.add_image_to_chat(images[i], thumb=True)
-            if i < len(images) - 1:
-                self.set_timer(gap, lambda: _next(i + 1))
-
-        self.set_timer(gap, lambda: _next(0))
-
-    def add_image_to_chat(
-        self, file_path: str, *, thumb: bool = False
-    ):  # returns HalfcellImage or fallback Static
-        """Mount an inline image widget in the chat view.
-
-        Uses ``safe_image_widget`` — never raises, always returns a
-        widget (Image or text fallback).
-
-        Args:
-            file_path: Path to an image file.
-            thumb: Use small thumbnail size when True.
-        """
-        css = "chat-image-thumb" if thumb else "chat-image"
-        widget = safe_image_widget(file_path, css_class=css)
-        self.mount(widget)
-        # Defer scroll so the image widget has time to render its full
-        # height before we compute the scroll position.
-        self._follow_after_refresh()
-        return widget
 
     def add_assistant_message(
         self,
@@ -240,7 +194,6 @@ class UserMessage(Static):
     def __init__(
         self,
         text: str,
-        images: list[str] | None = None,
         prefix: str = "> ",
         timestamp=None,
     ):
@@ -268,11 +221,8 @@ class UserMessage(Static):
                 start=len(time_str) + len(prefix) + footnote,
                 end=len(time_str) + len(prefix) + len(text),
             )
-        # Image rendering is handled by ChatView.add_user_message()
-        # which mounts InlineImage siblings — no text fallback here.
         super().__init__(content)
         self.add_class("user-message")
-        self._image_paths: list[str] = images or []
 
 
 class AssistantMessage(Static):
@@ -322,7 +272,6 @@ class AssistantMessage(Static):
         self._usage: TokenUsage | None = None
         self._is_thinking_collapsed: bool = False
         self._show_usage: bool = True
-        self._image_paths: list[str] = []  # images to render below text
         self._trim_marker: str = ""  # runtime-only "[TrimContext: N]" note
 
     def append_thinking(self, chunk: str) -> None:
@@ -376,15 +325,6 @@ class AssistantMessage(Static):
             self._is_thinking_collapsed = True
             self._show_usage = False
         self._refresh_display()
-
-    def append_image(self, source: str) -> None:
-        """Record an image to be rendered below the response text.
-
-        The actual widget mounting is handled externally (by
-        TUIHandler / ChatView) — this just tracks the source
-        so session restore can reconstruct the image list.
-        """
-        self._image_paths.append(source)
 
     def on_click(self) -> None:
         """Expand thinking on click (never collapse — avoids destroying text selection).

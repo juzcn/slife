@@ -21,8 +21,8 @@ from slife.paths import (
     get_config_path,
     get_data_dir,
     get_db_path,
-    get_images_dir,
     get_logs_dir,
+    get_memfiles_dir,
     get_skills_dir,
 )
 
@@ -87,7 +87,7 @@ def _render_context(config: Config) -> dict:
         "config_path": str(get_config_path().resolve()),
         "logs_dir": str(get_logs_dir().resolve()),
         "db_path": str(get_db_path(config.agent_name).resolve()),
-        "images_dir": str(get_images_dir().resolve()),
+        "memfiles_dir": str(get_memfiles_dir(config.agent_name).resolve()),
         # ── 多代理通信 (A2A) ──
         "a2a_configured": a2a is not None and a2a.enabled,
         "a2a_transport": (a2a.transport if a2a else "mqtt"),

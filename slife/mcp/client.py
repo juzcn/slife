@@ -309,7 +309,10 @@ class MCPClient:
             elif hasattr(block, "data"):
                 img_path = _try_save_image_bytes(block.data)  # type: ignore[union-attr]
                 if img_path is not None:
-                    parts.append(f"[image: {img_path}]")
+                    # Binary image content is materialized to a temp file so
+                    # the LLM can reference it by path — no in-terminal
+                    # rendering; the user opens the file with the OS.
+                    parts.append(str(img_path))
                 else:
                     parts.append(f"[binary data: {len(block.data)} bytes]")  # type: ignore[union-attr]
             else:
