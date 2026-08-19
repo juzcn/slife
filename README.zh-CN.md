@@ -200,7 +200,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。`completed_at` 之前的旧库运行一次 `python scripts/migrate_memdb_completed_at.py` 迁移（插件内无 ALTER 迁移代码）；新库自动带该列。图片附件（`images`）用同一独立脚本模式——旧库运行 `python scripts/migrate_memdb_images.py`。token 用量记录在两列——`token_count`（本轮累计计费 token）和 `prompt_tokens`（最后一次 API 调用时的上下文大小，启动恢复时用它精确填充状态栏）——旧库运行 `python scripts/migrate_memdb_prompt_tokens.py` 迁移。
 
-用户消息会带一条紧凑的 **`[Turn: N · 开始 → 结束]`** 脚注（记忆 rowid 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 rowid 引用（`memdb__memory_open` / `memdb__memory_turn_summarize`），用户在 TUI 里也能读到同一行。恢复的轮在启动恢复时注入；刚完成的 live 轮在保存拿到 rowid 后补上（下一轮就能精确引用）；当前进行中的轮没有。机器注解统一采用 `[类别: …]` 形式——`[Image: …]`（附件无法读取、未发送）、`[Heartbeat]`（自主心跳触发，不是用户提问），以及 assistant 消息上的 **`[TrimContext: N]`**（上下文刚被压缩到 floor：N 个最老完整轮次在最近一轮保存后被剪切，该窗口的 tool 结果 / 中间推理可能已不在上下文中；这些轮次仍可在记忆里搜索）。trim 标记是**运行期专用**——只出现在当前会话，绝不会出现在恢复的历史里（恢复出来的本来就是已裁剪状态）。
+用户消息会带一条紧凑的 **`[Turn: N · 开始 → 结束]`** 脚注（记忆 rowid 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 rowid 引用（`memdb__memory_open` / `memdb__memory_turn_summarize`），用户在 TUI 里也能读到同一行。恢复的轮在启动恢复时注入；刚完成的 live 轮在保存拿到 rowid 后补上（下一轮就能精确引用）；当前进行中的轮没有。机器注解统一采用 `[类别: …]` 形式——`[Heartbeat]`（自主心跳触发，不是用户提问），以及 assistant 消息上的 **`[TrimContext: N]`**（上下文刚被压缩到 floor：N 个最老完整轮次在最近一轮保存后被剪切，该窗口的 tool 结果 / 中间推理可能已不在上下文中；这些轮次仍可在记忆里搜索）。trim 标记是**运行期专用**——只出现在当前会话，绝不会出现在恢复的历史里（恢复出来的本来就是已裁剪状态）。无法读取的图片附件现在会直接抛错（`add_user_message` 抛 `ValueError`），而不是静默丢弃——上游（`@path` 解析、`include_image`）已先行校验文件，因此失败是 bug 信号，不是隐藏标记。
 
 ### 自主心跳
 
