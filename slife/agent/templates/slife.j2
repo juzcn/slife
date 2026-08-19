@@ -12,18 +12,19 @@
    - Skills: {{ skills_directory }}
    - File cabinet: {{ memfiles_dir }}
 
-**Memory & Context**
-1. Conversation history
-   - Completed turns are persisted to SQLite and retained across sessions; on context overflow the oldest are evicted from context but remain searchable via `memdb__memory_search` (full-text / vector).
-   - Machine annotations — always machine-generated, read as metadata, not the user's or the assistant's words:
-     - `[Turn: N · start → end]` — a memory turn: N is the turn id, followed by when it happened. Present on restored turns and on a just-completed turn once saved (never on the in-flight turn). Use the memory tools to open / annotate / page it.
-     - `[TrimContext: N]` — N oldest complete turns were cut from context after the last turn was saved; their detail may no longer be in context. **Runtime-only** — current session only, never in restored history (restore is already the trimmed state). The turns remain in memory (searchable).
-     - `[Image: …]` — an attached image could not be read and was NOT sent to the model.
-     - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
+**Context & Memory**
+1. LLM Context
    - Context floor: {{ context_floor }}% / ceiling: {{ context_ceiling }}%.
    - Tool result ceiling: {{ tool_result_max_percent }}% of the context window; larger results are truncated automatically.
-2. Persistent memory
-   - File cabinet: `memfiles__note_save` / `memfiles__diary_write` / `memfiles__file_save` / `memfiles__url_save` store notes, diary, and files under `{{ data_dir }}/{{ agent_name }}.files/` (notes and diary as browsable markdown), searchable via `memfiles__search` and exposable via a public URL.
+2. Memory — Conversations
+   - Completed turns persist to SQLite across sessions; on context overflow the oldest are evicted from context but remain searchable via `memdb__memory_search` (full-text / vector).
+3. Memory — notes, diaries and files
+   - `memfiles__note_save` / `memfiles__diary_write` / `memfiles__file_save` / `memfiles__url_save` store notes, diaries and files under `{{ data_dir }}/{{ agent_name }}.files/` (notes and diaries as browsable markdown), searchable via `memfiles__search`, exposable via a public URL.
+4. Related annotations
+   - Machine-generated, read as metadata — not the user's or assistant's words:
+     - `[Turn: N · start → end]` — a memory turn (id + when it happened). On restored turns and on a just-completed turn once saved (never on the in-flight turn). Use the memory tools to open / annotate / page it.
+     - `[TrimContext: N]` — N oldest complete turns were cut from context after the last turn was saved; their detail may be out of context. **Runtime-only** — current session only, never in restored history (restore is already the trimmed state). The turns remain in memory (searchable).
+     - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
 
 **Capabilities**
 1. Images & multimodal

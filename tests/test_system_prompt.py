@@ -42,13 +42,15 @@ class TestBuild:
         result = build(cfg)
         # 一级标题（不编号）
         assert "**Environment**" in result
-        assert "**Memory & Context**" in result
+        assert "**Context & Memory**" in result
         assert "**Capabilities**" in result
         assert "**Coordination**" in result
         # 二级标题（组内编号）
         assert "1. Platform & OS" in result
-        assert "1. Conversation history" in result
-        assert "2. Persistent memory" in result
+        assert "1. LLM Context" in result
+        assert "2. Memory — Conversations" in result
+        assert "3. Memory — notes, diaries and files" in result
+        assert "4. Related annotations" in result
         assert "1. Images & multimodal" in result
         assert "2. Credential resolution chain" in result
         assert "3. Tools & skills" in result
@@ -237,7 +239,7 @@ class TestStructure:
     """Primary-heading taxonomy and world (slife.j2) consistency across roles."""
 
     _MAIN_HEADS = [
-        "**Identity**", "**Environment**", "**Memory & Context**",
+        "**Identity**", "**Environment**", "**Context & Memory**",
         "**Capabilities**", "**Coordination**", "**Autonomy**",
     ]
 
