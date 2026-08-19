@@ -148,6 +148,17 @@ def main(config_path: str | None = None):
         # Ensure child processes are cleaned up even on crash.
         app.service.kill_child_processes()
 
+        # A fatal startup failure (broken memory DB, failed required plugin)
+        # must never be silent: the TUI has now torn down its alternate
+        # screen, so the message stored by _fatal_exit can finally reach the
+        # terminal, and the shell sees a non-zero exit code.  Only a real
+        # string counts (tests use MagicMock for SlifeApp, whose auto-created
+        # attributes would otherwise look truthy here).
+        fatal = getattr(app, "_fatal_message", None)
+        if isinstance(fatal, str) and fatal:
+            print(f"\n{fatal}", file=sys.stderr)
+            raise SystemExit(1)
+
     # Session ended — log summary
     usage = app.service.session_usage
     logger.info(

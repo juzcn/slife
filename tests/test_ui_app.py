@@ -584,3 +584,44 @@ class TestModelSwitchBinding:
         from slife.ui.app import SlifeApp
 
         assert not inspect.iscoroutinefunction(SlifeApp.action_switch_model)
+
+
+# ── Fatal startup failure (never silent) ────────────────────────────────
+
+
+class TestFatalExit:
+    """A fatal component failure (broken memory DB, failed required plugin)
+    must record a message for post-teardown printing and exit non-zero —
+    never a silent exit-0 from the shell's perspective."""
+
+    def _app(self, sample_config):
+        from slife.ui.app import SlifeApp
+
+        with patch("slife.ui.app.Static.__init__", return_value=None):
+            app = SlifeApp(sample_config)
+        app.service.kill_child_processes = MagicMock()
+        return app
+
+    @pytest.mark.asyncio
+    async def test_fatal_exit_records_message_and_nonzero_code(self, sample_config):
+        app = self._app(sample_config)
+        app.query_one = MagicMock()
+        app._stop_plugins = AsyncMock()
+
+        await app._fatal_exit("✗ Memory database unavailable: boom")
+
+        assert app._fatal_message == "✗ Memory database unavailable: boom"
+        assert app._return_code == 1
+        app._stop_plugins.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_abort_required_plugin_routes_through_fatal_exit(self, sample_config):
+        app = self._app(sample_config)
+        app.query_one = MagicMock()
+        app._stop_plugins = AsyncMock()
+
+        await app._abort_required_plugin("memdb", "status=failed")
+
+        assert app._fatal_message is not None
+        assert "memdb" in app._fatal_message
+        assert app._return_code == 1

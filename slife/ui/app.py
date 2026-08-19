@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import re
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -294,6 +293,12 @@ class SlifeApp(App):
         self._model_picker_open = False
         self._model_picker_future: "asyncio.Future | None" = None
 
+        # Fatal startup failure (memory DB broken, required plugin failed).
+        # Stored so main() can surface it to the terminal AFTER the TUI has
+        # torn down its alternate screen — a stderr print during on_mount is
+        # wiped by Textual's screen restore, leaving a silent exit.
+        self._fatal_message: str | None = None
+
     def compose(self) -> ComposeResult:
         """Minimal layout: chat fills screen, input + status docked at bottom."""
         yield ChatView(id="chat-view")
@@ -341,21 +346,10 @@ class SlifeApp(App):
         except MemoryDatabaseError as e:
             # Memory is core — a broken memory DB must not start a
             # memory-less session.  Surface the error and abort startup.
-            logger.error("memory_restore_fatal err=%s", e)
-            chat_view = self.query_one("#chat-view", ChatView)
-            chat_view.add_system_message(
-                f"✗ Memory database unavailable: {e}\nMemory is a core feature — fix the database and restart.",
-                color="#f85149",
+            await self._fatal_exit(
+                f"✗ Memory database unavailable: {e}\n"
+                f"Memory is a core feature — fix the database and restart."
             )
-            # The TUI message above never gets a chance to render before
-            # exit() tears the app down, and the logger only writes to the
-            # log file — so the terminal would otherwise be silent. Emit the
-            # fatal error to stderr too so it's visible where slife ran.
-            print(
-                f"\n✗ Memory database unavailable: {e}\n  Memory is a core feature — fix the database and restart.",
-                file=sys.stderr,
-            )
-            self.exit()
         except Exception as e:
             logger.debug("session_restore_skip err=%s", e)
 
@@ -408,6 +402,22 @@ class SlifeApp(App):
 
         await self._stop_plugins()
         self.exit()
+
+    async def _fatal_exit(self, message: str) -> None:
+        """Abort startup on a fatal component failure — never silently.
+
+        Records the message so ``main()`` can re-print it to stderr after
+        the TUI has fully shut down (a print inside ``on_mount`` is erased
+        by Textual's alternate-screen restore), and exits with a non-zero
+        return code so the shell sees the failure.  Also stops plugins so
+        no child process is orphaned.
+        """
+        self._fatal_message = message
+        logger.error("fatal_exit msg=%s", message)
+        chat_view = self.query_one("#chat-view", ChatView)
+        chat_view.add_system_message(message, color="#f85149")
+        await self._stop_plugins()
+        self.exit(return_code=1)
 
     async def _stop_plugins(self) -> None:
         """Stop the inbox and every plugin service with a bounded wait.
@@ -674,12 +684,7 @@ class SlifeApp(App):
             f"✗ 必要组件加载失败: {name}（{reason}）\n"
             f"{name} 是系统核心组件 — 无法在缺少它的状态下运行，请修复后重启。"
         )
-        logger.error("required_plugin_fatal name=%s reason=%s", name, reason)
-        chat_view = self.query_one("#chat-view", ChatView)
-        chat_view.add_system_message(msg, color="#f85149")
-        print(f"\n{msg}", file=sys.stderr)
-        await self._stop_plugins()
-        self.exit()
+        await self._fatal_exit(msg)
 
 
     # ── Input handling ────────────────────────────────────────────
