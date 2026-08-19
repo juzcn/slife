@@ -293,8 +293,12 @@ class AgentService:
 
     @property
     def model_display_name(self) -> str:
-        """Human-readable name of the active model."""
-        return self.config.active_model.display_name
+        """Active model as ``provider/model`` — the canonical ref the LLM sees.
+
+        Multiple providers can serve the same model name, so the status bar
+        shows the full ref (``deepseek/deepseek-v4-flash``) to disambiguate.
+        """
+        return self.config.active_model.ref
 
     @property
     def context_window(self) -> int:

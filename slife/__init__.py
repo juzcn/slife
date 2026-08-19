@@ -118,7 +118,7 @@ def main(config_path: str | None = None):
     record(
         "model", "ok",
         key="active", value=active.ref,
-        hint=f"Model: {active.display_name}, "
+        hint=f"Model: {active.ref}, "
              f"thinking={'on' if active.thinking_enabled else 'off'}, "
              f"context={active.context_window}.",
     )

@@ -37,7 +37,7 @@ class TestAgentService:
 
     def test_model_display_name(self, sample_config):
         service = AgentService(sample_config)
-        assert service.model_display_name == "DeepSeek V4 Flash"
+        assert service.model_display_name == "deepseek/deepseek-v4-flash"
 
     def test_thinking_enabled_false(self, sample_config):
         service = AgentService(sample_config)
