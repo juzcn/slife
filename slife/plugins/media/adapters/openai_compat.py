@@ -41,7 +41,8 @@ class OpenAICompatAdapter:
 
     async def generate_image(
         self, *, model: str, prompt: str, size: str = "",
-        image_path: Path | None = None, extra_params: dict | None = None,
+        image_path: Path | None = None, outputs_dir: str = "",
+        extra_params: dict | None = None,
     ) -> str:
         if image_path is not None:
             raise NotImplementedError(
@@ -73,12 +74,14 @@ class OpenAICompatAdapter:
         item = items[0]
         if item.get("b64_json"):
             path = self._saver.save_bytes(
-                base64.b64decode(item["b64_json"]), "image", "png",
+                base64.b64decode(item["b64_json"]), "image", "png", outputs_dir,
             )
             return str(path)
         url = item.get("url")
         if url:
-            path = await self._saver.save_url(str(url), "image")
+            path = await self._saver.save_url(
+                str(url), "image", outputs_dir=outputs_dir,
+            )
             return str(path)
         raise MediaAdapterError(
             f"Image item has neither url nor b64_json: {str(item)[:300]}"

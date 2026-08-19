@@ -253,7 +253,8 @@ class DashScopeAIGCAdapter:
 
     async def generate_image(
         self, *, model: str, prompt: str, size: str = "",
-        image_path: Path | None = None, extra_params: dict | None = None,
+        image_path: Path | None = None, outputs_dir: str = "",
+        extra_params: dict | None = None,
     ) -> str:
         headers: dict[str, str] = {}
         content: list[dict] = [{"text": prompt}]
@@ -270,7 +271,9 @@ class DashScopeAIGCAdapter:
         for item in self._message_content(output):
             url = item.get("image")
             if url:
-                path = await self._saver.save_url(str(url), "image")
+                path = await self._saver.save_url(
+                    str(url), "image", outputs_dir=outputs_dir,
+                )
                 return str(path)
         raise MediaAdapterError(
             f"No image in Bailian response: {str(output)[:300]}"
@@ -278,7 +281,8 @@ class DashScopeAIGCAdapter:
 
     async def generate_video(
         self, *, model: str, prompt: str, image_path: Path | None = None,
-        extra_params: dict | None = None, deadline_s: float = 1200.0,
+        outputs_dir: str = "", extra_params: dict | None = None,
+        deadline_s: float = 1200.0,
     ) -> str:
         params = dict(extra_params or {})
         image_field = str(params.pop(_IMAGE_FIELD_KEY, _DEFAULT_IMAGE_FIELD))
@@ -298,12 +302,14 @@ class DashScopeAIGCAdapter:
             raise MediaAdapterError(
                 f"No video_url in completed task: {str(output)[:300]}"
             )
-        path = await self._saver.save_url(str(url), "video", "mp4")
+        path = await self._saver.save_url(
+            str(url), "video", "mp4", outputs_dir=outputs_dir,
+        )
         return str(path)
 
     async def text_to_speech(
         self, *, model: str, text: str, voice: str = "",
-        extra_params: dict | None = None,
+        outputs_dir: str = "", extra_params: dict | None = None,
     ) -> str:
         # qwen-tts uses a flat input {text, voice, language_type, ...} —
         # NOT the chat messages envelope.  Non-streaming responses carry
@@ -320,14 +326,16 @@ class DashScopeAIGCAdapter:
         audio = output.get("audio") or {}
         url = audio.get("url")
         if url:
-            path = await self._saver.save_url(str(url), "audio")
+            path = await self._saver.save_url(
+                str(url), "audio", outputs_dir=outputs_dir,
+            )
             return str(path)
         b64 = audio.get("data")
         if b64:
             import base64
 
             path = self._saver.save_bytes(
-                base64.b64decode(b64), "audio", "wav",
+                base64.b64decode(b64), "audio", "wav", outputs_dir,
             )
             return str(path)
         raise MediaAdapterError(

@@ -2,10 +2,10 @@
 
 Exposes generation capabilities (image, video, TTS, ASR) from any
 configured provider as MCP tools.  The plugin owns everything: its own
-``media:`` config section from slife.json5, the provider adapters, the
-HTTP calls, and artifact storage under ``{agent}.files/media/{kind}/``.
-The main slife process is a thin MCP client and never touches provider
-APIs directly.
+``media:`` config section from slife.json5, the provider adapters, and
+the HTTP calls.  Artifacts are saved to the working directory — generated
+media are work products, never memfiles cabinet files.  The main slife
+process is a thin MCP client and never touches provider APIs directly.
 
 Capability models are declared per provider with ``kind`` (image /
 video / tts / asr) and ``api`` (wire adapter — ``dashscope-aigc``,
@@ -77,6 +77,18 @@ def _resolve_input_path(path_str: str) -> Path | None:
     return path.resolve()
 
 
+def _resolve_output_dir(folder: str = "") -> str:
+    """Where a generated artifact should be saved.
+
+    ``folder`` (explicit user request) wins; else the working directory
+    (the plugin child inherits the main process's CWD).  Returns an
+    absolute path string.
+    """
+    if folder.strip():
+        return str(Path(folder).expanduser().resolve())
+    return str(Path.cwd().resolve())
+
+
 def _error(e: Exception) -> str:
     if isinstance(e, NotImplementedError):
         return f"Error: Capability not supported by this provider: {e}"
@@ -92,11 +104,14 @@ def _error(e: Exception) -> str:
     name="generate_image",
     description=(
         "Generate an image from a text prompt and save it locally. "
-        "Returns the absolute path of the saved image file."
+        "By default saves to the working directory; pass folder to save "
+        "to a specific directory. Returns the absolute path of the "
+        "saved image file."
     ),
 )
 async def generate_image(
     prompt: str, model: str = "", size: str = "", image: str = "",
+    folder: str = "",
 ) -> str:
     """Generate an image from a text prompt.
 
@@ -110,6 +125,8 @@ async def generate_image(
         image: Absolute local path to a reference image for
             image-conditioned generation. Uploaded to the provider
             automatically.
+        folder: Directory to save the image into (default: the working
+            directory).
     """
     try:
         cfg = _ensure_config()
@@ -125,6 +142,7 @@ async def generate_image(
             prompt=prompt,
             size=size,
             image_path=_resolve_input_path(image),
+            outputs_dir=_resolve_output_dir(folder),
             extra_params=entry.params,
         )
         logger.info("media_image_generated provider=%s model=%s path=%s",
@@ -142,14 +160,17 @@ async def generate_image(
     name="generate_video",
     description=(
         "Generate a video from a text prompt (optionally conditioned on "
-        "a reference image) and save it locally. Returns the absolute "
-        "path of the saved MP4 file. Renders take minutes — pass "
-        "_async: true and poll the returned task with check_async."
+        "a reference image) and save it locally. By default saves to the "
+        "working directory; pass folder to save to a specific directory. "
+        "Returns the absolute path of the saved MP4 file. Renders take "
+        "minutes — pass _async: true and poll the returned task with "
+        "check_async."
     ),
 )
 async def generate_video(
     prompt: str, model: str = "", image: str = "",
     resolution: str = "", ratio: str = "", duration: int = 0,
+    folder: str = "",
 ) -> str:
     """Generate a video from a text prompt.
 
@@ -167,6 +188,8 @@ async def generate_video(
             default when omitted.
         duration: Video duration in seconds. Uses the model default when
             omitted.
+        folder: Directory to save the video into (default: the working
+            directory).
     """
     try:
         cfg = _ensure_config()
@@ -188,6 +211,7 @@ async def generate_video(
             model=entry.model,
             prompt=prompt,
             image_path=_resolve_input_path(image),
+            outputs_dir=_resolve_output_dir(folder),
             extra_params=params,
         )
         logger.info("media_video_generated provider=%s model=%s path=%s",
@@ -204,11 +228,15 @@ async def generate_video(
 @mcp.tool(
     name="text_to_speech",
     description=(
-        "Synthesize speech from text and save it locally. Returns the "
-        "absolute path of the saved audio file."
+        "Synthesize speech from text and save it locally. By default "
+        "saves to the working directory; pass folder to save to a "
+        "specific directory. Returns the absolute path of the saved "
+        "audio file."
     ),
 )
-async def text_to_speech(text: str, model: str = "", voice: str = "") -> str:
+async def text_to_speech(
+    text: str, model: str = "", voice: str = "", folder: str = "",
+) -> str:
     """Synthesize speech from text.
 
     Args:
@@ -217,6 +245,8 @@ async def text_to_speech(text: str, model: str = "", voice: str = "") -> str:
             model name. Uses the configured tts default when omitted.
         voice: Voice identifier (e.g. 'longxiaochun'). Uses the model's
             configured default voice when omitted.
+        folder: Directory to save the audio into (default: the working
+            directory).
     """
     try:
         cfg = _ensure_config()
@@ -231,6 +261,7 @@ async def text_to_speech(text: str, model: str = "", voice: str = "") -> str:
             model=entry.model,
             text=text,
             voice=voice or entry.voice,
+            outputs_dir=_resolve_output_dir(folder),
             extra_params=entry.params,
         )
         logger.info("media_tts_synthesized provider=%s model=%s path=%s",

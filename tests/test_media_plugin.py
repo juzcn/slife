@@ -559,14 +559,21 @@ class TestOpenAICompatAdapter:
 
 
 class TestArtifactSaver:
-    def test_save_bytes_unique_path(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(
-            "slife.plugins.media.adapters.base.get_memfiles_dir",
-            lambda: tmp_path)
+    def test_save_bytes_default_cwd(self, monkeypatch, tmp_path):
+        """Generated artifacts default to the working directory — work
+        products, not memfiles cabinet files."""
+        monkeypatch.chdir(tmp_path)
         saver = ArtifactSaver()
         p1 = saver.save_bytes(b"a", "image", "png")
         p2 = saver.save_bytes(b"b", "image", ".png")
         assert p1 != p2
         assert p1.read_bytes() == b"a"
-        assert p1.parent == tmp_path / "media" / "image"
+        assert p1.parent == tmp_path
         assert p1.suffix == ".png" and p2.suffix == ".png"
+
+    def test_save_bytes_respects_outputs_dir(self, tmp_path):
+        saver = ArtifactSaver()
+        out = tmp_path / "sub"
+        p = saver.save_bytes(b"x", "image", "jpg", str(out))
+        assert p.parent == out
+        assert p.read_bytes() == b"x"
