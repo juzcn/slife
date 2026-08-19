@@ -323,6 +323,7 @@ class AssistantMessage(Static):
         self._is_thinking_collapsed: bool = False
         self._show_usage: bool = True
         self._image_paths: list[str] = []  # images to render below text
+        self._trim_marker: str = ""  # runtime-only "[TrimContext: N]" note
 
     def append_thinking(self, chunk: str) -> None:
         """Append a chunk of reasoning/thinking content."""
@@ -351,6 +352,16 @@ class AssistantMessage(Static):
     def set_token_usage(self, usage: TokenUsage) -> None:
         """Set token usage to display after the response."""
         self._usage = usage
+        self._refresh_display()
+
+    def set_trim_marker(self, count: int) -> None:
+        """Display a runtime-only ``[TrimContext: N]`` note after the text.
+
+        Rendered dim/italic (machine metadata, like the ``[Turn: N]``
+        footnote on user messages).  Never persisted — the live marker the
+        loop appended to the conversation is stripped before the next save.
+        """
+        self._trim_marker = f"[TrimContext: {count}]"
         self._refresh_display()
 
     def finalize(self, intermediate: bool = False) -> None:
@@ -475,6 +486,13 @@ class AssistantMessage(Static):
             content = content + self._build_response_text()
         elif not self._has_thinking:
             content = content + Content.from_markup("[dim]…[/dim]")
+
+        # Runtime trim marker — dim italic metadata after the response,
+        # styled like the [Turn: N] footnote on user messages.
+        if self._trim_marker:
+            content = content + Content.from_text(
+                f" {self._trim_marker}", markup=False,
+            ).stylize("dim italic")
 
         # Token usage footer
         if self._usage and self._show_usage:

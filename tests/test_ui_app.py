@@ -334,6 +334,31 @@ class TestTUIHandler:
         mock_assistant._refresh_display.assert_called()
 
     @pytest.mark.asyncio
+    async def test_on_trim_marks_turn_last_assistant(self):
+        """on_trim shows [TrimContext: N] on the turn's last assistant."""
+        app = self._make_app_mock()
+        mock_a1 = MagicMock()
+        mock_a2 = MagicMock()
+        mock_chat_view = app.query_one.return_value
+        mock_chat_view.add_assistant_message.side_effect = [mock_a1, mock_a2]
+
+        handler = TUIHandler(app)
+        await handler.on_thinking_chunk("x")   # creates a1
+        handler._iteration_needs_new_message = True
+        await handler.on_thinking_chunk("y")   # creates a2 (new iteration)
+        assert handler._turn_assistants == [mock_a1, mock_a2]
+
+        handler.on_trim(4)
+        mock_a2.set_trim_marker.assert_called_once_with(4)
+        mock_a1.set_trim_marker.assert_not_called()
+
+    def test_on_trim_no_assistant_noop(self):
+        """on_trim is safe when the turn produced no assistant message."""
+        app = self._make_app_mock()
+        handler = TUIHandler(app)
+        handler.on_trim(2)  # should not raise
+
+    @pytest.mark.asyncio
     async def test_on_token_usage_updates_current_assistant(self):
         """on_token_usage sets usage on the current assistant message."""
         app = self._make_app_mock()

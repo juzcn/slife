@@ -393,6 +393,77 @@ class TestRepairOrphanedToolCalls:
         assert {m["tool_call_id"] for m in synthetic} == {"a1", "a2"}
 
 
+# ── append_trim_marker (runtime-only [TrimContext: N]) ─────────────────
+
+
+class TestTrimMarker:
+    """append_trim_marker appends a runtime-only marker to the last assistant
+    message — never persisted, never a separate message."""
+
+    def test_appends_to_last_assistant(self):
+        conv = Conversation(system_prompt="SYS")
+        conv.add_user_message("hi")
+        conv.add_assistant_message("reply")
+        conv.append_trim_marker(3)
+        assert conv.messages[-1]["content"] == "reply [TrimContext: 3]"
+
+    def test_empty_content_becomes_marker(self):
+        conv = Conversation(system_prompt="SYS")
+        conv.add_user_message("hi")
+        conv.add_assistant_message("")
+        conv.append_trim_marker(2)
+        assert conv.messages[-1]["content"] == "[TrimContext: 2]"
+
+    def test_walks_back_to_last_assistant(self):
+        """A trailing tool result does not block the marker — it lands on the
+        assistant message that owns the turn."""
+        conv = Conversation(system_prompt="SYS")
+        conv.add_user_message("hi")
+        conv.add_assistant_message(
+            None,
+            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "x", "arguments": "{}"}}],
+        )
+        conv.add_tool_result("c1", "ok")
+        conv.append_trim_marker(1)
+        assert conv.messages[-2]["content"] == "[TrimContext: 1]"
+
+    def test_noop_without_assistant(self):
+        conv = Conversation(system_prompt="SYS")
+        conv.add_user_message("hi")
+        conv.append_trim_marker(1)
+        # No assistant present → nothing appended, no crash.
+        assert conv.messages[-1]["role"] == "user"
+
+
+class TestStripTrimMarkers:
+    """strip_trim_markers keeps [TrimContext: N] out of the diary."""
+
+    def test_strips_marker_from_assistant_content(self):
+        conv = Conversation(system_prompt="SYS")
+        conv.add_user_message("hi")
+        conv.add_assistant_message("reply [TrimContext: 3]")
+        cleaned = Conversation.strip_trim_markers(conv.messages)
+        # The marker is removed from the returned copy...
+        assert cleaned[-1]["content"] == "reply"
+        # ...and the live conversation keeps it.
+        assert conv.messages[-1]["content"] == "reply [TrimContext: 3]"
+
+    def test_marker_only_message_becomes_empty(self):
+        conv = Conversation(system_prompt="SYS")
+        conv.add_user_message("hi")
+        conv.add_assistant_message("[TrimContext: 2]")
+        cleaned = Conversation.strip_trim_markers(conv.messages)
+        assert cleaned[-1]["content"] == ""
+
+    def test_non_assistant_untouched(self):
+        conv = Conversation(system_prompt="SYS")
+        conv.add_user_message("hi [TrimContext: 1]")  # user content not stripped
+        conv.add_assistant_message("reply")
+        cleaned = Conversation.strip_trim_markers(conv.messages)
+        assert cleaned[1]["content"] == "hi [TrimContext: 1]"
+        assert cleaned[-1]["content"] == "reply"
+
+
 # ── add_assistant_message with thinking ───────────────────────────────
 
 

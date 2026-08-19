@@ -216,11 +216,13 @@ class AgentService:
             tool_timeout=config.tool_timeout,
             context_window=config.active_model.context_window,
             context_ceiling=config.context_ceiling,
+            context_floor=config.context_floor,
             memdb_enabled=not is_subagent,
             supports_vision=config.active_model.supports_vision,
             model_name=config.active_model.display_name,
             input_modalities=", ".join(config.active_model.input_modalities),
             presence_provider=self._drain_presence_events,
+            advance_context_start=self.advance_context_start,
         )
         self.conversation = Conversation(
             system_prompt=build_system_prompt(self.config),
@@ -228,11 +230,11 @@ class AgentService:
         self._tool_ctx.conversation = self.conversation
         # Runtime iteration-cap hook for the set_max_iterations meta tool.
         self._tool_ctx.set_max_iterations = self.agent_loop.set_max_iterations
-        # Live-context boundary hooks — _sys_trim advances the boundary so a
-        # restart rebuilds the exit-time context; clear_context flushes it
-        # for a fresh start.  Bound methods resolve the memdb client at call
-        # time (it is not connected during __init__), so a missing/unready
-        # client degrades to "skip" rather than raising.
+        # Live-context boundary hooks — _trim_after_save advances the
+        # boundary so a restart rebuilds the exit-time context; clear_context
+        # flushes it for a fresh start.  Bound methods resolve the memdb
+        # client at call time (it is not connected during __init__), so a
+        # missing/unready client degrades to "skip" rather than raising.
         self._tool_ctx.advance_context_start = self.advance_context_start
         self._tool_ctx.set_context_start_latest = self.set_context_start_latest
         self._tool_ctx.reset_context_time = self.agent_loop.reset_context_time
@@ -598,7 +600,7 @@ class AgentService:
             # Canonical marker: a plugin tool named ``__*`` (double underscore) is
             # harness-internal — called programmatically via call_tool(), never
             # exposed to the LLM.  (Single ``_`` = harness but LLM-visible, e.g.
-            # the native `_sys_note`/`_sys_trim`.)  The "harness-only" description
+            # the native `_sys_note`.)  The "harness-only" description
             # is kept as a secondary safety check.
             tagged = [
                 {**t, "server": name}
@@ -1416,6 +1418,7 @@ class AgentService:
         self,
         user_message: str = "",
         token_count: int | None = None,
+        prompt_tokens: int | None = None,
         conversation: "Conversation | None" = None,
         channel: str = "",
         images: "list[str] | None" = None,
@@ -1426,7 +1429,10 @@ class AgentService:
 
         Args:
             user_message: The user's input text.
-            token_count: Cumulative token usage for the turn.
+            token_count: Cumulative token usage for the turn (billing).
+            prompt_tokens: The LAST LLM call's prompt_tokens — the exact
+                context size at turn end.  Persisted so restore primes the
+                footer / _sys_note with the real exit-time occupancy.
             conversation: The conversation to extract messages from.
                 Defaults to self.conversation (the TUI conversation).
             channel: Source channel — 'human', 'wechat', or remote agent id.
@@ -1509,10 +1515,17 @@ class AgentService:
         if turn_messages is None:
             return
 
-        # Context trimming now happens in AgentLoop._maybe_trim_context()
-        # before each LLM call, with a visible _trim_context notification
-        # inserted into the conversation.  Each turn is still saved here
-        # via memory_save_turn, so trimmed turns remain searchable.
+        # Context trimming happens after this save, in
+        # AgentLoop._trim_after_save (invoked below once the row is written)
+        # — it uses this turn's real API usage and appends a runtime
+        # [TrimContext: N] marker.  Each turn is saved here via
+        # memory_save_turn, so trimmed turns remain searchable.
+
+        # The runtime [TrimContext: N] marker must never reach the diary —
+        # it is meaningful only in the live session.  Strip it from the
+        # copy being persisted (the live conversation keeps its marker).
+        from slife.agent.conversation import Conversation as _Conv
+        turn_messages = _Conv.strip_trim_markers(turn_messages)
 
         # Permanent memory keeps only head+tail digests of oversized tool
         # results — the diary never hoards reproducible tool output, so a
@@ -1534,6 +1547,7 @@ class AgentService:
             "messages": turn_messages,
             "images": images or [],
             "token_count": token_count or 0,
+            "prompt_tokens": prompt_tokens or 0,
             "who_helped": self.config.agent_name,
             "what_model": self.config.active_model.ref,
             "channel": channel,
@@ -1614,6 +1628,18 @@ class AgentService:
                     )
                 except Exception:
                     logger.debug("turn_annotation_skipped", exc_info=True)
+                # Trim AFTER the turn is safely persisted: the just-completed
+                # turn's real prompt_tokens are now known (the last API call's
+                # usage), so the ceiling check is exact, and a trim can never
+                # lose an unsaved turn.  Operates on *conv* (the conversation
+                # this turn ran in — human / wechat / a2a), never the global.
+                # Best-effort: a trim failure must not break the save flow.
+                loop = getattr(self, "agent_loop", None)
+                if loop is not None:
+                    try:
+                        await loop._trim_after_save(conv, handler)
+                    except Exception:
+                        logger.exception("trim_after_save_failed")
             else:
                 # The channel returned something that is neither a save
                 # ack nor an error object (non-JSON text, or JSON that
@@ -1699,29 +1725,31 @@ class AgentService:
             ]
 
     async def get_recent_turns(self, limit: int = 20) -> tuple[list[dict], int, int]:
-        """Load recent turns for restore. Returns ([], 0, budget) if no turns.
+        """Load recent turns for restore. Returns ([], 0, 0) if no turns.
 
-        Restores the **exit-time context**: it reads the persisted
+        Restores the **exit-time context** verbatim: it reads the persisted
         live-context start boundary (:meth:`SessionStore.get_context_start`,
-        maintained by ``_sys_trim`` / ``clear_context``) and returns every
-        turn recorded after it — the exact slice the agent was working with
-        when it exited — instead of re-slicing an arbitrary percentage.
+        maintained by ``_trim_after_save`` / ``clear_context``) and returns
+        **every** turn recorded after it — the exact slice the agent was
+        working with when it exited.  No re-slicing against the ceiling: the
+        boundary already encodes the trimmed state, so restore simply replays
+        it (the agent picks up exactly where it left off).
 
         Fetches newest-first in batches of *limit* (each batch already
-        newest-first, so appending stays globally newest-first), selects the
-        newest turns that fit the configured context **ceiling** (default
-        80%) as a hard safety cap (the budget the live session itself could
-        never exceed, leaving room for tool schemas on the wire), and
-        returns them **oldest-first** so the restore rebuilds the
-        conversation chronologically.  Heartbeat turns are included — they
-        restore as ⚡ 自主, consistent with the live TUI.
+        newest-first, so appending stays globally newest-first), then reverses
+        to **oldest-first** so the restore rebuilds the conversation
+        chronologically.  Heartbeat turns are included — they restore as
+        ⚡ 自主, consistent with the live TUI.
 
-        Returns ``(selected, skipped, budget)`` — *skipped* is how many
-        fetched turns were dropped for the budget, so the TUI can report
-        "已恢复最近 N 轮（M 轮旧记录未加载）"; *budget* is the token budget
-        used, so the restore reports and estimates consistently.  The
-        selection happens here (not in the restore), so the count must
-        originate here.
+        Returns ``(selected, skipped, budget)`` — *skipped* is always 0 (no
+        turns are dropped for a budget), *budget* is 0 (no ceiling cap: the
+        boundary already bounds what is restored).  Kept as a 3-tuple so the
+        call site and ``restore_session`` stay compatible.
+
+        A defensive hard cap (2× the ceiling) guards against a stale
+        boundary of 0 from a pre-boundary DB: it would otherwise replay the
+        entire history at once.  Normal operation never reaches it — the
+        live trim bounds the in-context slice well below the ceiling.
 
         Reads directly from SQLite — independent of the memory plugin / MCP.
         """
@@ -1734,21 +1762,21 @@ class AgentService:
             db_path = self._get_memory_db_path()
             if not (db_path and db_path.is_file()):
                 return [], 0, 0
-            budget = int(
-                self.config.active_model.context_window
-                * self.config.context_ceiling
-            )
             store = SessionStore(db_path)
             await store.setup(embedding_dim=0)
             start_rowid = await store.get_context_start()
 
             # Accumulate newest-first batches after the live-context boundary
-            # until the estimate reaches the budget (coarse stop — the exact
-            # selection below trims).
+            # until exhausted.  The defensive cap stops only a stale-boundary
+            # (0) DB from replaying unbounded history.
+            hard_cap = int(
+                self.config.active_model.context_window
+                * self.config.context_ceiling * 2
+            )
             all_turns: list[dict] = []
             total = 0
             offset = 0
-            while total < budget:
+            while total < hard_cap:
                 batch = await store.get_recent_turns(
                     limit=limit, offset=offset, after_rowid=start_rowid,
                 )
@@ -1758,19 +1786,8 @@ class AgentService:
                 total += sum(estimate_turn_tokens(t) for t in batch)
                 offset += limit
 
-            # Select newest-first within the budget, stopping before a turn
-            # that would overshoot (the first turn is always kept).
-            selected: list[dict] = []
-            tokens = 0
-            for t in all_turns:  # already newest-first
-                est = estimate_turn_tokens(t)
-                if selected and tokens + est > budget:
-                    break
-                tokens += est
-                selected.append(t)
-            selected.reverse()  # oldest-first for restore
-            skipped = len(all_turns) - len(selected)
-            return selected, skipped, budget
+            all_turns.reverse()  # oldest-first for restore
+            return all_turns, 0, 0
         except Exception as e:
             # A present-but-broken memory DB (missing column, corruption,
             # disk error) must NOT start a memory-less session silently —
@@ -1791,12 +1808,12 @@ class AgentService:
     async def advance_context_start(self, count: int) -> bool:
         """Persist the live-context boundary after a trim removed *count*.
 
-        Called by ``_sys_trim`` right after it evicts the oldest turns, so a
-        restart rebuilds the exit-time context from exactly where the live
-        one stood.  Best-effort — if the memdb channel is unreachable the
-        boundary just stays stale, which makes the next restore a
-        *superset* (old trimmed turns come back searchable in context), never
-        a loss.
+        Called by ``AgentLoop._trim_after_save`` right after it evicts the
+        oldest turns, so a restart rebuilds the exit-time context from
+        exactly where the live one stood.  Best-effort — if the memdb
+        channel is unreachable the boundary just stays stale, which makes
+        the next restore a *superset* (old trimmed turns come back
+        searchable in context), never a loss.
         """
         if count <= 0 or not self.memdb_enabled:
             return False

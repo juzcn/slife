@@ -91,6 +91,7 @@ class TestAssistantMessage:
             msg._is_thinking_collapsed = False
             msg._show_usage = True
             msg._name_prefix = None
+            msg._trim_marker = ""
             return msg
 
     def test_initial_state(self):
@@ -301,6 +302,27 @@ class TestAssistantMessage:
         text = content.plain
         assert "▸" not in text
         assert "Thinking" in text
+
+    def test_trim_marker_rendered_after_text(self):
+        """[TrimContext: N] renders dim/italic after the reply."""
+        msg = self._make_msg()
+        msg._buffer = "The answer"
+        msg._trim_marker = "[TrimContext: 3]"
+        msg.update = MagicMock()
+        msg._refresh_display()
+        content = msg.update.call_args[0][0]
+        assert content.plain.endswith("The answer [TrimContext: 3]")
+
+    def test_trim_marker_set_keeps_buffer(self):
+        """set_trim_marker records the marker without touching the buffer."""
+        msg = self._make_msg()
+        msg.update = MagicMock()
+        msg._buffer = "The answer"
+        msg._trim_marker = ""
+        msg.set_trim_marker(2)
+        assert msg._buffer == "The answer"
+        assert msg._trim_marker == "[TrimContext: 2]"
+        msg.update.assert_called_once()
 
 
 # ── ChatView logic ────────────────────────────────────────────────────

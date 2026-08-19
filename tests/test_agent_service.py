@@ -519,6 +519,34 @@ class TestAgentServiceMemory:
         assert persisted_tool["content"] == small
 
     @pytest.mark.asyncio
+    async def test_save_strips_runtime_trim_marker(self, sample_config):
+        """[TrimContext: N] is runtime-only — a marker on the live
+        conversation (from a prior trim) must not reach the diary."""
+        service = AgentService(sample_config)
+        mock_client = AsyncMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(
+            return_value=_json.dumps({"rowid": 7, "status": "saved"}),
+        )
+        service._plugins["memdb"].client = mock_client
+
+        conv = service.conversation
+        conv.add_user_message("hi")
+        conv.add_assistant_message("previous reply")
+        conv.append_trim_marker(3)  # a trim happened earlier in the session
+
+        await service.save_to_memory(user_message="hi", conversation=conv)
+
+        # The live conversation still carries the marker...
+        assert "[TrimContext:" in conv.messages[-1]["content"]
+        # ...but the persisted turn is clean.
+        _, args = mock_client.call_tool.await_args.args
+        assert all(
+            "[TrimContext:" not in (m.get("content") or "")
+            for m in args["messages"]
+        )
+
+    @pytest.mark.asyncio
     async def test_saved_turn_annotated_with_footnote(self, sample_config):
         """After a successful save, the turn's user message gets the inline
         `[Turn: N · …]` footnote so the next LLM call can reference it by
@@ -1375,7 +1403,7 @@ class TestGetRecentTurns:
             "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
             "tags TEXT, images TEXT NOT NULL DEFAULT '', channel TEXT, "
             "created_at TEXT, completed_at TEXT, "
-            "who_helped TEXT, what_model TEXT, token_count INT)"
+            "who_helped TEXT, what_model TEXT, token_count INT, prompt_tokens INT)"
         )
         con.execute(
             "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -1401,11 +1429,11 @@ class TestGetRecentTurns:
         return db
 
     @pytest.mark.asyncio
-    async def test_all_turns_selected_within_ceiling_budget(
+    async def test_all_turns_after_boundary_restored_whole(
         self, sample_config, tmp_path, monkeypatch
     ):
-        """Budget is the context ceiling (max the live session could hold) —
-        a small session restores whole, not re-sliced at the floor."""
+        """No ceiling re-slicing: every turn after the live-context boundary
+        is restored verbatim — the exit-time context, not a budgeted slice."""
         from slife.agent.service import AgentService
 
         db = self._make_db(tmp_path, 5)
@@ -1418,17 +1446,17 @@ class TestGetRecentTurns:
 
         ids = [t["rowid"] for t in turns]
         assert ids == sorted(ids), "must be oldest-first for the restore"
-        assert ids == [1, 2, 3, 4, 5], "all turns fit the 80% ceiling budget"
+        assert ids == [1, 2, 3, 4, 5], "the whole exit-time context comes back"
         assert skipped == 0
-        assert budget == 800
+        assert budget == 0, "no ceiling budget — restore is verbatim"
 
     @pytest.mark.asyncio
     async def test_restore_starts_at_persisted_boundary(
         self, sample_config, tmp_path, monkeypatch
     ):
         """Turning the context_floor off must not matter: restore reads the
-        persisted live-context start, so turns evicted by _sys_trim or
-        clear_context do not come back."""
+        persisted live-context start, so turns evicted by the internal trim
+        or clear_context do not come back."""
         from slife.agent.service import AgentService
 
         db = self._make_db(tmp_path, 8, context_start=4)
@@ -1442,14 +1470,15 @@ class TestGetRecentTurns:
         ids = [t["rowid"] for t in turns]
         assert ids == [5, 6, 7, 8], "only rows after the boundary are restored"
         assert skipped == 0
-        assert budget == 800000
+        assert budget == 0
 
     @pytest.mark.asyncio
-    async def test_budget_cap_at_ceiling_drops_oldest(
+    async def test_hard_cap_only_for_stale_boundary(
         self, sample_config, tmp_path, monkeypatch
     ):
-        """Monster history over the ceiling cap: newest fits, the overflow
-        (oldest in-window turns) is dropped and reported as skipped."""
+        """A stale boundary of 0 (pre-boundary DB) would replay the whole
+        history — the defensive hard cap (2× ceiling) bounds it.  Normal
+        in-boundary history stays far below the cap and is restored whole."""
         from slife.agent.service import AgentService
 
         db = tmp_path / "big.db"
@@ -1460,13 +1489,15 @@ class TestGetRecentTurns:
             "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
             "tags TEXT, images TEXT NOT NULL DEFAULT '', channel TEXT, "
             "created_at TEXT, completed_at TEXT, "
-            "who_helped TEXT, what_model TEXT, token_count INT)"
+            "who_helped TEXT, what_model TEXT, token_count INT, prompt_tokens INT)"
         )
         con.execute(
             "CREATE TABLE diary_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
-        for i in range(1, 7):
-            # ~145 est-tokens per turn (user 5 chars + 400-char reply)…
+        # ~147 est-tokens per turn: 20 turns ≈ 2940 >> 2 × 800 hard cap, so
+        # the newest-first fetch stops once the cap is crossed — the oldest
+        # turns are not replayed.
+        for i in range(1, 21):
             con.execute(
                 "INSERT INTO diary (user_message, messages, channel, created_at, token_count) "
                 "VALUES (?, ?, 'human', ?, ?)",
@@ -1482,16 +1513,19 @@ class TestGetRecentTurns:
 
         srv = AgentService(sample_config)
         srv.config.active_model.context_window = 1000
-        srv.config.context_ceiling = 0.8  # budget 800 < 6 × ~145 ≈ 870
+        srv.config.context_ceiling = 0.8  # hard cap = 2 × 800 = 1600
         monkeypatch.setattr(srv, "_get_memory_db_path", lambda: db)
 
         turns, skipped, budget = await srv.get_recent_turns(limit=3)
 
+        # The cap stopped the fetch (newest-first, ~441/batch) — the oldest
+        # turns are absent but the newest in-window ones are kept.
         ids = [t["rowid"] for t in turns]
         assert ids == sorted(ids), "must be oldest-first for the restore"
-        assert ids == [2, 3, 4, 5, 6], "newest 5 within the ceiling budget"
-        assert skipped == 1, "the 6th would overshoot the budget → dropped"
-        assert len(turns) == 5
+        assert len(ids) < 20, "the cap stopped the replay"
+        assert ids[0] > 1, "the oldest turns past the cap are not replayed"
+        assert skipped == 0
+        assert budget == 0
 
     @pytest.mark.asyncio
     async def test_broken_db_raises_memory_error(

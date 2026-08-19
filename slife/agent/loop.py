@@ -9,7 +9,7 @@ import os
 import re
 import time as _time
 from datetime import datetime
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -291,11 +291,13 @@ class AgentLoop:
         tool_timeout: float = 60.0,
         context_window: int = 0,
         context_ceiling: float = 0.8,
+        context_floor: float = 0.2,
         memdb_enabled: bool = True,
         supports_vision: bool = False,
         model_name: str = "",
         input_modalities: str = "",
         presence_provider: Callable[[], list[tuple[float, str]]] | None = None,
+        advance_context_start: Callable[[int], Awaitable[bool]] | None = None,
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -303,9 +305,15 @@ class AgentLoop:
         self.max_tool_result_chars = max_tool_result_chars
         self.tool_timeout = tool_timeout
         self.context_window = context_window
-        # context_floor is consumed by _sys_trim via config.context_floor, not here.
         self.context_ceiling = context_ceiling
+        self.context_floor = context_floor
         self.memdb_enabled = memdb_enabled
+        #: Persist the live-context start boundary after a trim evicted
+        #: *count* oldest turns, so a restart rebuilds the exit-time context
+        #: from exactly where the live one now stands.  Best-effort: an
+        #: unreachable memdb only leaves the boundary stale (restore becomes
+        #: a superset, never a loss).  Wired by AgentService (bound method).
+        self.advance_context_start = advance_context_start
         self.supports_vision = supports_vision
         self.model_name = model_name
         self.input_modalities = input_modalities
@@ -499,8 +507,9 @@ class AgentLoop:
     def context_tokens_for(self, conversation: Conversation) -> int:
         """Context tokens the next API call would send.
 
-        Single source for ``_sys_note``, the trim gate, and the TUI
-        status bar — one value, no recompute.  Resolution order:
+        Single source for ``_sys_note``, the trim decision
+        (``_trim_after_save``), and the TUI status bar — one value, no
+        recompute.  Resolution order:
 
         1. After an API call — that conversation's last call's actual
            ``prompt_tokens`` (tracked per conversation, so a heartbeat's
@@ -521,6 +530,102 @@ class AgentLoop:
             return usage.total_tokens
         return conversation.count_tokens()
 
+    async def _trim_after_save(
+        self, conversation: Conversation, handler: object | None = None,
+    ) -> None:
+        """Trim the oldest turns after a turn is saved to memory.
+
+        Called by ``save_to_memory`` once the just-completed turn is
+        persisted.  By then the last API call's real ``prompt_tokens`` are
+        known (``context_tokens_for`` reads ``_usage_by_conv``), so the
+        ceiling check uses the true context occupancy — not the estimate
+        the loop had at the turn's start.
+
+        *handler* (optional) receives ``on_trim(count)`` so the live TUI
+        can show the ``[TrimContext: N]`` note on the turn's last
+        assistant message — mirroring the LLM-side marker.
+
+        When occupancy is at/over the ceiling, compacts the conversation
+        down to the floor (oldest complete turns removed) and appends a
+        ``[TrimContext: N]`` marker to the last assistant message so the
+        LLM knows how many turns were cut from its context.  The marker is
+        runtime-only — never persisted, discarded on restore (a restored
+        session is already the trimmed state; "a past session was
+        truncated" is meaningless to the model, only the *current* cut is).
+
+        A freshly-restored conversation is a legitimate pre-exit state,
+        not growth — the ``_just_restored_conv`` marker (consumed in
+        :meth:`run`) still guards the first replacement turn.
+        """
+        # A freshly-restored conversation is a legitimate pre-exit state,
+        # not growth — never shred it on the very first replacement turn.
+        # Consume the marker so from the second turn on the live rules
+        # apply.  (Restore primes the context up to the ceiling; the first
+        # turn's save would otherwise immediately compact it to the floor.)
+        just_restored = self._just_restored_conv == id(conversation)
+        if just_restored:
+            self._just_restored_conv = None
+            return
+
+        # Only the just-finished turn exists / nothing to trim — the loop
+        # also needs a boundary to not trim a conversation whose context
+        # usage is unmeasurable (no API call yet → estimate fallback).
+        current = self.context_tokens_for(conversation)
+        if current < int(self.context_window * self.context_ceiling):
+            return
+
+        # Compress to the floor; the current (just-saved) turn is kept by
+        # extract_oldest_turns — it only ever removes complete older turns.
+        target = int(self.context_window * self.context_floor)
+        turns, tokens_freed = conversation.extract_oldest_turns(target)
+        if not turns:
+            return
+
+        # Advance the persisted live-context boundary past the removed
+        # turns (best-effort — see advance_context_start).
+        if self.advance_context_start is not None:
+            try:
+                await self.advance_context_start(len(turns))
+            except Exception:
+                logger.exception(
+                    "context_start_advance_failed count=%d", len(turns),
+                )
+
+        # Advance the tracked "Context covers" time range by the same
+        # number of removed turns (each complete turn has one user msg).
+        removed = len(turns)
+        for _ in range(removed):
+            if self._context_turn_dates:
+                self._context_time_start = self._context_turn_dates.pop(0)
+        if removed and not self._context_turn_dates:
+            # The trim removed every tracked turn (list exhausted — e.g. a
+            # fresh session whose only tracked turn was in
+            # _context_time_start, or all later dates got popped).  The
+            # context now starts at the current turn (the one this save
+            # just finished, which extract_oldest_turns always keeps);
+            # don't leave a stale "covers since …" that points at a turn
+            # that is no longer in context.
+            now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            self._context_time_start = now
+        logger.info(
+            "context_trimmed_after_save turns=%d tokens_freed=%d time_start=%s",
+            removed, tokens_freed, self._context_time_start,
+        )
+
+        # Tell the LLM how much of its context was just cut.  Runtime-only
+        # marker appended to the last assistant message (guaranteed present
+        # and last by _ensure_turn_consistent in save_to_memory).
+        conversation.append_trim_marker(removed)
+        # Mirror it in the live TUI — same [TrimContext: N] note on the
+        # turn's last assistant message.
+        if handler is not None:
+            on_trim = getattr(handler, "on_trim", None)
+            if on_trim is not None:
+                try:
+                    on_trim(removed)
+                except Exception:
+                    logger.exception("trim_marker_ui_failed")
+
     # ── Harness tool invocation ────────────────────────────────────
 
     def _footer_kwargs(self, conversation: Conversation, current: int) -> dict:
@@ -528,9 +633,8 @@ class AgentLoop:
 
         Time + token always shown; model/CWD/shell only when they
         changed since the last turn.  *current* is the context token
-        count — computed once in :meth:`run` and shared with the trim
-        gate, so ``_sys_note``'s percentage and the trim decision come
-        from the same value (no recompute).
+        count — computed once in :meth:`run` for the note (the trim
+        decision later uses its own reading in ``_trim_after_save``).
         """
         cwd_now = os.getcwd()
         shell_now = _current_shell()
@@ -1070,49 +1174,16 @@ class AgentLoop:
                         del self._context_turn_dates[_MAX_CONTEXT_DATES:]
 
                 # Context usage is computed ONCE and shared: _sys_note
-                # reports it as the usage %, and the trim gate below uses
-                # the same value (no recompute).
+                # reports it as the usage %, and the TUI status bar.
                 current = self.context_tokens_for(conversation)
                 await self._auto_invoke(
                     "_sys_note", self._footer_kwargs(conversation, current), conversation,
                 )
-                # Trigger _sys_trim when the reported usage hits the
-                # configured ceiling (context_ceiling) — the same
-                # percentage _sys_note just showed.  A freshly-restored
-                # conversation is a legitimate pre-exit state, not growth —
-                # never shred it on the very first turn.  Consume the
-                # marker, so from the second turn on the live rules apply.
-                just_restored = self._just_restored_conv == id(conversation)
-                if just_restored:
-                    self._just_restored_conv = None
-                if (
-                    current >= int(self.context_window * self.context_ceiling)
-                    and not just_restored
-                ):
-                    users_before = sum(
-                        1 for m in conversation.messages if m.get("role") == "user"
-                    )
-                    await self._auto_invoke(
-                        "_sys_trim", {"memory_saved": self.memdb_enabled}, conversation,
-                    )
-                    # Advance the context time range by the number of
-                    # removed turns (each complete turn has one user msg).
-                    removed = users_before - sum(
-                        1 for m in conversation.messages if m.get("role") == "user"
-                    )
-                    for _ in range(removed):
-                        if self._context_turn_dates:
-                            self._context_time_start = self._context_turn_dates.pop(0)
-                    if removed and not self._context_turn_dates:
-                        # The trim removed every tracked turn (list exhausted —
-                        # e.g. a fresh session whose only tracked turn was in
-                        # _context_time_start).  The context now starts at the
-                        # current turn; don't leave a stale "covers since …".
-                        self._context_time_start = turn_start
-                    logger.info(
-                        "context_trimmed turns=%d time_start=%s",
-                        removed, self._context_time_start,
-                    )
+                # Context trimming no longer happens here — it moved to
+                # _trim_after_save (after each turn is persisted), where the
+                # real API usage is known.  The _sys_note percentage and the
+                # trim decision now come from the same context_tokens_for
+                # reading at their respective times.
                 # max_iterations = 0 means no cap.  The cap is checked live
                 # each iteration, so a mid-turn set_max_iterations applies
                 # immediately (and to the next turn too).

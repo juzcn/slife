@@ -24,8 +24,8 @@ The model input should read uniformly, so text that Slife authors is English:
 ├──────────────────────────────────────────────────────────────────────┤
 │  Agent Loop                              │  MCP Client                │
 │  Streaming function-calling              │  Streamable HTTP transport │
-│  Context trim (_sys_trim) + status       │  OAuth device-code flow    │
-│  (_sys_note); concurrent tool execution  │  Tool proxy + adapter      │
+│  Context trim (internal, after save)     │  OAuth device-code flow    │
+│  + status (_sys_note); concurrent tools  │  Tool proxy + adapter      │
 │  Reasoning (thinking) support            │                            │
 ├──────────────────────────────────────────┴───────────────────────────┤
 │  Tool Registry — unified OpenAI function definitions for all tools   │
@@ -51,13 +51,13 @@ User Input → Conversation.add_user_message()        (secrets sanitized)
   → loop (max_iterations):
     → cancel check
     → auto-invoke _sys_note (context status)        (usage computed once)
-    → usage ≥ ceiling? → auto-invoke _sys_trim      (trim to floor)
     → LLM stream → thinking/text/tool deltas → handler callbacks
     → tool calls? → ToolRegistry.execute() concurrently (asyncio.gather)
                     → sanitize_secrets() on each result → truncate → loop
     → `_approve: true` on a call? → serialized ApprovalPrompt before execution
     → no tool calls? → response text → return
     → save turn to diary (unconditional — even on cancel/error/max-iterations)
+    → trim after save (internal, real usage)        (see Context Window Management)
 ```
 
 - **Streaming**: thinking and text tokens delivered in real time via `AgentEventHandler` callbacks
@@ -72,7 +72,7 @@ User Input → Conversation.add_user_message()        (secrets sanitized)
   2. **Alternating roles** — a conversation ending on a `user`/`tool` message (a tool result is a `user` role on the Anthropic wire, which rejects two consecutive users with a 400) gets a closing assistant message.
 
   It has exactly **two call sites**: `save_to_memory` (before persisting — the save-side guarantee, which runs unconditionally after every turn via the inbox `finally`), and `restore_session` (after loading from memory — the load-side guarantee). Because every turn is saved unconditionally, the conversation is always left consistent before the next user message is appended. Each turn also opens with an auto-invoked `_sys_note` assistant+tool pair, so a user message is always sandwiched between assistant messages.
-- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (actual `prompt_tokens` from the last API call, else the restore-time estimate before the first call, else the chars÷3 live estimate). It drives `_sys_note`, the trim gate, and the TUI status bar — one value, no recompute. Usage is tracked **per conversation** (`_usage_by_conv`, keyed by `id()`): the heartbeat, A2A, and WeChat turns run in their own (often tiny) conversations, so a global last-usage would let a 9.6% heartbeat drag the human conversation's status bar / `_sys_note` down from its real 26.5%. Each conversation keeps its own reading; `_last_usage` is retained only as the restore-time estimate slot.
+- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (actual `prompt_tokens` from the last API call, else the restore-time value primed on `_last_usage` — now the **latest restored turn's persisted `prompt_tokens`** rather than an estimate — before the first call, else the chars÷3 live estimate). It drives `_sys_note`, the trim decision, and the TUI status bar — one value, no recompute. Usage is tracked **per conversation** (`_usage_by_conv`, keyed by `id()`): the heartbeat, A2A, and WeChat turns run in their own (often tiny) conversations, so a global last-usage would let a 9.6% heartbeat drag the human conversation's status bar / `_sys_note` down from its real 26.5%. Each conversation keeps its own reading; `_last_usage` is retained only as the restore-time slot.
 
 ### Context Window Management
 
@@ -86,10 +86,10 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Detect**: context usage is computed **once per turn** via `context_tokens_for()` — the conversation's last API call's actual prompt tokens after the first round (per-conversation, so heartbeat turns don't contaminate the human reading), else the restore-time estimate primed on `_last_usage` (computed when the UI rebuilds the session to decide how many turns to restore), else the chars÷3 live estimate; `_sys_note` reports it as the usage %
-- **Trim**: when the reported usage % hits the configured `context_ceiling` (default 80%), the loop auto-invokes **`_sys_trim`** — which is the trim itself. It removes the oldest complete turns down to `context_window × context_floor` (default 20%) and returns the notification. The gate lives outside the tool so `_sys_trim` is only invoked — and only records a pair — when a trim actually happens; if the LLM calls it directly it genuinely compacts the context (a legitimate action, not a no-op)
-- **Status**: once per turn the loop auto-invokes **`_sys_note`** (a normal tool-call pair) with the same `current` value the trim gate uses — it renders `context_status.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), and any A2A peer presence events since the last turn (online/offline/timeout, drained read-once)
-- **Restore**: on startup, the diary rows recorded **after the persisted live-context boundary** are loaded directly from SQLite, capped only at the `context_ceiling` budget — startup rebuilds the exit-time context instead of re-slicing an arbitrary floor percentage. The boundary lives in `diary_meta.context_start` (exclusive rowid): `_sys_trim` advances it by the turns it evicted, `clear_context` flushes it to the latest row (the fresh start). The just-restored conversation is exempt from the first-turn ceiling trim — a restored context is a pre-exit state, not growth. The boundary reuses the existing `diary_meta` table (ships idempotently in `schema.sql`) — no schema migration; real schema changes stay out of the app and go to `scripts/migrate_memdb_*.py`
+- **Detect**: context usage is computed via `context_tokens_for()` — the conversation's last API call's actual prompt tokens after the first round (per-conversation, so heartbeat turns don't contaminate the human reading), else the restore-time value primed on `_last_usage` (the latest restored turn's **persisted `prompt_tokens`** — the exact context size at exit — not an estimate), else the chars÷3 live estimate; `_sys_note` reports it as the usage %
+- **Trim**: happens **after a turn is saved** (`save_to_memory` → `AgentLoop._trim_after_save`) — by then the last API call's real `prompt_tokens` are known, so the ceiling check uses the true context occupancy, not the estimate the loop had at the turn's start. When occupancy hits the configured `context_ceiling` (default 80%), `extract_oldest_turns` removes the oldest **complete** turns down to `context_window × context_floor` (default 20%), always keeping the current (just-saved) turn. It is an **internal mechanism — no tool call, no LLM-visible pair**: the cut is marked with a runtime-only **`[TrimContext: N]`** note appended to the last assistant message (N = turns removed), mirrored in the live TUI as a dim/italic footnote. `advance_context_start` persists the boundary, and the tracked "Context covers" time range advances by the same count (reset to the current turn if the date list is exhausted). A freshly-restored conversation is exempt from the first-turn trim (`_just_restored_conv`) — a restored context is a pre-exit state, not growth.
+- **Status**: once per turn the loop auto-invokes **`_sys_note`** (a normal tool-call pair) — it renders `context_status.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), and any A2A peer presence events since the last turn (online/offline/timeout, drained read-once). On the first round after a restore, `context_tokens_for` falls back to `_last_usage`, which restore primes with the latest restored turn's **persisted `prompt_tokens`** — so `_sys_note` reports the real exit-time occupancy instead of an estimate.
+- **Restore**: on startup, the diary rows recorded **after the persisted live-context boundary** are loaded directly from SQLite **verbatim** — no ceiling re-slicing. The boundary already encodes the trimmed state, so restore simply replays the exact slice that was live at exit (the agent picks up where it left off); only a stale boundary of `0` from a pre-boundary DB is defensively capped at 2× the ceiling. The boundary lives in `diary_meta.context_start` (exclusive rowid): the internal trim advances it by the turns it evicted, `clear_context` flushes it to the latest row (the fresh start). `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept for call-site compatibility only. The just-restored conversation is exempt from the first-turn trim (`_just_restored_conv`). The boundary reuses the existing `diary_meta` table (ships idempotently in `schema.sql`) — no schema migration; real schema changes stay out of the app and go to `scripts/migrate_memdb_*.py`.
 - **Tool result cap (HARD constraint)**: a single tool result is truncated at `tool_result_ceiling × context_window × 3` characters (default 20% of the window; ~3 chars/token heuristic). This is the **hard** window-safety limit — it is deliberately generous so a large-but-real file read (≤ ~600K chars) is never truncated, and only pathological outputs that could not fit the window at all are capped. It protects the model's live reasoning; it is not where memory is saved.
 - **Permanent-memory compaction**: the diary does **not** hoard reproducible tool output. At `save_to_memory`, any tool result exceeding `memory_tool_result_chars` (default 8000) is stored as a head+tail digest with an explicit marker (original size + which tool to re-run). Small results are stored as-is. Rationale: tool output is reproducible (re-run the tool), a single result must never starve session restore within the floor budget, and memory_search recall stays cheap. The live conversation keeps the full result — compaction only affects the persisted copy.
 - **Truncation is announced in the tool output itself** (not the system prompt): both the live cap and the save-side compaction append a marker inside the result telling the model it was truncated, how large it originally was, and that re-running the tool retrieves the full version.
@@ -98,13 +98,12 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 
 Harness tools are internal machinery the loop invokes on the agent's behalf. Two prefixes encode the visibility tier:
 
-1. **`_` (single underscore) = harness, LLM-visible but reserved.** The native `_sys_note` / `_sys_trim` (in `slife/tools/harness.py`) **do** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept their tool-call pairs in history. `AgentLoop._auto_invoke()` calls them as normal tool-call pairs; the system prompt forbids the LLM from calling them. `_sys_note` is pure (only reads state); `_sys_trim` genuinely trims to the floor — a legitimate action if the LLM calls it anyway.
+1. **`_` (single underscore) = harness, LLM-visible but reserved.** The native `_sys_note` (in `slife/tools/harness.py`) **does** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept its tool-call pair in history. `AgentLoop._auto_invoke()` calls it as a normal tool-call pair; the system prompt forbids the LLM from calling it. `_sys_note` is pure (only reads state). Context trimming is **not** a tool: it runs internally after each save (`_trim_after_save`), marking the cut with a runtime `[TrimContext: N]` note — no `_sys_trim` in the schema, no pair to validate.
 2. **`__` (double underscore) = harness, LLM-invisible.** Plugin harness tools (`__memory_save_turn`, `__a2a_drain_incoming`, `__wechat_drain_incoming`, `__mcp_call_tool`, …) are filtered out of the schema before registration — they never reach `to_openai_functions()`. They are called programmatically via `client.call_tool("__…")`.
 
 | Tool | Shape | Visibility |
 |------|-------|------------|
 | `_sys_note` | Native tool, auto-invoked each turn | `_` — visible-but-forbidden |
-| `_sys_trim` | Native tool, auto-invoked on trim | `_` — visible-but-forbidden |
 | `__memory_save_turn` / `__memory_get_recent_turns` | memdb plugin | `__` — invisible |
 | `__wechat_drain_incoming` / `__wechat_dispatch_reply` | wechat plugin | `__` — invisible |
 | `__a2a_drain_incoming` / `__a2a_dispatch_result` | a2a plugin | `__` — invisible |
@@ -155,7 +154,7 @@ Reasoning ("thinking") support is per-backend:
 
 **Prompt caching (Anthropic system blocks):** `AnthropicBackend._oa_msgs_to_anthropic` emits each OpenAI `system` message as an Anthropic system content block and tags the **last** one with `cache_control: {type: "ephemeral"}` — the static base prompt becomes the cache breakpoint, so only the dynamic `_sys_note` status (a message-stream tool pair, never a second `system` message) changes per turn. Guarded by `_use_system_cache_control()`: on by default for `api.anthropic.com`, off for Anthropic-compatible providers (Bailian/Qwen) that may reject the field, overridable per model via `compat.cacheControl`.
 
-**History validation (H3, resolved):** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_sys_note` / `_sys_trim` are therefore **declared native tools** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not conversation-layer fabrications — so their pairs validate. The system prompt forbids the LLM from calling them (see Tools & skills, §3 under **Capabilities** in `slife.j2`), and both are side-effect free if it does. DeepSeek (Chat Completions) doesn't validate and is unaffected.
+**History validation (H3, resolved):** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_sys_note` is therefore a **declared native tool** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not a conversation-layer fabrication — so its pair validates. The system prompt forbids the LLM from calling it (see Tools & skills, §3 under **Capabilities** in `slife.j2`), and it is side-effect free if it does. DeepSeek (Chat Completions) doesn't validate and is unaffected. Context trimming no longer needs schema validation at all — it is internal (`_trim_after_save`), not a tool call.
 
 **History wire shape (W2, resolved):** `OpenAIResponsesBackend._oa_msgs_to_responses` emits the Responses API's native `function_call` / `function_call_output` items for tool history — not the Chat-Completions `role:"tool"` / `tool_calls` shape. Multi-turn tool conversations are accepted by the Responses API (unit-tested; not yet exercised against a live endpoint).
 
@@ -197,7 +196,7 @@ The schema is the model's only view of a tool — write it for the model, not th
 
 `slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, skips vision tools when the active model can't see images, and skips `_skip_auto_register` classes (e.g. `MCPProxyTool`, created per-instance at runtime).
 
-### Tool Categories — 52 native tools (up to 50 LLM-visible + 2 harness `_` tools)
+### Tool Categories — native tools (up to 50 LLM-visible + 1 harness `_` tool)
 
 `include_image` is dropped when the active model has no vision; `install_python_package` is disabled by default in the shipped config.
 
@@ -217,7 +216,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `vision.py` | `include_image` (native — injects image blocks into the conversation; gated on a vision-capable model) |
-| Harness | `harness.py` | `_sys_note`, `_sys_trim` (visible-but-reserved, see above) |
+| Harness | `harness.py` | `_sys_note` (visible-but-reserved, see above); trim is internal — no tool |
 | Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
 Plus **plugin tools** — registered at runtime as `{server}__{tool}` proxies via `create_proxy_tools`:
@@ -225,7 +224,7 @@ Plus **plugin tools** — registered at runtime as `{server}__{tool}` proxies vi
 | Server | LLM-visible tools |
 |--------|-------------------|
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
-| `memdb` | `memdb__memory_list_turns`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_turn_summarize`, `memdb__memory_count`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
+| `memdb` | `memdb__memory_list_turns`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_turn_summarize`, `memdb__memory_count`, `memdb__memory_token_usage`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `memfiles__note_save`, `memfiles__diary_write`, `memfiles__file_save`, `memfiles__url_save`, `memfiles__note_list`, `memfiles__diary_list`, `memfiles__note_read`, `memfiles__diary_read`, `memfiles__list_files`, `memfiles__search`, `memfiles__read`, `memfiles__embedding_check`, `memfiles__expose_file` |
 
@@ -381,13 +380,16 @@ Every turn permanently recorded as an independent row — no session concept, a 
 | `completed_at` | ISO 8601 — assistant completion time (captured after the final turn ensure, before the MCP save) |
 | `channel` | Source: `human`, `wechat`, or remote agent id |
 | `who_helped` / `what_model` | Agent identity + model used |
-| `token_count` | Tokens consumed by this turn |
+| `token_count` | Cumulative billed tokens for this turn |
+| `prompt_tokens` | Context size at the last API call (restore primes the footer / `_sys_note` with it) |
 
 Supporting structures: `diary_fts` (FTS5 content-sync table over message/summary/tags/channel with insert/update/delete triggers — the update trigger keeps `memory_turn_summarize`'s summary/tags visible to keyword search), `diary_semantic` (sqlite-vec `vec0` table: embedding + rowid + chunk index + summary/tags/created_at), and `diary_meta` (key-value store tracking the embedding model identity for migration detection).
 
 Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the harness-only `__memory_save_turn` tool. The save-side invariant is enforced by the harness: a turn with an orphaned `tool_call` is repaired (`_ensure_turn_consistent`) before it reaches the plugin, so the diary never persists an incomplete pair.
 
-`completed_at` is written for every new turn; databases that predate the column are migrated **once** by `scripts/migrate_memdb_completed_at.py` — a standalone script that adds the column, backfills `completed_at = created_at`, and pulls `created_at` earlier by a random 0–5 minutes to approximate the user-input moment. Deliberately **no** in-plugin ALTER migration: fresh databases get the column from `schema.sql`, existing ones are migrated by the script (run it once per DB, then restart). The `images` column (user image attachments) follows the same pattern — `scripts/migrate_memdb_images.py` adds it to pre-existing databases; fresh databases get it from `schema.sql`. Databases whose `diary_semantic` holds summary-only vectors (written by the pre-fix `memory_summarize` — now `memory_turn_summarize` — which re-embedded a turn from its summary and dropped the full text) are fixed **once** by `scripts/migrate_memdb_embeddings.py` — it clears the semantic index, and the drainer rebuilds every turn's full-text vectors on the next restart.
+`completed_at` is written for every new turn; databases that predate the column are migrated **once** by `scripts/migrate_memdb_completed_at.py` — a standalone script that adds the column, backfills `completed_at = created_at`, and pulls `created_at` earlier by a random 0–5 minutes to approximate the user-input moment. Deliberately **no** in-plugin ALTER migration: fresh databases get the column from `schema.sql`, existing ones are migrated by the script (run it once per DB, then restart). The `images` column (user image attachments) follows the same pattern — `scripts/migrate_memdb_images.py` adds it to pre-existing databases; fresh databases get it from `schema.sql`. The `prompt_tokens` column (context size at the last call) likewise — `scripts/migrate_memdb_prompt_tokens.py` adds it to pre-existing databases (legacy rows keep `0`, restore falls back to the token estimate). Databases whose `diary_semantic` holds summary-only vectors (written by the pre-fix `memory_summarize` — now `memory_turn_summarize` — which re-embedded a turn from its summary and dropped the full text) are fixed **once** by `scripts/migrate_memdb_embeddings.py` — it clears the semantic index, and the drainer rebuilds every turn's full-text vectors on the next restart.
+
+Per-turn token consumption is queryable via **`memory_token_usage`** (`rowid`, `since`/`until`, `limit`) — returns each matching turn's `token_count` (billing) and `prompt_tokens` (context size) plus totals/averages.
 
 ### Search
 
@@ -432,7 +434,9 @@ On startup, recent turns are read **directly from SQLite** — no MCP transport,
 
 **Turn headers on restore.** Each restored user message gets a compact `[Turn: N · start → end]` footnote (rowid + created → completed) concatenated into the message text — without it the whole restored history would read as "just happened". The LLM can also use N with `memdb__memory_open` / `memdb__memory_turn_summarize`, and the human reads the same line in the TUI. Restored turns get it from persisted columns at restore; a just-completed live turn gets the same footnote appended by `save_to_memory` once `__memory_save_turn` returns its rowid — so the model can reference the previous turn precisely, and `memory_turn_summarize`'s latest-rowid default stops being racy. **The footnote is runtime-only and never persisted:** the stored `user_message` / `messages` are written *before* the append, restore regenerates it from columns, so the DB carries the clean original in both paths. The current in-flight turn carries none (it is the one that IS now), and live TUI bubbles are not retro-updated — a missing footnote is itself the "current session" signal. Heartbeat turns are excluded — their user message is the synthetic `[Heartbeat]` trigger, not a real query. Machine annotations share one `[Kind: …]` shape; the dropped-image note is the only separate text part (`[Image: …]`, `ANNOTATION_PREFIXES` / `is_annotation_text` in `conversation.py`), excluded from derived user text by `extract_turns` so trim summaries stay clean. Heartbeat stays its own sentinel: it is a stored turn identity (old diary rows start with it), so renaming it would misclassify every stored heartbeat on the next restore.
 
-Restore rebuilds the **exit-time context**. The `diary_meta.context_start` row (an exclusive rowid) marks the live-context boundary: `_sys_trim` advances it past every turn it evicts (`advance_context_start`), `clear_context` flushes it to the latest row (`set_context_start_latest`), and `get_recent_turns` reads it directly from SQLite. Turns after the boundary are selected newest-first within the context-**ceiling** token budget — the maximum the live session itself could hold, leaving room for tool schemas on the wire — and returned `(selected, skipped, budget)`. The just-restored conversation is exempt from the first-turn ceiling trim (its context is a pre-exit state, not growth), so nothing is compacted before the user's first exchange. Older turns stay in the diary, searchable via `memory_search`. When the budget still overflows, the TUI shows **`✅ 已恢复退出时的上下文（N 轮；M 轮更早记录未载入，可用 memory_search 查找）`**.
+Restore rebuilds the **exit-time context verbatim**. The `diary_meta.context_start` row (an exclusive rowid) marks the live-context boundary: the internal trim advances it past every turn it evicts (`advance_context_start`), `clear_context` flushes it to the latest row (`set_context_start_latest`), and `get_recent_turns` reads it directly from SQLite. Turns after the boundary are returned **verbatim — no ceiling re-slicing**: the boundary already encodes the trimmed state, so restore replays the exact slice that was live at exit, and the agent picks up where it left off. `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept only for call-site compatibility; the only cap is a defensive 2×-ceiling guard against a stale `0` boundary from a pre-boundary DB (normal operation never reaches it). The just-restored conversation is exempt from the first-turn trim (`_just_restored_conv`), so nothing is compacted before the user's first exchange. Older turns stay in the diary, searchable via `memory_search`.
+
+The restored context footer is primed with the **latest restored turn's persisted `prompt_tokens`** — the exact context size at exit (what `_sys_note` would have reported) — so the first `_sys_note` / status bar shows the real occupancy instead of an estimate. Legacy turns that predate the `prompt_tokens` column fall back to the token estimate. The `prompt_tokens` column is added to pre-existing databases once with `python scripts/migrate_memdb_prompt_tokens.py` (same standalone-script pattern as `completed_at` / `images`).
 
 **Restore failure is fatal, never silent.** A present-but-broken memory DB (missing column, corruption, disk error) makes `get_recent_turns` raise `MemoryDatabaseError` instead of returning `[]` — the TUI shows the error and **aborts startup**. The agent must not begin a memory-less session as if nothing happened. memdb is also a **required plugin**: a memdb that fails to *load* (its plugin process never becomes ready — including a bounded 30 s timeout on a hung spawn) likewise aborts startup with a red message, stops all plugins, and exits — never silently limping on without memory.
 
@@ -748,7 +752,7 @@ slife/
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
     _config_io.py      #   JSON5 read/write helpers
-    harness.py         #   _sys_note / _sys_trim (visible-but-reserved harness tools)
+    harness.py         #   _sys_note (visible-but-reserved harness tool); trim is internal
     system.py          #   system_health + per-plugin checks
     exec.py            #   Shell, Python, package install (+ _kill_process_tree)
     skill.py           #   Skill management (SKILL.md)

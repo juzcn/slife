@@ -272,3 +272,29 @@ class TestListTurns:
             limit=5, before_rowid=10, after_rowid=None,
         )
         assert json.loads(out)[0]["rowid"] == 2
+
+
+class TestTokenUsage:
+    """memory_token_usage — per-turn token consumption."""
+
+    @pytest.mark.asyncio
+    async def test_passes_filters_to_store(self, restore_root_logger):
+        import json
+
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        store.token_usage = AsyncMock(return_value={
+            "turns": [{"rowid": 1, "token_count": 100}],
+            "summary": {"count": 1},
+            "filters": {},
+        })
+        srv._store = store
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.memory_token_usage(
+                rowid=3, since="2026-01-01", until="2026-02-01", limit=10,
+            )
+
+        store.token_usage.assert_awaited_once_with(
+            rowid=3, since="2026-01-01", until="2026-02-01", limit=10,
+        )
+        assert json.loads(out)["summary"]["count"] == 1

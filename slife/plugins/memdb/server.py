@@ -156,6 +156,7 @@ async def __memory_save_turn(
     messages: list[dict] | None = None,
     images: list[str] | None = None,
     token_count: int = 0,
+    prompt_tokens: int = 0,
     who_helped: str = "",
     what_model: str = "",
     channel: str = "",
@@ -172,6 +173,7 @@ async def __memory_save_turn(
             rowid = await store.save_turn(
                 user_message=user_message, messages=messages,
                 images=images, token_count=token_count,
+                prompt_tokens=prompt_tokens,
                 who_helped=who_helped, what_model=what_model,
                 channel=channel, created_at=created_at,
                 completed_at=completed_at,
@@ -208,7 +210,7 @@ async def __memory_get_recent_turns(limit: int = 50, after_rowid: int = 0) -> st
     description="Advance the persisted live-context start by count rows. Harness-only.",
 )
 async def __memory_context_start_advance(count: int) -> str:
-    """Persist the live-context boundary after ``_sys_trim`` removed
+    """Persist the live-context boundary after the internal trim removed
     *count* oldest turns.  Restore starts where the boundary points, so
     startup rebuilds the exit-time context instead of re-slicing 20%."""
     try:
@@ -250,9 +252,9 @@ async def __memory_context_start_latest() -> str:
 @mcp.tool(
     name="memory_list_turns",
     description=(
-        "List turns (newest first): rowid, truncated user_message, summary, "
+        "List turns (newest first): turn id, truncated user_message, summary, "
         "tags, created_at. Use memory_open for full content. "
-        "before_rowid / after_rowid anchor the window by rowid (exclusive): "
+        "before_rowid / after_rowid anchor the window by turn id (exclusive): "
         "page older than a [Turn: N · …] footnote with before_rowid, newer "
         "with after_rowid."
     ),
@@ -266,8 +268,8 @@ async def memory_list_turns(
 
     Args:
         limit: Maximum number of turns to return.
-        before_rowid: Only turns with rowid < this (older) — page back from a turn you can see in context.
-        after_rowid: Only turns with rowid > this (newer).
+        before_rowid: Only turns with id < this (older) — page back from a turn you can see in context.
+        after_rowid: Only turns with id > this (newer).
     """
     store = await _ensure_store()
     try:
@@ -281,6 +283,41 @@ async def memory_list_turns(
         return json.dumps(entries, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("list_recent_failed limit=%d", limit)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="memory_token_usage",
+    description=(
+        "Token consumption per turn. Options: rowid (one turn), since/until "
+        "(ISO datetime time range), limit (cap on turns returned, default 50). "
+        "Each turn reports token_count (cumulative billed tokens) and "
+        "prompt_tokens (context size at the last call). Returns the turns "
+        "plus a summary of totals/averages across the filtered set."
+    ),
+)
+async def memory_token_usage(
+    rowid: int | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Token consumption by turn, filtered by rowid or time range.
+
+    Args:
+        rowid: Restrict to a single turn by its id.
+        since: Lower bound, ISO datetime (relative words like 'yesterday' accepted).
+        until: Upper bound, ISO datetime.
+        limit: Maximum number of turns to return (newest first).
+    """
+    store = await _ensure_store()
+    try:
+        result = await store.token_usage(
+            rowid=rowid, since=since, until=until, limit=limit,
+        )
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.exception("token_usage_failed rowid=%s", rowid)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -320,15 +357,17 @@ async def memory_count(
 @mcp.tool(
     name="memory_open",
     description=(
-        "Load a memory by rowid: full messages (OpenAI JSON) incl. thinking, "
-        "tool calls, tool results. rowid from memory_list_turns / memory_search."
+        "Load a memory by turn id: full messages (OpenAI JSON) incl. thinking, "
+        "tool calls, tool results. The id comes from memory_list_turns / "
+        "memory_search (each result carries the turn id)."
     ),
 )
 async def memory_open(rowid: int) -> str:
-    """Load a full memory turn by rowid.
+    """Load a full memory turn by turn id.
 
     Args:
-        rowid: The memory rowid, from memory_list_turns / memory_search.
+        rowid: The turn id (same id as a `[Turn: N · …]` footnote or a
+            memory_list_turns / memory_search result).
     """
     store = await _ensure_store()
     try:
@@ -346,12 +385,12 @@ async def memory_open(rowid: int) -> str:
 @mcp.tool(
     name="memory_search",
     description=(
-        "Search memories (each result = one turn). "
+        "Search memories (each result = one turn, carrying its turn id). "
         "Modes: 'grep' exact substring (error messages, file paths, code); "
         "'fts5' BM25 keyword ranking; 'hybrid' fts5 + semantic (default); "
         "'time' browse by date range, no query. "
         "since/until = ISO datetime — convert relative time ('yesterday' → date). "
-        "Use memory_open for full turns."
+        "Use memory_open with the result's turn id for full turns."
     ),
 )
 async def memory_search(
@@ -461,8 +500,8 @@ async def memory_search(
     description=(
         "Write a summary (1-2 sentences) and comma-separated tags for a turn, "
         "making it findable via keyword search. Both optional. "
-        "rowid: the turn to annotate — omit it to annotate the CURRENT turn "
-        "(applied when it completes; call during the turn). "
+        "Omit the turn id to annotate the CURRENT turn (applied when it "
+        "completes; call during the turn). "
         "Does NOT touch the semantic index."
     ),
 )
@@ -473,9 +512,9 @@ async def memory_turn_summarize(
     """Write a summary and tags for a turn, making it findable by keyword search.
 
     Args:
-        rowid: The turn rowid to annotate. Omit to annotate the current
-            (in-flight) turn — the summary/tags are applied when the turn
-            completes and is saved.
+        rowid: The turn id to annotate (same id as a `[Turn: N · …]` footnote).
+            Omit to annotate the current (in-flight) turn — the summary/tags
+            are applied when the turn completes and is saved.
         summary: A 1-2 sentence summary of the turn.
         tags: Comma-separated tags for keyword search.
     """

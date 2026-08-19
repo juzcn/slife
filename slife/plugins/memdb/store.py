@@ -302,6 +302,7 @@ class SessionStore:
         user_message: str = "",
         messages: list[dict] | None = None,
         token_count: int = 0,
+        prompt_tokens: int = 0,
         who_helped: str = "",
         what_model: str = "",
         channel: str = "",
@@ -320,6 +321,11 @@ class SessionStore:
         (the Enter-press moment); ``completed_at`` is the assistant
         completion timestamp (captured after the final ensure).  ``None``
         falls back to the current wall clock.
+
+        ``token_count`` is the turn's cumulative total_tokens (billing);
+        ``prompt_tokens`` is the LAST LLM call's prompt_tokens — the exact
+        context size at turn end, which restore uses to prime the footer /
+        _sys_note with the real exit-time occupancy instead of an estimate.
         """
         now = created_at or _now()
         done = completed_at or _now()
@@ -330,10 +336,11 @@ class SessionStore:
             cursor = await self._c.execute(
                 """INSERT INTO diary (user_message, messages, images, summary, tags,
                                       channel, created_at, completed_at,
-                                      who_helped, what_model, token_count)
-                   VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?, ?)""",
+                                      who_helped, what_model, token_count,
+                                      prompt_tokens)
+                   VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)""",
                 (user_message, messages_json, images_json, channel, now, done,
-                 who_helped, what_model, token_count),
+                 who_helped, what_model, token_count, prompt_tokens),
             )
             await self._c.commit()
         rowid = cursor.lastrowid
@@ -367,7 +374,7 @@ class SessionStore:
         cursor = await self._c.execute(
             """SELECT rowid, user_message, messages, images, summary, tags,
                       channel, created_at, completed_at,
-                      who_helped, what_model, token_count
+                      who_helped, what_model, token_count, prompt_tokens
                FROM diary
                WHERE rowid IN (
                    SELECT rowid FROM diary
@@ -383,7 +390,7 @@ class SessionStore:
     #
     # The diary is the whole session history; the *live context* is the
     # slice the agent was actually working with (bounded to the window by
-    # _sys_trim).  ``context_start`` (stored in ``diary_meta``) marks the
+    # the internal trim).  ``context_start`` (stored in ``diary_meta``) marks the
     # boundary — every turn with ``rowid <= context_start`` is outside the
     # live context (trimmed or cleared), every newer turn is inside.
     # Restore reads from the boundary so startup rebuilds the exact
@@ -424,8 +431,9 @@ class SessionStore:
         """Advance the boundary past *count* diary rows; return new boundary.
 
         Moves the live-context start forward by *count* rows strictly after
-        the current boundary and records the result.  Used by ``_sys_trim``,
-        which removed that many oldest complete turns from the conversation.
+        the current boundary and records the result.  Used by the internal
+        trim (``AgentLoop._trim_after_save``), which removed that many
+        oldest complete turns from the conversation.
 
         Clamps when fewer than *count* rows remain (a trim after a rollback
         can overshoot by dead rows) — the boundary never overshoots the
@@ -602,6 +610,65 @@ class SessionStore:
             params,
         )
         return [dict(row) for row in await cursor.fetchall()]
+
+    async def token_usage(
+        self,
+        rowid: int | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """Token consumption by turn, optionally filtered.
+
+        Returns the matching turns (newest-first) with their billing
+        (``token_count`` = cumulative total_tokens) and context size
+        (``prompt_tokens`` = the last call's prompt_tokens), plus a summary
+        of totals / averages across the filtered set.
+
+        ``rowid`` narrows to a single turn; ``since``/``until`` filter by
+        ``created_at`` (ISO datetime, relative expressions accepted via
+        :func:`_normalize_time_param`).
+        """
+        clauses: list[str] = []
+        params: list = []
+        if rowid is not None:
+            clauses.append("rowid = ?")
+            params.append(rowid)
+        if since:
+            since = _normalize_time_param(since, role="since")
+            clauses.append("created_at >= ?")
+            params.append(since)
+        if until:
+            until = _normalize_time_param(until, role="until")
+            clauses.append("created_at <= ?")
+            params.append(until)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        limit = _clamp_limit(limit)
+        params.append(limit)
+
+        cursor = await self._c.execute(
+            f"""SELECT rowid, user_message, created_at, completed_at,
+                      token_count, prompt_tokens
+               FROM diary{where}
+               ORDER BY rowid DESC
+               LIMIT ?""",
+            params,
+        )
+        rows = [dict(r) for r in await cursor.fetchall()]
+
+        total_billed = sum(r.get("token_count") or 0 for r in rows)
+        total_context = sum(r.get("prompt_tokens") or 0 for r in rows)
+        return {
+            "turns": rows,
+            "summary": {
+                "count": len(rows),
+                "total_token_count": total_billed,
+                "total_prompt_tokens": total_context,
+                "avg_token_count": (total_billed // len(rows))
+                if rows else 0,
+            },
+            "filters": {"rowid": rowid, "since": since, "until": until},
+        }
 
     # ── Summarize ──────────────────────────────────────────────────
 

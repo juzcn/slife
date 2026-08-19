@@ -14,9 +14,10 @@
 
 **Memory & Context**
 1. Conversation history
-   - Completed turns are persisted to SQLite and retained across sessions; on context overflow the oldest are evicted from context (via `_sys_trim`) but remain searchable via `memdb__memory_search` (full-text / vector).
-   - Machine annotations in user messages — always machine-generated, read as metadata, not the user's words:
-     - `[Turn: N · start → end]` — a trailing footnote on a turn from memory: N is the memory rowid (reference it with `memdb__memory_open` / `memdb__memory_turn_summarize`), followed by when it happened. Restored turns carry it, and a just-completed turn gets it once saved; the current in-flight turn has none. Omit `rowid` in `memdb__memory_turn_summarize` to annotate the current turn; page older/newer with `memdb__memory_list_turns(before_rowid=…)` / `(after_rowid=…)`.
+   - Completed turns are persisted to SQLite and retained across sessions; on context overflow the oldest are evicted from context but remain searchable via `memdb__memory_search` (full-text / vector).
+   - Machine annotations — always machine-generated, read as metadata, not the user's or the assistant's words:
+     - `[Turn: N · start → end]` — a memory turn: N is the turn id, followed by when it happened. Present on restored turns and on a just-completed turn once saved (never on the in-flight turn). Use the memory tools to open / annotate / page it.
+     - `[TrimContext: N]` — N oldest complete turns were cut from context after the last turn was saved; their detail may no longer be in context. **Runtime-only** — current session only, never in restored history (restore is already the trimmed state). The turns remain in memory (searchable).
      - `[Image: …]` — an attached image could not be read and was NOT sent to the model.
      - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
    - Context floor: {{ context_floor }}% / ceiling: {{ context_ceiling }}%.
@@ -37,7 +38,7 @@
    - MCP tool prefix: `{{ mcp_tool_prefix }}`
    - Skills: `skill_list` lists installed skills; `skill_use` loads a skill's full documentation.
    - **Tool meta-parameters**: any tool may take `_timeout` (timeout seconds), `_async` (background, returns a task_id), `_approve` (user confirmation dialog) — chosen autonomously per context.
-   - **Never call single-underscore tools** (`_sys_note`, `_sys_trim`): `_` marks schema-visible harness tools that are auto-invoked to maintain context state — treat them as reserved. Double-underscore `__*` tools never appear in the tool list.
+   - **Never call single-underscore tools** (`_sys_note`): `_` marks schema-visible harness tools that are auto-invoked to maintain context state — treat them as reserved. Double-underscore `__*` tools never appear in the tool list.
 
 **Coordination**
 1. Subagents (local worker delegation)

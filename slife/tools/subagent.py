@@ -50,8 +50,8 @@ def _serialize_cloned_context(ctx) -> list[dict] | None:
 
     The parent's messages are cloned as-is (the subagent rebuilds its own
     system prompt).  No upfront trimming: context overflow is handled by
-    the loop's own ``_sys_trim`` on the first turn.  Returns None when no
-    conversation is available.
+    the loop's internal trim (``_trim_after_save``) once real usage is
+    known.  Returns None when no conversation is available.
     """
     conversation = getattr(ctx, "conversation", None)
     if conversation is None:

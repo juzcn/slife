@@ -1,10 +1,12 @@
-"""Tests for Harness tools (_sys_note / _sys_trim) and the consecutive-user fix.
+"""Tests for Harness tools (_sys_note) and the internal trim + marker.
 
 Covers:
 - Registration + schema declaration (fixes H3 — Anthropic/Responses validate
   history tool names against the declared tools list).
-- _sys_note / _sys_trim execute output.
+- _sys_note execute output.
 - The loop's auto-invoke producing normal tool-call pairs.
+- _trim_after_save: internal trim (after a turn is saved) uses real usage,
+  appends a [TrimContext: N] marker, and respects the restore exemption.
 - The _ensure_turn_consistent guarantee: an interrupted turn is restored to
   a consistent state — no orphaned tool_calls, and no consecutive user
   messages on the Anthropic wire (which rejects them).
@@ -35,19 +37,18 @@ class TestRegistration:
         reg = _registry()
         names = {t.name for t in reg.list_tools()}
         assert "_sys_note" in names
-        assert "_sys_trim" in names
+        assert "_sys_trim" not in names  # trim is now an internal mechanism
 
     def test_declared_in_schema(self):
-        """Both tools appear in to_openai_functions() — the H3 fix."""
+        """The note appears in to_openai_functions() — the H3 fix."""
         reg = _registry()
         fnames = {f["function"]["name"] for f in reg.to_openai_functions()}
         assert "_sys_note" in fnames
-        assert "_sys_trim" in fnames
+        assert "_sys_trim" not in fnames
 
     def test_harness_category(self):
         reg = _registry()
         assert reg.get("_sys_note").category == "Harness"
-        assert reg.get("_sys_trim").category == "Harness"
 
 
 # ── Tool execution ───────────────────────────────────────────────────────
@@ -70,56 +71,12 @@ class TestSysNote:
         assert "Context usage" in out
 
 
-class TestSysTrim:
-    """_sys_trim is the trim action itself — no condition check, trims to floor."""
-
-    @staticmethod
-    def _cfg():
-        from slife.config import Config, ModelConfig
-        return Config(
-            models=[ModelConfig(ref="t/m", provider="t", api_model="m",
-                                display_name="M", api_key="k",
-                                context_window=200, supports_vision=False)],
-            active_model_ref="t/m", tools=[], agent_name="test",
-        )
-
-    @classmethod
-    def _tool(cls, conv, cfg):
-        from slife.tools.context import ToolContext
-        from slife.tools.harness import SysTrimTool
-        tool = SysTrimTool()
-        object.__setattr__(tool, "_ctx", ToolContext(conversation=conv, config=cfg))
-        return tool
-
-    def _conv(self, turns=12):
-        conv = Conversation(system_prompt="SYS")
-        for i in range(turns):
-            conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大Context usage估计。")
-            conv.add_assistant_message(f"这是第{i}轮的回复，也需要一定长度以参与 token 估算。")
-        return conv
-
-    @pytest.mark.asyncio
-    async def test_trims_oldest_turns_to_floor(self):
-        conv = self._conv(12)
-        out = await self._tool(conv, self._cfg()).execute(memory_saved=True)
-        assert "Trimmed" in out
-        assert "memory_search" in out
-        # oldest turns removed (each turn carries one user message)
-        assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
-
-    @pytest.mark.asyncio
-    async def test_no_trim_when_already_below_floor(self):
-        conv = self._conv(1)
-        out = await self._tool(conv, self._cfg()).execute()
-        assert "No complete turns to trim" in out
-        assert len([m for m in conv.messages if m.get("role") == "user"]) == 1
+# ── Internal trim after save (_trim_after_save) ──────────────────────────
 
 
-# ── Inline percentage gate → _sys_trim ───────────────────────────────────
-
-
-class TestTurnTrim:
-    """run() shares one context-usage value between _sys_note and the trim gate."""
+class TestTrimAfterSave:
+    """_trim_after_save: called after a turn is saved, uses real usage,
+    appends a [TrimContext: N] marker, and never shreds a restored context."""
 
     @staticmethod
     def _cfg():
@@ -140,50 +97,116 @@ class TestTurnTrim:
         return conv
 
     @staticmethod
-    def _loop(conv, cfg):
-        from unittest.mock import MagicMock
-        from slife.tools.context import ToolContext
-        from slife.agent.llm_client import StreamChunk
-        reg = create_tools_from_config(ctx=ToolContext(conversation=conv, config=cfg))
-        llm = MagicMock()
-        llm.model_config.thinking_enabled = False
+    def _loop(conv, cfg, **kwargs):
+        return AgentLoop(
+            llm_client=None, tool_registry=create_tools_from_config(),
+            context_window=200, context_ceiling=0.8, context_floor=0.2,
+            advance_context_start=kwargs.get("advance"),
+        )
 
-        async def mock_stream(messages, tools, **kwargs):
-            yield StreamChunk(content="ok")
-        llm.chat_stream = mock_stream
-
-        return AgentLoop(llm_client=llm, tool_registry=reg, context_window=200)
+    async def _prime_usage(self, loop, conv):
+        """Simulate the just-finished API call's real usage for this conv."""
+        from slife.agent.llm_client import TokenUsage
+        loop._usage_by_conv[id(conv)] = TokenUsage(
+            prompt_tokens=conv.count_tokens(), total_tokens=conv.count_tokens(),
+        )
 
     @pytest.mark.asyncio
-    async def test_invokes_sys_trim_when_over_ceiling(self):
+    async def test_trims_to_floor_when_over_ceiling(self):
         conv = self._conv(12)
         loop = self._loop(conv, self._cfg())
+        await self._prime_usage(loop, conv)
         assert conv.count_tokens() > 160  # over 0.8 × 200 ceiling
 
-        await loop.run("hi", conv)
+        await loop._trim_after_save(conv)
 
-        assert any(
-            m.get("role") == "assistant" and m.get("tool_calls")
-            and m["tool_calls"][0]["function"]["name"] == "_sys_trim"
-            for m in conv.messages
-        )
-        # 12 old turns + the new "hi" turn → trimmed well below.
+        # oldest turns removed (each turn carries one user message)
         assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
+        # marker appended to the last assistant message
+        assert "[TrimContext: " in conv.messages[-1].get("content", "")
+        # no tool-call pair was produced (internal mechanism, not a tool)
+        assert not any(m.get("tool_calls") for m in conv.messages)
 
     @pytest.mark.asyncio
-    async def test_no_sys_trim_pair_when_under_ceiling(self):
+    async def test_no_trim_when_under_ceiling(self):
         conv = self._conv(1)
         loop = self._loop(conv, self._cfg())
+        await self._prime_usage(loop, conv)
         assert conv.count_tokens() <= 160
 
-        await loop.run("hi", conv)
+        await loop._trim_after_save(conv)
 
-        # No _sys_trim pair at all — fewer tool-call messages when nothing trims.
-        assert not any(
-            m.get("role") == "assistant" and m.get("tool_calls")
-            and m["tool_calls"][0]["function"]["name"] == "_sys_trim"
-            for m in conv.messages
-        )
+        assert len([m for m in conv.messages if m.get("role") == "user"]) == 1
+        assert not any("[TrimContext: " in (m.get("content") or "") for m in conv.messages)
+
+    @pytest.mark.asyncio
+    async def test_advances_context_start(self):
+        conv = self._conv(12)
+        advanced: list[int] = []
+
+        async def advance(count):
+            advanced.append(count)
+            return True
+
+        loop = self._loop(conv, self._cfg(), advance=advance)
+        await self._prime_usage(loop, conv)
+        await loop._trim_after_save(conv)
+
+        assert advanced, "advance_context_start should be called with the removed count"
+        users = len([m for m in conv.messages if m.get("role") == "user"])
+        assert advanced[0] >= 12 - users  # advanced by at least the removed turns
+
+    @pytest.mark.asyncio
+    async def test_restored_context_not_shredded_on_first_turn(self):
+        """A freshly-restored conversation is a pre-exit state — the first
+        trim after restore must not compact it (even over ceiling)."""
+        conv = self._conv(12)
+        loop = self._loop(conv, self._cfg())
+        loop._just_restored_conv = id(conv)
+        await self._prime_usage(loop, conv)
+        assert conv.count_tokens() > 160
+
+        await loop._trim_after_save(conv)
+
+        # The marker is consumed and nothing was trimmed.
+        assert loop._just_restored_conv is None
+        assert len([m for m in conv.messages if m.get("role") == "user"]) == 12
+        assert not any("[TrimContext: " in (m.get("content") or "") for m in conv.messages)
+
+    @pytest.mark.asyncio
+    async def test_second_turn_after_restore_trims(self):
+        """Once the restore marker is consumed, the live rules apply."""
+        conv = self._conv(12)
+        loop = self._loop(conv, self._cfg())
+        loop._just_restored_conv = id(conv)
+        await self._prime_usage(loop, conv)
+        # First save consumes the marker without trimming...
+        await loop._trim_after_save(conv)
+        assert loop._just_restored_conv is None
+        # ...but the second save trims (real usage still over ceiling).
+        await self._prime_usage(loop, conv)
+        await loop._trim_after_save(conv)
+        assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
+        assert "[TrimContext: " in conv.messages[-1].get("content", "")
+
+    @pytest.mark.asyncio
+    async def test_trim_resets_time_start_when_dates_exhausted(self):
+        """When a trim pops every tracked turn date, 'Context covers' must
+        reset to the current turn — not point at a turn that was removed."""
+        conv = self._conv(12)
+        loop = self._loop(conv, self._cfg())
+        # Simulate: only ONE tracked turn date exists (a fresh session where
+        # _context_time_start holds the very first turn and nothing else).
+        loop._context_time_start = "2026-08-01 10:00:00"
+        loop._context_turn_dates = ["2026-08-01 10:05:00"]
+        await self._prime_usage(loop, conv)
+
+        await loop._trim_after_save(conv)
+
+        # The single tracked date was popped; the range must not point at it.
+        assert loop._context_turn_dates == []
+        assert loop._context_time_start != "2026-08-01 10:05:00"
+        assert loop._context_time_start  # reset to a fresh current-turn stamp
 
 
 # ── Auto-invoke + consecutive-user fix ───────────────────────────────────

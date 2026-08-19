@@ -46,7 +46,8 @@ async def _create_diary_table(conn) -> None:
             channel        TEXT DEFAULT '',
             who_helped     TEXT DEFAULT '',
             what_model     TEXT DEFAULT '',
-            token_count    INTEGER NOT NULL DEFAULT 0
+            token_count    INTEGER NOT NULL DEFAULT 0,
+            prompt_tokens  INTEGER NOT NULL DEFAULT 0
         )""")
 
 
@@ -497,7 +498,8 @@ class TestSessionStoreGetRecentTurns:
                 channel        TEXT DEFAULT '',
                 who_helped     TEXT DEFAULT '',
                 what_model     TEXT DEFAULT '',
-                token_count    INTEGER NOT NULL DEFAULT 0
+                token_count    INTEGER NOT NULL DEFAULT 0,
+                prompt_tokens  INTEGER NOT NULL DEFAULT 0
             )""")
         await conn.commit()
 
@@ -879,6 +881,60 @@ class TestSessionStoreListRecent:
         sql, params = mock_conn.execute.await_args.args
         assert "WHERE" not in sql
         assert params == [5]
+
+
+class TestSessionStoreTokenUsage:
+    """Tests for token_usage — per-turn billing / context-size query."""
+
+    @pytest.mark.asyncio
+    async def test_aggregates_sums(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"rowid": 2, "token_count": 300, "prompt_tokens": 200},
+            {"rowid": 1, "token_count": 100, "prompt_tokens": 80},
+        ])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        result = await store.token_usage(limit=50)
+        assert result["summary"]["count"] == 2
+        assert result["summary"]["total_token_count"] == 400
+        assert result["summary"]["total_prompt_tokens"] == 280
+        assert result["summary"]["avg_token_count"] == 200
+
+    @pytest.mark.asyncio
+    async def test_rowid_filters(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        await store.token_usage(rowid=7, limit=10)
+        sql, params = mock_conn.execute.await_args.args
+        assert "rowid = ?" in sql
+        assert 7 in params
+        assert 10 in params
+
+    @pytest.mark.asyncio
+    async def test_time_window_filters(self):
+        store = SessionStore(Path("/tmp/test.db"))
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        store._conn = mock_conn
+
+        await store.token_usage(since="2026-01-01", until="2026-02-01", limit=5)
+        sql, params = mock_conn.execute.await_args.args
+        assert "created_at >= ?" in sql
+        assert "created_at <= ?" in sql
+        # A date-only `until` is advanced a day so records on that day are
+        # included (the same normalisation every time-filtered query uses).
+        assert params[:2] == ["2026-01-01", "2026-02-02"]
 
 
 class TestSessionStoreUpdateSummary:

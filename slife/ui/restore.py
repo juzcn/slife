@@ -253,38 +253,13 @@ async def restore_session(
     if not all_turns:
         return
 
-    # ── Select turns within token budget (newest-first, cap at ceiling) ──
-    # Budget = the context ceiling (max the live session itself could hold) —
-    # never the floor: startup must restore what was live at exit, not
-    # re-slice an arbitrary 20%.  Falls back to the ceiling formula for
-    # legacy recovery_info that predates the budget field.
-    context_window = config.active_model.context_window
-    context_ceiling = config.context_ceiling
-    token_budget = recovery_info.get(
-        "budget", int(context_window * context_ceiling),
-    )
-
-    turns: list[dict] = []
-    tokens_selected = 0
-    for turn in reversed(all_turns):
-        t = estimate_turn_tokens(turn)
-        if turns and tokens_selected + t > token_budget:
-            break
-        turns.append(turn)
-        tokens_selected += t
-    turns.reverse()
-
-    # Budget trimming already happened in get_recent_turns, which reports
-    # how many fetched turns were dropped.  Fall back to computing it here
-    # for legacy recovery_info that carries the untrimmed list.
-    skipped = recovery_info.get("skipped")
-    if skipped is None:
-        skipped = len(all_turns) - len(turns)
-    if skipped > 0:
-        logger.debug(
-            "session_restore_trimmed loaded=%d skipped=%d budget=%d selected=%d",
-            len(turns), skipped, token_budget, tokens_selected,
-        )
+    # ── Reuse the exit-time context verbatim ──────────────────────────
+    # get_recent_turns already returns every turn after the persisted
+    # live-context boundary — the exact slice that was live at exit.  No
+    # re-slicing against the ceiling: restore replays the exit state so the
+    # agent picks up exactly where it left off.  (Legacy recovery_info that
+    # predates this carries an untrimmed list — kept whole here too.)
+    turns = all_turns
 
     # ── Phase 1: Reconstruct message list from selected turns ─────────
     try:
@@ -441,7 +416,7 @@ async def restore_session(
                 if (msg.get("content") or "").strip() == ".":
                     continue
                 # Nothing to show → skip.  Covers harness messages
-                # (_sys_note, _sys_trim — LLM context only, never in the live
+                # (_sys_note — LLM context only, never in the live
                 # TUI) AND genuinely empty messages.  An empty tool-iteration
                 # message with REAL tool calls stays: its ToolCallWidgets
                 # render the work even without a message body.
@@ -601,6 +576,7 @@ async def restore_session(
     # ── Post-restore setup ────────────────────────────────────────────
     # Still under suppressed auto-scroll — the system message must not
     # scroll by itself; the single final scroll below covers it.
+    skipped = recovery_info.get("skipped", 0)  # legacy field, now always 0
     if skipped > 0:
         _show_system_message(
             app,
@@ -629,15 +605,20 @@ async def restore_session(
     # Reset session token counter — session starts fresh
     app.service.session_usage.total_tokens = 0
 
-    # Prime the context footer with the restored token estimate.  This is
-    # the estimated context size after restore (computed above to decide
-    # how many turns to restore) — on the first round we have no real API
-    # usage yet, so `context_tokens_for` / the status bar fall back to it.
-    # Stored as prompt_tokens because that is semantically what it is.
-    if tokens_selected > 0:
+    # Prime the context footer with the restored context size.  On the
+    # first round we have no real API usage yet, so `context_tokens_for` /
+    # the status bar fall back to `_last_usage`.  Use the **latest restored
+    # turn's persisted prompt_tokens** — the exact context size at exit
+    # (what _sys_note would have reported) — instead of an estimate.
+    # Legacy turns predate the column → fall back to the token estimate.
+    last_turn = turns[-1] if turns else {}
+    prompt = last_turn.get("prompt_tokens") or 0
+    if prompt <= 0:
+        prompt = estimate_turn_tokens(last_turn) if last_turn else 0
+    if prompt > 0:
         app.service.agent_loop._last_usage = TokenUsage(
-            prompt_tokens=tokens_selected,
-            total_tokens=tokens_selected,
+            prompt_tokens=prompt,
+            total_tokens=prompt,
         )
     app._update_status()
 

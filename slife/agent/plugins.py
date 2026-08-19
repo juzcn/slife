@@ -124,7 +124,7 @@ class PluginLifecycle:
 
             # Harness-only tools are prefixed with __ (convention) — filtered
             # out of the schema entirely.  (Single ``_`` = harness but
-            # LLM-visible, e.g. the native `_sys_note`/`_sys_trim`.)  Same
+            # LLM-visible, e.g. the native `_sys_note`.)  Same
             # predicate as the generic spawn path in service.py, so a plugin's
             # harness tools are hidden identically whichever registration path
             # ran.  The deprecated harness_tools set is also respected.

@@ -29,6 +29,11 @@ IMAGE_NOTE_PREFIX = "\n\n[Image: the following file(s)"
 #: Kind tag of the turn footnote (``[Turn: N · start → end]``).  Shared by
 #: the restore path, the save path, and the TUI ``UserMessage`` styler.
 TURN_HEADER_PREFIX = "[Turn: "
+#: Runtime-only marker of a context trim (``[TrimContext: N]``).  Appended
+#: to the last assistant message by the loop after a trim — NEVER persisted:
+#: a restored session is already the trimmed state, so a "past session was
+#: truncated" note is meaningless.  Stripped before every diary save.
+TRIM_MARKER_PREFIX = "[TrimContext: "
 
 
 def _format_turn_dt(value) -> str:
@@ -260,6 +265,53 @@ class Conversation:
             logger.debug("conv_assistant text_len=%d think=%d", len(content or ""), len(thinking or ""))
         self.messages.append(msg)
 
+    def append_trim_marker(self, count: int) -> None:
+        """Append a runtime-only ``[TrimContext: N]`` marker to the last
+        assistant message.
+
+        Tells the LLM how many of its oldest turns were just cut from the
+        context by a trim (tool results the model may still reference are
+        gone).  Unlike the persisted ``[Turn: N]`` footnotes, this marker
+        is **not** written to memory — a restored session is already the
+        trimmed state, so a "past session was truncated" note is
+        meaningless; only the current cut is relevant.  It is therefore
+        never present in restored history.
+
+        The last message is an assistant by :meth:`_ensure_turn_consistent`
+        (guaranteed when save_to_memory calls this after a trim).
+        """
+        if not self.messages:
+            return
+        idx = len(self.messages) - 1
+        while idx >= 0 and self.messages[idx].get("role") != "assistant":
+            idx -= 1
+        if idx < 0:
+            return
+        msg = self.messages[idx]
+        marker = f"[TrimContext: {count}]"
+        content = msg.get("content") or ""
+        msg["content"] = f"{content} {marker}".strip() if content else marker
+        logger.debug("conv_trim_marker count=%d msg_idx=%d", count, idx)
+
+    @staticmethod
+    def strip_trim_markers(messages: list[dict]) -> list[dict]:
+        """Return a copy of *messages* with ``[TrimContext: N]`` markers removed.
+
+        The marker is runtime-only: this keeps it out of the diary.  The
+        live conversation keeps its marker (the LLM needs to know the
+        current cut); only what is persisted is cleaned.  Works on the
+        list passed in — callers pass the sliced turn messages.
+        """
+        cleaned = []
+        for m in messages:
+            if m.get("role") == "assistant" and m.get("content"):
+                content = m["content"]
+                if isinstance(content, str) and TRIM_MARKER_PREFIX in content:
+                    m = dict(m)
+                    m["content"] = content.split(TRIM_MARKER_PREFIX)[0].rstrip()
+            cleaned.append(m)
+        return cleaned
+
     def add_tool_result(
         self, tool_call_id: str, content: str, is_error: bool = False,
     ) -> None:
@@ -326,8 +378,8 @@ class Conversation:
             elif thinking_enabled and m.get("role") == "assistant":
                 # DeepSeek/Qwen require reasoning_content on EVERY
                 # assistant message when thinking is on, even synthetic
-                # harness messages (_sys_note, _sys_trim) that
-                # never carried reasoning.
+                # harness messages (_sys_note) that never carried
+                # reasoning.
                 m["reasoning_content"] = ""
             m.pop("images", None)  # internal attachment tracking
             m.pop("is_error", None)  # internal error flag, not an OpenAI field

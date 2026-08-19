@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS diary (
     what_model     TEXT DEFAULT '',
 
     -- ▼ 用量
-    token_count    INTEGER NOT NULL DEFAULT 0
+    token_count    INTEGER NOT NULL DEFAULT 0,  -- 本轮累计 total_tokens（计费）
+    prompt_tokens  INTEGER NOT NULL DEFAULT 0   -- 最后一次 LLM 调用的 prompt_tokens（上下文大小）
 );
 
 

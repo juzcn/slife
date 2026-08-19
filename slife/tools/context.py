@@ -60,7 +60,7 @@ class ToolContext:
     advance_context_start: Callable[[int], Awaitable[bool]] | None = None
     """Persist the live-context start boundary after a trim evicted
     *count* oldest turns, so restart rebuilds the exit-time context.
-    Populated by AgentService; used by ``_sys_trim``."""
+    Populated by AgentService; used by ``AgentLoop._trim_after_save``."""
 
     set_context_start_latest: Callable[[], Awaitable[bool]] | None = None
     """Flush the live-context boundary to the latest saved turn, so the

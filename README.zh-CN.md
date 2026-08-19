@@ -163,12 +163,12 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `include_image`（把本地图片或 URL 注入对话） |
 | Display | `show_image`, `notify_user` |
-| Harness | `_sys_note`（上下文状态）、`_sys_trim`（上下文裁剪）——自主调用，LLM 不可用 |
+| Harness | `_sys_note`（上下文状态）——自主调用，LLM 不可用 |
 | Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
 每个工具还额外接受三个框架元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（对话流内联审批行——Y 批准 / N 拒绝 / Esc 拒绝）。
 
-**Harness 工具分两级。** `_` 前缀的原生工具（`_sys_note` / `_sys_trim`）**LLM 可见但保留**：agent loop 每轮自主调用它们维护上下文状态（上报用量百分比、超出上限时裁剪旧轮次）；它们是 schema 声明的（这样 Anthropic / OpenAI-Responses 后端才会接受其调用对），但系统提示词禁止 LLM 调用，即便调用也无害。`__` 前缀的插件工具（`__memory_save_turn`、`__mcp_call_tool` 等）**LLM 不可见**——被完全过滤出 schema，仅由框架通过 `client.call_tool()` 编程调用。
+**Harness 工具分两级。** `_` 前缀的原生工具（`_sys_note`）**LLM 可见但保留**：agent loop 每轮自主调用它上报上下文状态（用量百分比、时间范围）；它是 schema 声明的（这样 Anthropic / OpenAI-Responses 后端才会接受其调用对），但系统提示词禁止 LLM 调用，即便调用也无害。上下文**裁剪不再走工具**——它在每轮保存后内部执行（`_trim_after_save`），并把一次运行期的 `[TrimContext: N]` 标记追加到最后一条 assistant 消息（见下文「记忆 — 始终开启」）。`__` 前缀的插件工具（`__memory_save_turn`、`__mcp_call_tool` 等）**LLM 不可见**——被完全过滤出 schema，仅由框架通过 `client.call_tool()` 编程调用。
 
 **五个托管类别**（Skills / CLI / REST API / Models / MCP）支持 `X_list` / `X_set` / `X_remove`（+ 需要开关时 `X_set_enabled`）——所有 `X_set` 工具都是幂等 upsert。`model_set` 的 upsert 会**合并**进现有条目（局部更新会保留 `reasoning` / `input` / `compat` 等字段），并接受 `compat` dict 用于每模型的供应商覆盖。
 
@@ -177,7 +177,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 | 服务器 | LLM 可见工具 |
 |--------|-------------|
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
-| `memdb` | `memdb__memory_list_turns`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_turn_summarize`, `memdb__memory_count`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
+| `memdb` | `memdb__memory_list_turns`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_turn_summarize`, `memdb__memory_count`, `memdb__memory_token_usage`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `memfiles__note_save`, `memfiles__diary_write`, `memfiles__file_save`, `memfiles__url_save`, `memfiles__note_list`, `memfiles__diary_list`, `memfiles__note_read`, `memfiles__diary_read`, `memfiles__list_files`, `memfiles__search`, `memfiles__read`, `memfiles__embedding_check`, `memfiles__expose_file` |
 
@@ -198,9 +198,9 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 嵌入后端：本地 GGUF（BGE-M3，离线）、HuggingFace transformers 或 OpenAI 兼容 API。无嵌入后端时关键词搜索照常工作。语义（hybrid）结果只在**当前模型的索引完整构建后**才返回——全量重建期间（新/换模型、重启中断续跑）hybrid 退回关键词搜索，索引完成后自动恢复。
 
-每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。`completed_at` 之前的旧库运行一次 `python scripts/migrate_memdb_completed_at.py` 迁移（插件内无 ALTER 迁移代码）；新库自动带该列。
+每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。`completed_at` 之前的旧库运行一次 `python scripts/migrate_memdb_completed_at.py` 迁移（插件内无 ALTER 迁移代码）；新库自动带该列。图片附件（`images`）用同一独立脚本模式——旧库运行 `python scripts/migrate_memdb_images.py`。token 用量记录在两列——`token_count`（本轮累计计费 token）和 `prompt_tokens`（最后一次 API 调用时的上下文大小，启动恢复时用它精确填充状态栏）——旧库运行 `python scripts/migrate_memdb_prompt_tokens.py` 迁移。
 
-用户消息会带一条紧凑的 **`[Turn: N · 开始 → 结束]`** 脚注（记忆 rowid 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 rowid 引用（`memdb__memory_open` / `memdb__memory_turn_summarize`），用户在 TUI 里也能读到同一行。恢复的轮在启动恢复时注入；刚完成的 live 轮在保存拿到 rowid 后补上（下一轮就能精确引用）；当前进行中的轮没有。机器注解统一采用 `[类别: …]` 形式——`[Image: …]`（附件无法读取、未发送）和 `[Heartbeat]`（自主心跳触发，不是用户提问）。
+用户消息会带一条紧凑的 **`[Turn: N · 开始 → 结束]`** 脚注（记忆 rowid 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 rowid 引用（`memdb__memory_open` / `memdb__memory_turn_summarize`），用户在 TUI 里也能读到同一行。恢复的轮在启动恢复时注入；刚完成的 live 轮在保存拿到 rowid 后补上（下一轮就能精确引用）；当前进行中的轮没有。机器注解统一采用 `[类别: …]` 形式——`[Image: …]`（附件无法读取、未发送）、`[Heartbeat]`（自主心跳触发，不是用户提问），以及 assistant 消息上的 **`[TrimContext: N]`**（上下文刚被压缩到 floor：N 个最老完整轮次在最近一轮保存后被剪切，该窗口的 tool 结果 / 中间推理可能已不在上下文中；这些轮次仍可在记忆里搜索）。trim 标记是**运行期专用**——只出现在当前会话，绝不会出现在恢复的历史里（恢复出来的本来就是已裁剪状态）。
 
 ### 自主心跳
 

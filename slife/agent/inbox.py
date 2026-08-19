@@ -339,9 +339,18 @@ class Inbox:
                     token_count = 0
                     if result is not None and hasattr(result, "usage"):
                         token_count = result.usage.total_tokens
+                    # The LAST LLM call's prompt_tokens = the exact context
+                    # size at turn end (per-conversation, from the loop's
+                    # usage cache).  Persisted so restore can prime the
+                    # footer / _sys_note with the real exit-time occupancy
+                    # instead of an estimate.  Absent on cancel-without-API
+                    # → 0 (legacy fallback applies on restore).
+                    usage = self._agent_loop._usage_by_conv.get(id(conversation))
+                    prompt_tokens = usage.prompt_tokens if usage else 0
                     await self._on_turn_complete(
                         user_message=msg.content,
                         token_count=token_count,
+                        prompt_tokens=prompt_tokens,
                         conversation=conversation,
                         channel=str(msg.source),
                         images=getattr(msg, "images", None),
