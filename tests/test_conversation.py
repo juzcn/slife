@@ -61,19 +61,14 @@ class TestAddUserMessage:
         assert conv.messages[0]["role"] == "user"
         assert conv.messages[0]["content"] == "Hello!"
 
-    def test_text_with_images_dropped_notifies_llm(self):
-        """Unreadable images are dropped with a visible note for the LLM."""
+    def test_unreadable_image_raises(self):
+        """An unreadable local image is a bug signal — it raises instead
+        of being silently dropped.  Upstream (@path parsing, include_image)
+        validates files first, so this path should never fire in practice."""
         conv = Conversation()
-        conv.add_user_message("Describe", images=["/fake/img.png"])
-        assert conv.messages[0]["role"] == "user"
-        parts = conv.messages[0]["content"]
-        assert isinstance(parts, list)
-        # Original text + dropped-image note = 2 parts
-        assert len(parts) == 2
-        assert parts[0] == {"type": "text", "text": "Describe"}
-        assert parts[1]["text"].startswith("\n\n[Image: the following file(s)")
-        assert "/fake/img.png" in parts[1]["text"]
-        assert "NOT sent" in parts[1]["text"]
+        with pytest.raises(ValueError, match="cannot read image"):
+            conv.add_user_message("Describe", images=["/fake/img.png"])
+        assert conv.messages == []  # nothing appended on failure
 
     def test_image_paths_not_provided(self):
         """images=None is treated as no images."""

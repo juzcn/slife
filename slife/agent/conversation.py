@@ -11,21 +11,13 @@ from slife.logfmt import sanitize_secrets
 logger = logging.getLogger(__name__)
 
 # Machine-injected annotations inside a user message share one `[<Kind>: …]`
-# shape.  Only the dropped-image note is a separate text part — appended at
-# live-add time so derived user text and the save-path match can tell it apart
-# from the user's actual words:
-#   - IMAGE_NOTE_PREFIX — appended when an attached image cannot be read.
-#     Shared with the persistence layer (save_to_memory) so the note can be
-#     distinguished from the user's actual text.
-#   - restore turn headers — concatenated as a trailing footnote into the
-#     restored user-message text (see ``slife.ui.restore._turn_header``) so
-#     the LLM can tell which turn (rowid) a restored message belongs to and
-#     when it happened.  Deliberately NOT excluded from the TUI — the human
-#     reads it too.
+# shape.  The restore turn header is the only one — concatenated as a
+# trailing footnote into the restored user-message text (see
+# ``slife.ui.restore._turn_header``) so the LLM can tell which turn (rowid) a
+# restored message belongs to and when it happened.  Deliberately NOT
+# excluded from the TUI — the human reads it too.
 # Heartbeat is NOT an annotation: `[Heartbeat]` is a stored turn identity
 # (old diary rows start with it), so it stays a distinct sentinel.
-ANNOTATION_PREFIXES = ("[Image:",)
-IMAGE_NOTE_PREFIX = "\n\n[Image: the following file(s)"
 #: Kind tag of the turn footnote (``[Turn: N · start → end]``).  Shared by
 #: the restore path, the save path, and the TUI ``UserMessage`` styler.
 TURN_HEADER_PREFIX = "[Turn: "
@@ -62,16 +54,6 @@ def turn_header(turn: dict) -> str:
         span = start or end
     bits = ([str(rowid)] if rowid is not None else []) + ([span] if span else [])
     return f"{TURN_HEADER_PREFIX}{' · '.join(bits)}]" if bits else ""
-
-
-def is_annotation_text(text: str) -> bool:
-    """True for a machine-injected annotation part in a user message.
-
-    Currently only the dropped-image note (``\n\n[Image: …``), so derived
-    user text skips it.  The restore turn header is concatenated into the
-    message text instead of being a separate part, so it is not covered.
-    """
-    return isinstance(text, str) and text.lstrip().startswith(ANNOTATION_PREFIXES)
 
 
 class Conversation:
@@ -181,9 +163,10 @@ class Conversation:
         """Add a user message, optionally with attached images.
 
         Local image files are read and base64-encoded into data URIs;
-        remote URLs (``https://``) are passed through as-is.  Images that
-        cannot be read are dropped with a visible note appended to the
-        message so the LLM knows the attachment was lost.
+        remote URLs (``https://``) are passed through as-is.  A local image
+        that cannot be read raises ``ValueError`` — upstream (``@path``
+        parsing, ``include_image``) already validates files, so a failure
+        here is a bug signal to be surfaced, not silently dropped.
 
         User input is sanitized to mask any API keys / tokens before the
         message enters the LLM context or persistent storage.
@@ -191,6 +174,9 @@ class Conversation:
         Args:
             content: The user's text input.
             images: Optional list of image file paths or URLs to attach.
+
+        Raises:
+            ValueError: A local image file does not exist or cannot be read.
         """
         # Turn consistency is enforced at the single save point
         # (save_to_memory, which runs unconditionally after every turn) and on
@@ -200,25 +186,17 @@ class Conversation:
 
         if images:
             parts: list[dict] = [{"type": "text", "text": content}]
-            dropped: list[str] = []
             for img in images:
                 block = include_image_url(img)
-                if block is not None:
-                    parts.append(block)
-                else:
-                    dropped.append(str(img))
-            if dropped:
-                note = (
-                    IMAGE_NOTE_PREFIX + " could not be "
-                    "read and were NOT sent to the model: "
-                    + ", ".join(dropped)
-                    + "]"
-                )
-                parts.append({"type": "text", "text": note})
-                logger.warning(
-                    "conv_user_dropped_images count=%d files=%s",
-                    len(dropped), dropped,
-                )
+                if block is None:
+                    logger.warning(
+                        "conv_user_unreadable_image path=%s", img,
+                    )
+                    raise ValueError(
+                        f"cannot read image '{img}' — file does not exist "
+                        f"or is unreadable"
+                    )
+                parts.append(block)
             self.messages.append({"role": "user", "content": parts})
             logger.debug("conv_user text=%.80s imgs=%d", content, len(images))
         else:
@@ -554,7 +532,6 @@ class Conversation:
                         p.get("text", "")
                         for p in content
                         if p.get("type") == "text"
-                        and not is_annotation_text(p.get("text", ""))
                     )
                 else:
                     current_user_msg = str(content) if content else ""

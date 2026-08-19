@@ -25,7 +25,7 @@ from pathlib import Path
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
-from slife.agent.conversation import Conversation, IMAGE_NOTE_PREFIX, turn_header
+from slife.agent.conversation import Conversation, turn_header
 from slife.agent.heartbeat import HEARTBEAT_MARK
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
 from slife.agent.inbox import Inbox, ConversationStore
@@ -1499,13 +1499,9 @@ class AgentService:
                 user_idx = i
                 break
             if isinstance(content, list):
-                # Exclude the "[Image: …]" note that add_user_message appends
-                # for dropped attachments — it is not the user's text, and
-                # including it breaks the match so the turn silently fails.
                 text = "".join(
                     p.get("text", "") for p in content
                     if p.get("type") == "text"
-                    and not p.get("text", "").startswith(IMAGE_NOTE_PREFIX)
                 )
                 if text == target:
                     turn_messages = all_messages[i + 1:]
