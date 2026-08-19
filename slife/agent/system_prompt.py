@@ -240,15 +240,6 @@ def _os_version() -> str:
     return platform.uname().release
 
 
-def _current_shell() -> str:
-    """Detect the shell that launched slife."""
-    if os.name != "nt":
-        return os.environ.get("SHELL", "sh")
-    if os.environ.get("PSModulePath"):
-        return "powershell"
-    return "cmd"
-
-
 def _credstore_backend() -> str:
     """Safe lookup of the active credstore backend name."""
     try:

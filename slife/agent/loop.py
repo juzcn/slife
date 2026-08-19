@@ -15,7 +15,7 @@ from typing import Protocol
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.logfmt import sanitize_secrets
 from slife.agent.conversation import Conversation
-from slife.agent.system_prompt import _current_shell
+from slife.platform import detect_current_shell
 from slife.tools.registry import ToolRegistry
 from slife.logfmt import request_scope, elapsed
 
@@ -575,7 +575,7 @@ class AgentLoop:
         decision later uses its own reading in ``_trim_after_save``).
         """
         cwd_now = os.getcwd()
-        shell_now = _current_shell()
+        shell_now = detect_current_shell()
         kwargs: dict = {
             "context_window": self.context_window,
             "last_context_tokens": current,
