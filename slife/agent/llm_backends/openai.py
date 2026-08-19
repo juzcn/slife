@@ -6,15 +6,18 @@ of slife matches the OpenAI Chat Completions wire format natively.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time as _time
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from openai import AsyncOpenAI
 
 from slife.config import ModelConfig
-from slife.agent.llm_client import TokenUsage, StreamChunk
+from slife.agent.llm_client import TokenUsage, StreamChunk, _safe_close_stream
+
+if TYPE_CHECKING:
+    import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -191,5 +194,4 @@ class OpenAIBackend:
                         for tc in delta.tool_calls
                     ])
         finally:
-            from slife.agent.llm_client import _safe_close_stream
             await _safe_close_stream(stream)

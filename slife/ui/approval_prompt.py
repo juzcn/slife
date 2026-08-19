@@ -18,31 +18,12 @@ from textual.content import Content
 from textual.widgets import Static
 
 from slife.agent.loop import ToolCallInfo
+from slife.ui.content import lit as _lit
+from slife.ui.content import mc as _mc
 
 # Arg display caps — keep the waiting prompt compact.
 _ARG_MAX = 120
 _ARG_LINES_MAX = 6
-
-
-def _mc(text: str) -> Content:
-    """Build Content from a **controlled** markup string.
-
-    Only use for strings we construct ourselves (labels, section headers).
-    Never pass user data or tool output through this function.
-    """
-    return Content.from_markup(text)
-
-
-def _lit(text: str, style: str = "") -> Content:
-    """Build Content from arbitrary text — NEVER parsed as markup.
-
-    This is the safe path for all user data: tool names, arg values, etc.
-    Characters like &, [, ] are rendered literally.
-    """
-    c = Content.from_text(text, markup=False)
-    if style:
-        c = c.stylize(style)
-    return c
 
 
 class ApprovalPrompt(Static):

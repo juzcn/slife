@@ -24,19 +24,6 @@ from datetime import datetime, timezone
 from enum import Enum
 
 
-# ── JSON-RPC error codes (official) ────────────────────────────────────
-
-JSONRPC_PARSE_ERROR = -32700
-JSONRPC_INVALID_REQUEST = -32600
-JSONRPC_METHOD_NOT_FOUND = -32601
-JSONRPC_INVALID_PARAMS = -32602
-JSONRPC_INTERNAL_ERROR = -32603
-
-# A2A domain errors ride in the -32000 range (task not found, etc.)
-A2A_ERROR = -32000
-TASK_NOT_FOUND = -32001
-
-
 def iso_now() -> str:
     """Current UTC time as an ISO-8601 string (official A2A timestamps)."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

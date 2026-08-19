@@ -2191,10 +2191,6 @@ class AgentService:
             self.inbox._a2a_client = None
             self.inbox._on_activity = None
 
-        # Clear module-level transport reference
-        from slife.a2a.client import clear_client
-        clear_client()
-
         logger.info("a2a_shutdown")
 
     # ── Subagent lifecycle ─────────────────────────────────────────────

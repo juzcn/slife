@@ -39,28 +39,6 @@ class DuplicateAgentError(RuntimeError):
 
 logger = logging.getLogger(__name__)
 
-# ── Module-level current-client reference ────────────────────────────
-# Set by AgentService.start_a2a() / stop_a2a() so that native tools
-# (Slife.tools.a2a) can look up the live transport without closures.
-_current_client: "A2AClient | None" = None
-
-
-def get_client() -> "A2AClient | None":
-    """Return the live A2AClient, or None if A2A is not active."""
-    return _current_client
-
-
-def set_client(client: "A2AClient") -> None:
-    """Set the current A2AClient (called by AgentService.start_a2a)."""
-    global _current_client
-    _current_client = client
-
-
-def clear_client() -> None:
-    """Clear the current A2AClient (called by AgentService.stop_a2a)."""
-    global _current_client
-    _current_client = None
-
 
 AgentChangeCallback = Callable[[AgentCard, str], Awaitable[None]]
 """Callback signature: ``async def on_change(card: AgentCard, event: str)``

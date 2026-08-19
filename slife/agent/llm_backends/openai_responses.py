@@ -6,15 +6,23 @@ adapts them for the OpenAI Responses API.  No public conversion layer.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time as _time
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from openai import AsyncOpenAI
 
 from slife.config import ModelConfig
-from slife.agent.llm_client import TokenUsage, StreamChunk
+from slife.agent.llm_client import (
+    TokenUsage,
+    StreamChunk,
+    _compat_chat_response,
+    _safe_close_stream,
+)
+
+if TYPE_CHECKING:
+    import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -165,9 +173,7 @@ class OpenAIResponsesBackend:
                 total_tokens=response.usage.total_tokens or 0,
             )
 
-        C = type("Choice", (), {"message": type("Msg", (), {"content": text})()})()
-        R = type("Response", (), {"choices": [C], "usage": getattr(response, "usage", None)})()
-        return R, usage
+        return _compat_chat_response(text, usage)
 
     # ── Streaming ─────────────────────────────────────────────────────
 
@@ -279,5 +285,4 @@ class OpenAIResponsesBackend:
                         )
                         yield StreamChunk(usage=usage)
         finally:
-            from slife.agent.llm_client import _safe_close_stream
             await _safe_close_stream(stream)

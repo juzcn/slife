@@ -51,6 +51,33 @@ def _sync_in_memory_models(config, raw: dict) -> None:
     config.models, _ = Config._parse_models_section(raw.get(_MODELS_KEY, {}))
 
 
+class _ModelConfigTool(_ConfigPathMixin, Tool):
+    """Shared ``__init__``/``from_config`` for the model-mutation tools.
+
+    All three (set/remove/switch) need the live :class:`Config` to keep the
+    in-memory model registry in sync with the on-disk JSON5.
+
+    Not a real tool — placeholder class attrs only to pass
+    ``Tool.__init_subclass__`` validation; excluded from auto-discovery.
+    """
+
+    name = "_model_config_tool"
+    description = "model config tool base (placeholder)"
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+    _skip_auto_register: ClassVar[bool] = True
+
+    def __init__(self, config_path=None, config=None):
+        super().__init__(config_path=config_path)
+        self._config: "Config | None" = config
+
+    @classmethod
+    def from_config(cls, cfg: dict, config: "Config | None", ctx=None):  # noqa: ARG003
+        tool = cls(config_path=config._path if config else None, config=config)
+        if ctx is not None:
+            object.__setattr__(tool, "_ctx", ctx)
+        return tool
+
+
 # ── List Models ──────────────────────────────────────────────────────
 
 
@@ -115,7 +142,7 @@ class ListModelsTool(_ConfigPathMixin, Tool):
 # ── Add Model ────────────────────────────────────────────────────────
 
 
-class SetModelTool(_ConfigPathMixin, Tool):
+class SetModelTool(_ModelConfigTool):
     """Add or update a model on a provider in the config."""
 
     name: ClassVar[str] = "model_set"
@@ -183,17 +210,6 @@ class SetModelTool(_ConfigPathMixin, Tool):
         },
         "required": ["provider", "model", "name"],
     }
-
-    def __init__(self, config_path=None, config=None):
-        super().__init__(config_path=config_path)
-        self._config: "Config | None" = config
-
-    @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None", ctx=None):  # noqa: ARG003
-        tool = cls(config_path=config._path if config else None, config=config)
-        if ctx is not None:
-            object.__setattr__(tool, "_ctx", ctx)
-        return tool
 
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
@@ -288,7 +304,7 @@ class SetModelTool(_ConfigPathMixin, Tool):
 # ── Remove Model ─────────────────────────────────────────────────────
 
 
-class RemoveModelTool(_ConfigPathMixin, Tool):
+class RemoveModelTool(_ModelConfigTool):
     """Remove a model from the config."""
 
     name: ClassVar[str] = "model_remove"
@@ -309,17 +325,6 @@ class RemoveModelTool(_ConfigPathMixin, Tool):
         },
         "required": ["ref"],
     }
-
-    def __init__(self, config_path=None, config=None):
-        super().__init__(config_path=config_path)
-        self._config: "Config | None" = config
-
-    @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None", ctx=None):  # noqa: ARG003
-        tool = cls(config_path=config._path if config else None, config=config)
-        if ctx is not None:
-            object.__setattr__(tool, "_ctx", ctx)
-        return tool
 
     async def execute(self, **kwargs) -> str:
         if not self._config_path:
@@ -374,7 +379,7 @@ class RemoveModelTool(_ConfigPathMixin, Tool):
 # ── Switch Model ─────────────────────────────────────────────────────
 
 
-class SwitchModelTool(_ConfigPathMixin, Tool):
+class SwitchModelTool(_ModelConfigTool):
     """Switch the active model.
 
     Updates the config file AND the in-memory Config object so the
@@ -397,17 +402,6 @@ class SwitchModelTool(_ConfigPathMixin, Tool):
         },
         "required": ["ref"],
     }
-
-    def __init__(self, config_path=None, config=None):
-        super().__init__(config_path=config_path)
-        self._config: Config | None = config
-
-    @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None", ctx=None):
-        tool = cls(config_path=config._path if config else None, config=config)
-        if ctx is not None:
-            object.__setattr__(tool, "_ctx", ctx)
-        return tool
 
     async def execute(self, **kwargs) -> str:
         if not self._config_path:

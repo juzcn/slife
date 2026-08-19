@@ -7,16 +7,19 @@ the adaptation is a private implementation detail of chat/chat_stream.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time as _time
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from anthropic import AsyncAnthropic
 
-from slife.agent.llm_client import StreamChunk, TokenUsage
+from slife.agent.llm_client import StreamChunk, TokenUsage, _compat_chat_response
 from slife.config import ModelConfig
+
+if TYPE_CHECKING:
+    import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -238,10 +241,7 @@ class AnthropicBackend:
             completion_tokens=response.usage.output_tokens or 0,
             total_tokens=(response.usage.input_tokens or 0) + (response.usage.output_tokens or 0),
         )
-        # Minimal compat shape for callers
-        C = type("Choice", (), {"message": type("Msg", (), {"content": text})()})()
-        R = type("Response", (), {"choices": [C], "usage": response.usage})()
-        return R, usage
+        return _compat_chat_response(text, usage)
 
     # ── Streaming ─────────────────────────────────────────────────────
 

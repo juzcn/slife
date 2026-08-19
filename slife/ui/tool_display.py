@@ -15,6 +15,8 @@ from textual.content import Content
 from textual.widgets import Static
 
 from slife.platform import IS_WINDOWS
+from slife.ui.content import lit as _lit
+from slife.ui.content import mc as _mc
 
 # WSL: Linux kernel with Windows interop — clip.exe is the native clipboard.
 _IS_WSL = sys.platform == "linux" and os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop")
@@ -74,29 +76,6 @@ _STATUS_LABEL: dict[str, str] = {
 }
 
 _STATUS_DEFAULT = "pending"
-
-
-# ── Safe Content builders ────────────────────────────────────────────
-
-def _mc(text: str) -> Content:
-    """Build Content from a **controlled** markup string.
-
-    Only use for strings we construct ourselves (labels, section headers).
-    Never pass user data or tool output through this function.
-    """
-    return Content.from_markup(text)
-
-
-def _lit(text: str, style: str = "") -> Content:
-    """Build Content from arbitrary text — NEVER parsed as markup.
-
-    This is the safe path for all user data: command output, search results,
-    file contents, etc. Characters like &, [, ] are rendered literally.
-    """
-    c = Content.from_text(text, markup=False)
-    if style:
-        c = c.stylize(style)
-    return c
 
 
 # ── Widget ───────────────────────────────────────────────────────────
