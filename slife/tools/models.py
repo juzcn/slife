@@ -100,10 +100,12 @@ class ListModelsTool(_ConfigPathMixin, Tool):
                 vision = "👁" if "image" in m.get("input", []) else ""
                 ctx = m.get("context_window", m.get("contextWindow", "?"))
                 max_tok = m.get("max_tokens", m.get("maxTokens", "?"))
+                compat = m.get("compat")
+                compat_tag = f"  compat={compat}" if isinstance(compat, dict) and compat else ""
                 lines.append(
                     f"  {star} `{ref}` — {name}"
                     f"  ctx={ctx} max_tok={max_tok}"
-                    f"  {thinking} {vision}".rstrip()
+                    f"  {thinking} {vision}{compat_tag}".rstrip()
                 )
                 total += 1
         lines.insert(0, f"**{total} model(s)** configured. Active: `{active}`")
@@ -168,6 +170,16 @@ class SetModelTool(_ConfigPathMixin, Tool):
                 "type": "integer",
                 "description": "Max output tokens. Default: 4096.",
             },
+            "compat": {
+                "type": "object",
+                "description": (
+                    "Provider-specific compatibility overrides, e.g. "
+                    "{thinkingFormat: 'openai'} for Bailian/Qwen anthropic models, "
+                    "or {thinking: 'omit'} to skip the thinking parameter entirely "
+                    "(MiniMax-style openai-compat gateways)."
+                ),
+                "additionalProperties": True,
+            },
         },
         "required": ["provider", "model", "name"],
     }
@@ -215,21 +227,11 @@ class SetModelTool(_ConfigPathMixin, Tool):
         if "api" in kwargs:
             pcfg["api"] = kwargs["api"]
 
-        # Model entry
-        model_entry: dict = {
-            "model": model_id,
-            "name": name,
-        }
-        if "reasoning" in kwargs:
-            model_entry["reasoning"] = kwargs["reasoning"]
-        if "input" in kwargs:
-            model_entry["input"] = kwargs["input"]
-        if "context_window" in kwargs:
-            model_entry["context_window"] = kwargs["context_window"]
-        if "max_tokens" in kwargs:
-            model_entry["max_tokens"] = kwargs["max_tokens"]
-
-        # UPSERT: replace if model with same id exists, otherwise append
+        # Model entry.  On update, MERGE into the existing entry instead of
+        # replacing it wholesale — an earlier model_set that only changed e.g.
+        # max_tokens must not silently drop reasoning/input/compat, which
+        # previously broke thinking-enabled models (a model would lose its
+        # reasoning flag and stop sending the thinking parameter).
         models = pcfg.setdefault("models", [])
         if not isinstance(models, list):
             models = []
@@ -238,10 +240,39 @@ class SetModelTool(_ConfigPathMixin, Tool):
         replaced = False
         for i, m in enumerate(models):
             if isinstance(m, dict) and m.get("model") == model_id:
+                # Merge: keep fields the caller didn't pass (reasoning,
+                # input, compat, context_window, ...) so a partial update
+                # can't strip them.
+                model_entry = {**m, "model": model_id, "name": name}
+                if "reasoning" in kwargs:
+                    model_entry["reasoning"] = kwargs["reasoning"]
+                if "input" in kwargs:
+                    model_entry["input"] = kwargs["input"]
+                if "context_window" in kwargs:
+                    model_entry["context_window"] = kwargs["context_window"]
+                if "max_tokens" in kwargs:
+                    model_entry["max_tokens"] = kwargs["max_tokens"]
+                if "compat" in kwargs:
+                    model_entry["compat"] = kwargs["compat"]
                 models[i] = model_entry
                 replaced = True
                 break
+
         if not replaced:
+            model_entry = {
+                "model": model_id,
+                "name": name,
+            }
+            if "reasoning" in kwargs:
+                model_entry["reasoning"] = kwargs["reasoning"]
+            if "input" in kwargs:
+                model_entry["input"] = kwargs["input"]
+            if "context_window" in kwargs:
+                model_entry["context_window"] = kwargs["context_window"]
+            if "max_tokens" in kwargs:
+                model_entry["max_tokens"] = kwargs["max_tokens"]
+            if "compat" in kwargs:
+                model_entry["compat"] = kwargs["compat"]
             models.append(model_entry)
 
         write_config(self._config_path, raw)

@@ -108,9 +108,36 @@ active_model: "deepseek/deepseek-v4-pro",
 
 | `api` field | Backend | Providers |
 |-------------|---------|-----------|
-| `openai-completions` | OpenAI / DeepSeek / Ollama | Chat Completions |
+| `openai-completions` | OpenAI / DeepSeek / Ollama / MiniMax | Chat Completions |
 | `anthropic-messages` | Claude / Bailian (Qwen) | Messages |
 | `openai-responses` | OpenAI | Responses |
+
+**Per-model `compat` overrides** (configured in the model entry, or via `model_set`):
+
+```json5
+models: {
+  providers: {
+    bailian: {
+      api: "anthropic-messages",
+      models: [{
+        model: "qwen3.8-max", name: "Qwen3.8 Max",
+        reasoning: true,
+        compat: { thinkingFormat: "openai" },  // anthropic backend: model always thinks, no thinking param
+      }],
+    },
+    scnet: {
+      api: "openai-completions",
+      models: [{
+        model: "MiniMax-M3", name: "MiniMax M3",
+        reasoning: true,
+        compat: { thinking: "omit" },          // openai backend: send NO thinking field (gateway 400s on enabled)
+      }],
+    },
+  },
+},
+```
+
+`compat.thinking` on the OpenAI backend: `"omit"` sends no thinking field (for gateways that reject the `{"type": "enabled"}` shape but reason natively), `"disabled"` forces explicit off, `"enabled"` matches the default.
 
 Switch at runtime: `model_list` → `model_switch(ref="bailian/qwen3.8-max")`.
 
@@ -145,7 +172,7 @@ Every tool additionally accepts three harness meta-parameters: `_timeout` (per-c
 
 **Harness tools** come in two tiers. `_`-prefixed native tools (`_sys_note` / `_sys_trim`) are **LLM-visible but reserved**: the agent loop auto-invokes them each turn to maintain context state (report usage %, trim old turns when over the ceiling); they are schema-declared (so the Anthropic / OpenAI-Responses backends accept their call pairs) but the system prompt forbids the LLM from calling them, and both are harmless if it does anyway. `__`-prefixed plugin tools (`__memory_save_turn`, `__mcp_call_tool`, …) are **LLM-invisible** — filtered out of the schema entirely and called programmatically via `client.call_tool()`.
 
-**Five managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts.
+**Five managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts. `model_set` upserts **merge** into the existing entry (a partial update preserves `reasoning` / `input` / `compat`), and accepts a `compat` dict for per-model provider overrides.
 
 **Plugin tools** — registered at runtime as `{server}__{tool}` proxies:
 

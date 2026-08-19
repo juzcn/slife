@@ -117,6 +117,61 @@ class TestBuildKwargs:
         assert kw["extra_body"]["thinking"]["type"] == "enabled"
         assert "reasoning_effort" not in kw["extra_body"]
 
+    # ── compat.thinking escape hatch (MiniMax-style gateways) ──────────
+
+    def test_compat_thinking_omit_skips_extra_body_even_when_thinking_on(self):
+        """compat: {thinking: 'omit'} sends NO thinking field, even for a
+        reasoning-enabled model — scnet/MiniMax-M3 rejects the enabled shape
+        with a 400 Format Error but reasons natively anyway."""
+        mc = ModelConfig(
+            ref="scnet/MiniMax-M3", provider="scnet", api_model="MiniMax-M3",
+            display_name="MiniMax M3", api_key="key",
+            thinking_enabled=True, reasoning_effort=None,
+            compat={"thinking": "omit"},
+        )
+        backend = OpenAIBackend(mc)
+        kw = backend._build_kwargs([], None)
+        assert "extra_body" not in kw
+
+    def test_compat_thinking_disabled_forces_disabled(self):
+        mc = ModelConfig(
+            ref="scnet/MiniMax-M3", provider="scnet", api_model="MiniMax-M3",
+            display_name="MiniMax M3", api_key="key",
+            thinking_enabled=True, reasoning_effort=None,
+            compat={"thinking": "disabled"},
+        )
+        backend = OpenAIBackend(mc)
+        kw = backend._build_kwargs([], None)
+        assert kw["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert "reasoning_effort" not in kw["extra_body"]
+
+    def test_compat_thinking_enabled_keeps_normal_enabled(self):
+        """compat: {thinking: 'enabled'} is equivalent to thinking_enabled —
+        still emits the enabled shape (with reasoning_effort)."""
+        mc = ModelConfig(
+            ref="scnet/Kimi-K3", provider="scnet", api_model="Kimi-K3",
+            display_name="Kimi K3", api_key="key",
+            thinking_enabled=True, reasoning_effort="high",
+            compat={"thinking": "enabled"},
+        )
+        backend = OpenAIBackend(mc)
+        kw = backend._build_kwargs([], None)
+        assert kw["extra_body"]["thinking"]["type"] == "enabled"
+        assert kw["extra_body"]["reasoning_effort"] == "high"
+
+    def test_compat_thinking_omit_does_not_break_deepseek_disabled(self):
+        """compat 'omit' takes precedence over the DeepSeek auto-disabled —
+        no thinking field at all when the user asked to omit."""
+        mc = ModelConfig(
+            ref="deepseek/v4", provider="deepseek", api_model="v4",
+            display_name="V4", api_key="key",
+            thinking_enabled=False, reasoning_effort=None,
+            compat={"thinking": "omit"},
+        )
+        backend = OpenAIBackend(mc)
+        kw = backend._build_kwargs([], None)
+        assert "extra_body" not in kw
+
 
 # ── chat (non-streaming) ────────────────────────────────────────────────
 

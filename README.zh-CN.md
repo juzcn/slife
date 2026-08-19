@@ -106,9 +106,36 @@ active_model: "deepseek/deepseek-v4-pro",
 
 | `api` 字段 | 后端 | 供应商 |
 |-----------|------|--------|
-| `openai-completions` | OpenAI / DeepSeek / Ollama | Chat Completions |
+| `openai-completions` | OpenAI / DeepSeek / Ollama / MiniMax | Chat Completions |
 | `anthropic-messages` | Claude / 百炼 (Qwen) | Messages |
 | `openai-responses` | OpenAI | Responses |
+
+**每模型 `compat` 覆盖**（在模型条目中配置，或通过 `model_set` 配置）：
+
+```json5
+models: {
+  providers: {
+    bailian: {
+      api: "anthropic-messages",
+      models: [{
+        model: "qwen3.8-max", name: "Qwen3.8 Max",
+        reasoning: true,
+        compat: { thinkingFormat: "openai" },  // anthropic 后端：模型总是思考，不发送 thinking 参数
+      }],
+    },
+    scnet: {
+      api: "openai-completions",
+      models: [{
+        model: "MiniMax-M3", name: "MiniMax M3",
+        reasoning: true,
+        compat: { thinking: "omit" },          // openai 后端：不发送 thinking 字段（网关对 enabled 形状报 400）
+      }],
+    },
+  },
+},
+```
+
+OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒绝 `{"type": "enabled"}` 形状但原生会思考的网关），`"disabled"` 显式关闭，`"enabled"` 与默认行为一致。
 
 运行时切换：`model_list` → `model_switch(ref="bailian/qwen3.8-max")`。
 
@@ -143,7 +170,7 @@ active_model: "deepseek/deepseek-v4-pro",
 
 **Harness 工具分两级。** `_` 前缀的原生工具（`_sys_note` / `_sys_trim`）**LLM 可见但保留**：agent loop 每轮自主调用它们维护上下文状态（上报用量百分比、超出上限时裁剪旧轮次）；它们是 schema 声明的（这样 Anthropic / OpenAI-Responses 后端才会接受其调用对），但系统提示词禁止 LLM 调用，即便调用也无害。`__` 前缀的插件工具（`__memory_save_turn`、`__mcp_call_tool` 等）**LLM 不可见**——被完全过滤出 schema，仅由框架通过 `client.call_tool()` 编程调用。
 
-**五个托管类别**（Skills / CLI / REST API / Models / MCP）支持 `X_list` / `X_set` / `X_remove`（+ 需要开关时 `X_set_enabled`）——所有 `X_set` 工具都是幂等 upsert。
+**五个托管类别**（Skills / CLI / REST API / Models / MCP）支持 `X_list` / `X_set` / `X_remove`（+ 需要开关时 `X_set_enabled`）——所有 `X_set` 工具都是幂等 upsert。`model_set` 的 upsert 会**合并**进现有条目（局部更新会保留 `reasoning` / `input` / `compat` 等字段），并接受 `compat` dict 用于每模型的供应商覆盖。
 
 **插件工具** — 运行时以 `{server}__{tool}` 代理注册：
 

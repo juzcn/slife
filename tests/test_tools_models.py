@@ -129,6 +129,79 @@ class TestSetModelTool:
         assert matches[0]["name"] == "Updated Test Model"
 
     @pytest.mark.asyncio
+    async def test_upsert_merges_not_replaces(self, tmp_path):
+        """A partial update must not drop fields the caller didn't pass.
+
+        Regression: model_set previously REPLACED the whole entry, so
+        updating only max_tokens silently stripped reasoning/input/compat —
+        which broke thinking-enabled models (lost the thinking parameter).
+        """
+        p = _make_path(tmp_path)
+        tool = SetModelTool(config_path=p)
+        # The fixture's test-model has reasoning=False, input=["text"], etc.
+        result = await tool.execute(
+            provider="test", model="test-model", name="Updated",
+            max_tokens=9999,
+        )
+        assert "Updated" in result
+
+        raw = _read_config(p)
+        models = raw["models"]["providers"]["test"]["models"]
+        m = next(x for x in models if x["model"] == "test-model")
+        assert m["name"] == "Updated"
+        assert m["max_tokens"] == 9999
+        # Preserved fields from the original entry:
+        assert m["reasoning"] is False
+        assert m["input"] == ["text"]
+        assert m["context_window"] == 100000
+
+    @pytest.mark.asyncio
+    async def test_upsert_can_overwrite_reasoning(self, tmp_path):
+        """Updating a model with an explicit reasoning= flips the flag."""
+        p = _make_path(tmp_path)
+        tool = SetModelTool(config_path=p)
+        result = await tool.execute(
+            provider="test", model="test-model", name="Test Model",
+            reasoning=True,
+        )
+        assert "Updated" in result
+        raw = _read_config(p)
+        m = next(x for x in raw["models"]["providers"]["test"]["models"]
+                 if x["model"] == "test-model")
+        assert m["reasoning"] is True
+        # Input still preserved from original.
+        assert m["input"] == ["text"]
+
+    @pytest.mark.asyncio
+    async def test_set_compat_param(self, tmp_path):
+        """model_set can attach a compat dict (e.g. Bailian thinkingFormat)."""
+        p = _make_path(tmp_path)
+        tool = SetModelTool(config_path=p)
+        result = await tool.execute(
+            provider="test", model="test-model", name="Test Model",
+            compat={"thinkingFormat": "openai"},
+        )
+        assert "Updated" in result
+        raw = _read_config(p)
+        m = next(x for x in raw["models"]["providers"]["test"]["models"]
+                 if x["model"] == "test-model")
+        assert m["compat"] == {"thinkingFormat": "openai"}
+
+    @pytest.mark.asyncio
+    async def test_set_compat_on_new_model(self, tmp_path):
+        p = _make_path(tmp_path)
+        tool = SetModelTool(config_path=p)
+        result = await tool.execute(
+            provider="test", model="new-model", name="New",
+            compat={"thinking": "omit"},
+        )
+        assert "Added" in result
+        raw = _read_config(p)
+        m = next(x for x in raw["models"]["providers"]["test"]["models"]
+                 if x["model"] == "new-model")
+        assert m["compat"] == {"thinking": "omit"}
+
+    @pytest.mark.asyncio
     async def test_no_config_path(self, tmp_path):
         tool = SetModelTool(config_path=None)
         result = await tool.execute(provider="t", model="m", name="N")

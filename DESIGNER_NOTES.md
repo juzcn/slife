@@ -132,6 +132,18 @@ UI的调整，bug的修复当前是在Agent之外做的，因为它自己改自�
 
 目前只有 opennai 后端的Deepseek等大模型是完整使用这个字段， 其它两个后端和其它大模型只是思维链过程，不进入上下文， 也就是后续推理不参考前面的推理过程。
 
+5.3.1 thinking 参数的兼容性逃生阀（2026-08 新增）
+
+不同 OpenAI-compatible 网关对 `thinking` 参数的 schema 要求不一致。scnet 网关的 MiniMax-M3 拒绝 `{"type": "enabled"}` 形状（400 Format Error），但模型本身原生思考，无需显式参数。因此 openai 后端新增 `compat.thinking` 覆盖：
+
+- `"omit"`：完全不发送 thinking 字段（MiniMax-M3 这类网关的正解，模型仍会思考）
+- `"disabled"`：显式发送 `{"type": "disabled"}`
+- `"enabled"`：与默认 `thinking_enabled` 行为一致
+
+设计原则：`reasoning: true` 表达「模型能力标注」（TUI 🧠、model_list 显示），`compat.thinking` 控制「请求参数形状」——能力标注与请求控制分层，不要用删掉 `reasoning` 的方式掩盖参数问题。
+
+配套：`model_set` 的 upsert 改为合并而非整体替换（局部更新不再清掉 reasoning/input/compat），并支持设置 `compat` dict，配置无需手改 json5。
+
 5.4 关于tool output的澄清
 
 当前tool output有个截断，但截断是相当富裕的，考虑到它可能会读取大文件。tool output的当前轮的工具基础，只是它跨轮次的作用值得讨论。就像thinking一样。知道曾经的工具输出是什么，曾经做个什么思考，多当前轮工作既有启发也有污染。

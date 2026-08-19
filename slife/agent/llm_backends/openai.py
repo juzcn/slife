@@ -77,6 +77,23 @@ class OpenAIBackend:
         }
         if tools:
             kwargs["tools"] = tools
+
+        # Per-model compat escape hatch: ``compat.thinking`` explicitly
+        # controls the ``thinking`` parameter.  Some OpenAI-compatible
+        # gateways (e.g. scnet's MiniMax-M3) reject the ``{"type":
+        # "enabled"}`` shape with a 400 Format Error and either expect
+        # ``{"type": "disabled"}`` or no thinking field at all — while the
+        # model still reasons natively.  Values: "enabled" / "disabled"
+        # force the exact shape; "omit" (or anything else) sends no
+        # thinking field.  When unset, fall back to thinking_enabled.
+        compat = self.model_config.compat or {}
+        thinking_override = compat.get("thinking")
+        if thinking_override is not None and thinking_override != "enabled":
+            # "disabled" -> explicit off; "omit"/other -> no thinking field.
+            if thinking_override == "disabled":
+                kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            return kwargs
+
         if self.model_config.thinking_enabled:
             extra_body: dict = {"thinking": {"type": "enabled"}}
             if self.model_config.reasoning_effort:

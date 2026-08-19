@@ -149,7 +149,7 @@ Reasoning ("thinking") support is per-backend:
 
 | Backend | Thinking on | Notes |
 |---------|-------------|-------|
-| OpenAI Completions | `extra_body.thinking.type = "enabled"` (+ optional `reasoning_effort`) | DeepSeek requires explicit `"disabled"` when off; thinking streamed from `delta.reasoning_content` |
+| OpenAI Completions | `extra_body.thinking.type = "enabled"` (+ optional `reasoning_effort`) | DeepSeek requires explicit `"disabled"` when off; thinking streamed from `delta.reasoning_content`. **`compat.thinking`** overrides per model: `"omit"` sends no thinking field (MiniMax-M3-style gateways that 400 on the enabled shape but reason natively), `"disabled"` forces explicit off, `"enabled"` matches the default |
 | Anthropic Messages | `thinking.budget_tokens = max(max_tokens // 2, 1024)` | `compat.thinkingFormat: "openai"` (Bailian/Qwen) sends no thinking param — the model always thinks |
 | OpenAI Responses | `reasoning.effort` (default `"medium"`) | Streams both `reasoning_text` and `reasoning_summary_text` deltas |
 
@@ -169,6 +169,8 @@ Runtime model management via native tools — no config editing needed:
 | `model_set` | Add/update a model (creates provider if new) |
 | `model_remove` | Remove by ref; auto-switches if it was active |
 | `model_switch` | Switch active model by ref — persists to config and rebuilds the client live |
+
+`model_set` is an **upsert that merges, not replaces**: a partial update (e.g. only `max_tokens`) keeps the model's existing `reasoning`, `input`, `compat`, and other fields, so a field-focused change can't silently strip a model's thinking/vision capability. It also accepts a `compat` dict (e.g. `{thinking: "omit"}` or `{thinkingFormat: "openai"}`), so per-model compatibility overrides can be configured without hand-editing `slife.json5`. `model_list` surfaces the `compat` dict on each model.
 
 Model switches fire callbacks that rebuild the LLM client, update loop parameters (vision, context window, modalities), and re-render the system prompt.
 
@@ -229,7 +231,7 @@ Plus **plugin tools** — registered at runtime as `{server}__{tool}` proxies vi
 
 Naming rule: a plugin tool already carrying its server as a name prefix (`mcp_set`, `wechat_login`) is registered as-is (avoids the redundant `mcp__mcp_set` / `wechat__wechat_login`); otherwise the proxy adds `{server}__`. External MCP servers always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
 
-**Managed categories** (Skills / CLI / REST API / Models / MCP) support a standard **`X_list` / `X_set` / `X_remove`** surface (plus `X_set_enabled` where an enable/disable toggle applies). `X_set` is an idempotent upsert — add + update in one call. Config uses the `config_env_*` prefix (no `config_list`); Models substitutes `model_switch` for `X_set_enabled`.
+**Managed categories** (Skills / CLI / REST API / Models / MCP) support a standard **`X_list` / `X_set` / `X_remove`** surface (plus `X_set_enabled` where an enable/disable toggle applies). `X_set` is an idempotent upsert — add + update in one call. Config uses the `config_env_*` prefix (no `config_list`); Models substitutes `model_switch` for `X_set_enabled`. `model_set`'s upsert **merges** into the existing entry (a partial update preserves `reasoning` / `input` / `compat`), so a field-focused change can't strip a model's capabilities; it also accepts a `compat` dict for per-model overrides (see Model Management).
 
 ### Registry
 
