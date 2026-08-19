@@ -258,11 +258,11 @@ The active model is switched via the `model_switch` tool (natural language) in n
 
 Picker rules (hard-won):
 
-- Pure priority bindings — digits `1`-`9` → `pick(i)`, `Esc` → cancel. No `_on_key` / `on_click` overrides (they swallowed keys).
+- Pure priority bindings — `↑`/`↓` move a cursor, `Enter` picks, `Esc` cancels. No `_on_key` / `on_click` overrides (they swallowed keys). The cursor opens on the active model, so a bare `Enter` re-selects it.
 - The binding action must be **sync**: binding actions run inside the key-event handler (`App._on_key` → `_check_bindings`), so awaiting the picker's future there deadlocks the TUI (the picker needs key events to resolve). The await lives in a background task (`_finish_model_switch`).
 - Scroll to the picker **after layout** (`call_after_refresh(scroll_end)`) — an immediate scroll runs against the pre-mount content and the picker's insertion leaves the view pinned at the top (picker below the fold).
 - Key is `Ctrl+S` ("s" = switch). Not `ctrl+m` (Textual aliases it to enter), not `ctrl+g` (VSCode's goto-line steals it).
-- The picker lists up to 9 models (one digit per key); more are folded into "… N more". Accepted — this is an emergency tool; natural-language `model_switch` is the primary path.
+- Every configured model is listed (no cap); the chat scrolls if the list is taller than the viewport.
 
 ### Autonomous Heartbeat
 

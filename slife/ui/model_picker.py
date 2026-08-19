@@ -2,7 +2,8 @@
 
 Lets the operator switch the active model from the UI even when the
 current LLM is down (no API round-trip needed).  Rendered as a numbered
-row in the chat stream; typing ``1``-``9`` picks a model, ``Esc`` cancels.
+row in the chat stream; ``↑/↓`` move a cursor, ``Enter`` picks, ``Esc``
+cancels.  Every configured model is listed — no cap.
 
 Same contract as :class:`~slife.ui.approval_prompt.ApprovalPrompt`: the
 caller creates an ``asyncio.Future``, mounts the picker, focuses it, and
@@ -20,8 +21,8 @@ from textual.widgets import Static
 
 from slife.config import ModelConfig
 
-# Inline picker keys: digits 1-9.  Cap the rendered list accordingly.
-_MAX_CHOICES = 9
+# Inline picker navigation: ↑/↓ move a cursor, Enter picks, Esc cancels.
+# Every configured model is listed — no cap.
 
 
 def _mc(text: str) -> Content:
@@ -41,7 +42,7 @@ def _lit(text: str, style: str = "") -> Content:
 
 
 class ModelPicker(Static):
-    """Inline numbered model selector — ``1``-``9`` picks, ``Esc`` cancels.
+    """Inline model selector — ``↑/↓`` move a cursor, ``Enter`` picks, ``Esc`` cancels.
 
     Pure priority bindings, no ``_on_key`` / ``on_click`` overrides —
     exactly the ApprovalPrompt interaction model, so focus and key
@@ -56,15 +57,9 @@ class ModelPicker(Static):
     # widget) BEFORE ChatView's printable-key redirect and the App's
     # non-priority escape -> cancel — same as ApprovalPrompt.
     BINDINGS = [
-        Binding("1", "pick(0)", "1", priority=True),
-        Binding("2", "pick(1)", "2", priority=True),
-        Binding("3", "pick(2)", "3", priority=True),
-        Binding("4", "pick(3)", "4", priority=True),
-        Binding("5", "pick(4)", "5", priority=True),
-        Binding("6", "pick(5)", "6", priority=True),
-        Binding("7", "pick(6)", "7", priority=True),
-        Binding("8", "pick(7)", "8", priority=True),
-        Binding("9", "pick(8)", "9", priority=True),
+        Binding("up", "cursor_up", "Up", priority=True),
+        Binding("down", "cursor_down", "Down", priority=True),
+        Binding("enter", "pick", "Pick", priority=True),
         Binding("escape", "cancel", "Cancel", priority=True),
     ]
 
@@ -80,14 +75,31 @@ class ModelPicker(Static):
         self._future = future
         self._decided: bool = False
         self._choice: ModelConfig | None = None
+        # Cursor opens on the active model, so a bare Enter switches to the
+        # current selection without any navigation.
+        self._cursor = next(
+            (i for i, m in enumerate(models) if m.ref == active_ref), 0
+        )
         # Reuse the approval-prompt visual style (unified with approve).
         self.add_class("approval-prompt")
         self.update(self._build_content())
 
-    def action_pick(self, index: int) -> None:
-        """Pick the numbered model (1-9 key).  Out-of-range → no-op."""
-        if not self._decided and 0 <= index < len(self._models):
-            self._resolve(self._models[index])
+    def action_cursor_up(self) -> None:
+        """Move the selection cursor up (clamped at the top)."""
+        if not self._decided and self._cursor > 0:
+            self._cursor -= 1
+            self.update(self._build_content())
+
+    def action_cursor_down(self) -> None:
+        """Move the selection cursor down (clamped at the bottom)."""
+        if not self._decided and self._cursor < len(self._models) - 1:
+            self._cursor += 1
+            self.update(self._build_content())
+
+    def action_pick(self) -> None:
+        """Pick the model under the cursor (Enter)."""
+        if not self._decided and 0 <= self._cursor < len(self._models):
+            self._resolve(self._models[self._cursor])
 
     def action_cancel(self) -> None:
         """Cancel the picker (Esc)."""
@@ -110,34 +122,29 @@ class ModelPicker(Static):
 
         content = _mc("[bold #d29922]⚠ [/]") + _mc("[bold]Switch model[/bold]")
 
-        for i, m in enumerate(self._models[:_MAX_CHOICES], 1):
+        for i, m in enumerate(self._models, 1):
+            row_idx = i - 1
+            cursor = "▸ " if row_idx == self._cursor else "  "
             star = "★ " if m.ref == self._active_ref else "  "
             content = content + _lit(
-                f"\n  {i}. {star}{m.display_name}",
+                f"\n{cursor}{i}. {star}{m.ref}",
                 "bold" if m.ref == self._active_ref else "",
-            ) + _lit(f"  {m.provider}", "#8b949e")
+            )
             meta = self._meta_line(m)
             if meta:
-                content = content + _lit("\n     " + meta, "#8b949e")
+                content = content + _lit("  " + meta, "#8b949e")
 
-        if len(self._models) > _MAX_CHOICES:
-            content = content + _lit(
-                f"\n  … {len(self._models) - _MAX_CHOICES} more", "#484f58"
-            )
-
-        # Key hints on the last line, same as ApprovalPrompt.  Reflect the
-        # actual selectable range (1-N, capped at the bound digit keys).
-        max_key = min(len(self._models), _MAX_CHOICES)
-        key_hint = "1" if max_key <= 1 else f"1-{max_key}"
+        # Key hints on the last line, same as ApprovalPrompt.
         content = content + _mc(
-            f"\n[#6e7681]{key_hint} [/][bold #3fb950]Select[/]  "
+            "\n[#6e7681]↑/↓ [/][bold #3fb950]Select[/]  "
+            "[#6e7681]Enter [/][bold #3fb950]Pick[/]  "
             "[#6e7681]Esc [/][bold #f85149]Cancel[/]"
         )
         return content
 
     def _meta_line(self, m: ModelConfig) -> str:
-        """One-line model metadata: ref + context window + capability flags."""
-        parts = [m.ref]
+        """One-line model metadata: context window + capability flags."""
+        parts = []
         if m.context_window:
             parts.append(f"ctx {m.context_window}")
         if m.supports_vision:
@@ -151,7 +158,6 @@ class ModelPicker(Static):
             return (
                 _mc("[bold #3fb950]✓ Switched[/bold #3fb950]")
                 + _mc(" — ")
-                + _lit(self._choice.display_name, "bold")
-                + _lit(f"  {self._choice.provider}", "#8b949e")
+                + _lit(self._choice.ref, "bold")
             )
         return _mc("[bold #f85149]✗ Canceled[/bold #f85149]")

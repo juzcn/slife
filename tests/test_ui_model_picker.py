@@ -1,7 +1,7 @@
 """Tests for the inline ModelPicker widget (Ctrl+S model switching).
 
 Same interaction style as ApprovalPrompt: an inline row in the chat,
-``1``-``9`` picks a numbered model, ``Esc`` cancels, and the row
+``↑/↓`` moves a cursor, ``Enter`` picks, ``Esc`` cancels, and the row
 re-renders to a ✓ Switched / ✗ Canceled status line.  Pure priority
 bindings — no ``_on_key`` / ``on_click`` overrides.
 """
@@ -18,7 +18,7 @@ def _models():
     return [
         ModelConfig(ref="alpha/m1", provider="alpha", api_model="m1", display_name="Alpha One", api_key="k"),
         ModelConfig(ref="beta/m2", provider="beta", api_model="m2", display_name="Beta Two", api_key="k", supports_vision=True),
-        ModelConfig(ref="gamma/m3", provider="gamma", api_model="m3", display_name="Gamma & [Three]", api_key="k", thinking_enabled=True),
+        ModelConfig(ref="gamma/m3&[x]", provider="gamma", api_model="m3", display_name="Gamma & [Three]", api_key="k", thinking_enabled=True),
     ]
 
 
@@ -29,17 +29,28 @@ class TestModelPicker:
         return picker, future
 
     @pytest.mark.asyncio
-    async def test_active_model_starred(self):
+    async def test_lists_all_models(self):
+        """Every model is rendered — no 9-slot cap, no ``… N more``."""
+        many = [
+            ModelConfig(ref=f"p{i}/m{i}", provider=f"p{i}", api_model=f"m{i}",
+                        display_name=f"M{i}", api_key="k")
+            for i in range(1, 13)
+        ]
+        future = asyncio.Future()
+        picker = ModelPicker(many, "p1/m1", future)
+        text = str(picker.render())
+        for i in range(1, 13):
+            assert f"p{i}/m{i}" in text
+        assert "more" not in text
+
+    @pytest.mark.asyncio
+    async def test_active_model_starred_and_cursor_on_it(self):
         picker, _ = self._make()
         text = str(picker.render())
-        assert "★ Beta Two" in text  # active model starred
-        assert "Alpha One" in text
-        assert "Gamma & [Three]" in text  # markup-hazardous name renders literally
-        assert "beta/m2" in text
-        # Provider id shown next to each display name.
-        assert "Alpha One  alpha" in text
-        assert "Beta Two  beta" in text
-        assert "Gamma & [Three]  gamma" in text
+        # Cursor opens on the active model; both markers show on that row.
+        assert "▸ 2. ★ beta/m2" in text
+        assert "alpha/m1" in text
+        assert "gamma/m3&[x]" in text  # markup-hazardous ref renders literally
         # Capability flags as text labels, not emojis.
         assert "vision" in text  # Beta Two supports vision
         assert "thinking" in text  # Gamma has thinking enabled
@@ -47,39 +58,48 @@ class TestModelPicker:
         assert "🧠" not in text
 
     @pytest.mark.asyncio
-    async def test_hint_reflects_model_count(self):
+    async def test_hint_shows_navigation(self):
         picker, _ = self._make()  # 3 models
         text = str(picker.render())
-        assert "1-3 Select" in text
-
-        single_future = asyncio.Future()
-        single = ModelPicker(_models()[:1], "alpha/m1", single_future)
-        assert "1 Select" in str(single.render())
+        assert "↑/↓" in text
+        assert "Enter" in text
+        assert "Esc Cancel" in text
 
     @pytest.mark.asyncio
-    async def test_digit_bindings_are_priority(self):
+    async def test_navigation_bindings_are_priority(self):
         picker, _ = self._make()
         keys = {b.key: b for b in picker.BINDINGS}
-        for i in range(1, 10):
-            b = keys[str(i)]
-            assert b.action == f"pick({i - 1})" and b.priority
-        assert keys["escape"].action == "cancel" and keys["escape"].priority
+        for key, action in (
+            ("up", "cursor_up"),
+            ("down", "cursor_down"),
+            ("enter", "pick"),
+            ("escape", "cancel"),
+        ):
+            b = keys[key]
+            assert b.action == action and b.priority
 
     @pytest.mark.asyncio
-    async def test_action_pick_selects_model(self):
+    async def test_cursor_moves_and_clamps(self):
+        """Cursor starts on the active model and clamps at both ends."""
         picker, future = self._make()
-        picker.action_pick(0)
-        assert future.result().ref == "alpha/m1"
+        assert picker._cursor == 1  # beta/m2
+        picker.action_cursor_up()    # -> alpha/m1
+        picker.action_cursor_up()    # clamp at top
+        assert picker._cursor == 0
+        picker.action_cursor_down()
+        picker.action_cursor_down()  # -> beta, then gamma
+        picker.action_cursor_down()  # clamp at bottom
+        assert picker._cursor == 2
+        picker.action_pick()
+        assert future.result().ref == "gamma/m3&[x]"
+
+    @pytest.mark.asyncio
+    async def test_action_pick_selects_cursor_model(self):
+        picker, future = self._make()
+        picker.action_pick()  # cursor opens on active model
+        assert future.result().ref == "beta/m2"
         assert "Switched" in str(picker.render())
-        assert "Alpha One" in str(picker.render())
-        assert "Alpha One  alpha" in str(picker.render())  # provider in status line
-
-    @pytest.mark.asyncio
-    async def test_action_pick_out_of_range_noop(self):
-        picker, future = self._make()
-        picker.action_pick(99)
-        assert future.done() is False
-        assert picker._decided is False
+        assert "beta/m2" in str(picker.render())  # ref in status line
 
     @pytest.mark.asyncio
     async def test_action_cancel_sets_none(self):
@@ -91,14 +111,15 @@ class TestModelPicker:
     @pytest.mark.asyncio
     async def test_second_decision_ignored(self):
         picker, future = self._make()
-        picker.action_pick(0)
-        picker.action_pick(1)  # repeat press must not override
-        assert future.result().ref == "alpha/m1"
-        assert "Alpha One" in str(picker.render())
+        picker.action_pick()  # picks cursor model (beta/m2)
+        picker.action_cursor_down()  # ignored after decision
+        picker.action_pick()  # ignored
+        assert future.result().ref == "beta/m2"
+        assert "beta/m2" in str(picker.render())
 
     @pytest.mark.asyncio
-    async def test_pilot_digit_selects_model(self):
-        """Real Textual key dispatch: typing 2 resolves the 2nd model."""
+    async def test_pilot_arrows_and_enter_select(self):
+        """Real Textual key dispatch: ↓ + Enter picks the model under cursor."""
         from textual.app import App
 
         app = App()
@@ -108,8 +129,9 @@ class TestModelPicker:
             await app.mount(picker)
             picker.focus()
             await pilot.pause()
-            await pilot.press("2")
-            assert future.result().ref == "beta/m2"
+            await pilot.press("down")  # beta -> gamma
+            await pilot.press("enter")
+            assert future.result().ref == "gamma/m3&[x]"
             assert "Switched" in str(picker.render())
 
     @pytest.mark.asyncio
@@ -170,7 +192,7 @@ class TestModelPicker:
 
     @pytest.mark.asyncio
     async def test_pilot_unbound_key_falls_through(self):
-        """A non-digit key must NOT be swallowed — no keyboard hijack."""
+        """A non-navigation key must NOT be swallowed — no keyboard hijack."""
         from textual.app import App
 
         app = App()
