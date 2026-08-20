@@ -42,15 +42,16 @@ class TestBuild:
         result = build(cfg)
         # 一级标题（不编号）
         assert "**Environment**" in result
-        assert "**Context & Memory**" in result
+        assert "**Turn(or called conversation), Context & Memory**" in result
         assert "**Capabilities**" in result
         assert "**Coordination**" in result
         # 二级标题（组内编号）
         assert "1. Platform & OS" in result
-        assert "1. LLM Context" in result
-        assert "2. Memory — Conversations" in result
-        assert "3. Memory — notes, diaries and files" in result
-        assert "4. Related annotations" in result
+        assert "1. Turn" in result
+        assert "2. LLM Context" in result
+        assert "3. Memory — Turns (memdb)" in result
+        assert "4. Memory — Files Cabinet (memfiles)" in result
+        assert "5. Annotations" in result
         assert "1. Images & multimodal" in result
         assert "2. Credential resolution chain" in result
         assert "3. Tools & skills" in result
@@ -64,7 +65,7 @@ class TestBuild:
     def test_context_window_strategy(self, cfg):
         from slife.agent.system_prompt import build
         result = build(cfg)
-        assert "Context floor: 20% / ceiling: 80%" in result  # defaults
+        assert "20%" in result and "80%" in result  # floor/ceiling defaults
         assert "_sys_trim" not in result  # trim is now internal (marker, not tool)
         assert "[TrimContext:" in result  # the runtime trim marker is documented
         assert "memory_search" in result
@@ -239,7 +240,8 @@ class TestStructure:
     """Primary-heading taxonomy and world (slife.j2) consistency across roles."""
 
     _MAIN_HEADS = [
-        "**Identity**", "**Environment**", "**Context & Memory**",
+        "**Identity**", "**Environment**",
+        "**Turn(or called conversation), Context & Memory**",
         "**Capabilities**", "**Coordination**", "**Autonomy**",
     ]
 

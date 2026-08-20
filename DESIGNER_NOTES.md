@@ -168,6 +168,35 @@ UI的调整，bug的修复当前是在Agent之外做的，因为它自己改自�
 
 6.3 ✅ recall 工具集随 turn id 完善（2026-08 已实现）。`memory_turn_summarize` 的 rowid=None 语义改为"当前轮"：大模型在循环结束前调用，save 时 `_extract_turn_annotation` 把 summary/tags 落到新行，不再 `latest_rowid()` 竞态（显式 rowid 照旧即时更新）。`memory_list_recent` 改名 `memory_list_turns`，支持 before_rowid / after_rowid 按 rowid 锚点翻页（从脚注锚点往前看上下文之外的旧轮）。
 
+6.3 Context & Memory
+
+1 Turn 和 Coversation
+与大模型交互从user message、tool pair messges 到 assitant message的消息集合, 我们称为一轮会话。每轮结束后它都会被持久化，进入永久记忆。
+
+2 LLM Context
+
+是指每次提交给大模型的数据，它包含系统提示词、工具schemas, 合法消息数组。这个数组是由历史turns和当前turn的消息构成和演化。
+
+由于大模型上下文窗口的限制， 我们必须需要动态管理加载的turns，使得上下文大小维持在大模型上下文窗口的20%和80%之间。
+
+系统重启时，默认恢复退出时的上下文，就像没有发生过退出和重启。如果用户需要一个fresh start，它可以调用 clear context工具清空加载的历史turns.
+
+3 Memory Turn Conversation - memdb
+
+对于不在上下文的更早时间的turn，用户可以使用memory search 工具召回，以工具结果的形式注入到当前上下文。
+
+4 Memory files - memfiles
+
+除了turn 会话会自动进入永久记忆，还有一类数据是通过用户调用工具以文件的形式进入永久记忆，写笔记、记日记和保存文件。这些记忆可以通过相应的工具召回。
+
+5 Annotation - injected into user or assitant message
+
+   - read as metadata — not the user's or assistant's words:
+     - `[Turn: N · start → end]` — a memory turn (id + when it happened). On restored turns and on a just-completed turn once saved (never on the in-flight turn). Use the memory tools to open / annotate / page it.
+     - `[TrimContext: N]` — N oldest complete turns were cut from context after the last turn was saved; their detail may be out of context. **Runtime-only** — current session only, never in restored history (restore is already the trimmed state). The turns remain in memory (searchable).
+     - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
+
+
 
 
 

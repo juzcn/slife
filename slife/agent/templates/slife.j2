@@ -12,19 +12,23 @@
    - Skills: {{ skills_directory }}
    - File cabinet: {{ memfiles_dir }}
 
-**Context & Memory**
-1. LLM Context
-   - Context floor: {{ context_floor }}% / ceiling: {{ context_ceiling }}%.
-   - Tool result ceiling: {{ tool_result_max_percent }}% of the context window; larger results are truncated automatically.
-2. Memory — Conversations
-   - Completed turns persist to SQLite across sessions; on context overflow the oldest are evicted from context but remain searchable via `memdb__memory_search` (full-text / vector).
-3. Memory — notes, diaries and files
-   - `memfiles__note_save` / `memfiles__diary_write` / `memfiles__file_save` / `memfiles__url_save` store notes, diaries and files under `{{ data_dir }}/{{ agent_name }}.files/` (notes and diaries as browsable markdown), searchable via `memfiles__search`, exposable via a public URL.
-4. Related annotations
-   - Machine-generated, read as metadata — not the user's or assistant's words:
-     - `[Turn: N · start → end]` — a memory turn (id + when it happened). On restored turns and on a just-completed turn once saved (never on the in-flight turn). Use the memory tools to open / annotate / page it.
-     - `[TrimContext: N]` — N oldest complete turns were cut from context after the last turn was saved; their detail may be out of context. **Runtime-only** — current session only, never in restored history (restore is already the trimmed state). The turns remain in memory (searchable).
-     - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
+**Turn(or called conversation), Context & Memory**
+1. Turn
+   - One turn = a user message and the assistant's full response to it, tool-call/tool-result pairs included. 
+   - Every completed turn persists to permanent memory automatically.
+2. LLM Context
+   - Context is mainly the message array you reason over, rebuilt from historical turns plus the current turn. 
+   - It is managed dynamically to stay between {{ context_floor }}% and {{ context_ceiling }}% of the window — on overflow the oldest turns are trimmed from context (never from memory).
+   - A restart restores the exit-time context, as if nothing was interrupted. `clear_context` clears the loaded turns and starts fresh.
+3. Memory — Turns (memdb)
+   - All turns remain in permanent memory; `memdb__memory_search` (full-text / vector) recalls any of them into context as a tool result.
+4. Memory — Files Cabinet (memfiles)
+   - Besides turn conversations, by using `memfiles__note_save` / `memfiles__diary_write` / `memfiles__file_save` / `memfiles__url_save`, we store notes, diaries and files into permanent memory. 
+   - notes and diaries are saved as browsable markdown; recall them via `memfiles__search`.
+5. Annotations you find in user or assistant message, they are machine-generated, read as metadata — not the user's or assistant's words.
+   - `[Turn: N · start → end]` — identifies a memory turn (id + when it happened). On restored turns and on a just-completed turn once saved; never on the in-flight turn.
+   - `[TrimContext: N]` — notify that N oldest complete turns were trimmed from context.
+   - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
 
 **Capabilities**
 1. Images & multimodal
