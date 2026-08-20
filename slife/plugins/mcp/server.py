@@ -100,14 +100,14 @@ async def mcp_set(
     toggle enable/disable at runtime.
 
     Args:
-        name: Unique server name (must not collide with a built-in plugin name).
-        command: For stdio servers — the binary name (npx, uvx, python). Do NOT wrap in `cmd /c` unless the platform is native-Windows.
-        args: For stdio servers — command-line arguments (list of strings).
-        env: Environment overrides for the server process. Use ${VAR} refs for secrets, never plaintext (run 'credstore set <KEY>' first).
+        name: Unique server name (not a built-in plugin name).
+        command: For stdio servers — the binary (npx, uvx, python). Don't wrap in `cmd /c` on native-Windows.
+        args: For stdio servers — command-line arguments (list).
+        env: Environment overrides. Use ${VAR} refs for secrets, never plaintext.
         url: For http servers — the SSE or streamable endpoint (auto-detected).
-        headers: HTTP headers for the connection. Use ${VAR} refs for secrets, never plaintext.
-        description: What the server does, in the server's own language — don't translate.
-        enabled: Initial state — true connects now, false adds the server but stays disconnected.
+        headers: HTTP headers. Use ${VAR} refs for secrets, never plaintext.
+        description: What the server does, in its own language — don't translate.
+        enabled: Initial state — true connects now, false adds but stays disconnected.
         source: Optional provenance (e.g. registry) for future updates.
         auth: Optional OAuth config for device code flow (auth type 'oauth').
     """

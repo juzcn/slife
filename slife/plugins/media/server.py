@@ -103,10 +103,8 @@ def _error(e: Exception) -> str:
 @mcp.tool(
     name="generate_image",
     description=(
-        "Generate an image from a text prompt and save it locally. "
-        "By default saves to the working directory; pass folder to save "
-        "to a specific directory. Returns the absolute path of the "
-        "saved image file."
+        "Generate an image from a text prompt and save it locally; "
+        "returns the absolute path of the saved image file."
     ),
 )
 async def generate_image(
@@ -117,16 +115,13 @@ async def generate_image(
 
     Args:
         prompt: Text description of the image to generate.
-        model: Model reference as 'provider/model' (e.g.
-            'bailian_personal/wan2.7-image') or a bare configured model
-            name. Uses the configured image default when omitted.
-        size: Output dimensions, e.g. '1024*1024'. Provider-specific;
-            uses the model default when omitted.
+        model: Model reference as 'provider/model' or a bare configured
+            model name; provider default when omitted.
+        size: Output dimensions, e.g. '1024*1024'; provider default when
+            omitted.
         image: Absolute local path to a reference image for
-            image-conditioned generation. Uploaded to the provider
-            automatically.
-        folder: Directory to save the image into (default: the working
-            directory).
+            image-conditioned generation (uploaded automatically).
+        folder: Directory to save the image into (default: working dir).
     """
     try:
         cfg = _ensure_config()
@@ -162,9 +157,7 @@ async def generate_image(
         "Generate a video from a text prompt (optionally conditioned on "
         "a reference image) and save it locally. By default saves to the "
         "working directory; pass folder to save to a specific directory. "
-        "Returns the absolute path of the saved MP4 file. Renders take "
-        "minutes — pass _async: true and poll the returned task with "
-        "check_async."
+        "Returns the absolute path of the saved MP4 file."
     ),
 )
 async def generate_video(
@@ -176,20 +169,17 @@ async def generate_video(
 
     Args:
         prompt: Text description of the video to generate.
-        model: Model reference as 'provider/model' (e.g.
-            'bailian_personal/happyhorse-1.1-t2v') or a bare configured
-            model name. Uses the configured video default when omitted.
+        model: Model reference as 'provider/model' or a bare configured
+            model name; provider default when omitted.
         image: Absolute local path to a reference image for
-            image-to-video / reference-to-video models. Uploaded to the
-            provider automatically.
-        resolution: Output resolution, e.g. '720P', '1080P'. Uses the
-            model default when omitted.
-        ratio: Aspect ratio, e.g. '16:9', '9:16', '1:1'. Uses the model
+            image-to-video / reference-to-video models (uploaded
+            automatically).
+        resolution: Output resolution, e.g. '720P', '1080P'; model
             default when omitted.
-        duration: Video duration in seconds. Uses the model default when
-            omitted.
-        folder: Directory to save the video into (default: the working
-            directory).
+        ratio: Aspect ratio, e.g. '16:9', '9:16', '1:1'; model default
+            when omitted.
+        duration: Video duration in seconds; model default when omitted.
+        folder: Directory to save the video into (default: working dir).
     """
     try:
         cfg = _ensure_config()

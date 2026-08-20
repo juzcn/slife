@@ -385,10 +385,8 @@ async def memory_open(rowid: int) -> str:
     name="memory_search",
     description=(
         "Search memories (each result = one turn, carrying its turn id). "
-        "Modes: 'grep' exact substring (error messages, file paths, code); "
-        "'fts5' BM25 keyword ranking; 'hybrid' fts5 + semantic (default); "
-        "'time' browse by date range, no query. "
-        "since/until = ISO datetime — convert relative time ('yesterday' → date). "
+        "Modes: 'grep' exact substring, 'fts5' BM25 keyword, 'hybrid' "
+        "fts5 + semantic (default), 'time' browse by date range (no query). "
         "Use memory_open with the result's turn id for full turns."
     ),
 )
@@ -403,9 +401,9 @@ async def memory_search(
 
     Args:
         query: The search text. Required except for mode="time".
-        mode: grep (exact substring) | fts5 (BM25 keyword) | hybrid (fts5 + semantic, default) | time (browse by date range, no query).
+        mode: grep | fts5 | hybrid (default) | time. See description.
         limit: Maximum results.
-        since: Lower bound, ISO datetime. Convert relative time ("yesterday") to a date first.
+        since: Lower bound, ISO datetime (relative words like 'yesterday' accepted).
         until: Upper bound, ISO datetime.
     """
     store = await _ensure_store()
@@ -511,9 +509,8 @@ async def memory_turn_summarize(
     """Write a summary and tags for a turn, making it findable by keyword search.
 
     Args:
-        rowid: The turn id to annotate (same id as a `[Turn: N · …]` footnote).
-            Omit to annotate the current (in-flight) turn — the summary/tags
-            are applied when the turn completes and is saved.
+        rowid: The turn id to annotate. Omit to annotate the current
+            (in-flight) turn — applied when it completes and is saved.
         summary: A 1-2 sentence summary of the turn.
         tags: Comma-separated tags for keyword search.
     """
@@ -614,12 +611,12 @@ async def memory_set_embedding(
 
     Args:
         backend: ``"gguf"``, ``"transformer"``, or ``"api"``.
-        model: Model name. Default ``"bge-m3"``. For API backend this is
-            the OpenAI model ID (e.g. ``"text-embedding-3-small"``).
+        model: Model name. Default ``"bge-m3"``; for ``api`` this is the
+            OpenAI model ID (e.g. ``"text-embedding-3-small"``).
         gguf_path: Path to .gguf file. Required when ``backend="gguf"``.
-        dim: Explicit embedding dimension. Auto-detected when 0 (default).
+        dim: Embedding dimension; auto-detected when 0 (default).
         device: Device override for transformer backend
-            (``"cpu"`` / ``"cuda"``). Auto-detect when empty.
+            (``"cpu"`` / ``"cuda"``); auto-detect when empty.
     """
     from slife.plugins.memdb.embedding_config import (
         write_embedding_config, validate_gguf_path, get_first_provider_api_key,

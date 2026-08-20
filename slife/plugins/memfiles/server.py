@@ -527,7 +527,7 @@ async def file_save(
         title: Display title (default: the source filename).
         tags: Optional comma-separated tags for search.
         summary: Optional LLM summary — makes the file findable by semantic search.
-        category: Optional subfolder override (files/<category>/); auto-detected from the extension by default.
+        category: Optional subfolder override (files/<category>/); auto-detected by extension.
     """
     store = await _ensure_store()
     mem_dir = store.mem_dir
@@ -584,7 +584,7 @@ async def url_save(
         title: Display title (default: derived from the URL).
         tags: Optional comma-separated tags for search.
         summary: Optional LLM summary — makes the file findable by semantic search.
-        category: Optional subfolder override (files/<category>/); auto-detected from the extension by default.
+        category: Optional subfolder override (files/<category>/); auto-detected by extension.
     """
     import aiohttp
 
@@ -923,7 +923,7 @@ async def list_files(category: str = "", limit: int = 50, offset: int = 0) -> st
     """List saved files, newest first.
 
     Args:
-        category: Optional filter — images/documents/archives/code/audio/video/data/other.
+        category: Optional filter — see description for the category list.
         limit: Maximum entries to return.
         offset: Skip this many entries (for paging).
     """
