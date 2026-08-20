@@ -5,7 +5,6 @@ Supports multimodal messages (text + images) for vision-capable models.
 
 import logging
 
-from slife.agent.multimodal import include_image_url
 from slife.logfmt import sanitize_secrets
 
 logger = logging.getLogger(__name__)
@@ -158,50 +157,26 @@ class Conversation:
         return repaired
 
     def add_user_message(
-        self, content: str, images: list[str] | None = None
+        self, content: str,
     ) -> None:
-        """Add a user message, optionally with attached images.
+        """Add a user message — the user's text, verbatim.
 
-        Local image files are read and base64-encoded into data URIs;
-        remote URLs (``https://``) are passed through as-is.  A local image
-        that cannot be read raises ``ValueError`` — upstream (``@path``
-        parsing, ``include_image``) already validates files, so a failure
-        here is a bug signal to be surfaced, not silently dropped.
+        Images are NOT encoded here.  Attachments ride the ``include_image``
+        tool path (harness-invoked for ``@path`` so no LLM iteration is
+        spent attaching): the tool injects the image content block into this
+        message in memory via :meth:`inject_images_to_last_user`.  Those
+        blocks are live-session-only — never persisted, restore is text-only.
 
         User input is sanitized to mask any API keys / tokens before the
         message enters the LLM context or persistent storage.
-
-        Args:
-            content: The user's text input.
-            images: Optional list of image file paths or URLs to attach.
-
-        Raises:
-            ValueError: A local image file does not exist or cannot be read.
         """
         # Turn consistency is enforced at the single save point
         # (save_to_memory, which runs unconditionally after every turn) and on
         # TUI restore — so by the time a new user message is appended the
         # conversation is already well-formed.
         content = sanitize_secrets(content)
-
-        if images:
-            parts: list[dict] = [{"type": "text", "text": content}]
-            for img in images:
-                block = include_image_url(img)
-                if block is None:
-                    logger.warning(
-                        "conv_user_unreadable_image path=%s", img,
-                    )
-                    raise ValueError(
-                        f"cannot read image '{img}' — file does not exist "
-                        f"or is unreadable"
-                    )
-                parts.append(block)
-            self.messages.append({"role": "user", "content": parts})
-            logger.debug("conv_user text=%.80s imgs=%d", content, len(images))
-        else:
-            self.messages.append({"role": "user", "content": content})
-            logger.debug("conv_user text=%.80s", content)
+        self.messages.append({"role": "user", "content": content})
+        logger.debug("conv_user text=%.80s", content)
 
     def add_assistant_message(
         self, content: str | None, tool_calls: list | None = None,
@@ -488,9 +463,6 @@ class Conversation:
                 for tc in msg["tool_calls"]:
                     args = tc.get("function", {}).get("arguments", "")
                     total += len(str(args)) // 3
-            # Images are token-heavy
-            if msg.get("images"):
-                total += len(msg["images"]) * 200  # rough per-image estimate
         return max(total, 1)
 
     # ── Extract turns helpers ─────────────────────────────────────

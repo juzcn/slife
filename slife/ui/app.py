@@ -4,7 +4,6 @@ import asyncio
 import logging
 import re
 from datetime import datetime
-from pathlib import Path
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -14,6 +13,7 @@ from textual.widgets import Static, TextArea
 
 from slife.config import Config
 from slife.a2a.card import format_presence_line
+from slife.agent.multimodal import is_image_source
 from slife.agent.service import AgentService, MemoryDatabaseError
 from slife.agent.plugins import PluginStartStatus
 from slife.ui.chat import ChatView
@@ -207,38 +207,22 @@ _IMAGE_ATTACH_RE = re.compile(
 )
 
 
-def _parse_images_from_input(raw: str) -> tuple[str, list[str]]:
-    """Extract ``@path`` and ``@url`` image directives from user input.
+def _parse_images_from_input(raw: str) -> list[str]:
+    """Extract ``@path`` / ``@url`` image directive sources from user input.
 
-    Supports:
-      - ``@path/img.png``          → local file
-      - ``@https://example.com/...`` → remote URL
-
-    Returns ``(cleaned_text, [paths_or_urls])``.  Items that are neither
-    a valid local image file nor an HTTPS URL are left in the text.
+    Just the regex plus the shared acceptance predicate — validation reuses
+    ``is_image_source`` (the same gate ``include_image`` / the vision
+    builders use), so it is never duplicated here.  The user message itself
+    is passed through verbatim (``@`` markers stay visible like any text);
+    non-image ``@tokens`` (e.g. ``@someone``) are not attachments and are
+    simply not attached.
     """
-    images: list[str] = []
-    parts: list[str] = []
-    last_end = 0
-
+    sources: list[str] = []
     for match in _IMAGE_ATTACH_RE.finditer(raw):
-        parts.append(raw[last_end:match.start()])
         value = match.group(1) or match.group(2) or match.group(3)
-
-        if value.startswith(("http://", "https://")):
-            images.append(value)
-        else:
-            p = Path(value)
-            if p.exists() and p.is_file():
-                images.append(str(p.resolve()))
-            else:
-                # Not a valid file — leave the @directive as-is
-                parts.append(raw[match.start():match.end()])
-        last_end = match.end()
-
-    parts.append(raw[last_end:])
-    cleaned = "".join(parts).strip()
-    return cleaned, images
+        if is_image_source(value):
+            sources.append(value)
+    return sources
 
 
 class SlifeApp(App):
@@ -707,12 +691,14 @@ class SlifeApp(App):
             event.input.add_history(raw)
         event.input.clear()
 
-        # Extract @path image directives
-        cleaned_text, image_paths = _parse_images_from_input(raw)
+        # Extract @path image directive sources — the message itself stays
+        # VERBATIM (the @ reference is visible like any other user text);
+        # the sources ride to the loop, which auto-invokes include_image
+        # for each (no LLM iteration spent deciding to attach).
+        image_paths = _parse_images_from_input(raw)
 
         chat_view = self.query_one("#chat-view", ChatView)
-        # Display the original raw text (with @path markers visible)
-        # … but pass cleaned text + image paths to the agent.
+        # Display the original raw text — exactly what the agent sees.
         # The timestamp is the Enter-press moment — shown on the user
         # message and threaded into the turn's diary created_at so the
         # assistant reply (and restore) show the same time.
@@ -725,7 +711,7 @@ class SlifeApp(App):
         # (handler is attached to the message, inbox streams later).
         self.run_worker(
             self._process_message(
-                cleaned_text, image_paths or None, chat_view, turn_time=now,
+                raw, image_paths or None, chat_view, turn_time=now,
             ),
             exclusive=False,
         )

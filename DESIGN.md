@@ -513,11 +513,11 @@ User attaches with `@path` / `@url` syntax (quoted paths supported):
 Check this screenshot @D:\Downloads\error.png and tell me what's wrong
 ```
 
-The TUI extracts attachments; `include_image_url()` turns each into a vision content block — HTTP(S) URLs pass through, local files are read and base64-encoded as `data:` URIs. The agent can attach images mid-conversation with the `include_image` tool (injects into the last user message). Nothing is rendered in-terminal — files open with the OS default app (clickable paths/URLs in the chat), and `memfiles__expose_file` publishes any local file as a public HTTPS link. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`).
+`@path` / `@url` handling is one mechanism with `include_image`: the TUI keeps the user message verbatim (the `@` reference stays visible like any text) and hands the extracted sources to the loop, which **auto-invokes** the `include_image` tool for each via the harness-call machinery (`_auto_invoke`, same as `_sys_note`) — same conversation shape as a model-driven attach, no LLM iteration spent deciding to attach. `include_image_url()` turns each source into a vision content block (HTTP(S) URLs pass through, local files base64 as `data:` URIs). Blocks are **live-session-only**: injected into the in-memory user message, never persisted, restore is text-only. Nothing is rendered in-terminal — files open with the OS default app (clickable paths/URLs in the chat), and `memfiles__expose_file` publishes any local file as a public HTTPS link. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`).
 
 ### Image Display
 
-Three-tier rendering in the terminal: **Sixel** (full-colour; whitelisted terminals: Windows Terminal, WezTerm, iTerm2, Kitty — detected via `WT_SESSION` / `TERM_PROGRAM` / `KITTY_WINDOW_ID`) → **HalfcellImage** (coloured Unicode half-blocks, any true-colour terminal) → text placeholder. Chat images are capped at 32×16 cells (thumbnails 20×10).
+Images are never rendered in the terminal — the Sixel / Half-cell render stack was removed, and the multimodal content blocks a user message carries feed the LLM context only: the TUI renders just the text parts of a message. To surface a file to the user, the agent hands back a path or URL (clickable in the chat, opened with the OS default app) or publishes a public HTTPS link via `memfiles__expose_file`.
 
 ### Memfiles — Notes / Diary / Files Cabinet + Sharing
 

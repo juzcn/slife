@@ -306,7 +306,6 @@ class SessionStore:
         who_helped: str = "",
         what_model: str = "",
         channel: str = "",
-        images: list[str] | None = None,
         created_at: str | None = None,
         completed_at: str | None = None,
     ) -> int:
@@ -330,16 +329,15 @@ class SessionStore:
         now = created_at or _now()
         done = completed_at or _now()
         messages_json = json.dumps(messages or [], ensure_ascii=False)
-        images_json = json.dumps(images or [], ensure_ascii=False)
 
         async with self._write_lock:
             cursor = await self._c.execute(
-                """INSERT INTO diary (user_message, messages, images, summary, tags,
+                """INSERT INTO diary (user_message, messages, summary, tags,
                                       channel, created_at, completed_at,
                                       who_helped, what_model, token_count,
                                       prompt_tokens)
-                   VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)""",
-                (user_message, messages_json, images_json, channel, now, done,
+                   VALUES (?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)""",
+                (user_message, messages_json, channel, now, done,
                  who_helped, what_model, token_count, prompt_tokens),
             )
             await self._c.commit()
@@ -372,7 +370,7 @@ class SessionStore:
         exactly the context that was live at exit.
         """
         cursor = await self._c.execute(
-            """SELECT rowid, user_message, messages, images, summary, tags,
+            """SELECT rowid, user_message, messages, summary, tags,
                       channel, created_at, completed_at,
                       who_helped, what_model, token_count, prompt_tokens
                FROM diary

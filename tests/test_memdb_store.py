@@ -40,7 +40,6 @@ async def _create_diary_table(conn) -> None:
             messages       TEXT NOT NULL DEFAULT '[]',
             summary        TEXT DEFAULT '',
             tags           TEXT DEFAULT '',
-            images         TEXT NOT NULL DEFAULT '',
             created_at     TEXT NOT NULL,
             completed_at   TEXT,
             channel        TEXT DEFAULT '',
@@ -419,11 +418,11 @@ class TestSessionStoreSaveTurn:
 
         assert rowid == 7
         args = mock_conn.execute.call_args[0][1]
-        # INSERT tuple order: (user_message, messages_json, images_json,
-        #                      channel, created_at, completed_at,
+        # INSERT tuple order: (user_message, messages_json, channel,
+        #                      created_at, completed_at,
         #                      who_helped, what_model, token_count)
-        assert args[4] == "2026-08-12T14:32:09+08:00"
-        assert args[5] == "2026-08-12T14:35:40+08:00"
+        assert args[3] == "2026-08-12T14:32:09+08:00"
+        assert args[4] == "2026-08-12T14:35:40+08:00"
 
 class TestSessionStoreGetTurn:
     """Tests for get_turn."""

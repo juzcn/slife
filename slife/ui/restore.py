@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 from slife.agent.conversation import turn_header
 from slife.agent.heartbeat import HEARTBEAT_MARK
 from slife.agent.llm_client import TokenUsage
-from slife.agent.multimodal import include_image_url
 from slife.ui.chat import ChatView
 from slife.ui.tool_display import ToolCallWidget
 
@@ -163,12 +162,9 @@ async def restore_session(
                 if isinstance(turn_messages_json, str)
                 else turn_messages_json
             )
-            images_json = turn.get("images", "")
-            images: list[str] = (
-                json.loads(images_json)
-                if isinstance(images_json, str) and images_json
-                else []
-            )
+            # (The images column is gone — image blocks live only in the
+            # in-memory user message and are never persisted; restore is
+            # text-only.  The user message here is plain text + turn header.)
             # Heartbeat turns carry a synthetic "[Heartbeat]…" trigger as the
             # user message, not a real query — no turn header (restore also
             # filters them from the TUI).
@@ -182,16 +178,7 @@ async def restore_session(
             # reading as metadata right after the user's words.
             if header:
                 user_msg_text = user_msg_text + " " + header
-            user_msg: dict
-            if images:
-                parts: list[dict] = [{"type": "text", "text": user_msg_text}]
-                for img in images:
-                    block = include_image_url(img)
-                    if block is not None:
-                        parts.append(block)
-                user_msg = {"role": "user", "content": parts, "images": images}
-            else:
-                user_msg = {"role": "user", "content": user_msg_text}
+            user_msg: dict = {"role": "user", "content": user_msg_text}
             all_messages.append(user_msg)
             all_messages.extend(turn_msgs)
 
@@ -274,7 +261,6 @@ async def restore_session(
                 ui_ops.append({
                     "type": "user",
                     "content": raw,
-                    "images": msg.get("images"),
                     "prefix": prefix,
                     "created_at": cur_created,
                 })

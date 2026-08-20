@@ -761,22 +761,50 @@ class TestAgentLoopRun:
 
     @pytest.mark.asyncio
     async def test_run_with_images(self, sample_model_config, empty_registry, conversation, tmp_path):
-        """User message can include images."""
+        """@path / programmatic attachments auto-invoke include_image: the
+        user message stays verbatim text, the image block is injected into
+        it, and the harness synthesizes the assistant(tool_use) + tool
+        result pair — no LLM iteration spent deciding to attach."""
         # Create a real temp image file
         img = tmp_path / "test.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake png")
 
+        from slife.tools.vision import IncludeImageTool
+        from slife.tools.context import ToolContext
+        from slife.tools.registry import ToolRegistry
+        registry = ToolRegistry()
+        tool = IncludeImageTool()
+        tool._ctx = ToolContext(conversation=conversation)
+        registry.register(tool)
+
         llm = LLMClient(sample_model_config)
-        loop = AgentLoop(llm, empty_registry, supports_vision=True)
+        loop = AgentLoop(llm, registry, supports_vision=True)
 
         async def mock_stream(messages, tools, **kwargs):
             yield StreamChunk(content="I see an image!")
             yield StreamChunk(usage=TokenUsage(5, 3, 8))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            result = await loop.run("Describe", conversation, images=[str(img)])
+            result = await loop.run("Describe this", conversation, images=[str(img)])
 
         assert result.text == "I see an image!"
+        # Find the just-added user message, then the harness pair after it.
+        ui = next(
+            i for i, m in enumerate(conversation.messages) if m["role"] == "user"
+        )
+        user = conversation.messages[ui]
+        assert user["content"][0] == {"type": "text", "text": "Describe this"}
+        assert user["content"][1]["type"] == "image_url"
+        assert user["content"][1]["image_url"]["url"].startswith("data:image/")
+        # Harness-synthesized include_image pair follows the user message
+        helper = conversation.messages[ui + 1]
+        assert helper["role"] == "assistant"
+        tc = helper["tool_calls"][0]
+        assert tc["function"]["name"] == "include_image"
+        assert tc["id"].startswith("_harness_include_image_")
+        res = conversation.messages[ui + 2]
+        assert res["role"] == "tool"
+        assert res["content"].startswith("Image included:")
 
     @pytest.mark.asyncio
     async def test_run_content_accumulation(self, sample_model_config, empty_registry, conversation):

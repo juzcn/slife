@@ -28,9 +28,6 @@ CREATE TABLE IF NOT EXISTS diary (
     summary        TEXT DEFAULT '',
     tags           TEXT DEFAULT '',
 
-    -- ▼ 用户图片附件（JSON 数组：本地路径或 https URL）
-    images         TEXT NOT NULL DEFAULT '',
-
     -- ▼ 时间
     created_at     TEXT NOT NULL,   -- 用户输入时间（输入框回车时刻）
     completed_at   TEXT,            -- assistant 完成时间（旧库经 scripts/migrate_memdb_completed_at.py 回填）

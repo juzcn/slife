@@ -154,7 +154,6 @@ async def _ensure_store_locked() -> SessionStore:
 async def __memory_save_turn(
     user_message: str = "",
     messages: list[dict] | None = None,
-    images: list[str] | None = None,
     token_count: int = 0,
     prompt_tokens: int = 0,
     who_helped: str = "",
@@ -172,7 +171,7 @@ async def __memory_save_turn(
             store = await _ensure_store_locked()
             rowid = await store.save_turn(
                 user_message=user_message, messages=messages,
-                images=images, token_count=token_count,
+                token_count=token_count,
                 prompt_tokens=prompt_tokens,
                 who_helped=who_helped, what_model=what_model,
                 channel=channel, created_at=created_at,

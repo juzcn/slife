@@ -146,9 +146,11 @@ class TestStoreLifecycleLocking:
         assert json.loads(out)["rowid"] == 1
 
     @pytest.mark.asyncio
-    async def test_save_turn_forwards_images_and_wakes_drainer(self, restore_root_logger):
-        """__memory_save_turn forwards ``images`` and calls on_saved()
-        (the drainer wake) — no reindex side-effect on the save path."""
+    async def test_save_turn_forwarded_and_wakes_drainer(self, restore_root_logger):
+        """__memory_save_turn forwards the turn args and calls on_saved()
+        (the drainer wake) — no reindex side-effect on the save path, and no
+        separate images channel (image blocks ride the conversation; the
+        ``images`` column is gone)."""
         import json
 
         srv = _import_memdb_server()
@@ -165,11 +167,12 @@ class TestStoreLifecycleLocking:
         srv._manager = manager
 
         out = await getattr(srv, "__memory_save_turn")(
-            user_message="hi", images=[r"C:\cache\a.png"],
+            user_message="hi",
         )
 
         assert json.loads(out)["rowid"] == 7
-        assert captured["images"] == [r"C:\cache\a.png"]
+        assert captured["user_message"] == "hi"
+        assert "images" not in captured
         # save_turn is insert-only (embedding is internal/reindex); the
         # harness's 10s save timeout can no longer be tripped by a slow embed.
         assert "embedder" not in captured

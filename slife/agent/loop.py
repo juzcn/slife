@@ -628,8 +628,12 @@ class AgentLoop:
         if tool is None:
             logger.warning("auto_invoke_tool_missing name=%s", name)
             return
+        # Harness ids strip a leading underscore if present (_sys_note →
+        # _harness_sys_note_…); non-underscore tools (include_image) keep
+        # their name: _harness_include_image_…
+        stem = name[1:] if name.startswith("_") else name
         tc = ToolCallInfo(
-            id=f"_harness_{name[1:]}_{_time.time_ns():x}",
+            id=f"_harness_{stem}_{_time.time_ns():x}",
             name=name,
             arguments=args,
         )
@@ -1072,11 +1076,20 @@ class AgentLoop:
             # Add text-only — don't encode images the model can't handle.
             # The warning is recorded as the assistant reply so the
             # conversation doesn't end on a dangling user message.
-            conversation.add_user_message(user_input, images=None)
+            conversation.add_user_message(user_input)
             conversation.add_assistant_message(content=msg)
             return AgentResult(text=msg, usage=TokenUsage())
 
-        conversation.add_user_message(user_input, images=images)
+        # @path / programmatic attachments ride the SAME include_image path
+        # the model would use — invoked by the harness so no LLM iteration
+        # is spent deciding to attach.  Reuses _auto_invoke (the _sys_note
+        # machinery): records the assistant(tool_use) + tool result pair, runs
+        # the tool directly, and include_image's execute injects the image
+        # content block into the user message in memory (never persisted —
+        # restore rebuilds text-only).
+        conversation.add_user_message(user_input)
+        for img in images or []:
+            await self._auto_invoke("include_image", {"source": img}, conversation)
         total_usage = TokenUsage()
         t_request = _time.monotonic()
 

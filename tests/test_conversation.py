@@ -61,28 +61,28 @@ class TestAddUserMessage:
         assert conv.messages[0]["role"] == "user"
         assert conv.messages[0]["content"] == "Hello!"
 
-    def test_unreadable_image_raises(self):
-        """An unreadable local image is a bug signal — it raises instead
-        of being silently dropped.  Upstream (@path parsing, include_image)
-        validates files first, so this path should never fire in practice."""
+    def test_verbatim_text_only(self):
+        """add_user_message is text-only — the user's text is stored
+        verbatim.  Images arrive via include_image's
+        inject_images_to_last_user, never encoded here."""
         conv = Conversation()
-        with pytest.raises(ValueError, match="cannot read image"):
-            conv.add_user_message("Describe", images=["/fake/img.png"])
-        assert conv.messages == []  # nothing appended on failure
-
-    def test_image_paths_not_provided(self):
-        """images=None is treated as no images."""
-        conv = Conversation()
-        conv.add_user_message("hello", images=None)
+        conv.add_user_message("图片中有什么 @D:\\Downloads\\奇点.png")
+        assert len(conv.messages) == 1
         assert conv.messages[0]["role"] == "user"
-        assert conv.messages[0]["content"] == "hello"
+        assert conv.messages[0]["content"] == "图片中有什么 @D:\\Downloads\\奇点.png"
 
-    def test_empty_images_list(self):
-        """Empty images list treated as no images (falsy)."""
+    def test_inject_appends_block_to_last_user(self):
+        """inject_images_to_last_user turns the verbatim text message into a
+        multimodal list and appends the image block — the text survives."""
         conv = Conversation()
-        conv.add_user_message("hello", images=[])
-        assert conv.messages[0]["role"] == "user"
-        assert conv.messages[0]["content"] == "hello"
+        conv.add_user_message("look at this")
+        conv.inject_images_to_last_user([
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ])
+        assert conv.messages[0]["content"] == [
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]
 
     def test_sanitizes_api_keys(self):
         """User input with API key patterns is sanitized before storage."""
@@ -580,11 +580,5 @@ class TestCountTokens:
         )
         count = conv.count_tokens()
         assert count > 5  # tool call arguments contribute
-
-    def test_images_add_tokens(self):
-        conv = Conversation(system_prompt="test")
-        conv.messages[0]["images"] = ["/tmp/img1.png", "/tmp/img2.png"]
-        count = conv.count_tokens()
-        assert count > 200  # ~200 tokens per image
 
 

@@ -287,33 +287,6 @@ class TestAgentServiceMemory:
         assert args["messages"]  # not an empty turn
 
     @pytest.mark.asyncio
-    async def test_save_to_memory_with_dropped_image_still_saves(self, sample_config):
-        """Regression: a user message whose image attachment failed to read gets
-        a '[System note: … could not be read …]' text part appended — the turn
-        used to be silently dropped because the stored text no longer matched
-        the input."""
-        service = AgentService(sample_config)
-        mock_client = AsyncMock()
-        mock_client.is_connected = True
-        mock_client.call_tool = AsyncMock(return_value="{}")
-        service._plugins["memdb"].client = mock_client
-
-        conv = service.conversation
-        conv.add_user_message(
-            "describe this", images=["definitely_missing_file.png"],
-        )
-        conv.add_assistant_message("it is missing")
-
-        await service.save_to_memory(
-            user_message="describe this", conversation=conv,
-        )
-
-        mock_client.call_tool.assert_awaited_once()
-        tool_name, args = mock_client.call_tool.await_args.args
-        assert tool_name == "__memory_save_turn"
-        assert args["messages"]  # not an empty turn — the turn must persist
-
-    @pytest.mark.asyncio
     async def test_save_to_memory_skips_when_user_message_absent(self, sample_config):
         """When the user message is no longer in the conversation (rolled back
         on a content-policy error), nothing is saved — no empty diary row."""
@@ -337,7 +310,7 @@ class TestAgentServiceMemory:
         mock_client = AsyncMock()
         mock_client.is_connected = True
         mock_client.call_tool = AsyncMock(
-            return_value='{"error": "table diary has no column named images"}',
+            return_value='{"error": "database is locked"}',
         )
         service._plugins["memdb"].client = mock_client
 
@@ -353,8 +326,8 @@ class TestAgentServiceMemory:
         )
 
         assert service._memory_broken is True
-        assert "no column named images" in service._memory_error
-        assert surfaced == ["table diary has no column named images"]
+        assert "database is locked" in service._memory_error
+        assert surfaced == ["database is locked"]
         # Inbox frozen — new turns are dropped, not run without memory.
         assert service.inbox._frozen is True
         assert "记忆保存失败" in service.inbox._frozen_reason
@@ -1401,7 +1374,7 @@ class TestGetRecentTurns:
         con = sqlite3.connect(str(db))
         con.execute(
             "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
-            "tags TEXT, images TEXT NOT NULL DEFAULT '', channel TEXT, "
+            "tags TEXT, channel TEXT, "
             "created_at TEXT, completed_at TEXT, "
             "who_helped TEXT, what_model TEXT, token_count INT, prompt_tokens INT)"
         )
@@ -1487,7 +1460,7 @@ class TestGetRecentTurns:
         con = sqlite3.connect(str(db))
         con.execute(
             "CREATE TABLE diary (user_message TEXT, messages TEXT, summary TEXT, "
-            "tags TEXT, images TEXT NOT NULL DEFAULT '', channel TEXT, "
+            "tags TEXT, channel TEXT, "
             "created_at TEXT, completed_at TEXT, "
             "who_helped TEXT, what_model TEXT, token_count INT, prompt_tokens INT)"
         )
@@ -1537,7 +1510,7 @@ class TestGetRecentTurns:
         import sqlite3
         from slife.agent.service import AgentService, MemoryDatabaseError
 
-        # Old-schema DB — missing the `images` column the store SELECTs.
+        # Old-schema DB — missing the `prompt_tokens` column the store SELECTs.
         db = tmp_path / "old.db"
         con = sqlite3.connect(str(db))
         con.execute(

@@ -1421,7 +1421,6 @@ class AgentService:
         prompt_tokens: int | None = None,
         conversation: "Conversation | None" = None,
         channel: str = "",
-        images: "list[str] | None" = None,
         created_at: "datetime | str | None" = None,
         handler: "object | None" = None,
     ) -> None:
@@ -1541,7 +1540,6 @@ class AgentService:
         save_args = {
             "user_message": user_message,
             "messages": turn_messages,
-            "images": images or [],
             "token_count": token_count or 0,
             "prompt_tokens": prompt_tokens or 0,
             "who_helped": self.config.agent_name,

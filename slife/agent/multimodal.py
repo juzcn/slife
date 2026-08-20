@@ -16,6 +16,18 @@ def _ensure_mimetypes() -> None:
         mimetypes.init()
 
 
+def is_image_source(source: str | Path) -> bool:
+    """Return True when *source* is attachable via ``include_image``: an
+    HTTP(S) URL or an existing local file.  Single source of truth shared
+    by the ``@path`` extractor and the vision block builders so the
+    acceptance check is never duplicated.
+    """
+    s = str(source)
+    if s.startswith(("http://", "https://")):
+        return True
+    return Path(s).is_file()
+
+
 def include_image_url(source: str | Path) -> dict[str, Any] | None:
     """Build a vision content block from a local file path or HTTPS URL.
 
@@ -25,14 +37,13 @@ def include_image_url(source: str | Path) -> dict[str, Any] | None:
     Returns ``None`` when a local file doesn't exist or can't be read.
     """
     source_str = str(source)
+    if not is_image_source(source_str):
+        logger.debug("include_image_not_found path=%s", source_str)
+        return None
     if source_str.startswith(("http://", "https://")):
         return {"type": "image_url", "image_url": {"url": source_str}}
 
     p = Path(source)
-    if not p.is_file():
-        logger.debug("include_image_not_found path=%s", p)
-        return None
-
     _ensure_mimetypes()
     mime_type = mimetypes.guess_type(str(p))[0] or "image/png"
     if not mime_type.startswith("image/"):
