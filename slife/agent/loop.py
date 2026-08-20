@@ -389,18 +389,13 @@ class AgentLoop:
 
     @staticmethod
     def _inject_meta_params(functions: list[dict]) -> list[dict]:
-        """Add ``_timeout`` and ``_async`` as optional parameters to every
-        function definition.
+        """Add ``_timeout``, ``_async`` and ``_approve`` as optional
+        parameters to every function definition.
 
-        The LLM can pass these on ANY tool call:
-          - ``_timeout`` (number) — override global ``tool_timeout``.
-            For tools with a native ``timeout`` parameter (e.g.
-            ``execute_shell``), ``_timeout`` is mapped to ``timeout``
-            and the tool's internal timeout logic takes over.
-          - ``_async`` (boolean) — run in background, return task_id
-            immediately.
-          - ``_approve`` (boolean) — ask the user to confirm this call
-            (approval dialog) before it runs.
+        These are universal — the model already knows what a timeout, a
+        background task and an approval prompt mean, so their descriptions
+        stay terse (they repeat on every one of the ~280 tool schemas every
+        request, so verbosity here is the single biggest context-tax).
 
         All are stripped before dispatch.
         """
@@ -415,28 +410,20 @@ class AgentLoop:
             if "_timeout" not in props:
                 props["_timeout"] = {
                     "type": "number",
-                    "description": (
-                        "Optional. Override the timeout (seconds) for this call, "
-                        "replacing the global default. Use for network requests, "
-                        "large-file operations, or other long-running work."
-                    ),
+                    "description": "Override tool_timeout (seconds) for this call.",
                 }
             if "async" not in props and "_async" not in props:
                 props["_async"] = {
                     "type": "boolean",
                     "description": (
-                        "Set true to run in the background and return a task_id "
-                        "immediately. Use for long-running operations — poll with "
+                        "Run in background; return a task_id. Poll with "
                         "check_async, cancel with cancel_async."
                     ),
                 }
             if "_approve" not in props:
                 props["_approve"] = {
                     "type": "boolean",
-                    "description": (
-                        "Optional. Set true to show a confirmation dialog to the "
-                        "user before executing. Default false (no dialog)."
-                    ),
+                    "description": "Show the user an approval dialog for this call.",
                 }
         return functions
 
