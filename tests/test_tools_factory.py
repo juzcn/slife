@@ -28,6 +28,21 @@ class TestCreateToolsFromConfig:
         assert "cli_remove" in names
         assert "cli_list" in names
 
+    def test_model_tools_all_discoverable(self):
+        """All four model tools auto-discover (regression: 069c954).
+
+        The shared _ModelConfigTool base sets _skip_auto_register = True,
+        which is inherited by its subclasses.  Auto-discovery must exclude
+        the base itself but still register model_set/model_remove/model_switch;
+        otherwise the slife agent can list models but never switch them.
+        """
+        registry = create_tools_from_config(None)
+        names = {t.name for t in registry.list_tools()}
+        assert "model_list" in names
+        assert "model_set" in names
+        assert "model_remove" in names
+        assert "model_switch" in names
+
     def test_empty_list_same_as_none(self):
         """Empty overrides list == all tools discovered."""
         registry = create_tools_from_config([])

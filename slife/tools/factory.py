@@ -95,9 +95,16 @@ def _iter_subclasses(cls):
     Only yields valid Tool subclasses — those that passed
     __init_subclass__ validation.  Broken subclasses (e.g. test
     stubs that raised TypeError during definition) are ignored.
+
+    A class that is skipped (e.g. an abstract base like ``_ModelConfigTool``)
+    still gets its subclasses visited — real tools like ``model_set`` /
+    ``model_remove`` / ``model_switch`` inherit from it and must be
+    discovered.  Only skipping an entire subtree (bug 069c954) would drop
+    them from the registry.
     """
     for sub in cls.__subclasses__():
         if not _is_valid(sub):
+            yield from _iter_subclasses(sub)
             continue
         yield sub
         yield from _iter_subclasses(sub)
@@ -113,8 +120,14 @@ def _is_valid(cls) -> bool:
     Classes with ``_skip_auto_register = True`` (e.g. MCPProxyTool,
     whose real name/description/parameters are set per-instance) are
     excluded — they are created manually by their own factory functions.
+
+    The flag is checked with ``vars(cls)`` (not ``getattr``) so it only
+    applies to the class that sets it.  It must NOT be inherited: a shared
+    base like ``_ModelConfigTool`` sets it to exclude itself while its
+    subclasses (model_set / model_remove / model_switch) are real tools
+    that must still be discovered.
     """
-    if getattr(cls, "_skip_auto_register", False):
+    if cls.__dict__.get("_skip_auto_register", False):
         return False
     name = getattr(cls, "name", "")
     return bool(name)
