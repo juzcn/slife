@@ -1,7 +1,7 @@
 # cc-switch
 
 Generate `~/.claude/settings.json` from saved provider/model configs —
-a small CLI that mirrors the [credstore](../credstore/README.md) pattern.
+a small CLI that mirrors the [credstore](https://github.com/juzcn/slife/blob/main/credstore/README.md) pattern.
 
 Non-secret provider *shape* lives in `~/.claude/cc-switch.json`.  API
 keys are **never** stored there — the config keeps the key's *name*,
@@ -13,7 +13,7 @@ generated `settings.json` contains no credential line.
 
 cc-switch is a standalone PyPI package — installed independently of
 slife (installing slife does **not** bring cc-switch, and vice versa).
-Both depend on [credstore](../credstore/README.md), which is pulled in
+Both depend on [credstore](https://github.com/juzcn/slife/blob/main/credstore/README.md), which is pulled in
 automatically.
 
 ```bash
