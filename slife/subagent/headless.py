@@ -262,6 +262,28 @@ async def run_headless() -> None:
                 if task_id:
                     logger.info("subagent_cancel_received task=%s", task_id)
                     service.inbox.cancel_correlation(task_id)
+            elif method == "worker/plugin_restart":
+                # The parent restarted a shared plugin (currently the MCP
+                # wrapper) on a new auto-assigned port.  Our client still
+                # points at the dead one — reconnect so the plugin's tools
+                # keep working instead of erroring until the worker exits.
+                plugin = params.get("plugin", "")
+                port = params.get("port", 0)
+                if plugin == "mcp" and port:
+                    logger.info("subagent_mcp_restart port=%s", port)
+                    try:
+                        await service.connect_mcp_http(int(port))
+                        logger.info("subagent_mcp_reconnect_done port=%s", port)
+                    except Exception as e:
+                        logger.warning(
+                            "subagent_mcp_reconnect_failed port=%s err=%s",
+                            port, e, exc_info=True,
+                        )
+                else:
+                    logger.warning(
+                        "subagent_plugin_restart_ignored plugin=%s port=%s",
+                        plugin, port,
+                    )
             elif method == "worker/send":
                 request_count += 1
                 task_text = params.get("task", "")

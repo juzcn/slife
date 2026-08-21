@@ -17,7 +17,8 @@ import enum
 import logging
 import os
 import sys
-from typing import TYPE_CHECKING, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from slife.mcp.client import MCPClient
 
@@ -68,7 +69,7 @@ class PluginLifecycle:
         # ── Watchdog state ──────────────────────────────────────────
         self._watchdog_task: asyncio.Task | None = None
         self._stopping: bool = False
-        self._restart_cb: "Callable[[], Awaitable[None]] | None" = None
+        self._restart_cb: Callable[[], Awaitable[None]] | None = None
         self._module: str | None = None
         self._harness_tools: set[str] | None = None
         self._max_restarts: int = _WATCHDOG_MAX_RESTARTS
@@ -149,14 +150,14 @@ class PluginLifecycle:
             try:
                 await process.stop()
             except Exception:
-                pass
+                logger.debug("%s_spawn_cleanup_error", self.name, exc_info=True)
             raise
 
     # ── watchdog ────────────────────────────────────────────────────────
 
     def start_watchdog(
         self,
-        restart_cb: "Callable[[], Awaitable[None]] | None" = None,
+        restart_cb: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Start a background task that monitors the child process and
         auto-restarts it on unexpected exit.
@@ -252,9 +253,27 @@ class PluginLifecycle:
                         "%s_watchdog_unregister_error", self.name, exc_info=True,
                     )
 
+                # ── Tear down the dead client, don't just drop it ─────
+                # Leaving it referenced (or merely clearing the attribute)
+                # strands its SDK post_writer / SSE-reader tasks against a
+                # dead port — they hammer it with ConnectTimeouts and the
+                # SDK's cancel-scope teardown bug surfaces as unretrieved
+                # task exceptions.  disconnect() closes the exit stack
+                # (bounded by _cleanup's 2s aclose timeout) so the watchdog
+                # restart isn't delayed, and marks in-flight calls so they
+                # fail fast with a clear "not connected" error.
+                old_client = self.client
                 self.process = None
                 self.client = None
                 self.port = 0
+                if old_client is not None:
+                    try:
+                        await old_client.disconnect()
+                    except Exception as e:
+                        logger.debug(
+                            "%s_watchdog_client_disconnect_error err=%s",
+                            self.name, e, exc_info=True,
+                        )
 
             # A fresh process is running — go back to waiting on it.
             if self.process is not None:
@@ -327,9 +346,9 @@ class PluginLifecycle:
                     backoff * _WATCHDOG_BACKOFF_MULTIPLIER,
                     _WATCHDOG_BACKOFF_MAX,
                 )
-                logger.error(
+                logger.exception(
                     "%s_watchdog_restart_failed backoff=%.1fs",
-                    self.name, backoff, exc_info=True,
+                    self.name, backoff,
                 )
                 if not self._stopping:
                     await asyncio.sleep(backoff)
@@ -337,7 +356,22 @@ class PluginLifecycle:
     # ── connect via HTTP (subagents share the main agent's plugins) ───────
 
     async def connect_http(self, port: int) -> None:
-        """Connect to an already-running plugin via Streamable HTTP (subagents)."""
+        """Connect to an already-running plugin via Streamable HTTP (subagents).
+
+        Reconnect-safe: a prior client (e.g. one left dangling after an MCP
+        wrapper restart) is disconnected first so its SDK tasks don't keep
+        hammering the old, dead port.
+        """
+        old = self.client
+        self.client = None
+        if old is not None:
+            try:
+                await old.disconnect()
+            except Exception as e:
+                logger.debug(
+                    "%s_http_reconnect_old_disconnect_error err=%s",
+                    self.name, e, exc_info=True,
+                )
         client = MCPClient(tool_timeout=self._service.config.tool_timeout)
         await client.connect(f"http://127.0.0.1:{port}/mcp")
         self.client = client
@@ -375,14 +409,14 @@ class PluginLifecycle:
             try:
                 await self.client.disconnect()
             except Exception as e:
-                logger.debug("%s_disconnect_error err=%s", self.name, e)
+                logger.debug("%s_disconnect_error err=%s", self.name, e, exc_info=True)
             self.client = None
 
         if self.process is not None:
             try:
                 await self.process.stop()
             except Exception as e:
-                logger.debug("%s_process_stop_error err=%s", self.name, e)
+                logger.debug("%s_process_stop_error err=%s", self.name, e, exc_info=True)
             self.process = None
 
         logger.info("%s_shutdown", self.name)
@@ -402,8 +436,8 @@ class PluginLifecycle:
         try:
             p.terminate()
         except Exception:
-            pass
+            logger.debug("plugin_terminate_error name=%s", self.name, exc_info=True)
         try:
             p.wait(timeout=3.0)
         except Exception:
-            pass
+            logger.debug("plugin_wait_error name=%s", self.name, exc_info=True)

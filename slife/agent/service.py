@@ -693,6 +693,9 @@ class AgentService:
             )
             asyncio.create_task(self._auto_connect_mcp_servers())
             asyncio.create_task(self._auto_connect_rest_apis())
+            # The wrapper restarted on a NEW port — subagents that share it
+            # still point at the dead one, so tell them to reconnect.
+            await self._notify_subagents_mcp_restart()
 
         self._plugins["mcp"].start_watchdog(restart_cb=_restart_mcp)
 
@@ -845,6 +848,29 @@ class AgentService:
         # MCP-specific: let REST API tools call mcp_set / mcp_remove
         if name == "mcp":
             self._tool_ctx.mcp_client = self._plugins["mcp"].client
+
+    async def _notify_subagents_mcp_restart(self) -> None:
+        """Tell every live subagent the MCP wrapper restarted on a new port.
+
+        Subagents share the main agent's MCP wrapper instead of spawning
+        their own.  When the watchdog respawns the wrapper (a crash or a
+        kill), it lands on a fresh auto-assigned port; workers still holding
+        the old session are dead until they reconnect.  This broadcasts the
+        new port so they rebuild their client (see ``worker/plugin_restart``
+        in ``headless.py``).  Best-effort — a worker busy mid-task simply
+        processes the notification when its current task finishes.
+        """
+        port = self._plugins["mcp"].port
+        if not port:
+            return
+        from slife.subagent.process import get_manager
+        manager = get_manager()
+        if manager is None:
+            return
+        logger.info("mcp_restart_notify_subagents port=%d", port)
+        await manager.broadcast(
+            "worker/plugin_restart", {"plugin": "mcp", "port": port},
+        )
 
     async def _auto_connect_mcp_servers(self) -> None:
         """Auto-connect to pre-configured MCP servers and discover

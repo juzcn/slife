@@ -18,6 +18,55 @@ from mcp.client.streamable_http import streamable_http_client
 
 logger = logging.getLogger(__name__)
 
+# True once the loop-level cancel-scope exception handler is installed.  A
+# process may create many MCPClient instances (one per plugin + subagents);
+# the handler is installed once per process and reused by all of them.
+_cancel_scope_handler_installed: bool = False
+
+
+def _install_cancel_scope_exception_handler() -> None:
+    """Demote the MCP SDK's 'cancel scope' RuntimeError to a debug log.
+
+    When a request dies mid-flight against a killed server, the SDK's
+    ``streamable_http_client`` tears its anyio TaskGroup down from a
+    different task than the one that entered it, raising::
+
+        RuntimeError: Attempted to exit cancel scope in a different task
+        than it was entered in
+
+    That task's exception is never retrieved (it fires after the caller has
+    already moved on), so it surfaces via the loop's exception handler as
+    ``Task exception was never retrieved`` — not catchable at any call site.
+    :meth:`_cleanup` already suppresses the synchronous variant; this
+    handler covers the async one.  Installed once, chained to any existing
+    handler.
+    """
+    global _cancel_scope_handler_installed
+    if _cancel_scope_handler_installed:
+        return
+    _cancel_scope_handler_installed = True
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+
+    def _handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        exc = context.get("exception")
+        msg = str(context.get("message", ""))
+        if (
+            (isinstance(exc, RuntimeError) and "cancel scope" in str(exc))
+            or "cancel scope" in msg
+        ):
+            logger.debug(
+                "asyncio_cancel_scope_suppressed err=%s", exc or msg,
+            )
+            return
+        if previous is not None:
+            previous(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+
+
 # Bounds one full connect attempt — transport setup (the SDK's
 # streamable_http_client context) AND the initialize handshake.  Previously
 # only initialize() was wrapped, so a hang in transport setup (e.g. memfiles'
@@ -130,6 +179,11 @@ class MCPClient:
         if self._connected:
             logger.warning("mcp_client_already_connected")
             return
+
+        # The SDK's cancel-scope teardown bug surfaces as an unretrieved task
+        # exception on the running loop — install the demoting handler before
+        # any transport that could trigger it is created.
+        _install_cancel_scope_exception_handler()
 
         logger.info("mcp_client_connect transport=%s url=%s", "streamable-http", url)
 

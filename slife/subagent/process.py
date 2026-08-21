@@ -264,6 +264,31 @@ class SubagentProcess:
         except Exception:
             pass
 
+    async def send_notification(
+        self, method: str, params: dict | None = None,
+    ) -> None:
+        """Send a JSON-RPC notification to the worker (no response expected).
+
+        Best-effort — a dead or not-yet-ready worker is skipped silently.
+        Used to tell workers about parent-side events, e.g. an MCP wrapper
+        restart so they reconnect their shared plugin client.
+        """
+        if not self.is_running or not self._process or not self._process.stdin:
+            return
+        req = json.dumps(
+            {"jsonrpc": "2.0", "method": method, "params": params or {}, "id": None},
+            ensure_ascii=False,
+        )
+        try:
+            async with self._stdin_lock:
+                self._process.stdin.write((req + "\n").encode())
+                await self._process.stdin.drain()
+        except Exception:
+            logger.debug(
+                "subagent_notify_send_failed name=%s method=%s",
+                self._name, method, exc_info=True,
+            )
+
     async def send_task(self, task: str, timeout: float = 120.0) -> str:
         if not self.is_running or not self._process or not self._process.stdin:
             raise RuntimeError(f"Subagent '{self._name}' not running")
@@ -670,6 +695,19 @@ class SubagentManager:
         if not self._subagents: return
         await asyncio.gather(*(s.stop() for s in list(self._subagents.values())))
         self._subagents.clear()
+
+    async def broadcast(
+        self, method: str, params: dict | None = None,
+    ) -> None:
+        """Send a notification to every live subagent worker (best-effort)."""
+        if not self._subagents:
+            return
+        await asyncio.gather(
+            *(
+                proc.send_notification(method, params)
+                for proc in list(self._subagents.values())
+            )
+        )
 
     def list(self) -> list[str]:
         return [n for n, p in self._subagents.items() if p.is_running]
