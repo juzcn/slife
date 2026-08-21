@@ -76,6 +76,14 @@ def base_backend(monkeypatch, in_mem_store, in_mem_cryptfile):
     # -- has_master_key: cryptfile file always "exists" --
     monkeypatch.setattr(backend, "has_master_key", lambda: True)
 
+    # -- reinit_cryptfile: keep the mock, never build a real CryptFileKeyring.
+    #    set-password calls reinit_cryptfile(), which normally re-runs
+    #    _init_cryptfile() and constructs a real backend; on POSIX CI that
+    #    construction fails and clobbers _cryptfile to None, breaking the
+    #    first-time/change password tests.  The CLI then sees the mock
+    #    cryptfile via get_cryptfile().
+    monkeypatch.setattr(backend, "reinit_cryptfile", lambda password: None)
+
     # -- Backend names / info --
     monkeypatch.setattr(backend, "get_active_backend_name", lambda: "MockBackend")
     monkeypatch.setattr(backend, "get_backend_info", lambda: {

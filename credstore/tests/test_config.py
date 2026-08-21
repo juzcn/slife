@@ -127,7 +127,9 @@ class TestGetCryptfilePath:
 
     def test_config_path_expands_user(self, monkeypatch):
         monkeypatch.delenv("CREDSTORE_FILE", raising=False)
+        # expanduser resolves "~" via USERPROFILE on Windows, HOME on POSIX.
         monkeypatch.setenv("USERPROFILE", "C:\\Users\\testuser")
+        monkeypatch.setenv("HOME", "/home/testuser")
         with patch("credstore._config.load_config", return_value={"cryptfile_path": "~/my/secrets.crypt"}):
             result = get_cryptfile_path()
             assert "~" not in result

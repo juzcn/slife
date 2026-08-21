@@ -38,7 +38,10 @@ jobs:
       - name: Run tests
         run: |
           # Each package's own [tool.pytest.ini_options] / testpaths apply
-          # when pytest runs from that package's directory.
+          # when pytest runs from that package's directory.  Use
+          # `uv run --directory` (NOT `cd ... &&`), because on the Windows
+          # runner PowerShell keeps the working-directory change from `cd`
+          # across command separators, breaking the later packages.
           uv run pytest -v --tb=short --no-header --maxfail=5
-          (cd credstore && uv run pytest -v --tb=short --no-header --maxfail=5)
-          (cd cc-switch && uv run pytest -v --tb=short --no-header --maxfail=5)
+          uv run --directory credstore pytest -v --tb=short --no-header --maxfail=5
+          uv run --directory cc-switch pytest -v --tb=short --no-header --maxfail=5
