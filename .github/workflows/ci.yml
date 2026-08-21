@@ -28,11 +28,11 @@ jobs:
         run: |
           uv build --out-dir dist
           uv build --out-dir dist --package credstore
-          uv build --out-dir dist --package cc-config
+          uv build --out-dir dist --package cc-switch
 
       - name: Install
         run: |
-          uv pip install dist/slife-*.whl dist/credstore-*.whl dist/cc_config-*.whl
+          uv pip install dist/slife-*.whl dist/credstore-*.whl dist/cc_switch-*.whl
           uv pip install pytest pytest-asyncio
 
       - name: Run tests

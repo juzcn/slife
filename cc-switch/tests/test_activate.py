@@ -1,4 +1,4 @@
-"""Tests for activation (cc_config._activate): settings generation + env injection.
+"""Tests for activation (cc_switch._activate): settings generation + env injection.
 
 The credstore secret is mocked at ``resolve_secret`` so the tests never
 touch a real keyring.
@@ -12,8 +12,8 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-import cc_config._activate as act
-from cc_config._defaults import DEFAULT_ENV, MAIN_MODEL_SLOT_KEYS, default_value
+import cc_switch._activate as act
+from cc_switch._defaults import DEFAULT_ENV, MAIN_MODEL_SLOT_KEYS, default_value
 
 
 PROVIDER = {

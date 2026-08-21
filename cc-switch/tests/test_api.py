@@ -1,10 +1,10 @@
-"""Tests for provider config storage (cc_config._api)."""
+"""Tests for provider config storage (cc_switch._api)."""
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
-import cc_config._api as api
+import cc_switch._api as api
 
 
 def make_provider(**overrides):

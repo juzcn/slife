@@ -10,7 +10,7 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "cc-config",
+    "cc-switch",
     "credstore",
     "slife",
 ]
@@ -288,9 +288,9 @@ wheels = [
 ]
 
 [[package]]
-name = "cc-config"
-version = "0.9.5"
-source = { editable = "cc-config" }
+name = "cc-switch"
+version = "0.9.6"
+source = { editable = "cc-switch" }
 dependencies = [
     { name = "credstore" },
 ]
@@ -517,7 +517,7 @@ wheels = [
 
 [[package]]
 name = "credstore"
-version = "0.9.5"
+version = "0.9.6"
 source = { editable = "credstore" }
 dependencies = [
     { name = "keyring" },
@@ -2638,7 +2638,7 @@ wheels = [
 
 [[package]]
 name = "slife"
-version = "0.9.5"
+version = "0.9.6"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

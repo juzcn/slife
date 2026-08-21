@@ -37,13 +37,13 @@ jobs:
           fi
           echo "credstore $CRED_VERSION — OK"
 
-          # Verify cc-config version
-          CC_VERSION=$(python -c "import tomllib; print(tomllib.load(open('cc-config/pyproject.toml','rb'))['project']['version'])")
+          # Verify cc-switch version
+          CC_VERSION=$(python -c "import tomllib; print(tomllib.load(open('cc-switch/pyproject.toml','rb'))['project']['version'])")
           if [ "$TAG_VERSION" != "$CC_VERSION" ]; then
-            echo "ERROR: tag v$TAG_VERSION != cc-config version $CC_VERSION"
+            echo "ERROR: tag v$TAG_VERSION != cc-switch version $CC_VERSION"
             exit 1
           fi
-          echo "cc-config $CC_VERSION — OK"
+          echo "cc-switch $CC_VERSION — OK"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -63,8 +63,8 @@ jobs:
       - name: Build credstore
         run: cd credstore && python -m build
 
-      - name: Build cc-config
-        run: cd cc-config && python -m build
+      - name: Build cc-switch
+        run: cd cc-switch && python -m build
 
       - name: Publish slife to PyPI
         uses: nick-fields/retry@v4
@@ -84,11 +84,11 @@ jobs:
           retry_wait_seconds: 15
           command: twine upload --verbose credstore/dist/*
 
-      - name: Publish cc-config to PyPI
+      - name: Publish cc-switch to PyPI
         uses: nick-fields/retry@v4
         with:
           timeout_minutes: 5
           max_attempts: 3
           retry_on: error
           retry_wait_seconds: 15
-          command: twine upload --verbose cc-config/dist/*
+          command: twine upload --verbose cc-switch/dist/*

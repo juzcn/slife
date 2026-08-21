@@ -1,20 +1,20 @@
-"""cc-config CLI — terminal commands for Claude Code settings generation.
+"""cc-switch CLI — terminal commands for Claude Code settings generation.
 
 Commands::
 
-    cc-config set <provider> [--name NAME] [--models M1,M2]
+    cc-switch set <provider> [--name NAME] [--models M1,M2]
         Create or edit a provider config (base URL + API key name,
         plus optional models / display name).  Secrets are never stored.
-    cc-config remove <provider>
+    cc-switch remove <provider>
         Delete a provider config.
-    cc-config activate <provider>[/<model>]
+    cc-switch activate <provider>[/<model>]
         Write ~/.claude/settings.json from defaults, inject the API key
         from credstore into ANTHROPIC_AUTH_TOKEN (env only).
-    cc-config activate <provider>[/<model>] --custom
+    cc-switch activate <provider>[/<model>] --custom
         Interactive override of every model slot, then write.
-    cc-config list
+    cc-switch list
         List providers and their models as provider/model.
-    cc-config list-providers
+    cc-switch list-providers
         Show all providers and their models (list is for provider/model rows).
 
 Non-secret interactive values use plain ``input()``.  The API key name
@@ -28,7 +28,7 @@ import argparse
 import json
 import sys
 
-from cc_config import _activate, _api, _defaults
+from cc_switch import _activate, _api, _defaults
 
 
 def _err(msg: str) -> None:
@@ -98,7 +98,7 @@ def _cmd_set(args) -> int:
     print(f"Provider '{name}' saved.")
     if models:
         print(f"  models: {', '.join(models)}")
-    print(f"  Activate with: cc-config activate {name}/<model>")
+    print(f"  Activate with: cc-switch activate {name}/<model>")
     return 0
 
 
@@ -143,7 +143,7 @@ def _cmd_activate(args) -> int:
     providers = _api.load_config().get("providers", {})
     provider = providers.get(provider_name)
     if provider is None:
-        _err(f"provider '{provider_name}' not found. Add it first: cc-config set {provider_name}")
+        _err(f"provider '{provider_name}' not found. Add it first: cc-switch set {provider_name}")
         return 1
 
     if model_name is None:
@@ -192,13 +192,13 @@ def _cmd_list(args) -> int:
     providers = _api.load_config().get("providers", {})
     if not providers:
         print("No providers configured.")
-        print("Add one with: cc-config set <provider-name>")
+        print("Add one with: cc-switch set <provider-name>")
         return 0
     for name in sorted(providers):
         provider = providers[name]
         models = provider.get("models") or []
         if not models:
-            print(f"{name}/<no models — run 'cc-config set {name}' to add>")
+            print(f"{name}/<no models — run 'cc-switch set {name}' to add>")
             continue
         for model in models:
             print(f"{name}/{model}")
@@ -229,7 +229,7 @@ def _cmd_list_providers(args) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="cc-config",
+        prog="cc-switch",
         description="Generate ~/.claude/settings.json from saved provider/model configs.",
     )
     sub = parser.add_subparsers(dest="command", required=True)

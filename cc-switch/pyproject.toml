@@ -1,6 +1,6 @@
 [project]
-name = "cc-config"
-version = "0.9.5"
+name = "cc-switch"
+version = "0.9.6"
 description = "Generate ~/.claude/settings.json from saved provider/model configs"
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,14 +26,14 @@ Homepage = "https://github.com/juzcn/slife"
 Repository = "https://github.com/juzcn/slife"
 
 [project.scripts]
-cc-config = "cc_config.cli:main"
+cc-switch = "cc_switch.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.24,<1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["cc_config"]
+packages = ["cc_switch"]
 
 [dependency-groups]
 dev = [

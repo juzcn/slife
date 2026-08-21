@@ -1,7 +1,7 @@
 """Activation — materialise a provider/model into ``~/.claude/settings.json``.
 
 Plain ``activate`` fills every model slot with the stock Claude Code
-defaults from :mod:`cc_config._defaults`; ``--custom`` lets the user
+defaults from :mod:`cc_switch._defaults`; ``--custom`` lets the user
 override each env key interactively before writing.
 
 The secret is read from credstore (by the *api_key_name* referenced in
@@ -9,7 +9,7 @@ the provider config) and injected into the **system environment** as
 ``ANTHROPIC_AUTH_TOKEN`` — mirroring ``credstore inject`` (registry on
 Windows, shell profile on Unix).  The generated settings.json never
 contains a credential line, and the env injection survives the transient
-cc-config process so a new Claude Code session picks it up.
+cc-switch process so a new Claude Code session picks it up.
 
 If the secret is missing from credstore, activation fails loudly instead
 of writing an unusable settings.json.
@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 import sys
 
-from cc_config import _defaults
+from cc_switch import _defaults
 
 # Output path — overridable for tests via monkeypatch.
 SETTINGS_PATH = os.path.expanduser("~/.claude/settings.json")
@@ -38,7 +38,7 @@ def resolve_secret(api_key_name: str) -> str | None:
 
     Returns the secret, or None when the key is not stored or credstore
     is unavailable.  The caller must ``del`` the returned value after
-    use.  This is the only place cc-config touches secret material.
+    use.  This is the only place cc-switch touches secret material.
     """
     try:
         from credstore import get_credential

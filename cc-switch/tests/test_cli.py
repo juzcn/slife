@@ -1,4 +1,4 @@
-"""Tests for the cc-config CLI (cc_config.cli)."""
+"""Tests for the cc-switch CLI (cc_switch.cli)."""
 
 import builtins
 import json
@@ -8,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from cc_config import _activate, _api, cli
+from cc_switch import _activate, _api, cli
 
 
 @pytest.fixture(autouse=True)

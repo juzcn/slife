@@ -1,7 +1,7 @@
 """Persistent provider/model configuration storage.
 
 The non-secret *shape* of a Claude Code provider setup lives in
-``~/.claude/cc-config.json`` (path overridable via ``CC_CONFIG_FILE``).
+``~/.claude/cc-switch.json`` (path overridable via ``CC_SWITCH_FILE``).
 Only provider metadata is stored here — never API keys.  The secret is
 referenced by *name* (the ``api_key_name`` field) and resolved through
 credstore at activate time.
@@ -25,11 +25,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-CONFIG_PATH = Path(os.environ.get("CC_CONFIG_FILE", str(Path.home() / ".claude" / "cc-config.json")))
+CONFIG_PATH = Path(os.environ.get("CC_SWITCH_FILE", str(Path.home() / ".claude" / "cc-switch.json")))
 
 
 def load_config() -> dict:
-    """Load provider configs from ``~/.claude/cc-config.json``.
+    """Load provider configs from ``~/.claude/cc-switch.json``.
 
     Returns a dict with a ``"providers"`` key (possibly empty).  A
     missing or unparseable file yields ``{"providers": {}}``.
@@ -46,7 +46,7 @@ def load_config() -> dict:
 
 
 def save_config(data: dict) -> None:
-    """Persist the whole config dict to ``~/.claude/cc-config.json``."""
+    """Persist the whole config dict to ``~/.claude/cc-switch.json``."""
     import json
 
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)

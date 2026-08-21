@@ -1,19 +1,19 @@
-"""cc-config — generate ~/.claude/settings.json from saved provider/model configs.
+"""cc-switch — generate ~/.claude/settings.json from saved provider/model configs.
 
 A standalone CLI (mirroring the credstore pattern) that keeps the
 non-secret *shape* of a Claude Code provider setup in
-``~/.claude/cc-config.json`` and materialises it into
+``~/.claude/cc-switch.json`` and materialises it into
 ``~/.claude/settings.json``.  Secrets never touch settings.json — the
 API key is read from credstore at activate time and injected only into
 the system environment as ``ANTHROPIC_AUTH_TOKEN``.
 
 Modules::
 
-    cc_config      Package API (get/save/remove/list/activate)
-    cc_config.cli  Command-line interface (entry point ``cc-config``)
+    cc_switch      Package API (get/save/remove/list/activate)
+    cc_switch.cli  Command-line interface (entry point ``cc-switch``)
 """
 
-from cc_config._api import (
+from cc_switch._api import (
     CONFIG_PATH,
     add_provider,
     list_providers,
@@ -22,7 +22,7 @@ from cc_config._api import (
     save_config,
     update_provider,
 )
-from cc_config._defaults import (
+from cc_switch._defaults import (
     DEFAULT_ENV,
     DEFAULT_OVERRIDE_KEYS,
     DEFAULT_SETTINGS,
@@ -31,7 +31,7 @@ from cc_config._defaults import (
     list_default_override_keys,
 )
 
-__version__ = "0.9.5"
+__version__ = "0.9.6"
 
 __all__ = [
     "CONFIG_PATH",

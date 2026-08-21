@@ -70,11 +70,11 @@ independently (neither pulls the others in):
 |---------|-------------------|---------|
 | `slife` | `uv tool install slife` | The agent (this README) |
 | `credstore` | `uv tool install credstore` | Cross-platform credential storage |
-| `cc-config` | `uv tool install cc-config` | Generate `~/.claude/settings.json` |
+| `cc-switch` | `uv tool install cc-switch` | Generate `~/.claude/settings.json` |
 
 Installing slife depends on [credstore](../credstore/README.md) only —
-it does **not** install cc-config.  See the
-[cc-config](../cc-config/README.md) and
+it does **not** install cc-switch.  See the
+[cc-switch](../cc-switch/README.md) and
 [credstore](../credstore/README.md) READMEs for details.
 
 ## Quick Start
