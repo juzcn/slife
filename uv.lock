@@ -289,7 +289,7 @@ wheels = [
 
 [[package]]
 name = "cc-config"
-version = "0.9.4"
+version = "0.9.5"
 source = { editable = "cc-config" }
 dependencies = [
     { name = "credstore" },
@@ -517,7 +517,7 @@ wheels = [
 
 [[package]]
 name = "credstore"
-version = "0.9.4"
+version = "0.9.5"
 source = { editable = "credstore" }
 dependencies = [
     { name = "keyring" },
@@ -2638,7 +2638,7 @@ wheels = [
 
 [[package]]
 name = "slife"
-version = "0.9.4"
+version = "0.9.5"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
