@@ -780,21 +780,19 @@ class MCPServerConnection:
 
     async def _drain_stderr(self) -> None:
         assert self._process and self._process.stderr
+        from slife.logfmt import read_stderr_lines, sanitize_secrets
         try:
-            while True:
-                line = await self._process.stderr.readline()
-                if not line:
-                    break
-                text = line.decode("utf-8", errors="replace").rstrip()
-                if text:
-                    self._stderr_buffer.append(text + "\n")
-                    # Bound the buffer — only the tail is ever read (the last
-                    # 20 lines in connect()'s error path); a chatty server must
-                    # not grow it without bound.
-                    if len(self._stderr_buffer) > 500:
-                        del self._stderr_buffer[:len(self._stderr_buffer) - 500]
-                    from slife.logfmt import sanitize_secrets
-                    logger.debug("mcp_stderr server=%s line=%s", self.config.name, sanitize_secrets(text))
+            # Shared hardened reader — an over-long stderr line must not
+            # kill this relay (a dead relay wedges the server's stderr
+            # pipe and the server blocks on its next log write).
+            async for text in read_stderr_lines(self._process):
+                self._stderr_buffer.append(text + "\n")
+                # Bound the buffer — only the tail is ever read (the last
+                # 20 lines in connect()'s error path); a chatty server must
+                # not grow it without bound.
+                if len(self._stderr_buffer) > 500:
+                    del self._stderr_buffer[:len(self._stderr_buffer) - 500]
+                logger.debug("mcp_stderr server=%s line=%s", self.config.name, sanitize_secrets(text))
         except asyncio.CancelledError:
             pass
 

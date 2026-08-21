@@ -300,6 +300,62 @@ class TestReadStderrLines:
         assert lines[0] == "valid line"
         assert "invalid utf8" in lines[1]  # errors='replace' handles it
 
+    @pytest.mark.asyncio
+    async def test_overlong_line_discarded_relay_survives(self):
+        """Regression: an over-long line must not kill the relay.
+
+        A 315 KB anthropic SDK "Request options" DEBUG line raised
+        LimitOverrunError in readline(); the relay died silently, the
+        child's stderr pipe filled up, and the child blocked on its next
+        log write — a subagent task stuck "pending" forever.  The relay
+        must discard the over-long line and keep relaying.
+        """
+        proc = MagicMock()
+        proc.stderr = MagicMock()
+        calls = {"readline": 0}
+
+        async def _readline():
+            calls["readline"] += 1
+            if calls["readline"] == 1:
+                # First line overruns the reader limit.
+                raise ValueError(
+                    "Separator is not found, and chunk exceed the limit",
+                )
+            if calls["readline"] == 2:
+                return b"X" * 1000 + b"\n"  # remainder of the overlong line
+            if calls["readline"] == 3:
+                return b"next line\n"
+            return b""
+
+        proc.stderr.readline = _readline
+        lines = [line async for line in read_stderr_lines(proc)]
+        # The overlong line (incl. its remainder) is dropped entirely;
+        # relaying continues with the next line.
+        assert lines == ["next line"]
+
+    @pytest.mark.asyncio
+    async def test_reader_limit_raised_large_line_truncated(self):
+        """A 300 KB line survives the relay: no overrun, truncated relay.
+
+        The StreamReader default limit is 64 KB; read_stderr_lines raises
+        it so real-world large lines (LLM SDK DEBUG dumps, big tracebacks)
+        don't overrun, and truncates the relayed copy (the child's own log
+        file keeps the full line; the relay is diagnostic).
+        """
+        reader = asyncio.StreamReader()  # default _limit: 64 KB
+        proc = MagicMock()
+        proc.stderr = reader
+        big = b"Y" * (300 * 1024)
+        reader.feed_data(big + b"\n")
+        reader.feed_data(b"after\n")
+        reader.feed_eof()
+        lines = [line async for line in read_stderr_lines(proc)]
+        assert reader._limit >= 300 * 1024  # noqa: SLF001
+        assert len(lines) == 2
+        assert lines[0].startswith("Y" * 1024)
+        assert "truncated" in lines[0]
+        assert lines[1] == "after"
+
 
 # ── drain_stderr ────────────────────────────────────────────────────────
 
@@ -502,6 +558,34 @@ class TestSanitizeSecrets:
         result = sanitize_secrets("OK")
         assert result == "OK"
 
+    def test_large_line_no_quadratic_blowup(self):
+        """Regression: a large line must not stall the event loop.
+
+        The key-name sandwiches ("…secret…", "…access…key…") used
+        unbounded repeats; on a non-matching line the engine backtracked
+        O(n) per start position — quadratic overall.  A 300 KB relayed
+        stderr line froze the parent's event loop for minutes, filling the
+        child's stderr pipe and wedging a subagent mid-task.  Key-name
+        repeats are now bounded; this must stay comfortably fast.
+        """
+        import time
+
+        big = "A" * (300 * 1024)
+        t0 = time.monotonic()
+        result = sanitize_secrets(big)
+        took = time.monotonic() - t0
+        assert result == big
+        assert took < 5.0  # measured ~30s+ before the fix, ~ms after
+
+    def test_bounded_key_name_still_redacted(self):
+        """The bounded key-name pattern still masks compound key names."""
+        assert "<MASKED>" in sanitize_secrets(
+            "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        )
+        assert "<MASKED>" in sanitize_secrets(
+            "STRIPE_ACCESS_KEY=sk_live_abcdefghijklmnop"
+        )
+
 
 # ── silence_noisy_loggers ────────────────────────────────────────────────────
 
@@ -529,6 +613,19 @@ class TestSilenceNoisyLoggers:
         """Even if an extra logger is already in defaults, it's still silenced."""
         # Just verify calling with extras doesn't error
         silence_noisy_loggers(extra=("openai._base_client",))
+
+    def test_llm_sdk_client_loggers_silenced(self):
+        """Both LLM SDK clients dump full request bodies at DEBUG.
+
+        A single anthropic "Request options" line carries the entire
+        request body (every tool schema) — hundreds of KB with a large
+        tool registry.  In a subagent that line rides the stderr pipe to
+        the parent; it must never be emitted.
+        """
+        from slife.logfmt import _NOISY_LOGGER_NAMES
+
+        assert "openai._base_client" in _NOISY_LOGGER_NAMES
+        assert "anthropic._base_client" in _NOISY_LOGGER_NAMES
 
 
 # ── ok_json ──────────────────────────────────────────────────────────────────

@@ -60,6 +60,11 @@ FILE_LOG_FORMAT = (
 # flooding the log file with HTTP request/response bodies.
 _NOISY_LOGGER_NAMES = (
     "openai._base_client",
+    # Same hazard as openai._base_client: dumps the full request body
+    # (every tool schema) at DEBUG — a single "Request options" line is
+    # hundreds of KB with a large tool registry.  In a subagent that line
+    # rides the stderr pipe to the parent and overruns the relay reader.
+    "anthropic._base_client",
     "httpcore.connection",
     "httpcore.http11",
     "httpcore.proxy",
@@ -195,12 +200,59 @@ def elapsed(
 
 # ── Stderr drain helper ───────────────────────────────────────────────
 
+logger = logging.getLogger(__name__)
+
+#: Per-line cap for subprocess stderr relays.  The StreamReader default is
+#: 64 KB; a single line beyond the limit makes ``readline()`` raise.  1 MB
+#: relays even enormous tracebacks while capping in-memory buffering.
+_STDERR_LIMIT = 1024 * 1024
+
+#: Relayed lines are truncated to this many characters.  The relay is
+#: diagnostic — the child's own log file keeps the full line.  The cap
+#: bounds the per-line cost of ``sanitize_secrets`` on the parent's event
+#: loop and keeps multi-hundred-KB dumps out of the session log.
+_MAX_RELAYED_CHARS = 16 * 1024
+
+
+async def _discard_overlong_line(stderr) -> int:
+    """Drop the remainder of a line that overran the reader limit.
+
+    ``readline()`` raises ``ValueError`` (``LimitOverrunError``) after
+    discarding the buffered head of the over-long line — but the tail is
+    still in flight and must be consumed up to and including its newline,
+    otherwise the next ``readline()`` returns that tail as if it were a
+    fresh line (and the consumer's line accounting silently corrupts).
+
+    Returns the number of discarded tail bytes (lower bound — the head
+    size is unknown once ``readline`` cleared its buffer).
+    """
+    dropped = 0
+    while True:
+        try:
+            rest = await stderr.readline()
+        except ValueError:
+            # The remainder alone still exceeds the limit — readline raised
+            # again after discarding another head-sized chunk; keep going.
+            continue
+        if not rest:
+            break  # EOF inside the over-long line
+        dropped += len(rest)
+        if rest.endswith(b"\n"):
+            break  # the newline terminating the over-long line
+    return dropped
+
 
 async def read_stderr_lines(process, running_check=None):
     """Async generator yielding decoded stderr lines from a subprocess.
 
     Used by MCPWrapperProcess, BrokerManager, and SubagentProcess to
     avoid duplicating the readline/decode/running-check loop.
+
+    An over-long line (beyond :data:`_STDERR_LIMIT`) is discarded with a
+    warning instead of killing the relay: ``readline()`` raises on it, and
+    a dead relay orphans the child's stderr pipe — the pipe fills, the
+    child blocks on its next log write, and a subagent hangs mid-task with
+    its task stuck "pending" forever.
 
     Args:
         process: An ``asyncio.subprocess.Process`` with a ``.stderr`` pipe.
@@ -212,16 +264,42 @@ async def read_stderr_lines(process, running_check=None):
     """
     if not process or not process.stderr:
         return
+    stderr = process.stderr
+    # Raise the StreamReader limit (a real StreamReader; no-op on mocks).
+    try:
+        stderr._limit = max(stderr._limit, _STDERR_LIMIT)  # type: ignore[attr-defined]
+    except (AttributeError, TypeError):
+        pass
     try:
         while running_check is None or running_check():
-            line = await process.stderr.readline()
+            try:
+                line = await stderr.readline()
+            except ValueError:
+                # LimitOverrunError — an over-long line.  Discard its
+                # remainder and keep relaying; never die here.
+                dropped = await _discard_overlong_line(stderr)
+                logger.warning(
+                    "stderr_line_overlong_discarded min_bytes=%d", dropped,
+                )
+                continue
             if not line:
                 break
             text = line.decode("utf-8", errors="replace").rstrip()
-            if text:
+            if not text:
+                continue
+            if len(text) > _MAX_RELAYED_CHARS:
+                yield (
+                    text[:_MAX_RELAYED_CHARS]
+                    + f"… [truncated: {len(line)} bytes total]"
+                )
+            else:
                 yield text
-    except (asyncio.CancelledError, Exception):
+    except asyncio.CancelledError:
         pass
+    except Exception:
+        # The relay must never die silently — a dead stderr relay wedges
+        # the child process (see docstring).  Log why it stopped.
+        logger.warning("stderr_relay_failed", exc_info=True)
 
 
 async def drain_stderr(
@@ -314,10 +392,15 @@ _SECRET_PATTERNS: list[re.Pattern] = [
     # The value class excludes quotes/braces/brackets so JSON like
     # {"api_key": "sk-…"} masks just the value instead of swallowing the
     # closing braces and corrupting the line.
+    # The key-name sandwiches bound their repeats ({0,64}, not *): with an
+    # unbounded "[A-Za-z0-9_]*secret…" the engine backtracks O(n) per start
+    # position on lines without a match — quadratic overall, which froze the
+    # parent's event loop for minutes on a 300 KB relayed stderr line.  Key
+    # names are short; 64 chars on each side is generous.
     re.compile(
         r"(?:api[_-]?key|apikey|token|password|auth[_-]?token|"
-        r"[A-Za-z0-9_]*secret[A-Za-z0-9_]*|"
-        r"[A-Za-z0-9_]*access[_-]?key[A-Za-z0-9_]*)\s*[=:]\s*"
+        r"[A-Za-z0-9_]{0,64}secret[A-Za-z0-9_]{0,64}|"
+        r"[A-Za-z0-9_]{0,64}access[_-]?key[A-Za-z0-9_]{0,64})\s*[=:]\s*"
         r"([^\s\"'{}()\[\];,]{6,})",
         re.IGNORECASE,
     ),
