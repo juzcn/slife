@@ -8,7 +8,7 @@ the command line (``ANTHROPIC_MODEL``), and are never left empty.
 user can change them individually.
 
 Only the non-model slots have a static default
-(``ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL: medium``).
+(``ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL: max``).
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ DEFAULT_OVERRIDE_KEYS = list(MAIN_MODEL_SLOT_KEYS) + [
 
 # Static default for the non-model slots.
 DEFAULT_ENV: dict[str, str] = {
-    "ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL": "medium",
+    "ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL": "max",
 }
 
 # Frozen template for the settings.json body — never a credential here.

@@ -30,7 +30,7 @@ class TestDefaultValue:
             assert default_value(key, "deepseek-chat") == "deepseek-chat"
 
     def test_effort_level_keeps_static_default(self):
-        assert default_value("ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL", "deepseek-chat") == "medium"
+        assert default_value("ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL", "deepseek-chat") == "max"
 
 
 class TestBuildEnv:
@@ -48,7 +48,7 @@ class TestBuildEnv:
         env = act.build_env(PROVIDER, "m", overrides={"ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-x"})
         assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "haiku-x"
         assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "m"
-        assert env["ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL"] == "medium"
+        assert env["ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL"] == "max"
 
     def test_override_clear_with_empty_string(self):
         env = act.build_env(PROVIDER, "m", overrides={"ANTHROPIC_DEFAULT_HAIKU_MODEL": ""})
