@@ -440,30 +440,35 @@ class TestDashScopeAdapter:
         }
 
     @pytest.mark.asyncio
-    async def test_transcribe_uploads_and_resolves_oss(self, monkeypatch,
-                                                       tmp_path):
+    async def test_transcribe_sends_data_uri(self, monkeypatch, tmp_path):
         adapter = _ds_adapter()
         audio = tmp_path / "a.wav"
         audio.write_bytes(b"fake")
-        monkeypatch.setattr(
-            adapter, "upload_file",
-            AsyncMock(return_value="oss://dir/a.wav"))
         captured = {}
 
         async def fake_request(method, url, *, extra_headers=None,
                                json_body=None):
-            captured["headers"] = extra_headers
-            captured["body"] = json_body
+            captured.update(method=method, url=url, headers=extra_headers,
+                            body=json_body)
             return {"output": {"choices": [{"message": {"content": [
                 {"text": "hello"}]}}]}}
 
         monkeypatch.setattr(adapter, "_request", fake_request)
         result = await adapter.transcribe_audio(model="asr", audio_path=audio)
         assert result == "hello"
-        assert captured["headers"] == {
-            "X-DashScope-OssResourceResolve": "enable"}
-        assert captured["body"]["input"]["messages"][0]["content"] == [
-            {"audio": "oss://dir/a.wav"}]
+        # The flash ASR models (qwen-audio-3.0-asr-flash / fun-asr-flash)
+        # take a base64 Data URI on the multimodal generation endpoint —
+        # no OSS upload / resolve header (that path 404s for them).
+        assert captured["url"].endswith("/multimodal-generation/generation")
+        assert captured["headers"] is None
+        body = captured["body"]
+        assert body["model"] == "asr"
+        content = body["input"]["messages"][0]["content"]
+        assert content == [{
+            "type": "input_audio",
+            "input_audio": {"data": "data:audio/wav;base64,ZmFrZQ=="},
+        }]
+        assert body["parameters"] == {"format": "wav", "sample_rate": "16000"}
 
     @pytest.mark.asyncio
     async def test_upload_file_two_step(self, monkeypatch, tmp_path):
