@@ -217,7 +217,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `vision.py` | `include_image` (native — injects image blocks into the conversation; gated on a vision-capable model) |
 | Harness | `harness.py` | `_sys_note` (visible-but-reserved, see above); trim is internal — no tool |
-| Meta | `meta.py` | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
+| Meta | `meta.py` | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
 Plus **plugin tools** — registered at runtime as `{server}__{tool}` proxies via `create_proxy_tools`:
 
@@ -764,7 +764,7 @@ slife/
     credentials.py     #   Credential check/inject/uninject
     vision.py          #   include_image — vision helper (native, conversation-scoped)
     notify.py          #   notify_user (pure UI)
-    meta.py            #   list_tools, check_async, cancel_async, clear_context
+    meta.py            #   list_native_tools, check_async, cancel_async, clear_context
   plugins/             # Built-in plugins (auto-discovered server.py packages)
     mcp/               #   External MCP gateway (raw JSON-RPC: stdio/SSE/streamable)
     memdb/             #   Diary database (store, search, embeddings, schema.sql)

@@ -1,4 +1,4 @@
-"""Tests for slife.tools.meta — ListToolsTool, CheckAsyncTool, CancelAsyncTool, ClearContextTool."""
+"""Tests for slife.tools.meta — ListNativeToolsTool, CheckAsyncTool, CancelAsyncTool, ClearContextTool."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from slife.tools.meta import (
-    ListToolsTool,
+    ListNativeToolsTool,
     CheckAsyncTool,
     CancelAsyncTool,
     ClearContextTool,
@@ -72,9 +72,9 @@ class TestClassify:
         assert _classify("credential_uninject") == "Credentials"
 
     def test_meta_tools(self):
-        # list_tools, cancel_async, clear_context → Meta
+        # list_native_tools, cancel_async, clear_context → Meta
         # check_async starts with "check_" → System (checked first in _classify order)
-        assert _classify("list_tools") == "Meta"
+        assert _classify("list_native_tools") == "Meta"
         assert _classify("cancel_async") == "Meta"
         assert _classify("clear_context") == "Meta"
         # check_async matches startswith("check_") before the Meta tuple check
@@ -84,22 +84,22 @@ class TestClassify:
         assert _classify("some_random_tool") == "Other"
 
 
-# ── ListToolsTool ─────────────────────────────────────────────────────────
+# ── ListNativeToolsTool ──────────────────────────────────────────────────
 
 
-class TestListToolsTool:
-    """Tests for ListToolsTool."""
+class TestListNativeToolsTool:
+    """Tests for ListNativeToolsTool."""
 
     def test_metadata(self):
-        tool = ListToolsTool()
-        assert tool.name == "list_tools"
+        tool = ListNativeToolsTool()
+        assert tool.name == "list_native_tools"
         assert tool.category == "Meta"
-        assert "category" in tool.parameters["properties"]
+        assert tool.parameters == {"type": "object", "properties": {}, "required": []}
 
     @pytest.mark.asyncio
     async def test_registry_unavailable(self):
         """When registry is None, returns clear message."""
-        tool = ListToolsTool()
+        tool = ListNativeToolsTool()
         try:
             result = await tool.execute()
             assert "not available" in result.lower()
@@ -110,7 +110,7 @@ class TestListToolsTool:
     async def test_registry_empty(self):
         """When registry has no tools, returns appropriate message."""
         from slife.tools.registry import ToolRegistry
-        tool = ListToolsTool()
+        tool = ListNativeToolsTool()
         from slife.tools.context import ToolContext
         try:
             tool._ctx = ToolContext(registry=ToolRegistry())
@@ -134,92 +134,75 @@ class TestListToolsTool:
         registry = ToolRegistry()
         registry.register(_TestNative())
 
-        tool = ListToolsTool()
+        tool = ListNativeToolsTool()
         from slife.tools.context import ToolContext
         try:
             tool._ctx = ToolContext(registry=registry)
-            result = await tool.execute(category="native")
+            result = await tool.execute()
             assert "check_something" in result
             assert "System" in result  # auto-classified as System
         finally:
             tool._ctx = None
 
     @pytest.mark.asyncio
-    async def test_mcp_tools_listed(self):
-        """MCP proxy tools are listed under their servers."""
+    async def test_mcp_proxy_tools_excluded(self):
+        """External MCP proxy tools are NOT listed — the model already gets
+        their full schemas natively, so a second listing is redundant cost."""
         from slife.tools.registry import ToolRegistry
         from slife.mcp.tool_adapter import MCPProxyTool
-        from unittest.mock import AsyncMock
+        from slife.tools.base import Tool
 
-        # Create a minimal MCPProxyTool-like mock with the class being
-        # MCPProxyTool so isinstance checks pass.
+        class _Native(Tool):
+            name = "echo"
+            description = "Echo back."
+            parameters = {"type": "object", "properties": {}}
+            async def execute(self, **kwargs): return "ok"
+
+        # Minimal MCPProxyTool-like mock so isinstance checks pass.
         mock_tool = MagicMock(spec=MCPProxyTool)
-        mock_tool.name = "memory__search"
-        mock_tool._server = "memdb"
-        mock_tool.description = "Search memory."
-        mock_tool.category = "Memory"
+        mock_tool.name = "filesystem__read_file"
+        mock_tool._server = "filesystem"
+        mock_tool.description = "Read a file."
+        mock_tool.category = "MCP"
         mock_tool.parameters = {"type": "object", "properties": {}}
 
         registry = ToolRegistry()
         registry.register(mock_tool)
-
-        tool = ListToolsTool()
-        from slife.tools.context import ToolContext
-        try:
-            tool._ctx = ToolContext(registry=registry)
-            result = await tool.execute(category="mcp")
-            assert "memdb" in result.lower() or "memory__search" in result
-        finally:
-            tool._ctx = None
-
-    @pytest.mark.asyncio
-    async def test_category_all_shows_both(self):
-        """category='all' shows both native and MCP sections."""
-        from slife.tools.registry import ToolRegistry
-        from slife.tools.base import Tool
-
-        class _Native(Tool):
-            name = "echo"
-            description = "Echo back."
-            parameters = {"type": "object", "properties": {}}
-            async def execute(self, **kwargs): return "ok"
-
-        registry = ToolRegistry()
         registry.register(_Native())
 
-        tool = ListToolsTool()
+        tool = ListNativeToolsTool()
         from slife.tools.context import ToolContext
         try:
             tool._ctx = ToolContext(registry=registry)
-            result = await tool.execute(category="all")
-            assert "Native Tools" in result
+            result = await tool.execute()
             assert "echo" in result
+            assert "filesystem__read_file" not in result
+            assert "filesystem" not in result.lower()
         finally:
             tool._ctx = None
 
     @pytest.mark.asyncio
-    async def test_category_mcp_no_servers(self):
-        """When category is mcp and no MCP tools, shows appropriate message."""
+    async def test_harness_marker_for_underscore_tools(self):
+        """Native harness tools (_sys_note) are shown with a marker."""
         from slife.tools.registry import ToolRegistry
         from slife.tools.base import Tool
 
-        # Need at least one native tool so registry isn't empty,
-        # but no MCPProxyTool instances.
-        class _Native(Tool):
-            name = "echo"
-            description = "Echo back."
+        class _Harness(Tool):
+            name = "_sys_note"
+            description = "Current context status."
             parameters = {"type": "object", "properties": {}}
             async def execute(self, **kwargs): return "ok"
 
         registry = ToolRegistry()
-        registry.register(_Native())
+        registry.register(_Harness())
 
-        tool = ListToolsTool()
+        tool = ListNativeToolsTool()
         from slife.tools.context import ToolContext
         try:
             tool._ctx = ToolContext(registry=registry)
-            result = await tool.execute(category="mcp")
-            assert "no mcp servers connected" in result.lower()
+            result = await tool.execute()
+            assert "`_sys_note`" in result
+            assert "harness, auto-invoked" in result
         finally:
             tool._ctx = None
 

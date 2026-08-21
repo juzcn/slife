@@ -30,7 +30,7 @@ class ToolContext:
     """
 
     registry: ToolRegistry | None = None
-    """The live :class:`ToolRegistry` (needed by ``list_tools``, model
+    """The live :class:`ToolRegistry` (needed by ``list_native_tools``, model
     switching, etc.)"""
 
     config: Config | None = None

@@ -178,7 +178,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 | Vision | `include_image`（把本地图片或 URL 注入对话） |
 | Display | `notify_user` |
 | Harness | `_sys_note`（上下文状态）——自主调用，LLM 不可用 |
-| Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
+| Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
 每个工具还额外接受三个框架元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（对话流内联审批行——Y 批准 / N 拒绝 / Esc 拒绝）。
 

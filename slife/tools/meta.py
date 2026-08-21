@@ -1,6 +1,6 @@
 """Meta tools — agent self-management.
 
-list_tools         — inventory with category filter
+list_native_tools  — native tool inventory (grouped, with harness markers)
 check_async        — poll background task result
 cancel_async       — cancel a running background task
 clear_context      — reset conversation history
@@ -20,13 +20,8 @@ from slife.tools.base import Tool, make_params
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════
-# list_tools
+# list_native_tools
 # ═══════════════════════════════════════════════════════════════════════
-
-_PLUGIN_LABELS: dict[str, str] = {
-    "memdb": "MemDB (built-in plugin)",
-    "wechat": "WeChat (built-in plugin)",
-}
 
 
 def _classify(name: str) -> str:
@@ -50,30 +45,22 @@ def _classify(name: str) -> str:
         return "Execution"
     if name.startswith("credential_"):
         return "Credentials"
-    if name in ("list_tools", "check_async", "cancel_async", "clear_context"):
+    if name in ("list_native_tools", "check_async", "cancel_async", "clear_context"):
         return "Meta"
     return "Other"
 
 
-class ListToolsTool(Tool):
-    name: ClassVar[str] = "list_tools"
+class ListNativeToolsTool(Tool):
+    name: ClassVar[str] = "list_native_tools"
     category: ClassVar[str] = "Meta"
-    description: ClassVar[str] = "List available tools. category: all (default), native, or mcp."
-    parameters: ClassVar[dict] = {
-        "type": "object",
-        "properties": {
-            "category": {
-                "type": "string",
-                "enum": ["all", "native", "mcp"],
-                "description": "all (default) / native / mcp.",
-            },
-        },
-        "required": [],
-    }
+    description: ClassVar[str] = (
+        "Inventory of native tools (grouped, first-sentence summaries, "
+        "harness/auto-invoked markers). External MCP tools are NOT listed — "
+        "the model already receives their full schemas natively."
+    )
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
 
-    async def execute(self, category: str = "all", **kwargs) -> str:
-        from slife.mcp.tool_adapter import MCPProxyTool
-
+    async def execute(self, **kwargs) -> str:
         ctx = getattr(self, "_ctx", None)
         registry = ctx.registry if ctx is not None else None
         if registry is None:
@@ -83,45 +70,29 @@ class ListToolsTool(Tool):
         if not all_tools:
             return "No tools are currently registered."
 
-        natives: list[Tool] = []
-        mcp_proxies: dict[str, list[Tool]] = defaultdict(list)
-        for t in all_tools:
-            if isinstance(t, MCPProxyTool):
-                mcp_proxies[t._server].append(t)
-            else:
-                natives.append(t)
+        # External MCP tools are excluded: the model already receives their
+        # full schemas in the native `tools` array of every request, so a
+        # second listing here is pure redundant context.
+        from slife.mcp.tool_adapter import MCPProxyTool
 
-        show_native = category in ("all", "native")
-        show_mcp = category in ("all", "mcp")
-        lines: list[str] = []
+        natives = [t for t in all_tools if not isinstance(t, MCPProxyTool)]
+        if not natives:
+            return "No native tools are currently registered."
 
-        if show_native:
-            lines.append(f"## Native Tools ({len(natives)} total)\n")
-            native_groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
-            for t in sorted(natives, key=lambda t: t.name):
-                cat = getattr(t, "category", "") or _classify(t.name)
-                desc = t.description.split(".")[0].strip() + "."
-                native_groups[cat].append((t.name, desc))
+        lines = [f"## Native Tools ({len(natives)} total)\n"]
+        native_groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for t in sorted(natives, key=lambda t: t.name):
+            cat = getattr(t, "category", "") or _classify(t.name)
+            desc = t.description.split(".")[0].strip() + "."
+            native_groups[cat].append((t.name, desc))
 
-            for cat in sorted(native_groups):
-                items = native_groups[cat]
-                lines.append(f"### {cat} ({len(items)})")
-                for name, desc in items:
-                    marker = " — harness, auto-invoked" if name.startswith("_") else ""
-                    lines.append(f"- **`{name}`**{marker} — {desc}")
-                lines.append("")
-
-        if show_mcp and mcp_proxies:
-            lines.append(f"## MCP-Connected Servers ({len(mcp_proxies)} servers)\n")
-            for server in sorted(mcp_proxies):
-                tools = mcp_proxies[server]
-                label = _PLUGIN_LABELS.get(server, f"MCP: {server}")
-                tool_names = sorted(t.name for t in tools)
-                lines.append(f"- **{label}** ({len(tools)} tools): "
-                             + ", ".join(f"`{n}`" for n in tool_names))
+        for cat in sorted(native_groups):
+            items = native_groups[cat]
+            lines.append(f"### {cat} ({len(items)})")
+            for name, desc in items:
+                marker = " — harness, auto-invoked" if name.startswith("_") else ""
+                lines.append(f"- **`{name}`**{marker} — {desc}")
             lines.append("")
-        elif show_mcp and not mcp_proxies:
-            lines.append("## MCP-Connected Servers\n\nNo MCP servers connected.\n")
 
         return "\n".join(lines)
 

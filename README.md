@@ -186,7 +186,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Vision | `include_image` (injects a local image or URL into the conversation) |
 | Display | `notify_user` |
 | Harness | `_sys_note` (context status) — auto-invoked, not for LLM use |
-| Meta | `list_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
+| Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
 Every tool additionally accepts three harness meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt in the chat — Y approve / N deny / Esc deny).
 

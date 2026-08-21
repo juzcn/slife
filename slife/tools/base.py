@@ -157,7 +157,7 @@ class Tool(ABC):
     description: ClassVar[str]
     parameters: ClassVar[dict]
 
-    # Logical category for grouping in list_tools output.
+    # Logical category for grouping in list_native_tools output.
     # Must be one of: System, Execution, Skills, CLI, REST API,
     # A2A, Config, Credentials, Meta.
     category: ClassVar[str] = ""

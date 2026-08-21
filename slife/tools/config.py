@@ -216,7 +216,7 @@ class NativeToolSet(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatib
     parameters = {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "Tool name, from list_tools."},
+            "name": {"type": "string", "description": "Tool name, from list_native_tools."},
             "enabled": {"type": "boolean", "description": "Enable or disable."},
         },
         "required": ["name", "enabled"],
