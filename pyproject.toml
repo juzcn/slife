@@ -57,21 +57,18 @@ packages = ["slife"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "slife/skills"
-"credstore/credstore" = "credstore"
 "slife.template.json5" = "slife/slife.template.json5"
 
 
 [tool.hatch.build.targets.sdist]
 include = [
     "/slife",
-    "/credstore",
     "/skills",
     "/README.md",
     "/README.zh-CN.md",
     "/LICENSE",
     "/pyproject.toml",
     "/slife.template.json5",
-
 ]
 
 [build-system]
