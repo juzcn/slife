@@ -68,14 +68,18 @@ independently (neither pulls the others in):
 
 | Package | One-click install | Purpose |
 |---------|-------------------|---------|
-| `slife` | `uv tool install slife` | The agent (this README) |
-| `credstore` | `uv tool install credstore` | Cross-platform credential storage |
-| `cc-switch` | `uv tool install cc-switch` | Generate `~/.claude/settings.json` |
+| `slife` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh \| bash` | The agent (this README) |
+| `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh \| bash` | Cross-platform credential storage |
+| `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | Generate `~/.claude/settings.json` |
 
-Installing slife depends on [credstore](../credstore/README.md) only —
+Installing slife depends on [credstore](credstore/README.md) only —
 it does **not** install cc-switch.  See the
-[cc-switch](../cc-switch/README.md) and
-[credstore](../credstore/README.md) READMEs for details.
+[cc-switch](cc-switch/README.md) and
+[credstore](credstore/README.md) READMEs for details.
+
+All three packages also support a plain `uv tool install <name>` from PyPI.
+Each has its own one-click installer (macOS / Linux / WSL: `install.sh`,
+Windows: `install.ps1`) and uninstaller, kept in its package directory.
 
 ## Quick Start
 

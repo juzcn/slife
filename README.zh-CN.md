@@ -59,6 +59,20 @@ powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/r
 
 用户数据（`~/.slife/`、`~/.credstore/`）**不会删除**——如需彻底清除请手动删除。
 
+### 相关工具
+
+本仓库还发布两个独立的 PyPI 包，各自可独立安装（互不依赖）：
+
+| 包 | 一键安装 | 用途 |
+|---------|-------------------|---------|
+| `slife` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh \| bash` | 智能体（本 README） |
+| `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh \| bash` | 跨平台凭据存储 |
+| `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | 生成 `~/.claude/settings.json` |
+
+安装 slife 仅依赖 [credstore](credstore/README.md)——**不会**安装 cc-switch。详见 [cc-switch](cc-switch/README.md) 与 [credstore](credstore/README.md) 各自的 README。
+
+三个包也都支持直接 `uv tool install <name>`（从 PyPI 安装）。每个包在其目录下都有独立的一键安装脚本（macOS/Linux/WSL 用 `install.sh`，Windows 用 `install.ps1`）与卸载脚本。
+
 ## 快速开始
 
 ```bash
