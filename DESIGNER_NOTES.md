@@ -196,6 +196,19 @@ UI的调整，bug的修复当前是在Agent之外做的，因为它自己改自�
      - `[TrimContext: N]` — N oldest complete turns were cut from context after the last turn was saved; their detail may be out of context. **Runtime-only** — current session only, never in restored history (restore is already the trimmed state). The turns remain in memory (searchable).
      - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
 
+6.4 在项目里创建一个小工具 cc-config， 能够生成 ~/.claude/settings.json， 按照credstore模式。
+
+1 创建和使用 ~/.claude/cc-config.json 保存设置 settings.json 需要的provider和model的配置信息， 例如 DEEPSEEK-API-KEY, 对应credstore中定义的名称
+
+2 cc-config set <provider-name>, 输入base url, api key name, supported models list, 如果 provider-name 存在， 就是编辑， 不存在就是添加。
+
+3 cc-config activate <provider-name/model-name> , 创建和覆盖  ~/.claude/settings.json， 其它参数全部用默认
+
+4 cc-config activate <provider-name/model-name> --custom， 允许修改默认配置， 依次输入 ANTHROPIC_DEFAULT_HAIKU_MODEL ...等其它配置，然后 创建和覆盖  ~/.claude/settings.json
+    
+--- activate 要把api key name的值从credstore读出 注入到 ANTHROPIC_AUTH_TOKEN 环境变量中，生成的~/.claude/settings.json 不含credential 明文， 也就是没有那一行
+
+5 cc-config list 按 provider-name/model-name 列出
 
 
 
