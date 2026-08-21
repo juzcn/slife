@@ -1,9 +1,23 @@
 name: Publish to PyPI
 
+# Per-package release: each package in this repo publishes independently
+# when its own tag is pushed.
+#
+#   v0.9.6            -> slife      (legacy tag convention, kept for back-compat)
+#   slife-v0.9.6      -> slife
+#   credstore-v0.9.6  -> credstore
+#   cc-switch-v0.9.6  -> cc-switch
+#
+# Only the package whose tag prefix matches is built and uploaded.  The
+# version in that package's pyproject.toml must equal the tag version.
+
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*'            # slife (legacy)
+      - 'slife-v*'      # slife
+      - 'credstore-v*'
+      - 'cc-switch-v*'
 
 jobs:
   build-and-publish:
@@ -16,34 +30,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify tag matches versions
+      - name: Resolve package from tag
+        id: resolve
         run: |
-          TAG_VERSION="${{ github.ref_name }}"
-          TAG_VERSION="${TAG_VERSION#v}"
-
-          # Verify slife version
-          PKG_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "ERROR: tag v$TAG_VERSION != slife version $PKG_VERSION"
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" == v* ]]; then
+            PKG="slife"
+            VERSION="${TAG#v}"
+          elif [[ "$TAG" == slife-v* ]]; then
+            PKG="slife"
+            VERSION="${TAG#slife-v}"
+          elif [[ "$TAG" == credstore-v* ]]; then
+            PKG="credstore"
+            VERSION="${TAG#credstore-v}"
+          elif [[ "$TAG" == cc-switch-v* ]]; then
+            PKG="cc-switch"
+            VERSION="${TAG#cc-switch-v}"
+          else
+            echo "ERROR: unrecognized tag $TAG"
             exit 1
           fi
-          echo "slife $PKG_VERSION — OK"
+          echo "pkg=$PKG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag $TAG -> package $PKG, version $VERSION"
 
-          # Verify credstore version
-          CRED_VERSION=$(python -c "import tomllib; print(tomllib.load(open('credstore/pyproject.toml','rb'))['project']['version'])")
-          if [ "$TAG_VERSION" != "$CRED_VERSION" ]; then
-            echo "ERROR: tag v$TAG_VERSION != credstore version $CRED_VERSION"
+      - name: Verify tag matches package version
+        run: |
+          PKG="${{ steps.resolve.outputs.pkg }}"
+          VERSION="${{ steps.resolve.outputs.version }}"
+
+          # Map package to its pyproject.toml
+          case "$PKG" in
+            slife)     PYPROJECT="pyproject.toml" ;;
+            credstore) PYPROJECT="credstore/pyproject.toml" ;;
+            cc-switch) PYPROJECT="cc-switch/pyproject.toml" ;;
+          esac
+
+          PKG_VERSION=$(python -c "import tomllib; print(tomllib.load(open('$PYPROJECT','rb'))['project']['version'])")
+          if [ "$VERSION" != "$PKG_VERSION" ]; then
+            echo "ERROR: tag $PKG-v$VERSION != $PKG version $PKG_VERSION"
             exit 1
           fi
-          echo "credstore $CRED_VERSION — OK"
-
-          # Verify cc-switch version
-          CC_VERSION=$(python -c "import tomllib; print(tomllib.load(open('cc-switch/pyproject.toml','rb'))['project']['version'])")
-          if [ "$TAG_VERSION" != "$CC_VERSION" ]; then
-            echo "ERROR: tag v$TAG_VERSION != cc-switch version $CC_VERSION"
-            exit 1
-          fi
-          echo "cc-switch $CC_VERSION — OK"
+          echo "$PKG $PKG_VERSION — OK"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -51,44 +79,31 @@ jobs:
           python-version: '3.13'
 
       - name: Install build tools
-        # twine unpinned (7.x): twine<6 breaks trusted publishing — it falls
-        # back to "Enter your API token" (no OIDC in the retry step) and its
-        # pkginfo caps Metadata-Version at 2.3, so uploads fail. 7.x handles
-        # both.
-        run: pip install build twine
+        # twine pinned to 6.x/7.x: trusted publishing (OIDC) needs twine>=6,
+        # and its pkginfo handles Metadata-Version 2.4/2.5.  Keep within this
+        # range so behavior is deterministic.
+        run: pip install 'build' 'twine>=6,<8'
 
-      - name: Build slife
-        run: python -m build
+      - name: Build package
+        run: |
+          PKG="${{ steps.resolve.outputs.pkg }}"
+          case "$PKG" in
+            slife)     python -m build ;;
+            credstore) (cd credstore && python -m build) ;;
+            cc-switch) (cd cc-switch && python -m build) ;;
+          esac
 
-      - name: Build credstore
-        run: cd credstore && python -m build
-
-      - name: Build cc-switch
-        run: cd cc-switch && python -m build
-
-      - name: Publish slife to PyPI
+      - name: Publish package to PyPI
         uses: nick-fields/retry@v4
         with:
           timeout_minutes: 5
           max_attempts: 3
           retry_on: error
           retry_wait_seconds: 15
-          command: twine upload --verbose dist/*
-
-      - name: Publish credstore to PyPI
-        uses: nick-fields/retry@v4
-        with:
-          timeout_minutes: 5
-          max_attempts: 3
-          retry_on: error
-          retry_wait_seconds: 15
-          command: twine upload --verbose credstore/dist/*
-
-      - name: Publish cc-switch to PyPI
-        uses: nick-fields/retry@v4
-        with:
-          timeout_minutes: 5
-          max_attempts: 3
-          retry_on: error
-          retry_wait_seconds: 15
-          command: twine upload --verbose cc-switch/dist/*
+          command: |
+            PKG="${{ steps.resolve.outputs.pkg }}"
+            case "$PKG" in
+              slife)     twine upload --verbose dist/* ;;
+              credstore) twine upload --verbose credstore/dist/* ;;
+              cc-switch) twine upload --verbose cc-switch/dist/* ;;
+            esac
