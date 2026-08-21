@@ -440,6 +440,18 @@ class TestDashScopeAdapter:
         }
 
     @pytest.mark.asyncio
+    def test_audio_mime_is_platform_independent(self):
+        """``_audio_mime`` must not depend on the host's mimetypes DB — Windows
+        maps ``.wav`` → ``audio/x-wav``, Linux → ``audio/wav``.  Pin the
+        canonical value so the Data URI is identical on every machine."""
+        from pathlib import Path
+        from slife.plugins.media.adapters.dashscope_aigc import DashScopeAIGCAdapter
+
+        assert DashScopeAIGCAdapter._audio_mime(Path("a.wav")) == "audio/wav"
+        assert DashScopeAIGCAdapter._audio_mime(Path("a.WAV")) == "audio/wav"
+        assert DashScopeAIGCAdapter._audio_mime(Path("a.mp3")) == "audio/mpeg"
+
+    @pytest.mark.asyncio
     async def test_transcribe_sends_data_uri(self, monkeypatch, tmp_path):
         adapter = _ds_adapter()
         audio = tmp_path / "a.wav"

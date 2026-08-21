@@ -69,6 +69,26 @@ class DashScopeAIGCAdapter:
             self._client = None
 
 
+    # Canonical MIME types for audio inputs.  ``mimetypes.guess_type()`` is
+    # platform-dependent (Windows maps ``.wav`` → ``audio/x-wav``, Linux →
+    # ``audio/wav``) — pin the ones the DashScope multimodal endpoint accepts
+    # so the Data URI is identical on every machine.
+    _AUDIO_MIME_BY_SUFFIX: dict[str, str] = {
+        ".wav": "audio/wav",
+        ".mp3": "audio/mpeg",
+        ".ogg": "audio/ogg",
+        ".flac": "audio/flac",
+        ".m4a": "audio/mp4",
+        ".aac": "audio/aac",
+    }
+
+    @classmethod
+    def _audio_mime(cls, file_path: Path) -> str:
+        return (
+            cls._AUDIO_MIME_BY_SUFFIX.get(file_path.suffix.lower())
+            or "audio/wav"
+        )
+
     @staticmethod
     def _to_data_uri(file_path: Path) -> str:
         """Read a local file and return a ``data:<mime>;base64,...`` URI."""
@@ -381,11 +401,12 @@ class DashScopeAIGCAdapter:
         # two-step OSS upload (that path is for local-file image/video
         # input and returns 404 here).
         import base64
-        import mimetypes
 
         if not audio_path.is_file():
             raise FileNotFoundError(f"File not found: '{audio_path}'")
-        mime = mimetypes.guess_type(str(audio_path))[0] or "audio/wav"
+        # Canonical, platform-independent MIME (see _audio_mime) — the same
+        # file must produce the same Data URI on Windows and Linux.
+        mime = self._audio_mime(audio_path)
         b64 = base64.b64encode(audio_path.read_bytes()).decode()
         data_uri = f"data:{mime};base64,{b64}"
         params = dict(extra_params or {})
