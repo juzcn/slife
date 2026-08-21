@@ -36,4 +36,9 @@ jobs:
           uv pip install pytest pytest-asyncio
 
       - name: Run tests
-        run: uv run pytest -v --tb=short --no-header --maxfail=5
+        run: |
+          # Each package's own [tool.pytest.ini_options] / testpaths apply
+          # when pytest runs from that package's directory.
+          uv run pytest -v --tb=short --no-header --maxfail=5
+          (cd credstore && uv run pytest -v --tb=short --no-header --maxfail=5)
+          (cd cc-switch && uv run pytest -v --tb=short --no-header --maxfail=5)
