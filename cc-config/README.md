@@ -11,8 +11,13 @@ generated `settings.json` contains no credential line.
 
 ## Install
 
+cc-config is a standalone PyPI package — installed independently of
+slife (installing slife does **not** bring cc-config, and vice versa).
+Both depend on [credstore](../credstore/README.md), which is pulled in
+automatically.
+
 ```bash
-uv tool install git+https://github.com/juzcn/slife.git
+uv tool install cc-config
 # or, in this repo:
 uv sync
 ```

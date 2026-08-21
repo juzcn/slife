@@ -13,7 +13,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 import cc_config._activate as act
-from cc_config._defaults import DEFAULT_TEMPLATE
+from cc_config._defaults import DEFAULT_ENV, MAIN_MODEL_SLOT_KEYS, default_value
 
 
 PROVIDER = {
@@ -24,24 +24,31 @@ PROVIDER = {
 }
 
 
+class TestDefaultValue:
+    def test_model_slots_inherit_main_model(self):
+        for key in MAIN_MODEL_SLOT_KEYS:
+            assert default_value(key, "deepseek-chat") == "deepseek-chat"
+
+    def test_effort_level_keeps_static_default(self):
+        assert default_value("ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL", "deepseek-chat") == "medium"
+
+
 class TestBuildEnv:
-    def test_default_slots_filled(self):
+    def test_model_slots_default_to_main_model(self):
         env = act.build_env(PROVIDER, "deepseek-chat")
         assert env["ANTHROPIC_BASE_URL"] == PROVIDER["base_url"]
         assert env["ANTHROPIC_MODEL"] == "deepseek-chat"
-        # every default slot present, base value untouched
-        for key in ("ANTHROPIC_DEFAULT_HAIKU_MODEL",
-                    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-                    "ANTHROPIC_CLAUDE_CODE_SUBAGENT_MODEL",
-                    "ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL"):
-            assert key in env
-            assert env[key] == DEFAULT_TEMPLATE[key]
+        # main-model slots inherit the main model — never empty
+        for key in MAIN_MODEL_SLOT_KEYS:
+            assert env[key] == "deepseek-chat"
+        # non-model slot keeps its static default
+        assert env["ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL"] == DEFAULT_ENV["ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL"]
 
     def test_overrides_applied(self):
         env = act.build_env(PROVIDER, "m", overrides={"ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-x"})
         assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "haiku-x"
-        assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == DEFAULT_TEMPLATE["ANTHROPIC_DEFAULT_SONNET_MODEL"]
+        assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "m"
+        assert env["ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL"] == "medium"
 
     def test_override_clear_with_empty_string(self):
         env = act.build_env(PROVIDER, "m", overrides={"ANTHROPIC_DEFAULT_HAIKU_MODEL": ""})

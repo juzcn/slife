@@ -61,6 +61,22 @@ powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/r
 
 User data (`~/.slife/`, `~/.credstore/`) is **not removed** — delete manually for a full reset.
 
+### Related tools
+
+The repo also ships two standalone PyPI packages — install each
+independently (neither pulls the others in):
+
+| Package | One-click install | Purpose |
+|---------|-------------------|---------|
+| `slife` | `uv tool install slife` | The agent (this README) |
+| `credstore` | `uv tool install credstore` | Cross-platform credential storage |
+| `cc-config` | `uv tool install cc-config` | Generate `~/.claude/settings.json` |
+
+Installing slife depends on [credstore](../credstore/README.md) only —
+it does **not** install cc-config.  See the
+[cc-config](../cc-config/README.md) and
+[credstore](../credstore/README.md) READMEs for details.
+
 ## Quick Start
 
 ```bash

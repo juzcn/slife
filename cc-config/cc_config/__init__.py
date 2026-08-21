@@ -5,7 +5,7 @@ non-secret *shape* of a Claude Code provider setup in
 ``~/.claude/cc-config.json`` and materialises it into
 ``~/.claude/settings.json``.  Secrets never touch settings.json — the
 API key is read from credstore at activate time and injected only into
-the current process environment as ``ANTHROPIC_AUTH_TOKEN``.
+the system environment as ``ANTHROPIC_AUTH_TOKEN``.
 
 Modules::
 
@@ -24,8 +24,10 @@ from cc_config._api import (
 )
 from cc_config._defaults import (
     DEFAULT_ENV,
+    DEFAULT_OVERRIDE_KEYS,
     DEFAULT_SETTINGS,
-    DEFAULT_TEMPLATE,
+    MAIN_MODEL_SLOT_KEYS,
+    default_value,
     list_default_override_keys,
 )
 
@@ -34,9 +36,11 @@ __version__ = "0.1.0"
 __all__ = [
     "CONFIG_PATH",
     "DEFAULT_ENV",
+    "DEFAULT_OVERRIDE_KEYS",
     "DEFAULT_SETTINGS",
-    "DEFAULT_TEMPLATE",
+    "MAIN_MODEL_SLOT_KEYS",
     "add_provider",
+    "default_value",
     "list_default_override_keys",
     "list_providers",
     "load_config",

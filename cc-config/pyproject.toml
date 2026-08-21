@@ -1,6 +1,6 @@
 [project]
 name = "cc-config"
-version = "0.1.0"
+version = "0.9.4"
 description = "Generate ~/.claude/settings.json from saved provider/model configs"
 readme = "README.md"
 license = { text = "MIT" }

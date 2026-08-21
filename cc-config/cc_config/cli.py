@@ -116,17 +116,18 @@ def _cmd_remove(args) -> int:
 # ── activate ─────────────────────────────────────────────────────────
 
 
-def _collect_overrides() -> dict:
+def _collect_overrides(main_model: str) -> dict:
     """Interactive override pass for ``activate --custom``.
 
-    Walks every default slot and lets the user replace the stock value.
-    A blank response keeps the default; a value of ``-`` clears the
-    field to an empty string.
+    Main-model slots default to *main_model* (the CLI-chosen model);
+    the effort level defaults to its static value.  A blank response
+    keeps the default; a value of ``-`` clears the field to an empty
+    string.
     """
     overrides: dict[str, str] = {}
     print("Custom activation — enter a new value, or Enter to keep the default.")
     for key in _defaults.DEFAULT_OVERRIDE_KEYS:
-        current = _defaults.DEFAULT_TEMPLATE[key]
+        current = _defaults.default_value(key, main_model)
         hint = ""
         if key == "ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL":
             hint = " (low|medium|high|xhigh|max)"
@@ -164,7 +165,7 @@ def _cmd_activate(args) -> int:
     elif model_name not in (provider.get("models") or []):
         print(f"Note: model '{model_name}' is not in the provider's model list.", file=sys.stderr)
 
-    overrides = _collect_overrides() if args.custom else None
+    overrides = _collect_overrides(model_name) if args.custom else None
 
     # --custom never touches the stored config; the overrides are one-shot.
     try:

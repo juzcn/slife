@@ -51,14 +51,17 @@ def build_env(provider: dict, model_name: str, overrides: dict | None = None) ->
     """Build the env block for settings.json.
 
     *overrides* maps env key → value and is used by ``--custom``; a
-    missing key falls back to the default template.  Always the stock
-    defaults + ``ANTHROPIC_BASE_URL`` + model — never a secret.
+    missing key falls back to ``default_value`` — the main-model slots
+    inherit *model_name* (never empty), the rest keep their static
+    default.  Always + ``ANTHROPIC_BASE_URL`` + model — never a secret.
     """
     env: dict[str, str] = {}
-    # 1. Every default slot (with the override value where provided)
+    # 1. Every override slot (with the override value where provided)
     for key in _defaults.DEFAULT_OVERRIDE_KEYS:
-        default = _defaults.DEFAULT_TEMPLATE[key]
-        env[key] = str(overrides.get(key)) if overrides and key in overrides else default
+        if overrides and key in overrides:
+            env[key] = str(overrides[key])
+        else:
+            env[key] = _defaults.default_value(key, model_name)
     # 2. Provider-specific env overrides (applied after the slots)
     env.update(provider.get("extra_env") or {})
     # 3. Provider base URL + chosen model
