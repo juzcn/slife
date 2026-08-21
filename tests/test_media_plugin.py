@@ -439,7 +439,6 @@ class TestDashScopeAdapter:
             "input": {"text": "hi", "voice": "longxiaochun"},
         }
 
-    @pytest.mark.asyncio
     def test_audio_mime_is_platform_independent(self):
         """``_audio_mime`` must not depend on the host's mimetypes DB — Windows
         maps ``.wav`` → ``audio/x-wav``, Linux → ``audio/wav``.  Pin the
