@@ -190,6 +190,15 @@ class TestAgentServiceMCPLifecycle:
 class TestAgentServiceMCPReconcile:
     """Tool-registry self-healing: reconcile poll + reconnect notification."""
 
+    @pytest.fixture(autouse=True)
+    def _clean_health(self):
+        """The health store is module-global — keep it clean around these
+        tests so a recovery record from one test can't leak into another."""
+        from slife.health import clear
+        clear()
+        yield
+        clear()
+
     def _client_with(self, status_servers, tools_by_server):
         client = AsyncMock()
         client.is_connected = True
@@ -338,6 +347,109 @@ class TestAgentServiceMCPReconcile:
         with suppress(asyncio.CancelledError):
             await service._mcp_reconcile_task
         service._mcp_reconcile_task = None
+
+    @pytest.mark.asyncio
+    async def test_discover_records_ok_health_replace(self, sample_config):
+        """Successful tool registration supersedes a stale startup warning —
+        ``mcp_server/ok`` with replace=True, so the health store itself
+        reflects the recovery, not just the live check_mcp diff."""
+        from slife.health import record
+        record(
+            "mcp_server", "warning",
+            key="foo", value="connect_pending",
+            hint="enabled but not yet connected; retrying in background.",
+        )
+        service = AgentService(sample_config)
+        service._plugins["mcp"].client = self._client_with(
+            status_servers=[],
+            tools_by_server={"foo": [self._tool("foo", "t1")]},
+        )
+
+        await service._discover_and_register_external_tools("foo")
+
+        from slife.health import get_report
+        recs = [e for e in get_report() if e.get("key") == "foo"]
+        assert len(recs) == 1  # the warning was replaced, not appended
+        assert recs[0]["level"] == "ok"
+        assert recs[0]["value"] == "connected"
+
+    @pytest.mark.asyncio
+    async def test_discover_with_no_tools_leaves_health_untouched(self, sample_config):
+        """An empty / not-ready tool list is NOT a recovery — the stale
+        warning must survive (no flicker in either registry or health)."""
+        from slife.health import record
+        record(
+            "mcp_server", "warning",
+            key="foo", value="connect_pending",
+            hint="enabled but not yet connected; retrying in background.",
+        )
+        service = AgentService(sample_config)
+        service._plugins["mcp"].client = self._client_with(
+            status_servers=[], tools_by_server={},
+        )
+        service.tool_registry.register(SimpleNamespace(name="foo__keep"))
+
+        await service._discover_and_register_external_tools("foo")
+
+        from slife.health import get_report
+        recs = [e for e in get_report() if e.get("key") == "foo"]
+        assert len(recs) == 1
+        assert recs[0]["level"] == "warning"
+
+    @pytest.mark.asyncio
+    async def test_reconcile_poll_restores_ok_health_for_existing_tools(self, sample_config):
+        """When the reconnect notification (not the poll) registered the tools,
+        the add-only poll still repairs the health record — a stale startup
+        warning is superseded even though the registry was never missing
+        anything."""
+        from slife.health import record
+        record(
+            "mcp_server", "warning",
+            key="foo", value="connect_pending",
+            hint="enabled but not yet connected; retrying in background.",
+        )
+        service = AgentService(sample_config)
+        service._plugins["mcp"].client = self._client_with(
+            status_servers=[
+                {"name": "foo", "enabled": True, "state": "running", "tool_count": 1},
+            ],
+            tools_by_server={"foo": [self._tool("foo", "t1")]},
+        )
+        # Tools already registered (by the reconnect notification) — the poll
+        # must not re-sync, but it must still restore the health record.
+        service.tool_registry.register(SimpleNamespace(name="foo__t1"))
+
+        await service._reconcile_mcp_tools(full=False)
+
+        from slife.health import get_report
+        recs = [e for e in get_report() if e.get("key") == "foo"]
+        assert len(recs) == 1
+        assert recs[0]["level"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_reconcile_poll_keeps_existing_ok_health(self, sample_config):
+        """Add-only: an existing ok record is never downgraded or duplicated."""
+        from slife.health import record
+        record(
+            "mcp_server", "ok",
+            key="foo", value="connected",
+            hint="MCP server 'foo' connected.",
+        )
+        service = AgentService(sample_config)
+        service._plugins["mcp"].client = self._client_with(
+            status_servers=[
+                {"name": "foo", "enabled": True, "state": "running", "tool_count": 1},
+            ],
+            tools_by_server={"foo": [self._tool("foo", "t1")]},
+        )
+        service.tool_registry.register(SimpleNamespace(name="foo__t1"))
+
+        await service._reconcile_mcp_tools(full=False)
+
+        from slife.health import get_report
+        recs = [e for e in get_report() if e.get("key") == "foo"]
+        assert len(recs) == 1
+        assert recs[0]["level"] == "ok"
 
 
 # ── AgentService memory ─────────────────────────────────────────────────────

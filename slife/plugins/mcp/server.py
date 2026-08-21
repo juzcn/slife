@@ -304,7 +304,11 @@ async def mcp_list() -> str:
     ),
 )
 async def __mcp_connection_status(ctx: Context | None = None) -> str:
-    """Report live connection status of all external MCP servers."""
+    """Report live connection status of all external MCP servers.
+
+    Authoritative for health: ``state=running`` means the server is connected
+    and its tools are registered on the agent (the agent re-syncs on reconnect
+    via ``notifications/tools/list_changed`` and a periodic poll)."""
     # Remember the caller's session for reconnect notifications.
     _capture_session(ctx)
     servers = _pool.list_servers()

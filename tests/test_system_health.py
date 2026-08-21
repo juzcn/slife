@@ -17,6 +17,7 @@ from slife.tools.system import (
     _component_status,
     _build_summary,
     _overall_healthy,
+    _dedupe_mcp_records,
     SystemHealthTool,
     CheckWatchdogTool,
     CheckMcpTool,
@@ -54,6 +55,76 @@ class TestGroupByComponent:
         entries = [{"level": "ok"}]
         result = _group_by_component(entries)
         assert "unknown" in result
+
+
+# ── _dedupe_mcp_records ───────────────────────────────────────────────
+
+
+class TestDedupeMcpRecords:
+    """MCP startup records vs live check_mcp entries must not double-report.
+
+    The contradiction scenario: a slow cold start records
+    ``(mcp_server, warning)`` in the startup store; the background reconnect
+    later succeeds and the live ``check_mcp`` says the server is connected.
+    system_health merges both, so without dedup the stale warning survives
+    and the report contradicts itself.
+    """
+
+    @staticmethod
+    def _startup(name, level="warning", component="mcp_server"):
+        return {"component": component, "level": level, "key": name,
+                "value": "connect_pending", "hint": "retrying"}
+
+    @staticmethod
+    def _live(name, level="ok", component="mcp_servers"):
+        return {"component": component, "level": level, "key": name,
+                "value": "connected (2 tools loaded)", "hint": "all good"}
+
+    def test_live_ok_supersedes_stale_warning(self):
+        startup = [self._startup("fs"), self._startup("github")]
+        live = [self._live("fs")]
+        merged = _dedupe_mcp_records(startup, live)
+
+        # fs: startup warning dropped, live ok kept.
+        assert [e["key"] for e in merged if e["component"] == "mcp_servers"] == ["fs"]
+        assert all(e["level"] == "ok" for e in merged if e["key"] == "fs")
+        # github: not covered by live — startup record preserved.
+        assert any(e["key"] == "github" and e["level"] == "warning" for e in merged)
+
+    def test_live_warning_still_supersedes_startup_ok(self):
+        """The live report is authoritative in BOTH directions: a server the
+        live check says is disconnected must not be masked by a stale
+        "connected" startup record."""
+        merged = _dedupe_mcp_records(
+            [self._startup("fs", level="ok")],
+            [self._live("fs", level="warning")],
+        )
+        entries = [e for e in merged if e["key"] == "fs"]
+        assert len(entries) == 1
+        assert entries[0]["level"] == "warning"
+
+    def test_dedupe_matches_on_name_not_on_components(self):
+        """Component prefixes must not fool the name-based match: a startup
+        ``mcp_server`` record for ``fs`` is covered by a live ``mcp_servers``
+        record for ``fs``, and vice versa."""
+        merged = _dedupe_mcp_records(
+            [self._startup("fs")],
+            [self._live("fs")],
+        )
+        assert [e["key"] for e in merged] == ["fs"]
+
+    def test_keeps_startup_records_with_no_live_counterpart(self):
+        startup = [self._startup("only_startup")]
+        merged = _dedupe_mcp_records(startup, [])
+        assert len(merged) == 1
+        assert merged[0]["key"] == "only_startup"
+
+    def test_no_mutation_of_inputs(self):
+        startup = [self._startup("fs")]
+        live = [self._live("fs")]
+        _dedupe_mcp_records(startup, live)
+        assert len(startup) == 1
+        assert len(live) == 1
 
 
 # ── _component_status ─────────────────────────────────────────────────
@@ -489,6 +560,44 @@ class TestSystemHealthToolExecute:
             parsed = json.loads(result)
             assert parsed["healthy"] is True
             assert "ok" in parsed["summary"].lower()
+
+    @pytest.mark.asyncio
+    async def test_recovered_mcp_server_is_not_contradictory(self):
+        """A server that was slow to cold-start (startup warning recorded) but
+        is now connected (live check ok) must not keep the report unhealthy —
+        the stale startup record is superseded by the live result."""
+        tool = SystemHealthTool()
+        startup_entries = [
+            {"component": "mcp_server", "level": "warning", "key": "fs",
+             "value": "connect_pending",
+             "hint": "enabled but not yet connected; retrying in background."},
+        ]
+        live_entries = [
+            {"component": "mcp_servers", "level": "ok", "key": "fs",
+             "value": "connected (5 tools loaded)",
+             "hint": "MCP server 'fs': connected via stdio, 5 tools loaded."},
+        ]
+        with patch(
+            "slife.tools.system.get_startup_records",
+            return_value=startup_entries,
+        ), patch(
+            "slife.tools.system.check_memdb", return_value=[],
+        ), patch(
+            "slife.tools.system.check_wechat", return_value=[],
+        ), patch(
+            "slife.tools.system.check_memfiles", return_value=[],
+        ), patch(
+            "slife.tools.system.check_mcp", return_value=live_entries,
+        ), patch(
+            "slife.tools.system.check_a2a", return_value=[],
+        ):
+            result = await tool.execute()
+            parsed = json.loads(result)
+            # One mcp_servers entry (live), no stale mcp_server warning.
+            assert parsed["healthy"] is True
+            mcp = parsed["components"].get("mcp_servers", {})
+            assert mcp.get("status") == "ok"
+            assert "mcp_server" not in parsed["components"]
 
 
 # ── CheckWatchdogTool / CheckMcpTool ───────────────────────────────────

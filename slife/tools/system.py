@@ -5,7 +5,7 @@ Tools:
     check_wechat             — WeChat plugin status
     check_watchdog           — plugin watchdog (auto-restart) status
     system_health            — orchestrate checks + startup records
-    list_tools               — enumerate native vs MCP-proxied tools (with category filter)
+    list_native_tools        — native tool inventory (grouped, harness markers)
     check_mcp                — MCP server connection status
     check_a2a                — A2A mesh (MQTT) connection + peer status
 
@@ -377,6 +377,11 @@ async def check_mcp(server: str = "", client=None) -> list[dict]:
     server state, then applies :func:`_diagnose_mcp_server` to each entry to
     produce health-check records with an appropriate level and remediation hint.
 
+    The status report is authoritative: an enabled server whose state is
+    ``running`` reports ok (its tools are guaranteed registered — the wrapper's
+    reconnect notification plus the agent's periodic poll keep the registry in
+    sync, so tools can only be missing transiently).
+
     Args:
         server: Optional server name to check alone.  Empty (default)
             checks all configured servers.
@@ -581,6 +586,39 @@ async def _run_checks(ctx=None) -> list[dict]:
     return all_entries
 
 
+def _dedupe_mcp_records(startup: list[dict], live: list[dict]) -> list[dict]:
+    """Merge startup records with live check entries without double-reporting.
+
+    ``mcp_server`` is the component used for *static* startup records (recorded
+    by the main process during auto-connect / reconnect); ``mcp_servers`` is
+    the component used by the *live* ``check_mcp`` diagnostics.  ``system_health``
+    merges both, so without dedup a server that recovered after a slow cold
+    start would still be reported as failed by its stale startup record while
+    the live check says it is connected — contradictory health.
+
+    Rules (keyed by the server name in each entry's ``key``):
+      - an entry is the *live* one iff its component is ``mcp_servers``
+        (regardless of level — a live "disconnected" report is authoritative
+        too, so we never resurrect a stale "connected" startup record);
+      - every startup record whose name is covered by a live entry is dropped;
+      - startup records for servers the live check did not cover (e.g. the
+        wrapper was unreachable, or only a single server was checked) are kept
+        so recovery info is never lost.
+    """
+    live_names = {
+        e["key"] for e in live
+        if e.get("component") == "mcp_servers" and e.get("key")
+    }
+    kept = [
+        e for e in startup
+        if not (
+            e.get("component") == "mcp_server"
+            and e.get("key") in live_names
+        )
+    ]
+    return kept + live
+
+
 def _group_by_component(entries: list[dict]) -> dict[str, list[dict]]:
     """Group flat entry list by component for structured display."""
     groups: dict[str, list[dict]] = {}
@@ -631,7 +669,7 @@ class SystemHealthTool(Tool):
     async def execute(self, **kwargs) -> str:
         startup = get_startup_records()
         dynamic = await _run_checks(ctx=getattr(self, "_ctx", None))
-        all_entries = startup + dynamic
+        all_entries = _dedupe_mcp_records(startup, dynamic)
         groups = _group_by_component(all_entries)
 
         components: dict[str, dict] = {}

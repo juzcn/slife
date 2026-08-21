@@ -1155,6 +1155,20 @@ class AgentService:
                     self.tool_registry.register(tool)
             for stale in old_names - new_names:
                 self.tool_registry.unregister(stale)
+            # Tools are now live in the registry — supersede any earlier
+            # "enabled but not yet connected" startup warning with replace=True,
+            # so the health store itself reflects the recovery (not just the
+            # live check_mcp diff).  The wrapper's reconnect hook records the
+            # same entry when a server comes up while the agent is otherwise
+            # idle; recording here too keeps the store consistent regardless
+            # of which path actually re-synced the tools.
+            from slife.health import record
+            record(
+                "mcp_server", "ok",
+                key=server_name, value="connected",
+                hint=f"MCP server '{server_name}' connected.",
+                replace=True,
+            )
             logger.debug(
                 "mcp_tools_registered server=%s count=%d",
                 server_name, len(proxy_tools),
@@ -1203,9 +1217,44 @@ class AgentService:
                     for t in self.tool_registry.list_tools()
                 )
                 if has_tools:
+                    # Tools are already registered — the only thing the poll
+                    # could still repair is a stale health record (e.g. the
+                    # reconnect notification registered the tools but a startup
+                    # "not yet connected" warning lingers).  Add-only: never
+                    # downgrade an ok record; only supersede a warning/error.
+                    self._restore_mcp_health(name)
                     continue
             logger.info("mcp_reconcile_sync server=%s full=%s", name, full)
             await self._discover_and_register_external_tools(server_name=name)
+
+    def _restore_mcp_health(self, name: str) -> None:
+        """Add-only health reconciliation: replace a stale non-ok ``mcp_server``
+        record for *name* with an ``ok`` one.
+
+        The live wrapper state says this server is running with tools, so any
+        lingering startup "not yet connected" warning / error is stale.  This
+        mirrors :func:`_fire_on_reconnect`'s replace=True record, but is driven
+        from the agent side so it also covers paths where the wrapper's hook
+        never fired (e.g. the tools were registered by the reconcile diff
+        itself).  Add-only: an existing ``ok`` record is left alone — never
+        downgrades.
+        """
+        from slife.health import get_report, record
+
+        has_ok = any(
+            e.get("component") == "mcp_server"
+            and e.get("key") == name
+            and e.get("level") == "ok"
+            for e in get_report()
+        )
+        if has_ok:
+            return
+        record(
+            "mcp_server", "ok",
+            key=name, value="connected",
+            hint=f"MCP server '{name}' connected.",
+            replace=True,
+        )
 
     async def _on_mcp_notification(self, method: str, _params: dict) -> None:
         """Handle a server-initiated notification from the MCP wrapper.
