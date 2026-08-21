@@ -32,6 +32,7 @@ def record(
     key: str = "",
     value: str = "",
     hint: str = "",
+    replace: bool = False,
 ) -> None:
     """Push a status entry.
 
@@ -39,7 +40,16 @@ def record(
     *level*: "ok", "warning", "error".
     *key* / *value*: structured k=v for programmatic consumption.
     *hint*: human-readable remediation or context.
+    *replace*: when True, drop any earlier entry with the same
+        ``(component, key)`` before appending — lets a later recovery
+        (e.g. an MCP server reconnecting in the background) supersede a
+        stale startup warning instead of leaving both in the report.
     """
+    if replace and key:
+        _entries[:] = [
+            e for e in _entries
+            if not (e.get("component") == component and e.get("key") == key)
+        ]
     entry: dict = {
         "component": component,
         "level": level,

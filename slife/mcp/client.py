@@ -9,6 +9,7 @@ nesting.
 import asyncio
 import logging
 import tempfile
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
@@ -165,6 +166,11 @@ class MCPClient:
         self._connected: bool = False
         self._exit_stack: AsyncExitStack | None = None
         self._tool_timeout = tool_timeout
+        # Optional async callback(method, params) invoked for server-initiated
+        # notifications (e.g. ``notifications/tools/list_changed``).  Must
+        # return quickly — it runs on the SDK's receive loop; a handler that
+        # awaits a call_tool on the same session would deadlock that loop.
+        self.on_notification: Callable[[str, dict], Awaitable[None]] | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -202,7 +208,10 @@ class MCPClient:
                         streamable_http_client(url),
                     )
                     self._session = await self._exit_stack.enter_async_context(
-                        ClientSession(read_stream, write_stream),
+                        ClientSession(
+                            read_stream, write_stream,
+                            message_handler=self._handle_server_message,
+                        ),
                     )
                     await self._session.initialize()
                 break  # success
@@ -231,6 +240,37 @@ class MCPClient:
             "mcp_client_connected transport=%s url=%s attempts=%d",
             "streamable-http", url, attempt + 1,
         )
+
+    async def _handle_server_message(self, message: Any) -> None:
+        """Dispatch server-initiated notifications to ``on_notification``.
+
+        Installed as the SDK ``ClientSession`` message_handler — the receive
+        loop feeds every server notification here (responses are matched by
+        id internally and never reach this).  Only ``notifications/*`` methods
+        are forwarded; everything else (server→client requests, errors) is
+        ignored.  Must return without awaiting a call_tool on this session —
+        the SDK receive loop awaits this handler, so that would deadlock.
+        """
+        method = getattr(message, "method", None)
+        if not isinstance(method, str) or not method.startswith("notifications/"):
+            return
+        params = getattr(message, "params", None)
+        params_dict: dict = {}
+        if isinstance(params, dict):
+            params_dict = dict(params)
+        elif params is not None:
+            dump = getattr(params, "model_dump", None)
+            if callable(dump):
+                dumped = dump()
+                if isinstance(dumped, dict):
+                    params_dict = dumped
+        handler = self.on_notification
+        if handler is None:
+            return
+        try:
+            await handler(method, params_dict)
+        except Exception:
+            logger.exception("mcp_notification_handler_failed method=%s", method)
 
     async def disconnect(self) -> None:
         """Disconnect from the MCP server and release all resources."""

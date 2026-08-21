@@ -9,6 +9,9 @@ This is the entry point for the slife-mcp child process. It:
 import json
 import os
 from contextlib import asynccontextmanager
+from typing import Any
+
+from fastmcp.server.context import Context
 
 from slife.plugins.mcp.connection import ConnectionPool, ServerConfig, ServerStatus
 from slife.server_utils import create_plugin_server
@@ -45,7 +48,35 @@ mcp, _log_path, logger = create_plugin_server(
 
 # ── Global state ─────────────────────────────────────────────────────
 
-_pool = ConnectionPool()
+# Client sessions that have made at least one request to this wrapper (the
+# main agent, and any subagents sharing it).  A ServerSession is only
+# reachable inside a request context (FastMCP's request_context raises
+# LookupError in background tasks), so tools that run on the request path
+# stash their session here for later use by the reconnect hook.
+_active_sessions: set[Any] = set()
+
+
+def _capture_session(ctx: Context | None) -> None:
+    """Remember the caller's ServerSession for background notifications."""
+    if ctx is not None and ctx.session is not None:
+        _active_sessions.add(ctx.session)
+
+
+async def _notify_tools_changed() -> None:
+    """Push ``notifications/tools/list_changed`` to every known client.
+
+    Invoked by the connection pool when an external MCP server reconnects
+    successfully — the agent listens for this and re-syncs its tool registry.
+    Best-effort: a dead/stale session is dropped; the rest are still served.
+    """
+    for sess in list(_active_sessions):
+        try:
+            await sess.send_tool_list_changed()
+        except Exception:
+            _active_sessions.discard(sess)
+
+
+_pool = ConnectionPool(on_connected=_notify_tools_changed)
 
 # Built-in plugin server names — reserved: an external MCP server must not
 # take one of these, or its tools would collide / misroute in the harness
@@ -92,6 +123,7 @@ async def mcp_set(
     enabled: bool = True,
     source: dict | None = None,
     auth: dict | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """Add or update an MCP server (upsert — idempotent).
 
@@ -111,6 +143,10 @@ async def mcp_set(
         source: Optional provenance (e.g. registry) for future updates.
         auth: Optional OAuth config for device code flow (auth type 'oauth').
     """
+    # Remember the caller's session so the reconnect hook can push
+    # tools/list_changed notifications (see _notify_tools_changed).
+    _capture_session(ctx)
+
     if not command and not url:
         return error_json(
             "Either 'command' (for stdio) or 'url' (for HTTP) must be provided.",
@@ -267,8 +303,10 @@ async def mcp_list() -> str:
         "errors. Harness-only — consumed by the check_mcp tool."
     ),
 )
-async def __mcp_connection_status() -> str:
+async def __mcp_connection_status(ctx: Context | None = None) -> str:
     """Report live connection status of all external MCP servers."""
+    # Remember the caller's session for reconnect notifications.
+    _capture_session(ctx)
     servers = _pool.list_servers()
     return json.dumps(servers, ensure_ascii=False, indent=2)
 

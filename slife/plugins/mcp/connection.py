@@ -18,6 +18,7 @@ import logging
 import os
 import subprocess as _subprocess
 import time as _time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -98,9 +99,25 @@ class MCPServerConnection:
     No ClientSession, no anyio, no TaskGroup conflicts.
     """
 
-    def __init__(self, config: ServerConfig):
+    def __init__(
+        self,
+        config: ServerConfig,
+        on_connected: Callable[[], Awaitable[None]] | None = None,
+    ):
         self.config = config
         self._status = ServerStatus.DISCONNECTED
+        self._on_connected = on_connected
+        # True once connect() has succeeded at least once.  Used to tell a
+        # RECONNECT apart from the first connect — only reconnects fire
+        # ``on_connected`` (the initial connect is handled by the caller,
+        # e.g. mcp_set/auto-connect, which already registers tools).
+        self._ever_connected = False
+        # True when the INITIAL connect attempt failed (timed out).  The
+        # caller (mcp_set/auto-connect) saw the failure and skipped tool
+        # registration, so the next successful connect — the health
+        # monitor's recovery — must notify listeners even though it is not
+        # a "reconnect" in the _ever_connected sense.
+        self._notify_on_next_success = False
         self._process: asyncio.subprocess.Process | None = None
         self._http_client: httpx.AsyncClient | None = None
         self._session_id: str | None = None
@@ -260,6 +277,14 @@ class MCPServerConnection:
                 if self._disconnecting:
                     self._status = ServerStatus.DISCONNECTED
                     return
+
+                # A reconnect (not the first connect) can mean the server's
+                # tool surface changed — notify listeners so they re-discover
+                # and re-register.  The first connect is excluded: the caller
+                # (mcp_set / auto-connect) registers tools for it, so firing
+                # here too would trigger a redundant reconcile at startup.
+                await self._fire_on_reconnect()
+
                 if self._health_task is None or self._health_task.done():
                     self._health_task = asyncio.create_task(self._health_monitor())
 
@@ -277,6 +302,12 @@ class MCPServerConnection:
 
             except Exception as e:
                 self._status = ServerStatus.FAILED
+                # A failed INITIAL connect means the caller (mcp_set /
+                # auto-connect) saw the failure and skipped tool registration
+                # — the health monitor's eventual recovery must notify
+                # listeners so the tools still get registered.
+                if not self._ever_connected:
+                    self._notify_on_next_success = True
                 stderr_tail = "".join(self._stderr_buffer[-20:]).strip()
                 if stderr_tail:
                     self._error = f"{e}\n\n[server stderr]\n{stderr_tail}"
@@ -293,6 +324,45 @@ class MCPServerConnection:
                     self._health_task is None or self._health_task.done()
                 ):
                     self._health_task = asyncio.create_task(self._health_monitor())
+
+    async def _fire_on_reconnect(self) -> None:
+        """Notify listeners when a connect succeeded but the caller didn't
+        register tools for it.
+
+        Two cases:
+          - a RECONNECT (the server was connected before, then recovered) —
+            the tool surface may have changed;
+          - a recovery after the INITIAL connect failed — the caller
+            (mcp_set / auto-connect) saw the failure and skipped registration.
+
+        The plain first connect is excluded: the caller handles it and fires
+        here too would trigger a redundant full reconcile for every server at
+        startup.  Best-effort: a failing listener never breaks the connection.
+        """
+        should_notify = self._ever_connected or self._notify_on_next_success
+        self._ever_connected = True
+        self._notify_on_next_success = False
+        # A background recovery supersedes the startup "retrying" warning —
+        # record the healthy state so system_health stops reporting this
+        # server as failed even though it is now connected.
+        try:
+            from slife.health import record
+            record(
+                "mcp_server", "ok",
+                key=self.config.name, value="connected",
+                hint=f"MCP server '{self.config.name}' connected.",
+                replace=True,
+            )
+        except Exception:
+            pass
+        if should_notify and self._on_connected is not None:
+            try:
+                await self._on_connected()
+            except Exception:
+                logger.exception(
+                    "mcp_on_connected_failed server=%s",
+                    self.config.name,
+                )
 
     async def _connect_stdio(self) -> None:
         """Spawn server as subprocess and set up pipe I/O."""
@@ -1055,14 +1125,18 @@ class MCPServerConnection:
 class ConnectionPool:
     """Manages a collection of MCP server connections."""
 
-    def __init__(self):
+    def __init__(self, on_connected: Callable[[], Awaitable[None]] | None = None):
         self._connections: dict[str, MCPServerConnection] = {}
+        # Fired on every successful RECONNECT of any server (never on the
+        # first connect — see MCPServerConnection.connect).  The wrapper wires
+        # this to a tools/list_changed notification so the agent re-syncs.
+        self._on_connected = on_connected
 
     async def add_server(self, config: ServerConfig) -> MCPServerConnection:
         if config.name in self._connections:
             logger.info("mcp_replace server=%s", config.name)
             await self.remove_server(config.name)
-        conn = MCPServerConnection(config=config)
+        conn = MCPServerConnection(config=config, on_connected=self._on_connected)
         self._connections[config.name] = conn
         if config.enabled:
             await conn.connect()

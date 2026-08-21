@@ -41,10 +41,10 @@ class OpenAICompatAdapter:
 
     async def generate_image(
         self, *, model: str, prompt: str, size: str = "",
-        image_path: Path | None = None, outputs_dir: str = "",
+        image: str | Path | None = None, outputs_dir: str = "",
         extra_params: dict | None = None,
     ) -> str:
-        if image_path is not None:
+        if image is not None:
             raise NotImplementedError(
                 "image-conditioned generation is not supported by this "
                 "adapter yet"

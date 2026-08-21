@@ -970,3 +970,72 @@ class TestMCPServerConnectionTreeKill:
         mock_tree.assert_awaited_once_with(proc)
         mock_term.assert_awaited_once()
         assert conn._process is None
+
+
+class TestMCPServerConnectionReconnectNotify:
+    """on_connected fires only on RECONNECTS, never the first connect.
+
+    The first connect is handled by the caller (mcp_set / auto-connect) which
+    already registers tools; firing here too would trigger a redundant full
+    reconcile for every server at startup.
+    """
+
+    @pytest.mark.asyncio
+    async def test_first_connect_does_not_notify(self):
+        cb = AsyncMock()
+        conn = MCPServerConnection(
+            ServerConfig(name="test", command="echo"), on_connected=cb,
+        )
+        await conn._fire_on_reconnect()
+        cb.assert_not_called()
+        assert conn._ever_connected is True
+
+    @pytest.mark.asyncio
+    async def test_reconnect_notifies(self):
+        cb = AsyncMock()
+        conn = MCPServerConnection(
+            ServerConfig(name="test", command="echo"), on_connected=cb,
+        )
+        await conn._fire_on_reconnect()  # first connect — no notify
+        cb.assert_not_called()
+        await conn._fire_on_reconnect()  # reconnect — notify
+        cb.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_recovery_after_failed_initial_connect_notifies(self):
+        """A failed INITIAL connect (mcp_set saw status=failed) must notify on
+        the health monitor's later recovery — the caller skipped registration."""
+        cb = AsyncMock()
+        conn = MCPServerConnection(
+            ServerConfig(name="test", command="echo"), on_connected=cb,
+        )
+        conn._notify_on_next_success = True  # prior initial connect failed
+
+        await conn._fire_on_reconnect()
+
+        cb.assert_awaited_once()
+        assert conn._ever_connected is True
+        assert conn._notify_on_next_success is False
+
+    @pytest.mark.asyncio
+    async def test_listener_error_is_swallowed(self):
+        async def boom():
+            raise RuntimeError("listener failed")
+
+        conn = MCPServerConnection(
+            ServerConfig(name="test", command="echo"), on_connected=boom,
+        )
+        # A failing listener must never propagate into connect().
+        await conn._fire_on_reconnect()
+        await conn._fire_on_reconnect()
+        assert conn._ever_connected is True
+
+    @pytest.mark.asyncio
+    async def test_pool_passes_callback_to_connections(self):
+        cb = AsyncMock()
+        pool = ConnectionPool(on_connected=cb)
+        # enabled=False so add_server doesn't attempt a real connect.
+        conn = await pool.add_server(
+            ServerConfig(name="test", command="echo", enabled=False),
+        )
+        assert conn._on_connected is cb

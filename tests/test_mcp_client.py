@@ -361,3 +361,82 @@ class TestMCPClientConnect:
                 # The hung attempt timed out, then the next attempt succeeded.
                 assert client.is_connected is True
                 assert mock_transport.call_count == 2
+
+
+class TestMCPClientNotificationHandler:
+    """MCPClient._handle_server_message dispatches server notifications."""
+
+    @pytest.mark.asyncio
+    async def test_dispatches_tools_list_changed(self):
+        from types import SimpleNamespace
+
+        client = MCPClient()
+        seen = {}
+
+        async def handler(method, params):
+            seen["method"] = method
+            seen["params"] = params
+
+        client.on_notification = handler
+        msg = SimpleNamespace(
+            method="notifications/tools/list_changed",
+            params={"server": "foo"},
+        )
+        await client._handle_server_message(msg)
+
+        assert seen["method"] == "notifications/tools/list_changed"
+        assert seen["params"] == {"server": "foo"}
+
+    @pytest.mark.asyncio
+    async def test_ignores_non_notification_methods(self):
+        from types import SimpleNamespace
+
+        client = MCPClient()
+        handler = AsyncMock()
+        client.on_notification = handler
+        # A server→client request or a response never reaches the handler.
+        await client._handle_server_message(
+            SimpleNamespace(method="ping", params={}),
+        )
+        handler.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_handler_is_noop(self):
+        from types import SimpleNamespace
+
+        client = MCPClient()
+        await client._handle_server_message(
+            SimpleNamespace(method="notifications/tools/list_changed", params={}),
+        )  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_handler_exception_does_not_propagate(self):
+        from types import SimpleNamespace
+
+        client = MCPClient()
+
+        async def boom(method, params):
+            raise RuntimeError("boom")
+
+        client.on_notification = boom
+        await client._handle_server_message(
+            SimpleNamespace(method="notifications/tools/list_changed", params={}),
+        )  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_params_model_dump_is_extracted(self):
+        from types import SimpleNamespace
+
+        client = MCPClient()
+        seen = {}
+
+        async def handler(method, params):
+            seen["params"] = params
+
+        client.on_notification = handler
+        msg = SimpleNamespace(
+            method="notifications/tools/list_changed",
+            params=SimpleNamespace(model_dump=lambda: {"a": 1}),
+        )
+        await client._handle_server_message(msg)
+        assert seen["params"] == {"a": 1}

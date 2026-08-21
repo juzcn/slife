@@ -68,12 +68,24 @@ def _get_adapter(provider_id: str, provider_config) -> MediaAdapter:
     return adapter
 
 
-def _resolve_input_path(path_str: str) -> Path | None:
-    if not path_str:
+def _resolve_image_input(image: str) -> str | Path | None:
+    """Resolve a reference-image argument for image-conditioned generation.
+
+    Accepts three forms and returns a value the adapters understand:
+      - a public ``http(s)://`` URL (e.g. one produced by expose_file) —
+        passed through as-is;
+      - a ``data:<mime>;base64,...`` Data URI — passed through as-is;
+      - a local file path — returned as a ``Path`` (adapters convert
+        local files to a Data URI themselves).
+    """
+    if not image:
         return None
-    path = Path(path_str).expanduser()
+    s = image.strip()
+    if s.startswith(("http://", "https://", "data:")):
+        return s
+    path = Path(s).expanduser()
     if not path.is_file():
-        raise FileNotFoundError(f"File not found: '{path_str}'")
+        raise FileNotFoundError(f"File not found: '{image}'")
     return path.resolve()
 
 
@@ -119,8 +131,9 @@ async def generate_image(
             model name; provider default when omitted.
         size: Output dimensions, e.g. '1024*1024'; provider default when
             omitted.
-        image: Absolute local path to a reference image for
-            image-conditioned generation (uploaded automatically).
+        image: Reference image for image-conditioned generation — a
+            public http(s) URL (e.g. from expose_file), a Base64 Data URI,
+            or an absolute local path.
         folder: Directory to save the image into (default: working dir).
     """
     try:
@@ -136,7 +149,7 @@ async def generate_image(
             model=entry.model,
             prompt=prompt,
             size=size,
-            image_path=_resolve_input_path(image),
+            image=_resolve_image_input(image),
             outputs_dir=_resolve_output_dir(folder),
             extra_params=entry.params,
         )
@@ -200,7 +213,7 @@ async def generate_video(
         result = await adapter.generate_video(
             model=entry.model,
             prompt=prompt,
-            image_path=_resolve_input_path(image),
+            image=_resolve_image_input(image),
             outputs_dir=_resolve_output_dir(folder),
             extra_params=params,
         )
@@ -289,7 +302,13 @@ async def transcribe_audio(path: str, model: str = "") -> str:
             )
         pid, pcfg, entry = cfg.resolve_model("asr", model or None)
         adapter = _get_adapter(pid, pcfg)
-        audio_path = _resolve_input_path(path)
+        audio_path = None
+        if path:
+            p = Path(path).expanduser()
+            if p.is_file():
+                audio_path = p.resolve()
+            else:
+                return f"Error: File not found: '{path}'"
         if audio_path is None:
             return "Error: No audio file path provided."
         result = await adapter.transcribe_audio(

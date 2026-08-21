@@ -245,6 +245,15 @@ class AgentService:
         self._on_heartbeat = None
         self._heartbeat_task: asyncio.Task | None = None
 
+        # ── MCP tool-registry self-healing ───────────────────────────
+        # The wrapper reconnects dead external servers on its own; these
+        # reconcile the agent's tool registry with the wrapper's live state
+        # so a slow cold start (or a mid-session reconnect) can't leave the
+        # external servers' tools permanently missing.
+        self._mcp_syncing: set[str] = set()          # per-server in-flight guard
+        self._mcp_reconcile_task: asyncio.Task | None = None  # periodic poll
+        self._mcp_reconcile_inflight = False         # notification coalescing
+
         # ── Unified message queue (always active) ──────────────────
         # Every input — human keyboard, A2A MQTT, WeChat — flows
         # through the same inbox queue.  Processed serially.
@@ -654,6 +663,7 @@ class AgentService:
         logger.info("mcp_init_start")
         try:
             await self._connect_mcp_wrapper()
+            self._wire_mcp_reconcile()
             await self._register_plugin_tools(
                 "mcp",
                 on_server_added=self._persist_server,
@@ -685,6 +695,7 @@ class AgentService:
         # Watchdog: on MCP wrapper crash, respawn + reconnect external servers
         async def _restart_mcp():
             await self._connect_mcp_wrapper()
+            self._wire_mcp_reconcile()
             await self._register_plugin_tools(
                 "mcp",
                 on_server_added=self._persist_server,
@@ -732,6 +743,7 @@ class AgentService:
             on_server_updated=self._on_server_updated,
         )
         if not self.is_subagent:
+            self._wire_mcp_reconcile()
             await self._auto_connect_mcp_servers()
             await self._auto_connect_rest_apis()
         else:
@@ -948,13 +960,36 @@ class AgentService:
                     name, result,
                 )
                 from slife.health import record
-                record(
-                    "mcp_server", "ok",
-                    key=name, value="connected",
-                    hint=f"MCP server '{name}' connected.",
-                )
-                # Register tools immediately — enabled implies eager.
-                await self._discover_and_register_external_tools(server_name=name)
+                try:
+                    status = json.loads(result).get("status", "")
+                except Exception:
+                    status = ""
+                if status in ("connected", "already_connected"):
+                    record(
+                        "mcp_server", "ok",
+                        key=name, value="connected",
+                        hint=f"MCP server '{name}' connected.",
+                    )
+                    # Register tools immediately — enabled implies eager.
+                    await self._discover_and_register_external_tools(server_name=name)
+                else:
+                    # Handshake timed out (slow uvx/npx cold start) or the
+                    # server is still coming up — don't claim success.  The
+                    # wrapper reconnects in the background and fires a
+                    # tools/list_changed notification; the reconcile poll
+                    # backstops it, so the tools land once the server is up.
+                    logger.warning(
+                        "mcp_auto_connect_pending server=%s status=%s result=%.120s",
+                        name, status, result,
+                    )
+                    record(
+                        "mcp_server", "warning",
+                        key=name, value=status or "connect_pending",
+                        hint=(
+                            f"MCP server '{name}' is enabled but not yet "
+                            f"connected (status={status}); retrying in background."
+                        ),
+                    )
             except Exception as e:
                 logger.error("mcp_auto_connect_failed server=%s err=%s", name, e)
                 from slife.health import record
@@ -1075,33 +1110,55 @@ class AgentService:
     # ── MCP tool discovery & registration ────────────────────────────
 
     async def _discover_and_register_external_tools(self, server_name: str) -> None:
-        """Discover tools from a specific MCP server and register as proxy tools."""
-        assert self._plugins["mcp"].client is not None
-        mcp_cfg = self.config.mcp_config
-        assert mcp_cfg is not None
+        """Discover tools from a specific MCP server and register as proxy tools.
 
+        Idempotent full diff: registers tools the server offers that aren't
+        registered yet, and unregisters tools it no longer offers.  Safe to
+        call concurrently from several triggers (auto-connect, reconnect
+        notification, reconcile poll) — a per-server in-flight guard coalesces
+        races, and an empty tool list leaves the registry untouched so a
+        half-connected server can't flicker its tools out.
+        """
+        client = self._plugins["mcp"].client
+        assert client is not None
+
+        if server_name in self._mcp_syncing:
+            return  # already syncing — the in-flight pass does the full diff
+        self._mcp_syncing.add(server_name)
         try:
-            tools_json = await self._plugins["mcp"].client.call_tool(
+            tools_json = await client.call_tool(
                 "mcp_list_tools", {"server": server_name}
             )
             tools_data = json.loads(tools_json)
             external = tools_data.get("tools", [])
 
-            if external:
-                proxy_tools = create_proxy_tools(
-                    self._plugins["mcp"].client, external,
-                    on_server_added=self._persist_server,
-                    on_server_removed=self._unpersist_server,
-                    on_server_updated=self._on_server_updated,
-                )
-                for tool in proxy_tools:
-                    self.tool_registry.register(tool)
-                logger.debug(
-                    "mcp_tools_registered server=%s count=%d",
-                    server_name, len(proxy_tools),
-                )
-            else:
+            if not external:
+                # Not connected/ready yet (list_all_tools returns [] when the
+                # server isn't CONNECTED) — leave existing tools untouched so
+                # a transient status blip can't tear them down.
                 logger.debug("mcp_no_tools server=%s", server_name)
+                return
+
+            proxy_tools = create_proxy_tools(
+                client, external,
+                on_server_added=self._persist_server,
+                on_server_removed=self._unpersist_server,
+                on_server_updated=self._on_server_updated,
+            )
+            new_names = {t.name for t in proxy_tools}
+            old_names = {
+                t.name for t in self.tool_registry.list_tools()
+                if t.name.startswith(f"{server_name}__")
+            }
+            for tool in proxy_tools:
+                if tool.name not in old_names:
+                    self.tool_registry.register(tool)
+            for stale in old_names - new_names:
+                self.tool_registry.unregister(stale)
+            logger.debug(
+                "mcp_tools_registered server=%s count=%d",
+                server_name, len(proxy_tools),
+            )
         except Exception as e:
             logger.error("mcp_discover_failed server=%s err=%s", server_name, e)
             from slife.health import record
@@ -1109,6 +1166,101 @@ class AgentService:
                 "mcp_server", "warning",
                 key=server_name, value="discovery_failed",
                 hint=f"MCP server '{server_name}' connected but tool discovery failed: {e}",
+            )
+        finally:
+            self._mcp_syncing.discard(server_name)
+
+    async def _reconcile_mcp_tools(self, *, full: bool = False) -> None:
+        """Reconcile the tool registry with the wrapper's live server state.
+
+        For each enabled, connected external server that reports tools:
+          - ``full=True`` (reconnect notification): sync every such server —
+            the diff registers new tools and unregisters dropped ones.
+          - ``full=False`` (periodic poll): only repair servers whose tools
+            are entirely missing from the registry (add-only — never tears
+            down existing tools, so a transient status blip can't flicker
+            them out).
+        """
+        client = self._plugins["mcp"].client
+        if client is None or not client.is_connected:
+            return
+        try:
+            raw = await client.call_tool("__mcp_connection_status")
+            servers = json.loads(raw)
+        except Exception as e:
+            logger.debug("mcp_reconcile_status_failed err=%s", e)
+            return
+
+        for s in servers:
+            name = s.get("name")
+            if not name or not s.get("enabled"):
+                continue
+            if s.get("state") != "running" or s.get("tool_count", 0) <= 0:
+                continue
+            if not full:
+                has_tools = any(
+                    t.name.startswith(f"{name}__")
+                    for t in self.tool_registry.list_tools()
+                )
+                if has_tools:
+                    continue
+            logger.info("mcp_reconcile_sync server=%s full=%s", name, full)
+            await self._discover_and_register_external_tools(server_name=name)
+
+    async def _on_mcp_notification(self, method: str, _params: dict) -> None:
+        """Handle a server-initiated notification from the MCP wrapper.
+
+        ``notifications/tools/list_changed`` means an external server
+        connected/reconnected (or its tool set changed) — re-sync the
+        registry.  Runs as a fire-and-forget task: the SDK receive loop awaits
+        this handler, so it must never block on a call_tool against the same
+        session (that would deadlock the loop).
+        """
+        if method != "notifications/tools/list_changed":
+            return
+        if self._mcp_reconcile_inflight:
+            return
+        self._mcp_reconcile_inflight = True
+
+        async def _run() -> None:
+            try:
+                await self._reconcile_mcp_tools(full=True)
+            except Exception:
+                logger.exception("mcp_reconcile_task_failed")
+            finally:
+                self._mcp_reconcile_inflight = False
+
+        asyncio.create_task(_run())
+
+    async def _mcp_reconcile_loop(self, interval: float = 30.0) -> None:
+        """Periodic reconciliation backstop for external MCP tool registration.
+
+        The wrapper's reconnect notification is the primary trigger; this poll
+        repairs any server whose tools are still missing (e.g. the notification
+        was lost because the SSE channel dropped).
+        """
+        while True:
+            try:
+                await self._reconcile_mcp_tools(full=False)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug("mcp_reconcile_error err=%s", e)
+            await asyncio.sleep(interval)
+
+    def _wire_mcp_reconcile(self) -> None:
+        """Attach the notification handler to the wrapper client and ensure the
+        reconciliation poll is running.
+
+        Called on wrapper connect and after every wrapper restart — a fresh
+        client needs the handler re-attached.
+        """
+        client = self._plugins["mcp"].client
+        if client is not None:
+            client.on_notification = self._on_mcp_notification
+        if self._mcp_reconcile_task is None or self._mcp_reconcile_task.done():
+            self._mcp_reconcile_task = asyncio.create_task(
+                self._mcp_reconcile_loop()
             )
 
     async def _persist_server(self, name: str, command: str, args: list[str], env: dict | None = None, description: str = "", source: dict | None = None, url: str = "", headers: dict[str, str] | None = None):
@@ -1174,6 +1326,13 @@ class AgentService:
 
     async def stop_mcp(self) -> None:
         """Shut down the MCP wrapper and clean up."""
+        if self._mcp_reconcile_task is not None:
+            self._mcp_reconcile_task.cancel()
+            try:
+                await self._mcp_reconcile_task
+            except asyncio.CancelledError:
+                pass
+            self._mcp_reconcile_task = None
         await self._stop_plugin("mcp")
 
     async def stop_memdb(self) -> None:

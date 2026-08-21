@@ -5,6 +5,8 @@ import pytest; pytestmark = pytest.mark.unit
 
 import asyncio
 import json as _json
+from contextlib import suppress
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -117,6 +119,14 @@ class TestAgentServiceMCPLifecycle:
             mock_register.assert_called_once()
             mock_auto.assert_called_once()
 
+        # start_mcp now also spawns the reconciliation poll task — stop it so
+        # the test event loop isn't left with a 30s sleeper.
+        if service._mcp_reconcile_task is not None:
+            service._mcp_reconcile_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await service._mcp_reconcile_task
+            service._mcp_reconcile_task = None
+
     @pytest.mark.asyncio
     async def test_stop_mcp_with_client(self, sample_config):
         service = AgentService(sample_config)
@@ -175,6 +185,159 @@ class TestAgentServiceMCPLifecycle:
             mock_unreg.assert_called_once_with("filesystem__")
             mock_disc.assert_awaited_once_with(server_name="filesystem")
             mock_set.assert_called_once_with("filesystem", True)
+
+
+class TestAgentServiceMCPReconcile:
+    """Tool-registry self-healing: reconcile poll + reconnect notification."""
+
+    def _client_with(self, status_servers, tools_by_server):
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def fake_call_tool(name, arguments=None):
+            if name == "__mcp_connection_status":
+                return _json.dumps(status_servers, ensure_ascii=False)
+            if name == "mcp_list_tools":
+                return _json.dumps(
+                    {"tools": tools_by_server.get(arguments.get("server"), [])},
+                    ensure_ascii=False,
+                )
+            raise AssertionError(f"unexpected tool call: {name}")
+
+        client.call_tool = fake_call_tool
+        return client
+
+    @staticmethod
+    def _tool(server, name):
+        return {
+            "server": server,
+            "name": name,
+            "description": "",
+            "inputSchema": {"type": "object", "properties": {}},
+        }
+
+    @pytest.mark.asyncio
+    async def test_reconcile_poll_repairs_missing_tools(self, sample_config):
+        service = AgentService(sample_config)
+        service._plugins["mcp"].client = self._client_with(
+            status_servers=[
+                {"name": "foo", "enabled": True, "state": "running", "tool_count": 2},
+                {"name": "bar", "enabled": True, "state": "running", "tool_count": 1},
+                {"name": "baz", "enabled": True, "state": "stopped", "tool_count": 0},
+            ],
+            tools_by_server={"foo": [self._tool("foo", "t1"), self._tool("foo", "t2")]},
+        )
+        # "bar" already has tools → the add-only poll must not re-sync it.
+        service.tool_registry.register(SimpleNamespace(name="bar__t1"))
+
+        await service._reconcile_mcp_tools(full=False)
+
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert {"foo__t1", "foo__t2", "bar__t1"} <= names
+        # baz is not connected → skipped entirely.
+        assert not any(n.startswith("baz__") for n in names)
+
+    @pytest.mark.asyncio
+    async def test_reconcile_full_syncs_every_connected_server(self, sample_config):
+        service = AgentService(sample_config)
+        listed = []
+        client = self._client_with(
+            status_servers=[
+                {"name": "foo", "enabled": True, "state": "running", "tool_count": 1},
+                {"name": "bar", "enabled": True, "state": "running", "tool_count": 1},
+            ],
+            tools_by_server={
+                "foo": [self._tool("foo", "t1")],
+                "bar": [self._tool("bar", "t1")],
+            },
+        )
+        orig_call = client.call_tool
+
+        async def tracking(name, arguments=None):
+            if name == "mcp_list_tools":
+                listed.append(arguments.get("server"))
+            return await orig_call(name, arguments)
+
+        client.call_tool = tracking
+        service._plugins["mcp"].client = client
+        service.tool_registry.register(SimpleNamespace(name="bar__t1"))
+
+        await service._reconcile_mcp_tools(full=True)
+
+        # full=True syncs bar even though it already has tools.
+        assert "bar" in listed and "foo" in listed
+
+    @pytest.mark.asyncio
+    async def test_discover_empty_tools_leaves_registry_untouched(self, sample_config):
+        service = AgentService(sample_config)
+        service._plugins["mcp"].client = self._client_with(
+            status_servers=[], tools_by_server={},
+        )
+        service.tool_registry.register(SimpleNamespace(name="foo__keep"))
+
+        await service._discover_and_register_external_tools("foo")
+
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "foo__keep" in names  # no flicker on an empty / not-ready list
+
+    @pytest.mark.asyncio
+    async def test_discover_diff_unregisters_dropped_tools(self, sample_config):
+        service = AgentService(sample_config)
+        service._plugins["mcp"].client = self._client_with(
+            status_servers=[],
+            tools_by_server={"foo": [self._tool("foo", "t1")]},
+        )
+        service.tool_registry.register(SimpleNamespace(name="foo__gone"))
+
+        await service._discover_and_register_external_tools("foo")
+
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "foo__t1" in names
+        assert "foo__gone" not in names
+
+    @pytest.mark.asyncio
+    async def test_on_mcp_notification_triggers_reconcile(self, sample_config):
+        service = AgentService(sample_config)
+        service._plugins["mcp"].client = self._client_with(
+            status_servers=[
+                {"name": "foo", "enabled": True, "state": "running", "tool_count": 1},
+            ],
+            tools_by_server={"foo": [self._tool("foo", "t1")]},
+        )
+
+        await service._on_mcp_notification("notifications/tools/list_changed", {})
+
+        # Fire-and-forget task — give it a moment to run to completion.
+        for _ in range(10):
+            await asyncio.sleep(0.01)
+            if any(t.name == "foo__t1" for t in service.tool_registry.list_tools()):
+                break
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "foo__t1" in names
+        assert service._mcp_reconcile_inflight is False
+
+    @pytest.mark.asyncio
+    async def test_on_mcp_notification_ignores_other_methods(self, sample_config):
+        service = AgentService(sample_config)
+        await service._on_mcp_notification("notifications/something_else", {})
+        assert service._mcp_reconcile_inflight is False
+
+    @pytest.mark.asyncio
+    async def test_wire_mcp_reconcile_attaches_handler_and_starts_poll(self, sample_config):
+        service = AgentService(sample_config)
+        client = AsyncMock()
+        client.is_connected = True
+        service._plugins["mcp"].client = client
+
+        service._wire_mcp_reconcile()
+
+        assert client.on_notification == service._on_mcp_notification
+        assert service._mcp_reconcile_task is not None
+        # Stop the poll task so the test loop isn't left with a 30s sleeper.
+        service._mcp_reconcile_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await service._mcp_reconcile_task
+        service._mcp_reconcile_task = None
 
 
 # ── AgentService memory ─────────────────────────────────────────────────────

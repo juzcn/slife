@@ -16,7 +16,7 @@ import importlib
 import logging
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -108,3 +108,57 @@ class TestAddServerToolRegistration:
             async with srv._mcp_lifespan(None):
                 pass
             mock_pool.shutdown.assert_awaited_once()
+
+
+class TestWrapperNotifyToolsChanged:
+    """Reconnect notifications: session capture + tools/list_changed broadcast."""
+
+    @pytest.mark.asyncio
+    async def test_pool_is_wired_to_notify(self, restore_root_logger):
+        srv = _import_mcp_server()
+        assert srv._pool._on_connected is srv._notify_tools_changed
+
+    def test_capture_session_accumulates(self, restore_root_logger):
+        srv = _import_mcp_server()
+        srv._active_sessions.clear()
+        fake_ctx = MagicMock()
+        fake_ctx.session = object()
+        srv._capture_session(fake_ctx)
+        assert len(srv._active_sessions) == 1
+        srv._capture_session(fake_ctx)  # idempotent for the same session
+        assert len(srv._active_sessions) == 1
+        srv._capture_session(None)  # no request context → no-op
+        assert len(srv._active_sessions) == 1
+
+    @pytest.mark.asyncio
+    async def test_notify_no_sessions_is_noop(self, restore_root_logger):
+        srv = _import_mcp_server()
+        srv._active_sessions.clear()
+        await srv._notify_tools_changed()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_notify_drops_dead_sessions(self, restore_root_logger):
+        srv = _import_mcp_server()
+        alive = MagicMock()
+        alive.send_tool_list_changed = AsyncMock()
+        dead = MagicMock()
+        dead.send_tool_list_changed = AsyncMock(side_effect=RuntimeError("gone"))
+        srv._active_sessions = {alive, dead}
+
+        await srv._notify_tools_changed()
+
+        alive.send_tool_list_changed.assert_awaited_once()
+        dead.send_tool_list_changed.assert_awaited_once()
+        # The dead session was dropped; the alive one is kept for next time.
+        assert srv._active_sessions == {alive}
+
+    @pytest.mark.asyncio
+    async def test_notify_calls_send_tool_list_changed(self, restore_root_logger):
+        srv = _import_mcp_server()
+        sess = MagicMock()
+        sess.send_tool_list_changed = AsyncMock()
+        srv._active_sessions = {sess}
+
+        await srv._notify_tools_changed()
+
+        sess.send_tool_list_changed.assert_awaited_once()

@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 _SYNC_PATH = "/services/aigc/multimodal-generation/generation"
 _VIDEO_PATH = "/services/aigc/video-generation/video-synthesis"
+_TTS_PATH = "/services/audio/tts/SpeechSynthesizer"
 
 #: Poll cadence for async tasks (Aliyun's own examples use 15 s).
 _POLL_INTERVAL_S = 15.0
@@ -66,6 +67,40 @@ class DashScopeAIGCAdapter:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
+
+    @staticmethod
+    def _to_data_uri(file_path: Path) -> str:
+        """Read a local file and return a ``data:<mime>;base64,...`` URI."""
+        import base64
+        import mimetypes
+
+        mime = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+        b64 = base64.b64encode(file_path.read_bytes()).decode()
+        return f"data:{mime};base64,{b64}"
+
+    @staticmethod
+    def _resolve_reference(image: str | Path | None) -> str | None:
+        """Normalize a reference image to something DashScope accepts.
+
+        - http(s) URL → passed through (public URL, e.g. from expose_file)
+        - ``data:`` URI → passed through (Base64)
+        - local Path → converted to a Base64 ``data:`` URI
+        """
+        if image is None:
+            return None
+        if isinstance(image, Path):
+            return DashScopeAIGCAdapter._to_data_uri(image)
+        s = str(image).strip()
+        if s.startswith(("http://", "https://", "data:")):
+            return s
+        p = Path(s).expanduser()
+        if p.is_file():
+            return DashScopeAIGCAdapter._to_data_uri(p)
+        raise MediaAdapterError(
+            f"Reference image must be a public http(s) URL, a Base64 data "
+            f"URI, or an existing local path — got: {s[:80]!r}"
+        )
 
     async def _request(
         self, method: str, url: str, *,
@@ -253,21 +288,17 @@ class DashScopeAIGCAdapter:
 
     async def generate_image(
         self, *, model: str, prompt: str, size: str = "",
-        image_path: Path | None = None, outputs_dir: str = "",
+        image: str | Path | None = None, outputs_dir: str = "",
         extra_params: dict | None = None,
     ) -> str:
-        headers: dict[str, str] = {}
-        content: list[dict] = [{"text": prompt}]
-        if image_path is not None:
-            oss_url = await self.upload_file(model=model, file_path=image_path)
-            content.append({"image": oss_url})
-            headers["X-DashScope-OssResourceResolve"] = "enable"
+        body_content: list[dict] = [{"text": prompt}]
+        ref = self._resolve_reference(image)
+        if ref is not None:
+            body_content.append({"image": ref})
         params = dict(extra_params or {})
         if size:
             params["size"] = size
-        output = await self._sync_generate(
-            model, content, params, extra_headers=headers or None,
-        )
+        output = await self._sync_generate(model, body_content, params)
         for item in self._message_content(output):
             url = item.get("image")
             if url:
@@ -280,17 +311,16 @@ class DashScopeAIGCAdapter:
         )
 
     async def generate_video(
-        self, *, model: str, prompt: str, image_path: Path | None = None,
+        self, *, model: str, prompt: str, image: str | Path | None = None,
         outputs_dir: str = "", extra_params: dict | None = None,
         deadline_s: float = 1200.0,
     ) -> str:
         params = dict(extra_params or {})
         image_field = str(params.pop(_IMAGE_FIELD_KEY, _DEFAULT_IMAGE_FIELD))
         input_data: dict = {"prompt": prompt}
-        if image_path is not None:
-            input_data[image_field] = await self.upload_file(
-                model=model, file_path=image_path,
-            )
+        ref = self._resolve_reference(image)
+        if ref is not None:
+            input_data[image_field] = ref
         task_id = await self._async_submit(model, input_data, params)
         output = await self._async_poll(task_id, deadline_s)
         url = output.get("video_url")
@@ -319,7 +349,7 @@ class DashScopeAIGCAdapter:
             input_data["voice"] = voice
         input_data.update(extra_params or {})
         data = await self._request(
-            "POST", f"{self._config.base_url}{_SYNC_PATH}",
+            "POST", f"{self._config.base_url}{_TTS_PATH}",
             json_body={"model": model, "input": input_data},
         )
         output = data.get("output") or {}
@@ -346,11 +376,30 @@ class DashScopeAIGCAdapter:
         self, *, model: str, audio_path: Path,
         extra_params: dict | None = None,
     ) -> str:
-        oss_url = await self.upload_file(model=model, file_path=audio_path)
-        output = await self._sync_generate(
-            model, [{"audio": oss_url}], dict(extra_params or {}),
-            extra_headers={"X-DashScope-OssResourceResolve": "enable"},
-        )
+        # qwen-audio-3.0-asr-flash / fun-asr-flash use the multimodal
+        # generation endpoint with an input_audio Data URI — NOT the
+        # two-step OSS upload (that path is for local-file image/video
+        # input and returns 404 here).
+        import base64
+        import mimetypes
+
+        if not audio_path.is_file():
+            raise FileNotFoundError(f"File not found: '{audio_path}'")
+        mime = mimetypes.guess_type(str(audio_path))[0] or "audio/wav"
+        b64 = base64.b64encode(audio_path.read_bytes()).decode()
+        data_uri = f"data:{mime};base64,{b64}"
+        params = dict(extra_params or {})
+        params.setdefault("format", "wav")
+        params.setdefault("sample_rate", "16000")
+        content: list[dict] = [
+            {"type": "input_audio", "input_audio": {"data": data_uri}},
+        ]
+        output = await self._sync_generate(model, content, params)
+        # ASR responses carry output.text (non-streaming) or
+        # output.sentence.text; _message_content also covers choices.
+        text = output.get("text") or (output.get("sentence") or {}).get("text")
+        if text:
+            return str(text)
         texts = [
             str(item["text"]) for item in self._message_content(output)
             if item.get("text")

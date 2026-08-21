@@ -39,12 +39,12 @@ class MediaAdapter(Protocol):
 
     async def generate_image(
         self, *, model: str, prompt: str, size: str = "",
-        image_path: Path | None = None, outputs_dir: str = "",
+        image: str | Path | None = None, outputs_dir: str = "",
         extra_params: dict | None = None,
     ) -> str: ...
 
     async def generate_video(
-        self, *, model: str, prompt: str, image_path: Path | None = None,
+        self, *, model: str, prompt: str, image: str | Path | None = None,
         outputs_dir: str = "", extra_params: dict | None = None,
         deadline_s: float = 1200.0,
     ) -> str: ...
