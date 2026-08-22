@@ -38,13 +38,17 @@ Tool registration
   ``slife.mcp.tool_adapter.create_proxy_tools``.  Tools with names in
   ``<server>__<tool>`` format are placed in the LLM's tool registry.
 
-Harness-only tools
-  A tool whose name starts with ``_`` (e.g. ``_drain_incoming``) is
-  harness-internal: both registration paths (generic spawn and
-  subagent connect) filter it out by the ``_`` prefix, so it is never
-  exposed to the LLM.  The harness calls it programmatically via
-  ``client.call_tool()``.  The description marker "Harness-only" is
-  optional documentation, not the filter key.
+Internal tools
+  A tool whose name starts with ``__`` (e.g. ``__memory_save_turn``) is an
+  *internal tool* — the plugin contract's marker for "not exposed to the
+  LLM".  Both registration paths (generic spawn and subagent connect)
+  filter these out by the ``__`` prefix (see :func:`is_internal_tool`), so
+  they never reach the LLM's tool registry.  The main process calls them
+  programmatically via ``client.call_tool()``.  This is distinct from the
+  harness concept: a single ``_`` prefix (e.g. the native ``_sys_note``)
+  means *harness* — LLM-visible-but-reserved, auto-invoked by the agent
+  loop.  The plugin description text is not a filter key — the ``__``
+  prefix is canonical.
 
 Non-MCP endpoints on an MCP plugin
   A plugin may serve plain HTTP endpoints *in addition to* MCP tools on
@@ -107,6 +111,26 @@ from slife.logfmt import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Internal-tool marker ──────────────────────────────────────────────────
+
+#: Plugin internal-tool prefix.  ``__``-prefixed MCP tools are internal to
+#: the plugin — called programmatically by the main process via
+#: ``client.call_tool()``, never exposed to the LLM.  (Single ``_`` =
+#: harness, LLM-visible-but-reserved, e.g. the native ``_sys_note``.)
+INTERNAL_TOOL_PREFIX = "__"
+
+
+def is_internal_tool(name: str) -> bool:
+    """Return True for plugin internal tools (``__``-prefixed).
+
+    The plugin contract's marker for "not exposed to the LLM": both
+    registration paths filter these out by the ``__`` prefix, and the main
+    process reaches them via ``client.call_tool()``.  Distinct from harness
+    (single ``_``) — see the module docstring.
+    """
+    return name.startswith(INTERNAL_TOOL_PREFIX)
+
 
 # FastMCP-specific loggers that should also be silenced.
 _FASTMCP_NOISE = ("mcp.server.lowlevel.server", "fastmcp")

@@ -3,7 +3,7 @@
 Mocks the ngrok tunnel (no network) and exercises the MCP tool functions
 directly, following the test_mqtt_plugin.py pattern.  Covers the token
 registry, the note/diary/file/search tools (with a mocked store), the
-harness-only tools, the SSRF guard, and the custom ``GET /share/{file_id}``
+internal tools, the SSRF guard, and the custom ``GET /share/{file_id}``
 HTTP route.  Store internals (md mirroring, hybrid search, the SemanticManager
 contract) are covered against a real temp DB in ``TestMemfilesStore``.
 """
@@ -579,11 +579,11 @@ class TestSaveUrlPublicGuard:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Harness-only tools
+# Internal tools
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class TestHarnessTools:
+class TestInternalTools:
     @pytest.mark.asyncio
     async def test_tunnel_status_active(self):
         with _active_tunnel():

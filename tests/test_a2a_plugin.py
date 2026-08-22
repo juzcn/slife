@@ -277,17 +277,16 @@ class TestHarnessTools:
             clear_store()
 
     @pytest.mark.asyncio
-    async def test_harness_tools_marked_harness_only(self):
-        """The filter keys off 'harness-only' in the registered description."""
+    async def test_internal_tools_prefixed_double_underscore(self):
+        """Internal (LLM-invisible) tools carry the ``__`` prefix convention."""
         tools = await plugin.mcp._list_tools()
-        by_name = {t.name: t.description for t in tools}
-        assert "harness-only" in by_name["__a2a_drain_incoming"].lower()
-        assert "harness-only" in by_name["__a2a_dispatch_result"].lower()
-        assert "harness-only" in by_name["__a2a_status"].lower()
+        names = {t.name for t in tools}
+        for name in ("__a2a_drain_incoming", "__a2a_dispatch_result", "__a2a_status"):
+            assert name in names, f"{name} missing from plugin tools"
 
     @pytest.mark.asyncio
-    async def test_a2a_tools_exposed_without_harness_marker(self):
-        """The a2a_* mesh tools are LLM-visible: no '__' prefix, no 'harness-only'."""
+    async def test_a2a_tools_visible_no_internal_prefix(self):
+        """The a2a_* mesh tools are LLM-visible: no '__' prefix."""
         tools = await plugin.mcp._list_tools()
         by_name = {t.name: t.description for t in tools}
         for name in (
@@ -296,7 +295,7 @@ class TestHarnessTools:
             "a2a_agent_card", "a2a_broadcast",
         ):
             assert name in by_name, f"{name} missing from plugin tools"
-            assert "harness-only" not in by_name[name].lower(), name
+            assert not name.startswith("__"), name
 
 
 class TestConfig:
@@ -377,7 +376,7 @@ class TestEagerConnect:
 
 
 class TestA2aStatusTool:
-    """Tests for the __a2a_status harness tool (health-check probe)."""
+    """Tests for the __a2a_status internal tool (health-check probe)."""
 
     _CONFIG = json.dumps({
         "enabled": True, "agent_name": "slife",

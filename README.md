@@ -9,7 +9,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: up to 50 native tools in 14 categories (plus 2 harness tools), six built-in plugin services, always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: up to 50 native tools in 14 categories (plus 1 harness tool, `_sys_note`), six built-in plugin services, always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -169,7 +169,7 @@ Switch at runtime: `model_list` → `model_switch(ref="bailian/qwen3.8-max")`.
 
 All unified as OpenAI function definitions. The LLM sees no difference between native, plugin, and external MCP tools.
 
-**52 native tools in 14 categories** — auto-discovered from `slife/tools/` (up to 50 LLM-visible + 2 harness; `include_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
+**52 native tools in 14 categories** — auto-discovered from `slife/tools/` (up to 50 LLM-visible + 1 harness `_sys_note`; `include_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
 
 | Category | Tools |
 |----------|-------|

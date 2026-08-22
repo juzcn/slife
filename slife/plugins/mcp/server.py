@@ -300,7 +300,7 @@ async def mcp_list() -> str:
     name="__mcp_connection_status",
     description=(
         "Live connection status of MCP servers: running/stopped, tool counts, "
-        "errors. Harness-only — consumed by the check_mcp tool."
+        "errors. Internal — consumed by the check_mcp tool."
     ),
 )
 async def __mcp_connection_status(ctx: Context | None = None) -> str:
@@ -342,7 +342,7 @@ async def mcp_list_tools(server: str) -> str:
 @mcp.tool(
     name="__mcp_call_tool",
     description=(
-        "Call a tool on a connected MCP server (harness-only — invoked by the "
+        "Call a tool on a connected MCP server (internal — invoked by the "
         "server__tool proxies, not directly by the agent). "
         "arguments = JSON object string."
     ),

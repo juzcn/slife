@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from slife.mcp.client import MCPClient
+from slife.server_utils import is_internal_tool
 
 if TYPE_CHECKING:
     from slife.agent.service import AgentService
@@ -85,13 +86,13 @@ class PluginLifecycle:
         """Spawn a plugin child process, connect, and register its LLM-visible tools.
 
         Handles the common pattern: spawn MCPWrapperProcess → set env var →
-        create client → list tools → filter harness-only tools →
+        create client → list tools → filter internal tools →
         create_proxy_tools → register.
 
-        Tools whose name starts with ``_`` are harness-only and are never
-        exposed to the LLM.  The *harness_tools* parameter is **deprecated**
-        — it still works for backward compatibility but the preferred
-        mechanism is the ``_`` prefix naming convention.
+        Tools whose name starts with ``__`` are internal (plugin contract)
+        and are never exposed to the LLM.  The *harness_tools* parameter is
+        **deprecated** — it still works for backward compatibility but the
+        preferred mechanism is the ``__`` prefix naming convention.
         """
         from slife.mcp.process import MCPWrapperProcess
         from slife.mcp.tool_adapter import create_proxy_tools
@@ -123,16 +124,16 @@ class PluginLifecycle:
                 [t["name"] for t in plugin_tools],
             )
 
-            # Harness-only tools are prefixed with __ (convention) — filtered
+            # Internal tools are prefixed with __ (convention) — filtered
             # out of the schema entirely.  (Single ``_`` = harness but
             # LLM-visible, e.g. the native `_sys_note`.)  Same
             # predicate as the generic spawn path in service.py, so a plugin's
-            # harness tools are hidden identically whichever registration path
-            # ran.  The deprecated harness_tools set is also respected.
+            # internal tools are hidden identically whichever registration
+            # path ran.  The deprecated harness_tools set is also respected.
             tagged = [
                 {**t, "server": self.name}
                 for t in plugin_tools
-                if not t["name"].startswith("__")
+                if not is_internal_tool(t["name"])
                 and (harness_tools is None or t["name"] not in harness_tools)
             ]
 

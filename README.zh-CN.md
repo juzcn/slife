@@ -9,7 +9,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：14 个类别最多 50 个原生工具（另有 2 个 harness 工具）、六个内置插件服务、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：14 个类别最多 50 个原生工具（另有 1 个 harness 工具 `_sys_note`）、六个内置插件服务、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -161,7 +161,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 统一为 OpenAI 函数定义。LLM 看不出原生、插件与外部 MCP 工具的区别。
 
-**14 个类别共 52 个原生工具** — 从 `slife/tools/` 自动发现（最多 50 个 LLM 可见 + 2 个 harness；`include_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
+**14 个类别共 52 个原生工具** — 从 `slife/tools/` 自动发现（最多 50 个 LLM 可见 + 1 个 harness `_sys_note`；`include_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
 
 | 类别 | 工具 |
 |------|------|
@@ -177,7 +177,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Vision | `include_image`（把本地图片或 URL 注入对话） |
 | Display | `notify_user` |
-| Harness | `_sys_note`（上下文状态）——自主调用，LLM 不可用 |
+| Harness | `_sys_note`（上下文状态）——由 loop 代调，LLM 保留不可调 |
 | Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
 每个工具还额外接受三个框架元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（对话流内联审批行——Y 批准 / N 拒绝 / Esc 拒绝）。

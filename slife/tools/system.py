@@ -214,7 +214,7 @@ async def check_memfiles(client=None) -> list[dict]:
     """Return file-sharing tunnel status (queried from the memfiles plugin).
 
     The tunnel now lives inside the memfiles plugin process, so this check
-    asks the plugin's harness tool ``__tunnel_status`` through its MCP
+    asks the plugin's internal tool ``__tunnel_status`` through its MCP
     client (from ``ToolContext.memfiles_client``).  When the plugin is not
     connected, a warning is reported.
     """
@@ -464,7 +464,7 @@ async def check_a2a(client=None) -> list[dict]:
     """Return A2A mesh status (queried from the a2a plugin).
 
     The A2A mesh transport (MQTT binding) lives inside the a2a plugin
-    process, so this check asks the plugin's harness tool ``__a2a_status``
+    process, so this check asks the plugin's internal tool ``__a2a_status``
     through its MCP client (from ``ToolContext.a2a_mcp_client``).  When the
     mesh is unreachable — mosquitto not running (no active MQTT port), or
     the connection dropped — a warning is reported.

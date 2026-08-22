@@ -26,7 +26,7 @@ The plugin owns everything:
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
 ``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``list_files``,
 ``search``, ``read``, ``expose_file``, ``embedding_check``.
-Harness-only tools (``__`` prefix, never LLM-visible): ``__tunnel_status``,
+Internal tools (``__`` prefix, never LLM-visible): ``__tunnel_status``,
 ``__register_file``.
 
 Usage::
@@ -319,7 +319,7 @@ async def handle_share(request: Request) -> Response:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Harness-only tools (``__`` prefix — callable by the harness, never the LLM)
+# Internal tools (``__`` prefix — callable by the main process, never the LLM)
 # ═══════════════════════════════════════════════════════════════════════
 
 

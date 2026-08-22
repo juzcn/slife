@@ -150,7 +150,7 @@ async def _ensure_store_locked() -> SessionStore:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(name="__memory_save_turn", description="Save a turn. Harness-only.")
+@mcp.tool(name="__memory_save_turn", description="Save a turn. Internal — called by the agent loop.")
 async def __memory_save_turn(
     user_message: str = "",
     messages: list[dict] | None = None,
@@ -193,7 +193,7 @@ async def __memory_save_turn(
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(name="__memory_get_recent_turns", description="Load recent turns for restore. Harness-only.")
+@mcp.tool(name="__memory_get_recent_turns", description="Load recent turns for restore. Internal — called by the main process.")
 async def __memory_get_recent_turns(limit: int = 50, after_rowid: int = 0) -> str:
     store = await _ensure_store()
     try:
@@ -206,7 +206,7 @@ async def __memory_get_recent_turns(limit: int = 50, after_rowid: int = 0) -> st
 
 @mcp.tool(
     name="__memory_context_start_advance",
-    description="Advance the persisted live-context start by count rows. Harness-only.",
+    description="Advance the persisted live-context start by count rows. Internal — called by the agent loop.",
 )
 async def __memory_context_start_advance(count: int) -> str:
     """Persist the live-context boundary after the internal trim removed
@@ -226,7 +226,7 @@ async def __memory_context_start_advance(count: int) -> str:
 
 @mcp.tool(
     name="__memory_context_start_latest",
-    description="Move the live-context start to the latest saved turn. Harness-only.",
+    description="Move the live-context start to the latest saved turn. Internal — called by the agent loop.",
 )
 async def __memory_context_start_latest() -> str:
     """Flush the boundary to the latest row — the fresh start after

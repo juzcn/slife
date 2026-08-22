@@ -2,7 +2,7 @@
 
 Slife (the main process) acts as a thin client: it connects to this
 plugin over Streamable HTTP, registers the ``a2a__*`` tools, and drains
-inbound tasks/presence via the harness-only ``__a2a_drain_incoming`` tool.
+inbound tasks/presence via the internal ``__a2a_drain_incoming`` tool.
 The plugin owns the :class:`A2AClient` (MQTT) with the main agent's
 identity — senders and the mesh cannot tell which slife process sent a
 message, so subagents connect to the same plugin and reuse the channel.
@@ -381,14 +381,14 @@ async def a2a_broadcast(task: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Harness-only drain (the thin client polls this)
+# Internal drain (the thin client polls this)
 # ═══════════════════════════════════════════════════════════════════════
 
 
 @mcp.tool(
     name="__a2a_drain_incoming",
     description="Drain queued inbound A2A tasks + presence events + cancellations "
-    "+ async task completions. Harness-only.",
+    "+ async task completions. Internal — called by the agent service.",
 )
 async def __a2a_drain_incoming() -> str:
     """Drain queued inbound tasks + presence events + cancellations + async
@@ -414,7 +414,7 @@ async def __a2a_drain_incoming() -> str:
 
 @mcp.tool(
     name="__a2a_status",
-    description="A2A mesh status as JSON. Harness-only.",
+    description="A2A mesh status as JSON. Internal — consumed by the check_a2a health tool.",
 )
 async def __a2a_status() -> str:
     """Return mesh connection + peer status for the harness health check.
@@ -460,7 +460,7 @@ async def __a2a_status() -> str:
 
 @mcp.tool(
     name="__a2a_dispatch_result",
-    description="Publish a task result to a requester's result topic. Harness-only.",
+    description="Publish a task result to a requester's result topic. Internal — called by the agent service.",
 )
 async def __a2a_dispatch_result(
     reply_to: str, corr_id: str = "", text: str = "", cancelled: bool = False,

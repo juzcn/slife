@@ -94,23 +94,44 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 - **Permanent-memory compaction**: the diary does **not** hoard reproducible tool output. At `save_to_memory`, any tool result exceeding `memory_tool_result_chars` (default 8000) is stored as a head+tail digest with an explicit marker (original size + which tool to re-run). Small results are stored as-is. Rationale: tool output is reproducible (re-run the tool), a single result must never starve session restore within the floor budget, and memory_search recall stays cheap. The live conversation keeps the full result — compaction only affects the persisted copy.
 - **Truncation is announced in the tool output itself** (not the system prompt): both the live cap and the save-side compaction append a marker inside the result telling the model it was truncated, how large it originally was, and that re-running the tool retrieves the full version.
 
-### Harness Tools — Visibility Tiers
+### Harness vs Internal Tools — a naming distinction
 
-Harness tools are internal machinery the loop invokes on the agent's behalf. Two prefixes encode the visibility tier:
+Two distinct concepts live under different prefixes. They are **not** two
+tiers of the same thing:
 
-1. **`_` (single underscore) = harness, LLM-visible but reserved.** The native `_sys_note` (in `slife/tools/harness.py`) **does** appear in the schema — required so the Anthropic / OpenAI-Responses backends accept its tool-call pair in history. `AgentLoop._auto_invoke()` calls it as a normal tool-call pair; the system prompt forbids the LLM from calling it. `_sys_note` is pure (only reads state). Context trimming is **not** a tool: it runs internally after each save (`_trim_after_save`), marking the cut with a runtime `[TrimContext: N]` note — no `_sys_trim` in the schema, no pair to validate.
-2. **`__` (double underscore) = harness, LLM-invisible.** Plugin harness tools (`__memory_save_turn`, `__a2a_drain_incoming`, `__wechat_drain_incoming`, `__mcp_call_tool`, …) are filtered out of the schema before registration — they never reach `to_openai_functions()`. They are called programmatically via `client.call_tool("__…")`.
+1. **`_` (single underscore) = harness, LLM-visible but reserved.** Harness
+   tools are invoked by the agent loop *on the agent's behalf* — the LLM does
+   not decide to call them. The only one is the native `_sys_note`
+   (`slife/tools/harness.py`): `AgentLoop._auto_invoke()` injects it each turn
+   as a normal `assistant(tool_calls)` + `tool` pair. It **does** appear in the
+   schema — required so the Anthropic / OpenAI-Responses backends accept its
+   tool-call pair in history — and the system prompt forbids the LLM from
+   calling it. `_sys_note` is pure (only reads state). Context trimming is
+   **not** a tool: it runs internally after each save (`_trim_after_save`),
+   marking the cut with a runtime `[TrimContext: N]` note — no `_sys_trim` in
+   the schema, no pair to validate. Note: `include_image` is also auto-invoked
+   via `_auto_invoke`, but it has no `_` prefix and is not schema-reserved, so
+   it is not a harness tool.
+2. **`__` (double underscore) = plugin internal tool, LLM-invisible.** This is
+   a **plugin-spec marker**, not a harness concept. Plugin internal tools
+   (`__memory_save_turn`, `__a2a_drain_incoming`, `__wechat_drain_incoming`,
+   `__mcp_call_tool`, …) are ordinary MCP tools that happen to serve the main
+   process (agent service / TUI) rather than the LLM. They are filtered out of
+   the schema before registration — they never reach `to_openai_functions()`
+   — and are called programmatically via `client.call_tool("__…")`.
 
-| Tool | Shape | Visibility |
-|------|-------|------------|
-| `_sys_note` | Native tool, auto-invoked each turn | `_` — visible-but-forbidden |
-| `__memory_save_turn` / `__memory_get_recent_turns` | memdb plugin | `__` — invisible |
-| `__wechat_drain_incoming` / `__wechat_dispatch_reply` | wechat plugin | `__` — invisible |
-| `__a2a_drain_incoming` / `__a2a_dispatch_result` | a2a plugin | `__` — invisible |
-| `__mcp_connection_status` / `__mcp_call_tool` | mcp plugin | `__` — invisible |
-| `__tunnel_status` / `__register_file` | memfiles plugin | `__` — invisible |
+| Tool | Shape | Category |
+|------|-------|----------|
+| `_sys_note` | Native tool, auto-invoked each turn | Harness — visible-but-forbidden |
+| `__memory_save_turn` / `__memory_get_recent_turns` | memdb plugin | Internal — invisible |
+| `__wechat_drain_incoming` / `__wechat_dispatch_reply` | wechat plugin | Internal — invisible |
+| `__a2a_drain_incoming` / `__a2a_dispatch_result` | a2a plugin | Internal — invisible |
+| `__mcp_connection_status` / `__mcp_call_tool` | mcp plugin | Internal — invisible |
+| `__tunnel_status` / `__register_file` | memfiles plugin | Internal — invisible |
 
-The three registration paths share one `__` predicate (`agent/plugins.py`) — no harness tool leaks into the schema.
+Both registration paths share one `__` predicate — `is_internal_tool()`
+(`slife/server_utils.py`) — so no plugin internal tool leaks into the schema,
+whichever path (generic spawn or subagent connect) registered the plugin.
 
 ### System Prompt
 
@@ -234,7 +255,7 @@ Naming rule: a plugin tool already carrying its server as a name prefix (`mcp_se
 
 ### Registry
 
-`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. A module-level singleton (`get_registry()`) lets meta-tools introspect without circular imports. Dynamic tools — plugin tools, MCP wrapper tools, and external MCP server tools — are registered at runtime as `MCPProxyTool` instances named `"{server}__{tool}"`. Harness-only plugin tools (prefixed `__`) are filtered out before registration.
+`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. A module-level singleton (`get_registry()`) lets meta-tools introspect without circular imports. Dynamic tools — plugin tools, MCP wrapper tools, and external MCP server tools — are registered at runtime as `MCPProxyTool` instances named `"{server}__{tool}"`. Internal plugin tools (prefixed `__`) are filtered out before registration.
 
 ### Timeout Architecture
 
@@ -288,6 +309,18 @@ Six built-in plugins run as independent child processes. Communication is via **
 4. Define `@mcp.tool` functions; optionally serve plain-HTTP endpoints on the same port via `@mcp.custom_route(path, methods=[...])` (e.g. memfiles `GET /share/{token}`)
 5. Be importable: `python -m <module>.server`
 
+**Public vs internal tools.** Every `@mcp.tool` is a normal MCP tool. Most are
+**public** — registered as `{server}__{tool}` proxy tools and exposed to the
+LLM. A tool is **internal** when its name is prefixed `__` (double
+underscore): it is *not* exposed to the LLM, and is called programmatically by
+the main process (agent service / TUI) via `client.call_tool("__…")`. The
+`__` marker is the plugin-spec convention — a single shared predicate,
+`is_internal_tool()` (`slife/server_utils.py`), filters these out on both
+registration paths, so an internal tool never leaks into the schema. This is
+distinct from the harness concept (single `_`, e.g. the native `_sys_note`),
+which is LLM-visible-but-reserved and auto-invoked by the loop — see [Harness
+vs Internal Tools](#harness-vs-internal-tools--a-naming-distinction).
+
 No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. memfiles' ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal. In practice uvicorn finishes mounting the Streamable HTTP endpoint ~1 s *after* the lifespan signals, so a session established in that window can get a bad SSE transport on Windows/Proactor that hangs `tools/list`; the harness runs that call through `asyncio.timeout` (which, unlike `asyncio.wait_for`, breaks the hang reliably) and, on a timeout, reconnects a fresh session and retries once — by then the plugin is serving, so the race self-heals instead of failing the load.
 
 The MCP client keeps bounded retry (6 attempts, 0.5 s apart, each attempt time-boxed at 10 s including transport setup) as **defense-in-depth**: a plugin that signals early (violating the contract) still loads instead of hanging.
@@ -325,8 +358,8 @@ Processes communicate through environment variables:
 | **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config. |
 | **slife-memdb** | Streamable HTTP | Diary database. Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
-| **slife-memfiles** | Streamable HTTP + `/share` route | Notes/diary/files cabinet + public sharing. MCP tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `search`, `read`, `expose_file`, `embedding_check`), harness tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel, the in-process token registry, and a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. |
-| **slife-a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools; only the drain/dispatch harness tools (`__a2a_*`) stay `__`-prefixed. |
+| **slife-memfiles** | Streamable HTTP + `/share` route | Notes/diary/files cabinet + public sharing. MCP tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `search`, `read`, `expose_file`, `embedding_check`), internal tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel, the in-process token registry, and a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. |
+| **slife-a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools; only the drain/dispatch internal tools (`__a2a_*`) stay `__`-prefixed. |
 | **slife-media** | Streamable HTTP | Non-chat AI generation (image, video, TTS, ASR) from any provider. Owns the `media:` config section (plugin-read, ignored by the main `Config` parser) and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` (namespaced `media__*`). Long renders use the harness's universal `_async: true` + `check_async`. Artifacts are saved to the working directory (or a `folder` passed to the tool) — work products, never memfiles cabinet files. |
 
 ### slife-mcp — External MCP Gateway
@@ -341,9 +374,9 @@ Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` 
 
 For `url`-configured servers the gateway probes with `GET + Accept: text/event-stream`: a `text/event-stream` reply switches to **SSE** mode (the `endpoint` event yields the POST message URL); otherwise the same client falls through to **Streamable HTTP**. A Streamable response may be a single JSON body or an SSE stream — both are parsed (the first matching JSON-RPC message; later events are server-initiated notifications and are dropped).
 
-Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`). Live status is reported by `check_mcp` via the harness `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is a harness tool — LLM-invisible, invoked only by the `server__tool` proxies.
+Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`). Live status is reported by `check_mcp` via the internal `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is an internal tool — LLM-invisible, invoked only by the `server__tool` proxies.
 
-`mcp_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp` (a standalone tool, also run by `system_health`) calls the harness `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
+`mcp_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp` (a standalone tool, also run by `system_health`) calls the internal `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
 
 Server lifecycle:
 
@@ -385,7 +418,7 @@ Every turn permanently recorded as an independent row — no session concept, a 
 
 Supporting structures: `diary_fts` (FTS5 content-sync table over message/summary/tags/channel with insert/update/delete triggers — the update trigger keeps `memory_turn_summarize`'s summary/tags visible to keyword search), `diary_semantic` (sqlite-vec `vec0` table: embedding + rowid + chunk index + summary/tags/created_at), and `diary_meta` (key-value store tracking the embedding model identity for migration detection).
 
-Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the harness-only `__memory_save_turn` tool. The save-side invariant is enforced by the harness: a turn with an orphaned `tool_call` is repaired (`_ensure_turn_consistent`) before it reaches the plugin, so the diary never persists an incomplete pair.
+Turns are saved **unconditionally** after every turn (cancel, error, or max-iterations) via the internal `__memory_save_turn` tool. The save-side invariant is enforced by the harness: a turn with an orphaned `tool_call` is repaired (`_ensure_turn_consistent`) before it reaches the plugin, so the diary never persists an incomplete pair.
 
 `completed_at` is written for every new turn; databases that predate the column are migrated **once** by `scripts/migrate_memdb_completed_at.py` — a standalone script that adds the column, backfills `completed_at = created_at`, and pulls `created_at` earlier by a random 0–5 minutes to approximate the user-input moment. Deliberately **no** in-plugin ALTER migration: fresh databases get the column from `schema.sql`, existing ones are migrated by the script (run it once per DB, then restart). The `images` column (user image attachments) follows the same pattern — `scripts/migrate_memdb_images.py` adds it to pre-existing databases; fresh databases get it from `schema.sql`. The `prompt_tokens` column (context size at the last call) likewise — `scripts/migrate_memdb_prompt_tokens.py` adds it to pre-existing databases (legacy rows keep `0`, restore falls back to the token estimate). Databases whose `diary_semantic` holds summary-only vectors (written by the pre-fix `memory_summarize` — now `memory_turn_summarize` — which re-embedded a turn from its summary and dropped the full text) are fixed **once** by `scripts/migrate_memdb_embeddings.py` — it clears the semantic index, and the drainer rebuilds every turn's full-text vectors on the next restart.
 
@@ -673,7 +706,7 @@ Health checks fall into two categories. `system_health` runs all of them togethe
 | `check_wechat` | Login status, session age, QR expiry | Application state (wechat plugin) |
 | `check_memfiles` | File-sharing tunnel online? ngrok URL? | Application state (memfiles plugin) |
 | `check_mcp` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, hints) | Application state (MCP wrapper + external servers) |
-| `check_a2a` | A2A mesh connection + peer status (via the a2a plugin's `__a2a_status` harness tool) | Application state (a2a plugin) |
+| `check_a2a` | A2A mesh connection + peer status (via the a2a plugin's `__a2a_status` internal tool) | Application state (a2a plugin) |
 | `check_watchdog` | Auto-restart status per plugin, deduplicated from health records (latest record per plugin) | Process layer |
 
 The watchdog only monitors processes — it does not introspect application state. Each plugin owns its own runtime health check. Missing deps are recorded as warnings — Slife still starts; affected MCP servers won't work.
@@ -706,8 +739,8 @@ Three sinks, two audiences:
   surfaced explicitly via `_show_system_message` / callbacks — never by leaking
   `logger.warning` to the terminal.  The plugin never talks to the TUI: the
   harness owns surfacing.  E.g. the memfiles ngrok tunnel is eager-started on a
-  background task inside the plugin process; after the plugin loads, the harness
-  probes `__tunnel_status` (state `active`/`starting`/`failed`) until the
+  background task inside the plugin process; after the plugin loads, the main
+  process probes the internal `__tunnel_status` (state `active`/`starting`/`failed`) until the
   attempt settles, and surfaces a one-time "tunnel unavailable" warning via
   `_show_system_message` only on a terminal `failed` state.
 

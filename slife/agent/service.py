@@ -33,6 +33,7 @@ from slife.agent.plugins import PluginLifecycle, PluginStartStatus
 from slife.a2a.identity import HUMAN
 from slife.tools.factory import create_tools_from_config
 from slife.mcp.tool_adapter import create_proxy_tools
+from slife.server_utils import is_internal_tool
 
 logger = logging.getLogger(__name__)
 
@@ -605,17 +606,15 @@ class AgentService:
                          name, len(plugin_tools),
                          [t["name"] for t in plugin_tools])
 
-            # Register as proxy tools — filter out harness-only tools.
-            # Canonical marker: a plugin tool named ``__*`` (double underscore) is
-            # harness-internal — called programmatically via call_tool(), never
-            # exposed to the LLM.  (Single ``_`` = harness but LLM-visible, e.g.
-            # the native `_sys_note`.)  The "harness-only" description
-            # is kept as a secondary safety check.
+            # Register as proxy tools — filter out plugin internal tools.
+            # Canonical marker: a plugin tool named ``__*`` (double underscore)
+            # is internal — called programmatically via call_tool(), never
+            # exposed to the LLM.  (Single ``_`` = harness but LLM-visible,
+            # e.g. the native `_sys_note`.)
             tagged = [
                 {**t, "server": name}
                 for t in plugin_tools
-                if not t.get("name", "").startswith("__")
-                and "harness-only" not in t.get("description", "").lower()
+                if not is_internal_tool(t.get("name", ""))
             ]
             if len(tagged) < len(plugin_tools):
                 logger.debug(
@@ -826,12 +825,12 @@ class AgentService:
         """Discover and register a connected plugin's tools as proxy tools.
 
         Tags each tool with the plugin's ``server`` name (the ``server__tool``
-        prefix), filters out harness-only tools (names starting with ``__``),
+        prefix), filters out internal tools (names starting with ``__``),
         creates proxy tools, and registers them.
 
         Args:
             name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``,
-                ``"a2a"`` — harness-only tools are ``_``-prefixed and filtered;
+                ``"a2a"`` — internal tools are ``__``-prefixed and filtered;
                 the ``a2a_*`` mesh tools register as proxy tools).
             **kwargs: Forwarded to :func:`create_proxy_tools` (e.g.
                 ``on_server_added``, ``on_server_removed``).
@@ -844,12 +843,12 @@ class AgentService:
             [t["name"] for t in tools],
         )
 
-        # Harness-only: ``__`` (double-underscore) plugin tools are internal
-        # and filtered out for all agents.
+        # Internal: ``__`` (double-underscore) plugin tools are not exposed
+        # to the LLM — filtered out for all agents.
         tagged = [
             {**t, "server": name}
             for t in tools
-            if not t["name"].startswith("__")
+            if not is_internal_tool(t["name"])
         ]
 
         proxy_tools = create_proxy_tools(self._plugins[name].client, tagged, **kwargs)
@@ -1478,8 +1477,8 @@ class AgentService:
 
         Delegates to ``PluginLifecycle.spawn()`` for the actual work.
 
-        *harness_tools* is **deprecated** — harness-only tools are now
-        identified by the ``_`` prefix naming convention.
+        *harness_tools* is **deprecated** — internal tools are now
+        identified by the ``__`` prefix naming convention.
         """
         await self._plugins[name].spawn(module, harness_tools)
 
@@ -1588,9 +1587,9 @@ class AgentService:
     async def _wechat_poll_loop(self, interval: float = 5.0) -> None:
         """Poll the wechat plugin for new messages and inject them into the inbox.
 
-        Uses harness-only tools (wechat_drain_incoming, wechat_dispatch_reply)
+        Uses internal tools (wechat_drain_incoming, wechat_dispatch_reply)
         so all wechat-specific logic — typing indicators, message format —
-        stays inside the plugin process.  The harness only sees generic
+        stays inside the plugin process.  The main process only sees generic
         messages with an on_reply callback.
         """
         import json as _json
