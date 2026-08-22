@@ -85,12 +85,11 @@ _slife_install_node_rootless() {
     _major=22
     if command -v ldd &>/dev/null; then
         _glibc="$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
-        # Node 22 needs glibc ≥ 2.28; older distros get Node 18 — the last
-        # LTS whose prebuilt binaries run on glibc 2.17 (CentOS/RHEL 7).
-        # Node 20's binaries also require glibc ≥ 2.28, so 18 is the safe
-        # pick below 2.28.
+        # Node 22 needs glibc ≥ 2.27; Node 20 ≥ 2.17; older → Node 18.
         case "$_glibc" in
-            2.2[8-9]|2.[3-9][0-9]|3.*) _major=22 ;;
+            2.2[7-9]|2.[3-9][0-9]|3.*) _major=22 ;;
+            2.1[7-9]|2.2[0-6])         _major=20 ;;
+            2.1[4-6]|2.[0-9]|2.1[0-3]) _major=18 ;;
             *)                        _major=18 ;;
         esac
         echo -e "  ${GRAY}(glibc $_glibc → Node $_major LTS)${NC}"
