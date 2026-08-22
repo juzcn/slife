@@ -32,8 +32,9 @@ The model input should read uniformly, so text that Slife authors is English:
 │  Native · MemDB · MCP Proxy · Skills · CLI · REST API · A2A          │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins (independent child processes, Streamable HTTP)              │
-│  slife-mcp (gateway) · slife-memdb (diary) · slife-wechat            │
-│  slife-a2a (A2A over MQTT) · slife-memfiles (notes/diary/files + /share)                          │
+│  slife-mcp (gateway) · slife-memdb (diary) · slife-wechat ·          │
+│  slife-a2a (A2A over MQTT) · slife-memfiles (notes/diary/files       │
+│  + /share) · slife-media (image/video/TTS/ASR generation)            │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
@@ -204,7 +205,7 @@ Model switches fire callbacks that rebuild the LLM client, update loop parameter
 
 `execute_shell` runs commands in the **detected shell** — `detect_current_shell()`: PowerShell / cmd on native Windows, `$SHELL` on POSIX incl. WSL — the **same value the system prompt reports**, so the LLM's shell syntax actually executes (previously it ran `COMSPEC`=cmd.exe regardless). Output is decoded with the system code page (GBK/cp936 on zh-CN Windows); `run_python_script` forces the child Python to UTF-8 via `-X utf8`.
 
-Categories in use (14): `System`, `Execution`, `Skills`, `CLI`, `REST API`, `A2A`, `Subagent`, `Config`, `Models`, `Credentials`, `Vision`, `Display`, `Harness`, `Meta`. The docstring in `base.py` lists only a subset — treat it as illustrative, not enforced.
+Categories in use: 13 native categories (`System`, `Execution`, `Skills`, `CLI`, `REST API`, `Subagent`, `Config`, `Models`, `Credentials`, `Vision`, `Display`, `Harness`, `Meta`) plus the plugin-hosted `A2A` category — the `a2a_*` tools live in the a2a plugin, not in `slife/tools/`. The docstring in `base.py` lists only a subset — treat it as illustrative, not enforced.
 
 ### Schema Authoring
 
@@ -219,7 +220,7 @@ The schema is the model's only view of a tool — write it for the model, not th
 
 `slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, skips vision tools when the active model can't see images, and skips `_skip_auto_register` classes (e.g. `MCPProxyTool`, created per-instance at runtime).
 
-### Tool Categories — native tools (up to 50 LLM-visible + 1 harness `_` tool)
+### Tool Categories — native tools (50 total: 49 LLM-visible + 1 harness `_` tool)
 
 `include_image` is dropped when the active model has no vision; `install_python_package` is disabled by default in the shipped config.
 
@@ -677,11 +678,12 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 | `env` | `${VAR}` references, applied to the environment at startup |
 | `models.providers` | Provider configs (api_key, base_url, api, models[]) |
 | `active_model` | Currently active model ref (`provider/model`) |
-| `agent` | `max_iterations`, `tool_timeout`, `context_floor`, `context_ceiling`, `tool_result_ceiling` |
+| `agent` | `max_iterations`, `tool_timeout`, `context_floor`, `context_ceiling`, `tool_result_ceiling`, `heartbeat_interval` |
 | `tools` | Per-tool overrides (timeout, enabled) |
 | `mcp.servers` | External MCP server configs |
 | `memdb.embedding` | Embedding backend config (backend, model, dim, gguf_path) |
 | `wechat` | `enabled` toggle |
+| `media` | Non-chat generation config (defaults, providers → api adapter + models) — plugin-read, ignored by the main `Config` parser |
 | `a2a` | A2A config (transport binding, broker host/port, heartbeat, task_timeout) |
 | `subagent` | `max_subagents`, `task_timeout` |
 | `cli_tools` | External CLI tool definitions (read by the CLI tools directly) |
@@ -782,7 +784,7 @@ slife/
     inbox.py           #   Unified message queue + ConversationStore
     plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle)
     multimodal.py      #   Image encoding for vision models
-  tools/               # Native tools (auto-discovered, 52)
+  tools/               # Native tools (auto-discovered, 50: 49 LLM-visible + _sys_note)
     base.py            #   Tool ABC + make_params/NO_PARAMS/require_params
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
@@ -806,6 +808,7 @@ slife/
     wechat/            #   WeChat messaging (iLink ClawBot client)
     memfiles/          #   Notes/diary/files cabinet + sharing (server.py tools, store.py + schema.sql, tunnel.py = ngrok)
     a2a/               #   A2A mesh (a2a_* tools + A2AClient, MQTT binding)
+    media/             #   Non-chat AI generation (server.py, config.py, adapters/ for dashscope-aigc + openai-images)
   mcp/                 # MCP client infra
     client.py          #   Streamable HTTP client
     tool_adapter.py    #   MCPProxyTool (bridges MCP → Tool ABC, ProxyRoute dispatch)

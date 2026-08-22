@@ -1,6 +1,6 @@
 # Slife
 
-**Terminal-based AI agent** — a function-calling loop with minimum harness. Chat with an LLM that calls tools, remembers every turn, and orchestrates other agents.
+**Terminal-based AI agent** — a function-calling loop with minimum harness. Chat with an LLM that calls tools, remembers every turn forever, and orchestrates other agents.
 
 ```
 You: "Find all TODO comments and create GitHub issues"
@@ -9,7 +9,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: up to 50 native tools in 14 categories (plus 1 harness tool, `_sys_note`), six built-in plugin services, always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: 50 native tools across 13 categories (plus a reserved harness tool, `_sys_note`), six built-in plugin services, always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -63,8 +63,7 @@ User data (`~/.slife/`, `~/.credstore/`) is **not removed** — delete manually 
 
 ### Related tools
 
-The repo also ships two standalone PyPI packages — install each
-independently (neither pulls the others in):
+The repo also ships two standalone PyPI packages — install each independently (neither pulls the others in):
 
 | Package | One-click install | Purpose |
 |---------|-------------------|---------|
@@ -72,14 +71,9 @@ independently (neither pulls the others in):
 | `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh \| bash` | Cross-platform credential storage |
 | `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | Generate `~/.claude/settings.json` |
 
-Installing slife depends on [credstore](credstore/README.md) only —
-it does **not** install cc-switch.  See the
-[cc-switch](cc-switch/README.md) and
-[credstore](credstore/README.md) READMEs for details.
+Installing slife depends on [credstore](credstore/README.md) only — it does **not** install cc-switch. See the [cc-switch](cc-switch/README.md) and [credstore](credstore/README.md) READMEs for details.
 
-All three packages also support a plain `uv tool install <name>` from PyPI.
-Each has its own one-click installer (macOS / Linux / WSL: `install.sh`,
-Windows: `install.ps1`) and uninstaller, kept in its package directory.
+All three packages also support a plain `uv tool install <name>` from PyPI. Each has its own one-click installer (macOS / Linux / WSL: `install.sh`, Windows: `install.ps1`) and uninstaller, kept in its package directory.
 
 ## Quick Start
 
@@ -122,7 +116,7 @@ models: {
 active_model: "deepseek/deepseek-v4-pro",
 ```
 
-`${VAR:-default}` fallback syntax is supported. Secrets can also be referenced as `keyring:service/key` URIs.
+`${VAR:-default}` fallback syntax is supported (resolution order: shell env → credstore → literal default). Secrets can also be referenced as `keyring:service/key` URIs.
 
 **Three first-class API backends:**
 
@@ -169,7 +163,7 @@ Switch at runtime: `model_list` → `model_switch(ref="bailian/qwen3.8-max")`.
 
 All unified as OpenAI function definitions. The LLM sees no difference between native, plugin, and external MCP tools.
 
-**52 native tools in 14 categories** — auto-discovered from `slife/tools/` (up to 50 LLM-visible + 1 harness `_sys_note`; `include_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
+**50 native tools in 13 categories** — auto-discovered from `slife/tools/` (49 LLM-visible + 1 harness `_sys_note`; `include_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
 
 | Category | Tools |
 |----------|-------|
@@ -178,7 +172,6 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
-| A2A | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch` |
@@ -188,9 +181,11 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Harness | `_sys_note` (context status) — auto-invoked, not for LLM use |
 | Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
+The A2A mesh tools (`a2a_*`, 8 of them) and all plugin tools are hosted in plugins, not the native tool set — see below.
+
 Every tool additionally accepts three harness meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt in the chat — Y approve / N deny / Esc deny).
 
-**Harness tools** come in two tiers. `_`-prefixed native tools (`_sys_note`) are **LLM-visible but reserved**: the agent loop auto-invokes the note each turn to report context status (usage %, time range); it is schema-declared (so the Anthropic / OpenAI-Responses backends accept its call pair) but the system prompt forbids the LLM from calling it. Context **trimming no longer happens through a tool** — it runs internally after each turn is persisted, marking the cut with a runtime-only `[TrimContext: N]` note on the last assistant message (see [Memory — Always On](#memory--always-on)). `__`-prefixed plugin tools (`__memory_save_turn`, `__mcp_call_tool`, …) are **LLM-invisible** — filtered out of the schema entirely and called programmatically via `client.call_tool()`.
+**Harness tools come in two tiers.** `_`-prefixed native tools (`_sys_note`) are **LLM-visible but reserved**: the agent loop auto-invokes the note each turn to report context status (usage %, time range); it is schema-declared (so the Anthropic / OpenAI-Responses backends accept its call pair) but the system prompt forbids the LLM from calling it. Context **trimming no longer happens through a tool** — it runs internally after each turn is persisted, marking the cut with a runtime-only `[TrimContext: N]` note on the last assistant message (see [Memory — Always On](#memory--always-on)). `__`-prefixed plugin tools (`__memory_save_turn`, `__mcp_call_tool`, …) are **LLM-invisible** — filtered out of the schema entirely and called programmatically via `client.call_tool()`.
 
 **Five managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts. `model_set` upserts **merge** into the existing entry (a partial update preserves `reasoning` / `input` / `compat`), and accepts a `compat` dict for per-model provider overrides.
 
@@ -202,6 +197,8 @@ Every tool additionally accepts three harness meta-parameters: `_timeout` (per-c
 | `memdb` | `memdb__memory_list_turns`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_turn_summarize`, `memdb__memory_count`, `memdb__memory_token_usage`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `memfiles__note_save`, `memfiles__diary_write`, `memfiles__file_save`, `memfiles__url_save`, `memfiles__note_list`, `memfiles__diary_list`, `memfiles__note_read`, `memfiles__diary_read`, `memfiles__list_files`, `memfiles__search`, `memfiles__read`, `memfiles__embedding_check`, `memfiles__expose_file` |
+| `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
+| `media` | `media__generate_image`, `media__generate_video`, `media__text_to_speech`, `media__transcribe_audio` |
 
 Built-in plugin tools that already carry their server as a name prefix (`mcp_set`, `wechat_login`) are registered as-is; the rest are namespaced `{server}__{tool}`. External MCP servers configured in `slife.json5` → `mcp.servers` always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
 
@@ -228,7 +225,7 @@ User messages carry a compact **`[Turn: N · start → end]`** footnote (the mem
 
 ### Autonomous Heartbeat
 
-While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_interval` seconds, default 60) to think or act on its own. It runs as a normal turn (own conversation, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.`. A bare `.` reply is **silence** — never rendered in the chat or session restore, from any event (heartbeat, A2A async-completion notification, etc.); the `[Heartbeat]` trigger is filtered, and a real autonomous reply renders as `⚡ 自主`. A precondition for emergent self-initiated behavior.
+While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_interval` seconds; the code default is 60, the shipped template sets 600) to think or act on its own. It runs as a normal turn (own conversation, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.`. A bare `.` reply is **silence** — never rendered in the chat or session restore, from any event (heartbeat, A2A async-completion notification, etc.); the `[Heartbeat]` trigger is filtered, and a real autonomous reply renders as `⚡ 自主`. A precondition for emergent self-initiated behavior.
 
 ### Image & Vision
 
@@ -251,7 +248,7 @@ Six built-in plugins as independent child processes:
 | **slife-wechat** | Bidirectional WeChat messaging |
 | **slife-memfiles** | Notes / diary / files cabinet + public sharing (Streamable HTTP, `/share` route on the same port; ngrok tunnel owned by the plugin). Notes & diary dual-written to markdown + a SQLite hybrid index |
 | **slife-a2a** | A2A mesh channel over MQTT (only starts when the broker is reachable) |
-| **slife-media** | Non-chat AI generation (image, video, TTS, ASR) from any provider — owns the `media:` config section and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` (`media__*`) |
+| **slife-media** | Non-chat AI generation (image, video, TTS, ASR) from any provider — owns the `media:` config section and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` (namespaced `media__*`) |
 
 External MCP servers configured in `slife.json5` → `mcp.servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled).
 
@@ -261,7 +258,7 @@ All plugins — built-in and auto-discovered third-party alike — run with a **
 
 The A2A protocol (JSON-RPC operations and Message/Task/AgentCard data shapes mirroring the official a2a-python reference interface) runs over a pluggable transport **binding** — currently MQTT. The **`a2a` plugin** hosts the LLM-visible tools and the `A2AClient`, and only starts when the broker is reachable:
 - **Mesh tools** (one uniform `a2a_` prefix): `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast`.
-- **Local workers** are NOT A2A: `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task`. A worker runs one task at a time; a sync send to a busy worker is auto-queued as async (task_id returned) and reported.
+- **Local workers are NOT A2A**: `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task`. A worker runs one task at a time; a sync send to a busy worker is auto-queued as async (task_id returned) and reported.
 
 A2A's only implemented transport binding is MQTT — setting `transport` to any other value disables A2A with a warning instead of crashing startup. All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
 
@@ -275,12 +272,15 @@ A2A's only implemented transport binding is MQTT — setting `transport` to any 
 | `Home` / `End` | Scroll to top / bottom |
 | `Ctrl+Y` | Copy result (on a tool call) |
 | `Enter` / `Space` | Toggle thinking block (on an assistant message) |
+| `↑` / `↓` | Input history navigation |
+| `Shift+Enter` | Insert newline in input |
 
 ## CLI
 
 | Flag | Description |
 |------|-------------|
 | `--agent <id>` | Agent identity — separate diary database + A2A mesh name (default: `slife`) |
+| `<config-path>` | Positional — use a specific config file (its parent dir becomes the data dir) |
 
 ## Optional Extras
 
@@ -314,7 +314,7 @@ uv run pytest
 uv run pytest --cov --cov-report=term-missing
 ```
 
-Dev mode auto-detects when you run from the source tree: data files stay in the project directory. Production installs (uv tool / pipx / pip) always use `~/.slife/` — even when launched from inside a checkout or from the home directory. CI runs the test suite on Ubuntu, macOS, and Windows with Python 3.13.
+Dev mode auto-detects when you run from the source tree: data files stay in the project directory. Production installs (uv tool / pipx / pip) always use `~/.slife/` — even when launched from inside a checkout or from the home directory. CI runs the test suite on Ubuntu, macOS, and Windows with Python 3.13 (tests run against the built wheels).
 
 ## Architecture
 
