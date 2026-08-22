@@ -40,7 +40,7 @@ Path overridable via `CREDSTORE_FILE` env var or `credstore.json5`.
 | `delete KEY` | master | Remove from both stores |
 | `copy SOURCE DEST` | master | Idempotent copy (keyring + cryptfile). Re-injects dest to env if previously injected |
 | `list` | master¹ | Triple-read: keyring + cryptfile + env. Shows sync status per key |
-| `inject KEY… [--shell]` | — | Persist to system env: registry (Win) or shell profile (Unix) |
+| `inject KEY… [--shell]` | master¹ | Persist to system env: registry (Win) or shell profile (Unix). Reads keyring; in cryptfile-only mode reads the backup (prompts master pw) |
 | `uninject KEY… [--shell]` | — | Remove from system env |
 | `reset-keyring` | master | Restore all from cryptfile → keyring (disaster recovery) |
 | `reset-backup` | master | Sync keyring → cryptfile |
@@ -60,6 +60,8 @@ Path overridable via `CREDSTORE_FILE` env var or `credstore.json5`.
 - Values differ → error, tells you which tool to run
 
 **Cryptfile-only mode** (no system keyring available — e.g. Linux where keyctl is blocked by policy): the AES cryptfile is the sole store. `set`/`copy` write there with a notice, `status` reports "cryptfile-only mode", and `get -p` returns the cryptfile value directly (no dual-query mismatch possible).
+
+> ⚠️ **CLI-only.** The Python API (`get_credential`, `exists_credential`, `resolve_uri`) reads the system keyring only and returns `None` in cryptfile-only mode — it never prompts for the master password. Consumers that rely on password-free startup resolution (like **sLife**) therefore **do not support cryptfile-only mode** — use the CLI (`credstore get KEY -p`) or, for sLife, shell environment variables (fully supported, since sLife checks `os.environ` before credstore).
 
 ### `inject` / `uninject`
 

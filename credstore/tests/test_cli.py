@@ -545,6 +545,20 @@ class TestCliInject:
         out = capsys.readouterr().out
         assert "export KEY='val'\\''quote'" in out
 
+    def test_inject_cryptfile_only(self, capsys, mock_backend_no_keyring, in_mem_cryptfile, monkeypatch):
+        """No system keyring → inject reads from cryptfile (prompts master pw)."""
+        in_mem_cryptfile["MY_KEY"] = "sk-from-cryptfile"
+        inputs = iter(["master-pw"])
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": next(inputs))
+        assert main(["inject", "MY_KEY", "--shell", "bash"]) == 0
+        out = capsys.readouterr().out
+        assert "export MY_KEY='sk-from-cryptfile'" in out
+
+    def test_inject_cryptfile_only_not_found(self, capsys, mock_backend_no_keyring, monkeypatch):
+        """No system keyring, key not in cryptfile → error."""
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
+        assert main(["inject", "NONEXISTENT", "--shell", "bash"]) == 1
+
 @pytest.mark.usefixtures("_tty")
 class TestCliUninject:
     """Tests for 'credstore uninject' — remove from system environment."""

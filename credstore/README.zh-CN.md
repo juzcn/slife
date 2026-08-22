@@ -41,7 +41,7 @@ credstore set-password    # 创建 ~/.credstore/credentials.crypt
 | `delete KEY` | 主密码 | 从两个存储中删除 |
 | `copy SOURCE DEST` | 主密码 | 幂等复制（密钥链 + cryptfile）。若目标已注入环境变量则自动重新注入 |
 | `list` | 主密码¹ | 三重读取：密钥链 + cryptfile + 环境变量。显示每个 key 的同步状态 |
-| `inject KEY… [--shell]` | — | 持久化到系统环境：注册表（Win）或 shell 配置文件（Unix） |
+| `inject KEY… [--shell]` | 主密码¹ | 持久化到系统环境：注册表（Win）或 shell 配置文件（Unix）。读密钥链；cryptfile-only 模式下读加密备份（询问主密码） |
 | `uninject KEY… [--shell]` | — | 从系统环境中移除 |
 | `reset-keyring` | 主密码 | 从 cryptfile 恢复全部 → 密钥链（灾难恢复） |
 | `reset-backup` | 主密码 | 同步密钥链 → cryptfile |
@@ -60,7 +60,9 @@ credstore set-password    # 创建 ~/.credstore/credentials.crypt
 - 一个存储缺失 → 报错并给出恢复指令
 - 值不一致 → 报错，告知应执行哪个命令
 
-**仅加密文件模式**（无系统密钥链可用——例如 Linux 上 keyctl 被安全策略屏蔽）：AES cryptfile 是唯一存储。`set`/`copy` 写入并给出提示，`status` 显示 "cryptfile-only mode"，`get -p` 直接返回 cryptfile 的值（不存在双查询不一致）。
+**仅加密文件模式**（无系统密钥链可用——例如 Linux 上 keyctl 被安全策略屏蔽）：AES cryptfile 是唯一存储。`set`/`copy` 写入并给出提示，`status` 显示 "cryptfile-only mode"，`get -p` 直接返回 cryptfile 的值（不存在双查询不一致），`inject` 会询问主密码并从备份读取后注入环境。
+
+> ⚠️ **仅 CLI。** Python API（`get_credential`、`exists_credential`、`resolve_uri`）在 cryptfile-only 模式下只读系统密钥链并返回 `None`，从不弹窗。依赖免密码启动解析的消费方（如 **sLife**）因此**不支持 cryptfile-only 模式**——请使用 CLI（`credstore get KEY -p`），或对 sLife 使用 shell 环境变量（完全兼容，sLife 先查 `os.environ` 再查 credstore）。
 
 ### `inject` / `uninject`
 

@@ -116,6 +116,22 @@ active_model: "deepseek/deepseek-v4-pro",
 
 支持 `${VAR:-default}` 回退语法。密钥也可用 `keyring:service/key` URI 形式引用。
 
+**sLife 不支持 credstore 的 cryptfile 模式，但与环境变量设置完全兼容。** sLife 的凭据解析无需密码、绝不弹窗——它通过 credstore 读 OS 密钥链，再回退到 `os.environ`。当 credstore 进入 cryptfile-only（无 OS 密钥链，例如 HPC 登录节点上内核 keyring 被 seccomp/策略屏蔽）时，sLife 不读加密备份；有三种用法：
+
+1. **仅环境变量（独立于 credstore）：** 在 shell 中导出密钥即可
+   ```bash
+   export DEEPSEEK_API_KEY="sk-…"
+   ```
+   sLife 解析 `${VAR}` 时先查 `os.environ`（在 credstore 之前），导出的密钥正常工作。
+2. **继续用 credstore cryptfile 模式管理，再注入到环境变量：** 照常存储（`credstore set-password`、`credstore set KEY`），然后注入到环境让 sLife 可见：
+   ```bash
+   credstore inject DEEPSEEK_API_KEY BAILIAN_API_KEY   # cryptfile-only 模式下会询问主密码
+   # 重启 shell，或：eval "$(credstore inject DEEPSEEK_API_KEY)"
+   ```
+3. **明文写在配置文件里（容忍，但不建议）：** sLife 接受 `slife.json5` 中字面量 `api_key`。能用，但密钥明文落盘（`~/.slife/slife.json5`，chmod 0600）——优先用方法 1 或 2。
+
+`credstore` 本身在 cryptfile-only 模式下功能完整（`set-password`、`set`、`get -p`、`inject`、`status`——见 [credstore/README.md](credstore/README.md)）。
+
 **三种一等公民 API 后端：**
 
 | `api` 字段 | 后端 | 供应商 |

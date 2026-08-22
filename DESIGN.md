@@ -656,6 +656,14 @@ Backend selection is **deterministic by platform** — `_init_system()` dispatch
 
 Anything else raises a clear "unsupported platform" error. On a supported platform whose backend is unavailable (e.g. Linux where keyctl is blocked by policy), `_init_system()` returns `None` instead of raising — credstore keeps working in **cryptfile-only** mode (`set` stores in the AES backup with a notice; `set-password`, `status`, `get -p`, `delete` all function). `credstore set` dual-writes: cryptfile first, then the system keyring (rolled back if the keyring write fails). The CLI also provides `set-password`, `status`, `get`, `delete`, `copy`, `list`, `reset-keyring`, `reset-backup`, `inject`/`uninject` (shell-aware export: bash / powershell / cmd; Windows persistence via `HKCU\Environment`).
 
+**sLife does not support credstore's cryptfile mode, but is fully compatible with environment-variable setup.** The sLife Python API (config `_try_credstore_lookup`, `credential_check`/`credential_inject`, OAuth, memfiles tunnel) calls credstore's password-free `get_credential`/`exists_credential`/`resolve_uri`, which read the system keyring only and return `None` (never prompting) when it's absent. So on a keyring-less box (cryptfile-only), sLife's `${VAR}`/`keyring:` secret resolution is inert — it silently falls through to env vars or defaults. This is by design: the master password lives in the CLI (`credstore set-password` / `get -p`), not in sLife. Three supported usage methods:
+
+1. **Env-var only** — export secrets in the shell; `os.environ` is checked before credstore in `_resolve_secret`, so env-based credentials are fully supported.
+2. **Cryptfile + inject** — keep managing secrets in credstore cryptfile mode, then `credstore inject KEY…` pushes them into the environment (in cryptfile-only mode `inject` prompts once for the master password and reads from the encrypted backup). sLife then resolves them from `os.environ`.
+3. **Plaintext in config** — a literal `api_key` in `slife.json5` works (tolerated), but the secret sits on disk; not recommended.
+
+(A pre-0.9.7 credstore *would* prompt, because auto-discovery made the cryptfile the active system keyring — the deterministic dispatch in 0.9.7+ removed that path.)
+
 ### Secret Sanitization
 
 **The input and output gates are the authoritative trust boundary.** A secret may appear as plaintext anywhere *inside* the process (tool internals, `conn.error`, log lines) — that is **not** a vulnerability by itself. Judge any finding by two questions:

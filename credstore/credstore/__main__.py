@@ -483,17 +483,34 @@ def _cmd_get(key: str, password_mode: bool = False) -> int:
 # ── inject / uninject ──────────────────────────────────────────
 
 
+@requires_tty
 def _cmd_inject(keys: list[str], shell: str) -> int:
     """Persist credentials to system environment + print export for current shell.
 
     For each KEY:
-      1. Read the secret from the system keyring.
+      1. Read the secret from the system keyring — or, in cryptfile-only
+         mode (no system keyring), from the encrypted backup (prompts once
+         for the master password).
       2. Persist: registry (Windows) or shell profile (Unix).
       3. Print the export command for immediate eval.
       4. ``del`` the secret immediately.
     """
     for key in keys:
         value = store_mod.get_credential(key)
+        if value is None and backend_mod.get_system_keyring() is None:
+            # Cryptfile-only mode: read from the encrypted backup.
+            master_pw = masked_input("Master password (for encrypted backup): ")
+            try:
+                value = backend_mod.read_cryptfile_entry(
+                    key, master_pw, store_mod.DEFAULT_SERVICE
+                )
+            except Exception as exc:
+                del master_pw
+                _err(
+                    f"'{key}' not found in system keyring or cryptfile: {exc}"
+                )
+                return 1
+            del master_pw
         if value is None:
             _err(
                 f"'{key}' is not stored in the keyring.\n"

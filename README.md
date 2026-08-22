@@ -133,6 +133,22 @@ active_model: "deepseek/deepseek-v4-pro",
 
 `${VAR:-default}` fallback syntax is supported (resolution order: shell env → credstore → literal default). Secrets can also be referenced as `keyring:service/key` URIs.
 
+**sLife does not support credstore's cryptfile mode, but is fully compatible with environment-variable setup.** sLife's credential resolution is password-free and never prompts — it reads the OS keyring via credstore, then falls back to `os.environ`. When credstore falls back to cryptfile-only (no OS keyring available, e.g. Linux where the kernel keyring is blocked by seccomp/policy on an HPC login node), sLife does **not** read the encrypted backup; use one of two methods:
+
+1. **Environment variables only (independent of credstore):** export the secrets in your shell:
+   ```bash
+   export DEEPSEEK_API_KEY="sk-…"
+   ```
+   sLife resolves `${VAR}` from `os.environ` (checked before credstore), so exported keys work normally.
+2. **Keep managing in credstore cryptfile mode, but inject to env:** store credentials as usual (`credstore set-password`, `credstore set KEY`), then push them into the environment so sLife sees them:
+   ```bash
+   credstore inject DEEPSEEK_API_KEY BAILIAN_API_KEY   # prompts master pw in cryptfile-only mode
+   # restart shell, or: eval "$(credstore inject DEEPSEEK_API_KEY)"
+   ```
+3. **Plaintext in the config file (tolerated, not recommended):** sLife accepts a literal `api_key` in `slife.json5`. It works, but the secret sits in plaintext on disk (`~/.slife/slife.json5`, chmod 0600) — prefer methods 1 or 2.
+
+`credstore` itself works fully in cryptfile-only mode (`set-password`, `set`, `get -p`, `inject`, `status` — see [credstore/README.md](credstore/README.md)).
+
 **Three first-class API backends:**
 
 | `api` field | Backend | Providers |
