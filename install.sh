@@ -462,6 +462,19 @@ if [ -f "$HOME/.slife/pyvenv.cfg" ]; then
     done
 fi
 
+# Mainland-China / HPC nodes: GitHub is unreachable, but `uv tool install`
+# still needs to fetch the Python 3.13 standalone build from
+# github.com/astral-sh/python-build-standalone — and it hangs with no
+# visible progress.  Same fail-open pattern as the slife tarball / bun:
+# probe GitHub once; if it's blocked, point uv at a github-release mirror
+# (NJU mirrors astral-sh/python-build-standalone; Tsinghua does not).
+# Never override a mirror the user already set.
+if [ -z "${UV_PYTHON_INSTALL_MIRROR:-}" ] && \
+   ! curl -fsSL --max-time 8 -o /dev/null https://github.com 2>/dev/null; then
+    export UV_PYTHON_INSTALL_MIRROR="https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone"
+    echo -e "  ${GRAY}GitHub unreachable — Python 3.13 downloads via NJU mirror${NC}"
+fi
+
 TOOL_INSTALL_LOG="$TMP_DIR/tool-install.log"
 set +eo pipefail
 uv tool install --from "$TMP_DIR/slife-main" --python 3.13 slife > "$TOOL_INSTALL_LOG" 2>&1
