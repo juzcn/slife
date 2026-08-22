@@ -17,6 +17,21 @@ Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
 **Zero prerequisites.** The install script auto-installs uv, Node.js, and bun if needed. On WSL, Linux-native versions are installed (Windows executables cannot receive custom env vars via WSL interop). Mosquitto (only needed for the A2A MQTT mesh) is offered interactively.
 
+### Environment requirements
+
+The install script uses the **standard installation paths** for each runtime — it does not probe or adapt your system. If your environment doesn't meet a runtime's requirements, the installer reports the incompatibility and points you to the manual route; it never silently installs an old or alternate version.
+
+| Runtime | Where it installs | Requirement |
+|---|---|---|
+| uv | `~/.local/bin` | any modern Linux/macOS/Windows; Python managed by uv (3.13) |
+| Node.js (LTS v22) | `~/.local/bin` via official tarball | **glibc ≥ 2.28 / libstdc++ ≥ 3.4.29** on Linux. Old distros (e.g. CentOS 7) **cannot run** the official binaries — the installer reports the missing `GLIBC_2.28` / `GLIBCXX_3.4.xx` symbols. |
+| bun | `~/.bun/bin` | modern Linux/macOS/Windows |
+| Mosquitto (optional) | via package manager | only needed for A2A MQTT mesh |
+
+If your Linux is older than glibc 2.28, Node's official tarball won't run. The supported route is **not** an older Node — it's a Node built for your distro (e.g. `module load nodejs` on HPC clusters, or your distro's package). Install that, then re-run this installer — it detects an existing `npx` and skips its own Node install.
+
+When a runtime is unavailable, the installer **warns and continues** — slife itself still installs; only the features needing that runtime are unavailable (e.g. the npx-based MCP servers `file-search`, `serper`, `tavily-mcp`, `github`, `amap-maps`, `filesystem`).
+
 ### macOS / Linux / WSL
 
 ```bash

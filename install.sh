@@ -59,13 +59,13 @@ echo ""
 # ~/.local — the same rootless pattern uv and bun use.
 
 # Node.js LTS: official binary tarball → ~/.local/lib/nodejs,
-# with node/npm/npx symlinked into ~/.local/bin.  The newest LTS major
-# compatible with the local glibc is chosen (Node 22 needs glibc ≥ 2.27,
-# Node 20 ≥ 2.17; Node 18 covers older distros), resolved from the
-# floating nodejs.org prefix; integrity is verified against the checksum
-# file before anything is extracted.
+# with node/npm/npx symlinked into ~/.local/bin.  Installs the current
+# Node LTS (v22.x) from the floating nodejs.org prefix; integrity is
+# verified against the checksum file before anything is extracted.
+# If the environment can't run it (e.g. old glibc), the install reports
+# the missing symbols and the user is pointed at a compatible route.
 _slife_install_node_rootless() {
-    local _v _sha _file _url _got _rel _arch _root _bin _nixarch _list _major
+    local _v _sha _file _url _got _rel _arch _root _bin _nixarch _list
     if ! command -v sha256sum &>/dev/null; then
         echo -e "  ${YELLOW}sha256sum not available — skipping tarball install.${NC}"
         return 1
@@ -80,26 +80,12 @@ _slife_install_node_rootless() {
         echo -e "  ${YELLOW}Unsupported architecture '$_arch' — install Node.js manually.${NC}"
         return 1
     fi
-    # Pick an LTS major by local glibc so node actually runs on old
-    # distros (a too-new binary dies with "GLIBC_2.xx not found").
-    _major=22
-    if command -v ldd &>/dev/null; then
-        _glibc="$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
-        # Node 22 needs glibc ≥ 2.27; Node 20 ≥ 2.17; older → Node 18.
-        case "$_glibc" in
-            2.2[7-9]|2.[3-9][0-9]|3.*) _major=22 ;;
-            2.1[7-9]|2.2[0-6])         _major=20 ;;
-            2.1[4-6]|2.[0-9]|2.1[0-3]) _major=18 ;;
-            *)                        _major=18 ;;
-        esac
-        echo -e "  ${GRAY}(glibc $_glibc → Node $_major LTS)${NC}"
-    fi
-    _v="$(curl -fsSL https://nodejs.org/dist/latest-v$_major.x/SHASUMS256.txt 2>/dev/null \
+    _v="$(curl -fsSL https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt 2>/dev/null \
             | grep "node-v[0-9.]*-linux-$_nixarch\.tar\.gz" | head -1 || true)"
     [ -n "$_v" ] || { echo -e "  ${YELLOW}Could not resolve latest Node.js LTS — skipping.${NC}"; return 1; }
     _sha="$(echo "$_v" | awk '{print $1}')"
     _file="$(echo "$_v" | awk '{print $2}')"
-    _url="https://nodejs.org/dist/latest-v$_major.x/$_file"
+    _url="https://nodejs.org/dist/latest-v22.x/$_file"
     _root="$HOME/.local/lib/nodejs"
     _bin="$HOME/.local/bin"
     echo -e "  ${GRAY}Downloading $_file…${NC}"
