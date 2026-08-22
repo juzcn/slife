@@ -49,8 +49,131 @@ echo "Python            : managed by uv (3.13)"
 echo "npx               : auto-install Node.js if needed (required for MCP servers)"
 echo "bun               : auto-install bun if needed (required for nvidia-nim MCP)"
 echo "unzip             : auto-install on Linux if missing (bun installer dependency)"
+echo "rootless fallback : official tarballs → ~/.local when no root/package manager"
 echo "Disk space needed : ~500 MB"
 echo ""
+
+# ── Rootless install helpers ────────────────────────────────────
+# On HPC login nodes there is usually no root and no package manager,
+# so sudo-based steps fail.  These install official binaries into
+# ~/.local — the same rootless pattern uv and bun use.
+
+# Node.js LTS: official binary tarball → ~/.local/lib/nodejs,
+# with node/npm/npx symlinked into ~/.local/bin.  Latest v22.x is
+# resolved from the floating nodejs.org prefix; integrity is verified
+# against the checksum file before anything is extracted.
+_slife_install_node_rootless() {
+    local _v _sha _file _url _got _rel _arch _root _bin _nixarch _list
+    if ! command -v sha256sum &>/dev/null; then
+        echo -e "  ${YELLOW}sha256sum not available — skipping tarball install.${NC}"
+        return 1
+    fi
+    _arch="$(uname -m 2>/dev/null)"
+    _nixarch=""
+    case "$_arch" in
+        x86_64|amd64) _nixarch="x64" ;;
+        aarch64|arm64) _nixarch="arm64" ;;
+    esac
+    if [ -z "$_nixarch" ]; then
+        echo -e "  ${YELLOW}Unsupported architecture '$_arch' — install Node.js manually.${NC}"
+        return 1
+    fi
+    _v="$(curl -fsSL https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt 2>/dev/null \
+            | grep "node-v[0-9.]*-linux-$_nixarch\.tar\.gz" | head -1 || true)"
+    [ -n "$_v" ] || { echo -e "  ${YELLOW}Could not resolve latest Node.js LTS — skipping.${NC}"; return 1; }
+    _sha="$(echo "$_v" | awk '{print $1}')"
+    _file="$(echo "$_v" | awk '{print $2}')"
+    _url="https://nodejs.org/dist/latest-v22.x/$_file"
+    _root="$HOME/.local/lib/nodejs"
+    _bin="$HOME/.local/bin"
+    echo -e "  ${GRAY}Downloading $_file…${NC}"
+    curl --progress-bar -fL "$_url" -o "$TMP_DIR/node.tar.gz" || return 1
+    _got="$(sha256sum "$TMP_DIR/node.tar.gz" 2>/dev/null | awk '{print $1}')"
+    if [ -z "$_got" ] || [ "$_got" != "$_sha" ]; then
+        echo -e "  ${YELLOW}SHA256 mismatch — skipping tarball install.${NC}"
+        return 1
+    fi
+    mkdir -p "$_root" "$_bin"
+    # Clean any stale partial install of the same dir name.
+    rm -rf "$_root/node-v"* 2>/dev/null || true
+    if ! tar -xzf "$TMP_DIR/node.tar.gz" -C "$_root" --strip-components=1; then
+        echo -e "  ${YELLOW}Extraction failed — skipping tarball install.${NC}"
+        return 1
+    fi
+    # Drop symlinks before re-linking so an older install can't linger.
+    _list="node npm npx"
+    for _rel in $_list; do
+        [ -e "$_bin/$_rel" ] && rm -f "$_bin/$_rel" 2>/dev/null || true
+    done
+    for _rel in $_list; do
+        ln -sf "$_root/bin/$_rel" "$_bin/$_rel" 2>/dev/null || true
+    done
+    export PATH="$_bin:$PATH"
+    [ -x "$_bin/npx" ] && [ -f "$_root/lib/node_modules/npm/bin/npm-cli.js" ]
+}
+
+# Python ≥3.8 available?  (bun's flat zip needs no `unzip`, only zipfile.)
+_slife_have_python() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null
+}
+
+# bun: official installer normally (no root needed — installs to ~/.bun).
+# If `unzip` is missing (no package manager to install it), extract the
+# same official bun-<platform>.zip with Python's zipfile instead.
+_slife_install_bun() {
+    if command -v unzip &>/dev/null; then
+        curl -fsSL https://bun.sh/install | bash
+        return $?
+    fi
+    if ! _slife_have_python; then
+        echo -e "  ${YELLOW}unzip missing and no Python ≥3.8 — falling back to official installer.${NC}"
+        curl -fsSL https://bun.sh/install | bash
+        return $?
+    fi
+    local _arch _nixarch _url _bin _exe _dir
+    _arch="$(uname -m 2>/dev/null)"
+    _nixarch=""
+    case "$_arch" in
+        x86_64|amd64) _nixarch="linux-x64" ;;
+        aarch64|arm64) _nixarch="linux-aarch64" ;;
+    esac
+    if [ -z "$_nixarch" ]; then
+        echo -e "  ${YELLOW}Unsupported architecture '$_arch' — using official installer.${NC}"
+        curl -fsSL https://bun.sh/install | bash
+        return $?
+    fi
+    _url="https://github.com/oven-sh/bun/releases/latest/download/bun-$_nixarch.zip"
+    echo -e "  ${YELLOW}No unzip — extracting bun with Python zipfile…${NC}"
+    curl --progress-bar -fL "$_url" -o "$TMP_DIR/bun.zip" || return 1
+    _bin="$HOME/.bun/bin"
+    mkdir -p "$_bin"
+    if ! python3 - "$TMP_DIR/bun.zip" "$_bin" <<'PYEOF'
+import sys, zipfile
+zp, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(zp) as z:
+    names = z.namelist()
+    tops = {n.split('/', 1)[0] for n in names}
+    # single top dir (bun-linux-x64/) → flatten onto out
+    if len(tops) == 1:
+        for n in names:
+            z.extract(n, out)
+    else:
+        z.extractall(out)
+PYEOF
+    then
+        echo -e "  ${YELLOW}bun extraction failed — skipping.${NC}"
+        return 1
+    fi
+    # flatten single top dir if present (bun-linux-x64/bun → out/bun)
+    _exe="$HOME/.bun/bin/bun"
+    if [ ! -x "$_exe" ]; then
+        _dir="$(find "$HOME/.bun/bin" -maxdepth 1 -type d -name 'bun-*' 2>/dev/null | head -1 || true)"
+        [ -n "$_dir" ] && mv "$_dir"/* "$HOME/.bun/bin/" 2>/dev/null || true
+    fi
+    chmod +x "$_exe" 2>/dev/null || true
+    [ -x "$_exe" ]
+}
 
 #
 if command -v df &>/dev/null; then
@@ -95,18 +218,31 @@ if [ "$HAVE_NPX" = false ]; then
     elif command -v pacman &>/dev/null; then
         sudo pacman -S --noconfirm nodejs npm 2>/dev/null || true
     fi
-    # Re-check after install attempt
-    if command -v npx &>/dev/null; then
-        echo -e "${GREEN}  ✓${NC} npx v$(npx --version 2>&1)"
+    # On HPC login nodes there is usually no root, so sudo steps fail
+    # (harmlessly, via `|| true`).  Try a preloaded cluster module first —
+    # modules are read-only, no root needed.
+    if command -v module &>/dev/null && module load nodejs 2>/dev/null && command -v npx &>/dev/null; then
+        echo -e "${GREEN}  ✓${NC} npx v$(npx --version 2>&1) (via module load nodejs)"
         HAVE_NPX=true
     fi
-    if [ "$HAVE_NPX" = false ]; then
+    # Rootless fallback: official Node.js binary tarball → ~/.local
+    # (exactly how uv and bun are installed — no root, no package manager).
+    if [ "$HAVE_NPX" = false ] && command -v tar &>/dev/null; then
+        echo -e "${YELLOW}  Installing Node.js LTS via official tarball → ~/.local…${NC}"
+        if _slife_install_node_rootless; then
+            HAVE_NPX=true
+        else
+            echo -e "${YELLOW}  Node.js tarball install failed — install it manually and re-run.${NC}"
+        fi
+    fi
+    if [ "$HAVE_NPX" = true ]; then
+        echo -e "${GREEN}  ✓${NC} npx v$(npx --version 2>&1)"
+    else
         echo -e "${RED}WARNING: npx not available.${NC}"
         echo -e "${RED}  These MCP servers require npx and will NOT work:${NC}"
         echo -e "${RED}    file-search, serper, tavily-mcp, github, amap-maps, filesystem${NC}"
         echo -e "${RED}  Install Node.js LTS from https://nodejs.org then re-run this installer.${NC}"
         echo -e "${YELLOW}Help: $SLIFE_REPO${NC}"
-        exit 1
     fi
 fi
 
@@ -134,8 +270,19 @@ if [ "$HAVE_BUN" = false ]; then
         elif command -v pacman &>/dev/null; then
             sudo pacman -S --noconfirm unzip 2>/dev/null || true
         fi
+        # Rootless fallback (no root / no package manager): Python's
+        # zipfile extracts the flat bun zip just as well.  No Python
+        # here is not an error — the official bun installer is still
+        # attempted below and will report its own failure if needed.
+        if ! command -v unzip &>/dev/null && ! _slife_have_python; then
+            echo -e "${YELLOW}  unzip unavailable and no Python ≥3.8 — will warn instead of fail.${NC}"
+        fi
     fi
-    curl -fsSL https://bun.sh/install | bash
+    if _slife_install_bun; then
+        echo -e "  ${GRAY}✓${NC} bun installed via official installer"
+    else
+        echo -e "  ${YELLOW}⚠ bun install failed — see messages above.${NC}"
+    fi
     export PATH="$HOME/.bun/bin:$PATH"
     # Persist bun in shell profile so it survives reboot.
     for _rc in "$HOME/.bashrc" "$HOME/.profile"; do

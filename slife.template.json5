@@ -10,17 +10,10 @@
   ],
   agent: {
     max_iterations: 30,
-    // Context-window management, as fractions of context_window.
-    //   context_floor:   _sys_trim compacts the oldest turns down to this ratio
-    //                    when context hits the ceiling.
-    //   context_ceiling: the usage ratio that triggers _sys_trim.  It is
-    //                    ALSO the restore cap: startup rebuilds the exit-time
-    //                    context (turns beyond the persisted live-context
-    //                    boundary) up to this limit — never the floor.
     context_floor: 0.2,
     context_ceiling: 0.8,
     tool_timeout: 60,
-    heartbeat_interval: 600
+    heartbeat_interval: 1200
   },
   models: {
     mode: "merge",
@@ -41,19 +34,20 @@
             max_tokens: 384000,
             temperature: 0.7,
             top_p: 1.0
-          },
-          {
-            model: "deepseek-v4-pro",
-            name: "DeepSeek V4 Pro",
-            reasoning: true,
-            input: [
-              "text"
-            ],
-            context_window: 1000000,
-            max_tokens: 384000,
-            temperature: 0.7,
-            top_p: 1.0
           }
+        ]
+      },
+      scnet: {
+        base_url: "https://api.scnet.cn/api/llm/v1",
+        api_key: "${SCNET_TOKEN_PLAN}",
+        api: "openai-completions",
+        models: [
+          { model: "DeepSeek-V4-Flash-0731", name: "DeepSeek V4 Flash", reasoning: true, input: ["text"], context_window: 1000000, max_tokens: 384000, temperature: 0.7, top_p: 1.0 },
+          { model: "DeepSeek-V4", name: "DeepSeek V4 Pro", reasoning: true, input: ["text"], context_window: 1000000, max_tokens: 384000, temperature: 0.7, top_p: 1.0 },
+          { model: "Kimi-K3", name: "Kimi K3", reasoning: true, input: ["text", "image"], context_window: 1048576, max_tokens: 131072, compat: { thinking: "omit" } },
+          { model: "Qwen3.8-Max", name: "Qwen3.8 Max", reasoning: true, input: ["text", "image"], context_window: 983616, max_tokens: 131072 },
+          { model: "MiniMax-M3", name: "MiniMax M3", reasoning: true, input: ["text", "image"], context_window: 1000000, max_tokens: 512000, compat: { thinking: "omit" } },
+          { model: "GLM-5.2", name: "GLM 5.2", reasoning: true, input: ["text"], context_window: 1048576, max_tokens: 131072 }
         ]
       },
       bailian_personal: {
@@ -148,6 +142,14 @@
             max_tokens: 393216
           }
         ]
+      },
+      local: {
+        base_url: "http://127.0.0.1:8080/v1",
+        api_key: "local",
+        api: "openai-completions",
+        models: [
+          { model: "qwen3.8-27b", name: "Qwen3.8-27B (本地)", reasoning: false, input: ["text", "image"], context_window: 262144, max_tokens: 4096, temperature: 0.7, top_p: 1.0 }
+        ]
       }
     }
   },
@@ -179,7 +181,7 @@
       }
     }
   },
-  active_model: "bailian_personal/glm-5.2",
+  active_model: "bailian_personal/qwen3.6-flash",
   mcp: {
     servers: {
       filesystem: {
