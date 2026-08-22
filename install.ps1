@@ -349,7 +349,9 @@ try {
     } catch {
         Write-Dim "  GitHub unreachable — trying gitee mirror..."
         try {
-            Invoke-WebRequest -Uri "https://gitee.com/juzcn/slife/archive/refs/heads/main.zip" -OutFile $zipFile -ErrorAction Stop
+            # gitee uses /repository/archive/{branch}.zip, NOT GitHub's
+            # /archive/refs/heads/{branch}.zip format (that 404s on gitee).
+            Invoke-WebRequest -Uri "https://gitee.com/juzcn/slife/repository/archive/main.zip" -OutFile $zipFile -ErrorAction Stop
             $downloaded = $true
         } catch {
             $downloaded = $false
@@ -363,7 +365,7 @@ try {
             curl.exe -fsSL -o $zipFile $slifeTarball
             if ($LASTEXITCODE -ne 0) {
                 Write-Dim "  GitHub unreachable — trying gitee mirror..."
-                curl.exe -fsSL -o $zipFile "https://gitee.com/juzcn/slife/archive/refs/heads/main.zip"
+                curl.exe -fsSL -o $zipFile "https://gitee.com/juzcn/slife/repository/archive/main.zip"
             }
             if ($LASTEXITCODE -ne 0) {
                 Write-Err "Error: download failed. Check your network and try again."

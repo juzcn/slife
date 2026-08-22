@@ -378,7 +378,9 @@ if curl --progress-bar -fL "$SLIFE_TARBALL" -o "$TMP_DIR/slife.tar.gz"; then
     SLIFE_DL_OK=true
 else
     echo -e "  ${YELLOW}GitHub unreachable — trying gitee mirror…${NC}"
-    if curl --progress-bar -fL "https://gitee.com/juzcn/slife/archive/refs/heads/main.tar.gz" -o "$TMP_DIR/slife.tar.gz"; then
+    # gitee uses /repository/archive/{branch}.tar.gz, NOT GitHub's
+    # /archive/refs/heads/{branch}.tar.gz format (that 404s on gitee).
+    if curl --progress-bar -fL "https://gitee.com/juzcn/slife/repository/archive/main.tar.gz" -o "$TMP_DIR/slife.tar.gz"; then
         SLIFE_DL_OK=true
     fi
 fi
