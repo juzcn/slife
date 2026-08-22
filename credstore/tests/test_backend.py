@@ -23,55 +23,113 @@ class TestGetSystemKeyring:
             kr2 = backend.get_system_keyring()
             assert kr1 == kr2 == "mock_kr"
 
-    def test_init_system_success(self):
-        import keyring
+    # ── deterministic dispatch ──────────────────────────────────────
 
+    def test_dispatch_windows(self, monkeypatch):
+        """Native Windows → WinVaultKeyring."""
+        monkeypatch.setattr(backend, "is_wsl", lambda: False)
+        monkeypatch.setattr(backend.os, "name", "nt")
+        monkeypatch.setattr(backend.sys, "platform", "win32")
         mock_kr = MagicMock()
-        with patch.object(keyring, "get_keyring", return_value=mock_kr), \
-             patch.object(keyring, "set_keyring"):
+        mock_mod = MagicMock()
+        mock_mod.WinVaultKeyring = MagicMock(return_value=mock_kr)
+        with patch.dict("sys.modules", {
+            "keyring": MagicMock(),
+            "keyring.backends.Windows": mock_mod,
+        }):
+            assert backend._init_system() is mock_kr
+
+    def test_dispatch_wsl(self, monkeypatch):
+        """WSL → WslBackend (direct instantiation, no auto-discovery)."""
+        monkeypatch.setattr(backend, "is_wsl", lambda: True)
+        mock_wsl = MagicMock()
+        mock_wsl_mod = MagicMock()
+        mock_wsl_mod.WslBackend = MagicMock(return_value=mock_wsl)
+        with patch.dict("sys.modules", {
+            "keyring": MagicMock(),
+            "credstore._wsl_backend": mock_wsl_mod,
+        }):
+            result = backend._init_system()
+            assert result is mock_wsl
+            mock_wsl.get_password.assert_called_once_with("credstore", "__probe__")
+
+    def test_dispatch_macos(self, monkeypatch):
+        """macOS with no CREDSTORE_KEYCHAIN → login keychain (no with_properties)."""
+        monkeypatch.setattr(backend, "is_wsl", lambda: False)
+        monkeypatch.setattr(backend.os, "name", "posix")
+        monkeypatch.setattr(backend.sys, "platform", "darwin")
+        monkeypatch.delenv("CREDSTORE_KEYCHAIN", raising=False)
+        mock_kr = MagicMock()
+        mock_mod = MagicMock()
+        mock_mod.Keyring = MagicMock(return_value=mock_kr)
+        with patch.dict("sys.modules", {
+            "keyring": MagicMock(),
+            "keyring.backends.macOS": mock_mod,
+        }):
+            assert backend._init_system() is mock_kr
+            mock_mod.Keyring.assert_called_once_with()
+            mock_kr.with_properties.assert_not_called()
+
+    def test_dispatch_macos_headless(self, monkeypatch):
+        """macOS with CREDSTORE_KEYCHAIN → isolated keychain (with_properties)."""
+        monkeypatch.setattr(backend, "is_wsl", lambda: False)
+        monkeypatch.setattr(backend.os, "name", "posix")
+        monkeypatch.setattr(backend.sys, "platform", "darwin")
+        monkeypatch.setenv("CREDSTORE_KEYCHAIN", "/tmp/ci.keychain-db")
+        monkeypatch.setattr(backend, "ensure_macos_keychain", lambda k: None)
+        mock_kr = MagicMock()
+        mock_kr.with_properties.return_value = mock_kr
+        mock_mod = MagicMock()
+        mock_mod.Keyring = MagicMock(return_value=mock_kr)
+        with patch.dict("sys.modules", {
+            "keyring": MagicMock(),
+            "keyring.backends.macOS": mock_mod,
+        }):
             result = backend._init_system()
             assert result is mock_kr
-            mock_kr.get_password.assert_called_once_with("credstore", "__probe__")
+            mock_kr.with_properties.assert_called_once_with(
+                keychain="/tmp/ci.keychain-db"
+            )
 
-    def test_init_system_get_keyring_raises(self):
-        mock_fail = MagicMock()
-        mock_fail.Keyring = type("FailKeyring", (), {})
-        mock_backends = MagicMock()
-        mock_backends.fail = mock_fail
-        mock_keyring = MagicMock()
-        mock_keyring.backends = mock_backends
-        mock_keyring.get_keyring.side_effect = RuntimeError("no backend")
-        with patch.dict("sys.modules", {"keyring": mock_keyring}):
-            result = backend._init_system()
-            assert result is None
-
-    def test_init_system_fail_keyring(self):
-        from keyring.backends.fail import Keyring as FailKeyring
-
-        mock_fail = MagicMock()
-        mock_fail.Keyring = FailKeyring
-        mock_backends = MagicMock()
-        mock_backends.fail = mock_fail
-        mock_keyring = MagicMock()
-        mock_keyring.backends = mock_backends
-        mock_keyring.get_keyring.return_value = FailKeyring()
-        with patch.dict("sys.modules", {"keyring": mock_keyring}):
-            result = backend._init_system()
-            assert result is None
-
-    def test_init_system_probe_raises(self):
+    def test_dispatch_linux(self, monkeypatch):
+        """Native Linux → KeyutilsBackend (kernel persistent keyring)."""
+        monkeypatch.setattr(backend, "is_wsl", lambda: False)
+        monkeypatch.setattr(backend.os, "name", "posix")
+        monkeypatch.setattr(backend.sys, "platform", "linux")
+        monkeypatch.setattr(backend, "_check_keyutils_viable", lambda: None)
         mock_kr = MagicMock()
-        mock_kr.get_password.side_effect = OSError("keyring locked")
-        mock_fail = MagicMock()
-        mock_fail.Keyring = type("FailKeyring", (), {})
-        mock_backends = MagicMock()
-        mock_backends.fail = mock_fail
-        mock_keyring = MagicMock()
-        mock_keyring.backends = mock_backends
-        mock_keyring.get_keyring.return_value = mock_kr
-        with patch.dict("sys.modules", {"keyring": mock_keyring}):
-            result = backend._init_system()
-            assert result is None
+        mock_mod = MagicMock()
+        mock_mod.KeyutilsBackend = MagicMock(return_value=mock_kr)
+        with patch.dict("sys.modules", {
+            "keyring": MagicMock(),
+            "credstore._keyutils_backend": mock_mod,
+        }):
+            assert backend._init_system() is mock_kr
+
+    def test_dispatch_linux_keyutils_unavailable(self, monkeypatch):
+        """Native Linux but kernel keyring unusable → loud RuntimeError."""
+        monkeypatch.setattr(backend, "is_wsl", lambda: False)
+        monkeypatch.setattr(backend.os, "name", "posix")
+        monkeypatch.setattr(backend.sys, "platform", "linux")
+        monkeypatch.setattr(
+            backend, "_check_keyutils_viable",
+            lambda: "Persistent keyring unavailable (errno=1: Operation not permitted)",
+        )
+        with patch.dict("sys.modules", {
+            "keyring": MagicMock(),
+            "credstore._keyutils_backend": MagicMock(),
+        }):
+            with pytest.raises(RuntimeError, match="keyring unavailable"):
+                backend._init_system()
+
+    def test_dispatch_unsupported_platform(self, monkeypatch):
+        """Unsupported platform → loud RuntimeError."""
+        monkeypatch.setattr(backend, "is_wsl", lambda: False)
+        monkeypatch.setattr(backend.os, "name", "posix")
+        monkeypatch.setattr(backend.sys, "platform", "freebsd")
+        with patch.dict("sys.modules", {"keyring": MagicMock()}):
+            with pytest.raises(RuntimeError, match="does not support platform"):
+                backend._init_system()
 
     def test_init_system_probe_raises_wsl_tolerated(self, monkeypatch):
         """On WSL, a probe failure is tolerated — WslBackend is still used.
@@ -99,6 +157,57 @@ class TestGetSystemKeyring:
                 "credstore", "__probe__"
             )
             assert result is mock_wsl
+
+
+# ── macOS keychain resolution (headless isolated keychain) ───────────
+
+
+class TestResolveMacosKeychain:
+    """Tests for _resolve_macos_keychain — login vs isolated keychain."""
+
+    def test_no_env_no_file_returns_none(self, monkeypatch):
+        monkeypatch.delenv("CREDSTORE_KEYCHAIN", raising=False)
+        monkeypatch.setattr(backend.os.path, "exists", lambda p: False)
+        assert backend._resolve_macos_keychain() is None
+
+    def test_env_var_wins(self, monkeypatch):
+        monkeypatch.setenv("CREDSTORE_KEYCHAIN", "~/ci/keys.keychain-db")
+        monkeypatch.setattr(backend.os.path, "exists", lambda p: False)
+        result = backend._resolve_macos_keychain()
+        # ~ is expanded (can't be absolute here — path exists() is faked)
+        assert result == os.path.expanduser("~/ci/keys.keychain-db")
+
+    def test_default_file_exists_returns_it(self, monkeypatch):
+        monkeypatch.delenv("CREDSTORE_KEYCHAIN", raising=False)
+        monkeypatch.setattr(
+            backend.os.path,
+            "exists",
+            lambda p: p.endswith("credentials.keychain-db"),
+        )
+        result = backend._resolve_macos_keychain()
+        assert result is not None
+        assert result.endswith("credentials.keychain-db")
+
+
+class TestEnsureMacosKeychain:
+    """Tests for ensure_macos_keychain — creates the isolated keychain file."""
+
+    def test_skips_when_exists(self, monkeypatch):
+        monkeypatch.setattr(backend.os.path, "exists", lambda p: True)
+        with patch("credstore._backend.subprocess.run") as mock_run:
+            backend.ensure_macos_keychain("/tmp/keys.keychain-db")
+            mock_run.assert_not_called()
+
+    def test_creates_with_security(self, monkeypatch):
+        monkeypatch.setattr(backend.os.path, "exists", lambda p: False)
+        monkeypatch.setattr(backend.os, "makedirs", lambda *a, **k: None)
+        with patch("credstore._backend.subprocess.run") as mock_run:
+            backend.ensure_macos_keychain("/tmp/ci/keys.keychain-db")
+            mock_run.assert_called_once()
+            args = mock_run.call_args.args[0]
+            assert args[0] == "security"
+            assert "create-keychain" in args
+            assert args[-1] == "/tmp/ci/keys.keychain-db"
 
 
 # ── get_cryptfile / has_master_key ────────────────────────────────────

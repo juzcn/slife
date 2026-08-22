@@ -163,15 +163,15 @@ Priority: `CREDSTORE_FILE` env var → `credstore.json5` → `~/.credstore/crede
 
 ### Backend Matrix
 
-Credstore auto-selects the best available backend via keyring's priority system:
+Backend selection is **deterministic by platform** — no keyring auto-discovery. Exactly five backends are supported; anything else is rejected with a clear error.
 
-| Platform | Backend | Priority | Mechanism |
-|----------|---------|----------|-----------|
-| **Windows** | WinCredKeyring | 9.0 | Windows Credential Manager (pywin32) |
-| **WSL** | WslBackend | 9.5 | PowerShell → advapi32.dll CredReadW/CredWriteW (C# P/Invoke) |
-| **macOS** | Keychain | 5.0 | macOS Keychain |
-| **Linux desktop** | SecretService | 5.0 | D-Bus Secret Service (GNOME Keyring / KWallet) |
-| **Linux headless** | KeyutilsBackend | 1.5 | Kernel keyring via `add_key`/`keyctl` syscalls (ctypes, zero deps) |
+| Platform | Backend | Mechanism |
+|----------|---------|-----------|
+| **Windows** | `WinVaultKeyring` | Windows Credential Manager (Vault API, via keyring) |
+| **WSL** | `WslBackend` | PowerShell → advapi32.dll CredReadW/CredWriteW (C# P/Invoke) — same CredMan store as Windows |
+| **macOS** (GUI) | `macOS.Keyring` | macOS login keychain |
+| **macOS** (headless) | `macOS.Keyring` + isolated keychain | `CREDSTORE_KEYCHAIN` (or `~/.credstore/credentials.keychain-db`); auto-created via `security create-keychain` |
+| **Linux** | `KeyutilsBackend` | Kernel persistent keyring (`@p`) via `add_key`/`keyctl` syscalls (ctypes, zero deps) |
 
 ### Dual-Write Flow
 
@@ -191,18 +191,21 @@ Credstore auto-selects the best available backend via keyring's priority system:
 │  Win CredMan       │  keyrings.cryptfile         │
 │  WSL (PowerShell)  │  AES-encrypted INI          │
 │  macOS Keychain    │  Survives OS pw changes     │
-│  Linux Secret Svc  │                             │
 │  Linux keyutils    │                             │
 └────────────────────┴─────────────────────────────┘
 ```
 
 ### WSL Backend
 
-On WSL, no Linux desktop keyring is available. `WslBackend` bridges to Windows Credential Manager by calling `powershell.exe` with embedded C# that P/Invokes `advapi32.dll` (`CredReadW`, `CredWriteW`, `CredDeleteW`). Priority 9.5 beats `WinCredKeyring` (9.0) when both are installed — our backend fixes target-format and encoding issues.
+On WSL, no Linux desktop keyring is available. `WslBackend` bridges to Windows Credential Manager by calling `powershell.exe` with embedded C# that P/Invokes `advapi32.dll` (`CredReadW`, `CredWriteW`, `CredDeleteW`). Because it targets CredMan directly, WSL and native Windows share the same credential store — `credstore set` on either side is visible on the other. Unlike the platform auto-discovery it replaces, `WslBackend` is selected deterministically (no priority roulette).
 
 ### Keyutils Backend
 
-On headless Linux (no D-Bus session), `KeyutilsBackend` stores credentials in the Linux kernel's persistent keyring (`@p`). Calls `add_key` and `keyctl` syscalls directly through `ctypes` — zero Python dependencies beyond stdlib. Each credential is a `"user"` key with description `"credstore:<service>/<key>"`.
+On Linux (desktop and headless alike), `KeyutilsBackend` stores credentials in the Linux kernel's persistent keyring (`@p`). Calls `add_key` and `keyctl` syscalls directly through `ctypes` — zero Python dependencies beyond stdlib. Each credential is a `"user"` key with description `"credstore:<service>/<key>"`. If the kernel keyring is unavailable (e.g. restricted container), `credstore` fails with a clear error rather than silently degrading.
+
+### macOS Backend
+
+macOS uses `keyring.backends.macOS.Keyring` (the login keychain) in GUI sessions. For headless macOS (CI, servers) — where login-keychain interaction would fail with `errSecInteractionNotAllowed` — set `CREDSTORE_KEYCHAIN` to an isolated keychain path, or let credstore use `~/.credstore/credentials.keychain-db`; the file is created automatically via `security create-keychain` on first use.
 
 ### Credential Enumeration
 

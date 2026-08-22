@@ -39,7 +39,7 @@ The model input should read uniformly, so text that Slife authors is English:
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Credstore — OS keyring + AES cryptfile backup                       │
-│  Win · Mac · Linux (SecretService / keyutils) · WSL (PowerShell)     │
+│  Win · Mac · Linux (keyutils) · WSL (PowerShell)                     │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -644,15 +644,17 @@ Not all tools are in every request. Several categories use lightweight summaries
 
 ### Credstore Backend Matrix
 
-| Platform | Backend | Priority | Mechanism |
-|----------|---------|----------|-----------|
-| **WSL** | WslBackend | 9.5 | PowerShell bridge → advapi32.dll CredReadW/CredWriteW (C# P/Invoke) |
-| **Windows** | WinCredKeyring | 9.0 | Windows Credential Manager (pywin32/win32ctypes) |
-| **macOS** | Keychain | 5.0 | macOS Keychain via keyring |
-| **Linux (desktop)** | SecretService | 5.0 | D-Bus Secret Service (GNOME Keyring / KWallet) |
-| **Linux (headless)** | KeyutilsBackend | 1.5 | Kernel persistent keyring via ctypes syscalls (zero deps) |
+Backend selection is **deterministic by platform** — `_init_system()` dispatches `os.name`/`sys.platform`/`is_wsl()` to exactly five backends, no keyring priority auto-discovery:
 
-Auto-selected by priority — no configuration needed. `credstore set` dual-writes: cryptfile first, then the system keyring (rolled back if the keyring write fails). The CLI also provides `set-password`, `status`, `get`, `delete`, `copy`, `list`, `reset-keyring`, `reset-backup`, `inject`/`uninject` (shell-aware export: bash / powershell / cmd; Windows persistence via `HKCU\Environment`).
+| Platform | Backend | Mechanism |
+|----------|---------|-----------|
+| **WSL** | WslBackend | PowerShell bridge → advapi32.dll CredReadW/CredWriteW (C# P/Invoke) — shares the Windows CredMan store |
+| **Windows** | WinVaultKeyring | Windows Credential Manager (Vault API, via keyring) |
+| **macOS** (GUI) | macOS Keyring | Logon keychain via keyring ctypes shim |
+| **macOS** (headless) | macOS Keyring + isolated keychain | `CREDSTORE_KEYCHAIN` or `~/.credstore/credentials.keychain-db`, auto-created via `security create-keychain` |
+| **Linux** | KeyutilsBackend | Kernel persistent keyring via ctypes syscalls (zero deps) |
+
+Anything else raises a clear "unsupported platform" error; on Linux the kernel keyring is required and failure is loud, never a silent fallback. `credstore set` dual-writes: cryptfile first, then the system keyring (rolled back if the keyring write fails). The CLI also provides `set-password`, `status`, `get`, `delete`, `copy`, `list`, `reset-keyring`, `reset-backup`, `inject`/`uninject` (shell-aware export: bash / powershell / cmd; Windows persistence via `HKCU\Environment`).
 
 ### Secret Sanitization
 

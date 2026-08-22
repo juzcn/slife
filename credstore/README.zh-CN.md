@@ -164,15 +164,15 @@ credstore.get_backend_name()   # → "system keyring + cryptfile (dual-write)"
 
 ### 后端矩阵
 
-Credstore 通过 keyring 的优先级系统自动选择最佳可用后端：
+后端选择**按平台确定性分发**——不依赖 keyring 的自动发现。仅支持以下五个后端，其它平台直接报清晰错误。
 
-| 平台 | 后端 | 优先级 | 机制 |
-|------|------|--------|------|
-| **Windows** | WinCredKeyring | 9.0 | Windows 凭据管理器（pywin32） |
-| **WSL** | WslBackend | 9.5 | PowerShell → advapi32.dll CredReadW/CredWriteW（C# P/Invoke） |
-| **macOS** | Keychain | 5.0 | macOS 钥匙串 |
-| **Linux 桌面** | SecretService | 5.0 | D-Bus Secret Service（GNOME Keyring / KWallet） |
-| **Linux 无桌面** | KeyutilsBackend | 1.5 | 内核 keyring，通过 `add_key`/`keyctl` 系统调用（ctypes，零依赖） |
+| 平台 | 后端 | 机制 |
+|------|------|------|
+| **Windows** | `WinVaultKeyring` | Windows 凭据管理器（Vault API，由 keyring 提供） |
+| **WSL** | `WslBackend` | PowerShell → advapi32.dll CredReadW/CredWriteW（C# P/Invoke）——与 Windows 共享同一 CredMan 存储 |
+| **macOS**（GUI） | `macOS.Keyring` | macOS 登录钥匙串 |
+| **macOS**（无头） | `macOS.Keyring` + 隔离钥匙串 | `CREDSTORE_KEYCHAIN`（或 `~/.credstore/credentials.keychain-db`）；首次使用时自动通过 `security create-keychain` 创建 |
+| **Linux** | `KeyutilsBackend` | 内核持久化 keyring（`@p`），通过 `add_key`/`keyctl` 系统调用（ctypes，零依赖） |
 
 ### 双写流程
 
@@ -192,18 +192,21 @@ Credstore 通过 keyring 的优先级系统自动选择最佳可用后端：
 │  Win 凭据管理器     │  keyrings.cryptfile         │
 │  WSL（PowerShell） │  AES 加密 INI 文件           │
 │  macOS 钥匙串      │  OS 密码变更不受影响          │
-│  Linux Secret Svc  │                             │
 │  Linux keyutils    │                             │
 └────────────────────┴─────────────────────────────┘
 ```
 
 ### WSL 后端
 
-在 WSL 上，没有可用的 Linux 桌面密钥链。`WslBackend` 通过调用 `powershell.exe` 并嵌入 C# 代码 P/Invoke `advapi32.dll`（`CredReadW`、`CredWriteW`、`CredDeleteW`）来桥接 Windows 凭据管理器。优先级 9.5，高于 `WinCredKeyring`（9.0）—— 我们的后端修复了目标格式和编码问题。
+在 WSL 上，没有可用的 Linux 桌面密钥链。`WslBackend` 通过调用 `powershell.exe` 并嵌入 C# 代码 P/Invoke `advapi32.dll`（`CredReadW`、`CredWriteW`、`CredDeleteW`）来桥接 Windows 凭据管理器。由于直接对接 CredMan，WSL 与原生 Windows 共享同一凭据存储——任一侧 `credstore set` 的数据另一侧都能读到。`WslBackend` 按平台确定性地选中，不经过优先级竞争。
 
 ### Keyutils 后端
 
-在无桌面 Linux（无 D-Bus 会话）上，`KeyutilsBackend` 将凭据存储在内核的持久化 keyring（`@p`）中。通过 `ctypes` 直接调用 `add_key` 和 `keyctl` 系统调用——标准库外零 Python 依赖。每个凭据是一个 `"user"` 键，描述为 `"credstore:<service>/<key>"`。
+在 Linux（无论桌面还是无头）上，`KeyutilsBackend` 将凭据存储在内核的持久化 keyring（`@p`）中。通过 `ctypes` 直接调用 `add_key` 和 `keyctl` 系统调用——标准库外零 Python 依赖。每个凭据是一个 `"user"` 键，描述为 `"credstore:<service>/<key>"`。若内核 keyring 不可用（例如受限容器），`credstore` 直接报清晰错误，而不是静默降级。
+
+### macOS 后端
+
+macOS 在 GUI 会话中使用 `keyring.backends.macOS.Keyring`（登录钥匙串）。对于无头 macOS（CI、服务器）——登录钥匙串交互失败（`errSecInteractionNotAllowed`）的环境——设置 `CREDSTORE_KEYCHAIN` 指向一个隔离钥匙串路径，或让 credstore 使用 `~/.credstore/credentials.keychain-db`；该文件首次使用时通过 `security create-keychain` 自动创建。
 
 ### 凭据枚举
 

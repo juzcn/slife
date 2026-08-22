@@ -1,7 +1,8 @@
 """Dual-write backend for credstore.
 
 Architecture:
-  - System keyring: primary read/write (Windows CredMan / macOS Keychain / SecretService)
+  - System keyring: primary read/write (deterministic per-platform:
+    WinVaultKeyring / WslBackend / macOS Keychain / KeyutilsBackend)
   - keyrings.cryptfile: encrypted backup sync (survives OS password changes)
 
 On set(): write to BOTH system keyring + cryptfile.
@@ -16,6 +17,8 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -113,16 +116,29 @@ from credstore._platform import is_wsl  # noqa: E402
 def _init_system():
     """Initialize the system keyring backend.
 
-    On WSL we instantiate ``WslBackend`` **directly** — bypassing
-    ``keyring.get_keyring()`` entirely.  The auto-discovery chain may
-    include irrelevant Linux backends (SecretService, keyrings.alt,
-    etc.) that can fail with encoding errors on WSL.  A transient probe
-    failure (e.g. PowerShell cold-start) is logged but tolerated — it
-    doesn't mean the backend is broken.
+    Deterministic platform → backend dispatch.  No keyring auto-discovery:
+    the mapping below is the single source of truth.  On each platform the
+    exact backend is known up front, so behavior never depends on which
+    third-party backends happen to be installed or their priority.
+
+    Backend matrix (only these platforms are supported):
+
+      Windows            WinVaultKeyring      (Credential Manager / Vault)
+      WSL                WslBackend           (PowerShell bridge → CredMan)
+      macOS (GUI)        macOS.Keyring        (login keychain)
+      macOS (headless)   macOS.Keyring +      (isolated keychain file via
+                           with_properties      CREDSTORE_KEYCHAIN)
+      Linux (native)     KeyutilsBackend      (kernel persistent keyring @p)
+
+    Any other platform raises — credstore supports exactly these five.
     """
     import keyring
 
     # ── WSL: direct backend, no auto-discovery ──────────────────────
+    # The PowerShell bridge shares Windows Credential Manager, so WSL and
+    # native Windows credentials are the same store.  A transient probe
+    # failure (e.g. PowerShell cold-start) is logged but tolerated — it
+    # doesn't mean the backend is broken.
     if is_wsl():
         from credstore._wsl_backend import WslBackend
 
@@ -138,27 +154,109 @@ def _init_system():
         keyring.set_keyring(kr)
         return kr
 
-    # ── Non-WSL: keyring priority-based auto-discovery ──────────────
-    try:
-        kr = keyring.get_keyring()
-    except Exception as exc:
-        logger.debug("system keyring get_keyring failed: %s", exc)
-        return None
+    # ── Windows: Credential Manager via keyring's WinVaultKeyring ──
+    # This is the effective primary of the auto-discovery chain on Windows
+    # (WinVaultKeyring 5.0 > cryptfile 2.5/0.6/0.5), so selecting it
+    # explicitly is behavior-identical — just deterministic.
+    if os.name == "nt":
+        from keyring.backends.Windows import WinVaultKeyring
 
-    from keyring.backends.fail import Keyring as FailKeyring
-    if isinstance(kr, FailKeyring):
-        logger.debug("system keyring: fail backend (no viable backends)")
-        return None
+        kr = WinVaultKeyring()
+        logger.debug("system keyring: WinVaultKeyring (deterministic)")
+        keyring.set_keyring(kr)
+        return kr
 
-    try:
-        kr.get_password("credstore", "__probe__")
-    except Exception as exc:
-        logger.debug("system keyring probe failed: %s", exc)
-        return None
+    # ── macOS: Keychain (login keychain, or isolated keychain file) ──
+    if sys.platform == "darwin":
+        from keyring.backends.macOS import Keyring as MacKeyring
 
-    logger.debug("system keyring: %s", type(kr).__name__)
-    keyring.set_keyring(kr)
-    return kr
+        keychain = _resolve_macos_keychain()
+        if keychain is not None:
+            ensure_macos_keychain(keychain)
+        kr = (
+            MacKeyring()
+            if keychain is None
+            else MacKeyring().with_properties(keychain=keychain)
+        )
+        logger.debug("system keyring: macOS Keychain (keychain=%s)", keychain or "login")
+        keyring.set_keyring(kr)
+        return kr
+
+    # ── Linux (incl. headless): kernel persistent keyring ──────────
+    if sys.platform.startswith("linux"):
+        from credstore._keyutils_backend import KeyutilsBackend
+
+        kr = KeyutilsBackend()
+        # Fail loudly if the kernel keyring is unavailable — this platform
+        # must use keyutils; falling back silently hides the real problem.
+        err = _check_keyutils_viable()
+        if err is not None:
+            raise RuntimeError(
+                f"Linux system keyring unavailable: {err}\n"
+                "credstore on Linux requires the kernel keyring"
+                " (add_key/keyctl syscalls)."
+            )
+        logger.debug("system keyring: KeyutilsBackend (deterministic)")
+        keyring.set_keyring(kr)
+        return kr
+
+    raise RuntimeError(
+        f"credstore does not support platform '{sys.platform}' (os.name={os.name}).\n"
+        "Supported: Windows, WSL, macOS, Linux. "
+        "See https://github.com/juzcn/slife/tree/main/credstore"
+    )
+
+
+def _check_keyutils_viable() -> str | None:
+    """Return an error string if the kernel keyring is unusable, else None."""
+    from credstore._keyutils_backend import _check_viable
+
+    return _check_viable()
+
+
+def _resolve_macos_keychain() -> str | None:
+    """Resolve the keychain path for macOS.
+
+    Returns None → use the default (login) keychain.  Returns a path →
+    use an isolated keychain file.  The path comes from
+    ``CREDSTORE_KEYCHAIN``, falling back to ``~/.credstore/credentials.keychain-db``
+    when the file already exists (headless setup via ``security create-keychain``).
+    """
+    env_path = os.environ.get("CREDSTORE_KEYCHAIN")
+    if env_path:
+        return os.path.expanduser(env_path)
+
+    default = os.path.join(
+        os.path.expanduser("~"), ".credstore", "credentials.keychain-db"
+    )
+    if os.path.exists(default):
+        return default
+    return None
+
+
+def ensure_macos_keychain(keychain: str) -> None:
+    """Create an isolated macOS keychain file if it does not exist.
+
+    Headless macOS (CI, servers) has no login-keychain interaction, so
+    ``SecItem*`` writes fail with ``errSecInteractionNotAllowed``.  An
+    isolated keychain file created with ``security create-keychain`` is
+    the supported escape.  The caller passes the *keychain* path that
+    ``_resolve_macos_keychain`` already chose.
+    """
+    if os.path.exists(keychain):
+        return
+    parent = os.path.dirname(keychain)
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, exist_ok=True)
+    # -h/-U keep it unlocked, non-interactive; -p '' avoids a prompt
+    subprocess.run(
+        [
+            "security", "create-keychain", "-p", "", "-h", "-U", keychain,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _init_cryptfile(password: str | None = None):

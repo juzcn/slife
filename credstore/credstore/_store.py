@@ -41,7 +41,7 @@ class CredentialStore:
         """
         sk = _be.get_system_keyring()
         if sk is not None:
-            return sk.get_password(self._service, key)
+            return sk.get_password(self._service, key)  # type: ignore[return-value]
         return None
 
     def exists(self, key: str) -> bool:
