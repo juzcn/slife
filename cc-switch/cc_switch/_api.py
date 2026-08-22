@@ -90,6 +90,29 @@ def update_provider(name: str, base_url: str | None = None, api_key_name: str | 
     save_config({"providers": providers})
 
 
+def set_provider_models(name: str, models: list[str]) -> list[str]:
+    """Replace a provider's models with the symmetric difference of the
+    given list and its current models (toggle semantics).
+
+    A model present in both the input and the stored list is removed;
+    a model in only one side is kept.  Re-running the same input undoes
+    the previous run.  A nonexistent provider is created with just the
+    new models.  Returns the resulting (deduped, input-order) model list.
+    """
+    current = _get_providers().get(name, {}).get("models", [])
+    current_set = set(current)
+    seen: set[str] = set()
+    input_unique = [m for m in models if not (m in seen or seen.add(m))]
+    new_models = [m for m in input_unique if m not in current_set]
+    removed = [m for m in current if m not in set(input_unique)]
+    result = new_models + removed
+    data = load_config()
+    data.setdefault("providers", {}).setdefault(name, {})
+    data["providers"][name]["models"] = result
+    save_config(data)
+    return result
+
+
 def remove_provider(name: str) -> bool:
     """Delete a provider.  Returns True if it existed."""
     providers = _get_providers()

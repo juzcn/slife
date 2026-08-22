@@ -17,8 +17,8 @@ from cc_switch._api import (
     CONFIG_PATH,
     add_provider,
     list_providers,
-    remove_provider,
     load_config,
+    remove_provider,
     save_config,
     update_provider,
 )

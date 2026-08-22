@@ -57,6 +57,44 @@ class TestAddProvider:
         assert p["models"] == ["b", "c"]
 
 
+class TestSetProviderModels:
+    def test_add_new_models_when_list_empty(self, config_path):
+        # empty default list -> symmetric difference is just the input
+        api.add_provider("ds", "https://x", "K", [])
+        assert api.set_provider_models("ds", ["a", "b"]) == ["a", "b"]
+        assert api.load_config()["providers"]["ds"]["models"] == ["a", "b"]
+
+    def test_symmetric_difference_removes_intersection(self, config_path):
+        api.add_provider("ds", "https://x", "K", ["a", "b", "c"])
+        # input ∩ current = {b, c} removed; {a} stays, {d} added
+        assert api.set_provider_models("ds", ["b", "c", "d"]) == ["d", "a"]
+        assert api.load_config()["providers"]["ds"]["models"] == ["d", "a"]
+
+    def test_same_input_undoes(self, config_path):
+        api.add_provider("ds", "https://x", "K", ["a", "b"])
+        api.set_provider_models("ds", ["b", "c"])
+        assert api.load_config()["providers"]["ds"]["models"] == ["c", "a"]
+        # toggling the same list back restores the original (order-preserving)
+        api.set_provider_models("ds", ["b", "c"])
+        assert api.load_config()["providers"]["ds"]["models"] == ["b", "a"]
+
+    def test_duplicates_in_input_are_deduped(self, config_path):
+        api.add_provider("ds", "https://x", "K", ["a"])
+        # two 'b's are one toggle: b is added once, 'a' survives
+        assert api.set_provider_models("ds", ["b", "b"]) == ["b", "a"]
+        assert api.load_config()["providers"]["ds"]["models"] == ["b", "a"]
+
+    def test_creates_missing_provider_with_models(self, config_path):
+        assert api.set_provider_models("new", ["m"]) == ["m"]
+        assert api.load_config()["providers"]["new"]["models"] == ["m"]
+
+    def test_empty_input_is_noop(self, config_path):
+        # A △ ∅ = A — blank input leaves the list untouched
+        api.add_provider("ds", "https://x", "K", ["a", "b"])
+        assert api.set_provider_models("ds", []) == ["a", "b"]
+        assert api.load_config()["providers"]["ds"]["models"] == ["a", "b"]
+
+
 class TestUpdateProvider:
     def test_update_core_fields(self, config_path):
         api.add_provider("ds", "https://one", "K1", ["a"])

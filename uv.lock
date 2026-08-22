@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -289,7 +289,7 @@ wheels = [
 
 [[package]]
 name = "cc-switch"
-version = "0.9.6"
+version = "0.9.7"
 source = { editable = "cc-switch" }
 dependencies = [
     { name = "credstore" },

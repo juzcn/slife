@@ -15,7 +15,6 @@ pytestmark = pytest.mark.unit
 import cc_switch._activate as act
 from cc_switch._defaults import DEFAULT_ENV, MAIN_MODEL_SLOT_KEYS, default_value
 
-
 PROVIDER = {
     "base_url": "https://api.deepseek.com/anthropic",
     "api_key_name": "DEEPSEEK_API_KEY",

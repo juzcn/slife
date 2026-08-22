@@ -71,6 +71,24 @@ def _parse_models(text: str) -> list[str]:
     return [m.strip() for m in text.split() if m.strip()]
 
 
+def _prompt_models(current: list[str]) -> list[str]:
+    """Prompt for the models list.
+
+    Unlike ``_prompt_optional`` this does NOT back-fill the current value
+    on a blank answer: the models field is the symmetric difference
+    against the stored list, so a blank (empty) answer must be a literal
+    empty input — A △ ∅ = A keeps the list unchanged.  Back-filling the
+    current value would instead toggle the whole list off.
+    """
+    hint = ", ".join(current) if current else ""
+    text = input(
+        "Supported models (comma, space, or semicolon separated; "
+        "toggles against the current list)"
+        f"{' [' + hint + ']' if hint else ' [blank = keep current]'}: "
+    ).strip()
+    return _parse_models(text)
+
+
 # ── set ──────────────────────────────────────────────────────────────
 
 
@@ -88,13 +106,18 @@ def _cmd_set(args) -> int:
 
     base_url = _prompt_required("Base URL", current["base_url"] if current else "")
     api_key_name = _prompt_required("API key name (credstore key)", current["api_key_name"] if current else "")
-    models_text = _prompt_optional(
-        "Supported models (comma, space, or semicolon separated)",
-        ", ".join(current["models"]) if current else "",
-    )
-    models = _parse_models(models_text)
+    models = _prompt_models(current["models"] if current else [])
     extra_env = current.get("extra_env") if current else None
-    _api.add_provider(name, base_url, api_key_name, models, extra_env=extra_env)
+    if is_edit:
+        _api.update_provider(name, base_url=base_url, api_key_name=api_key_name, extra_env=extra_env)
+    else:
+        # New provider: models start empty, so the symmetric-difference
+        # path below just adds the input (empty default list).
+        _api.add_provider(name, base_url, api_key_name, [], extra_env=extra_env)
+    # Every models entry is the symmetric difference against the stored
+    # list — a blank input is the difference with the empty list, which
+    # is the current list itself (i.e. skip / no change).
+    models = _api.set_provider_models(name, models)
     print(f"Provider '{name}' saved.")
     if models:
         print(f"  models: {', '.join(models)}")

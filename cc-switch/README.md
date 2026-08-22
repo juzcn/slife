@@ -33,12 +33,15 @@ Create or edit a provider.  Prompts for:
 - **Supported models** (optional; comma, space, or semicolon separated)
 
 If the provider already exists this *edits* it; otherwise it *adds* it.
+The models prompt **toggles** against the provider's current list: a model
+you type that is already listed is removed, one that isn't is added
+(symmetric difference).  Typing the same list again undoes the change.
 
 ```bash
 cc-switch set deepseek
 # Base URL [..]: https://api.deepseek.com/anthropic
 # API key name (credstore key): DEEPSEEK_API_KEY
-# Supported models (comma separated): deepseek-chat,deepseek-reasoner
+# Supported models (comma separated; toggles against the current list): deepseek-chat,deepseek-reasoner
 ```
 
 No secret value is ever asked for or written — store it first with:

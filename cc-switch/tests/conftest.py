@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-import cc_switch._api as api
 import cc_switch._activate as act
+import cc_switch._api as api
 
 
 @pytest.fixture

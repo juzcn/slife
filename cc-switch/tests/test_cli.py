@@ -45,7 +45,8 @@ class TestSet:
         p = _api.load_config()["providers"]["deepseek"]
         assert p["base_url"] == "https://new"
         assert p["api_key_name"] == "OLD_KEY"  # blank kept current
-        assert p["models"] == ["b", "c"]
+        # 'a' isn't in the input, so it survives the symmetric difference
+        assert p["models"] == ["b", "c", "a"]
 
     def test_required_cannot_be_empty(self, config_path, monkeypatch):
         feed_inputs(monkeypatch, ["", "https://valid", "K", ""])
@@ -59,6 +60,37 @@ class TestSet:
         p = _api.load_config()["providers"]["ds"]
         assert p["models"] == ["a", "b", "c", "d"]
         assert len(p["models"]) == 4
+
+    def test_add_provider_models_via_symmetric_difference(self, config_path, monkeypatch):
+        # new provider: empty default list -> models are just the input
+        feed_inputs(monkeypatch, ["https://x", "K", "a,b"])
+        assert cli.main(["set", "ds"]) == 0
+        assert _api.load_config()["providers"]["ds"]["models"] == ["a", "b"]
+
+    def test_edit_toggles_models_against_current_list(self, config_path, monkeypatch):
+        _api.add_provider("ds", "https://old", "K", ["a", "b", "c"])
+        # input {b,c,d} symmetric-diff with stored {a,b,c} -> {d,a}
+        feed_inputs(monkeypatch, ["https://new", "", "b,c,d"])
+        assert cli.main(["set", "ds"]) == 0
+        p = _api.load_config()["providers"]["ds"]
+        assert p["base_url"] == "https://new"
+        assert p["models"] == ["d", "a"]
+
+    def test_edit_same_models_removes_them(self, config_path, monkeypatch):
+        _api.add_provider("ds", "https://x", "K", ["a", "b"])
+        # typing the full current list toggles it off -> empty
+        feed_inputs(monkeypatch, ["", "", "a,b"])
+        assert cli.main(["set", "ds"]) == 0
+        assert _api.load_config()["providers"]["ds"]["models"] == []
+
+    def test_edit_blank_models_keeps_current(self, config_path, monkeypatch):
+        # blank input = difference with the empty list = current list itself
+        _api.add_provider("ds", "https://x", "K", ["a", "b"])
+        feed_inputs(monkeypatch, ["https://new", "", ""])
+        assert cli.main(["set", "ds"]) == 0
+        p = _api.load_config()["providers"]["ds"]
+        assert p["base_url"] == "https://new"
+        assert p["models"] == ["a", "b"]
 
 
 class TestRemove:
