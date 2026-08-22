@@ -208,8 +208,8 @@ try {
         Write-Warn "  These MCP servers require npx and will NOT work:"
         Write-Warn "    file-search, serper, tavily-mcp, github, amap-maps, filesystem"
         Write-Warn "  Install Node.js LTS from https://nodejs.org then re-run this installer."
+        Write-Warn "  (Runtime tools are optional — continuing with the core install.)"
         Write-Warn "Help: $slifeRepo"
-        exit 1
     }
 
     # -- bun / bunx (required by nvidia-nim MCP server) --
@@ -335,12 +335,36 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
     $zipFile = Join-Path $tmpDir "slife.zip"
+    $downloaded = $false
+
+    # Same logic as install.sh: prefer GitHub, fall back to the gitee
+    # mirror when GitHub is unreachable (mainland China / blocked
+    # networks).  A failure only after both sources is a hard error.
     try {
         Invoke-WebRequest -Uri $slifeTarball -OutFile $zipFile -ErrorAction Stop
+        $downloaded = $true
     } catch [System.IndexOutOfRangeException] {
-        Write-Warn "  Invoke-WebRequest failed (PowerShell 5.1 bug), trying curl.exe..."
+        # PowerShell 5.1 bug — try curl.exe below.
+        $downloaded = $false
+    } catch {
+        Write-Dim "  GitHub unreachable — trying gitee mirror..."
+        try {
+            Invoke-WebRequest -Uri "https://gitee.com/juzcn/slife/archive/refs/heads/main.zip" -OutFile $zipFile -ErrorAction Stop
+            $downloaded = $true
+        } catch {
+            $downloaded = $false
+        }
+    }
+
+    if (-not $downloaded) {
+        # PowerShell 5.1 Invoke-WebRequest quirk (IndexOutOfRangeException):
+        # retry with curl.exe (bundled with Windows 10 build 17063+).
         if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
             curl.exe -fsSL -o $zipFile $slifeTarball
+            if ($LASTEXITCODE -ne 0) {
+                Write-Dim "  GitHub unreachable — trying gitee mirror..."
+                curl.exe -fsSL -o $zipFile "https://gitee.com/juzcn/slife/archive/refs/heads/main.zip"
+            }
             if ($LASTEXITCODE -ne 0) {
                 Write-Err "Error: download failed. Check your network and try again."
                 Write-Warn "Help: $slifeRepo"
