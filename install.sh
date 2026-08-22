@@ -259,7 +259,9 @@ if [ "$HAVE_NPX" = false ]; then
     # (exactly how uv and bun are installed — no root, no package manager).
     if [ "$HAVE_NPX" = false ] && command -v tar &>/dev/null; then
         echo -e "${YELLOW}  Installing Node.js LTS via official tarball → ~/.local…${NC}"
-        if _slife_install_node_rootless; then
+        # Subshell + set +e: a failure here is only a warning — it must
+        # never abort the whole install (runtime tools are optional).
+        if ( set +e; _slife_install_node_rootless; ); then
             HAVE_NPX=true
         else
             echo -e "${YELLOW}  Node.js tarball install failed — install it manually and re-run.${NC}"
@@ -308,7 +310,9 @@ if [ "$HAVE_BUN" = false ]; then
             echo -e "${YELLOW}  unzip unavailable and no Python ≥3.8 — will warn instead of fail.${NC}"
         fi
     fi
-    if _slife_install_bun; then
+    # Subshell + set +e: a bun failure is only a warning — it must never
+    # abort the whole install (runtime tools are optional).
+    if ( set +e; _slife_install_bun; ); then
         echo -e "  ${GRAY}✓${NC} bun installed via official installer"
     else
         echo -e "  ${YELLOW}⚠ bun install failed — see messages above.${NC}"
@@ -379,7 +383,25 @@ fi
 #
 echo ""
 echo -e "${YELLOW}[3/5] Downloading slife…${NC}"
-curl --progress-bar -fL "$SLIFE_TARBALL" -o "$TMP_DIR/slife.tar.gz"
+# Try GitHub first, then the gitee mirror (GitHub is often unreachable
+# from mainland China / HPC login nodes).  A failure here is a hard
+# error — slife itself cannot be installed without its source — but it
+# is reported cleanly instead of tripping set -e.
+SLIFE_DL_OK=false
+if curl --progress-bar -fL "$SLIFE_TARBALL" -o "$TMP_DIR/slife.tar.gz"; then
+    SLIFE_DL_OK=true
+else
+    echo -e "  ${YELLOW}GitHub unreachable — trying gitee mirror…${NC}"
+    if curl --progress-bar -fL "https://gitee.com/juzcn/slife/archive/refs/heads/main.tar.gz" -o "$TMP_DIR/slife.tar.gz"; then
+        SLIFE_DL_OK=true
+    fi
+fi
+if [ "$SLIFE_DL_OK" = false ]; then
+    echo -e "${RED}Error: could not download slife from GitHub or gitee.${NC}"
+    echo -e "${YELLOW}  Check your network, or download manually and re-run.${NC}"
+    echo -e "${YELLOW}Help: $SLIFE_REPO${NC}"
+    exit 1
+fi
 
 # Print SHA256 so users can verify integrity if desired.
 echo -e "  SHA256: ${GRAY}$(sha256sum "$TMP_DIR/slife.tar.gz" 2>/dev/null || shasum -a 256 "$TMP_DIR/slife.tar.gz" 2>/dev/null || echo '(sha256sum not available)')${NC}"
