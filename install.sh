@@ -147,7 +147,7 @@ _slife_install_bun() {
         curl -fsSL https://bun.sh/install | bash
         return $?
     fi
-    local _arch _nixarch _url _bin _exe _dir
+    local _arch _nixarch _url _bin _exe _dir _ver
     _arch="$(uname -m 2>/dev/null)"
     _nixarch=""
     case "$_arch" in
@@ -159,7 +159,21 @@ _slife_install_bun() {
         curl -fsSL https://bun.sh/install | bash
         return $?
     fi
-    _url="https://github.com/oven-sh/bun/releases/latest/download/bun-$_nixarch.zip"
+    # Download from npmmirror (reachable in mainland China) first, then
+    # GitHub.  npmmirror has no `latest` alias, so resolve the newest
+    # version from its directory listing.
+    _url=""
+    if curl -fsSL --max-time 15 https://registry.npmmirror.com/-/binary/bun/ 2>/dev/null \
+            | grep -oE 'bun-v[0-9]+\.[0-9]+\.[0-9]+/' \
+            | grep -oE 'bun-v[0-9.]+' | sort -V | tail -1 | grep -q .; then
+        _ver="$(curl -fsSL --max-time 15 https://registry.npmmirror.com/-/binary/bun/ 2>/dev/null \
+                | grep -oE 'bun-v[0-9]+\.[0-9]+\.[0-9]+/' \
+                | grep -oE 'bun-v[0-9.]+' | sort -V | tail -1)"
+        _url="https://registry.npmmirror.com/-/binary/bun/$_ver/$_nixarch.zip"
+    fi
+    if [ -z "$_url" ]; then
+        _url="https://github.com/oven-sh/bun/releases/latest/download/bun-$_nixarch.zip"
+    fi
     echo -e "  ${YELLOW}No unzip — extracting bun with Python zipfile…${NC}"
     curl --progress-bar -fL "$_url" -o "$TMP_DIR/bun.zip" || return 1
     _bin="$HOME/.bun/bin"
