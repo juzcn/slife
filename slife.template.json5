@@ -34,6 +34,18 @@
             max_tokens: 384000,
             temperature: 0.7,
             top_p: 1.0
+          },
+          {
+            model: "deepseek-v4-pro",
+            name: "DeepSeek V4 Pro",
+            reasoning: true,
+            input: [
+              "text"
+            ],
+            context_window: 1000000,
+            max_tokens: 384000,
+            temperature: 0.7,
+            top_p: 1.0
           }
         ]
       },
@@ -42,12 +54,79 @@
         api_key: "${SCNET_TOKEN_PLAN}",
         api: "openai-completions",
         models: [
-          { model: "DeepSeek-V4-Flash-0731", name: "DeepSeek V4 Flash", reasoning: true, input: ["text"], context_window: 1000000, max_tokens: 384000, temperature: 0.7, top_p: 1.0 },
-          { model: "DeepSeek-V4", name: "DeepSeek V4 Pro", reasoning: true, input: ["text"], context_window: 1000000, max_tokens: 384000, temperature: 0.7, top_p: 1.0 },
-          { model: "Kimi-K3", name: "Kimi K3", reasoning: true, input: ["text", "image"], context_window: 1048576, max_tokens: 131072, compat: { thinking: "omit" } },
-          { model: "Qwen3.8-Max", name: "Qwen3.8 Max", reasoning: true, input: ["text", "image"], context_window: 983616, max_tokens: 131072 },
-          { model: "MiniMax-M3", name: "MiniMax M3", reasoning: true, input: ["text", "image"], context_window: 1000000, max_tokens: 512000, compat: { thinking: "omit" } },
-          { model: "GLM-5.2", name: "GLM 5.2", reasoning: true, input: ["text"], context_window: 1048576, max_tokens: 131072 }
+          {
+            model: "DeepSeek-V4-Flash-0731",
+            name: "DeepSeek V4 Flash",
+            reasoning: true,
+            input: [
+              "text"
+            ],
+            context_window: 1000000,
+            max_tokens: 384000,
+            temperature: 0.7,
+            top_p: 1.0
+          },
+          {
+            model: "DeepSeek-V4",
+            name: "DeepSeek V4 Pro",
+            reasoning: true,
+            input: [
+              "text"
+            ],
+            context_window: 1000000,
+            max_tokens: 384000,
+            temperature: 0.7,
+            top_p: 1.0
+          },
+          {
+            model: "Kimi-K3",
+            name: "Kimi K3",
+            reasoning: true,
+            input: [
+              "text",
+              "image"
+            ],
+            context_window: 1048576,
+            max_tokens: 131072,
+            compat: {
+              thinking: "omit"
+            }
+          },
+          {
+            model: "Qwen3.8-Max",
+            name: "Qwen3.8 Max",
+            reasoning: true,
+            input: [
+              "text",
+              "image"
+            ],
+            context_window: 983616,
+            max_tokens: 131072
+          },
+          {
+            model: "MiniMax-M3",
+            name: "MiniMax M3",
+            reasoning: true,
+            input: [
+              "text",
+              "image"
+            ],
+            context_window: 1000000,
+            max_tokens: 512000,
+            compat: {
+              thinking: "omit"
+            }
+          },
+          {
+            model: "GLM-5.2",
+            name: "GLM 5.2",
+            reasoning: true,
+            input: [
+              "text"
+            ],
+            context_window: 1048576,
+            max_tokens: 131072
+          }
         ]
       },
       bailian_personal: {
@@ -112,16 +191,6 @@
             max_tokens: 16384
           },
           {
-            model: "deepseek-v4-pro",
-            name: "DeepSeek V4 Pro",
-            reasoning: false,
-            input: [
-              "text"
-            ],
-            context_window: 163840,
-            max_tokens: 32768
-          },
-          {
             model: "deepseek-v4-pro-0813",
             name: "DeepSeek V4 Pro 0813",
             reasoning: false,
@@ -148,16 +217,23 @@
         api_key: "local",
         api: "openai-completions",
         models: [
-          { model: "qwen3.8-27b", name: "Qwen3.8-27B (本地)", reasoning: false, input: ["text", "image"], context_window: 262144, max_tokens: 4096, temperature: 0.7, top_p: 1.0 }
+          {
+            model: "qwen3.8-27b",
+            name: "Qwen3.8-27B (本地)",
+            reasoning: false,
+            input: [
+              "text",
+              "image"
+            ],
+            context_window: 262144,
+            max_tokens: 4096,
+            temperature: 0.7,
+            top_p: 1.0
+          }
         ]
       }
     }
   },
-  // Non-chat generation models (image / video / TTS / ASR), consumed by the
-  // slife-media plugin (tools: media__generate_image / generate_video /
-  // text_to_speech / transcribe_audio).  kind = capability, api = wire
-  // adapter (dashscope-aigc for Aliyun Bailian, openai-images for
-  // OpenAI-compatible providers).  Artifacts land in {agent}.files/media/.
   media: {
     defaults: {
       image: "bailian_personal/wan2.7-image",
@@ -169,14 +245,52 @@
         base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1",
         api_key: "${QWEN_TOKEN_PLAN_PERSONAL}",
         models: [
-          { model: "wan2.7-image", kind: "image" },
-          { model: "wan2.7-image-pro", kind: "image" },
-          { model: "qwen-image-3.0-pro", kind: "image" },
-          { model: "happyhorse-1.1-t2v", kind: "video", params: { resolution: "720P", ratio: "16:9", duration: 5 } },
-          { model: "happyhorse-1.1-i2v", kind: "video", params: { resolution: "720P", duration: 5 } },
-          { model: "happyhorse-1.1-r2v", kind: "video", params: { resolution: "720P", duration: 5 } },
-          { model: "qwen-audio-3.0-tts-plus", kind: "tts", voice: "longanhuan_v3.6" },
-          { model: "qwen-audio-3.0-asr-flash", kind: "asr" }
+          {
+            model: "wan2.7-image",
+            kind: "image"
+          },
+          {
+            model: "wan2.7-image-pro",
+            kind: "image"
+          },
+          {
+            model: "qwen-image-3.0-pro",
+            kind: "image"
+          },
+          {
+            model: "happyhorse-1.1-t2v",
+            kind: "video",
+            params: {
+              resolution: "720P",
+              ratio: "16:9",
+              duration: 5
+            }
+          },
+          {
+            model: "happyhorse-1.1-i2v",
+            kind: "video",
+            params: {
+              resolution: "720P",
+              duration: 5
+            }
+          },
+          {
+            model: "happyhorse-1.1-r2v",
+            kind: "video",
+            params: {
+              resolution: "720P",
+              duration: 5
+            }
+          },
+          {
+            model: "qwen-audio-3.0-tts-plus",
+            kind: "tts",
+            voice: "longanhuan_v3.6"
+          },
+          {
+            model: "qwen-audio-3.0-asr-flash",
+            kind: "asr"
+          }
         ]
       }
     }
