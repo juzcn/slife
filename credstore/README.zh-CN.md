@@ -60,6 +60,8 @@ credstore set-password    # 创建 ~/.credstore/credentials.crypt
 - 一个存储缺失 → 报错并给出恢复指令
 - 值不一致 → 报错，告知应执行哪个命令
 
+**仅加密文件模式**（无系统密钥链可用——例如 Linux 上 keyctl 被安全策略屏蔽）：AES cryptfile 是唯一存储。`set`/`copy` 写入并给出提示，`status` 显示 "cryptfile-only mode"，`get -p` 直接返回 cryptfile 的值（不存在双查询不一致）。
+
 ### `inject` / `uninject`
 
 `inject` 从密钥链读取密钥并持久化到系统环境：
@@ -202,7 +204,7 @@ credstore.get_backend_name()   # → "system keyring + cryptfile (dual-write)"
 
 ### Keyutils 后端
 
-在 Linux（无论桌面还是无头）上，`KeyutilsBackend` 将凭据存储在内核的持久化 keyring（`@p`）中。通过 `ctypes` 直接调用 `add_key` 和 `keyctl` 系统调用——标准库外零 Python 依赖。每个凭据是一个 `"user"` 键，描述为 `"credstore:<service>/<key>"`。若内核 keyring 不可用（例如受限容器），`credstore` 直接报清晰错误，而不是静默降级。
+在 Linux（无论桌面还是无头）上，`KeyutilsBackend` 将凭据存储在内核的持久化 keyring（`@p`）中。通过 `ctypes` 直接调用 `add_key` 和 `keyctl` 系统调用——标准库外零 Python 依赖。每个凭据是一个 `"user"` 键，描述为 `"credstore:<service>/<key>"`。若内核 keyring 不可用（例如 HPC 登录节点上 seccomp 屏蔽了 keyctl），credstore 降级为**仅加密文件（cryptfile-only）模式**：`set` 存入 AES 备份并给出提示，`set-password`/`status`/`get -p`/`delete` 照常工作，原因可通过 `credstore status` 查看。完全不支持的平台仍然报错，而不是错误选择后端。
 
 ### macOS 后端
 

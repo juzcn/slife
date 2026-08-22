@@ -131,8 +131,12 @@ def _init_system():
       Linux (native)     KeyutilsBackend      (kernel persistent keyring @p)
 
     Any other platform raises — credstore supports exactly these five.
+
+    If a *supported* platform's backend is unavailable (e.g. Linux where
+    keyctl is blocked by seccomp/policy), returns ``None`` so the caller
+    continues in **cryptfile-only** mode instead of failing every command.
+    The reason is logged; ``kind`` in ``get_backend_info()`` reports why.
     """
-    import keyring
 
     # ── WSL: direct backend, no auto-discovery ──────────────────────
     # The PowerShell bridge shares Windows Credential Manager, so WSL and
@@ -151,23 +155,62 @@ def _init_system():
                 exc,
             )
         logger.debug("system keyring: WslBackend (direct)")
-        keyring.set_keyring(kr)
+        _activate_system_keyring(kr)
         return kr
 
-    # ── Windows: Credential Manager via keyring's WinVaultKeyring ──
-    # This is the effective primary of the auto-discovery chain on Windows
-    # (WinVaultKeyring 5.0 > cryptfile 2.5/0.6/0.5), so selecting it
-    # explicitly is behavior-identical — just deterministic.
+    # ── Platform → backend factory (each may return None) ───────────
     if os.name == "nt":
+        kr = _init_windows_backend()
+    elif sys.platform == "darwin":
+        kr = _init_macos_backend()
+    elif sys.platform.startswith("linux"):
+        kr = _init_linux_backend()
+    else:
+        raise RuntimeError(
+            f"credstore does not support platform '{sys.platform}' (os.name={os.name}).\n"
+            "Supported: Windows, WSL, macOS, Linux. "
+            "See https://github.com/juzcn/slife/tree/main/credstore"
+        )
+
+    if kr is None:
+        logger.warning("system keyring unavailable — cryptfile-only mode")
+        return None
+    _activate_system_keyring(kr)
+    return kr
+
+
+def _activate_system_keyring(kr) -> None:
+    """Register the selected backend so every keyring caller shares it."""
+    import keyring
+
+    keyring.set_keyring(kr)
+
+
+def _init_windows_backend():
+    """Windows Credential Manager via keyring's WinVaultKeyring.
+
+    This is the effective primary of the auto-discovery chain on Windows
+    (WinVaultKeyring 5.0 > cryptfile 2.5/0.6/0.5), so selecting it
+    explicitly is behavior-identical — just deterministic.
+    Returns None if construction fails (pywin32 missing, etc.).
+    """
+    try:
         from keyring.backends.Windows import WinVaultKeyring
 
         kr = WinVaultKeyring()
-        logger.debug("system keyring: WinVaultKeyring (deterministic)")
-        keyring.set_keyring(kr)
-        return kr
+    except Exception as exc:
+        logger.warning("Windows system keyring unavailable: %s", exc)
+        return None
+    logger.debug("system keyring: WinVaultKeyring (deterministic)")
+    return kr
 
-    # ── macOS: Keychain (login keychain, or isolated keychain file) ──
-    if sys.platform == "darwin":
+
+def _init_macos_backend():
+    """macOS Keychain — login keychain, or isolated file on headless.
+
+    Returns None if the Keychain layer is unavailable.
+    """
+    try:
         from keyring.backends.macOS import Keyring as MacKeyring
 
         keychain = _resolve_macos_keychain()
@@ -178,33 +221,33 @@ def _init_system():
             if keychain is None
             else MacKeyring().with_properties(keychain=keychain)
         )
-        logger.debug("system keyring: macOS Keychain (keychain=%s)", keychain or "login")
-        keyring.set_keyring(kr)
-        return kr
+    except Exception as exc:
+        logger.warning("macOS system keyring unavailable: %s", exc)
+        return None
+    logger.debug("system keyring: macOS Keychain (keychain=%s)", keychain or "login")
+    return kr
 
-    # ── Linux (incl. headless): kernel persistent keyring ──────────
-    if sys.platform.startswith("linux"):
+
+def _init_linux_backend():
+    """Linux (incl. headless): kernel persistent keyring.
+
+    Returns None if the kernel keyring is unavailable (e.g. keyctl blocked
+    by seccomp or container policy — common on HPC login nodes) so the
+    caller falls back to cryptfile-only storage.
+    """
+    try:
         from credstore._keyutils_backend import KeyutilsBackend
 
-        kr = KeyutilsBackend()
-        # Fail loudly if the kernel keyring is unavailable — this platform
-        # must use keyutils; falling back silently hides the real problem.
         err = _check_keyutils_viable()
         if err is not None:
-            raise RuntimeError(
-                f"Linux system keyring unavailable: {err}\n"
-                "credstore on Linux requires the kernel keyring"
-                " (add_key/keyctl syscalls)."
-            )
-        logger.debug("system keyring: KeyutilsBackend (deterministic)")
-        keyring.set_keyring(kr)
-        return kr
-
-    raise RuntimeError(
-        f"credstore does not support platform '{sys.platform}' (os.name={os.name}).\n"
-        "Supported: Windows, WSL, macOS, Linux. "
-        "See https://github.com/juzcn/slife/tree/main/credstore"
-    )
+            logger.warning("Linux system keyring unavailable: %s", err)
+            return None
+        kr = KeyutilsBackend()
+    except Exception as exc:
+        logger.warning("Linux system keyring unavailable: %s", exc)
+        return None
+    logger.debug("system keyring: KeyutilsBackend (deterministic)")
+    return kr
 
 
 def _check_keyutils_viable() -> str | None:

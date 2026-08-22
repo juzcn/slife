@@ -59,6 +59,8 @@ Path overridable via `CREDSTORE_FILE` env var or `credstore.json5`.
 - One store missing → error with recovery instructions
 - Values differ → error, tells you which tool to run
 
+**Cryptfile-only mode** (no system keyring available — e.g. Linux where keyctl is blocked by policy): the AES cryptfile is the sole store. `set`/`copy` write there with a notice, `status` reports "cryptfile-only mode", and `get -p` returns the cryptfile value directly (no dual-query mismatch possible).
+
 ### `inject` / `uninject`
 
 `inject` reads a secret from the keyring and persists it to the system environment:
@@ -201,7 +203,7 @@ On WSL, no Linux desktop keyring is available. `WslBackend` bridges to Windows C
 
 ### Keyutils Backend
 
-On Linux (desktop and headless alike), `KeyutilsBackend` stores credentials in the Linux kernel's persistent keyring (`@p`). Calls `add_key` and `keyctl` syscalls directly through `ctypes` — zero Python dependencies beyond stdlib. Each credential is a `"user"` key with description `"credstore:<service>/<key>"`. If the kernel keyring is unavailable (e.g. restricted container), `credstore` fails with a clear error rather than silently degrading.
+On Linux (desktop and headless alike), `KeyutilsBackend` stores credentials in the Linux kernel's persistent keyring (`@p`). Calls `add_key` and `keyctl` syscalls directly through `ctypes` — zero Python dependencies beyond stdlib. Each credential is a `"user"` key with description `"credstore:<service>/<key>"`. If the kernel keyring is unavailable (e.g. keyctl blocked by seccomp on an HPC login node), credstore degrades to **cryptfile-only** mode: `set` stores in the AES backup with a notice, `set-password`/`status`/`get -p`/`delete` keep working, and the reason is visible in `credstore status`. A fully unsupported platform still raises rather than picking a wrong backend.
 
 ### macOS Backend
 

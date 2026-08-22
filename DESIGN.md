@@ -654,7 +654,7 @@ Backend selection is **deterministic by platform** — `_init_system()` dispatch
 | **macOS** (headless) | macOS Keyring + isolated keychain | `CREDSTORE_KEYCHAIN` or `~/.credstore/credentials.keychain-db`, auto-created via `security create-keychain` |
 | **Linux** | KeyutilsBackend | Kernel persistent keyring via ctypes syscalls (zero deps) |
 
-Anything else raises a clear "unsupported platform" error; on Linux the kernel keyring is required and failure is loud, never a silent fallback. `credstore set` dual-writes: cryptfile first, then the system keyring (rolled back if the keyring write fails). The CLI also provides `set-password`, `status`, `get`, `delete`, `copy`, `list`, `reset-keyring`, `reset-backup`, `inject`/`uninject` (shell-aware export: bash / powershell / cmd; Windows persistence via `HKCU\Environment`).
+Anything else raises a clear "unsupported platform" error. On a supported platform whose backend is unavailable (e.g. Linux where keyctl is blocked by policy), `_init_system()` returns `None` instead of raising — credstore keeps working in **cryptfile-only** mode (`set` stores in the AES backup with a notice; `set-password`, `status`, `get -p`, `delete` all function). `credstore set` dual-writes: cryptfile first, then the system keyring (rolled back if the keyring write fails). The CLI also provides `set-password`, `status`, `get`, `delete`, `copy`, `list`, `reset-keyring`, `reset-backup`, `inject`/`uninject` (shell-aware export: bash / powershell / cmd; Windows persistence via `HKCU\Environment`).
 
 ### Secret Sanitization
 

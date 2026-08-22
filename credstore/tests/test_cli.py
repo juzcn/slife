@@ -93,6 +93,12 @@ class TestCliStatus:
         out = capsys.readouterr().out
         assert "LOCKED" in out
 
+    def test_status_shows_cryptfile_only(self, capsys, mock_backend_no_keyring):
+        """No system keyring but cryptfile ready → cryptfile-only mode."""
+        main(["status"])
+        out = capsys.readouterr().out
+        assert "cryptfile-only" in out
+
 
 # ═══════════════════════════════════════════════════════════════
 # set
@@ -134,6 +140,16 @@ class TestCliSet:
         # Credential should NOT be in either store
         assert "test/key" not in in_mem_cryptfile
         assert "test/key" not in in_mem_store
+
+    def test_set_cryptfile_only_when_no_keyring(self, capsys, mock_backend_no_keyring, in_mem_cryptfile, monkeypatch):
+        """No system keyring → set stores in cryptfile only, prints notice."""
+        inputs = iter(["sk-cf-only-secret", "master-pw"])
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": next(inputs))
+        assert main(["set", "test/key"]) == 0
+        captured = capsys.readouterr()
+        assert "Stored: test/key" in captured.out
+        assert "cryptfile-only" in captured.err
+        assert in_mem_cryptfile.get("test/key") == "sk-cf-only-secret"
 
     def test_set_cryptfile_backend_unavailable(self, mock_backend_no_cryptfile, monkeypatch):
         """When cryptfile backend is not installed, set fails hard."""
@@ -224,6 +240,15 @@ class TestCliGetPassword:
     def test_dual_query_empty_password_rejected(self, mock_backend, monkeypatch):
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "")
         assert main(["get", "--password", "test/key"]) == 1
+
+    def test_get_password_cryptfile_only_mode(self, capsys, mock_backend_no_keyring, in_mem_cryptfile, monkeypatch):
+        """No system keyring: cryptfile is authoritative — value printed."""
+        in_mem_cryptfile["test/key"] = "sk-cryptfile-value"
+        monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
+        result = main(["get", "--password", "test/key"])
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "sk-cryptfile-value" in out
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -654,3 +679,21 @@ def mock_backend_no_cryptfile(base_backend, cli_store, monkeypatch):
         "available": True, "backend": "MockBackend",
         "cryptfile_ready": False,
     })
+
+
+@pytest.fixture
+def mock_backend_no_keyring(base_backend, cli_store, monkeypatch):
+    """Mock where the system keyring is unavailable (cryptfile-only mode)."""
+    import credstore._backend as backend
+
+    monkeypatch.setattr(backend, "get_system_keyring", lambda: None)
+    monkeypatch.setattr(backend, "get_backend_info", lambda: {
+        "available": False, "backend": "MockBackend",
+        "cryptfile_ready": True, "cryptfile_path": "/mock/credentials.crypt",
+    })
+    import credstore._store as sm
+    monkeypatch.setattr(sm, "check_backend", lambda: {
+        "available": False, "backend": "MockBackend",
+        "cryptfile_ready": True, "cryptfile_path": "/mock/credentials.crypt",
+    })
+    return base_backend

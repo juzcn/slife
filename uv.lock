@@ -517,7 +517,7 @@ wheels = [
 
 [[package]]
 name = "credstore"
-version = "0.9.7"
+version = "0.9.8"
 source = { editable = "credstore" }
 dependencies = [
     { name = "keyring" },

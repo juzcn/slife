@@ -295,12 +295,20 @@ def _cmd_status() -> int:
     print(f"Available: {info.get('available', False)}")
 
     if info.get("cryptfile_ready"):
-        print("Cryptfile: ready (dual-write active)")
-        if "cryptfile_path" in info:
-            print(f"  File: {info['cryptfile_path']}")
-        print()
-        print("Dual-write: system keyring + cryptfile encrypted backup.")
-        print("Safe from OS password changes — data auto-restores from cryptfile.")
+        if info.get("available"):
+            print("Cryptfile: ready (dual-write active)")
+            if "cryptfile_path" in info:
+                print(f"  File: {info['cryptfile_path']}")
+            print()
+            print("Dual-write: system keyring + cryptfile encrypted backup.")
+            print("Safe from OS password changes — data auto-restores from cryptfile.")
+        else:
+            print("Cryptfile: ready (cryptfile-only mode)")
+            if "cryptfile_path" in info:
+                print(f"  File: {info['cryptfile_path']}")
+            print()
+            print("No system keyring available — the encrypted backup is the store.")
+            print("Secrets are stored in the AES cryptfile; get with 'credstore get KEY -p'.")
     elif info.get("cryptfile_locked") is not None:
         print("Cryptfile: LOCKED (master password not set)")
         if "cryptfile_path" in info:
@@ -354,7 +362,18 @@ def _cmd_set(key: str) -> int:
         _err(str(exc))
         return 1
 
-    # 2. Write system keyring (primary)
+    # 2. Write system keyring (primary) — skip if unavailable (cryptfile-only)
+    if backend_mod.get_system_keyring() is None:
+        del secret
+        del master_pw
+        print(f"Stored: {key}")
+        print(
+            "  (cryptfile-only — no system keyring available;"
+            " stored in the encrypted backup)",
+            file=sys.stderr,
+        )
+        return 0
+
     try:
         store_mod.set_credential(key, secret)
     except Exception as exc:
@@ -406,6 +425,20 @@ def _cmd_get(key: str, password_mode: bool = False) -> int:
         value_cf = backend_mod.read_cryptfile_entry(key, master_pw, store_mod.DEFAULT_SERVICE)
     except Exception as exc:
         cf_error = str(exc)
+
+    # Cryptfile-only mode: no system keyring at all — the encrypted backup
+    # IS the store, so its value is authoritative (skip the dual-query
+    # consistency checks that assume two stores exist).
+    if backend_mod.get_system_keyring() is None:
+        if value_cf is None:
+            del master_pw
+            _err(f"Not found in cryptfile backup: {key}"
+                 + (f" ({cf_error})" if cf_error else ""))
+            return 1
+        del master_pw
+        print(value_cf)
+        del value_cf
+        return 0
 
     # Guard clauses — each branch returns early
     if value_kr is None and value_cf is None:
@@ -582,11 +615,25 @@ def _cmd_copy(source: str, dest: str) -> int:
         print("Install: pip install keyrings.cryptfile", file=sys.stderr)
         return 1
 
-    # 1. Read source
+    # 1. Read source (keyring first; cryptfile in cryptfile-only mode)
     secret = store_mod.get_credential(source)
     if secret is None:
-        _err(f"source credential '{source}' not found in system keyring.")
-        return 1
+        if backend_mod.get_system_keyring() is not None:
+            _err(f"source credential '{source}' not found in system keyring.")
+            return 1
+        master_pw_probe = masked_input("Master password (for encrypted backup): ")
+        try:
+            secret = backend_mod.read_cryptfile_entry(
+                source, master_pw_probe, store_mod.DEFAULT_SERVICE
+            )
+        except Exception as exc:
+            del master_pw_probe
+            _err(f"source credential '{source}' not found in system keyring or cryptfile: {exc}")
+            return 1
+        del master_pw_probe
+        if secret is None:
+            _err(f"source credential '{source}' not found in system keyring or cryptfile.")
+            return 1
 
     # 2. Idempotency: skip if dest already holds the same value
     dest_existing = store_mod.get_credential(dest)
@@ -610,7 +657,18 @@ def _cmd_copy(source: str, dest: str) -> int:
         _err(str(exc))
         return 1
 
-    # 4. Write system keyring (primary)
+    # 4. Write system keyring (primary) — skip if unavailable (cryptfile-only)
+    if backend_mod.get_system_keyring() is None:
+        del secret
+        del master_pw
+        print(f"Copied to: {dest}")
+        print(
+            "  (cryptfile-only — no system keyring available;"
+            " stored in the encrypted backup)",
+            file=sys.stderr,
+        )
+        return 0
+
     try:
         store_mod.set_credential(dest, secret)
     except Exception as exc:

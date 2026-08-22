@@ -107,7 +107,7 @@ class TestGetSystemKeyring:
             assert backend._init_system() is mock_kr
 
     def test_dispatch_linux_keyutils_unavailable(self, monkeypatch):
-        """Native Linux but kernel keyring unusable → loud RuntimeError."""
+        """Native Linux but kernel keyring unusable → None (cryptfile-only)."""
         monkeypatch.setattr(backend, "is_wsl", lambda: False)
         monkeypatch.setattr(backend.os, "name", "posix")
         monkeypatch.setattr(backend.sys, "platform", "linux")
@@ -119,8 +119,8 @@ class TestGetSystemKeyring:
             "keyring": MagicMock(),
             "credstore._keyutils_backend": MagicMock(),
         }):
-            with pytest.raises(RuntimeError, match="keyring unavailable"):
-                backend._init_system()
+            result = backend._init_system()
+            assert result is None
 
     def test_dispatch_unsupported_platform(self, monkeypatch):
         """Unsupported platform → loud RuntimeError."""
