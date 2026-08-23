@@ -111,11 +111,6 @@ class TestBuild:
         assert "Skills:" in result
         assert "File cabinet:" in result
 
-    def test_mcp_tool_prefix(self, cfg):
-        from slife.agent.system_prompt import build
-        result = build(cfg)
-        assert "server_name__" in result
-
     def test_no_personality_language(self, cfg):
         """No 'helpful assistant' or tone instructions.  (The opening 'You
         are Agent …' is intentional identity framing, not personality.)
@@ -356,12 +351,6 @@ class TestStructure:
 
 class TestHelpers:
     """Direct tests for system_prompt helper functions."""
-
-    def test_credstore_backend_runtime_error(self):
-        """_credstore_backend returns '未知' when get_backend_name raises."""
-        from slife.agent.system_prompt import _credstore_backend
-        with patch("credstore.get_backend_name", side_effect=RuntimeError("boom")):
-            assert _credstore_backend() == "unknown"
 
     def test_os_name_windows(self):
         from slife.agent.system_prompt import _os_name

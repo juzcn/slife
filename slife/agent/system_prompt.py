@@ -78,10 +78,7 @@ def _render_context(config: Config) -> dict:
         "tool_result_max_percent": int(config.tool_result_ceiling * 100),
         # ── 图像与多模态 ──
         "has_vision": model.supports_vision,
-        # ── 凭证解析链 ──
-        "credstore_backend": _credstore_backend(),
         # ── 工具与技能 ──
-        "mcp_tool_prefix": "server_name__",
         "skills_directory": str(get_skills_dir().resolve()),
         "data_dir": str(get_data_dir().resolve()),
         "config_path": str(get_config_path().resolve()),
@@ -238,14 +235,3 @@ def _os_version() -> str:
     if system == "Darwin":
         return platform.mac_ver()[0] or platform.uname().release
     return platform.uname().release
-
-
-def _credstore_backend() -> str:
-    """Safe lookup of the active credstore backend name."""
-    try:
-        from credstore import get_backend_name
-        return get_backend_name()
-    except ImportError:
-        return "unavailable"
-    except Exception:
-        return "unknown"

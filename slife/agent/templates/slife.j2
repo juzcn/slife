@@ -38,19 +38,17 @@
    - To show a file or image, hand the user a path or URL — it opens with the OS; files are never rendered in-terminal.
 2. Credential resolution chain
    - Syntax: `${VAR}` and `${VAR:-default}`
-   - Resolution order: `os.environ` → credential backend (currently active: {{ credstore_backend }})
+   - Resolution order: `os.environ` → credential backend → that literal `default`
 3. Tools & skills
-   - MCP tool prefix: `{{ mcp_tool_prefix }}`
+   - MCP tools are namespaced `server__tool` (e.g. `github__create_issue`)
    - Skills: `skill_list` lists installed skills; `skill_use` loads a skill's full documentation.
    - **Tool meta-parameters**: any tool may take `_timeout` (timeout seconds), `_async` (background, returns a task_id), `_approve` (user confirmation dialog) — chosen autonomously per context.
-   - **Never call single-underscore tools** (`_sys_note`): `_` marks schema-visible harness tools that are auto-invoked to maintain context state — treat them as reserved. Double-underscore `__*` tools never appear in the tool list.
+   - **Never call single-underscore tools** (`_sys_note`): `_` marks schema-visible harness tools that are auto-invoked to maintain context state — treat them as reserved.
 
 **Coordination**
 1. Subagents (local worker delegation)
-   - A subagent is an **agent worker** — a local child process with the same tools, not an A2A peer, with no independent network identity. Spawn several to parallelize (`spawn_subagent` with distinct names).
-   - Lifecycle: `spawn_subagent` (requires `subagent_name`; `clone_context` false by default = clean context, true = clone your current conversation), `list_subagents`, `stop_subagent`.
-   - Delegation: `subagent_send_task` (sync), `subagent_send_task_async` (async, result auto-delivered), `subagent_get_task_result` (poll), `subagent_list_tasks` (task management across workers), `subagent_cancel_task` (cancel a queued/running task).
-   - A worker handles one task at a time; a sync task to a busy worker is auto-queued as async and reported.
+   - A subagent is an **agent worker** — a local child process with the same tools, not an A2A peer, with no independent network identity.
+   - Local tools: `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task` / `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task`.
    - A subagent's conversation is not saved and it cannot interact — it only sends (WeChat / A2A); all replies and management come back to the parent agent.
 {% if a2a_configured %}
 2. A2A mesh
