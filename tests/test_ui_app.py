@@ -10,7 +10,7 @@ from slife.config import Config, ModelConfig
 from slife.agent.llm_client import TokenUsage
 from slife.agent.loop import ToolCallInfo, AgentResult
 from slife.agent.service import AgentService
-from slife.ui.app import StatusBar
+from slife.ui.app import StatusBar, _parse_images_from_input
 from slife.ui.handler import TUIHandler
 
 
@@ -625,3 +625,137 @@ class TestFatalExit:
         assert app._fatal_message is not None
         assert "memdb" in app._fatal_message
         assert app._return_code == 1
+
+
+# ── Image attachment parsing ───────────────────────────────────────
+
+
+class TestParseImagesFromInput:
+    """_parse_images_from_input — multiple @directives, mixed shapes."""
+
+    def test_no_at_no_images(self):
+        assert _parse_images_from_input("just text") == []
+
+    def test_single_bare_path(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        assert _parse_images_from_input(f"看 @{img}") == [str(img)]
+
+    def test_non_image_at_token_not_attached(self):
+        assert _parse_images_from_input("hi @someone how are you") == []
+
+    def test_multiple_bare_paths(self, tmp_path):
+        a = tmp_path / "a.png"; a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        b = tmp_path / "b.jpg"; b.write_bytes(b"\xff\xd8\xff\xe0JFIF")
+        got = _parse_images_from_input(f"看图 @{a} 和 @{b} 哪个好")
+        assert got == [str(a), str(b)]
+
+    def test_adjacent_no_space(self, tmp_path):
+        """@a.png和@b.png — two directives with no whitespace between them."""
+        a = tmp_path / "a.png"; a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        b = tmp_path / "b.png"; b.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        got = _parse_images_from_input(f"对比@{a}和@{b}")
+        assert got == [str(a), str(b)]
+
+    def test_comma_separated(self, tmp_path):
+        a = tmp_path / "a.png"; a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        b = tmp_path / "b.png"; b.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        got = _parse_images_from_input(f"@{a},@{b}")
+        assert got == [str(a), str(b)]
+
+    def test_quoted_with_spaces(self, tmp_path):
+        img = tmp_path / "has space.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        got = _parse_images_from_input(f'看图 @"{img}" 谢谢')
+        assert got == [str(img)]
+
+    def test_single_quoted(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        got = _parse_images_from_input(f"@'{img}'")
+        assert got == [str(img)]
+
+    def test_quoted_then_bare(self, tmp_path):
+        a = tmp_path / "has space.png"; a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        b = tmp_path / "b.png"; b.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        got = _parse_images_from_input(f'@"{a}" 和 @{b}')
+        assert got == [str(a), str(b)]
+
+    def test_mixed_url_path(self, tmp_path):
+        img = tmp_path / "a.png"; img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        got = _parse_images_from_input(
+            f"@{img} @https://example.com/x.png @http://e.com/y.jpg"
+        )
+        assert got == [str(img), "https://example.com/x.png", "http://e.com/y.jpg"]
+
+    def test_data_uri(self):
+        got = _parse_images_from_input("@data:image/png;base64,AAAA")
+        assert got == ["data:image/png;base64,AAAA"]
+
+    def test_data_uri_adjacent_to_path(self, tmp_path):
+        img = tmp_path / "a.png"; img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        got = _parse_images_from_input(f"@{img} @data:image/png;base64,AAAA")
+        assert got == [str(img), "data:image/png;base64,AAAA"]
+
+    def test_bracketed(self, tmp_path):
+        img = tmp_path / "a.png"; img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        got = _parse_images_from_input(f"@[{img}] 和 @{{{img}}}")
+        assert got == [str(img), str(img)]
+
+    def test_unterminated_quote_no_crash(self):
+        assert _parse_images_from_input('看 @"C:\foo\a.png') == []
+
+    def test_at_alone(self):
+        assert _parse_images_from_input("plain @ nothing") == []
+        assert _parse_images_from_input("@") == []
+
+    def test_path_and_non_image_together(self, tmp_path):
+        img = tmp_path / "a.png"; img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        got = _parse_images_from_input(f"@{img} @everyone thanks")
+        assert got == [str(img)]
+
+    def test_data_uri_with_comma_adjacent(self):
+        """data URIs contain commas — must not split at them."""
+        got = _parse_images_from_input(
+            "@data:image/png;base64,AAAA @data:image/jpeg;base64,BBBB"
+        )
+        assert got == [
+            "data:image/png;base64,AAAA",
+            "data:image/jpeg;base64,BBBB",
+        ]
+
+    def test_duplicate_directives_kept(self, tmp_path):
+        img = tmp_path / "a.png"; img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        got = _parse_images_from_input(f"@{img} 再来一次 @{img}")
+        assert got == [str(img), str(img)]
+
+    def test_url_adjacent_no_space(self):
+        """URLs don't end in an image extension — whitespace-exact slicing
+        still splits adjacent directives (URLs never contain spaces)."""
+        got = _parse_images_from_input(
+            "@https://example.com/a.png和@http://e.com/b.jpg"
+        )
+        assert got == ["https://example.com/a.png", "http://e.com/b.jpg"]
+
+    def test_url_comma_separated(self):
+        got = _parse_images_from_input(
+            "@https://a.com/x.png,@https://b.com/y.png"
+        )
+        assert got == ["https://a.com/x.png", "https://b.com/y.png"]
+
+    def test_url_no_extension(self):
+        """URLs are self-identifying via scheme — no extension required."""
+        got = _parse_images_from_input("@https://example.com/photo")
+        assert got == ["https://example.com/photo"]
+
+    def test_url_with_query_string(self):
+        got = _parse_images_from_input("@https://example.com/photo?v=2&x=1")
+        assert got == ["https://example.com/photo?v=2&x=1"]
+
+    def test_url_with_fragment(self):
+        got = _parse_images_from_input("@https://example.com/photo#section")
+        assert got == ["https://example.com/photo#section"]
+
+    def test_url_with_extension_and_query(self):
+        got = _parse_images_from_input("@https://example.com/a.png?v=2")
+        assert got == ["https://example.com/a.png?v=2"]

@@ -290,7 +290,8 @@ class Conversation:
         """Append pre-built image blocks to the last user message.
 
         Used by ``include_image`` so the LLM sees images as vision
-        content blocks on the next turn, not just as text.
+        content blocks on the next turn, not just as text.  A single
+        call may carry several blocks (one per attached image).
 
         Each block must be a dict with ``"type": "image_url"``.
         """

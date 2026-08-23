@@ -52,12 +52,11 @@ def create_tools_from_config(
             logger.info("tool_disabled name=%s", tool_cls.name)
             continue
 
-        # Skip vision tools when the active model doesn't support images.
-        if getattr(tool_cls, "_requires_vision", False):
-            active = getattr(config, "active_model", None) if config else None
-            if active is None or not active.supports_vision:
-                logger.info("tool_skipped_no_vision name=%s", tool_cls.name)
-                continue
+        # NOTE: vision tools are NOT filtered here anymore — they are always
+        # registered (include_image is the only one).  A tool that needs
+        # vision enforces it at execute() time (see IncludeImageTool) so a
+        # non-vision model that calls it gets a clear "vision=false" refusal
+        # instead of a silently-missing tool.
 
         # Note: the memfiles tools (expose_file, note_save, diary_write,
         # file_save, url_save, search, read) live in the

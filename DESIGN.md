@@ -218,11 +218,11 @@ The schema is the model's only view of a tool — write it for the model, not th
 
 ### Auto-Discovery
 
-`slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, skips vision tools when the active model can't see images, and skips `_skip_auto_register` classes (e.g. `MCPProxyTool`, created per-instance at runtime).
+`slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, `_skip_auto_register` classes (e.g. `MCPProxyTool`, created per-instance at runtime), and per-model requirements enforced at **execute time** rather than load time: tools are always registered, and a tool like `include_image` refuses at runtime when the active model has no vision (so the LLM sees the tool and gets a clear "vision=false" error instead of a silently-missing tool).
 
 ### Tool Categories — native tools (50 total: 49 LLM-visible + 1 harness `_` tool)
 
-`include_image` is dropped when the active model has no vision; `install_python_package` is disabled by default in the shipped config.
+`install_python_package` is disabled by default in the shipped config.
 
 All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM sees only function names and schemas.
 
@@ -239,7 +239,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
-| Vision | `vision.py` | `include_image` (native — injects image blocks into the conversation; gated on a vision-capable model) |
+| Vision | `vision.py` | `include_image` (native — injects one or more image blocks into the conversation; runtime-gated on a vision-capable model) |
 | Harness | `harness.py` | `_sys_note` (visible-but-reserved, see above); trim is internal — no tool |
 | Meta | `meta.py` | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
@@ -543,13 +543,49 @@ Local child-process workers, always available — no config toggle.  A subagent 
 
 ### Image Input
 
-User attaches with `@path` / `@url` syntax (quoted paths supported):
+User attaches images with `@` directives — **one `@` = one image source**, any number per input, parsed independently. The user message stays verbatim (the `@` reference remains visible like any text); the extracted sources are handed to the loop, which **auto-invokes** the `include_image` tool once with the whole `sources` list via the harness-call machinery (`_auto_invoke`, same as `_sys_note`) — a single conversation shape (one assistant(tool_use) + tool-result pair), no LLM iteration spent deciding to attach.
 
-```
-Check this screenshot @D:\Downloads\error.png and tell me what's wrong
-```
+#### `@` syntax
 
-`@path` / `@url` handling is one mechanism with `include_image`: the TUI keeps the user message verbatim (the `@` reference stays visible like any text) and hands the extracted sources to the loop, which **auto-invokes** the `include_image` tool for each via the harness-call machinery (`_auto_invoke`, same as `_sys_note`) — same conversation shape as a model-driven attach, no LLM iteration spent deciding to attach. `include_image_url()` turns each source into a vision content block (HTTP(S) URLs pass through, local files base64 as `data:` URIs). Blocks are **live-session-only**: injected into the in-memory user message, never persisted, restore is text-only. Nothing is rendered in-terminal — files open with the OS default app (clickable paths/URLs in the chat), and `memfiles__expose_file` publishes any local file as a public HTTPS link. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`).
+Each `@` is followed by exactly one source, in any of these shapes:
+
+| Shape | Example |
+|---|---|
+| Bare path | `@D:\photos\a.png` |
+| URL | `@https://example.com/x.png` (no extension / query / fragment OK) |
+| Data URI | `@data:image/png;base64,AAAA` |
+| Quoted (spaces OK) | `@"D:\my photo.png"` / `@'a.jpg'` |
+| Bracketed | `@[D:\a.png]` / `@{a.png}` / `@(a.png)` |
+
+Multiple `@` may sit **adjacent without spaces** — `@a.png@b.png`, `@a.png @b.png`, and `@https://a.com/x.png和@http://b.com/y.png` each yield two sources. Quoted/bracketed forms read the inner content (spaces allowed); bare tokens run to whitespace, a quote, or the next `@`.
+
+**Shape gating.** A bare path must end in an image extension (`.png .jpg .jpeg .gif .webp .bmp .svg .ico .avif .tiff .heic`), so `@someone` (no extension) is skipped as plain text. **URLs and data URIs are self-identifying via their scheme** (`http://` / `https://` / `data:`) — they need no extension gate, so `@https://example.com/photo`, query strings (`?v=2`), and fragments (`#x`) are all valid. **No filesystem check here** — whether a source actually exists / is reachable is validated downstream by `include_image` (which reads the file or returns an error). Nothing is rendered in-terminal.
+
+#### Boundary characters (token-end)
+
+The extract regex ends a token at these characters — deliberate, so adjacent `@` directives split cleanly and CJK text isn't swallowed:
+
+- **Whitespace, quote (`"` / `'`), `@`** — universal boundaries (the next directive).
+- **CJK characters** — a natural word boundary when typing `@a.png和@b.png` or `@https://a.com/x.png和@http://b.com/y.png`, so both directives parse.
+- **Comma — URLs only** — `@url,@url` separates; a URL with a comma in its query string is truncated at it (rare; percent-encode instead). **Data URIs keep commas** (base64 payload is `,`-heavy).
+
+**CJK inside a URL.** A bare URL must not contain raw CJK — `@https://example.com/photo?v=我` truncates at the CJK. Two correct ways to attach a URL whose query carries non-ASCII:
+
+- **Percent-encode** the value: `@https://example.com/photo?v=%E6%88%91`
+- **Wrap the whole URL in quotes**: `@"https://example.com/photo?v=我的照片"` (the quoted branch reads everything inside, CJK included)
+
+#### Parsing: two-phase regex
+
+`slife/ui/app.py` parses with a two-phase regex — **locate then extract** — deliberately *not* a single-line grammar:
+
+1. **Locate** — `_AT_RE = re.compile("@")` finds every `@`.
+2. **Extract** — `_SOURCE_RE` matches a source pattern on the slice after each `@` (data URI / URL / quoted / bracketed / bare-with-extension).
+
+The boundary set is shared via `_TOKEN_END` (whitespace / quote / `@` / CJK) with `_URL_END` adding comma for URLs only. This locates-then-slices structure is more robust than one regex against special characters (spaces, CJK, commas) that would otherwise corrupt a single `\S+` token, and keeps the existence check in one place downstream. A non-matching `@` (e.g. `@someone`, an unclosed quote) is skipped whole — the text stays, nothing is attached.
+
+#### Pipeline
+
+The loop passes the parsed `sources` list to `include_image` in a single call. `include_image_urls()` (in `slife/agent/multimodal.py`) turns each source into a vision content block (HTTP(S) URLs pass through, local files base64 as `data:` URIs), returning `(blocks, failed)` — the valid blocks are injected into the in-memory user message in one shot, the failures are reported in the tool result. Exact duplicate sources are deduped (order-preserving) so a repeated `@a.png` attaches once. Blocks are **live-session-only**: injected into the in-memory user message, never persisted, restore is text-only. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`).
 
 ### Image Display
 

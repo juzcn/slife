@@ -1072,11 +1072,14 @@ class AgentLoop:
         # is spent deciding to attach.  Reuses _auto_invoke (the _sys_note
         # machinery): records the assistant(tool_use) + tool result pair, runs
         # the tool directly, and include_image's execute injects the image
-        # content block into the user message in memory (never persisted —
-        # restore rebuilds text-only).
+        # content blocks into the user message in memory (never persisted —
+        # restore rebuilds text-only).  All images go in ONE call so a single
+        # (user, assistant, tool) triple carries the whole batch.
         conversation.add_user_message(user_input)
-        for img in images or []:
-            await self._auto_invoke("include_image", {"source": img}, conversation)
+        if images:
+            await self._auto_invoke(
+                "include_image", {"sources": list(images)}, conversation,
+            )
         total_usage = TokenUsage()
         t_request = _time.monotonic()
 

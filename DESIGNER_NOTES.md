@@ -210,6 +210,14 @@ UI的调整，bug的修复当前是在Agent之外做的，因为它自己改自�
 
 5 cc-switch list 按 provider-name/model-name 列出
 
+7. Project specific info
+
+- expose file tool use ngrok free version, with 2 consequences, 1 only support one instance of slife, 2 url generated is short lived. 
+
+- @ 的写法规则， 给用户看的
+
+
+
 
 
 

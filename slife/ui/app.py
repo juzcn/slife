@@ -13,7 +13,6 @@ from textual.widgets import Static, TextArea
 
 from slife.config import Config
 from slife.a2a.card import format_presence_line
-from slife.agent.multimodal import is_image_source
 from slife.agent.service import AgentService, MemoryDatabaseError
 from slife.agent.plugins import PluginStartStatus
 from slife.ui.chat import ChatView
@@ -199,29 +198,95 @@ class HistoryInput(TextArea):
 
 
 # ── Image attachment parsing ──────────────────────────────────────
+#
+# Two-phase regex parsing:
+#   1. LOCATE  — _AT_RE finds every '@' in the input.
+#   2. EXTRACT — on the slice after each '@', _SOURCE_RE matches the
+#      image source by pattern (data URI / URL / quoted / bracketed /
+#      bare path), reading up to the next whitespace, quote, or '@'.
+#
+# Pure pattern extraction — NO filesystem checks here.  A matched source
+# is returned as-is; whether it actually exists is validated later by
+# include_image (is_image_source / is_file).  This keeps the parser a
+# simple grammar and the existence check in one place downstream.
 
-# Matches @ followed by an image file path (quoted or unquoted).
-# Supports: @path/img.png  @"path/with spaces/img.jpg"  @'path/img.gif'
-_IMAGE_ATTACH_RE = re.compile(
-    r"""@(?:"([^"]+)"|'([^']+)'|(\S+))""",
+_AT_RE = re.compile("@")
+
+# Characters that END a token in the parser.  Whitespace, quotes, and '@'
+# (the next directive) are always boundaries.  CJK characters are too —
+# a natural word boundary when typing "@url和@url" or "@a.png和@b.png" —
+# so an adjacent directive isn't swallowed.  URLs additionally stop at a
+# comma (the "@url,@url" separator); data URIs keep commas (base64) and
+# bare paths keep their image-extension gate.
+_TOKEN_END = r'\s"\'@一-鿿'
+_URL_END = _TOKEN_END + ","
+
+# Image extensions gate the bare-path shape: a bare @token is only a
+# source when it "looks like" an image (ends in a known extension), so
+# @someone is skipped.  URLs / data URIs are self-identifying via their
+# scheme and need no extension gate.
+_IMAGE_EXTS = (
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+    ".svg", ".ico", ".avif", ".tiff", ".heic",
 )
+_EXT_ALT = "|".join(re.escape(e.lstrip(".")) for e in _IMAGE_EXTS)
+
+# One source per @, matched INSIDE the slice after the '@'.  Delimiters:
+#   data:…             → to next token-end (commas are base64 — kept)
+#   http(s)://…        → to next token-end OR comma (self-identifying,
+#                        may have query strings / fragments / no ext)
+#   "..."/'...'        → quoted, may contain spaces
+#   [...]/ {...} /(…)  → bracketed, may contain spaces
+#   bare               → token-end run ending in an image extension —
+#                        "@a.png@b.png" cuts cleanly at each '@'.
+_SOURCE_RE = re.compile(r"""
+    (?: data: [^%s]+ | https?:// [^%s]+ )          # data URI / URL
+  | "(?P<dq>[^"]+)"                                # @"path with spaces"
+  | '(?P<sq>[^']+)'                                # @'path'
+  | \[(?P<br>[^\]\s]+)\]                           # @[path]
+  | \{(?P<bc>[^}\s]+)\}                            # @{path}
+  | \((?P<bp>[^)\s]+)\)                            # @(path)
+  | (?P<bare>[^%s]*\.(?:%s))                       # bare path w/ img ext
+""" % (_TOKEN_END, _URL_END, _TOKEN_END, _EXT_ALT), re.VERBOSE)
 
 
 def _parse_images_from_input(raw: str) -> list[str]:
-    """Extract ``@path`` / ``@url`` image directive sources from user input.
+    """Extract ``@path`` / ``@url`` / ``@data:...`` directive sources from
+    user input — one per ``@`` directive, in any mix of shapes.
 
-    Just the regex plus the shared acceptance predicate — validation reuses
-    ``is_image_source`` (the same gate ``include_image`` / the vision
-    builders use), so it is never duplicated here.  The user message itself
-    is passed through verbatim (``@`` markers stay visible like any text);
-    non-image ``@tokens`` (e.g. ``@someone``) are not attachments and are
-    simply not attached.
+    Supports, in any combination on one input::
+
+        @path/img.png
+        @"path/with spaces/img.jpg"
+        @'path/img.gif'
+        @[path/a.png] / @{path/a.png} / @(path/a.png)
+        @path/a.png@path/b.png      (adjacent, no spaces)
+        @https://example.com/x.png
+        @data:image/png;base64,AAAA
+
+    Two-phase regex: locate every ``@``, then match a source pattern on
+    the slice after it (no filesystem checks — existence is validated
+    downstream by ``include_image``).  The user message itself is passed
+    through verbatim (``@`` markers stay visible like any text);
+    non-image ``@tokens`` (e.g. ``@someone``) are not attachments and
+    are simply not attached (the ``@`` is skipped, the text stays).
     """
     sources: list[str] = []
-    for match in _IMAGE_ATTACH_RE.finditer(raw):
-        value = match.group(1) or match.group(2) or match.group(3)
-        if is_image_source(value):
-            sources.append(value)
+    i = 0
+    while True:
+        at = _AT_RE.search(raw, i)
+        if at is None:
+            break
+        m = _SOURCE_RE.match(raw, at.end())
+        if m:
+            value = m.group("dq") or m.group("sq") or \
+                m.group("br") or m.group("bc") or m.group("bp") \
+                or m.group(0)
+            if value:
+                sources.append(value)
+            i = m.end()
+        else:
+            i = at.start() + 1  # skip just the '@', keep scanning
     return sources
 
 

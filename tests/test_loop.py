@@ -3,6 +3,7 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
+import json
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -762,12 +763,15 @@ class TestAgentLoopRun:
     @pytest.mark.asyncio
     async def test_run_with_images(self, sample_model_config, empty_registry, conversation, tmp_path):
         """@path / programmatic attachments auto-invoke include_image: the
-        user message stays verbatim text, the image block is injected into
+        user message stays verbatim text, the image blocks are injected into
         it, and the harness synthesizes the assistant(tool_use) + tool
-        result pair — no LLM iteration spent deciding to attach."""
-        # Create a real temp image file
+        result pair — no LLM iteration spent deciding to attach.  Multiple
+        images ride ONE include_image call (single harness pair)."""
+        # Create real temp image files
         img = tmp_path / "test.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake png")
+        img2 = tmp_path / "test2.png"
+        img2.write_bytes(b"\x89PNG\r\n\x1a\nfake png 2")
 
         from slife.tools.vision import IncludeImageTool
         from slife.tools.context import ToolContext
@@ -781,27 +785,38 @@ class TestAgentLoopRun:
         loop = AgentLoop(llm, registry, supports_vision=True)
 
         async def mock_stream(messages, tools, **kwargs):
-            yield StreamChunk(content="I see an image!")
+            yield StreamChunk(content="I see images!")
             yield StreamChunk(usage=TokenUsage(5, 3, 8))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            result = await loop.run("Describe this", conversation, images=[str(img)])
+            result = await loop.run(
+                "Describe these", conversation,
+                images=[str(img), str(img2)],
+            )
 
-        assert result.text == "I see an image!"
+        assert result.text == "I see images!"
         # Find the just-added user message, then the harness pair after it.
         ui = next(
             i for i, m in enumerate(conversation.messages) if m["role"] == "user"
         )
         user = conversation.messages[ui]
-        assert user["content"][0] == {"type": "text", "text": "Describe this"}
+        assert user["content"][0] == {"type": "text", "text": "Describe these"}
+        # Both images injected as separate image_url blocks.
+        assert len(user["content"]) == 3
         assert user["content"][1]["type"] == "image_url"
         assert user["content"][1]["image_url"]["url"].startswith("data:image/")
+        assert user["content"][2]["type"] == "image_url"
+        assert user["content"][2]["image_url"]["url"].startswith("data:image/")
         # Harness-synthesized include_image pair follows the user message
         helper = conversation.messages[ui + 1]
         assert helper["role"] == "assistant"
         tc = helper["tool_calls"][0]
         assert tc["function"]["name"] == "include_image"
         assert tc["id"].startswith("_harness_include_image_")
+        # ONE call carries the whole batch via sources (JSON-escaped path
+        # separators on Windows — parse to compare reliably).
+        args = json.loads(tc["function"].get("arguments", ""))
+        assert args.get("sources") == [str(img), str(img2)]
         res = conversation.messages[ui + 2]
         assert res["role"] == "tool"
         assert res["content"].startswith("Image included:")

@@ -8,7 +8,12 @@ from unittest.mock import patch
 
 import pytest
 
-from slife.agent.multimodal import include_image_url, _ensure_mimetypes
+from slife.agent.multimodal import (
+    include_image_url,
+    include_image_urls,
+    is_image_source,
+    _ensure_mimetypes,
+)
 
 
 # ── _ensure_mimetypes ─────────────────────────────────────────────────
@@ -98,6 +103,15 @@ class TestIncludeImageUrl:
         assert result is not None
         assert result["image_url"]["url"] == "http://example.com/photo.jpg"
 
+    def test_data_uri_passthrough(self):
+        result = include_image_url("data:image/png;base64,AAAA")
+        assert result is not None
+        assert result["type"] == "image_url"
+        assert result["image_url"]["url"] == "data:image/png;base64,AAAA"
+
+    def test_data_uri_is_image_source(self):
+        assert is_image_source("data:image/png;base64,AAAA") is True
+
     def test_non_image_mime_still_works(self, tmp_path):
         """MIME type not starting with 'image/' is force-corrected to image/png."""
         img = tmp_path / "data.bin"
@@ -118,3 +132,42 @@ class TestIncludeImageUrl:
             result = include_image_url(img)
 
         assert result is None
+
+
+# ── include_image_urls ──────────────────────────────────────────────
+
+
+class TestIncludeImageUrls:
+    """Tests for include_image_urls — batch block generation."""
+
+    def test_mixed_sources(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+        blocks, failed = include_image_urls([
+            str(img),
+            "https://example.com/b.png",
+            "data:image/png;base64,AAAA",
+        ])
+        assert failed == []
+        assert len(blocks) == 3
+        assert blocks[0]["type"] == "image_url"
+        assert blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert blocks[1]["image_url"]["url"] == "https://example.com/b.png"
+        assert blocks[2]["image_url"]["url"] == "data:image/png;base64,AAAA"
+
+    def test_missing_source_reported_not_swallowed(self, tmp_path):
+        img = tmp_path / "a.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+        blocks, failed = include_image_urls([
+            str(img),
+            str(tmp_path / "missing.png"),
+        ])
+        assert len(blocks) == 1
+        assert failed == [str(tmp_path / "missing.png")]
+
+    def test_all_failed(self):
+        blocks, failed = include_image_urls(["nope/1.png", "nope/2.png"])
+        assert blocks == []
+        assert failed == ["nope/1.png", "nope/2.png"]
