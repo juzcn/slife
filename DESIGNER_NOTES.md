@@ -196,6 +196,10 @@ UI的调整，bug的修复当前是在Agent之外做的，因为它自己改自�
      - `[TrimContext: N]` — N oldest complete turns were cut from context after the last turn was saved; their detail may be out of context. **Runtime-only** — current session only, never in restored history (restore is already the trimmed state). The turns remain in memory (searchable).
      - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
 
+5.6 localhost 流量绝不走代理（2026-08 修复）
+
+插件连接（`http://127.0.0.1:{port}/mcp`）被系统代理（如 Windows 系统代理 `127.0.0.1:7890`，或 shell 导出的 `HTTP_PROXY`）劫持，返回 502，导致 `start_plugin_server` 挂起、启动时 `🔌 插件已加载` 一条都不显示（只有返回快的 `SKIPPED` 会显示）。这是潜在 bug 不是环境问题：任何配了代理的机器都可能触发。修复：`MCPClient.connect` 自己构造 `httpx.AsyncClient(trust_env=False)` 传给 SDK —— 本地插件客户端不带代理；外部 MCP 服务器走 mcp 插件自己的 client（`connection.py`），仍然 `trust_env=True`，需要代理的远端不受影响。详见 DESIGN.md "Localhost Never Goes Through a Proxy"。
+
 6.4 在项目里创建一个小工具 cc-switch， 能够生成 ~/.claude/settings.json， 按照credstore模式。
 
 1 创建和使用 ~/.claude/cc-switch.json 保存设置 settings.json 需要的provider和model的配置信息， 例如 DEEPSEEK-API-KEY, 对应credstore中定义的名称

@@ -259,6 +259,41 @@ class TestMCPClientConnect:
                 mock_session.initialize.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_connect_passes_proxy_free_http_client(self):
+        """Local plugin traffic must not route through the OS proxy.
+
+        Regression: a Windows system proxy (e.g. 127.0.0.1:7890) was being
+        picked up via the MCP SDK's default httpx client (trust_env=True),
+        502ing every localhost plugin session — so plugin startup hung and
+        the "插件已加载" messages never rendered.  connect() now supplies its
+        own httpx.AsyncClient(trust_env=False).
+        """
+        client = MCPClient()
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+
+        with patch("slife.mcp.client.streamable_http_client") as mock_transport:
+            mock_read, mock_write, mock_info = MagicMock(), MagicMock(), MagicMock()
+            mock_ctx = MagicMock()
+            mock_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write, mock_info))
+            mock_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_transport.return_value = mock_ctx
+
+            with patch("slife.mcp.client.ClientSession") as mock_session_cls:
+                mock_sc = MagicMock()
+                mock_sc.__aenter__ = AsyncMock(return_value=mock_session)
+                mock_sc.__aexit__ = AsyncMock(return_value=None)
+                mock_session_cls.return_value = mock_sc
+
+                await client.connect("http://127.0.0.1:1234/mcp")
+
+        assert client._http_client is not None
+        assert client._http_client.trust_env is False
+        # The provided client is handed to the transport, not the SDK default.
+        _, kwargs = mock_transport.call_args
+        assert kwargs.get("http_client") is client._http_client
+
+    @pytest.mark.asyncio
     async def test_connect_already_connected(self):
         client = MCPClient()
         client._connected = True

@@ -14,6 +14,8 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -165,6 +167,7 @@ class MCPClient:
         self._session: ClientSession | None = None
         self._connected: bool = False
         self._exit_stack: AsyncExitStack | None = None
+        self._http_client: httpx.AsyncClient | None = None
         self._tool_timeout = tool_timeout
         # Optional async callback(method, params) invoked for server-initiated
         # notifications (e.g. ``notifications/tools/list_changed``).  Must
@@ -204,8 +207,21 @@ class MCPClient:
                 # timeout to surface it into the retry loop.
                 async with asyncio.timeout(_CONNECT_ATTEMPT_TIMEOUT):
                     self._exit_stack = AsyncExitStack()
+                    if self._http_client is None:
+                        # Local plugin servers only — never route localhost
+                        # through the OS proxy (a Windows system proxy like
+                        # 127.0.0.1:7890 would 502 the local MCP session).
+                        # trust_env=False keeps this client proxy-free; a
+                        # provided client is owned by us (the SDK does not
+                        # manage its lifecycle), so it is closed in _cleanup.
+                        self._http_client = httpx.AsyncClient(
+                            trust_env=False,
+                            timeout=httpx.Timeout(
+                                connect=10.0, read=None, write=None, pool=10.0,
+                            ),
+                        )
                     read_stream, write_stream, _ = await self._exit_stack.enter_async_context(
-                        streamable_http_client(url),
+                        streamable_http_client(url, http_client=self._http_client),
                     )
                     self._session = await self._exit_stack.enter_async_context(
                         ClientSession(
@@ -326,6 +342,14 @@ class MCPClient:
             except Exception:
                 pass
             self._exit_stack = None
+        # Close our proxy-free HTTP client (the SDK does not own it when
+        # provided).  Recreated fresh on the next connect().
+        if self._http_client is not None:
+            try:
+                await self._http_client.aclose()
+            except Exception:
+                pass
+            self._http_client = None
         self._session = None
 
     async def list_tools(self) -> list[dict]:

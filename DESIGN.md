@@ -328,6 +328,42 @@ No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `
 
 The MCP client keeps bounded retry (6 attempts, 0.5 s apart, each attempt time-boxed at 10 s including transport setup) as **defense-in-depth**: a plugin that signals early (violating the contract) still loads instead of hanging.
 
+### Localhost Never Goes Through a Proxy
+
+Every `MCPClient` connection is loopback — the harness connects only to
+`http://127.0.0.1:{port}/mcp` (main process ↔ local plugins, and subagents ↔
+the shared local plugin; verified across all call sites in `process.py`,
+`service.py`, and `plugins.py`). Loopback traffic must therefore **never**
+consult the OS proxy.
+
+The MCP SDK's `streamable_http_client` builds a default httpx client with
+`trust_env=True`, which reads the OS proxy configuration (Windows system
+proxy, or `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` env vars) and applies it
+to *every* request — `127.0.0.1` included. On any machine with a proxy
+configured (e.g. a Windows system proxy `127.0.0.1:7890` for GitHub pushes, or
+a corp proxy exported in the shell), the plugin's connect / `tools/list`
+requests get routed through the proxy, which typically answers `502` for
+loopback — the connect retry (6 × 10 s) burns up, `start_plugin_server` never
+returns, and the TUI shows **no** `🔌 插件已加载` messages at startup (only
+`SKIPPED` results — which return instantly — still surface). This is a latent
+bug, not a config problem: it fires for any user with *any* proxy configured,
+and we cannot know their `NO_PROXY` setup.
+
+**Fix (2026-08):** `MCPClient.connect` supplies its own
+`httpx.AsyncClient(trust_env=False)` to `streamable_http_client` — a provided
+client is owned by `MCPClient` (the SDK does not manage its lifecycle), so it
+is closed in `_cleanup`. `trust_env=False` also drops `NO_PROXY` on these
+connections, which is deliberate: there is nothing a `NO_PROXY` list would
+legitimately exclude for loopback-only traffic, and it removes the dependency
+on the user's proxy config being correct.
+
+**Scope — external MCP servers are unaffected.** Outbound traffic to the
+configured external MCP servers (`mcp.servers`) goes through the *mcp plugin's*
+own client (`slife/plugins/mcp/connection.py`), which keeps `trust_env=True`
+— a remote server that genuinely needs the proxy still gets it. Only the local
+plugin client is proxy-free. Regression test:
+`TestMCPClientConnect::test_connect_passes_proxy_free_http_client`.
+
 ### Watchdog (Auto-Restart)
 
 Each plugin runs with a **watchdog** background task that monitors the child process and auto-restarts it on unexpected exit:
