@@ -159,17 +159,17 @@ class TestHelpers:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# expose_file
+# share_file
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class TestExposeFile:
+class TestShareFile:
     @pytest.mark.asyncio
     async def test_active_tunnel_returns_url(self, tmp_path):
         f = tmp_path / "photo.png"
         f.write_bytes(b"pngdata")
         with _active_tunnel():
-            result = await plugin.expose_file(path=str(f))
+            result = await plugin.share_file(path=str(f))
         assert "Public URL for photo.png" in result
         assert "https://slife.ngrok-free.dev/share/" in result
 
@@ -178,21 +178,21 @@ class TestExposeFile:
         f = tmp_path / "photo.png"
         f.write_bytes(b"pngdata")
         with _offline_tunnel():
-            result = await plugin.expose_file(path=str(f))
+            result = await plugin.share_file(path=str(f))
         assert result.startswith("Error:")
         assert "file sharing service is not available" in result
 
     @pytest.mark.asyncio
     async def test_missing_file(self):
         with _active_tunnel():
-            result = await plugin.expose_file(path="D:\\nonexistent\\x.png")
+            result = await plugin.share_file(path="D:\\nonexistent\\x.png")
         assert result.startswith("Error:")
         assert "file not found" in result
 
     @pytest.mark.asyncio
     async def test_directory(self, tmp_path):
         with _active_tunnel():
-            result = await plugin.expose_file(path=str(tmp_path))
+            result = await plugin.share_file(path=str(tmp_path))
         assert result.startswith("Error:")
         assert "not a file" in result
 
@@ -205,7 +205,7 @@ class TestExposeFile:
             is_active=MagicMock(return_value=True),
             share_url_for=MagicMock(return_value=None),
         ):
-            result = await plugin.expose_file(path=str(f))
+            result = await plugin.share_file(path=str(f))
         assert result.startswith("Error:")
         assert "became unavailable" in result
 

@@ -244,7 +244,7 @@ class CheckMemfilesTool(Tool):
 
     name = "check_memfiles"
     category: ClassVar[str] = "System"
-    description = "File sharing tunnel status (online/offline) for expose_file and the memfiles cabinet."
+    description = "File sharing tunnel status (online/offline) for share_file and the memfiles cabinet."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:

@@ -103,7 +103,7 @@ class DashScopeAIGCAdapter:
     def _resolve_reference(image: str | Path | None) -> str | None:
         """Normalize a reference image to something DashScope accepts.
 
-        - http(s) URL → passed through (public URL, e.g. from expose_file)
+        - http(s) URL → passed through (public URL, e.g. from share_file)
         - ``data:`` URI → passed through (Base64)
         - local Path → converted to a Base64 ``data:`` URI
         """

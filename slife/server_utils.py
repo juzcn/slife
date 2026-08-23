@@ -54,7 +54,7 @@ Non-MCP endpoints on an MCP plugin
   A plugin may serve plain HTTP endpoints *in addition to* MCP tools on
   the same port — register them with ``@mcp.custom_route(path, methods=...)``
   and FastMCP mounts them on the same uvicorn app as the Streamable HTTP
-  endpoint.  ``memfiles`` does exactly this: MCP tools (``expose_file``,
+  endpoint.  ``memfiles`` does exactly this: MCP tools (``share_file``,
   ``note_save`` / ``diary_write`` / ``file_save`` / ``search``) plus
   ``GET /share/{file_id}`` for serving the actual file bytes — one port, two
   protocols.  Such a plugin binds its

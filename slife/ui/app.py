@@ -207,7 +207,7 @@ class HistoryInput(TextArea):
 #
 # Pure pattern extraction — NO filesystem checks here.  A matched source
 # is returned as-is; whether it actually exists is validated later by
-# include_image (is_image_source / is_file).  This keeps the parser a
+# attach_image (is_image_source / is_file).  This keeps the parser a
 # simple grammar and the existence check in one place downstream.
 
 _AT_RE = re.compile("@")
@@ -266,7 +266,7 @@ def _parse_images_from_input(raw: str) -> list[str]:
 
     Two-phase regex: locate every ``@``, then match a source pattern on
     the slice after it (no filesystem checks — existence is validated
-    downstream by ``include_image``).  The user message itself is passed
+    downstream by ``attach_image``).  The user message itself is passed
     through verbatim (``@`` markers stay visible like any text);
     non-image ``@tokens`` (e.g. ``@someone``) are not attachments and
     are simply not attached (the ``@`` is skipped, the text stays).
@@ -758,7 +758,7 @@ class SlifeApp(App):
 
         # Extract @path image directive sources — the message itself stays
         # VERBATIM (the @ reference is visible like any other user text);
-        # the sources ride to the loop, which auto-invokes include_image
+        # the sources ride to the loop, which auto-invokes attach_image
         # for each (no LLM iteration spent deciding to attach).
         image_paths = _parse_images_from_input(raw)
 

@@ -561,7 +561,7 @@ class AgentService:
         if cb is not None:
             try:
                 cb(
-                    "⚠ 文件分享隧道不可用：expose_file 与文件分享链接将不可用。"
+                    "⚠ 文件分享隧道不可用：share_file 与文件分享链接将不可用。"
                     "可问 system_health 查看具体原因。"
                 )
             except Exception:

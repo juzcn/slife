@@ -12,6 +12,6 @@ saved files are recorded by metadata with an optional LLM summary.
 
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``,
 ``url_save``, ``note_list``, ``diary_list``, ``note_read``, ``diary_read``,
-``list_files``, ``search``, ``read``, ``expose_file``, ``embedding_check``.
+``list_files``, ``search``, ``read``, ``share_file``, ``embedding_check``.
 Internal tools: ``__tunnel_status``, ``__register_file``.
 """

@@ -616,8 +616,8 @@ class AgentLoop:
             logger.warning("auto_invoke_tool_missing name=%s", name)
             return
         # Harness ids strip a leading underscore if present (_sys_note →
-        # _harness_sys_note_…); non-underscore tools (include_image) keep
-        # their name: _harness_include_image_…
+        # _harness_sys_note_…); non-underscore tools (attach_image) keep
+        # their name: _harness_attach_image_…
         stem = name[1:] if name.startswith("_") else name
         tc = ToolCallInfo(
             id=f"_harness_{stem}_{_time.time_ns():x}",
@@ -835,7 +835,7 @@ class AgentLoop:
             logger.info("agent_cancelled phase=before_batch iter=%d", iteration)
             return
 
-        # Any tool that reads ctx.conversation (include_image, clear_context)
+        # Any tool that reads ctx.conversation (attach_image, clear_context)
         # must see the conversation this loop is processing — not the startup
         # human conversation — while a WeChat/remote-agent turn is running.
         # All native tools share one ToolContext, so a single swap covers the
@@ -924,7 +924,7 @@ class AgentLoop:
                 if _ctx is not None:
                     # The background task runs AFTER _execute_tools' finally
                     # restores ctx.conversation — a tool that reads it (e.g.
-                    # include_image) would otherwise target the wrong
+                    # attach_image) would otherwise target the wrong
                     # conversation.  Pin it to the one this turn is processing.
                     _run_conv = conversation
                     _run_ctx = _ctx
@@ -1067,18 +1067,18 @@ class AgentLoop:
             conversation.add_assistant_message(content=msg)
             return AgentResult(text=msg, usage=TokenUsage())
 
-        # @path / programmatic attachments ride the SAME include_image path
+        # @path / programmatic attachments ride the SAME attach_image path
         # the model would use — invoked by the harness so no LLM iteration
         # is spent deciding to attach.  Reuses _auto_invoke (the _sys_note
         # machinery): records the assistant(tool_use) + tool result pair, runs
-        # the tool directly, and include_image's execute injects the image
+        # the tool directly, and attach_image's execute injects the image
         # content blocks into the user message in memory (never persisted —
         # restore rebuilds text-only).  All images go in ONE call so a single
         # (user, assistant, tool) triple carries the whole batch.
         conversation.add_user_message(user_input)
         if images:
             await self._auto_invoke(
-                "include_image", {"sources": list(images)}, conversation,
+                "attach_image", {"sources": list(images)}, conversation,
             )
         total_usage = TokenUsage()
         t_request = _time.monotonic()

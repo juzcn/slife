@@ -762,22 +762,22 @@ class TestAgentLoopRun:
 
     @pytest.mark.asyncio
     async def test_run_with_images(self, sample_model_config, empty_registry, conversation, tmp_path):
-        """@path / programmatic attachments auto-invoke include_image: the
+        """@path / programmatic attachments auto-invoke attach_image: the
         user message stays verbatim text, the image blocks are injected into
         it, and the harness synthesizes the assistant(tool_use) + tool
         result pair — no LLM iteration spent deciding to attach.  Multiple
-        images ride ONE include_image call (single harness pair)."""
+        images ride ONE attach_image call (single harness pair)."""
         # Create real temp image files
         img = tmp_path / "test.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake png")
         img2 = tmp_path / "test2.png"
         img2.write_bytes(b"\x89PNG\r\n\x1a\nfake png 2")
 
-        from slife.tools.vision import IncludeImageTool
+        from slife.tools.vision import AttachImageTool
         from slife.tools.context import ToolContext
         from slife.tools.registry import ToolRegistry
         registry = ToolRegistry()
-        tool = IncludeImageTool()
+        tool = AttachImageTool()
         tool._ctx = ToolContext(conversation=conversation)
         registry.register(tool)
 
@@ -807,12 +807,12 @@ class TestAgentLoopRun:
         assert user["content"][1]["image_url"]["url"].startswith("data:image/")
         assert user["content"][2]["type"] == "image_url"
         assert user["content"][2]["image_url"]["url"].startswith("data:image/")
-        # Harness-synthesized include_image pair follows the user message
+        # Harness-synthesized attach_image pair follows the user message
         helper = conversation.messages[ui + 1]
         assert helper["role"] == "assistant"
         tc = helper["tool_calls"][0]
-        assert tc["function"]["name"] == "include_image"
-        assert tc["id"].startswith("_harness_include_image_")
+        assert tc["function"]["name"] == "attach_image"
+        assert tc["id"].startswith("_harness_attach_image_")
         # ONE call carries the whole batch via sources (JSON-escaped path
         # separators on Windows — parse to compare reliably).
         args = json.loads(tc["function"].get("arguments", ""))

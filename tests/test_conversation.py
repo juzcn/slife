@@ -63,7 +63,7 @@ class TestAddUserMessage:
 
     def test_verbatim_text_only(self):
         """add_user_message is text-only — the user's text is stored
-        verbatim.  Images arrive via include_image's
+        verbatim.  Images arrive via attach_image's
         inject_images_to_last_user, never encoded here."""
         conv = Conversation()
         conv.add_user_message("图片中有什么 @D:\\Downloads\\奇点.png")

@@ -17,7 +17,7 @@ def _ensure_mimetypes() -> None:
 
 
 def is_image_source(source: str | Path) -> bool:
-    """Return True when *source* is attachable via ``include_image``: a
+    """Return True when *source* is attachable via ``attach_image``: a
     data URI, an HTTP(S) URL, or an existing local file.  Single source
     of truth shared by the ``@path`` extractor and the vision block
     builders so the acceptance check is never duplicated.
@@ -42,7 +42,7 @@ def include_image_url(source: str | Path) -> dict[str, Any] | None:
     """
     source_str = str(source)
     if not is_image_source(source_str):
-        logger.debug("include_image_not_found path=%s", source_str)
+        logger.debug("attach_image_not_found path=%s", source_str)
         return None
     if source_str.startswith("data:"):
         return {"type": "image_url", "image_url": {"url": source_str}}
@@ -58,7 +58,7 @@ def include_image_url(source: str | Path) -> dict[str, Any] | None:
     try:
         data = base64.b64encode(p.read_bytes()).decode("ascii")
     except OSError:
-        logger.debug("include_image_read_error path=%s", p)
+        logger.debug("attach_image_read_error path=%s", p)
         return None
 
     return {
@@ -75,7 +75,7 @@ def include_image_urls(sources) -> tuple[list[dict[str, Any]], list[str]]:
     lists the sources that couldn't be read.  A whole-call failure is
     never collapsed to ``None``: a batch mixing one broken source with
     valid ones still attaches the valid images and reports the failures
-    so the caller can relay them (``include_image`` does).
+    so the caller can relay them (``attach_image`` does).
     """
     blocks: list[dict[str, Any]] = []
     failed: list[str] = []

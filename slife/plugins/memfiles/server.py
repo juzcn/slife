@@ -12,7 +12,7 @@ Three typed knowledge stores (each md-mirrored on disk + SQLite-indexed):
   - ``file_save`` / ``url_save`` — saved attachments (bytes on disk,
     metadata + optional LLM ``summary`` in the SQLite index)
 ``search`` hybrid-searches them (FTS5 + vec0, reusing memdb's SemanticManager
-and RRF merge); ``read`` re-opens a saved file.  ``expose_file`` publishes a
+and RRF merge); ``read`` re-opens a saved file.  ``share_file`` publishes a
 local file as a public HTTPS URL.
 
 The plugin owns everything:
@@ -25,7 +25,7 @@ The plugin owns everything:
 
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
 ``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``list_files``,
-``search``, ``read``, ``expose_file``, ``embedding_check``.
+``search``, ``read``, ``share_file``, ``embedding_check``.
 Internal tools (``__`` prefix, never LLM-visible): ``__tunnel_status``,
 ``__register_file``.
 
@@ -135,7 +135,7 @@ mcp, _log_path, logger = create_plugin_server(
         "diary_write writes a day's diary (md in diary/, searchable); "
         "file_save / url_save store one or more files, with an optional LLM "
         "summary (given at save time) for semantic search. search finds them by hybrid "
-        "(keyword + semantic) search; read re-opens a saved file; expose_file "
+        "(keyword + semantic) search; read re-opens a saved file; share_file "
         "publishes a local file as a public HTTPS URL."
     ),
     lifespan=_memfiles_lifespan,
@@ -409,17 +409,17 @@ def _detect_category(filename: str, override: str = "") -> str:
 
 
 @mcp.tool(
-    name="expose_file",
+    name="share_file",
     description=(
-        "Expose a local file as a public HTTPS URL for multimodal LLMs to "
+        "Share a local file as a public HTTPS URL for multimodal LLMs to "
         "fetch directly.  Requires the file-sharing tunnel to be active."
     ),
 )
-async def expose_file(path: str) -> str:
-    """Expose a local file as a public HTTPS URL.
+async def share_file(path: str) -> str:
+    """Share a local file as a public HTTPS URL.
 
     Args:
-        path: Absolute path to the local file to expose.
+        path: Absolute path to the local file to share.
     """
     p = Path(path)
     if not p.exists():

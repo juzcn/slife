@@ -161,7 +161,7 @@ class Conversation:
     ) -> None:
         """Add a user message — the user's text, verbatim.
 
-        Images are NOT encoded here.  Attachments ride the ``include_image``
+        Images are NOT encoded here.  Attachments ride the ``attach_image``
         tool path (harness-invoked for ``@path`` so no LLM iteration is
         spent attaching): the tool injects the image content block into this
         message in memory via :meth:`inject_images_to_last_user`.  Those
@@ -289,7 +289,7 @@ class Conversation:
     ) -> None:
         """Append pre-built image blocks to the last user message.
 
-        Used by ``include_image`` so the LLM sees images as vision
+        Used by ``attach_image`` so the LLM sees images as vision
         content blocks on the next turn, not just as text.  A single
         call may carry several blocks (one per attached image).
 

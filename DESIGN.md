@@ -110,7 +110,7 @@ tiers of the same thing:
    calling it. `_sys_note` is pure (only reads state). Context trimming is
    **not** a tool: it runs internally after each save (`_trim_after_save`),
    marking the cut with a runtime `[TrimContext: N]` note — no `_sys_trim` in
-   the schema, no pair to validate. Note: `include_image` is also auto-invoked
+   the schema, no pair to validate. Note: `attach_image` is also auto-invoked
    via `_auto_invoke`, but it has no `_` prefix and is not schema-reserved, so
    it is not a harness tool.
 2. **`__` (double underscore) = plugin internal tool, LLM-invisible.** This is
@@ -218,7 +218,7 @@ The schema is the model's only view of a tool — write it for the model, not th
 
 ### Auto-Discovery
 
-`slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, `_skip_auto_register` classes (e.g. `MCPProxyTool`, created per-instance at runtime), and per-model requirements enforced at **execute time** rather than load time: tools are always registered, and a tool like `include_image` refuses at runtime when the active model has no vision (so the LLM sees the tool and gets a clear "vision=false" error instead of a silently-missing tool).
+`slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, `_skip_auto_register` classes (e.g. `MCPProxyTool`, created per-instance at runtime), and per-model requirements enforced at **execute time** rather than load time: tools are always registered, and a tool like `attach_image` refuses at runtime when the active model has no vision (so the LLM sees the tool and gets a clear "vision=false" error instead of a silently-missing tool).
 
 ### Tool Categories — native tools (50 total: 49 LLM-visible + 1 harness `_` tool)
 
@@ -239,7 +239,7 @@ All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM s
 | Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch` |
 | Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
-| Vision | `vision.py` | `include_image` (native — injects one or more image blocks into the conversation; runtime-gated on a vision-capable model) |
+| Vision | `vision.py` | `attach_image` (native — injects one or more image blocks into the conversation; runtime-gated on a vision-capable model) |
 | Harness | `harness.py` | `_sys_note` (visible-but-reserved, see above); trim is internal — no tool |
 | Meta | `meta.py` | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
 
@@ -250,7 +250,7 @@ Plus **plugin tools** — registered at runtime as `{server}__{tool}` proxies vi
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
 | `memdb` | `memdb__memory_list_turns`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_turn_summarize`, `memdb__memory_count`, `memdb__memory_token_usage`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `memfiles__note_save`, `memfiles__diary_write`, `memfiles__file_save`, `memfiles__url_save`, `memfiles__note_list`, `memfiles__diary_list`, `memfiles__note_read`, `memfiles__diary_read`, `memfiles__list_files`, `memfiles__search`, `memfiles__read`, `memfiles__embedding_check`, `memfiles__expose_file` |
+| `memfiles` | `memfiles__note_save`, `memfiles__diary_write`, `memfiles__file_save`, `memfiles__url_save`, `memfiles__note_list`, `memfiles__diary_list`, `memfiles__note_read`, `memfiles__diary_read`, `memfiles__list_files`, `memfiles__search`, `memfiles__read`, `memfiles__embedding_check`, `memfiles__share_file` |
 
 Naming rule: a plugin tool already carrying its server as a name prefix (`mcp_set`, `wechat_login`) is registered as-is (avoids the redundant `mcp__mcp_set` / `wechat__wechat_login`); otherwise the proxy adds `{server}__`. External MCP servers always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
 
@@ -397,7 +397,7 @@ Processes communicate through environment variables:
 | **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config. |
 | **slife-memdb** | Streamable HTTP | Diary database. Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
-| **slife-memfiles** | Streamable HTTP + `/share` route | Notes/diary/files cabinet + public sharing. MCP tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `search`, `read`, `expose_file`, `embedding_check`), internal tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel, the in-process token registry, and a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. |
+| **slife-memfiles** | Streamable HTTP + `/share` route | Notes/diary/files cabinet + public sharing. MCP tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `search`, `read`, `share_file`, `embedding_check`), internal tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel, the in-process token registry, and a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. |
 | **slife-a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools; only the drain/dispatch internal tools (`__a2a_*`) stay `__`-prefixed. |
 | **slife-media** | Streamable HTTP | Non-chat AI generation (image, video, TTS, ASR) from any provider. Owns the `media:` config section (plugin-read, ignored by the main `Config` parser) and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` (namespaced `media__*`). Long renders use the harness's universal `_async: true` + `check_async`. Artifacts are saved to the working directory (or a `folder` passed to the tool) — work products, never memfiles cabinet files. |
 
@@ -504,7 +504,7 @@ Backend selection priority: GGUF file present → transformer requested → API 
 
 On startup, recent turns are read **directly from SQLite** — no MCP transport, no plugin dependency. The UI rebuilds the last session immediately (user messages, assistant text, tool-call widgets, images whose files still exist); plugins start in parallel. Restored messages carry their stored timestamps — user messages read `created_at`, assistant messages read `completed_at` — matching the live display.
 
-**Turn headers on restore.** Each restored user message gets a compact `[Turn: N · start → end]` footnote (rowid + created → completed) concatenated into the message text — without it the whole restored history would read as "just happened". The LLM can also use N with `memdb__memory_open` / `memdb__memory_turn_summarize`, and the human reads the same line in the TUI. Restored turns get it from persisted columns at restore; a just-completed live turn gets the same footnote appended by `save_to_memory` once `__memory_save_turn` returns its rowid — so the model can reference the previous turn precisely, and `memory_turn_summarize`'s latest-rowid default stops being racy. **The footnote is runtime-only and never persisted:** the stored `user_message` / `messages` are written *before* the append, restore regenerates it from columns, so the DB carries the clean original in both paths. The current in-flight turn carries none (it is the one that IS now), and live TUI bubbles are not retro-updated — a missing footnote is itself the "current session" signal. Heartbeat turns are excluded — their user message is the synthetic `[Heartbeat]` trigger, not a real query. Machine annotations share one `[Kind: …]` shape (`[Heartbeat]`, `[TrimContext: N]`); an unreadable image attachment now raises a `ValueError` from `add_user_message` instead of being silently dropped — upstream (`@path` parsing, `include_image`) validates files first, so a failure here is a bug signal, not a hidden marker. Heartbeat stays its own sentinel: it is a stored turn identity (old diary rows start with it), so renaming it would misclassify every stored heartbeat on the next restore.
+**Turn headers on restore.** Each restored user message gets a compact `[Turn: N · start → end]` footnote (rowid + created → completed) concatenated into the message text — without it the whole restored history would read as "just happened". The LLM can also use N with `memdb__memory_open` / `memdb__memory_turn_summarize`, and the human reads the same line in the TUI. Restored turns get it from persisted columns at restore; a just-completed live turn gets the same footnote appended by `save_to_memory` once `__memory_save_turn` returns its rowid — so the model can reference the previous turn precisely, and `memory_turn_summarize`'s latest-rowid default stops being racy. **The footnote is runtime-only and never persisted:** the stored `user_message` / `messages` are written *before* the append, restore regenerates it from columns, so the DB carries the clean original in both paths. The current in-flight turn carries none (it is the one that IS now), and live TUI bubbles are not retro-updated — a missing footnote is itself the "current session" signal. Heartbeat turns are excluded — their user message is the synthetic `[Heartbeat]` trigger, not a real query. Machine annotations share one `[Kind: …]` shape (`[Heartbeat]`, `[TrimContext: N]`); an unreadable image attachment now raises a `ValueError` from `add_user_message` instead of being silently dropped — upstream (`@path` parsing, `attach_image`) validates files first, so a failure here is a bug signal, not a hidden marker. Heartbeat stays its own sentinel: it is a stored turn identity (old diary rows start with it), so renaming it would misclassify every stored heartbeat on the next restore.
 
 Restore rebuilds the **exit-time context verbatim**. The `diary_meta.context_start` row (an exclusive rowid) marks the live-context boundary: the internal trim advances it past every turn it evicts (`advance_context_start`), `clear_context` flushes it to the latest row (`set_context_start_latest`), and `get_recent_turns` reads it directly from SQLite. Turns after the boundary are returned **verbatim — no ceiling re-slicing**: the boundary already encodes the trimmed state, so restore replays the exact slice that was live at exit, and the agent picks up where it left off. `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept only for call-site compatibility; the only cap is a defensive 2×-ceiling guard against a stale `0` boundary from a pre-boundary DB (normal operation never reaches it). The just-restored conversation is exempt from the first-turn trim (`_just_restored_conv`), so nothing is compacted before the user's first exchange. Older turns stay in the diary, searchable via `memory_search`.
 
@@ -579,7 +579,7 @@ Local child-process workers, always available — no config toggle.  A subagent 
 
 ### Image Input
 
-User attaches images with `@` directives — **one `@` = one image source**, any number per input, parsed independently. The user message stays verbatim (the `@` reference remains visible like any text); the extracted sources are handed to the loop, which **auto-invokes** the `include_image` tool once with the whole `sources` list via the harness-call machinery (`_auto_invoke`, same as `_sys_note`) — a single conversation shape (one assistant(tool_use) + tool-result pair), no LLM iteration spent deciding to attach.
+User attaches images with `@` directives — **one `@` = one image source**, any number per input, parsed independently. The user message stays verbatim (the `@` reference remains visible like any text); the extracted sources are handed to the loop, which **auto-invokes** the `attach_image` tool once with the whole `sources` list via the harness-call machinery (`_auto_invoke`, same as `_sys_note`) — a single conversation shape (one assistant(tool_use) + tool-result pair), no LLM iteration spent deciding to attach.
 
 #### `@` syntax
 
@@ -595,7 +595,7 @@ Each `@` is followed by exactly one source, in any of these shapes:
 
 Multiple `@` may sit **adjacent without spaces** — `@a.png@b.png`, `@a.png @b.png`, and `@https://a.com/x.png和@http://b.com/y.png` each yield two sources. Quoted/bracketed forms read the inner content (spaces allowed); bare tokens run to whitespace, a quote, or the next `@`.
 
-**Shape gating.** A bare path must end in an image extension (`.png .jpg .jpeg .gif .webp .bmp .svg .ico .avif .tiff .heic`), so `@someone` (no extension) is skipped as plain text. **URLs and data URIs are self-identifying via their scheme** (`http://` / `https://` / `data:`) — they need no extension gate, so `@https://example.com/photo`, query strings (`?v=2`), and fragments (`#x`) are all valid. **No filesystem check here** — whether a source actually exists / is reachable is validated downstream by `include_image` (which reads the file or returns an error). Nothing is rendered in-terminal.
+**Shape gating.** A bare path must end in an image extension (`.png .jpg .jpeg .gif .webp .bmp .svg .ico .avif .tiff .heic`), so `@someone` (no extension) is skipped as plain text. **URLs and data URIs are self-identifying via their scheme** (`http://` / `https://` / `data:`) — they need no extension gate, so `@https://example.com/photo`, query strings (`?v=2`), and fragments (`#x`) are all valid. **No filesystem check here** — whether a source actually exists / is reachable is validated downstream by `attach_image` (which reads the file or returns an error). Nothing is rendered in-terminal.
 
 #### Boundary characters (token-end)
 
@@ -621,11 +621,11 @@ The boundary set is shared via `_TOKEN_END` (whitespace / quote / `@` / CJK) wit
 
 #### Pipeline
 
-The loop passes the parsed `sources` list to `include_image` in a single call. `include_image_urls()` (in `slife/agent/multimodal.py`) turns each source into a vision content block (HTTP(S) URLs pass through, local files base64 as `data:` URIs), returning `(blocks, failed)` — the valid blocks are injected into the in-memory user message in one shot, the failures are reported in the tool result. Exact duplicate sources are deduped (order-preserving) so a repeated `@a.png` attaches once. Blocks are **live-session-only**: injected into the in-memory user message, never persisted, restore is text-only. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`).
+The loop passes the parsed `sources` list to `attach_image` in a single call. `include_image_urls()` (in `slife/agent/multimodal.py`) turns each source into a vision content block (HTTP(S) URLs pass through, local files base64 as `data:` URIs), returning `(blocks, failed)` — the valid blocks are injected into the in-memory user message in one shot, the failures are reported in the tool result. Exact duplicate sources are deduped (order-preserving) so a repeated `@a.png` attaches once. Blocks are **live-session-only**: injected into the in-memory user message, never persisted, restore is text-only. Each backend converts blocks to its wire format (Anthropic `image.source`, Responses `input_image`).
 
 ### Image Display
 
-Images are never rendered in the terminal — the Sixel / Half-cell render stack was removed, and the multimodal content blocks a user message carries feed the LLM context only: the TUI renders just the text parts of a message. To surface a file to the user, the agent hands back a path or URL (clickable in the chat, opened with the OS default app) or publishes a public HTTPS link via `memfiles__expose_file`.
+Images are never rendered in the terminal — the Sixel / Half-cell render stack was removed, and the multimodal content blocks a user message carries feed the LLM context only: the TUI renders just the text parts of a message. To surface a file to the user, the agent hands back a path or URL (clickable in the chat, opened with the OS default app) or publishes a public HTTPS link via `memfiles__share_file`.
 
 ### Memfiles — Notes / Diary / Files Cabinet + Sharing
 
@@ -644,10 +644,10 @@ Each kind owns its FTS5 + vec0 tables (`notes_*` / `diary_*` / `files_*`). `sear
 
 The plugin owns everything — the in-process token registry, the ngrok tunnel, and serving the file bytes on the **same port** via a custom HTTP route (one port, two protocols: `/mcp` for Streamable HTTP, `/share/{token}` for plain HTTP):
 
-1. `expose_file(path)` (MCP) → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`.  Always registered — when the tunnel is offline the tool returns a graceful error rather than being hidden.
+1. `share_file(path)` (MCP) → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`.  Always registered — when the tunnel is offline the tool returns a graceful error rather than being hidden.
 2. `GET /share/{token}` streams the file in 64 KB chunks (403 unknown token, 404 file gone).
 
-No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file). Saved files return share URLs when the tunnel is active; when offline, they are still saved locally and the result notes "(sharing offline)". `include_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/vision.py`) that injects image blocks into the main-process conversation.
+No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file). Saved files return share URLs when the tunnel is active; when offline, they are still saved locally and the result notes "(sharing offline)". `attach_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/vision.py`) that injects image blocks into the main-process conversation.
 
 `GET /share/{token}` streams the file with an RFC 5987 `Content-Disposition` — a non-ASCII filename (e.g. CJK) is emitted as an ASCII fallback in `filename=` plus the real name percent-encoded in `filename*=UTF-8''`, because HTTP header values must be Latin-1 (a raw CJK filename otherwise raises `UnicodeEncodeError` → HTTP 500).
 
@@ -881,7 +881,7 @@ slife/
     models.py          #   Model management (model_list/set/remove/switch)
     config.py          #   Config env var + native tool toggles
     credentials.py     #   Credential check/inject/uninject
-    vision.py          #   include_image — vision helper (native, conversation-scoped)
+    vision.py          #   attach_image — vision helper (native, conversation-scoped)
     notify.py          #   notify_user (pure UI)
     meta.py            #   list_native_tools, check_async, cancel_async, clear_context
   plugins/             # Built-in plugins (auto-discovered server.py packages)

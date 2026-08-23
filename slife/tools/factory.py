@@ -53,12 +53,12 @@ def create_tools_from_config(
             continue
 
         # NOTE: vision tools are NOT filtered here anymore — they are always
-        # registered (include_image is the only one).  A tool that needs
-        # vision enforces it at execute() time (see IncludeImageTool) so a
+        # registered (attach_image is the only one).  A tool that needs
+        # vision enforces it at execute() time (see AttachImageTool) so a
         # non-vision model that calls it gets a clear "vision=false" refusal
         # instead of a silently-missing tool.
 
-        # Note: the memfiles tools (expose_file, note_save, diary_write,
+        # Note: the memfiles tools (share_file, note_save, diary_write,
         # file_save, url_save, search, read) live in the
         # memfiles plugin (registered as memfiles__* proxy tools), not here —
         # so there is no tunnel-gating needed at native-tool load time.

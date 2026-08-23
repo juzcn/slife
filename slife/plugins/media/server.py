@@ -72,7 +72,7 @@ def _resolve_image_input(image: str) -> str | Path | None:
     """Resolve a reference-image argument for image-conditioned generation.
 
     Accepts three forms and returns a value the adapters understand:
-      - a public ``http(s)://`` URL (e.g. one produced by expose_file) —
+      - a public ``http(s)://`` URL (e.g. one produced by share_file) —
         passed through as-is;
       - a ``data:<mime>;base64,...`` Data URI — passed through as-is;
       - a local file path — returned as a ``Path`` (adapters convert
@@ -132,7 +132,7 @@ async def generate_image(
         size: Output dimensions, e.g. '1024*1024'; provider default when
             omitted.
         image: Reference image for image-conditioned generation — a
-            public http(s) URL (e.g. from expose_file), a Base64 Data URI,
+            public http(s) URL (e.g. from share_file), a Base64 Data URI,
             or an absolute local path.
         folder: Directory to save the image into (default: working dir).
     """

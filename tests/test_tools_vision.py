@@ -1,4 +1,4 @@
-"""Tests for slife.tools.vision — IncludeImageTool."""
+"""Tests for slife.tools.vision — AttachImageTool."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -6,26 +6,26 @@ import pytest; pytestmark = pytest.mark.unit
 from unittest.mock import MagicMock, patch
 
 from slife.config import Config, ModelConfig
-from slife.tools.vision import IncludeImageTool
+from slife.tools.vision import AttachImageTool
 
 
-class TestIncludeImageTool:
-    """Tests for IncludeImageTool."""
+class TestAttachImageTool:
+    """Tests for AttachImageTool."""
 
     def test_name(self):
-        assert IncludeImageTool.name == "include_image"
+        assert AttachImageTool.name == "attach_image"
 
     def test_category(self):
-        assert IncludeImageTool.category == "Vision"
+        assert AttachImageTool.category == "Vision"
 
     def test_requires_vision(self):
-        assert IncludeImageTool._requires_vision is True
+        assert AttachImageTool._requires_vision is True
 
     def test_description(self):
-        assert "Include one or more images" in IncludeImageTool.description
+        assert "Attach one or more images" in AttachImageTool.description
 
     def test_parameters_schema(self):
-        params = IncludeImageTool.parameters
+        params = AttachImageTool.parameters
         assert params["type"] == "object"
         assert "sources" in params["properties"]
         assert params["properties"]["sources"]["type"] == "array"
@@ -44,7 +44,7 @@ class TestIncludeImageTool:
             "slife.agent.multimodal.include_image_urls",
             return_value=([fake_block], []),
         ):
-            tool = IncludeImageTool()
+            tool = AttachImageTool()
             result = await tool.execute(source="D:\\photo.jpg")
 
         assert result == "Image included: D:\\photo.jpg"
@@ -59,7 +59,7 @@ class TestIncludeImageTool:
             "slife.agent.multimodal.include_image_urls",
             return_value=(blocks, []),
         ):
-            tool = IncludeImageTool()
+            tool = AttachImageTool()
             result = await tool.execute(
                 sources=["D:\\a.jpg", "https://example.com/b.png"],
             )
@@ -72,7 +72,7 @@ class TestIncludeImageTool:
             "slife.agent.multimodal.include_image_urls",
             return_value=([], ["D:\\missing.jpg"]),
         ):
-            tool = IncludeImageTool()
+            tool = AttachImageTool()
             result = await tool.execute(sources=["D:\\missing.jpg"])
 
         assert result.startswith("Error:")
@@ -86,7 +86,7 @@ class TestIncludeImageTool:
             "slife.agent.multimodal.include_image_urls",
             return_value=([ok], ["D:\\missing.jpg"]),
         ):
-            tool = IncludeImageTool()
+            tool = AttachImageTool()
             result = await tool.execute(sources=["D:\\a.jpg", "D:\\missing.jpg"])
 
         assert "Image included: D:\\a.jpg" in result
@@ -112,7 +112,7 @@ class TestIncludeImageTool:
             "slife.agent.multimodal.include_image_urls",
             return_value=(blocks, []),
         ):
-            tool = IncludeImageTool()
+            tool = AttachImageTool()
             object.__setattr__(tool, "_ctx", mock_ctx)
             result = await tool.execute(
                 sources=["D:\\a.jpg", "D:\\b.jpg"],
@@ -126,32 +126,32 @@ class TestResolveSources:
     """_resolve_sources — argument shape handling."""
 
     def test_sources_list(self):
-        assert IncludeImageTool._resolve_sources(
+        assert AttachImageTool._resolve_sources(
             {"sources": ["a", "b"]},
         ) == ["a", "b"]
 
     def test_source_single(self):
-        assert IncludeImageTool._resolve_sources(
+        assert AttachImageTool._resolve_sources(
             {"source": "a"},
         ) == ["a"]
 
     def test_string_in_sources_slot(self):
         # An LLM occasionally sends a bare string in the array slot.
-        assert IncludeImageTool._resolve_sources(
+        assert AttachImageTool._resolve_sources(
             {"sources": "a"},
         ) == ["a"]
 
     def test_missing_both_raises(self):
         with pytest.raises(ValueError):
-            IncludeImageTool._resolve_sources({})
+            AttachImageTool._resolve_sources({})
 
     def test_duplicates_deduped_preserving_order(self):
-        assert IncludeImageTool._resolve_sources(
+        assert AttachImageTool._resolve_sources(
             {"sources": ["a", "b", "a", "c", "b"]},
         ) == ["a", "b", "c"]
 
     def test_duplicate_single_not_created(self):
-        assert IncludeImageTool._resolve_sources({"source": "a"}) == ["a"]
+        assert AttachImageTool._resolve_sources({"source": "a"}) == ["a"]
 
 
 def _config_with_vision(supports_vision: bool) -> Config:
@@ -166,7 +166,7 @@ def _config_with_vision(supports_vision: bool) -> Config:
     return Config(models=[mc], active_model_ref="test/m", tools=[])
 
 
-class TestIncludeImageVisionGate:
+class TestAttachImageVisionGate:
     """Runtime gate: a non-vision active model is refused, not silently fed."""
 
     @pytest.mark.asyncio
@@ -175,7 +175,7 @@ class TestIncludeImageVisionGate:
         ctx.config = _config_with_vision(False)
         ctx.conversation = MagicMock()
 
-        tool = IncludeImageTool()
+        tool = AttachImageTool()
         object.__setattr__(tool, "_ctx", ctx)
         result = await tool.execute(sources=["D:\\img.jpg"])
 
@@ -195,7 +195,7 @@ class TestIncludeImageVisionGate:
             "slife.agent.multimodal.include_image_urls",
             return_value=([fake_block], []),
         ):
-            tool = IncludeImageTool()
+            tool = AttachImageTool()
             object.__setattr__(tool, "_ctx", ctx)
             result = await tool.execute(sources=["D:\\img.jpg"])
 
@@ -216,32 +216,32 @@ class TestIncludeImageVisionGate:
             "slife.agent.multimodal.include_image_urls",
             return_value=([fake_block], []),
         ):
-            tool = IncludeImageTool()
+            tool = AttachImageTool()
             object.__setattr__(tool, "_ctx", ctx)
             result = await tool.execute(sources=["D:\\img.jpg"])
 
         assert result == "Image included: D:\\img.jpg"
 
 
-class TestIncludeImageAlwaysLoaded:
-    """include_image is always registered, regardless of the active model's
+class TestAttachImageAlwaysLoaded:
+    """attach_image is always registered, regardless of the active model's
     vision support — the runtime gate in execute() refuses non-vision models."""
 
     def test_included_for_non_vision_config(self):
         from slife.tools.factory import create_tools_from_config
 
         registry = create_tools_from_config(config=_config_with_vision(False))
-        assert registry.get("include_image") is not None
+        assert registry.get("attach_image") is not None
 
     def test_included_for_vision_config(self):
         from slife.tools.factory import create_tools_from_config
 
         registry = create_tools_from_config(config=_config_with_vision(True))
-        assert registry.get("include_image") is not None
+        assert registry.get("attach_image") is not None
 
     def test_included_without_config(self):
         """No config at all — still loaded (factory no longer filters)."""
         from slife.tools.factory import create_tools_from_config
 
         registry = create_tools_from_config()
-        assert registry.get("include_image") is not None
+        assert registry.get("attach_image") is not None

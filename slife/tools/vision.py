@@ -1,12 +1,12 @@
 """Vision tools — help the LLM feed images to multimodal models.
 
-``include_image`` is a helper for building the image content blocks a
+``attach_image`` is a helper for building the image content blocks a
 vision model sees.  It takes one or more image sources — data URIs,
 local file paths, or HTTP(S) URLs — and injects the resulting blocks
 into the active conversation (works exactly like the ``@`` syntax in
 chat).  It feeds the vision API only — nothing is ever rendered in the
 terminal.  To *show* a file to the user, hand them a path / URL (opened
-with the OS) or publish it via ``memfiles__expose_file``.
+with the OS) or publish it via ``memfiles__share_file``.
 
 This is an agent-loop concern (it mutates in-conversation state), so it
 stays a native tool in the main process — unrelated to the memfiles
@@ -23,8 +23,8 @@ from slife.tools.base import Tool
 logger = logging.getLogger(__name__)
 
 
-class IncludeImageTool(Tool):
-    """Include one or more images for the LLM to process with vision.
+class AttachImageTool(Tool):
+    """Attach one or more images for the LLM to process with vision.
 
     Takes data URIs, local file paths, or HTTP(S) URLs and makes them
     visible to the vision model.  Works exactly like the ``@`` syntax
@@ -32,11 +32,11 @@ class IncludeImageTool(Tool):
     call (a single one also works via ``source``).
     """
 
-    name: ClassVar[str] = "include_image"
+    name: ClassVar[str] = "attach_image"
     category: ClassVar[str] = "Vision"
     _requires_vision: ClassVar[bool] = True
     description: ClassVar[str] = (
-        "Include one or more images for vision processing. "
+        "Attach one or more images for vision processing. "
         "Pass a list via 'sources' (data URI, local file path, or "
         "HTTP(S) URL each); a single image also works via 'source'. "
         "Works like @ syntax."
@@ -126,7 +126,7 @@ class IncludeImageTool(Tool):
         if raw is None:
             single = kwargs.get("source")
             if single is None:
-                raise ValueError("include_image requires 'sources' or 'source'")
+                raise ValueError("attach_image requires 'sources' or 'source'")
             if isinstance(single, str):
                 sources = [single]
             else:
