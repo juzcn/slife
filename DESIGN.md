@@ -1,5 +1,28 @@
 # Slife Design
 
+> Developer documentation for the slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md). This document covers the design principles, the agent loop, the tool system, the plugin contract, the MCP gateway, the memory database, the A2A mesh, the credential security model, and the full project structure. It is written for people who work on the code, and it assumes you have read the README.
+
+## Contents
+
+1. [Language policy](#language-policy)
+2. [Architecture](#architecture)
+3. [Agent Loop](#agent-loop) — context management, harness vs internal tools, system prompt, autonomous heartbeat
+4. [LLM Backends](#llm-backends) — wire formats, thinking, prompt caching
+5. [Model Management](#model-management)
+6. [Tool System](#tool-system) — Tool ABC, schema authoring, auto-discovery, registry, timeout, approval, model switching
+7. [Plugin Architecture](#plugin-architecture) — contract, localhost/proxy, watchdog, built-ins, MCP gateway, subagent discovery
+8. [Memory (MemDB)](#memory-memdb) — schema, search, embedding, session restore, agent isolation
+9. [A2A — Agent-to-Agent (mesh)](#a2a--agent-to-agent-mesh) — MQTT mesh, unified inbox, task store, subagent workers
+10. [Image & Memfiles](#image--memfiles) — @-syntax, image display, memfiles plugin, ngrok
+11. [UI](#ui) — widgets, timestamps, progressive disclosure
+12. [Config & Credentials](#config--credentials) — two-layer architecture, credstore matrix, secret sanitization, config sections
+13. [Health Checks](#health-checks)
+14. [Logging Convention](#logging-convention) — sinks, log vs TUI
+15. [Dev vs. Production Data Directory](#dev-vs-production-data-directory)
+16. [Project Structure](#project-structure)
+
+---
+
 ## Language policy
 
 The model input should read uniformly, so text that Slife authors is English:
@@ -151,6 +174,15 @@ Design principles:
 4. **No slash commands** — natural language only; the LLM interprets intent
 5. **Static baseline + change notifications** — constants at startup, deltas per-turn
 
+### Autonomous Heartbeat
+
+The agent is otherwise purely user-driven — no input, no activity. A heartbeat gives it a periodic **autonomous window** (a precondition for emergent self-initiated behavior): while idle, every `agent.heartbeat_interval` seconds (default 60) the service posts a `[Heartbeat]` message to the inbox, which runs as a **normal agent-loop turn** (own conversation via the heartbeat source, saved to the diary like any turn). The interval is read from `service.config.heartbeat_interval` (parsed from the `agent` section of `slife.json5`), falling back to 60.
+
+- **Reply contract** (also in the system prompt, under **Autonomy** → Heartbeat in `agent.j2`): real content if the agent has something worth proactively saying, otherwise exactly `.` — never empty (the `.` is the minimal non-empty assistant reply, satisfying the user→assistant role alternation).
+- **TUI filtering** (live + restore): heartbeat turns are recognised by the `[Heartbeat]` mark on the trigger message and filtered — the trigger is never shown, and a real reply renders as `⚡ 自主`. More generally, a bare `.` reply is **silence** and is never rendered from any event (heartbeat, A2A async-completion notification, …) — the TUI handler skips a lone `.` text chunk and restore skips any assistant message whose content is exactly `.`. The status bar shows the last beat (`●` act / `·` quiet).
+- **Main agent only**: subagents (`is_subagent=True`) never start the heartbeat loop — they are task-driven workers, not autonomous agents.
+- The heartbeat conversation is separate (source `heartbeat`), so the autonomous reflections persist in the diary without polluting the human conversation.
+
 ## LLM Backends
 
 Three backends, equal citizens. The internal message format is OpenAI Chat Completions; each backend owns its own wire conversion (`to_wire_messages()` / `to_wire_tools()`), and all produce the same unified stream:
@@ -182,7 +214,7 @@ Reasoning ("thinking") support is per-backend:
 
 **External placeholder injection (upstream, not a slife bug):** An Anthropic-Messages gateway that runs LiteLLM's prompt sanitizer rewrites an empty `text` block sitting next to a `tool_use` into the literal `[System: Empty message content sanitised to satisfy protocol]` — `_EMPTY_TEXT_PLACEHOLDER` / `_sanitize_empty_text_content` in LiteLLM's `litellm_core_utils/prompt_templates/factory.py` (issue BerriAI/litellm#24498; fix PRs #28987, #34822). An assistant turn that is `content: ""` + `tool_calls` is the ordinary shape between a tool call and its result, so Anthropic accepts it with the empty text block dropped — the substitution is a LiteLLM defect, and it runs **outside** the `modify_params` gate, so there is no config knob to disable it. Observed in slife via the `bailian_personal` provider (2026-08-21, 4 copies in the diary). It **poisons history**: the placeholder persists verbatim into the diary and replays into the next request, and the model then echoes it back (one observed echo even garbled it: `protection` for `protocol`). slife stores it as ordinary assistant text — contrast with slife's own wire hardening, which lives on the **outbound** request and cannot see a placeholder the gateway already substituted into the **response**: `OpenAIBackend._normalize_messages` replaces empty assistant content with `"…"` (a copy — storage untouched, so openai-completions providers never 400), and `AnthropicBackend` emits a single empty text block for an empty assistant turn. If the gateway substitutes anyway, the only recourse is cleaning the persisted rows (a one-off migration stripping that placeholder) before restore replays it.
 
-### Model Management
+## Model Management
 
 Runtime model management via native tools — no config editing needed:
 
@@ -251,6 +283,8 @@ Plus **plugin tools** — registered at runtime as `{server}__{tool}` proxies vi
 | `memdb` | `memdb__memory_list_turns`, `memdb__memory_search`, `memdb__memory_open`, `memdb__memory_turn_summarize`, `memdb__memory_count`, `memdb__memory_token_usage`, `memdb__memory_check_embedding`, `memdb__memory_set_embedding`, `memdb__memory_set_enabled` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `memfiles__note_save`, `memfiles__diary_write`, `memfiles__file_save`, `memfiles__url_save`, `memfiles__note_list`, `memfiles__diary_list`, `memfiles__note_read`, `memfiles__diary_read`, `memfiles__list_files`, `memfiles__search`, `memfiles__read`, `memfiles__embedding_check`, `memfiles__share_file` |
+| `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
+| `media` | `media__generate_image`, `media__generate_video`, `media__text_to_speech`, `media__transcribe_audio` |
 
 Naming rule: a plugin tool already carrying its server as a name prefix (`mcp_set`, `wechat_login`) is registered as-is (avoids the redundant `mcp__mcp_set` / `wechat__wechat_login`); otherwise the proxy adds `{server}__`. External MCP servers always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
 
@@ -288,15 +322,6 @@ Picker rules (hard-won):
 - Scroll to the picker **after layout** (`call_after_refresh(scroll_end)`) — an immediate scroll runs against the pre-mount content and the picker's insertion leaves the view pinned at the top (picker below the fold).
 - Key is `Ctrl+S` ("s" = switch). Not `ctrl+m` (Textual aliases it to enter), not `ctrl+g` (VSCode's goto-line steals it).
 - Every configured model is listed (no cap); the chat scrolls if the list is taller than the viewport.
-
-### Autonomous Heartbeat
-
-The agent is otherwise purely user-driven — no input, no activity. A heartbeat gives it a periodic **autonomous window** (a precondition for emergent self-initiated behavior): while idle, every `agent.heartbeat_interval` seconds (default 60) the service posts a `[Heartbeat]` message to the inbox, which runs as a **normal agent-loop turn** (own conversation via the heartbeat source, saved to the diary like any turn). The interval is read from `service.config.heartbeat_interval` (parsed from the `agent` section of `slife.json5`), falling back to 60.
-
-- **Reply contract** (also in the system prompt, under **Autonomy** → Heartbeat in `agent.j2`): real content if the agent has something worth proactively saying, otherwise exactly `.` — never empty (the `.` is the minimal non-empty assistant reply, satisfying the user→assistant role alternation).
-- **TUI filtering** (live + restore): heartbeat turns are recognised by the `[Heartbeat]` mark on the trigger message and filtered — the trigger is never shown, and a real reply renders as `⚡ 自主`. More generally, a bare `.` reply is **silence** and is never rendered from any event (heartbeat, A2A async-completion notification, …) — the TUI handler skips a lone `.` text chunk and restore skips any assistant message whose content is exactly `.`. The status bar shows the last beat (`●` act / `·` quiet).
-- **Main agent only**: subagents (`is_subagent=True`) never start the heartbeat loop — they are task-driven workers, not autonomous agents.
-- The heartbeat conversation is separate (source `heartbeat`), so the autonomous reflections persist in the diary without polluting the human conversation.
 
 ## Plugin Architecture
 
@@ -675,14 +700,7 @@ All user-supplied text is rendered with `markup=False` to prevent `MarkupError` 
 
 ### Keyboard
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+C` | Quit |
-| `Esc` | Cancel agent loop |
-| `Ctrl+S` | Switch model (inline picker — type a number, Esc cancels) |
-| `Home` / `End` | Scroll to top / bottom |
-| `Ctrl+Y` | Copy result (on a tool call) |
-| `Enter` / `Space` | Toggle thinking block (on an assistant message) |
+The end-user keymap is documented in the [README](README.md#keyboard-shortcuts). Design notes for the model picker and approval bindings live under [Model Switching](#model-switching) and [Approval Gate](#approval-gate).
 
 ### Progressive Disclosure
 
@@ -866,6 +884,7 @@ slife/
     inbox.py           #   Unified message queue + ConversationStore
     plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle)
     multimodal.py      #   Image encoding for vision models
+    heartbeat.py       #   Autonomous heartbeat scheduling
   tools/               # Native tools (auto-discovered, 50: 49 LLM-visible + _sys_note)
     base.py            #   Tool ABC + make_params/NO_PARAMS/require_params
     registry.py        #   ToolRegistry
@@ -910,6 +929,7 @@ slife/
     headless.py        #   Headless worker-scoped JSON-RPC process
     identity.py        #   SUBAGENT unified-inbox source sentinel
     process.py         #   SubagentProcess + SubagentManager
+    tools.py           #   Subagent-scoped tool set
   ui/                  # Textual TUI
     app.py             #   Textual App, bindings, HistoryInput, StatusBar
     chat.py            #   Chat message widgets (clickable paths/URLs)
@@ -917,6 +937,8 @@ slife/
     tool_display.py    #   ToolCallWidget + display helpers
     restore.py         #   Session restore (rebuilds UI from diary)
     approval_prompt.py #   Inline tool approval (Y/N/Esc, no modal)
+    model_picker.py    #   Ctrl+S inline model picker
+    content.py         #   Message content model
     slife.tcss         #   Textual CSS
   config.py            # JSON5 config parsing (models, env, plugins, A2A, subagent)
   paths.py             # Filesystem paths (dev vs prod, data dir, DB, memfiles)
@@ -927,6 +949,7 @@ slife/
   health.py            # External dependency checks (node, npm, bun, uv)
   env.py               # ${VAR} environment resolution
   os_detect.py         # OS path detection for install scripts
+  threads.py           # run_daemon — daemon threads for blocking calls
 
 credstore/
   credstore/

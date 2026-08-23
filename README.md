@@ -216,8 +216,6 @@ The A2A mesh tools (`a2a_*`, 8 of them) and all plugin tools are hosted in plugi
 
 Every tool additionally accepts three harness meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt in the chat — Y approve / N deny / Esc deny).
 
-**Harness tools come in two tiers.** `_`-prefixed native tools (`_sys_note`) are **LLM-visible but reserved**: the agent loop auto-invokes the note each turn to report context status (usage %, time range); it is schema-declared (so the Anthropic / OpenAI-Responses backends accept its call pair) but the system prompt forbids the LLM from calling it. Context **trimming no longer happens through a tool** — it runs internally after each turn is persisted, marking the cut with a runtime-only `[TrimContext: N]` note on the last assistant message (see [Memory — Always On](#memory--always-on)). `__`-prefixed plugin tools (`__memory_save_turn`, `__mcp_call_tool`, …) are **LLM-invisible** — filtered out of the schema entirely and called programmatically via `client.call_tool()`.
-
 **Five managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts. `model_set` upserts **merge** into the existing entry (a partial update preserves `reasoning` / `input` / `compat`), and accepts a `compat` dict for per-model provider overrides.
 
 **Plugin tools** — registered at runtime as `{server}__{tool}` proxies:
@@ -248,11 +246,9 @@ Every conversation turn is permanently recorded in SQLite (`~/.slife/<agent>.db`
 | `hybrid` | Semantic recall (FTS5 + vector → RRF merge) |
 | `time` | Browse by date |
 
-Embedding backends: local GGUF (BGE-M3, offline), HuggingFace transformers, or OpenAI-compatible API. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes. A single `SemanticManager` owns the lifecycle (search gate, embedder, background index drainer): `memory_set_embedding` / `memory_set_enabled(true)` block until the model loads and the index starts building, and `memory_check_embedding` reports the live state (`disabled` / `loading` / `indexing` / `ready` / `stalled`) alongside the gate.
+Embedding backends: local GGUF (BGE-M3, offline), HuggingFace transformers, or OpenAI-compatible API. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
-Each turn also records two timestamps — the user's input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers in the chat (user messages and assistant responses respectively). Databases created before `completed_at` are migrated once with `python scripts/migrate_memdb_completed_at.py` (no in-plugin ALTER); fresh databases get the column automatically. Image attachments (`images`) use the same standalone-script pattern — `python scripts/migrate_memdb_images.py` for pre-existing databases. Token usage is recorded in two columns — `token_count` (the turn's cumulative billed tokens) and `prompt_tokens` (the context size at the last API call, used at restore to prime the status footer with the real exit-time occupancy) — migrated with `python scripts/migrate_memdb_prompt_tokens.py`.
-
-User messages carry a compact **`[Turn: N · start → end]`** footnote (the memory rowid plus when the turn happened), concatenated into the message text — so the LLM can tell turns apart and reference them by rowid (`memdb__memory_open` / `memdb__memory_turn_summarize`), and the human reads the same line in the TUI. Restored turns get it at session restore; a just-completed live turn gets it as soon as its save returns the rowid (so the next call can reference it precisely); the current in-flight turn has none. Machine annotations share one `[Kind: …]` shape — `[Heartbeat]` (a synthetic autonomous trigger, not a user query) and **`[TrimContext: N]`** on an assistant message (a context compaction to the floor: N oldest complete turns were cut after the latest turn was saved, so tool results / intermediate reasoning from that window may no longer be in context; the turns remain searchable in memory). The trim marker is **runtime-only** — it appears only in the current session and never in restored history (a restored session is already the trimmed state).
+Each turn records two timestamps — the user's input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers in the chat. User messages carry a compact **`[Turn: N · start → end]`** footnote (the memory rowid plus when the turn happened) so the LLM can reference turns by rowid (`memdb__memory_open` / `memdb__memory_turn_summarize`) — and the human reads the same line in the TUI.
 
 ### Autonomous Heartbeat
 
@@ -349,7 +345,7 @@ Dev mode auto-detects when you run from the source tree: data files stay in the 
 
 ## Architecture
 
-See **[DESIGN.md](DESIGN.md)** — philosophy, agent loop, tool system, plugin contract, MCP gateway, memory database, A2A mesh, credential security model, and full project structure.
+See **[DESIGN.md](DESIGN.md)** — design principles, agent loop, tool system, plugin contract, MCP gateway, memory database, A2A mesh, credential security model, and full project structure.
 
 ## License
 
