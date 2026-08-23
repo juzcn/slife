@@ -107,7 +107,7 @@ class TestBuild:
         assert "Data root:" in result
         assert "Config file:" in result
         assert "Logs:" in result
-        assert "Database:" in result
+        assert "Turns Memory:" in result
         assert "Skills:" in result
         assert "File cabinet:" in result
 
