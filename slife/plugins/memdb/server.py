@@ -58,9 +58,9 @@ mcp, _log_path, logger = create_plugin_server(
     instructions=(
         "slife-memdb — turn-based long-term knowledge. "
         "Every turn (user question + your response) is one row. "
-        "LLM-visible tools: memory_list_turns, memory_search (grep/fts5/hybrid/time), "
-        "memory_open, memory_turn_summarize, memory_check/set/remove_embedding. "
-        "All data is automatically scoped to the current agent."
+        "LLM-visible tools: turn_list, turn_search (grep/fts5/hybrid/time), "
+        "turn_read, turn_summarize, semantic_index_status / semantic_index_config / "
+        "semantic_search_enable.  All data is automatically scoped to the current agent."
     ),
     lifespan=_memdb_lifespan,
 )
@@ -177,7 +177,7 @@ async def __memory_save_turn(
                 channel=channel, created_at=created_at,
                 completed_at=completed_at,
             )
-            # A rowid-less memory_turn_summarize captured the current turn's
+            # A rowid-less turn_summarize captured the current turn's
             # annotation — apply it to the row just written (best-effort).
             if summary is not None or tags is not None:
                 await store.update_summary(
@@ -249,16 +249,16 @@ async def __memory_context_start_latest() -> str:
 
 
 @mcp.tool(
-    name="memory_list_turns",
+    name="turn_list",
     description=(
         "List turns (newest first): turn id, truncated user_message, summary, "
-        "tags, created_at. Use memory_open for full content. "
+        "tags, created_at. Use turn_read for full content. "
         "before_rowid / after_rowid anchor the window by turn id (exclusive): "
         "page older than a [Turn: N · …] footnote with before_rowid, newer "
         "with after_rowid."
     ),
 )
-async def memory_list_turns(
+async def turn_list(
     limit: int = 20,
     before_rowid: int | None = None,
     after_rowid: int | None = None,
@@ -286,7 +286,7 @@ async def memory_list_turns(
 
 
 @mcp.tool(
-    name="memory_token_usage",
+    name="turn_token_usage",
     description=(
         "Token consumption per turn. Options: rowid (one turn), since/until "
         "(ISO datetime time range), limit (cap on turns returned, default 50). "
@@ -295,7 +295,7 @@ async def memory_list_turns(
         "plus a summary of totals/averages across the filtered set."
     ),
 )
-async def memory_token_usage(
+async def turn_token_usage(
     rowid: int | None = None,
     since: str | None = None,
     until: str | None = None,
@@ -321,20 +321,20 @@ async def memory_token_usage(
 
 
 @mcp.tool(
-    name="memory_count",
+    name="turn_count",
     description=(
-        "Count memories. No params: total. since/until: count in an ISO time "
+        "Count turns. No params: total. since/until: count in an ISO time "
         "range (use 'since' alone for 'since last month'). query+mode: count "
         "search matches (grep/fts5)."
     ),
 )
-async def memory_count(
+async def turn_count(
     since: str | None = None,
     until: str | None = None,
     query: str | None = None,
     mode: str = "fts5",
 ) -> str:
-    """Count memories.
+    """Count turns.
 
     Args:
         since: Lower bound, ISO datetime. "since" alone = count since that time.
@@ -354,19 +354,19 @@ async def memory_count(
 
 
 @mcp.tool(
-    name="memory_open",
+    name="turn_read",
     description=(
-        "Load a memory by turn id: full messages (OpenAI JSON) incl. thinking, "
-        "tool calls, tool results. The id comes from memory_list_turns / "
-        "memory_search (each result carries the turn id)."
+        "Load a turn by turn id: full messages (OpenAI JSON) incl. thinking, "
+        "tool calls, tool results. The id comes from turn_list / "
+        "turn_search (each result carries the turn id)."
     ),
 )
-async def memory_open(rowid: int) -> str:
-    """Load a full memory turn by turn id.
+async def turn_read(rowid: int) -> str:
+    """Load a full turn by turn id.
 
     Args:
         rowid: The turn id (same id as a `[Turn: N · …]` footnote or a
-            memory_list_turns / memory_search result).
+            turn_list / turn_search result).
     """
     store = await _ensure_store()
     try:
@@ -382,15 +382,15 @@ async def memory_open(rowid: int) -> str:
 
 
 @mcp.tool(
-    name="memory_search",
+    name="turn_search",
     description=(
-        "Search memories (each result = one turn, carrying its turn id). "
+        "Search turns (each result = one turn, carrying its turn id). "
         "Modes: 'grep' exact substring, 'fts5' BM25 keyword, 'hybrid' "
         "fts5 + semantic (default), 'time' browse by date range (no query). "
-        "Use memory_open with the result's turn id for full turns."
+        "Use turn_read with the result's turn id for full turns."
     ),
 )
-async def memory_search(
+async def turn_search(
     query: str = "",
     mode: str = "hybrid",
     limit: int = 10,
@@ -493,7 +493,7 @@ async def memory_search(
 
 
 @mcp.tool(
-    name="memory_turn_summarize",
+    name="turn_summarize",
     description=(
         "Write a summary (1-2 sentences) and comma-separated tags for a turn, "
         "making it findable via keyword search. Both optional. "
@@ -502,7 +502,7 @@ async def memory_search(
         "Does NOT touch the semantic index."
     ),
 )
-async def memory_turn_summarize(
+async def turn_summarize(
     rowid: int | None = None,
     summary: str | None = None, tags: str | None = None,
 ) -> str:
@@ -541,13 +541,13 @@ async def memory_turn_summarize(
 
 
 @mcp.tool(
-    name="memory_check_embedding",
+    name="semantic_index_status",
     description=(
-        "Embedding backend status + index state: backend, model, dimension, "
-        "available, semantic_ready (the search gate), state, unembedded, hint."
+        "Semantic index status: backend, model, dimension, available, "
+        "semantic_ready (the search gate), state, unembedded, hint."
     ),
 )
-async def memory_check_embedding() -> str:
+async def semantic_index_status() -> str:
     from slife.plugins.memdb.embedding_config import make_check_report
     await _ensure_store()
     manager = _manager
@@ -583,8 +583,8 @@ async def memory_check_embedding() -> str:
             elif state == "disabled" and report.get("configured"):
                 report["hint"] = (
                     "Semantic search disabled. Re-enable with "
-                    "memory_set_enabled true, or reconfigure with "
-                    "memory_set_embedding."
+                    "semantic_search_enable true, or reconfigure with "
+                    "semantic_index_config."
                 )
         return json.dumps(report, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -593,14 +593,14 @@ async def memory_check_embedding() -> str:
 
 
 @mcp.tool(
-    name="memory_set_embedding",
+    name="semantic_index_config",
     description=(
-        "Configure the embedding backend (gguf/transformer/api) for hybrid search. "
-        "Existing turns auto-reindex in the background; keyword search stays "
-        "available meanwhile. BLOCKS until the model is loaded."
+        "Configure the semantic index embedding backend (gguf/transformer/api) "
+        "for hybrid search. Existing turns auto-reindex in the background; "
+        "keyword search stays available meanwhile. BLOCKS until the model is loaded."
     ),
 )
-async def memory_set_embedding(
+async def semantic_index_config(
     backend: str = "",
     model: str = "bge-m3",
     gguf_path: str | None = None,
@@ -669,14 +669,14 @@ async def memory_set_embedding(
 
 
 @mcp.tool(
-    name="memory_set_enabled",
+    name="semantic_search_enable",
     description=(
         "Enable/disable semantic (hybrid) search. Disabling preserves embeddings; "
         "re-enabling re-indexes turns saved meanwhile. Enable blocks until the "
         "model is loaded."
     ),
 )
-async def memory_set_enabled(enabled: bool) -> str:
+async def semantic_search_enable(enabled: bool) -> str:
     """Enable or disable semantic (hybrid) search.
 
     Args:
@@ -687,7 +687,7 @@ async def memory_set_enabled(enabled: bool) -> str:
         ok = set_embedding_enabled(enabled)
         if not ok:
             return json.dumps(
-                {"error": "No embedding configured. Run memory_set_embedding first."},
+                {"error": "No embedding configured. Run semantic_index_config first."},
                 ensure_ascii=False,
             )
         store = await _ensure_store()

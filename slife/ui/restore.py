@@ -124,7 +124,7 @@ async def restore_session(
     within the context-ceiling token budget.  This re-select pass only
     guards legacy ``recovery_info`` that carries an untrimmed list; the
     current path arrives pre-fitted.  Older turns stay in the memory DB
-    and can be retrieved via ``memory_search`` if needed.
+    and can be retrieved via ``turn_search`` if needed.
 
     This function is self-contained — it reads recovery_info, rebuilds
     the conversation message list, and reconstructs the chat UI.
@@ -423,7 +423,7 @@ async def restore_session(
     if skipped > 0:
         _show_system_message(
             app,
-            f"✅ 已恢复退出时的上下文（{len(turns)} 轮；{skipped} 轮更早记录未载入，可用 memory_search 查找）",
+            f"✅ 已恢复退出时的上下文（{len(turns)} 轮；{skipped} 轮更早记录未载入，可用 turn_search 查找）",
             color="#3fb950",
         )
     else:

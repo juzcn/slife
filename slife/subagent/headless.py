@@ -152,15 +152,24 @@ async def run_headless() -> None:
         except Exception as e:
             logger.warning("a2a_http_failed port=%s err=%s", _a2a_port, e)
 
-    # Share the main agent's memfiles plugin (file cabinet + public URLs)
-    # instead of spawning a second instance that would fight over the
-    # single free-tier ngrok tunnel.
+    # Share the main agent's memfiles plugin (file cabinet) instead of
+    # spawning a second instance.
     _memfiles_port = os.environ.get("SLIFE_MEMFILES_PORT", "")
     if _memfiles_port:
         try:
             await service.connect_memfiles_http(int(_memfiles_port))
         except Exception as e:
             logger.warning("memfiles_http_failed port=%s err=%s", _memfiles_port, e)
+
+    # Share the main agent's sharefile plugin (public file sharing) instead
+    # of spawning a second instance that would fight over the single
+    # free-tier ngrok tunnel.
+    _sharefile_port = os.environ.get("SLIFE_SHAREFILE_PORT", "")
+    if _sharefile_port:
+        try:
+            await service.connect_sharefile_http(int(_sharefile_port))
+        except Exception as e:
+            logger.warning("sharefile_http_failed port=%s err=%s", _sharefile_port, e)
 
     # Subagents can spawn their own descendants (recursion enabled).
     await service.start_subagent()

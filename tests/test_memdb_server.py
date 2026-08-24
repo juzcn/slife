@@ -2,7 +2,7 @@
 
 The semantic lifecycle (gate, embedder, index drainer) lives in
 ``SemanticManager`` (semantic.py) and is covered by ``test_memdb_semantic.py``.
-These tests cover the FastMCP tool layer: how ``memory_search`` reads the gate,
+These tests cover the FastMCP tool layer: how ``turn_search`` reads the gate,
 and how ``__memory_save_turn`` wakes the drainer.
 """
 
@@ -41,7 +41,7 @@ def _import_memdb_server():
 
 
 def _fake_manager(*, semantic_ready: bool = False, reason: str = "") -> MagicMock:
-    """A stand-in SemanticManager: gate read by memory_search."""
+    """A stand-in SemanticManager: gate read by turn_search."""
     m = MagicMock()
     m.semantic_ready = semantic_ready
     m.reason = reason
@@ -74,7 +74,7 @@ class TestHybridDegradationHint:
         )
 
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
-            out = await srv.memory_search(query="北京天气怎么样", mode="hybrid")
+            out = await srv.turn_search(query="北京天气怎么样", mode="hybrid")
 
         data = json.loads(out)
         assert data["mode"] == "fts5"
@@ -94,7 +94,7 @@ class TestHybridDegradationHint:
         )
 
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
-            out = await srv.memory_search(query="微信登录", mode="hybrid")
+            out = await srv.turn_search(query="微信登录", mode="hybrid")
 
         data = json.loads(out)
         assert data["mode"] == "fts5"
@@ -113,7 +113,7 @@ class TestHybridDegradationHint:
         srv, store = self._server(keyword_hits=[], manager=manager)
 
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
-            out = await srv.memory_search(query="北京天气怎么样", mode="hybrid")
+            out = await srv.turn_search(query="北京天气怎么样", mode="hybrid")
 
         data = json.loads(out)
         assert data["mode"] == "fts5"
@@ -180,7 +180,7 @@ class TestStoreLifecycleLocking:
 
 
 class TestTurnSummarize:
-    """memory_turn_summarize — explicit rowid annotates a past turn;
+    """turn_summarize — explicit rowid annotates a past turn;
     rowid=None captures the current (in-flight) turn for save time."""
 
     def _server(self):
@@ -196,7 +196,7 @@ class TestTurnSummarize:
 
         srv, store = self._server()
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
-            out = await srv.memory_turn_summarize(summary="sum", tags="a,b")
+            out = await srv.turn_summarize(summary="sum", tags="a,b")
 
         data = json.loads(out)
         assert data["status"] == "captured"
@@ -210,7 +210,7 @@ class TestTurnSummarize:
 
         srv, store = self._server()
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
-            out = await srv.memory_turn_summarize(rowid=3, summary="sum")
+            out = await srv.turn_summarize(rowid=3, summary="sum")
 
         data = json.loads(out)
         assert data["status"] == "updated"
@@ -256,7 +256,7 @@ class TestTurnSummarize:
 
 
 class TestListTurns:
-    """memory_list_turns — rowid-anchored lightweight listing."""
+    """turn_list — rowid-anchored lightweight listing."""
 
     @pytest.mark.asyncio
     async def test_passes_rowid_window_to_store(self, restore_root_logger):
@@ -269,7 +269,7 @@ class TestListTurns:
         ])
         srv._store = store
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
-            out = await srv.memory_list_turns(before_rowid=10, limit=5)
+            out = await srv.turn_list(before_rowid=10, limit=5)
 
         store.list_recent.assert_awaited_once_with(
             limit=5, before_rowid=10, after_rowid=None,
@@ -278,7 +278,7 @@ class TestListTurns:
 
 
 class TestTokenUsage:
-    """memory_token_usage — per-turn token consumption."""
+    """turn_token_usage — per-turn token consumption."""
 
     @pytest.mark.asyncio
     async def test_passes_filters_to_store(self, restore_root_logger):
@@ -293,7 +293,7 @@ class TestTokenUsage:
         })
         srv._store = store
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
-            out = await srv.memory_token_usage(
+            out = await srv.turn_token_usage(
                 rowid=3, since="2026-01-01", until="2026-02-01", limit=10,
             )
 

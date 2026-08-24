@@ -493,7 +493,7 @@ class TestSystemHealthToolExecute:
         with patch("slife.tools.system.get_startup_records", return_value=[]), \
              patch("slife.tools.system.check_memdb", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
-             patch("slife.tools.system.check_memfiles", return_value=[]), \
+             patch("slife.tools.system.check_sharefile", return_value=[]), \
              patch("slife.tools.system.check_mcp", return_value=[]), \
              patch("slife.tools.system.check_a2a", return_value=[]):
             result = await tool.execute()
@@ -550,7 +550,7 @@ class TestSystemHealthToolExecute:
         ), patch(
             "slife.tools.system.check_wechat", return_value=[],
         ), patch(
-            "slife.tools.system.check_memfiles", return_value=[],
+            "slife.tools.system.check_sharefile", return_value=[],
         ), patch(
             "slife.tools.system.check_mcp", return_value=[],
         ), patch(
@@ -585,7 +585,7 @@ class TestSystemHealthToolExecute:
         ), patch(
             "slife.tools.system.check_wechat", return_value=[],
         ), patch(
-            "slife.tools.system.check_memfiles", return_value=[],
+            "slife.tools.system.check_sharefile", return_value=[],
         ), patch(
             "slife.tools.system.check_mcp", return_value=live_entries,
         ), patch(

@@ -1,4 +1,4 @@
-"""Tests for slife.plugins.memfiles.tunnel — ngrok tunnel lifecycle management."""
+"""Tests for slife.plugins.sharefile.tunnel — ngrok tunnel lifecycle management."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from slife.plugins.memfiles import tunnel as tmod
-from slife.plugins.memfiles.tunnel import NgrokTunnel, _read_auth_token
+from slife.plugins.sharefile import tunnel as tmod
+from slife.plugins.sharefile.tunnel import NgrokTunnel, _read_auth_token
 
 
 # ── NgrokTunnel ───────────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ class TestNgrokTunnelInit:
 
     def test_initial_state(self, monkeypatch):
         """A fresh tunnel is not active and has no public URL."""
-        monkeypatch.delenv("SLIFE_MEMFILES_URL", raising=False)
+        monkeypatch.delenv("SLIFE_SHAREFILE_URL", raising=False)
         tunnel = NgrokTunnel()
         assert tunnel.is_active is False
         assert tunnel.public_url is None
@@ -33,7 +33,7 @@ class TestNgrokTunnelStatus:
 
     def test_idle_never_started(self, monkeypatch):
         """A fresh tunnel (no attempt) reports 'idle', not 'failed'."""
-        monkeypatch.delenv("SLIFE_MEMFILES_URL", raising=False)
+        monkeypatch.delenv("SLIFE_SHAREFILE_URL", raising=False)
         tunnel = NgrokTunnel()
         assert tunnel.status() == {"state": "idle", "url": ""}
 
@@ -101,7 +101,7 @@ class TestNgrokTunnelIsActive:
 
     def test_false_initially(self, monkeypatch):
         """is_active is False on a fresh instance."""
-        monkeypatch.delenv("SLIFE_MEMFILES_URL", raising=False)
+        monkeypatch.delenv("SLIFE_SHAREFILE_URL", raising=False)
         tunnel = NgrokTunnel()
         assert tunnel.is_active is False
 
@@ -113,8 +113,8 @@ class TestNgrokTunnelIsActive:
         assert tunnel.public_url == "https://test.ngrok.io"
 
     def test_true_when_env_var_set(self, monkeypatch):
-        """is_active is True (and public_url resolved) when SLIFE_MEMFILES_URL is set."""
-        monkeypatch.setenv("SLIFE_MEMFILES_URL", "https://env.ngrok.io")
+        """is_active is True (and public_url resolved) when SLIFE_SHAREFILE_URL is set."""
+        monkeypatch.setenv("SLIFE_SHAREFILE_URL", "https://env.ngrok.io")
         tunnel = NgrokTunnel()
         assert tunnel.is_active is True
         assert tunnel.public_url == "https://env.ngrok.io"
@@ -131,7 +131,7 @@ class TestNgrokTunnelShareUrlFor:
 
     def test_returns_none_when_offline(self, monkeypatch):
         """share_url_for returns None when no public URL is available."""
-        monkeypatch.delenv("SLIFE_MEMFILES_URL", raising=False)
+        monkeypatch.delenv("SLIFE_SHAREFILE_URL", raising=False)
         tunnel = NgrokTunnel()
         assert tunnel.share_url_for("test123") is None
 
@@ -153,7 +153,7 @@ class TestNgrokTunnelStart:
 
         assert url == "https://test.ngrok.io"
         assert tunnel._public_url == "https://test.ngrok.io"
-        assert os.environ.get("SLIFE_MEMFILES_URL") == "https://test.ngrok.io"
+        assert os.environ.get("SLIFE_SHAREFILE_URL") == "https://test.ngrok.io"
         mock_ngrok.forward.assert_called_once_with(
             "localhost:8080", authtoken="test-token", pooling_enabled=True,
         )
@@ -257,13 +257,13 @@ class TestNgrokTunnelStop:
         tunnel = NgrokTunnel()
         tunnel._ngrok = mock_ngrok
         tunnel._public_url = "https://stop-me.ngrok.io"
-        monkeypatch.setenv("SLIFE_MEMFILES_URL", "https://stop-me.ngrok.io")
+        monkeypatch.setenv("SLIFE_SHAREFILE_URL", "https://stop-me.ngrok.io")
 
         tunnel.stop()
 
         mock_ngrok.disconnect.assert_called_once_with("https://stop-me.ngrok.io")
         assert tunnel._public_url is None
-        assert "SLIFE_MEMFILES_URL" not in os.environ
+        assert "SLIFE_SHAREFILE_URL" not in os.environ
 
     def test_not_running_noop(self):
         """stop() does nothing when the tunnel is not running."""
@@ -313,7 +313,7 @@ class TestNgrokTunnelStartMonitor:
             return tunnel._public_url
 
         with patch("asyncio.sleep", side_effect=fast_sleep), \
-             patch("slife.plugins.memfiles.tunnel._tunnel_alive", return_value=True), \
+             patch("slife.plugins.sharefile.tunnel._tunnel_alive", return_value=True), \
              patch.object(tunnel, "start", side_effect=fake_start):
             task = asyncio.create_task(tunnel._run_monitor(8080, on_tunnel_up=callback))
             try:
@@ -342,7 +342,7 @@ class TestNgrokTunnelStartMonitor:
             await real_sleep(0.01)
 
         with patch("asyncio.sleep", side_effect=fast_sleep), \
-             patch("slife.plugins.memfiles.tunnel._tunnel_alive", return_value=True), \
+             patch("slife.plugins.sharefile.tunnel._tunnel_alive", return_value=True), \
              patch.object(tunnel, "start", return_value="https://already-up.ngrok.io"):
             task = asyncio.create_task(tunnel._run_monitor(8080, on_tunnel_up=callback))
             try:
@@ -375,7 +375,7 @@ class TestNgrokTunnelStartMonitor:
             return tunnel._public_url
 
         with patch("asyncio.sleep", side_effect=fast_sleep), \
-             patch("slife.plugins.memfiles.tunnel._tunnel_alive",
+             patch("slife.plugins.sharefile.tunnel._tunnel_alive",
                    side_effect=lambda _u: next(alive_results)), \
              patch.object(tunnel, "start", side_effect=fake_start) as mock_start:
             task = asyncio.create_task(tunnel._run_monitor(8080))
@@ -402,7 +402,7 @@ class TestModuleFunctions:
 
     def test_is_active_and_public_url_delegate(self, monkeypatch):
         """is_active() and public_url() delegate to the module singleton."""
-        monkeypatch.delenv("SLIFE_MEMFILES_URL", raising=False)
+        monkeypatch.delenv("SLIFE_SHAREFILE_URL", raising=False)
         tmod._tunnel._public_url = None
         assert tmod.is_active() is False
         assert tmod.public_url() is None
@@ -413,7 +413,7 @@ class TestModuleFunctions:
 
     def test_share_url_for_delegates(self, monkeypatch):
         """share_url_for() delegates to the singleton's share_url_for()."""
-        monkeypatch.delenv("SLIFE_MEMFILES_URL", raising=False)
+        monkeypatch.delenv("SLIFE_SHAREFILE_URL", raising=False)
         # Reset singleton state (may be dirty from other tests).
         tmod._tunnel._public_url = None
 
@@ -438,7 +438,7 @@ class TestReadAuthToken:
         with patch(
             "credstore.get_credential", side_effect=OSError("mock")
         ) as mock_get, patch(
-            "slife.plugins.memfiles.tunnel.logger"
+            "slife.plugins.sharefile.tunnel.logger"
         ) as mock_logger:
             result = _read_auth_token()
         assert result == "env-token-123"

@@ -71,6 +71,27 @@ class TestMCPProxyToolConstruction:
 
         assert tool.name == "wechat_login"
 
+    def test_direct_builtin_registers_bare_name(self):
+        """Built-in plugin tools (DIRECT) register under their bare semantic
+        name — no ``{server}__`` prefix (e.g. ``memdb__turn_search`` →
+        ``turn_search``)."""
+        info = make_tool_info(server="memdb", name="turn_search")
+        client = make_mock_mcp_client()
+        tool = MCPProxyTool(client, info, route=ProxyRoute.DIRECT)
+
+        assert tool.name == "turn_search"
+
+    def test_external_server_keeps_full_namespace(self):
+        """External MCP server tools (EXTERNAL) ALWAYS keep the full
+        ``{server}__{tool}`` namespace — never a bare name, so a
+        server-supplied tool can't shadow a native one (e.g. github's
+        ``create_issue`` → ``github__create_issue``)."""
+        info = make_tool_info(server="github", name="create_issue")
+        client = make_mock_mcp_client()
+        tool = MCPProxyTool(client, info, route=ProxyRoute.EXTERNAL)
+
+        assert tool.name == "github__create_issue"
+
     def test_description_prefixed_with_server(self):
         info = make_tool_info(server="memdb", name="save", description="Save data")
         client = make_mock_mcp_client()

@@ -1,7 +1,7 @@
-"""Ngrok tunnel lifecycle management — owned by the memfiles plugin.
+"""Ngrok tunnel lifecycle management — owned by the sharefile plugin.
 
 The plugin (not the slife harness) starts the ngrok tunnel to its own
-local port so the memfiles service is reachable from the public internet.
+local port so the sharefile service is reachable from the public internet.
 LLM APIs (OpenAI, Anthropic, etc.) can then fetch images via HTTPS URLs
 instead of inline base64 data URIs.
 
@@ -93,7 +93,7 @@ class NgrokTunnel:
         """The current tunnel's public URL, or None."""
         if self._public_url is not None:
             return self._public_url
-        return os.environ.get("SLIFE_MEMFILES_URL")
+        return os.environ.get("SLIFE_SHAREFILE_URL")
 
     @property
     def is_active(self) -> bool:
@@ -201,7 +201,7 @@ class NgrokTunnel:
                     f"localhost:{port}", authtoken=token, pooling_enabled=True,
                 )
                 self._public_url = str(self._listener.url()).rstrip("/")
-                os.environ["SLIFE_MEMFILES_URL"] = self._public_url
+                os.environ["SLIFE_SHAREFILE_URL"] = self._public_url
                 self._failed = False
                 logger.info(
                     "tunnel_started port=%s url=%s attempt=%d",
@@ -239,7 +239,7 @@ class NgrokTunnel:
 
         self._listener = None
         self._public_url = None
-        os.environ.pop("SLIFE_MEMFILES_URL", None)
+        os.environ.pop("SLIFE_SHAREFILE_URL", None)
 
     # ── Health monitor ──────────────────────────────────────────────
 
@@ -285,7 +285,7 @@ class NgrokTunnel:
                     "tunnel_lost url=%s — restarting", self._public_url,
                 )
                 self._public_url = None
-                os.environ.pop("SLIFE_MEMFILES_URL", None)
+                os.environ.pop("SLIFE_SHAREFILE_URL", None)
 
             # No tunnel — (re)start.
             try:
@@ -336,7 +336,7 @@ def _read_auth_token() -> str | None:
 _tunnel = NgrokTunnel()
 
 
-# ── Module-level API (used by the memfiles plugin server) ──────────────
+# ── Module-level API (used by the sharefile plugin server) ─────────────
 
 
 def share_url_for(file_id: str) -> str | None:

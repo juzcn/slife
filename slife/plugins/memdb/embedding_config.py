@@ -1,7 +1,7 @@
 """Embedding configuration helpers — read, write, validate, report.
 
-Used by the memory_set_embedding / memory_check_embedding /
-memory_set_enabled MCP tools to manage the ``memdb.embedding``
+Used by the semantic_index_config / semantic_index_status /
+semantic_search_enable MCP tools to manage the ``memdb.embedding``
 section of ``slife.json5`` at runtime.  The embedder itself is owned by
 ``SemanticManager`` (semantic.py); this module never mutates it.
 """
@@ -92,7 +92,7 @@ def get_first_provider_api_key() -> str:
     """Return the api_key from the first configured provider, or ''.
 
     An unresolved ``${VAR}`` placeholder is NOT a usable key — skip it so
-    ``memory_set_embedding(backend=api)`` reports "set a real API key" instead
+    ``semantic_index_config(backend=api)`` reports "set a real API key" instead
     of a confusing "backend unavailable" degrade.
     """
     from slife.config import _resolve_secret
@@ -128,7 +128,7 @@ def validate_gguf_path(path: str) -> tuple[bool, str]:
 
 
 def make_check_report() -> dict:
-    """Build a status report dict for memory_check_embedding."""
+    """Build a status report dict for semantic_index_status."""
     cfg = read_embedding_config()
 
     if cfg is None:
@@ -141,7 +141,7 @@ def make_check_report() -> dict:
             "hint": (
                 "No embedding configured. Semantic search (hybrid mode) is "
                 "unavailable. Keyword search (grep / fts5 / time) still works. "
-                "Configure with memory_set_embedding: "
+                "Configure with semantic_index_config: "
                 "GGUF local model: backend=gguf model=bge-m3 gguf_path=... "
                 "or Transformer local model: backend=transformer model=BAAI/bge-m3 "
                 "or OpenAI API: backend=api model=text-embedding-3-small"
@@ -200,7 +200,7 @@ def make_check_report() -> dict:
                 result["hint"] = (
                     f"GGUF file unavailable: {file_msg}. Download the model file "
                     "or switch to the transformer / API backend with "
-                    "memory_set_embedding."
+                    "semantic_index_config."
                 )
             elif not _check_runtime("gguf"):
                 result["hint"] = (
@@ -238,7 +238,7 @@ def make_check_report() -> dict:
                 result["hint"] = (
                     "API backend is missing an api_key. Confirm api_key is set in "
                     "models.providers, or switch to a local model: "
-                    "memory_set_embedding backend=gguf or backend=transformer"
+                    "semantic_index_config backend=gguf or backend=transformer"
                 )
 
     return result

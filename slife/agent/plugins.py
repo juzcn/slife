@@ -67,6 +67,11 @@ class PluginLifecycle:
         self.port: int = 0
         self.poll_task: asyncio.Task | None = None
 
+        # Exact tool names this plugin registered (bare names — no {name}__
+        # prefix), so dead-process cleanup and stop can unregister them by
+        # exact name instead of by prefix.
+        self.registered_tools: set[str] = set()
+
         # ── Watchdog state ──────────────────────────────────────────
         self._watchdog_task: asyncio.Task | None = None
         self._stopping: bool = False
@@ -138,6 +143,7 @@ class PluginLifecycle:
             ]
 
             proxy_tools = create_proxy_tools(client, tagged)
+            self.registered_tools = {t.name for t in proxy_tools}
             for tool in proxy_tools:
                 self._service.tool_registry.register(tool)
             logger.debug("%s_tools_registered count=%d", self.name, len(proxy_tools))
@@ -235,15 +241,14 @@ class PluginLifecycle:
                 )
 
                 # ── Clean up dead tools ──────────────────────────────
-                # "{name}_" matches BOTH the namespaced "{name}__tool" tools and
-                # the as-is registered plugin tools that already carry the
-                # server prefix ("mcp_set", "wechat_*", "a2a_*") — the latter
-                # never had a "__", so "{name}__" alone left them registered,
-                # pointing at the dead client.
+                # Plugins register bare semantic tool names, so unregister by
+                # the exact set recorded at registration (no prefix to match).
                 try:
-                    removed = self._service.tool_registry.unregister_by_prefix(
-                        f"{self.name}_",
-                    )
+                    removed = 0
+                    for tool_name in list(self.registered_tools):
+                        if self._service.tool_registry.unregister(tool_name):
+                            removed += 1
+                    self.registered_tools.clear()
                     if removed:
                         logger.info(
                             "%s_watchdog_unregistered_tools count=%d",

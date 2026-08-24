@@ -1,11 +1,17 @@
-"""Tests for the memfiles plugin — notes / diary / files cabinet + sharing.
+"""Tests for the memfiles plugin — the private notes / diary / files cabinet.
 
-Mocks the ngrok tunnel (no network) and exercises the MCP tool functions
-directly, following the test_mqtt_plugin.py pattern.  Covers the token
-registry, the note/diary/file/search tools (with a mocked store), the
-internal tools, the SSRF guard, and the custom ``GET /share/{file_id}``
-HTTP route.  Store internals (md mirroring, hybrid search, the SemanticManager
-contract) are covered against a real temp DB in ``TestMemfilesStore``.
+The public file-sharing functionality (token registry, ``share_file``, the
+ngrok tunnel, the ``GET /share/{file_id}`` HTTP route) moved out of memfiles
+into the standalone ``sharefile`` plugin and is covered by
+``test_sharefile_plugin.py`` / ``test_sharefile_tunnel.py``.  Memfiles is
+now cabinet-only: every save tool returns the local path and never
+auto-publishes, so there is no sharing, no token registry, and no tunnel
+to mock here.
+
+This module exercises the MCP tool functions directly (following the
+test_mqtt_plugin.py pattern) with a mocked store.  Store internals (md
+mirroring, hybrid search, the SemanticManager contract) are covered against
+a real temp DB in ``TestMemfilesStore``.
 """
 
 import pytest; pytestmark = pytest.mark.unit
@@ -14,7 +20,6 @@ import pytest; pytestmark = pytest.mark.unit
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-from urllib.parse import quote
 
 import slife.plugins.memfiles.server as plugin
 from slife.plugins.memfiles.store import MemfilesStore
@@ -24,44 +29,15 @@ from slife.plugins.memfiles.store import MemfilesStore
 
 
 @pytest.fixture(autouse=True)
-def _reset_state(monkeypatch):
-    """Reset registry + store/manager globals + plugin port each test."""
-    plugin._reset_registry()
-    plugin._PLUGIN_PORT = 12345
+def _reset_state():
+    """Reset store/manager globals each test (no registry, no tunnel here)."""
     plugin._store = None
     plugin._manager = None
     plugin._db_path = None
     plugin._init_lock = None
     yield
-    plugin._reset_registry()
     plugin._store = None
     plugin._manager = None
-
-
-def _active_tunnel(url="https://slife.ngrok-free.dev"):
-    """Patch the tunnel so it reports active with the given public URL."""
-    return patch.multiple(
-        plugin,
-        is_active=MagicMock(return_value=True),
-        share_url_for=MagicMock(side_effect=lambda fid: f"{url}/share/{fid}"),
-        status=MagicMock(return_value={"state": "active", "url": url}),
-    )
-
-
-def _offline_tunnel(state="failed"):
-    """Patch the tunnel so it reports inactive with a terminal ``failed`` state.
-
-    Also clear ``_PLUGIN_PORT`` so ``_ensure_tunnel`` short-circuits without
-    a real ngrok start attempt — without this the offline test spent ~9s
-    trying to reach the actual ngrok service.
-    """
-    return patch.multiple(
-        plugin,
-        is_active=MagicMock(return_value=False),
-        share_url_for=MagicMock(return_value=None),
-        status=MagicMock(return_value={"state": state, "url": ""}),
-        _PLUGIN_PORT=0,
-    )
 
 
 def _fake_store(mem_dir: Path) -> MagicMock:
@@ -112,35 +88,6 @@ def _fake_store(mem_dir: Path) -> MagicMock:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Token registry
-# ═══════════════════════════════════════════════════════════════════════
-
-
-class TestRegistry:
-    def test_returns_30_char_hex(self):
-        tok = plugin._register_file("/some/file.txt")
-        assert len(tok) == 30
-        assert all(c in "0123456789abcdef" for c in tok)
-
-    def test_roundtrip(self):
-        tok = plugin._register_file("/data/report.pdf")
-        assert plugin._lookup_file(tok) == "/data/report.pdf"
-
-    def test_dedup_same_path(self):
-        t1 = plugin._register_file("/tmp/a.txt")
-        t2 = plugin._register_file("/tmp/a.txt")
-        assert t1 == t2
-
-    def test_distinct_paths(self):
-        t1 = plugin._register_file("/a.txt")
-        t2 = plugin._register_file("/b.txt")
-        assert t1 != t2
-
-    def test_unknown_token(self):
-        assert plugin._lookup_file("deadbeef") is None
-
-
-# ═══════════════════════════════════════════════════════════════════════
 # Filename helpers (from store)
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -159,74 +106,24 @@ class TestHelpers:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# share_file
-# ═══════════════════════════════════════════════════════════════════════
-
-
-class TestShareFile:
-    @pytest.mark.asyncio
-    async def test_active_tunnel_returns_url(self, tmp_path):
-        f = tmp_path / "photo.png"
-        f.write_bytes(b"pngdata")
-        with _active_tunnel():
-            result = await plugin.share_file(path=str(f))
-        assert "Public URL for photo.png" in result
-        assert "https://slife.ngrok-free.dev/share/" in result
-
-    @pytest.mark.asyncio
-    async def test_offline_tunnel_returns_error(self, tmp_path):
-        f = tmp_path / "photo.png"
-        f.write_bytes(b"pngdata")
-        with _offline_tunnel():
-            result = await plugin.share_file(path=str(f))
-        assert result.startswith("Error:")
-        assert "file sharing service is not available" in result
-
-    @pytest.mark.asyncio
-    async def test_missing_file(self):
-        with _active_tunnel():
-            result = await plugin.share_file(path="D:\\nonexistent\\x.png")
-        assert result.startswith("Error:")
-        assert "file not found" in result
-
-    @pytest.mark.asyncio
-    async def test_directory(self, tmp_path):
-        with _active_tunnel():
-            result = await plugin.share_file(path=str(tmp_path))
-        assert result.startswith("Error:")
-        assert "not a file" in result
-
-    @pytest.mark.asyncio
-    async def test_url_drops_after_register(self, tmp_path):
-        f = tmp_path / "doc.pdf"
-        f.write_bytes(b"pdf")
-        with patch.multiple(
-            plugin,
-            is_active=MagicMock(return_value=True),
-            share_url_for=MagicMock(return_value=None),
-        ):
-            result = await plugin.share_file(path=str(f))
-        assert result.startswith("Error:")
-        assert "became unavailable" in result
-
-
-# ═══════════════════════════════════════════════════════════════════════
 # note_save / diary_write / file_save / url_save
 # ═══════════════════════════════════════════════════════════════════════
 
 
 class TestNoteSave:
     @pytest.mark.asyncio
-    async def test_saves_and_returns_url(self, tmp_path):
+    async def test_saves_and_returns_local_path(self, tmp_path):
+        """A note is private — the result names the local md file, with no
+        share URL and no file registered for public sharing."""
         mem_dir = tmp_path / "files"
         mem_dir.mkdir()
         store = _fake_store(mem_dir)
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             _active_tunnel():
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
             result = await plugin.note_save(subject="Python", content="asyncio notes",
                                             tags="py")
         assert "Saved:" in result
-        assert "URL:" in result
+        assert result.rstrip().replace("\\", "/").endswith("notes/subj.md")
+        assert "URL:" not in result
         store.upsert_note.assert_awaited_once_with("Python", "asyncio notes", "py")
 
     @pytest.mark.asyncio
@@ -256,6 +153,19 @@ class TestDiaryWrite:
             await plugin.diary_write(date="2026-08-10", content="x")
         store.upsert_diary.assert_awaited_once_with("2026-08-10", "x", "")
 
+    @pytest.mark.asyncio
+    async def test_returns_local_path_not_share_url(self, tmp_path):
+        """A diary is private — the result names the local md file, with no
+        share URL and no file registered for public sharing."""
+        mem_dir = tmp_path / "files"
+        mem_dir.mkdir()
+        store = _fake_store(mem_dir)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            result = await plugin.diary_write(date="2026-08-10", content="x")
+        assert "Saved:" in result
+        assert result.rstrip().replace("\\", "/").endswith("diary/2026-08-15.md")
+        assert "URL:" not in result
+
 
 class TestFileSave:
     @pytest.mark.asyncio
@@ -267,8 +177,7 @@ class TestFileSave:
         mem_dir = tmp_path / "files"
         mem_dir.mkdir()
         store = _fake_store(mem_dir)
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             _active_tunnel():
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
             result = await plugin.file_save(paths=[str(a), str(b)])
         assert "Saved:" in result
         assert store.add_file.await_count == 2
@@ -352,7 +261,6 @@ class TestUrlSave:
             return _Resp()
 
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             _active_tunnel(), \
              patch("aiohttp.ClientSession") as sess_cls:
             sess = MagicMock()
             sess.get.side_effect = _fake_get
@@ -374,16 +282,16 @@ class TestUrlSave:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# search / read
+# cabinet_search / cabinet_read
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class TestSearch:
+class TestCabinetSearch:
     @pytest.mark.asyncio
     async def test_fts5(self, tmp_path):
         store = _fake_store(tmp_path / "files")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.search(query="python", kind="note", mode="fts5")
+            out = await plugin.cabinet_search(query="python", kind="note", mode="fts5")
         data = json.loads(out)
         assert data["mode"] == "fts5"
         assert data["results"][0]["id"] == "note:1"
@@ -394,7 +302,7 @@ class TestSearch:
     async def test_hybrid_without_manager_degrades_to_fts5(self, tmp_path):
         store = _fake_store(tmp_path / "files")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.search(query="python", mode="hybrid")
+            out = await plugin.cabinet_search(query="python", mode="hybrid")
         data = json.loads(out)
         assert data["mode"] == "fts5"
         assert "hybrid degraded" in data["hint"]
@@ -410,13 +318,13 @@ class TestSearch:
         manager.embedder = embedder
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
              patch.object(plugin, "_manager", manager):
-            out = await plugin.search(query="python", mode="hybrid")
+            out = await plugin.cabinet_search(query="python", mode="hybrid")
         data = json.loads(out)
         assert data["mode"] == "hybrid"
         assert store.search.await_args.kwargs["embed_query"] == [0.1, 0.2]
 
 
-class TestRead:
+class TestCabinetRead:
     @pytest.mark.asyncio
     async def test_reads_file(self, tmp_path):
         mem_dir = tmp_path / "files"
@@ -425,7 +333,7 @@ class TestRead:
         store = _fake_store(mem_dir)
         store.resolve_safe_path = MagicMock(return_value=mem_dir / "notes" / "subj.md")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.read("notes/subj.md")
+            out = await plugin.cabinet_read("notes/subj.md")
         assert out == "# content"
 
     @pytest.mark.asyncio
@@ -433,7 +341,7 @@ class TestRead:
         store = _fake_store(tmp_path / "files")
         store.resolve_safe_path = MagicMock(return_value=tmp_path / "files" / "none.md")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.read("none.md")
+            out = await plugin.cabinet_read("none.md")
         assert out.startswith("Error: not a file")
 
 
@@ -506,10 +414,11 @@ class TestNoteDiaryBrowse:
         )
 
 
-class TestEmbeddingCheck:
-    """embedding_check reports the memfiles index's OWN gate — independent
-    from memdb's memory_check_embedding (each plugin reindexes its own DB,
-    so one can be semantically ready while the other is still building)."""
+class TestCabinetEmbeddingCheck:
+    """cabinet_embedding_check reports the memfiles index's OWN gate —
+    independent from memdb's semantic_index_status (each plugin reindexes its
+    own DB, so one can be semantically ready while the other is still
+    building)."""
 
     @pytest.mark.asyncio
     async def test_reports_memfiles_manager_state(self, tmp_path):
@@ -528,7 +437,7 @@ class TestEmbeddingCheck:
         manager.embedder = embedder
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
              patch.object(plugin, "_manager", manager):
-            out = await plugin.embedding_check()
+            out = await plugin.cabinet_embedding_check()
         data = json.loads(out)
         assert data["semantic_ready"] is False
         assert data["state"] == "indexing"
@@ -540,7 +449,7 @@ class TestEmbeddingCheck:
     async def test_without_manager_reports_config_probe(self, tmp_path):
         store = _fake_store(tmp_path / "files")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.embedding_check()
+            out = await plugin.cabinet_embedding_check()
         data = json.loads(out)
         assert "configured" in data
         assert "hint" in data
@@ -576,135 +485,6 @@ class TestSaveUrlPublicGuard:
         assert plugin._reject_non_public_url("http://10.0.0.1/")
         assert plugin._reject_non_public_url("http://192.168.1.1/")
         assert plugin._reject_non_public_url("http://172.16.0.1/")
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Internal tools
-# ═══════════════════════════════════════════════════════════════════════
-
-
-class TestInternalTools:
-    @pytest.mark.asyncio
-    async def test_tunnel_status_active(self):
-        with _active_tunnel():
-            raw = await getattr(plugin, "__tunnel_status")()
-        data = json.loads(raw)
-        assert data["active"] is True
-        assert data["state"] == "active"
-        assert data["url"] == "https://slife.ngrok-free.dev"
-
-    @pytest.mark.asyncio
-    async def test_tunnel_status_failed(self):
-        with _offline_tunnel(state="failed"):
-            raw = await getattr(plugin, "__tunnel_status")()
-        data = json.loads(raw)
-        assert data["active"] is False
-        assert data["state"] == "failed"
-        assert "hint" in data
-
-    @pytest.mark.asyncio
-    async def test_tunnel_status_starting(self):
-        """A start attempt still in flight is reported as 'starting', so the
-        harness waits rather than misreading it as tunnel down."""
-        with _offline_tunnel(state="starting"):
-            raw = await getattr(plugin, "__tunnel_status")()
-        data = json.loads(raw)
-        assert data["active"] is False
-        assert data["state"] == "starting"
-
-    @pytest.mark.asyncio
-    async def test_register_file(self, tmp_path):
-        f = tmp_path / "a.png"
-        f.write_bytes(b"x")
-        with _active_tunnel():
-            raw = await getattr(plugin, "__register_file")(str(f))
-        data = json.loads(raw)
-        assert len(data["file_id"]) == 30
-        assert data["url"] == f"https://slife.ngrok-free.dev/share/{data['file_id']}"
-        assert plugin._lookup_file(data["file_id"]) == str(f.resolve())
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Custom HTTP route — GET /share/{file_id}
-# ═══════════════════════════════════════════════════════════════════════
-
-
-def _request(file_id: str):
-    req = MagicMock()
-    req.path_params = {"file_id": file_id}
-    return req
-
-
-class TestShareRoute:
-    @pytest.mark.asyncio
-    async def test_unknown_token_403(self):
-        resp = await plugin.handle_share(_request("deadbeef"))
-        assert resp.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_missing_file_404(self, tmp_path):
-        f = tmp_path / "gone.pdf"
-        f.write_bytes(b"x")
-        tok = plugin._register_file(str(f))
-        f.unlink()
-        resp = await plugin.handle_share(_request(tok))
-        assert resp.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_streams_file(self, tmp_path):
-        payload = b"file-content-bytes"
-        f = tmp_path / "data.txt"
-        f.write_bytes(payload)
-        tok = plugin._register_file(str(f))
-
-        resp = await plugin.handle_share(_request(tok))
-        assert resp.status_code == 200
-        assert resp.headers["Content-Type"].startswith("text/plain")
-        assert "ngrok-skip-browser-warning" in resp.headers
-
-        body = b"".join([c async for c in resp.body_iterator])
-        assert body == payload
-
-    @pytest.mark.asyncio
-    async def test_sets_content_length(self, tmp_path):
-        payload = b"1234567890"
-        f = tmp_path / "ten.bin"
-        f.write_bytes(payload)
-        tok = plugin._register_file(str(f))
-
-        resp = await plugin.handle_share(_request(tok))
-        assert resp.headers["Content-Length"] == "10"
-
-    @pytest.mark.asyncio
-    async def test_non_ascii_filename_no_500(self, tmp_path):
-        """A CJK filename must not blow up the Content-Disposition header.
-
-        Regression: HTTP headers are Latin-1 — a non-ASCII filename used to
-        raise UnicodeEncodeError in Starlette's init_headers (HTTP 500).
-        """
-        payload = b"\xe4\xb8\xad\xe6\x96\x87"  # some bytes
-        f = tmp_path / "报告.pdf"      # 报告.pdf
-        f.write_bytes(payload)
-        tok = plugin._register_file(str(f))
-
-        resp = await plugin.handle_share(_request(tok))
-        assert resp.status_code == 200
-        cd = resp.headers["Content-Disposition"]
-        # RFC 5987 percent-encoded form carries the real name
-        assert "filename*=UTF-8''" in cd
-        assert quote("报告.pdf") in cd
-        body = b"".join([c async for c in resp.body_iterator])
-        assert body == payload
-
-    def test_content_disposition_ascii(self):
-        assert plugin._content_disposition("photo.png") == (
-            'inline; filename="photo.png"'
-        )
-
-    def test_content_disposition_non_ascii(self):
-        cd = plugin._content_disposition("报告.pdf")
-        assert 'filename="' in cd
-        assert "filename*=UTF-8''" in cd
 
 
 # ═══════════════════════════════════════════════════════════════════════

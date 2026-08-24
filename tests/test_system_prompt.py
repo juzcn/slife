@@ -68,7 +68,7 @@ class TestBuild:
         assert "20%" in result and "80%" in result  # floor/ceiling defaults
         assert "_sys_trim" not in result  # trim is now internal (marker, not tool)
         assert "[TrimContext:" in result  # the runtime trim marker is documented
-        assert "memory_search" in result
+        assert "turn_search" in result
 
     def test_heartbeat_interval_rendered_from_config(self, cfg):
         """The Autonomy heartbeat window advertises the configured interval."""

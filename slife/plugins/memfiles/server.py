@@ -1,33 +1,25 @@
-"""slife-memfiles — standard plugin: notes / diary / files cabinet + sharing.
+"""slife-memfiles — standard plugin: notes / diary / files cabinet.
 
-A self-contained, replaceable plugin exactly like memdb / mqtt.  Slife
+A self-contained, replaceable plugin exactly like memdb / media.  Slife
 (the main process) is a thin MCP client: it spawns this plugin over
-Streamable HTTP, registers the ``memfiles__*`` tools, and never touches
-file-serving state directly.
+Streamable HTTP, registers the memfiles tools, and never touches
+file-serving state directly.  Public sharing lives in a separate plugin
+(``sharefile``) — memfiles is the private cabinet only.
 
 Three typed knowledge stores (each md-mirrored on disk + SQLite-indexed):
-  - ``note_save(subject, …)`` — a note keyed by subject, appended to
-    ``notes/<subject>.md``
-  - ``diary_write(date, …)``   — a day's diary, appended to ``diary/<date>.md``
+  - ``note_save(subject, …)`` — a private note keyed by subject, appended
+    to ``notes/<subject>.md``
+  - ``diary_write(date, …)``   — a private day's diary, appended to
+    ``diary/<date>.md``
   - ``file_save`` / ``url_save`` — saved attachments (bytes on disk,
     metadata + optional LLM ``summary`` in the SQLite index)
-``search`` hybrid-searches them (FTS5 + vec0, reusing memdb's SemanticManager
-and RRF merge); ``read`` re-opens a saved file.  ``share_file`` publishes a
-local file as a public HTTPS URL.
-
-The plugin owns everything:
-  - the token registry (token → local path, in-process),
-  - the ngrok tunnel (exposed so multimodal LLM APIs can fetch local
-    files by public HTTPS URL),
-  - serving the file bytes on the same port via a custom HTTP route
-    (``GET /share/{file_id}``) — one port, two protocols: ``/mcp``
-    (Streamable HTTP) and ``/share/...`` (plain HTTP).
+All save tools return the saved **local path** (clickable) — they never
+auto-publish.  ``cabinet_search`` hybrid-searches them (FTS5 + vec0, reusing
+memdb's SemanticManager and RRF merge); ``cabinet_read`` re-opens a saved file.
 
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
 ``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``list_files``,
-``search``, ``read``, ``share_file``, ``embedding_check``.
-Internal tools (``__`` prefix, never LLM-visible): ``__tunnel_status``,
-``__register_file``.
+``cabinet_search``, ``cabinet_read``, ``cabinet_embedding_check``.
 
 Usage::
     uv run python -m slife.plugins.memfiles.server
@@ -39,75 +31,28 @@ import asyncio
 import json
 import mimetypes
 import re
-import secrets
 import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse
-
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import urljoin, urlparse
 
 from slife.paths import get_memfiles_dir
 from slife.plugins.memdb.embeddings import EmbeddingClient
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.plugins.memfiles.store import MemfilesStore, _slugify, _unique_path
-from slife.plugins.memfiles.tunnel import (
-    is_active,
-    share_url_for,
-    start_monitor,
-    start_tunnel,
-    status,
-    stop_monitor,
-    stop_tunnel,
-)
-from slife.server_utils import (
-    bind_free_port,
-    create_plugin_server,
-    run_plugin_server,
-    shutdown_server_logging,
-)
-
-# ── Own port — bound by main() so the tunnel can forward to it ────────
-_PLUGIN_PORT: int = 0
+from slife.server_utils import create_plugin_server, run_plugin_server
 
 # Hard cap on url_save downloads — a multi-GB public URL must not OOM the
 # plugin process by buffering the whole body.
 _MAX_SAVE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Tunnel lifecycle — eager start on plugin startup, graceful failure
-# ═══════════════════════════════════════════════════════════════════════
-
-
 @asynccontextmanager
 async def _memfiles_lifespan(_app):
-    """Eagerly start the ngrok tunnel on plugin startup (like the mqtt
-    plugin connects the mesh eagerly).  A failed start is tolerated — the
-    tunnel retries with its own bounded backoff, and the share tools fall
-    back to an on-demand start.  On shutdown the tunnel is disconnected.
-
-    The tunnel is started on a background task and never awaited here, so the
-    app serves immediately and the plugin loads fast (the port signal fires as
-    soon as the app is ready; the tunnel keeps coming up in the background).
-    Blocking app startup on the ~2s ngrok session creation would only delay
-    loading — under the plugin loading contract the signal is deferred until
-    the app is ready either way, so this is a startup-speed optimization.
-    """
-    if _PLUGIN_PORT:
-        async def _eager_tunnel() -> None:
-            try:
-                from slife.threads import run_daemon
-                await run_daemon(start_tunnel, _PLUGIN_PORT, name="ngrok-tunnel")
-            except Exception as e:
-                logger.warning("memfiles_tunnel_eager_failed err=%s", e)
-
-        asyncio.create_task(_eager_tunnel())
-        # Background monitor — one-shot retry if the eager start failed.
-        start_monitor(_PLUGIN_PORT)
+    """Ensure the store is ready, then serve.  Public sharing lives in the
+    separate ``sharefile`` plugin, so no tunnel lifecycle here."""
     try:
         try:
             await _ensure_store()
@@ -115,8 +60,6 @@ async def _memfiles_lifespan(_app):
             logger.warning("memfiles_store_init_error err=%s", e)
         yield
     finally:
-        stop_monitor()
-        stop_tunnel()
         global _store, _manager
         # Stop the semantic drainer BEFORE closing the store connection.
         if _manager is not None:
@@ -130,13 +73,14 @@ async def _memfiles_lifespan(_app):
 mcp, _log_path, logger = create_plugin_server(
     "slife-memfiles",
     instructions=(
-        "slife-memfiles — notes / diary / files cabinet + public sharing. "
-        "note_save writes/updates a subject note (md in notes/, searchable); "
-        "diary_write writes a day's diary (md in diary/, searchable); "
-        "file_save / url_save store one or more files, with an optional LLM "
-        "summary (given at save time) for semantic search. search finds them by hybrid "
-        "(keyword + semantic) search; read re-opens a saved file; share_file "
-        "publishes a local file as a public HTTPS URL."
+        "slife-memfiles — notes / diary / files cabinet (private). "
+        "note_save / diary_write / file_save / url_save all return the saved "
+        "local path (clickable) — they never auto-publish. file_save / "
+        "url_save store one or more files with an optional LLM summary "
+        "(given at save time) for semantic search. cabinet_search finds them "
+        "by hybrid (keyword + semantic) search; cabinet_read re-opens a "
+        "saved file. To publish a local file as a public HTTPS URL, call the "
+        "separate sharefile plugin's share_file explicitly."
     ),
     lifespan=_memfiles_lifespan,
 )
@@ -197,184 +141,18 @@ async def _ensure_store_locked() -> MemfilesStore:
     return _store
 
 
-async def _ensure_tunnel() -> bool:
-    """Start the tunnel if it isn't active (lazy on-demand fallback)."""
-    if is_active():
-        return True
-    if not _PLUGIN_PORT:
-        return False
-    try:
-        from slife.threads import run_daemon
-        await run_daemon(start_tunnel, _PLUGIN_PORT, name="ngrok-tunnel-on-demand")
-        return is_active()
-    except Exception:
-        return False
-
-
 # ═══════════════════════════════════════════════════════════════════════
-# Token registry — in-process (server + tunnel live in one process)
-# ═══════════════════════════════════════════════════════════════════════
-
-_registry: dict[str, str] = {}       # token → absolute local path
-_path_to_token: dict[str, str] = {}  # absolute path → token (dedup)
-
-
-def _register_file(file_path: str) -> str:
-    """Return a short hex token for *file_path*, reusing an existing one.
-
-    30 chars (``secrets.token_hex(15)``) — deliberately below 32 to avoid
-    the generic ``[A-Za-z0-9]{32,}`` secret-sanitization pattern in
-    ``logfmt.py``.  Hex (not base64url) so no underscores break the
-    Textual/Rich markdown URL detection.
-    """
-    existing = _path_to_token.get(file_path)
-    if existing:
-        return existing
-    tok = secrets.token_hex(15)
-    _registry[tok] = file_path
-    _path_to_token[file_path] = tok
-    logger.debug("register_file token=%s path=%s", tok, file_path)
-    return tok
-
-
-def _lookup_file(token: str) -> str | None:
-    """Return the local path for *token*, or ``None`` if unknown."""
-    return _registry.get(token)
-
-
-def _reset_registry() -> None:
-    """Clear all registered tokens (used by tests)."""
-    _registry.clear()
-    _path_to_token.clear()
-
-
-def _content_disposition(filename: str) -> str:
-    """RFC 5987 content-disposition for (possibly) non-ASCII filenames.
-
-    HTTP header values must be Latin-1.  For a non-Latin-1 filename we
-    emit an ASCII fallback in ``filename=`` plus the real name
-    percent-encoded in ``filename*=UTF-8''...`` — otherwise Starlette
-    raises ``UnicodeEncodeError`` while writing the header (500).
-    """
-    try:
-        filename.encode("latin-1")
-    except UnicodeEncodeError:
-        ascii_fallback = re.sub(r'[^ -~]', "_", filename)
-        ascii_fallback = ascii_fallback.replace('"', "_").replace("\\", "_")
-        ascii_fallback = ascii_fallback[:80] or "file"
-        return (
-            f'inline; filename="{ascii_fallback}"; '
-            f"filename*=UTF-8''{quote(filename)}"
-        )
-    safe = filename.replace('"', "_").replace("\\", "_")
-    return f'inline; filename="{safe}"'
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# HTTP route — serve file bytes on the same port as /mcp
-# ═══════════════════════════════════════════════════════════════════════
-
-
-@mcp.custom_route("/share/{file_id}", methods=["GET"])
-async def handle_share(request: Request) -> Response:
-    """Serve a registered local file by its share token.
-
-    Returns 403 for an unknown/expired token, 404 if the file no longer
-    exists.  Streams in 64 KB chunks.
-    """
-    file_id = request.path_params["file_id"]
-
-    file_path_str = _lookup_file(file_id)
-    if file_path_str is None:
-        return Response("Unknown share link or session expired", status_code=403)
-
-    file_path = Path(file_path_str)
-    if not file_path.is_file():
-        return Response("File no longer exists", status_code=404)
-
-    if not mimetypes.inited:
-        mimetypes.init()
-    mime_type, _ = mimetypes.guess_type(str(file_path))
-    content_type = mime_type or "application/octet-stream"
-    file_size = file_path.stat().st_size
-
-    logger.info("share_served path=%s mime=%s size=%s", file_path, content_type, file_size)
-
-    def _iter_chunks():
-        with open(file_path, "rb") as f:
-            while chunk := f.read(65536):
-                yield chunk
-
-    return StreamingResponse(
-        _iter_chunks(),
-        status_code=200,
-        headers={
-            "Content-Type": content_type,
-            "Content-Length": str(file_size),
-            "Content-Disposition": _content_disposition(file_path.name),
-            # Suppress the ngrok free-tier interstitial browser-warning page.
-            "ngrok-skip-browser-warning": "true",
-        },
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Internal tools (``__`` prefix — callable by the main process, never the LLM)
-# ═══════════════════════════════════════════════════════════════════════
-
-
-@mcp.tool(name="__tunnel_status", description="File-sharing tunnel status as JSON.")
-async def __tunnel_status() -> str:
-    """Return ``{active, state, url, hint}`` for the harness health check.
-
-    ``state`` distinguishes the harness-relevant cases: ``active`` (a public
-    URL is live), ``starting`` (an eager start attempt is still in flight —
-    the harness waits for it to conclude), ``failed`` (terminal — safe to
-    report the tunnel down), ``idle`` (no attempt made, e.g. subagent
-    reusing the main agent's tunnel).
-    """
-    st = status()
-    if st["state"] == "active":
-        return json.dumps(
-            {"active": True, "state": "active", "url": st["url"]},
-            ensure_ascii=False,
-        )
-    return json.dumps(
-        {
-            "active": False,
-            "state": st["state"],
-            "url": "",
-            "hint": (
-                "File sharing tunnel unavailable. "
-                "Check NGROK_AUTHTOKEN credential or ngrok account limits "
-                "(free tier: 1 online agent — one tunnel per token)."
-            ),
-        },
-        ensure_ascii=False,
-    )
-
-
-@mcp.tool(name="__register_file", description="Register a file and return its share URL.")
-async def __register_file(path: str) -> str:
-    """Register *path* and return ``{file_id, url}`` for the harness."""
-    await _ensure_tunnel()
-    file_id = _register_file(str(Path(path).resolve()))
-    url = share_url_for(file_id) or ""
-    return json.dumps({"file_id": file_id, "url": url}, ensure_ascii=False)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# LLM-visible tools (registered as memfiles__<name> by the harness)
+# LLM-visible tools (registered by the harness)
 # ═══════════════════════════════════════════════════════════════════════
 
 
 def _saved_result(filepath: Path) -> str:
-    """Register the file for sharing and format the save confirmation."""
-    file_id = _register_file(str(filepath.resolve()))
-    url = share_url_for(file_id)
-    lines = [f"Saved: {filepath}"]
-    lines.append(f"URL: {url}" if url else "URL: (sharing offline — file accessible locally)")
-    return "\n".join(lines)
+    """Format a save confirmation.
+
+    Memfiles save tools never auto-publish — sharing lives in the separate
+    ``sharefile`` plugin — so a save confirms the local file path only.
+    """
+    return f"Saved: {filepath}"
 
 
 #: Extension → category subfolder under ``{agent}.files/files/``.
@@ -409,57 +187,18 @@ def _detect_category(filename: str, override: str = "") -> str:
 
 
 @mcp.tool(
-    name="share_file",
-    description=(
-        "Share a local file as a public HTTPS URL for multimodal LLMs to "
-        "fetch directly.  Requires the file-sharing tunnel to be active."
-    ),
-)
-async def share_file(path: str) -> str:
-    """Share a local file as a public HTTPS URL.
-
-    Args:
-        path: Absolute path to the local file to share.
-    """
-    p = Path(path)
-    if not p.exists():
-        return f"Error: file not found — {path}"
-    if not p.is_file():
-        return f"Error: not a file — {path}"
-
-    if not await _ensure_tunnel():
-        return (
-            "Error: file sharing service is not available. "
-            "Run system_health to check service status."
-        )
-
-    file_id = _register_file(str(p.resolve()))
-    url = share_url_for(file_id)
-    if url is None:
-        return (
-            "Error: file sharing service became unavailable. "
-            "Please retry or run system_health for details."
-        )
-
-    return (
-        f"Public URL for {p.name}:\n"
-        f"{url}\n\n"
-        f"Use this URL in multimodal API calls to let the LLM fetch "
-        f"the file directly."
-    )
-
-
-@mcp.tool(
     name="note_save",
     description=(
-        "Write or update a note for a subject.  Appends a timestamped "
-        "section to notes/<subject>.md and re-indexes it for search."
+        "Write or update a private note for a subject.  Appends a "
+        "timestamped section to the local file notes/<subject>.md and "
+        "re-indexes it for search.  The note is private — returns the "
+        "local file path, never a public share URL."
     ),
 )
 async def note_save(
     subject: str, content: str, tags: str | None = None,
 ) -> str:
-    """Write or update a note for a subject.
+    """Write or update a private note for a subject.
 
     Args:
         subject: The note's subject — also its filename (notes/<subject>.md).
@@ -480,8 +219,10 @@ async def note_save(
     name="diary_write",
     description=(
         "Write today's (or a given date's) diary entry.  Appends a "
-        "timestamped section to diary/<date>.md and re-indexes it. "
-        "date defaults to today (YYYY-MM-DD)."
+        "timestamped section to the local file diary/<date>.md and "
+        "re-indexes it for search.  date defaults to today (YYYY-MM-DD). "
+        "The diary is private — returns the local file path, never a "
+        "public share URL."
     ),
 )
 async def diary_write(
@@ -513,7 +254,8 @@ async def diary_write(
         "(images / documents / archives / code / audio / video / data / other); "
         "pass category to override.  Optionally give a title and an LLM "
         "summary (the summary makes the file findable by semantic search). "
-        "Returns local paths + share URLs."
+        "Returns the saved local paths (clickable); to publish a file as a "
+        "public URL call share_file on the returned path."
     ),
 )
 async def file_save(
@@ -570,7 +312,9 @@ async def file_save(
         "Download a public http(s) URL into the agent's files folder and "
         "record it.  Auto-filed under files/<category>/ by extension; pass "
         "category to override.  Optionally give a title and an LLM summary "
-        "(for semantic search).  Only publicly reachable URLs are accepted."
+        "(for semantic search).  Only publicly reachable URLs are accepted. "
+        "Returns the saved local path (clickable); to publish the file as a "
+        "public URL call share_file on the returned path."
     ),
 )
 async def url_save(
@@ -673,17 +417,18 @@ async def url_save(
 
 
 @mcp.tool(
-    name="search",
+    name="cabinet_search",
     description=(
-        "Search notes, diary and saved files.  kind: note | diary | file | "
-        "all (default).  mode: hybrid (keyword + semantic) or fts5. "
-        "Returns matches with their relative path, snippet and kind."
+        "Search the file cabinet (notes, diary and saved files).  kind: "
+        "note | diary | file | all (default).  mode: hybrid (keyword + "
+        "semantic) or fts5.  Returns matches with their relative path, "
+        "snippet and kind."
     ),
 )
-async def search(
+async def cabinet_search(
     query: str, kind: str = "all", mode: str = "hybrid", limit: int = 20,
 ) -> str:
-    """Search notes, diary and saved files.
+    """Search the file cabinet (notes, diary and saved files).
 
     Args:
         query: The search text.
@@ -736,16 +481,16 @@ async def search(
 
 
 @mcp.tool(
-    name="embedding_check",
+    name="cabinet_embedding_check",
     description=(
-        "Memfiles semantic-search status: shared embedding config plus the "
-        "memfiles index's own gate (semantic_ready, state, unembedded). "
-        "Independent from memdb's memory_check_embedding — the two plugins "
+        "File-cabinet semantic-search status: shared embedding config plus "
+        "the memfiles index's own gate (semantic_ready, state, unembedded). "
+        "Independent from memdb's semantic_index_status — the two plugins "
         "reindex their own DBs, so one can be semantically ready while the "
         "other is still building."
     ),
 )
-async def embedding_check() -> str:
+async def cabinet_embedding_check() -> str:
     from slife.plugins.memdb.embedding_config import make_check_report
 
     await _ensure_store()
@@ -782,7 +527,7 @@ async def embedding_check() -> str:
             elif state == "disabled" and report.get("configured"):
                 report["hint"] = (
                     "Memfiles semantic search disabled. Re-enable via memdb's "
-                    "memory_set_enabled true (shared embedding config)."
+                    "semantic_search_enable true (shared embedding config)."
                 )
         return json.dumps(report, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -791,18 +536,18 @@ async def embedding_check() -> str:
 
 
 @mcp.tool(
-    name="read",
+    name="cabinet_read",
     description=(
         "Read a saved file's content by its relative path under the agent's "
-        "files folder (as returned by file_save / search), e.g. "
+        "files folder (as returned by file_save / cabinet_search), e.g. "
         "notes/python.md or diary/2026-08-15.md."
     ),
 )
-async def read(path: str) -> str:
+async def cabinet_read(path: str) -> str:
     """Read a saved file's content.
 
     Args:
-        path: Relative path under the cabinet, as returned by file_save / search.
+        path: Relative path under the cabinet, as returned by file_save / cabinet_search.
     """
     store = await _ensure_store()
     try:
@@ -985,28 +730,9 @@ def _reject_non_public_url(url: str) -> str | None:
 
 
 def main() -> None:
-    """Run the memfiles plugin on Streamable HTTP.
-
-    Binds its own port first (the plugin owns the ngrok tunnel and must
-    know its port to forward to), then serves MCP on ``/mcp`` and file
-    bytes on ``/share/{file_id}`` — same port.  ``run_plugin_server`` emits
-    the port signal to the parent once the app is ready (the plugin loading
-    contract) — this plugin does not signal early.
-    """
-    import os
-
-    global _PLUGIN_PORT
-    sock, port = bind_free_port()
-    _PLUGIN_PORT = port
-    os.environ["SLIFE_MEMFILES_PORT"] = str(port)
-
-    logger.info("memfiles_start log=%s port=%s", _log_path, port)
-
-    try:
-        run_plugin_server(mcp, sockets=[sock])
-    finally:
-        logger.info("memfiles_shutdown port=%s", port)
-        shutdown_server_logging()
+    """Run the memfiles plugin on Streamable HTTP (generic — no own port,
+    no tunnel; the sharefile plugin owns sharing)."""
+    run_plugin_server(mcp)
 
 
 if __name__ == "__main__":

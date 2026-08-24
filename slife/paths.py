@@ -109,7 +109,8 @@ def get_memfiles_dir(agent_name: str = "slife") -> Path:
 
     Files saved via the memfiles plugin (``file_save`` / ``url_save`` /
     ``note_save`` / ``diary_write``) land here — plain files browsable by the
-    user and accessible via both local path and sharing URL.
+    user.  Public sharing of a file is a separate concern handled by the
+    sharefile plugin.
 
     Uses ``SLIFE_AGENT_NAME`` from the environment when available (mirrors
     :func:`get_db_path`), falling back to ``"slife"``.

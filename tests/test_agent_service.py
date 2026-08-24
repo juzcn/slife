@@ -798,7 +798,7 @@ class TestAgentServiceMemory:
     async def test_saved_turn_annotated_with_footnote(self, sample_config):
         """After a successful save, the turn's user message gets the inline
         `[Turn: N · …]` footnote so the next LLM call can reference it by
-        rowid (and memory_turn_summarize need not race latest_rowid)."""
+        rowid (and turn_summarize need not race latest_rowid)."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
@@ -866,7 +866,7 @@ class TestAgentServiceMemory:
 
     @pytest.mark.asyncio
     async def test_save_rides_captured_current_turn_annotation(self, sample_config):
-        """A rowid-less memory_turn_summarize called mid-turn rides the save:
+        """A rowid-less turn_summarize called mid-turn rides the save:
         its summary/tags land on the new row (no latest_rowid race)."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
@@ -882,7 +882,7 @@ class TestAgentServiceMemory:
             "", tool_calls=[{
                 "id": "c1", "type": "function",
                 "function": {
-                    "name": "memdb__memory_turn_summarize",
+                    "name": "turn_summarize",
                     "arguments": '{"summary": "switched model", "tags": "model,vision"}',
                 },
             }],
@@ -950,7 +950,7 @@ class TestCompactToolResults:
 
 
 class TestExtractTurnAnnotation:
-    """_extract_turn_annotation — rowid-less memory_turn_summarize calls."""
+    """_extract_turn_annotation — rowid-less turn_summarize calls."""
 
     @staticmethod
     def _call(args_json: str):
@@ -958,7 +958,7 @@ class TestExtractTurnAnnotation:
             "role": "assistant",
             "tool_calls": [{
                 "id": "c1", "type": "function",
-                "function": {"name": "memdb__memory_turn_summarize",
+                "function": {"name": "turn_summarize",
                              "arguments": args_json},
             }],
         }]
@@ -972,12 +972,15 @@ class TestExtractTurnAnnotation:
         msgs = self._call('{"rowid": 3, "summary": "x"}')
         assert _extract_turn_annotation(msgs) == (None, None)
 
-    def test_bare_prefix_name_still_matches(self):
+    def test_prefix_suffixed_name_still_matches(self):
+        """A legacy ``{server}__turn_summarize`` call (split("__")[-1]) still
+        matches — the matcher is suffix-based, so the prefixed historical form
+        keeps working even though built-ins now register bare."""
         msgs = [{
             "role": "assistant",
             "tool_calls": [{
                 "id": "c1", "type": "function",
-                "function": {"name": "memory_turn_summarize",
+                "function": {"name": "memdb__turn_summarize",
                              "arguments": '{"tags": "a,b"}'},
             }],
         }]
@@ -1851,7 +1854,7 @@ class TestSpawnPluginListToolsRetry:
         first_client.list_tools.side_effect = TimeoutError("list_tools timed out")
         second_client = AsyncMock()
         second_client.list_tools.return_value = [{
-            "name": "memdb__memory_search", "description": "d",
+            "name": "turn_search", "description": "d",
             "inputSchema": {"type": "object", "properties": {}},
         }]
         fake_process.create_client.side_effect = [first_client, second_client]
@@ -1893,13 +1896,13 @@ class TestSpawnPluginListToolsRetry:
         fake_process.stop.assert_awaited()
 
 
-# ── Memfiles tunnel readiness watch ───────────────────────────────────────
+# ── Sharefile tunnel readiness watch ─────────────────────────────────────
 
 
-class TestMemfilesTunnelWatch:
+class TestSharefileTunnelWatch:
     """Tests for the harness-owned tunnel readiness watch (main process
-    probes __tunnel_status after memfiles loads; the plugin never talks to
-    the TUI)."""
+    probes __tunnel_status after the sharefile plugin loads; the plugin
+    never talks to the TUI)."""
 
     @pytest.mark.asyncio
     async def test_surfaces_when_failed(self, sample_config):
@@ -1913,7 +1916,7 @@ class TestMemfilesTunnelWatch:
             "hint": "File sharing tunnel unavailable.",
         })
 
-        await service._check_memfiles_tunnel(client)
+        await service._check_sharefile_tunnel(client)
 
         cb.assert_called_once()
         client.call_tool.assert_called_once_with("__tunnel_status")
@@ -1929,7 +1932,7 @@ class TestMemfilesTunnelWatch:
             "active": True, "state": "active", "url": "https://x.ngrok-free.dev",
         })
 
-        await service._check_memfiles_tunnel(client)
+        await service._check_sharefile_tunnel(client)
 
         cb.assert_not_called()
 
@@ -1948,7 +1951,7 @@ class TestMemfilesTunnelWatch:
         ]
 
         with patch("asyncio.sleep", new=AsyncMock()):
-            await service._check_memfiles_tunnel(client)
+            await service._check_sharefile_tunnel(client)
 
         cb.assert_called_once()
         assert client.call_tool.call_count == 2
@@ -1962,7 +1965,7 @@ class TestMemfilesTunnelWatch:
         client = AsyncMock()
         client.call_tool.side_effect = RuntimeError("client gone")
 
-        await service._check_memfiles_tunnel(client)
+        await service._check_sharefile_tunnel(client)
 
         cb.assert_not_called()
 
@@ -1980,6 +1983,6 @@ class TestMemfilesTunnelWatch:
 
         with patch("asyncio.sleep", new=AsyncMock()), \
              patch("slife.agent.service._TUNNEL_SETTLE_TIMEOUT", 0.0):
-            await service._check_memfiles_tunnel(client)
+            await service._check_sharefile_tunnel(client)
 
         cb.assert_not_called()

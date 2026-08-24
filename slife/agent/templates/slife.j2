@@ -21,10 +21,10 @@
    - It is managed dynamically to stay between {{ context_floor }}% and {{ context_ceiling }}% of the window — on overflow the oldest turns are trimmed from context (never from memory).
    - A restart restores the exit-time context, as if nothing was interrupted. `clear_context` clears the loaded turns and starts fresh.
 3. Memory — Turns (memdb)
-   - All turns remain in permanent memory; `memdb__memory_search` (full-text / vector) recalls any of them into context as a tool result.
+   - All turns remain in permanent memory; `turn_search` (full-text / vector) recalls any of them into context as a tool result.
 4. Memory — Files Cabinet (memfiles)
-   - Besides turn conversations, by using `memfiles__note_save` / `memfiles__diary_write` / `memfiles__file_save` / `memfiles__url_save`, we store notes, diaries and files into permanent memory. 
-   - notes and diaries are saved as browsable markdown; recall them via `memfiles__search`.
+   - Besides turn conversations, by using `note_save` / `diary_write` / `file_save` / `url_save`, we store notes, diaries and files into permanent memory.
+   - notes and diaries are saved as browsable markdown; recall them via `cabinet_search`.
 5. Annotations you find in user or assistant message, they are machine-generated, read as metadata — not the user's or assistant's words.
    - `[Turn: N · start → end]` — identifies a memory turn (id + when it happened). On restored turns and on a just-completed turn once saved; never on the in-flight turn.
    - `[TrimContext: N]` — notify that N oldest complete turns were trimmed from context.
@@ -34,7 +34,7 @@
 1. Images & multimodal
    - Vision support: {{ "enabled" if has_vision else "disabled" }}
    - `attach_image` adds one or more images (data URI, local path, or HTTPS URL; pass a list via `sources`) to the conversation (same syntax as `@`); vision models only.
-   - `memfiles__share_file` publishes a local path as an HTTPS URL that multimodal LLMs can read directly — preferred for local images/files to vision models.
+   - `share_file` publishes a local path as an HTTPS URL that multimodal LLMs can read directly — preferred for local images/files to vision models.
    - To show a file or image, hand the user a path or URL — it opens with the OS; files are never rendered in-terminal.
 2. Credential resolution chain
    - Syntax: `${VAR}` and `${VAR:-default}`

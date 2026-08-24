@@ -422,7 +422,7 @@ class SlifeApp(App):
         self.service.on_heartbeat(self._on_heartbeat)
         # Fatal memory-save failure — persistent red banner (memory is core).
         self.service.on_memory_broken(self._on_memory_broken)
-        # File-sharing tunnel down (harness-probed after memfiles loads) —
+        # File-sharing tunnel down (harness-probed after sharefile loads) —
         # warning in chat, main-process owned.
         self.service.on_tunnel_down(self._on_tunnel_down)
 
@@ -494,6 +494,7 @@ class SlifeApp(App):
             _stop_one("memdb", self.service.stop_memdb()),
             _stop_one("wechat", self.service.stop_wechat()),
             _stop_one("memfiles", self.service.stop_memfiles()),
+            _stop_one("sharefile", self.service.stop_sharefile()),
             return_exceptions=True,
         )
 
@@ -640,7 +641,7 @@ class SlifeApp(App):
     def _on_tunnel_down(self, message: str) -> None:
         """File-sharing tunnel failed to start — show a warning in chat.
 
-        Surfaced by the harness after it probes the memfiles plugin's
+        Surfaced by the harness after it probes the sharefile plugin's
         ``__tunnel_status`` (main-process owned; the plugin never talks to
         the TUI).  ngrok free tier allows one online agent per token, so a
         second slife instance legitimately cannot start a second tunnel.

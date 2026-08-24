@@ -69,7 +69,7 @@ def check_memdb() -> list[dict]:
             "value": "none",
             "hint": ("No embedding backend configured. Semantic search (hybrid mode) will NOT work. "
                      "Keyword search (grep/fts5/time) still works normally. "
-                     "Use memory_set_embedding to configure: GGUF local model, "
+                     "Use semantic_index_config to configure: GGUF local model, "
                      "transformer (sentence-transformers), or OpenAI-compatible API."),
         })
         return results
@@ -207,50 +207,50 @@ class CheckWechatTool(Tool):
         return json.dumps(check_wechat(), ensure_ascii=False, indent=2)
 
 
-# check_memfiles
+# check_sharefile
 # ═══════════════════════════════════════════════════════════════════════
 
-async def check_memfiles(client=None) -> list[dict]:
-    """Return file-sharing tunnel status (queried from the memfiles plugin).
+async def check_sharefile(client=None) -> list[dict]:
+    """Return file-sharing tunnel status (queried from the sharefile plugin).
 
-    The tunnel now lives inside the memfiles plugin process, so this check
-    asks the plugin's internal tool ``__tunnel_status`` through its MCP
-    client (from ``ToolContext.memfiles_client``).  When the plugin is not
+    The tunnel lives inside the sharefile plugin process, so this check asks
+    the plugin's internal tool ``__tunnel_status`` through its MCP client
+    (from ``ToolContext.sharefile_client``).  When the plugin is not
     connected, a warning is reported.
     """
     try:
         if client is None:
-            return [{"component": "memfiles", "level": "warning", "key": "tunnel",
+            return [{"component": "sharefile", "level": "warning", "key": "tunnel",
                      "value": "plugin_offline",
-                     "hint": "memfiles plugin not connected — file sharing unavailable."}]
+                     "hint": "sharefile plugin not connected — file sharing unavailable."}]
         raw = await client.call_tool("__tunnel_status")
         data = json.loads(raw)
         if data.get("active"):
-            return [{"component": "memfiles", "level": "ok", "key": "tunnel",
+            return [{"component": "sharefile", "level": "ok", "key": "tunnel",
                      "value": data.get("url", "?"),
                      "hint": "File sharing tunnel is online."}]
-        return [{"component": "memfiles", "level": "warning", "key": "tunnel",
+        return [{"component": "sharefile", "level": "warning", "key": "tunnel",
                  "value": "offline",
                  "hint": data.get("hint") or "File sharing tunnel unavailable."}]
     except Exception as e:
-        logger.warning("memfiles_check_failed err=%s", e)
-        return [{"component": "memfiles", "level": "warning", "key": "tunnel",
+        logger.warning("sharefile_check_failed err=%s", e)
+        return [{"component": "sharefile", "level": "warning", "key": "tunnel",
                  "value": "offline",
                  "hint": f"File sharing tunnel status unavailable: {e}"}]
 
 
-class CheckMemfilesTool(Tool):
+class CheckSharefileTool(Tool):
     """Check file-sharing tunnel (ngrok) status."""
 
-    name = "check_memfiles"
+    name = "check_sharefile"
     category: ClassVar[str] = "System"
-    description = "File sharing tunnel status (online/offline) for share_file and the memfiles cabinet."
+    description = "File sharing tunnel status (online/offline) for share_file."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
         ctx = getattr(self, "_ctx", None)
-        client = getattr(ctx, "memfiles_client", None) if ctx is not None else None
-        return json.dumps(await check_memfiles(client=client), ensure_ascii=False, indent=2)
+        client = getattr(ctx, "sharefile_client", None) if ctx is not None else None
+        return json.dumps(await check_sharefile(client=client), ensure_ascii=False, indent=2)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -529,18 +529,18 @@ class CheckA2aTool(Tool):
 _CHECK_FUNCTIONS: list[str] = [
     "check_memdb",
     "check_wechat",
-    "check_memfiles",
+    "check_sharefile",
     "check_mcp",
     "check_a2a",
     "check_watchdog",
 ]
 
 #: check_* functions that reach live plugin state via a ToolContext client.
-#: ``check_mcp`` uses the slife-mcp wrapper client; ``check_memfiles`` and
+#: ``check_mcp`` uses the slife-mcp wrapper client; ``check_sharefile`` and
 #: ``check_a2a`` use their respective plugin clients.
 _CLIENT_FIELD: dict[str, str] = {
     "check_mcp": "mcp_client",
-    "check_memfiles": "memfiles_client",
+    "check_sharefile": "sharefile_client",
     "check_a2a": "a2a_mcp_client",
 }
 

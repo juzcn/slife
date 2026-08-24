@@ -10,11 +10,11 @@ Third-party plugin
   It will be discovered and started automatically on next launch.
 
 Built-in plugins
-  ``mcp``, ``memdb``, ``wechat``, ``memfiles``, and ``a2a`` are discovered
-  the same way.  Each has a small amount of harness-side post‑connect logic
-  (MCP auto‑connect, memory restore, WeChat poll loop, memfiles client
-  wiring, A2A mesh) that is triggered by plugin name rather than by special
-  registration.
+  ``mcp``, ``memdb``, ``wechat``, ``memfiles``, ``sharefile``, and ``a2a``
+  are discovered the same way.  Each has a small amount of harness-side
+  post‑connect logic (MCP auto‑connect, memory restore, WeChat poll loop,
+  memfiles/sharefile client wiring, A2A mesh) that is triggered by plugin
+  name rather than by special registration.
 
 External (non‑Python) MCP servers
   npm‑/uvx‑based servers (filesystem, fetch, serper, etc.) are NOT

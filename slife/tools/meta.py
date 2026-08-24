@@ -45,7 +45,23 @@ def _classify(name: str) -> str:
         return "Execution"
     if name.startswith("credential_"):
         return "Credentials"
-    if name in ("list_native_tools", "check_async", "cancel_async", "clear_context"):
+    if name.startswith("turn_") or name == "semantic_index_status" or \
+            name == "semantic_index_config" or name == "semantic_search_enable":
+        return "Memory (Turns)"
+    if name.startswith("note_") or name.startswith("diary_") or name.startswith("file_") or \
+            name.startswith("url_save") or name.startswith("cabinet_") or name == "list_files":
+        return "File Cabinet (notes / diary / files)"
+    if name == "share_file":
+        return "File Sharing"
+    if name.startswith("generate_") or name.startswith("text_to_speech") or \
+            name.startswith("transcribe_"):
+        return "Media Generation"
+    if name.startswith("mcp_"):
+        return "MCP Management"
+    if name.startswith("wechat_"):
+        return "WeChat"
+    if name in ("list_native_tools", "check_async", "cancel_async", "clear_context",
+                "set_max_iterations"):
         return "Meta"
     return "Other"
 
@@ -55,8 +71,10 @@ class ListNativeToolsTool(Tool):
     category: ClassVar[str] = "Meta"
     description: ClassVar[str] = (
         "Inventory of native tools (grouped, first-sentence summaries, "
-        "harness/auto-invoked markers). External MCP tools are NOT listed — "
-        "the model already receives their full schemas natively."
+        "harness/auto-invoked markers). Includes built-in plugin tools "
+        "(turns, file cabinet, sharing, media, WeChat, A2A) — they are "
+        "first-class like native tools. External MCP server tools are NOT "
+        "listed — the model already receives their full schemas natively."
     )
     parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
 
@@ -70,12 +88,16 @@ class ListNativeToolsTool(Tool):
         if not all_tools:
             return "No tools are currently registered."
 
-        # External MCP tools are excluded: the model already receives their
-        # full schemas in the native `tools` array of every request, so a
-        # second listing here is pure redundant context.
-        from slife.mcp.tool_adapter import MCPProxyTool
+        # External MCP server tools are excluded: the model already receives
+        # their full schemas in the native `tools` array of every request, so
+        # a second listing here is pure redundant context.  Built-in plugin
+        # tools (DIRECT/WRAPPER — bare names) ARE native: included here.
+        from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 
-        natives = [t for t in all_tools if not isinstance(t, MCPProxyTool)]
+        natives = [
+            t for t in all_tools
+            if not (isinstance(t, MCPProxyTool) and t._route == ProxyRoute.EXTERNAL)
+        ]
         if not natives:
             return "No native tools are currently registered."
 

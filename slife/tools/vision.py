@@ -6,11 +6,11 @@ local file paths, or HTTP(S) URLs — and injects the resulting blocks
 into the active conversation (works exactly like the ``@`` syntax in
 chat).  It feeds the vision API only — nothing is ever rendered in the
 terminal.  To *show* a file to the user, hand them a path / URL (opened
-with the OS) or publish it via ``memfiles__share_file``.
+with the OS) or publish it via ``share_file``.
 
 This is an agent-loop concern (it mutates in-conversation state), so it
 stays a native tool in the main process — unrelated to the memfiles
-plugin, which only handles file storage and public URL sharing.
+(file cabinet) / sharefile (public sharing) plugins.
 """
 
 from __future__ import annotations

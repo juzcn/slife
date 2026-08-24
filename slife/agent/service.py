@@ -52,9 +52,9 @@ class MemoryDatabaseError(Exception):
 # new model ref string (e.g. "deepseek/deepseek-v4-flash").
 _on_model_switched: list[Callable[[str], None]] = []
 
-# ── Memfiles tunnel readiness watch ──────────────────────────────────────
-# The memfiles plugin eager-starts its ngrok tunnel on a background task, so
-# the harness's one-time probe must not race a still-running attempt: a
+# ── Sharefile tunnel readiness watch ─────────────────────────────────────
+# The sharefile plugin eager-starts its ngrok tunnel on a background task,
+# so the harness's one-time probe must not race a still-running attempt: a
 # failed start retries up to 3× with 2s/4s backoff (~9s before it concludes).
 # The harness probes __tunnel_status until the plugin reports a terminal
 # state, bounded by these constants, and surfaces "tunnel down" only once.
@@ -69,7 +69,7 @@ _TUNNEL_PROBE_INTERVAL = 1.0   # seconds — between __tunnel_status probes
 # only live cap, a hard window-safety constraint).  Permanent memory does
 # NOT: tool output is reproducible (re-run the tool), so the diary stores
 # a head+tail digest.  This keeps diary turns small enough that session
-# restore can fill the context floor, and keeps memory_search recall cheap.
+# restore can fill the context floor, and keeps turn_search recall cheap.
 # Truncation is always announced to the model via an explicit marker.
 
 
@@ -130,9 +130,9 @@ def compact_tool_results(turn_messages: list[dict], budget_chars: int) -> int:
 def _extract_turn_annotation(
     turn_messages: list[dict],
 ) -> tuple[str | None, str | None]:
-    """Extract a rowid-less ``memory_turn_summarize`` call (the current turn).
+    """Extract a rowid-less ``turn_summarize`` call (the current turn).
 
-    The model annotates the in-flight turn by calling ``memory_turn_summarize``
+    The model annotates the in-flight turn by calling ``turn_summarize``
     without a rowid; the tool returns "captured" without writing.  The
     summary/tags are applied here, at the single save point, so the annotation
     lands on exactly the turn being saved — no ``latest_rowid()`` race, no
@@ -144,7 +144,7 @@ def _extract_turn_annotation(
     for msg in turn_messages:
         for tc in msg.get("tool_calls") or []:
             name = tc.get("function", {}).get("name", "")
-            if name.split("__")[-1] != "memory_turn_summarize":
+            if name.split("__")[-1] != "turn_summarize":
                 continue
             try:
                 args = json.loads(tc.get("function", {}).get("arguments", "{}"))
@@ -292,6 +292,7 @@ class AgentService:
             "memdb": PluginLifecycle("memdb", self),
             "wechat": PluginLifecycle("wechat", self),
             "memfiles": PluginLifecycle("memfiles", self),
+            "sharefile": PluginLifecycle("sharefile", self),
             "a2a": PluginLifecycle("a2a", self),
         }
 
@@ -454,21 +455,30 @@ class AgentService:
         if name == "wechat":
             return await self.start_wechat()
 
-        # ── Memfiles: fully generic plugin — spawn, connect, register.
-        # The plugin owns the ngrok tunnel and file serving; the harness
-        # only exposes the plugin's MCP client for health checks.
+        # ── Memfiles: fully generic private cabinet — spawn, connect, register.
         if name == "memfiles":
             started = await self._spawn_plugin_generic(name, module)
             if started:
-                self._tool_ctx.memfiles_client = self._plugins["memfiles"].client
+                self._start_generic_watchdog(name, module)
+            return (
+                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
+            )
+
+        # ── Sharefile: fully generic plugin — spawn, connect, register.
+        # The plugin owns the ngrok tunnel and file serving; the harness
+        # only exposes the plugin's MCP client for health checks.
+        if name == "sharefile":
+            started = await self._spawn_plugin_generic(name, module)
+            if started:
+                self._tool_ctx.sharefile_client = self._plugins["sharefile"].client
                 # Publish the port so subagents can inherit it and reuse
-                # the main agent's memfiles plugin (no second ngrok tunnel).
-                os.environ["SLIFE_MEMFILES_PORT"] = str(self._plugins["memfiles"].port)
+                # the main agent's sharefile plugin (no second ngrok tunnel).
+                os.environ["SLIFE_SHAREFILE_PORT"] = str(self._plugins["sharefile"].port)
                 self._start_generic_watchdog(name, module)
                 # Harness-owned tunnel readiness: probe __tunnel_status once
                 # the eager ngrok attempt settles, surface "tunnel down" only
                 # on a terminal failure.  The plugin never talks to the TUI.
-                self._watch_memfiles_tunnel()
+                self._watch_sharefile_tunnel()
             return (
                 PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
             )
@@ -500,28 +510,28 @@ class AgentService:
 
         async def _restart() -> None:
             await self._spawn_plugin_generic(name, module)
-            if name == "memfiles":
-                # _spawn_plugin_generic replaced self._plugins["memfiles"].client,
+            if name == "sharefile":
+                # _spawn_plugin_generic replaced self._plugins["sharefile"].client,
                 # but the harness's ToolContext still points at the dead client —
-                # re-point it or check_memfiles reports the restarted plugin offline.
-                self._tool_ctx.memfiles_client = self._plugins[name].client
+                # re-point it or check_sharefile reports the restarted plugin offline.
+                self._tool_ctx.sharefile_client = self._plugins[name].client
 
         self._plugins[name].start_watchdog(restart_cb=_restart)
 
-    def _watch_memfiles_tunnel(self) -> None:
-        """After memfiles loads, watch its eager ngrok attempt to settle and
+    def _watch_sharefile_tunnel(self) -> None:
+        """After sharefile loads, watch its eager ngrok attempt to settle and
         surface a TUI message when the tunnel is down.
 
         The harness owns the surfacing (main-process side); the plugin never
         talks to the TUI.  The tunnel is reported at most once, when it
         reaches a terminal ``failed`` state — a live tunnel stays silent.
         """
-        client = self._plugins["memfiles"].client
+        client = self._plugins["sharefile"].client
         if client is None:
             return
-        asyncio.create_task(self._check_memfiles_tunnel(client))
+        asyncio.create_task(self._check_sharefile_tunnel(client))
 
-    async def _check_memfiles_tunnel(self, client) -> None:
+    async def _check_sharefile_tunnel(self, client) -> None:
         """Probe ``__tunnel_status`` until the eager attempt concludes, then
         report once if the tunnel failed.
 
@@ -554,7 +564,7 @@ class AgentService:
         The message is deliberately generic (any failure cause — account
         limit, missing token, SDK absent) and points at ``system_health``
         for the concrete reason, matching the established convention
-        (memfiles errors reference system_health for details).
+        (sharefile errors reference system_health for details).
         """
         logger.warning("tunnel_unavailable detail=%s", detail)
         cb = self._on_tunnel_down
@@ -622,6 +632,9 @@ class AgentService:
                     name, len(tagged), len(plugin_tools) - len(tagged),
                 )
             proxy_tools = create_proxy_tools(client, tagged)
+            # Record exact registered names for dead-process cleanup / stop
+            # (bare names — no {name}__ prefix to unregister by).
+            self._plugins[name].registered_tools = {t.name for t in proxy_tools}
             for tool in proxy_tools:
                 self.tool_registry.register(tool)
 
@@ -765,14 +778,24 @@ class AgentService:
         """Connect to the main agent's memfiles plugin via Streamable HTTP.
 
         Used by subagents to reuse the main agent's file-cabinet plugin
-        instead of spawning their own (which would also fight over the
-        single free-tier ngrok tunnel).  Registers the ``memfiles__*``
-        tools and exposes the client for health checks.
+        instead of spawning their own.  Registers the memfiles tools.
         """
         await self._connect_plugin_http("memfiles", port)
         await self._register_plugin_tools("memfiles")
-        self._tool_ctx.memfiles_client = self._plugins["memfiles"].client
         logger.info("memfiles_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
+
+    async def connect_sharefile_http(self, port: int) -> None:
+        """Connect to the main agent's sharefile plugin via Streamable HTTP.
+
+        Used by subagents to reuse the main agent's sharefile plugin instead
+        of spawning their own (which would also fight over the single
+        free-tier ngrok tunnel).  Registers the sharefile tools and
+        exposes the client for health checks.
+        """
+        await self._connect_plugin_http("sharefile", port)
+        await self._register_plugin_tools("sharefile")
+        self._tool_ctx.sharefile_client = self._plugins["sharefile"].client
+        logger.info("sharefile_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_a2a_http(self, port: int) -> None:
         """Connect to the main agent's a2a plugin via Streamable HTTP.
@@ -824,9 +847,10 @@ class AgentService:
     async def _register_plugin_tools(self, name: str, **kwargs) -> None:
         """Discover and register a connected plugin's tools as proxy tools.
 
-        Tags each tool with the plugin's ``server`` name (the ``server__tool``
-        prefix), filters out internal tools (names starting with ``__``),
-        creates proxy tools, and registers them.
+        Filters out internal tools (names starting with ``__``), creates
+        proxy tools, and registers them under their bare semantic names
+        (built-in plugin tools are first-class, like native tools — no
+        ``server__tool`` prefix; only external MCP server tools keep it).
 
         Args:
             name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``,
@@ -852,6 +876,9 @@ class AgentService:
         ]
 
         proxy_tools = create_proxy_tools(self._plugins[name].client, tagged, **kwargs)
+        # Record the exact registered names so dead-process cleanup and stop
+        # can unregister this plugin's bare-name tools without a prefix.
+        self._plugins[name].registered_tools = {t.name for t in proxy_tools}
         for tool in proxy_tools:
             self.tool_registry.register(tool)
         logger.debug("%s_tools_registered count=%d", name, len(proxy_tools))
@@ -1392,12 +1419,16 @@ class AgentService:
         await self._stop_plugin("wechat", has_poll_task=True)
 
     async def stop_memfiles(self) -> None:
-        """Stop the memfiles plugin.
+        """Stop the memfiles plugin (the private file cabinet)."""
+        await self._stop_plugin("memfiles")
+
+    async def stop_sharefile(self) -> None:
+        """Stop the sharefile plugin.
 
         The plugin's own lifespan disconnects the ngrok tunnel on shutdown,
         so the harness only stops the child process.
         """
-        await self._stop_plugin("memfiles")
+        await self._stop_plugin("sharefile")
 
     def kill_child_processes(self) -> None:
         """Synchronous best-effort child process cleanup.
@@ -1788,7 +1819,7 @@ class AgentService:
                 else created_at
             )
         save_args["completed_at"] = now.isoformat(timespec="seconds")
-        # A rowid-less memory_turn_summarize captured the current turn's
+        # A rowid-less turn_summarize captured the current turn's
         # summary/tags — ride them on the save so they land on the new row.
         summary, tags = _extract_turn_annotation(turn_messages)
         if summary is not None or tags is not None:
@@ -1843,7 +1874,7 @@ class AgentService:
             elif isinstance(parsed, dict):
                 # The turn now has a rowid — annotate its user message so the
                 # next LLM call can reference it precisely (and the
-                # memory_turn_summarize default no longer needs the racy
+                # turn_summarize default no longer needs the racy
                 # latest_rowid fallback).  Live TUI bubbles are NOT
                 # retro-updated: their lack of the footnote is itself the
                 # "current session" signal.  Best-effort — a failure only

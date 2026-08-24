@@ -495,8 +495,8 @@ class SessionStore:
             if mode == "fts5" and _contains_cjk(query):
                 # FTS5 unicode61 cannot match a whole-sentence CJK query —
                 # search_keyword routes CJK to the LIKE fallback, so the count
-                # must do the same or count/search disagree (memory_count=0
-                # while memory_search returns hits).
+                # must do the same or count/search disagree (turn_count=0
+                # while turn_search returns hits).
                 mode = "grep"
             if mode == "grep":
                 # Escape LIKE metacharacters so a pattern containing %/_ matches

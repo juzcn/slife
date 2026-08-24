@@ -15,7 +15,7 @@ the two plugins' gates are independent.
 Why this exists: the previous design scattered ``_semantic_ready`` /
 ``_embedder`` / ``_reindex_task`` / ``_reinit_task`` across ``server.py``
 module globals, poked from 6+ entry points and racing each other — a runtime
-``memory_set_embedding`` once left the gate stuck off until restart. Here all
+``semantic_index_config`` once left the gate stuck off until restart. Here all
 state is owned in-process by one object, so the ``python -m`` double-module
 bug and the cross-module ``reload_embedder`` global mutation are structurally
 impossible.
@@ -50,11 +50,11 @@ def _backend_unavailable_reason(embedder: EmbeddingClient) -> str:
                 return ("gguf backend unavailable — llama-cpp-python not installed. "
                         "Run: uv pip install llama-cpp-python")
             return ("gguf backend unavailable — GGUF file not found. "
-                    "Download the model and set its path with memory_set_embedding")
+                    "Download the model and set its path with semantic_index_config")
         return "gguf backend unavailable — no GGUF model path configured"
     if backend == "api":
         return ("api backend unavailable — API key is an unresolved ${VAR} placeholder "
-                "or missing. Configure a real key with memory_set_embedding backend=api")
+                "or missing. Configure a real key with semantic_index_config backend=api")
     if backend == "transformer":
         return ("transformer backend unavailable — sentence-transformers not installed. "
                 "Run: uv pip install sentence-transformers")

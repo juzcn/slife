@@ -455,7 +455,7 @@ class ConversationStore:
             # Persistent conversation for human / WeChat / subagent sources.
             # SUBAGENT shares the HUMAN conversation so the user sees
             # subagent results inline — but the diary records channel
-            # as "subagent" for audit/memory_search distinguishability.
+            # as "subagent" for audit/turn_search distinguishability.
             conv_source = HUMAN if source == SUBAGENT else source
             if conv_source not in self._convs:
                 self._convs[conv_source] = Conversation(

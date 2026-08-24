@@ -34,7 +34,8 @@ class ProxyRoute(Enum):
 _MCP_SERVER = "mcp"           # built-in MCP management server
 _MEMDB_SERVER = "memdb"       # built-in memdb service
 _WECHAT_SERVER = "wechat"     # built-in WeChat messaging plugin
-_MEMFILES_SERVER = "memfiles"  # built-in file cabinet / public sharing plugin
+_MEMFILES_SERVER = "memfiles"   # built-in file cabinet plugin (private)
+_SHAREFILE_SERVER = "sharefile"  # built-in public file sharing plugin
 _A2A_SERVER = "a2a"           # built-in A2A mesh plugin (MQTT binding)
 _MEDIA_SERVER = "media"       # built-in media generation plugin (image/video/TTS/ASR)
 _MCP_SET = "mcp_set"
@@ -91,22 +92,19 @@ class MCPProxyTool(Tool):
         self._on_server_removed = on_server_removed
         self._on_server_updated = on_server_updated
 
-        # Namespaced tool name: "server__toolname".  Built-in plugin tools
-        # (DIRECT/WRAPPER) that already carry their server as a name prefix
-        # (e.g. the mcp plugin's "mcp_set", the wechat plugin's "wechat_login")
-        # would otherwise become the redundant "mcp__mcp_set" /
-        # "wechat__wechat_login" — drop the duplicated prefix and register them
-        # as-is.  External server tools ALWAYS keep the full "{server}__{tool}"
-        # namespace: applying the as-is rule to them let a server-supplied
-        # tool shadow a native tool (e.g. an external server named `check`
-        # advertising `check_mcp`) and broke `{name}__` unregistration
-        if (
-            self._route != ProxyRoute.EXTERNAL
-            and self._tool_name.startswith(f"{self._server}_")
-        ):
-            full_name = self._tool_name
-        else:
+        # Tool name: built-in plugin tools (DIRECT/WRAPPER) register under
+        # their bare name (semantic, self-describing — e.g. "turn_search",
+        # "note_save", "mcp_set", "wechat_login"); they are first-class like
+        # native tools and the `{server}_` prefix inside the name is preserved
+        # as-is where the plugin chose it.  External MCP server tools ALWAYS
+        # keep the full "{server}__{tool}" namespace: applying a bare-name
+        # rule to them would let a server-supplied tool shadow a native tool
+        # (e.g. an external server named `check` advertising `check_mcp`) and
+        # broke `{name}__` unregistration.
+        if self._route == ProxyRoute.EXTERNAL:
             full_name = f"{self._server}__{self._tool_name}"
+        else:
+            full_name = self._tool_name
 
         # Override class-level attrs at instance level with real values
         object.__setattr__(self, "name", full_name)
@@ -244,8 +242,8 @@ def _route_for_server(server: str) -> ProxyRoute:
     no more magic-string matching scattered across the codebase.
     """
     # Built-in plugins that have their own standalone MCP client
-    if server in (_MEMDB_SERVER, _WECHAT_SERVER, _MEMFILES_SERVER, _A2A_SERVER,
-                  _MEDIA_SERVER):
+    if server in (_MEMDB_SERVER, _WECHAT_SERVER, _MEMFILES_SERVER,
+                  _SHAREFILE_SERVER, _A2A_SERVER, _MEDIA_SERVER):
         return ProxyRoute.DIRECT
     # MCP wrapper — has extra config persistence hooks
     if server == _MCP_SERVER:

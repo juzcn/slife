@@ -58,10 +58,9 @@ def create_tools_from_config(
         # non-vision model that calls it gets a clear "vision=false" refusal
         # instead of a silently-missing tool.
 
-        # Note: the memfiles tools (share_file, note_save, diary_write,
-        # file_save, url_save, search, read) live in the
-        # memfiles plugin (registered as memfiles__* proxy tools), not here —
-        # so there is no tunnel-gating needed at native-tool load time.
+        # Note: the cabinet + sharing tools (note_save / share_file)
+        # live in their plugins (registered as proxy tools), not here — so
+        # there is no tunnel-gating needed at native-tool load time.
 
         tool = tool_cls.from_config(cfg, config, ctx)
 
