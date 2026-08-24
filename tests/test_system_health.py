@@ -11,8 +11,10 @@ import pytest
 from slife.tools.system import (
     check_memdb,
     check_wechat,
+    check_memfiles,
     check_mcp,
     check_a2a,
+    CheckMemfilesTool,
     _group_by_component,
     _component_status,
     _build_summary,
@@ -493,6 +495,7 @@ class TestSystemHealthToolExecute:
         with patch("slife.tools.system.get_startup_records", return_value=[]), \
              patch("slife.tools.system.check_memdb", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
+             patch("slife.tools.system.check_memfiles", return_value=[]), \
              patch("slife.tools.system.check_sharefile", return_value=[]), \
              patch("slife.tools.system.check_mcp", return_value=[]), \
              patch("slife.tools.system.check_a2a", return_value=[]):
@@ -550,6 +553,8 @@ class TestSystemHealthToolExecute:
         ), patch(
             "slife.tools.system.check_wechat", return_value=[],
         ), patch(
+            "slife.tools.system.check_memfiles", return_value=[],
+        ), patch(
             "slife.tools.system.check_sharefile", return_value=[],
         ), patch(
             "slife.tools.system.check_mcp", return_value=[],
@@ -584,6 +589,8 @@ class TestSystemHealthToolExecute:
             "slife.tools.system.check_memdb", return_value=[],
         ), patch(
             "slife.tools.system.check_wechat", return_value=[],
+        ), patch(
+            "slife.tools.system.check_memfiles", return_value=[],
         ), patch(
             "slife.tools.system.check_sharefile", return_value=[],
         ), patch(
@@ -805,6 +812,117 @@ class TestCheckA2aFunction:
         entries = await check_a2a(client=client)
         assert entries[0]["level"] == "warning"
         assert "boom" in entries[0]["hint"]
+
+
+class _FakeMemfilesClient:
+    """Minimal stand-in for the memfiles plugin MCP client."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def call_tool(self, name, arguments=None):
+        assert name == "__cabinet_status"
+        return json.dumps(self._payload)
+
+
+class TestCheckMemfilesFunction:
+    """Tests for check_memfiles()."""
+
+    @staticmethod
+    def _status(**overrides):
+        data = {
+            "ok": True, "connected": True, "state": "ready",
+            "semantic_ready": True, "unembedded": 0, "reason": "",
+            "hint": "Cabinet connected; semantic index ready.",
+        }
+        data.update(overrides)
+        return data
+
+    @pytest.mark.asyncio
+    async def test_client_unavailable(self):
+        entries = await check_memfiles()
+        assert entries[0]["component"] == "memfiles"
+        assert entries[0]["level"] == "warning"
+        assert entries[0]["value"] == "offline"
+        assert "not connected" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_connected_semantic_ready(self):
+        client = _FakeMemfilesClient(self._status())
+        entries = await check_memfiles(client=client)
+        assert len(entries) == 1
+        assert entries[0]["level"] == "ok"
+        assert entries[0]["value"] == "connected"
+        assert "ready" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_connected_semantic_indexing(self):
+        client = _FakeMemfilesClient(self._status(
+            state="indexing", semantic_ready=False, unembedded=5,
+        ))
+        entries = await check_memfiles(client=client)
+        assert len(entries) == 1
+        assert entries[0]["level"] == "ok"
+        assert "indexing" in entries[0]["hint"]
+        assert "5" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_store_error(self):
+        client = _FakeMemfilesClient(self._status(
+            ok=False, state="store_error", semantic_ready=False,
+            hint="store init failed",
+        ))
+        entries = await check_memfiles(client=client)
+        assert entries[0]["level"] == "warning"
+        assert entries[0]["value"] == "store_error"
+        assert "store init failed" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_check_failure_reports_warning(self):
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
+        entries = await check_memfiles(client=client)
+        assert entries[0]["level"] == "warning"
+        assert "boom" in entries[0]["hint"]
+
+
+class TestCheckMemfilesTool:
+    """Tests for CheckMemfilesTool metadata and execute."""
+
+    def test_metadata(self):
+        tool = CheckMemfilesTool()
+        assert tool.name == "check_memfiles"
+        assert "cabinet" in tool.description.lower()
+        assert tool.parameters["type"] == "object"
+        assert tool.parameters["required"] == []
+
+    @pytest.mark.asyncio
+    async def test_execute_returns_json(self):
+        tool = CheckMemfilesTool()
+        with patch("slife.tools.system.check_memfiles",
+                   new=AsyncMock(return_value=[
+                       {"component": "memfiles", "level": "ok", "key": "plugin",
+                        "value": "connected", "hint": "all good"},
+                   ])):
+            result = await tool.execute()
+            parsed = json.loads(result)
+            assert parsed[0]["component"] == "memfiles"
+            assert parsed[0]["value"] == "connected"
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_ctx_memfiles_client(self):
+        """execute() reaches the plugin through ToolContext.memfiles_client."""
+        tool = CheckMemfilesTool()
+        fake_client = _FakeMemfilesClient({
+            "ok": True, "connected": True, "state": "ready",
+            "semantic_ready": True, "unembedded": 0, "reason": "",
+            "hint": "Cabinet connected; semantic index ready.",
+        })
+        tool._ctx = MagicMock(memfiles_client=fake_client)
+        result = await tool.execute()
+        parsed = json.loads(result)
+        assert parsed[0]["component"] == "memfiles"
+        assert parsed[0]["value"] == "connected"
 
 
 class TestCheckA2aTool:

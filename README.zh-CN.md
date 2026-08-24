@@ -9,7 +9,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：13 个类别共 50 个原生工具（另有 1 个保留的 harness 工具 `_sys_note`）、六个内置插件服务、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：13 个类别共 51 个原生工具（另有 1 个保留的 harness 工具 `_sys_note`）、六个内置插件服务、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -177,11 +177,11 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 统一为 OpenAI 函数定义。LLM 看不出原生、插件与外部 MCP 工具的区别。
 
-**13 个类别共 50 个原生工具** — 从 `slife/tools/` 自动发现（49 个 LLM 可见 + 1 个 harness `_sys_note`；`attach_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
+**13 个类别共 51 个原生工具** — 从 `slife/tools/` 自动发现（50 个 LLM 可见 + 1 个 harness `_sys_note`；`attach_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
 
 | 类别 | 工具 |
 |------|------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_a2a`, `check_watchdog` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
@@ -261,7 +261,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。
 
-所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_mcp`、`check_a2a`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
+所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_sharefile`、`check_mcp`、`check_a2a`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
 
 ### A2A — 智能体间通信（网格）
 

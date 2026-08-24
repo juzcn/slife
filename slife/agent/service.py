@@ -459,6 +459,7 @@ class AgentService:
         if name == "memfiles":
             started = await self._spawn_plugin_generic(name, module)
             if started:
+                self._tool_ctx.memfiles_client = self._plugins["memfiles"].client
                 self._start_generic_watchdog(name, module)
             return (
                 PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
@@ -510,6 +511,11 @@ class AgentService:
 
         async def _restart() -> None:
             await self._spawn_plugin_generic(name, module)
+            if name == "memfiles":
+                # _spawn_plugin_generic replaced self._plugins["memfiles"].client,
+                # but the harness's ToolContext still points at the dead client —
+                # re-point it or check_memfiles reports the restarted plugin offline.
+                self._tool_ctx.memfiles_client = self._plugins[name].client
             if name == "sharefile":
                 # _spawn_plugin_generic replaced self._plugins["sharefile"].client,
                 # but the harness's ToolContext still points at the dead client —
@@ -778,10 +784,12 @@ class AgentService:
         """Connect to the main agent's memfiles plugin via Streamable HTTP.
 
         Used by subagents to reuse the main agent's file-cabinet plugin
-        instead of spawning their own.  Registers the memfiles tools.
+        instead of spawning their own.  Registers the memfiles tools and
+        exposes the client for the memfiles health check.
         """
         await self._connect_plugin_http("memfiles", port)
         await self._register_plugin_tools("memfiles")
+        self._tool_ctx.memfiles_client = self._plugins["memfiles"].client
         logger.info("memfiles_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_sharefile_http(self, port: int) -> None:
@@ -854,8 +862,8 @@ class AgentService:
 
         Args:
             name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``,
-                ``"a2a"`` — internal tools are ``__``-prefixed and filtered;
-                the ``a2a_*`` mesh tools register as proxy tools).
+                ``"memfiles"``, ``"a2a"`` — internal tools are ``__``-prefixed
+                and filtered; the ``a2a_*`` mesh tools register as proxy tools).
             **kwargs: Forwarded to :func:`create_proxy_tools` (e.g.
                 ``on_server_added``, ``on_server_removed``).
         """

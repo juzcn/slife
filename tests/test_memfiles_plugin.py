@@ -455,6 +455,51 @@ class TestCabinetEmbeddingCheck:
         assert "hint" in data
 
 
+class TestCabinetStatus:
+    """__cabinet_status — the internal tool the harness's check_memfiles probes."""
+
+    @pytest.mark.asyncio
+    async def test_store_error_reports_failure(self, tmp_path):
+        with patch.object(plugin, "_ensure_store",
+                          AsyncMock(side_effect=RuntimeError("boom"))):
+            out = await getattr(plugin, "__cabinet_status")()
+        data = json.loads(out)
+        assert data["ok"] is False
+        assert data["state"] == "store_error"
+        assert "boom" in data["hint"]
+
+    @pytest.mark.asyncio
+    async def test_reports_semantic_index_state(self, tmp_path):
+        store = _fake_store(tmp_path / "files")
+        manager = MagicMock()
+        manager.semantic_ready = False
+        manager.state = "indexing"
+        manager.reason = "index building"
+        manager.unembedded = AsyncMock(return_value=5)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
+             patch.object(plugin, "_store", store), \
+             patch.object(plugin, "_manager", manager):
+            out = await getattr(plugin, "__cabinet_status")()
+        data = json.loads(out)
+        assert data["ok"] is True
+        assert data["connected"] is True
+        assert data["semantic_ready"] is False
+        assert data["state"] == "indexing"
+        assert data["unembedded"] == 5
+
+    @pytest.mark.asyncio
+    async def test_no_manager(self, tmp_path):
+        store = _fake_store(tmp_path / "files")
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
+             patch.object(plugin, "_store", store), \
+             patch.object(plugin, "_manager", None):
+            out = await getattr(plugin, "__cabinet_status")()
+        data = json.loads(out)
+        assert data["ok"] is True
+        assert data["state"] == "no_manager"
+        assert data["semantic_ready"] is False
+
+
 # ── SSRF guard for url_save ───────────────────────────────────────────
 
 

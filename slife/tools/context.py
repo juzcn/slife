@@ -47,6 +47,11 @@ class ToolContext:
     """The sharefile plugin's MCP client — used by ``check_sharefile`` to
     query the file-sharing tunnel status via the plugin's internal tool."""
 
+    memfiles_client: object | None = None
+    """The memfiles plugin's MCP client — used by ``check_memfiles`` to
+    query the cabinet status (store, index, semantic search) via the
+    plugin's internal ``__cabinet_status`` tool."""
+
     message_history: MessageHistory | None = None
     """The active :class:`MessageHistory` (needed by ``clear_context``,
     ``attach_image`` and subagent context cloning)."""

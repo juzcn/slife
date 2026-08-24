@@ -3,6 +3,7 @@
 Tools:
     check_memdb              — MemDB plugin: database + embedding backend
     check_wechat             — WeChat plugin status
+    check_memfiles           — file cabinet (notes / diary / files) status
     check_sharefile          — file-sharing tunnel (ngrok) status
     check_watchdog           — plugin watchdog (auto-restart) status
     check_mcp                — external MCP server connection status
@@ -254,6 +255,58 @@ class CheckSharefileTool(Tool):
         ctx = getattr(self, "_ctx", None)
         client = getattr(ctx, "sharefile_client", None) if ctx is not None else None
         return json.dumps(await check_sharefile(client=client), ensure_ascii=False, indent=2)
+
+
+# check_memfiles
+# ═══════════════════════════════════════════════════════════════════════
+
+async def check_memfiles(client=None) -> list[dict]:
+    """Return file-cabinet (notes / diary / files) status as health entries.
+
+    The cabinet lives inside the memfiles plugin process, so this check asks
+    the plugin's internal tool ``__cabinet_status`` through its MCP client
+    (from ``ToolContext.memfiles_client``).  When the plugin is not
+    connected, a warning is reported.
+    """
+    try:
+        if client is None:
+            return [{"component": "memfiles", "level": "warning", "key": "plugin",
+                     "value": "offline",
+                     "hint": "memfiles plugin not connected — file cabinet unavailable."}]
+        raw = await client.call_tool("__cabinet_status")
+        data = json.loads(raw)
+        if data.get("ok"):
+            if data.get("semantic_ready"):
+                return [{"component": "memfiles", "level": "ok", "key": "plugin",
+                         "value": "connected",
+                         "hint": "Cabinet connected; semantic index ready."}]
+            return [{"component": "memfiles", "level": "ok", "key": "plugin",
+                     "value": "connected",
+                     "hint": (f"Cabinet connected — semantic index "
+                              f"{data.get('state')}, {data.get('unembedded', 0)} "
+                              "pending embedding; keyword search available.")}]
+        return [{"component": "memfiles", "level": "warning", "key": "plugin",
+                 "value": data.get("state", "degraded"),
+                 "hint": data.get("hint") or "Cabinet store unavailable."}]
+    except Exception as e:
+        logger.warning("memfiles_check_failed err=%s", e)
+        return [{"component": "memfiles", "level": "warning", "key": "plugin",
+                 "value": "offline",
+                 "hint": f"Cabinet status unavailable: {e}"}]
+
+
+class CheckMemfilesTool(Tool):
+    """Check file-cabinet (notes / diary / files) status."""
+
+    name = "check_memfiles"
+    category: ClassVar[str] = "System"
+    description = "File cabinet (memfiles) status: connected, store, semantic index (search)."
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs) -> str:
+        ctx = getattr(self, "_ctx", None)
+        client = getattr(ctx, "memfiles_client", None) if ctx is not None else None
+        return json.dumps(await check_memfiles(client=client), ensure_ascii=False, indent=2)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -532,6 +585,7 @@ class CheckA2aTool(Tool):
 _CHECK_FUNCTIONS: list[str] = [
     "check_memdb",
     "check_wechat",
+    "check_memfiles",
     "check_sharefile",
     "check_mcp",
     "check_a2a",
@@ -539,10 +593,11 @@ _CHECK_FUNCTIONS: list[str] = [
 ]
 
 #: check_* functions that reach live plugin state via a ToolContext client.
-#: ``check_mcp`` uses the slife-mcp wrapper client; ``check_sharefile`` and
-#: ``check_a2a`` use their respective plugin clients.
+#: ``check_mcp`` uses the slife-mcp wrapper client; ``check_memfiles``,
+#: ``check_sharefile`` and ``check_a2a`` use their respective plugin clients.
 _CLIENT_FIELD: dict[str, str] = {
     "check_mcp": "mcp_client",
+    "check_memfiles": "memfiles_client",
     "check_sharefile": "sharefile_client",
     "check_a2a": "a2a_mcp_client",
 }

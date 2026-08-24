@@ -20,6 +20,7 @@ memdb's SemanticManager and RRF merge); ``cabinet_read`` re-opens a saved file.
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
 ``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``list_files``,
 ``cabinet_search``, ``cabinet_read``, ``cabinet_embedding_check``.
+Internal tools (``__`` prefix, never LLM-visible): ``__cabinet_status``.
 
 Usage::
     uv run python -m slife.plugins.memfiles.server
@@ -80,7 +81,9 @@ mcp, _log_path, logger = create_plugin_server(
         "(given at save time) for semantic search. cabinet_search finds them "
         "by hybrid (keyword + semantic) search; cabinet_read re-opens a "
         "saved file. To publish a local file as a public HTTPS URL, call the "
-        "separate sharefile plugin's share_file explicitly."
+        "separate sharefile plugin's share_file explicitly. "
+        "The plugin's health is probed by the harness through the internal "
+        "__cabinet_status tool — never called by the LLM directly."
     ),
     lifespan=_memfiles_lifespan,
 )
@@ -533,6 +536,49 @@ async def cabinet_embedding_check() -> str:
     except Exception as e:
         logger.exception("memfiles_check_embedding_failed")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__cabinet_status",
+    description=(
+        "Internal — file-cabinet status as JSON, probed by the harness's "
+        "check_memfiles.  Never exposed to the LLM."
+    ),
+)
+async def __cabinet_status() -> str:
+    """Return cabinet status for the harness's ``check_memfiles`` health check.
+
+    Reports the store/index connection state and the semantic-search gate
+    (semantic_ready, state, unembedded).  The harness probes this via the
+    plugin's MCP client; the LLM never sees it (``__`` internal).
+    """
+    try:
+        await _ensure_store()
+    except Exception as e:
+        return json.dumps(
+            {"ok": False, "state": "store_error", "hint": f"store init failed: {e}"},
+            ensure_ascii=False,
+        )
+    store = _store
+    manager = _manager
+    result = {
+        "ok": store is not None,
+        "connected": store is not None,
+        "state": manager.state if manager is not None else "no_manager",
+        "semantic_ready": bool(manager is not None and manager.semantic_ready),
+        "unembedded": await manager.unembedded() if manager is not None else 0,
+        "reason": manager.reason if manager is not None else "",
+    }
+    if manager is None:
+        result["hint"] = "Cabinet plugin loaded, but no semantic index manager."
+    elif not manager.semantic_ready:
+        result["hint"] = (
+            f"Cabinet semantic index not ready — {result['unembedded']} "
+            "notes/diary/files pending embedding. Keyword search remains available."
+        )
+    else:
+        result["hint"] = "Cabinet connected; semantic index ready."
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp.tool(
