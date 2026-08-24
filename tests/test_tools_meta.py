@@ -14,7 +14,7 @@ from slife.tools.meta import (
     CancelAsyncTool,
     ClearContextTool,
     SetMaxIterationsTool,
-    _classify,
+    _native_category,
     _tasks,
     schedule,
     _get_task,
@@ -22,66 +22,50 @@ from slife.tools.meta import (
 )
 
 
-# ── _classify ─────────────────────────────────────────────────────────────
+# ── _native_category ──────────────────────────────────────────────────────
 
 
-class TestClassify:
-    """Tests for the _classify helper."""
+class TestNativeCategory:
+    """Tests for the source-based category helper (T-12)."""
 
-    def test_a2a_tools(self):
-        assert _classify("a2a_list_agents") == "Agent Communication (A2A)"
-        assert _classify("a2a_send_task") == "Agent Communication (A2A)"
-        assert _classify("a2a_broadcast") == "Agent Communication (A2A)"
+    def test_native_tool_uses_its_own_category(self):
+        from slife.tools.base import Tool
 
-    def test_subagent_tools(self):
-        assert _classify("subagent_send_task") == "Subagent (local workers)"
-        assert _classify("subagent_send_task_async") == "Subagent (local workers)"
-        assert _classify("subagent_get_task_result") == "Subagent (local workers)"
+        class _T(Tool):
+            name = "thing"
+            description = "Does a thing."
+            parameters = {"type": "object", "properties": {}}
+            category = "Custom"
+            async def execute(self, **kwargs): return "ok"
 
-    def test_cli_tools(self):
-        assert _classify("cli_set") == "CLI"
-        assert _classify("cli_list") == "CLI"
+        assert _native_category(_T()) == "Custom"
 
-    def test_rest_api_tools(self):
-        assert _classify("rest_api_set") == "REST API"
-        assert _classify("rest_api_list") == "REST API"
+    def test_plugin_tool_groups_by_plugin_name(self):
+        from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 
-    def test_config_tools(self):
-        assert _classify("config_env_set") == "Config"
-        assert _classify("native_tool_set") == "Config"
+        tool = MagicMock(spec=MCPProxyTool)
+        tool._server = "wechat"
+        tool._route = ProxyRoute.DIRECT
+        assert _native_category(tool) == "wechat"
 
-    def test_skill_tools(self):
-        assert _classify("skill_set_enabled") == "Skills"
-        assert _classify("skill_list") == "Skills"
-        assert _classify("skill_use") == "Skills"
-        assert _classify("skill_set") == "Skills"
-        assert _classify("skill_remove") == "Skills"
+    def test_plugin_tool_without_server_falls_back_to_plugins(self):
+        from slife.mcp.tool_adapter import MCPProxyTool
 
-    def test_system_tools(self):
-        assert _classify("check_memdb") == "System"
-        assert _classify("system_health") == "System"
+        tool = MagicMock(spec=MCPProxyTool)
+        del tool._server
+        assert _native_category(tool) == "Plugins"
 
-    def test_execution_tools(self):
-        assert _classify("execute_shell") == "Execution"
-        assert _classify("run_python_script") == "Execution"
-        assert _classify("install_python_package") == "Execution"
+    def test_unknown_native_tool_defaults_to_other(self):
+        from slife.tools.base import Tool
 
-    def test_credential_tools(self):
-        assert _classify("credential_check") == "Credentials"
-        assert _classify("credential_inject") == "Credentials"
-        assert _classify("credential_uninject") == "Credentials"
+        class _T(Tool):
+            name = "thing"
+            description = "Does a thing."
+            parameters = {"type": "object", "properties": {}}
+            category = ""
+            async def execute(self, **kwargs): return "ok"
 
-    def test_meta_tools(self):
-        # list_native_tools, cancel_async, clear_context → Meta
-        # check_async starts with "check_" → System (checked first in _classify order)
-        assert _classify("list_native_tools") == "Meta"
-        assert _classify("cancel_async") == "Meta"
-        assert _classify("clear_context") == "Meta"
-        # check_async matches startswith("check_") before the Meta tuple check
-        assert _classify("check_async") == "System"
-
-    def test_unknown_tool(self):
-        assert _classify("some_random_tool") == "Other"
+        assert _native_category(_T()) == "Other"
 
 
 # ── ListNativeToolsTool ──────────────────────────────────────────────────
@@ -121,7 +105,7 @@ class TestListNativeToolsTool:
 
     @pytest.mark.asyncio
     async def test_native_tools_listed(self):
-        """Native tools are listed under their categories."""
+        """Native tools are listed under their own category."""
         from slife.tools.registry import ToolRegistry
         from slife.tools.base import Tool
 
@@ -129,6 +113,7 @@ class TestListNativeToolsTool:
             name = "check_something"
             description = "Checks something."
             parameters = {"type": "object", "properties": {}}
+            category = "System"
             async def execute(self, **kwargs): return "ok"
 
         registry = ToolRegistry()
@@ -140,7 +125,7 @@ class TestListNativeToolsTool:
             tool._ctx = ToolContext(registry=registry)
             result = await tool.execute()
             assert "check_something" in result
-            assert "System" in result  # auto-classified as System
+            assert "System" in result  # the tool's own category
         finally:
             tool._ctx = None
 
@@ -149,7 +134,7 @@ class TestListNativeToolsTool:
         """External MCP proxy tools are NOT listed — the model already gets
         their full schemas natively, so a second listing is redundant cost."""
         from slife.tools.registry import ToolRegistry
-        from slife.mcp.tool_adapter import MCPProxyTool
+        from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
         from slife.tools.base import Tool
 
         class _Native(Tool):
@@ -159,9 +144,12 @@ class TestListNativeToolsTool:
             async def execute(self, **kwargs): return "ok"
 
         # Minimal MCPProxyTool-like mock so isinstance checks pass.
+        # _route is an instance attribute (set in __init__), so spec= alone
+        # does not expose it — set it explicitly to model an EXTERNAL proxy.
         mock_tool = MagicMock(spec=MCPProxyTool)
         mock_tool.name = "filesystem__read_file"
         mock_tool._server = "filesystem"
+        mock_tool._route = ProxyRoute.EXTERNAL
         mock_tool.description = "Read a file."
         mock_tool.category = "MCP"
         mock_tool.parameters = {"type": "object", "properties": {}}
@@ -178,6 +166,33 @@ class TestListNativeToolsTool:
             assert "echo" in result
             assert "filesystem__read_file" not in result
             assert "filesystem" not in result.lower()
+        finally:
+            tool._ctx = None
+
+    @pytest.mark.asyncio
+    async def test_builtin_plugin_tools_grouped_by_plugin_name(self):
+        """Built-in plugin tools (bare names) group under their plugin name —
+        source-based, no name-prefix guessing (T-12)."""
+        from slife.tools.registry import ToolRegistry
+        from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
+
+        plugin_tool = MagicMock(spec=MCPProxyTool)
+        plugin_tool.name = "wechat_login"
+        plugin_tool._server = "wechat"
+        plugin_tool._route = ProxyRoute.DIRECT
+        plugin_tool.description = "Log in to WeChat."
+        plugin_tool.parameters = {"type": "object", "properties": {}}
+
+        registry = ToolRegistry()
+        registry.register(plugin_tool)
+
+        tool = ListNativeToolsTool()
+        from slife.tools.context import ToolContext
+        try:
+            tool._ctx = ToolContext(registry=registry)
+            result = await tool.execute()
+            assert "`wechat_login`" in result
+            assert "wechat" in result  # grouped under the plugin name
         finally:
             tool._ctx = None
 
@@ -455,12 +470,12 @@ class TestClearContextTool:
         assert tool.parameters == {"type": "object", "properties": {}, "required": []}
 
     @pytest.mark.asyncio
-    async def test_conversation_not_initialised(self):
-        """When conversation is None, returns appropriate message."""
+    async def test_message_history_not_initialised(self):
+        """When history is None, returns appropriate message."""
         tool = ClearContextTool()
         from slife.tools.context import ToolContext
         try:
-            tool._ctx = ToolContext(conversation=None)
+            tool._ctx = ToolContext(message_history=None)
             result = await tool.execute()
             assert "not yet initialised" in result.lower()
         finally:
@@ -469,13 +484,13 @@ class TestClearContextTool:
     @pytest.mark.asyncio
     async def test_already_clean(self):
         """When context is already clean, returns appropriate message."""
-        from slife.agent.conversation import Conversation
+        from slife.agent.message_history import MessageHistory
         tool = ClearContextTool()
-        conv = Conversation(system_prompt="You are helpful.")
+        conv = MessageHistory(system_prompt="You are helpful.")
 
         from slife.tools.context import ToolContext
         try:
-            tool._ctx = ToolContext(conversation=conv)
+            tool._ctx = ToolContext(message_history=conv)
             result = await tool.execute()
             assert "already clean" in result.lower()
         finally:
@@ -484,9 +499,9 @@ class TestClearContextTool:
     @pytest.mark.asyncio
     async def test_clears_history(self):
         """Clears old turns, keeps system prompt and current turn."""
-        from slife.agent.conversation import Conversation
+        from slife.agent.message_history import MessageHistory
         tool = ClearContextTool()
-        conv = Conversation(system_prompt="You are helpful.")
+        conv = MessageHistory(system_prompt="You are helpful.")
         # Add TWO turns — clear_history preserves the last user message
         # and everything after it (the "current turn").  Only turns before
         # the last user message are cleared.
@@ -497,7 +512,7 @@ class TestClearContextTool:
 
         from slife.tools.context import ToolContext
         try:
-            tool._ctx = ToolContext(conversation=conv)
+            tool._ctx = ToolContext(message_history=conv)
             result = await tool.execute()
             assert "Cleared" in result
             assert "remaining" in result.lower()
@@ -510,10 +525,10 @@ class TestClearContextTool:
     async def test_resets_context_time(self):
         """Clearing context restarts the "Context covers" range — otherwise
         the next _sys_note would keep reporting the pre-clear start."""
-        from slife.agent.conversation import Conversation
+        from slife.agent.message_history import MessageHistory
         from slife.tools.context import ToolContext
         tool = ClearContextTool()
-        conv = Conversation(system_prompt="You are helpful.")
+        conv = MessageHistory(system_prompt="You are helpful.")
         conv.add_user_message("old question")
         conv.add_assistant_message(content="old answer")
         conv.add_user_message("current question")
@@ -522,7 +537,7 @@ class TestClearContextTool:
         reset_called = []
         try:
             tool._ctx = ToolContext(
-                conversation=conv,
+                message_history=conv,
                 reset_context_time=lambda: reset_called.append(True),
             )
             result = await tool.execute()

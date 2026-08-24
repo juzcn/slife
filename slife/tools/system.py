@@ -3,14 +3,17 @@
 Tools:
     check_memdb              — MemDB plugin: database + embedding backend
     check_wechat             — WeChat plugin status
+    check_sharefile          — file-sharing tunnel (ngrok) status
     check_watchdog           — plugin watchdog (auto-restart) status
-    system_health            — orchestrate checks + startup records
-    list_native_tools        — native tool inventory (grouped, harness markers)
-    check_mcp                — MCP server connection status
+    check_mcp                — external MCP server connection status
     check_a2a                — A2A mesh (MQTT) connection + peer status
+    system_health            — orchestrate checks + startup records
 
-OS name, architecture, Python path/version, current shell, CWD,
-environment mode, and package manager are in the system prompt.
+(``list_native_tools`` is a meta tool in ``tools/meta.py``, not here.)
+
+OS name, architecture, Python path/version, and package manager are in the
+system prompt.  The current shell and working directory are reported by the
+per-turn context footer (``_sys_note``) when they change.
 Permissions and git status are covered by execute_shell / GitHub MCP.
 check_os_info, check_shells, and check_workspace have been removed.
 """
@@ -473,7 +476,7 @@ async def check_a2a(client=None) -> list[dict]:
         if client is None:
             return [{"component": "a2a", "level": "warning", "key": "status",
                      "value": "unavailable",
-                     "hint": "没有活跃的mqtt端口，a2a不可用。启动 mosquitto 后重启 slife 即可启用 A2A 网格。"}]
+                     "hint": "No active MQTT port — A2A unavailable. Start mosquitto, then restart slife to enable the A2A mesh."}]
 
         raw = await client.call_tool("__a2a_status")
         data = json.loads(raw)
@@ -483,7 +486,7 @@ async def check_a2a(client=None) -> list[dict]:
             where = f" (broker {broker})" if broker else ""
             return [{"component": "a2a", "level": "warning", "key": "status",
                      "value": "unavailable",
-                     "hint": f"没有活跃的mqtt端口，a2a不可用{where}。启动 mosquitto 后插件会自动重连。"}]
+                     "hint": f"No active MQTT port — A2A unavailable{where}. Start mosquitto and the plugin will auto-reconnect."}]
 
         peers = data.get("peers", [])
         peer_names = ", ".join(p.get("agent_name") or "?" for p in peers)

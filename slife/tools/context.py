@@ -1,10 +1,8 @@
 """Tool context — typed container for runtime objects tools need.
 
-Previously these were scattered module-level singletons
-(``_current_conversation``, ``_current_registry``, ``_current_config``,
-``_rest_api_mcp_client``).  All of them are now fields on one object
-passed through :meth:`Tool.from_config()` at startup — no global state,
-no implicit initialisation order.
+Previously these were scattered module-level singletons.  All of them
+are now fields on one object passed through :meth:`Tool.from_config()`
+at startup — no global state, no implicit initialisation order.
 """
 
 from __future__ import annotations
@@ -14,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from slife.agent.conversation import Conversation
+    from slife.agent.message_history import MessageHistory
     from slife.config import Config
     from slife.tools.registry import ToolRegistry
 
@@ -49,8 +47,9 @@ class ToolContext:
     """The sharefile plugin's MCP client — used by ``check_sharefile`` to
     query the file-sharing tunnel status via the plugin's internal tool."""
 
-    conversation: Conversation | None = None
-    """The active :class:`Conversation` (needed by ``clear_context``)."""
+    message_history: MessageHistory | None = None
+    """The active :class:`MessageHistory` (needed by ``clear_context``,
+    ``attach_image`` and subagent context cloning)."""
 
     set_max_iterations: Callable[[int], str] | None = None
     """Runtime hook to change the agent loop's per-turn iteration cap

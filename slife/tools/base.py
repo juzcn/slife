@@ -157,9 +157,12 @@ class Tool(ABC):
     description: ClassVar[str]
     parameters: ClassVar[dict]
 
-    # Logical category for grouping in list_native_tools output.
-    # Must be one of: System, Execution, Skills, CLI, REST API,
-    # A2A, Config, Credentials, Meta.
+    # Logical category for grouping in list_native_tools output — a
+    # free-form display label each native tool sets itself (e.g. System,
+    # Execution, Skills, Models, Config, Credentials, CLI, REST API,
+    # Meta, Vision, Display, Subagent, Harness).  Built-in plugin tools
+    # are grouped by their plugin name instead; external MCP tools are
+    # excluded from the listing.
     category: ClassVar[str] = ""
 
     def __init_subclass__(cls, **kwargs) -> None:
@@ -189,7 +192,7 @@ class Tool(ABC):
         (e.g. timeout, skills_dir).
 
         *ctx* is a :class:`~slife.tools.context.ToolContext` holding
-        runtime references (registry, config, MCP client, conversation).
+        runtime references (registry, config, MCP client, message_history).
         Tools that need any of these store it as ``self._ctx``.
         """
         tool = cls()

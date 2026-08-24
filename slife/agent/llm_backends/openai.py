@@ -55,7 +55,7 @@ class OpenAIBackend:
         reasoning-only / max_tokens-cut response) is rejected by OpenAI-format
         providers as an empty-content assistant message — give it a visible
         placeholder so the request doesn't 400 on the next turn.  The stored
-        conversation is untouched (this is a copy).
+        history is untouched (this is a copy).
         """
         out: list[dict] = []
         for msg in messages:

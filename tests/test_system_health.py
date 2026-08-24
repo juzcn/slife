@@ -757,7 +757,7 @@ class TestCheckA2aFunction:
         assert entries[0]["component"] == "a2a"
         assert entries[0]["level"] == "warning"
         assert entries[0]["value"] == "unavailable"
-        assert "没有活跃的mqtt端口" in entries[0]["hint"]
+        assert "No active MQTT port" in entries[0]["hint"]
 
     @pytest.mark.asyncio
     async def test_plugin_disconnected(self):
@@ -766,7 +766,7 @@ class TestCheckA2aFunction:
         entries = await check_a2a(client=client)
         assert entries[0]["level"] == "warning"
         assert entries[0]["value"] == "unavailable"
-        assert "没有活跃的mqtt端口" in entries[0]["hint"]
+        assert "No active MQTT port" in entries[0]["hint"]
 
     @pytest.mark.asyncio
     async def test_connected_no_peers(self):

@@ -3,8 +3,7 @@
 Without user input the agent is completely still.  A heartbeat gives it a
 regular opportunity for self-initiated behavior (a precondition for
 emergent consciousness): every idle interval a heartbeat message is posted
-to the inbox and runs as a normal agent-loop turn, so it gets its own
-conversation and is saved to the diary like any other turn.
+to the inbox and runs as a normal agent-loop turn, saved like any other turn.
 
 The turn's output contract is ``.`` (nothing worth saying) or real content
 (an autonomous act).  The ``.`` is the minimal non-empty assistant reply —
@@ -47,8 +46,8 @@ HEARTBEAT_MARK = "[Heartbeat]"
 class _SilentHandler:
     """No-op handler for heartbeat turns.
 
-    The turn runs normally through the agent loop (its own conversation,
-    saved to the diary) but renders nothing to the chat — the final reply
+    The turn runs normally through the agent loop (saved like any other
+    turn) but renders nothing to the chat — the final reply
     is delivered to the caller via ``on_reply``, which surfaces non-``.``
     content as an autonomous message (⚡ 自主).
     """
@@ -93,8 +92,8 @@ async def heartbeat_loop(service: "AgentService") -> None:
 
     Skips the beat when a turn is in progress or messages are queued, so
     the heartbeat never competes with real user/remote work.  The message
-    flows through the normal inbox pipeline (own conversation, loop, diary
-    save); ``on_reply`` surfaces non-``.`` output to the TUI (⚡ 自主).
+    flows through the normal inbox pipeline (own turn, loop, and save);
+    ``on_reply`` surfaces non-``.`` output to the TUI (⚡ 自主).
     """
     from slife.a2a.identity import HEARTBEAT, AgentMessage
 

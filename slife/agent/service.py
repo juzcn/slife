@@ -1,4 +1,4 @@
-"""Agent service layer — wires together LLM, tools, conversation, and loop.
+"""Agent service layer — wires together LLM, tools, message history, and loop.
 
 Owns the agent's runtime state. The TUI delegates to this service
 rather than directly managing agent internals.
@@ -25,10 +25,10 @@ from pathlib import Path
 from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
-from slife.agent.conversation import Conversation, turn_header
+from slife.agent.message_history import MessageHistory, turn_header
 from slife.agent.heartbeat import HEARTBEAT_MARK
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
-from slife.agent.inbox import Inbox, ConversationStore
+from slife.agent.inbox import Inbox, MessageHistoryStore
 from slife.agent.plugins import PluginLifecycle, PluginStartStatus
 from slife.a2a.identity import HUMAN
 from slife.tools.factory import create_tools_from_config
@@ -64,11 +64,11 @@ _TUNNEL_PROBE_INTERVAL = 1.0   # seconds — between __tunnel_status probes
 
 # ── Tool result compaction for permanent memory ─────────────────────────
 #
-# The live conversation keeps oversized tool results whole — the model
+# The live context keeps oversized tool results whole — the model
 # reasons over them during the turn (the 20% tool_result_ceiling is the
 # only live cap, a hard window-safety constraint).  Permanent memory does
-# NOT: tool output is reproducible (re-run the tool), so the diary stores
-# a head+tail digest.  This keeps diary turns small enough that session
+# NOT: tool output is reproducible (re-run the tool), so the Turns DB stores
+# a head+tail digest.  This keeps saved turns small enough that session
 # restore can fill the context floor, and keeps turn_search recall cheap.
 # Truncation is always announced to the model via an explicit marker.
 
@@ -85,7 +85,7 @@ def compact_tool_results(turn_messages: list[dict], budget_chars: int) -> int:
 
     The replacement is a *copy* — the caller's ``turn_messages`` list
     entries are swapped for new dicts, never mutated in place, so the
-    live conversation keeps the full output.
+    live history keeps the full output.
     """
     if budget_chars <= 0:
         return 0
@@ -160,7 +160,7 @@ def _extract_turn_annotation(
 
 
 class AgentService:
-    """Wires together LLM client, tools, conversation, and agent loop.
+    """Wires together LLM client, tools, message history, and agent loop.
 
     Owns the agent's runtime state. The TUI delegates to this service
     rather than directly managing agent internals.
@@ -169,7 +169,7 @@ class AgentService:
     and registers MCP proxy tools.
 
     If A2A is enabled, manages the P2P mesh: Inbox, A2AClient, and
-    per-source conversations.
+    per-source histories.
     """
 
     def __init__(self, config: Config, is_subagent: bool = False):
@@ -225,10 +225,10 @@ class AgentService:
             presence_provider=self._drain_presence_events,
             advance_context_start=self.advance_context_start,
         )
-        self.conversation = Conversation(
+        self.message_history = MessageHistory(
             system_prompt=build_system_prompt(self.config),
         )
-        self._tool_ctx.conversation = self.conversation
+        self._tool_ctx.message_history = self.message_history
         # Runtime iteration-cap hook for the set_max_iterations meta tool.
         self._tool_ctx.set_max_iterations = self.agent_loop.set_max_iterations
         # Live-context boundary hooks — _trim_after_save advances the
@@ -258,14 +258,14 @@ class AgentService:
         # ── Unified message queue (always active) ──────────────────
         # Every input — human keyboard, A2A MQTT, WeChat — flows
         # through the same inbox queue.  Processed serially.
-        conversations = ConversationStore(
+        histories = MessageHistoryStore(
             system_prompt=build_system_prompt(self.config),
         )
-        conversations._convs[HUMAN] = self.conversation
+        histories._by_source[HUMAN] = self.message_history
 
         self.inbox = Inbox(
             agent_loop=self.agent_loop,
-            conversations=conversations,
+            histories=histories,
             a2a_client=None,  # (legacy, unused)
             on_activity=self._notify_a2a_activity,  # always active for WeChat etc.
             on_turn_complete=self.save_to_memory,
@@ -323,8 +323,8 @@ class AgentService:
         """Context tokens the next API call would send — same single source
         as ``_sys_note`` (see :meth:`AgentLoop.context_tokens_for`):
         last API call's actual prompt tokens, else the restore-time
-        estimate, else a live conversation estimate."""
-        return self.agent_loop.context_tokens_for(self.conversation)
+        estimate, else a live history estimate."""
+        return self.agent_loop.context_tokens_for(self.message_history)
 
     @property
     def thinking_enabled(self) -> bool:
@@ -358,7 +358,7 @@ class AgentService:
         """Reload runtime state after the active model is switched.
 
         Rebuilds the LLM client, updates the agent loop's model-specific
-        settings, and refreshes the conversation system prompt so the
+        settings, and refreshes the history system prompt so the
         next turn uses the new model.
         """
         old_ref = self.config.active_model_ref
@@ -385,20 +385,20 @@ class AgentService:
         self.agent_loop.max_tool_result_chars = int(
             self.config.tool_result_ceiling * model.context_window * 3
         )
-        # Drop stale per-conversation token caches (keyed by the old model's
+        # Drop stale per-history token caches (keyed by the old model's
         # prompt-token footprint) so the status bar stops reporting it.
-        self.agent_loop._usage_by_conv.clear()
+        self.agent_loop._usage_by_history.clear()
         # Also drop the restore-time fallback estimate — after a 32K→200K
         # switch the status bar / trim gate must not report the old window's
         # reading until the first API call under the new model.
         self.agent_loop._last_usage = TokenUsage()
 
         # Rebuild system prompt with updated model info — for the human
-        # conversation AND every persistent one (WeChat) and future ones.
+        # history AND every persistent one (WeChat) and future ones.
         new_system = build_system_prompt(self.config)
-        if self.conversation.messages and self.conversation.messages[0]["role"] == "system":
-            self.conversation.messages[0]["content"] = new_system
-        self.inbox._conversations.update_system_prompt(new_system)
+        if self.message_history.messages and self.message_history.messages[0]["role"] == "system":
+            self.message_history.messages[0]["content"] = new_system
+        self.inbox._histories.update_system_prompt(new_system)
 
     @property
     def mcp_enabled(self) -> bool:
@@ -418,8 +418,8 @@ class AgentService:
         return self._subagent_manager
 
     def clear(self) -> None:
-        """Reset conversation history and session usage."""
-        self.conversation.clear()
+        """Reset the message history and session usage."""
+        self.message_history.clear()
         self.session_usage = TokenUsage()
 
     # ── Plugin auto-discovery & lifecycle ───────────────────────────────
@@ -1683,7 +1683,7 @@ class AgentService:
         user_message: str = "",
         token_count: int | None = None,
         prompt_tokens: int | None = None,
-        conversation: "Conversation | None" = None,
+        history: "MessageHistory | None" = None,
         channel: str = "",
         created_at: "datetime | str | None" = None,
         handler: "object | None" = None,
@@ -1696,11 +1696,11 @@ class AgentService:
             prompt_tokens: The LAST LLM call's prompt_tokens — the exact
                 context size at turn end.  Persisted so restore primes the
                 footer / _sys_note with the real exit-time occupancy.
-            conversation: The conversation to extract messages from.
-                Defaults to self.conversation (the TUI conversation).
+            history: The history to extract messages from.
+                Defaults to self.message_history (the TUI history).
             channel: Source channel — 'human', 'wechat', or remote agent id.
             created_at: The user-input timestamp (Enter-press moment, aware
-                datetime or ISO-8601 str).  Written as the diary
+                datetime or ISO-8601 str).  Written as the turn row's
                 ``created_at`` so restore matches the live [HH:MM].
                 ``None`` lets the store use its own now().
             handler: The turn's UI handler, if any.  Receives the captured
@@ -1714,7 +1714,7 @@ class AgentService:
         if not self.memdb_enabled:
             return
 
-        conv = conversation if conversation is not None else self.conversation
+        conv = history if history is not None else self.message_history
 
         # Invariant: never persist an inconsistent turn.  Repair orphaned
         # tool_calls and close the turn if needed BEFORE extracting — the
@@ -1780,16 +1780,16 @@ class AgentService:
         # [TrimContext: N] marker.  Each turn is saved here via
         # memory_save_turn, so trimmed turns remain searchable.
 
-        # The runtime [TrimContext: N] marker must never reach the diary —
+        # The runtime [TrimContext: N] marker must never reach the Turns DB —
         # it is meaningful only in the live session.  Strip it from the
-        # copy being persisted (the live conversation keeps its marker).
-        from slife.agent.conversation import Conversation as _Conv
-        turn_messages = _Conv.strip_trim_markers(turn_messages)
+        # copy being persisted (the live history keeps its marker).
+        from slife.agent.message_history import MessageHistory as _MH
+        turn_messages = _MH.strip_trim_markers(turn_messages)
 
         # Permanent memory keeps only head+tail digests of oversized tool
-        # results — the diary never hoards reproducible tool output, so a
+        # results — the Turns DB never hoards reproducible tool output, so a
         # single result can't grow a turn past what session restore can
-        # rebuild within the context floor.  The live conversation is not
+        # rebuild within the context floor.  The live history is not
         # touched (the copy swapped into turn_messages is a new dict).
         compacted = compact_tool_results(
             turn_messages, self.config.memory_tool_result_chars,
@@ -1872,7 +1872,7 @@ class AgentService:
                     except Exception:
                         pass
             elif isinstance(parsed, dict):
-                # The turn now has a rowid — annotate its user message so the
+                # The turn now has a turn_id — annotate its user message so the
                 # next LLM call can reference it precisely (and the
                 # turn_summarize default no longer needs the racy
                 # latest_rowid fallback).  Live TUI bubbles are NOT
@@ -1881,7 +1881,7 @@ class AgentService:
                 # leaves the message unannotated.
                 try:
                     self._annotate_saved_turn(
-                        conv, user_idx, rowid=parsed.get("rowid"),
+                        conv, user_idx, rowid=parsed.get("turn_id"),
                         created_at=created_at, completed_at=now,
                     )
                 except Exception:
@@ -1889,7 +1889,7 @@ class AgentService:
                 # Trim AFTER the turn is safely persisted: the just-completed
                 # turn's real prompt_tokens are now known (the last API call's
                 # usage), so the ceiling check is exact, and a trim can never
-                # lose an unsaved turn.  Operates on *conv* (the conversation
+                # lose an unsaved turn.  Operates on *conv* (the history
                 # this turn ran in — human / wechat / a2a), never the global.
                 # Best-effort: a trim failure must not break the save flow.
                 loop = getattr(self, "agent_loop", None)
@@ -1931,7 +1931,7 @@ class AgentService:
 
     def _annotate_saved_turn(
         self,
-        conversation: "Conversation",
+        history: "MessageHistory",
         user_idx: int,
         rowid: int | None,
         created_at: "datetime | str | None",
@@ -1947,7 +1947,7 @@ class AgentService:
         """
         if rowid is None:
             return
-        msgs = conversation.messages
+        msgs = history.messages
         if not (0 <= user_idx < len(msgs)) or msgs[user_idx].get("role") != "user":
             return
         content = msgs[user_idx].get("content", "")
@@ -1995,7 +1995,7 @@ class AgentService:
 
         Fetches newest-first in batches of *limit* (each batch already
         newest-first, so appending stays globally newest-first), then reverses
-        to **oldest-first** so the restore rebuilds the conversation
+        to **oldest-first** so the restore rebuilds the history
         chronologically.  Heartbeat turns are included — they restore as
         ⚡ 自主, consistent with the live TUI.
 
@@ -2430,7 +2430,7 @@ class AgentService:
         available, even before the first human message is typed.
         """
         if self.inbox is not None:
-            self.inbox._conversations.set_default_handler_factory(factory)
+            self.inbox._histories.set_default_handler_factory(factory)
 
         logger.info("a2a_init_done tools=%d", len(self.tool_registry.list_tools()))
 

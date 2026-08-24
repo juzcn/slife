@@ -111,10 +111,10 @@ class TestAgentLoopApproval:
         handler.on_tool_approval = AsyncMock(return_value=False)
         handler.on_tool_call = AsyncMock()
         handler.on_tool_result = AsyncMock()
-        conversation = MagicMock()
+        history = MagicMock()
 
         tc = ToolCallInfo(id="call_1", name="approval_test_tool", arguments={"_approve": True})
-        await loop._execute_tools([tc], conversation, handler, iteration=1)
+        await loop._execute_tools([tc], history, handler, iteration=1)
 
         assert tool.executed is False
         registry.execute.assert_not_called()
@@ -140,10 +140,10 @@ class TestAgentLoopApproval:
         handler.on_tool_approval = AsyncMock(return_value=True)
         handler.on_tool_call = AsyncMock()
         handler.on_tool_result = AsyncMock()
-        conversation = MagicMock()
+        history = MagicMock()
 
         tc = ToolCallInfo(id="call_2", name="approval_test_tool", arguments={"_approve": True})
-        await loop._execute_tools([tc], conversation, handler, iteration=1)
+        await loop._execute_tools([tc], history, handler, iteration=1)
 
         assert tool.executed is True
         handler.on_tool_result.assert_called_once()
@@ -165,10 +165,10 @@ class TestAgentLoopApproval:
         handler = MagicMock(spec=AgentEventHandler)
         handler.on_tool_call = AsyncMock()
         handler.on_tool_result = AsyncMock()
-        conversation = MagicMock()
+        history = MagicMock()
 
         tc = ToolCallInfo(id="call_3", name="approval_test_tool", arguments={})
-        await loop._execute_tools([tc], conversation, handler, iteration=1)
+        await loop._execute_tools([tc], history, handler, iteration=1)
 
         handler.on_tool_approval.assert_not_called()
         handler.on_tool_result.assert_called_once()
@@ -185,9 +185,9 @@ class TestAgentLoopApproval:
         registry.execute = _exec
 
         loop = _make_loop(registry)
-        conversation = MagicMock()
+        history = MagicMock()
         tc = ToolCallInfo(id="call_4", name="approval_test_tool", arguments={"_approve": True})
-        await loop._execute_tools([tc], conversation, None, iteration=1)
+        await loop._execute_tools([tc], history, None, iteration=1)
 
         assert tool.executed is True
 
@@ -216,14 +216,14 @@ class TestAgentLoopApproval:
         handler.on_tool_approval = _approve
         handler.on_tool_call = AsyncMock()
         handler.on_tool_result = AsyncMock()
-        conversation = MagicMock()
+        history = MagicMock()
 
         tcs = [
             ToolCallInfo(id="grant", name="tool_a", arguments={"_approve": True}),
             ToolCallInfo(id="deny_me", name="tool_b", arguments={"_approve": True}),
             ToolCallInfo(id="plain", name="tool_c", arguments={}),
         ]
-        await loop._execute_tools(tcs, conversation, handler, iteration=1)
+        await loop._execute_tools(tcs, history, handler, iteration=1)
 
         assert tools["tool_a"].executed is True   # granted
         assert tools["tool_b"].executed is False  # denied

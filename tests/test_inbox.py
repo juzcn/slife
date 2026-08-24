@@ -1,4 +1,4 @@
-"""Tests for Slife.agent.inbox — ConversationStore and Inbox."""
+"""Tests for Slife.agent.inbox — MessageHistoryStore and Inbox."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -8,23 +8,23 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from slife.a2a.identity import AgentName, AgentMessage, HUMAN, WECHAT
-from slife.agent.inbox import ConversationStore
+from slife.agent.inbox import MessageHistoryStore
 
 
-# ── ConversationStore ───────────────────────────────────────────────────
+# ── MessageHistoryStore ───────────────────────────────────────────────────
 
 
-class TestConversationStore:
-    """Tests for ConversationStore — per-agent conversation management."""
+class TestMessageHistoryStore:
+    """Tests for MessageHistoryStore — per-agent history management."""
 
     @pytest.fixture
     def store(self):
-        return ConversationStore(system_prompt="You are helpful.")
+        return MessageHistoryStore(system_prompt="You are helpful.")
 
     def test_get_or_create_human_persistent(self, store):
         conv1 = store.get_or_create(HUMAN)
         conv2 = store.get_or_create(HUMAN)
-        assert conv1 is conv2  # Same conversation object
+        assert conv1 is conv2  # Same history object
 
     def test_get_or_create_human_has_system_prompt(self, store):
         conv = store.get_or_create(HUMAN)
@@ -36,7 +36,7 @@ class TestConversationStore:
         remote = AgentName("agent-7")
         conv1 = store.get_or_create(remote)
         conv2 = store.get_or_create(remote)
-        assert conv1 is not conv2  # Fresh conversation each time
+        assert conv1 is not conv2  # Fresh history each time
 
     def test_get_or_create_remote_has_system_prompt(self, store):
         remote = AgentName("agent-7")
@@ -56,10 +56,10 @@ class TestConversationStore:
         store.register_handler(AgentName("bot"), None)
         assert store.handler_for(AgentName("bot")) is None
 
-    def test_clear_removes_conversation(self, store):
+    def test_clear_removes_history(self, store):
         conv = store.get_or_create(HUMAN)
         store.clear(HUMAN)
-        # After clear, a new get_or_create should give a fresh conversation
+        # After clear, a new get_or_create should give a fresh history
         new_conv = store.get_or_create(HUMAN)
         assert new_conv is not conv
 
@@ -117,13 +117,13 @@ class TestInboxConstruction:
 
     @pytest.fixture
     def mock_store(self):
-        return MagicMock(spec=ConversationStore)
+        return MagicMock(spec=MessageHistoryStore)
 
     def test_construction(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
         inbox = Inbox(mock_loop, mock_store)
         assert inbox._agent_loop is mock_loop
-        assert inbox._conversations is mock_store
+        assert inbox._histories is mock_store
         assert inbox._a2a_client is None
         assert inbox._on_activity is None
 
@@ -181,7 +181,7 @@ class TestInboxCancelCorrelation:
 
     @pytest.fixture
     def mock_store(self):
-        return MagicMock(spec=ConversationStore)
+        return MagicMock(spec=MessageHistoryStore)
 
     @staticmethod
     def _drain(inbox):
@@ -246,8 +246,8 @@ class TestInboxProcessOne:
 
     @pytest.fixture
     def mock_store(self):
-        from slife.agent.inbox import ConversationStore
-        store = MagicMock(spec=ConversationStore)
+        from slife.agent.inbox import MessageHistoryStore
+        store = MagicMock(spec=MessageHistoryStore)
         store.get_or_create = MagicMock()
         store.handler_for = MagicMock(return_value=None)
         return store
@@ -655,15 +655,15 @@ class TestInboxPublishReply:
         assert '"correlation_id": ""' in payload
 
 
-# ── ConversationStore — default handler factory ───────────────────────
+# ── MessageHistoryStore — default handler factory ───────────────────────
 
 
-class TestConversationStoreDefaultHandler:
-    """Tests for ConversationStore.set_default_handler_factory /
+class TestMessageHistoryStoreDefaultHandler:
+    """Tests for MessageHistoryStore.set_default_handler_factory /
     handler_for fallback chain."""
 
     def test_set_and_use_default_factory(self):
-        store = ConversationStore(system_prompt="test")
+        store = MessageHistoryStore(system_prompt="test")
         default_handler = MagicMock()
         factory = MagicMock(return_value=default_handler)
         store.set_default_handler_factory(factory)
@@ -674,7 +674,7 @@ class TestConversationStoreDefaultHandler:
         factory.assert_called_once()
 
     def test_registered_handler_takes_precedence_over_default(self):
-        store = ConversationStore(system_prompt="test")
+        store = MessageHistoryStore(system_prompt="test")
         registered = MagicMock()
         default = MagicMock()
         store.register_handler(AgentName("bot"), registered)
@@ -684,7 +684,7 @@ class TestConversationStoreDefaultHandler:
         assert result is registered
 
     def test_human_handler_fallback(self):
-        store = ConversationStore(system_prompt="test")
+        store = MessageHistoryStore(system_prompt="test")
         human_handler = MagicMock()
         store.register_handler(HUMAN, human_handler)
 
@@ -693,20 +693,20 @@ class TestConversationStoreDefaultHandler:
         assert result is human_handler
 
 
-# ── ConversationStore — WeChat persistence ────────────────────────────
+# ── MessageHistoryStore — WeChat persistence ────────────────────────────
 
 
-class TestConversationStoreWeChat:
-    """Tests for ConversationStore.get_or_create with WeChat source."""
+class TestMessageHistoryStoreWeChat:
+    """Tests for MessageHistoryStore.get_or_create with WeChat source."""
 
-    def test_wechat_conversation_is_persistent(self):
-        store = ConversationStore(system_prompt="test")
+    def test_wechat_history_is_persistent(self):
+        store = MessageHistoryStore(system_prompt="test")
         conv1 = store.get_or_create(WECHAT)
         conv2 = store.get_or_create(WECHAT)
         assert conv1 is conv2
 
-    def test_wechat_conversation_has_system_prompt(self):
-        store = ConversationStore(system_prompt="be helpful")
+    def test_wechat_history_has_system_prompt(self):
+        store = MessageHistoryStore(system_prompt="be helpful")
         conv = store.get_or_create(WECHAT)
         msgs = conv.to_openai_messages()
         assert msgs[0]["role"] == "system"

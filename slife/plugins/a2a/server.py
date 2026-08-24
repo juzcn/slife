@@ -140,7 +140,7 @@ async def _on_task_result(corr_id: str, result: str, cancelled: bool) -> None:
     """Queue an outbound async-task completion for auto-push to the harness.
 
     The result arrived over MQTT (the peer published to our result topic);
-    the harness drains this and pushes it into the conversation so the agent
+    the harness drains this and pushes it into the history so the agent
     never needs to poll or block on ``a2a_subscribe_task``.
     """
     peer = ""

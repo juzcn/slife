@@ -10,7 +10,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-from slife.agent.conversation import turn_header
+from slife.agent.message_history import turn_header
 from slife.agent.heartbeat import HEARTBEAT_MARK
 from slife.agent.llm_client import TokenUsage
 from slife.ui.chat import ChatView
@@ -18,7 +18,7 @@ from slife.ui.tool_display import ToolCallWidget
 
 if TYPE_CHECKING:
     from slife.config import Config
-    from slife.agent.conversation import Conversation
+    from slife.agent.message_history import MessageHistory
     from slife.ui.app import SlifeApp
     from slife.ui.chat import ChatView
 
@@ -32,7 +32,7 @@ def estimate_turn_tokens(turn: dict) -> int:
     """Estimate the *incremental* token cost of a single turn.
 
     Counts the user message plus the stored assistant/tool messages
-    using the same chars/3 heuristic as ``Conversation.count_tokens``.
+    using the same chars/3 heuristic as ``MessageHistory.count_tokens``.
     Returns at least 1 so that a zero-content turn still counts.
     """
     user = turn.get("user_message", "") or ""
@@ -53,7 +53,7 @@ def estimate_turn_tokens(turn: dict) -> int:
 # concatenated into the message text — the LLM needs to tell old turns
 # apart: which turn (rowid), when it started, when it finished.  Without
 # it the whole restored history reads as "just happened".  The builder
-# lives in ``conversation.turn_header`` so the save path annotates
+# lives in ``history.turn_header`` so the save path annotates
 # completed live turns with the same format.  The current in-flight turn
 # gets nothing (it is the one that IS now), and the human reads the
 # footnote in the TUI.  Heartbeat turns are excluded: their user message
@@ -112,7 +112,7 @@ def tool_result_is_error(msg: dict) -> bool:
 async def restore_session(
     app: "SlifeApp",
     recovery_info: dict,
-    conversation: "Conversation",
+    history: "MessageHistory",
     config: "Config",
     agent_name: str,
     assistant_prefix: str,
@@ -127,7 +127,7 @@ async def restore_session(
     and can be retrieved via ``turn_search`` if needed.
 
     This function is self-contained — it reads recovery_info, rebuilds
-    the conversation message list, and reconstructs the chat UI.
+    the history message list, and reconstructs the chat UI.
     """
     all_turns: list[dict] = recovery_info.get("turns", [])
     if not all_turns:
@@ -144,9 +144,9 @@ async def restore_session(
     # ── Phase 1: Reconstruct message list from selected turns ─────────
     try:
         sys_msg = (
-            conversation.messages[0]
-            if conversation.messages
-            and conversation.messages[0].get("role") == "system"
+            history.messages[0]
+            if history.messages
+            and history.messages[0].get("role") == "system"
             else None
         )
 
@@ -186,8 +186,8 @@ async def restore_session(
         # BEFORE building the tool-result lookup and UI ops — otherwise the
         # restored UI shows "done + empty result" while the repaired LLM
         # context carries "(Tool execution interrupted)".
-        conversation.messages = all_messages
-        conversation._ensure_turn_consistent()
+        history.messages = all_messages
+        history._ensure_turn_consistent()
 
         # Build tool-result lookup
         tool_results: dict[str, str] = {}
@@ -328,7 +328,7 @@ async def restore_session(
             elif role == "tool":
                 pass
 
-        # The very last assistant message in the restored conversation
+        # The very last assistant message in the restored history
         # should mirror live-session behaviour: thinking expanded, reply
         # visible.  Walk backwards through ui_ops and tag the last one.
         for op in reversed(ui_ops):
@@ -340,16 +340,16 @@ async def restore_session(
         _show_system_message(app, f"✗ 恢复失败: {e}", color="#f85149")
         return
 
-    # ── Phase 2: Replace conversation messages ────────────────────────
+    # ── Phase 2: Replace history messages ────────────────────────
     # (messages were already assigned + repaired in Phase 1, before the
     # tool-result lookup was built, so the UI and LLM context agree.)
-    conversation.messages = all_messages
+    history.messages = all_messages
 
     # The restored context is a legitimate pre-exit state, not growth —
     # mark it so the loop does NOT compact it to the floor on the very
     # first replacement turn (the marker is consumed in AgentLoop.run).
     if turns:
-        app.service.agent_loop._just_restored_conv = id(conversation)
+        app.service.agent_loop._just_restored_history = id(history)
 
     # Prime the context time range so _sys_note shows the LLM
     # what time window its current context covers.  The start date is

@@ -18,7 +18,7 @@ def merge_hybrid(
     keyword_results: list[dict],
     semantic_results: list[dict],
     k: int = RRF_K,
-    key_field: str = "rowid",
+    key_field: str = "turn_id",
 ) -> list[dict]:
     """Merge keyword and semantic search results using RRF.
 
@@ -27,7 +27,7 @@ def merge_hybrid(
 
     Field-agnostic: the two lists are aligned by ``key_field`` and each
     result entry passes through with its own fields — the only fields added
-    are the RRF annotations.  memdb aligns turns on ``rowid``; memfiles
+    are the RRF annotations.  memdb aligns turns on ``turn_id``; memfiles
     aligns notes/diary/files on a composite ``id`` (``"note:5"`` etc.).
 
     Args:
@@ -37,7 +37,7 @@ def merge_hybrid(
             ``distance``.
         k: RRF smoothing constant (default 60).
         key_field: field holding the identity used to align the two lists
-            (default ``"rowid"``).
+            (default ``"turn_id"``).
 
     Returns:
         Merged list sorted by RRF score descending. Each entry carries the

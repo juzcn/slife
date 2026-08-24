@@ -1,34 +1,34 @@
-"""Tests for Slife.agent.conversation — conversation history management."""
+"""Tests for slife.agent.message_history — live message-history management."""
 
 import pytest; pytestmark = pytest.mark.unit
 
 
 import pytest
 
-from slife.agent.conversation import Conversation
+from slife.agent.message_history import MessageHistory
 
 
 # ── Construction ─────────────────────────────────────────────────────
 
 
-class TestConversationConstruction:
-    """Tests for Conversation.__init__."""
+class TestMessageHistoryConstruction:
+    """Tests for MessageHistory.__init__."""
 
-    def test_empty_conversation(self):
-        """Conversation starts with no messages when no system prompt."""
-        conv = Conversation()
+    def test_empty_history(self):
+        """MessageHistory starts with no messages when no system prompt."""
+        conv = MessageHistory()
         assert conv.messages == []
 
     def test_with_system_prompt(self):
         """System prompt creates initial system message."""
-        conv = Conversation(system_prompt="You are helpful.")
+        conv = MessageHistory(system_prompt="You are helpful.")
         assert len(conv.messages) == 1
         assert conv.messages[0]["role"] == "system"
         assert conv.messages[0]["content"] == "You are helpful."
 
     def test_from_history_seeds_messages(self):
         """from_history prepends a fresh system prompt and skips inherited system."""
-        conv = Conversation.from_history(
+        conv = MessageHistory.from_history(
             "SUB_SYS",
             [
                 {"role": "user", "content": "a"},
@@ -43,7 +43,7 @@ class TestConversationConstruction:
 
     def test_none_system_prompt(self):
         """None system prompt results in empty list."""
-        conv = Conversation(system_prompt=None)
+        conv = MessageHistory(system_prompt=None)
         assert conv.messages == []
 
 
@@ -51,11 +51,11 @@ class TestConversationConstruction:
 
 
 class TestAddUserMessage:
-    """Tests for Conversation.add_user_message."""
+    """Tests for MessageHistory.add_user_message."""
 
     def test_plain_text(self):
         """Plain text message without images."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("Hello!")
         assert len(conv.messages) == 1
         assert conv.messages[0]["role"] == "user"
@@ -65,7 +65,7 @@ class TestAddUserMessage:
         """add_user_message is text-only — the user's text is stored
         verbatim.  Images arrive via attach_image's
         inject_images_to_last_user, never encoded here."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("图片中有什么 @D:\\Downloads\\奇点.png")
         assert len(conv.messages) == 1
         assert conv.messages[0]["role"] == "user"
@@ -74,7 +74,7 @@ class TestAddUserMessage:
     def test_inject_appends_block_to_last_user(self):
         """inject_images_to_last_user turns the verbatim text message into a
         multimodal list and appends the image block — the text survives."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("look at this")
         conv.inject_images_to_last_user([
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
@@ -86,24 +86,24 @@ class TestAddUserMessage:
 
     def test_sanitizes_api_keys(self):
         """User input with API key patterns is sanitized before storage."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("My key is sk-ant-api03-abc123def456ghi789jkl")
         assert "sk-ant-api03-abc123def456ghi789jkl" not in conv.messages[0]["content"]
         assert "<MASKED>" in conv.messages[0]["content"]
 
     def test_normal_input_passes_through(self):
         """Normal user input without secrets is unchanged."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("What is the weather today?")
         assert conv.messages[0]["content"] == "What is the weather today?"
 
     def test_input_sanitization_idempotent(self):
         """Double sanitization produces the same result."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("api_key=sk-test-key-xxxxyyyyzzzz11112222")
         first = conv.messages[0]["content"]
         # Reset and add already-sanitized content
-        conv2 = Conversation()
+        conv2 = MessageHistory()
         conv2.add_user_message(first)
         assert conv2.messages[0]["content"] == first
 
@@ -112,10 +112,10 @@ class TestAddUserMessage:
 
 
 class TestAddAssistantMessage:
-    """Tests for Conversation.add_assistant_message."""
+    """Tests for MessageHistory.add_assistant_message."""
 
     def test_content_only(self):
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_assistant_message("I'm fine, thanks!")
         assert conv.messages[0]["role"] == "assistant"
         assert conv.messages[0]["content"] == "I'm fine, thanks!"
@@ -123,12 +123,12 @@ class TestAddAssistantMessage:
 
     def test_content_none_replaced_with_empty_string(self):
         """None content is replaced with empty string."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_assistant_message(None)
         assert conv.messages[0]["content"] == ""
 
     def test_with_tool_calls(self):
-        conv = Conversation()
+        conv = MessageHistory()
         tool_calls = [
             {
                 "id": "call_1",
@@ -140,7 +140,7 @@ class TestAddAssistantMessage:
         assert conv.messages[0]["tool_calls"] == tool_calls
 
     def test_none_content_with_tool_calls(self):
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_assistant_message(None, tool_calls=[{"id": "x"}])
         assert conv.messages[0]["content"] == ""
         assert conv.messages[0]["tool_calls"] == [{"id": "x"}]
@@ -150,23 +150,23 @@ class TestAddAssistantMessage:
 
 
 class TestAddToolResult:
-    """Tests for Conversation.add_tool_result."""
+    """Tests for MessageHistory.add_tool_result."""
 
     def test_adds_tool_result(self):
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_tool_result("call_abc", "Search results here.")
         assert conv.messages[0]["role"] == "tool"
         assert conv.messages[0]["tool_call_id"] == "call_abc"
         assert conv.messages[0]["content"] == "Search results here."
 
     def test_is_error_defaults_to_false(self):
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_tool_result("call_abc", "ok output")
         assert conv.messages[0]["is_error"] is False
 
     def test_is_error_stored_when_true(self):
         """The error flag is persisted so restore can render it."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_tool_result("call_abc", "Error: boom.", is_error=True)
         assert conv.messages[0]["is_error"] is True
 
@@ -175,18 +175,18 @@ class TestAddToolResult:
 
 
 class TestToOpenAIMessages:
-    """Tests for Conversation.to_openai_messages."""
+    """Tests for MessageHistory.to_openai_messages."""
 
     def test_returns_copy(self):
         """Returns a copy, not the internal list."""
-        conv = Conversation(system_prompt="You are helpful.")
+        conv = MessageHistory(system_prompt="You are helpful.")
         msgs = conv.to_openai_messages()
         msgs.append({"role": "user", "content": "extra"})
         assert len(conv.messages) == 1  # Original unchanged
 
-    def test_full_conversation_flow(self):
-        """Complete conversation flow produces correct message order."""
-        conv = Conversation(system_prompt="Be concise.")
+    def test_full_message_flow(self):
+        """Complete history flow produces correct message order."""
+        conv = MessageHistory(system_prompt="Be concise.")
         conv.add_user_message("What is 2+2?")
         conv.add_assistant_message("4")
         conv.add_user_message("And 3+3?")
@@ -202,7 +202,7 @@ class TestToOpenAIMessages:
 
     def test_tool_call_flow(self):
         """Assistant+tool result flow is correctly ordered."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("Search for cats")
         conv.add_assistant_message(
             None,
@@ -218,7 +218,7 @@ class TestToOpenAIMessages:
 
     def test_is_error_stripped_from_wire(self):
         """is_error is an internal field — never sent to the API."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("run it")
         conv.add_assistant_message(
             None,
@@ -237,10 +237,10 @@ class TestToOpenAIMessages:
 
 
 class TestClear:
-    """Tests for Conversation.clear."""
+    """Tests for MessageHistory.clear."""
 
     def test_clear_preserves_system_prompt(self):
-        conv = Conversation(system_prompt="You are helpful.")
+        conv = MessageHistory(system_prompt="You are helpful.")
         conv.add_user_message("hello")
         conv.add_assistant_message("hi")
 
@@ -250,7 +250,7 @@ class TestClear:
         assert conv.messages[0]["content"] == "You are helpful."
 
     def test_clear_without_system_prompt(self):
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("hello")
         conv.add_assistant_message("hi")
 
@@ -259,7 +259,7 @@ class TestClear:
 
     def test_clear_multiple_cycles(self):
         """Clear multiple times, still preserves system prompt."""
-        conv = Conversation(system_prompt="S")
+        conv = MessageHistory(system_prompt="S")
         conv.add_user_message("a")
         conv.clear()
         conv.add_user_message("b")
@@ -272,7 +272,7 @@ class TestClear:
 
 
 class TestRepairOrphanedToolCalls:
-    """Tests for Conversation._ensure_turn_consistent (repair + role closing).
+    """Tests for MessageHistory._ensure_turn_consistent (repair + role closing).
 
     `add_user_message` no longer repairs — consistency is enforced at the
     single save point (`save_to_memory`) and on TUI restore, so these tests
@@ -281,7 +281,7 @@ class TestRepairOrphanedToolCalls:
 
     def test_no_orphans_when_complete(self):
         """No repair needed when tool calls have matching results."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("search")
         conv.add_assistant_message(
             None,
@@ -302,7 +302,7 @@ class TestRepairOrphanedToolCalls:
 
     def test_repairs_single_orphan(self):
         """A synthetic error result is added for an orphaned tool call."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("search")
         conv.add_assistant_message(
             None,
@@ -325,7 +325,7 @@ class TestRepairOrphanedToolCalls:
 
     def test_repairs_multiple_orphans(self):
         """Multiple orphaned tool calls each get a synthetic error."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("search")
         conv.add_assistant_message(
             None,
@@ -344,7 +344,7 @@ class TestRepairOrphanedToolCalls:
 
     def test_partial_orphans(self):
         """Only missing tool results get repaired."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("search")
         conv.add_assistant_message(
             None,
@@ -367,7 +367,7 @@ class TestRepairOrphanedToolCalls:
 
     def test_multiple_assistant_messages_with_orphans(self):
         """Walk backwards through multiple orphan scenarios."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("q1")
         conv.add_assistant_message(
             None,
@@ -396,14 +396,14 @@ class TestTrimMarker:
     message — never persisted, never a separate message."""
 
     def test_appends_to_last_assistant(self):
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         conv.add_assistant_message("reply")
         conv.append_trim_marker(3)
         assert conv.messages[-1]["content"] == "reply [TrimContext: 3]"
 
     def test_empty_content_becomes_marker(self):
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         conv.add_assistant_message("")
         conv.append_trim_marker(2)
@@ -412,7 +412,7 @@ class TestTrimMarker:
     def test_walks_back_to_last_assistant(self):
         """A trailing tool result does not block the marker — it lands on the
         assistant message that owns the turn."""
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         conv.add_assistant_message(
             None,
@@ -423,7 +423,7 @@ class TestTrimMarker:
         assert conv.messages[-2]["content"] == "[TrimContext: 1]"
 
     def test_noop_without_assistant(self):
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         conv.append_trim_marker(1)
         # No assistant present → nothing appended, no crash.
@@ -434,27 +434,27 @@ class TestStripTrimMarkers:
     """strip_trim_markers keeps [TrimContext: N] out of the diary."""
 
     def test_strips_marker_from_assistant_content(self):
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         conv.add_assistant_message("reply [TrimContext: 3]")
-        cleaned = Conversation.strip_trim_markers(conv.messages)
+        cleaned = MessageHistory.strip_trim_markers(conv.messages)
         # The marker is removed from the returned copy...
         assert cleaned[-1]["content"] == "reply"
-        # ...and the live conversation keeps it.
+        # ...and the live history keeps it.
         assert conv.messages[-1]["content"] == "reply [TrimContext: 3]"
 
     def test_marker_only_message_becomes_empty(self):
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         conv.add_assistant_message("[TrimContext: 2]")
-        cleaned = Conversation.strip_trim_markers(conv.messages)
+        cleaned = MessageHistory.strip_trim_markers(conv.messages)
         assert cleaned[-1]["content"] == ""
 
     def test_non_assistant_untouched(self):
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi [TrimContext: 1]")  # user content not stripped
         conv.add_assistant_message("reply")
-        cleaned = Conversation.strip_trim_markers(conv.messages)
+        cleaned = MessageHistory.strip_trim_markers(conv.messages)
         assert cleaned[1]["content"] == "hi [TrimContext: 1]"
         assert cleaned[-1]["content"] == "reply"
 
@@ -466,14 +466,14 @@ class TestAddAssistantThinking:
     """Tests for thinking field in assistant messages."""
 
     def test_thinking_stored_in_message(self):
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_assistant_message("answer", thinking="Let me think...")
         assert conv.messages[0]["thinking"] == "Let me think..."
         assert conv.messages[0]["content"] == "answer"
 
     def test_thinking_renamed_for_api(self):
         """Thinking field is renamed to reasoning_content in to_openai_messages."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_assistant_message("answer", thinking="internal reasoning")
         msgs = conv.to_openai_messages()
         assert "thinking" not in msgs[0]
@@ -481,7 +481,7 @@ class TestAddAssistantThinking:
 
     def test_images_stripped_for_api(self):
         """Images field is stripped in to_openai_messages."""
-        conv = Conversation(system_prompt="test")
+        conv = MessageHistory(system_prompt="test")
         # Manually add an images field to check stripping
         conv.messages[0]["images"] = ["/tmp/img.png"]
         msgs = conv.to_openai_messages()
@@ -493,28 +493,28 @@ class TestThinkingEnabledRoundtrip:
 
     def test_empty_reasoning_for_messages_without_thinking(self):
         """Assistant msgs without thinking get reasoning_content="" when thinking on."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_assistant_message("answer")
         msgs = conv.to_openai_messages(thinking_enabled=True)
         assert msgs[0]["reasoning_content"] == ""
 
     def test_thinking_still_renamed_when_present(self):
         """Messages with thinking still get the real reasoning_content."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_assistant_message("answer", thinking="real reasoning")
         msgs = conv.to_openai_messages(thinking_enabled=True)
         assert msgs[0]["reasoning_content"] == "real reasoning"
 
     def test_disabled_mode_no_empty_reasoning(self):
         """When thinking_enabled=False, messages without thinking get no field."""
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_assistant_message("answer")
         msgs = conv.to_openai_messages(thinking_enabled=False)
         assert "reasoning_content" not in msgs[0]
 
     def test_synthetic_trim_context_gets_empty_reasoning(self):
         """_trim_context harness messages get empty reasoning_content."""
-        conv = Conversation(system_prompt="test")
+        conv = MessageHistory(system_prompt="test")
         conv.add_user_message("hello")
         conv.add_assistant_message("reply")
         conv.messages.insert(1, {
@@ -529,7 +529,7 @@ class TestThinkingEnabledRoundtrip:
 
     def test_synthetic_context_status_gets_empty_reasoning(self):
         """_context_status harness messages get empty reasoning_content."""
-        conv = Conversation(system_prompt="test")
+        conv = MessageHistory(system_prompt="test")
         conv.add_user_message("hello")
         conv.messages.append({
             "role": "assistant",
@@ -543,7 +543,7 @@ class TestThinkingEnabledRoundtrip:
 
     def test_user_and_system_roles_unaffected(self):
         """Only assistant messages get reasoning_content; user/system are untouched."""
-        conv = Conversation(system_prompt="Be helpful.")
+        conv = MessageHistory(system_prompt="Be helpful.")
         conv.add_user_message("hi")
         conv.add_assistant_message("hey", thinking="thinking...")
         msgs = conv.to_openai_messages(thinking_enabled=True)
@@ -556,20 +556,20 @@ class TestThinkingEnabledRoundtrip:
 
 
 class TestCountTokens:
-    """Tests for Conversation.count_tokens()."""
+    """Tests for MessageHistory.count_tokens()."""
 
     def test_empty_returns_at_least_one(self):
-        conv = Conversation()
+        conv = MessageHistory()
         assert conv.count_tokens() >= 1
 
     def test_increases_with_content(self):
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_user_message("hello world " * 50)
         count = conv.count_tokens()
         assert count > 10
 
     def test_tool_calls_add_tokens(self):
-        conv = Conversation()
+        conv = MessageHistory()
         conv.add_assistant_message(
             None,
             tool_calls=[{

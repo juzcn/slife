@@ -233,7 +233,7 @@ class TestProcessStream:
     """Tests for AgentLoop._process_stream."""
 
     @pytest.mark.asyncio
-    async def test_simple_text_response(self, sample_model_config, empty_registry, conversation):
+    async def test_simple_text_response(self, sample_model_config, empty_registry, history):
         """Stream returns a simple text response."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -245,13 +245,13 @@ class TestProcessStream:
             yield StreamChunk(usage=TokenUsage(5, 3, 8))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            result = await loop._process_stream(conversation, None)
+            result = await loop._process_stream(history, None)
 
         assert result.content == "Hello world!"
         assert result.usage.total_tokens == 8
 
     @pytest.mark.asyncio
-    async def test_with_thinking(self, sample_model_config, empty_registry, conversation):
+    async def test_with_thinking(self, sample_model_config, empty_registry, history):
         """Stream returns thinking + content."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -262,13 +262,13 @@ class TestProcessStream:
             yield StreamChunk(usage=TokenUsage(3, 1, 4))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            result = await loop._process_stream(conversation, None)
+            result = await loop._process_stream(history, None)
 
         assert result.thinking == "Let me think..."
         assert result.content == "OK"
 
     @pytest.mark.asyncio
-    async def test_with_handler_callbacks(self, sample_model_config, empty_registry, conversation):
+    async def test_with_handler_callbacks(self, sample_model_config, empty_registry, history):
         """Handler receives callbacks during streaming."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -281,13 +281,13 @@ class TestProcessStream:
             yield StreamChunk(usage=TokenUsage(2, 1, 3))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            result = await loop._process_stream(conversation, handler)
+            result = await loop._process_stream(history, handler)
 
         handler.on_thinking_chunk.assert_awaited_with("Hmm")
         handler.on_text_chunk.assert_awaited_with("Answer")
 
     @pytest.mark.asyncio
-    async def test_with_tool_deltas(self, sample_model_config, empty_registry, conversation):
+    async def test_with_tool_deltas(self, sample_model_config, empty_registry, history):
         """Stream accumulates tool call deltas."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -308,7 +308,7 @@ class TestProcessStream:
             yield StreamChunk(usage=TokenUsage(10, 5, 15))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            result = await loop._process_stream(conversation, None)
+            result = await loop._process_stream(history, None)
 
         assert 0 in result.tool_accum
         acc = result.tool_accum[0]
@@ -317,7 +317,7 @@ class TestProcessStream:
         assert acc["arguments"] == '{"msg": "hi"}'
 
     @pytest.mark.asyncio
-    async def test_handler_is_none(self, sample_model_config, empty_registry, conversation):
+    async def test_handler_is_none(self, sample_model_config, empty_registry, history):
         """Handler=None should not cause errors."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -327,13 +327,13 @@ class TestProcessStream:
             yield StreamChunk(usage=TokenUsage(1, 1, 2))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            result = await loop._process_stream(conversation, None)
+            result = await loop._process_stream(history, None)
 
         assert result.content == "test"
 
     @pytest.mark.asyncio
     async def test_retries_transient_error(
-        self, sample_model_config, empty_registry, conversation,
+        self, sample_model_config, empty_registry, history,
     ):
         """A transient httpx transport failure is retried transparently."""
         import httpx
@@ -356,14 +356,14 @@ class TestProcessStream:
             patch.object(llm, "chat_stream", side_effect=flaky_stream),
             patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
         ):
-            result = await loop._process_stream(conversation, None)
+            result = await loop._process_stream(history, None)
 
         assert result.content == "Hello"
         assert len(calls) == 2
 
     @pytest.mark.asyncio
     async def test_no_retry_on_non_transient(
-        self, sample_model_config, empty_registry, conversation,
+        self, sample_model_config, empty_registry, history,
     ):
         """Non-transient errors are not retried."""
         llm = LLMClient(sample_model_config)
@@ -380,13 +380,13 @@ class TestProcessStream:
             patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
         ):
             with pytest.raises(ValueError):
-                await loop._process_stream(conversation, None)
+                await loop._process_stream(history, None)
 
         assert len(calls) == 1
 
     @pytest.mark.asyncio
     async def test_resets_handler_before_retry(
-        self, sample_model_config, empty_registry, conversation,
+        self, sample_model_config, empty_registry, history,
     ):
         """Partial streamed output is cleared via on_stream_retry before retry."""
         import httpx
@@ -408,7 +408,7 @@ class TestProcessStream:
             patch.object(llm, "chat_stream", side_effect=flaky_stream),
             patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
         ):
-            result = await loop._process_stream(conversation, handler)
+            result = await loop._process_stream(history, handler)
 
         handler.on_stream_retry.assert_awaited_once()
         assert result.content == "clean answer"
@@ -417,7 +417,7 @@ class TestProcessStream:
 
     @pytest.mark.asyncio
     async def test_gives_up_after_retries(
-        self, sample_model_config, empty_registry, conversation,
+        self, sample_model_config, empty_registry, history,
     ):
         """Retryable failures stop after the max retries and wrap the error."""
         import httpx
@@ -436,7 +436,7 @@ class TestProcessStream:
             patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
         ):
             with pytest.raises(RuntimeError, match="LLM stream failed after 3 attempts"):
-                await loop._process_stream(conversation, None)
+                await loop._process_stream(history, None)
 
         assert len(calls) == 3
 
@@ -448,15 +448,15 @@ class TestExecuteTools:
     """Tests for AgentLoop._execute_tools."""
 
     @pytest.mark.asyncio
-    async def test_single_tool_execution(self, sample_model_config, tool_registry, conversation):
-        """Single tool executed and added to conversation."""
+    async def test_single_tool_execution(self, sample_model_config, tool_registry, history):
+        """Single tool executed and added to history."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry)
 
         tcs = [ToolCallInfo(id="c1", name="echo", arguments={"message": "hi"})]
         handler = AsyncMock(spec=AgentEventHandler)
 
-        await loop._execute_tools(tcs, conversation, handler)
+        await loop._execute_tools(tcs, history, handler)
 
         # Handler should be called
         handler.on_tool_call.assert_awaited_once()
@@ -465,14 +465,14 @@ class TestExecuteTools:
         assert call_args[0][0] == "c1"  # tool_call_id
         assert "Echo: hi" in call_args[0][1]  # result
 
-        # Conversation should have tool result
-        msgs = conversation.to_openai_messages()
+        # MessageHistory should have tool result
+        msgs = history.to_openai_messages()
         tool_msgs = [m for m in msgs if m["role"] == "tool"]
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["content"] == "Echo: hi"
 
     @pytest.mark.asyncio
-    async def test_tool_error(self, sample_model_config, tool_registry, conversation):
+    async def test_tool_error(self, sample_model_config, tool_registry, history):
         """Failing tool returns error result."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry)
@@ -480,29 +480,29 @@ class TestExecuteTools:
         tcs = [ToolCallInfo(id="c2", name="failer", arguments={"reason": "test"})]
         handler = AsyncMock(spec=AgentEventHandler)
 
-        await loop._execute_tools(tcs, conversation, handler)
+        await loop._execute_tools(tcs, history, handler)
 
         result_call = handler.on_tool_result.call_args
         assert result_call[0][2] is True  # is_error
 
-        msgs = conversation.to_openai_messages()
+        msgs = history.to_openai_messages()
         tool_msg = [m for m in msgs if m["role"] == "tool"][0]
         assert "Intentional failure" in tool_msg["content"]
 
     @pytest.mark.asyncio
-    async def test_no_handler(self, sample_model_config, tool_registry, conversation):
+    async def test_no_handler(self, sample_model_config, tool_registry, history):
         """Handler=None doesn't break execution."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry)
 
         tcs = [ToolCallInfo(id="c1", name="echo", arguments={"message": "x"})]
-        await loop._execute_tools(tcs, conversation, None)
+        await loop._execute_tools(tcs, history, None)
 
-        msgs = conversation.to_openai_messages()
+        msgs = history.to_openai_messages()
         assert any(m["role"] == "tool" for m in msgs)
 
     @pytest.mark.asyncio
-    async def test_error_detection_by_prefix(self, sample_model_config, tool_registry, conversation):
+    async def test_error_detection_by_prefix(self, sample_model_config, tool_registry, history):
         """Results starting with 'Error' are flagged as errors."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry)
@@ -510,7 +510,7 @@ class TestExecuteTools:
         tcs = [ToolCallInfo(id="c1", name="echo", arguments={"message": "Error: something"})]
         handler = AsyncMock(spec=AgentEventHandler)
 
-        await loop._execute_tools(tcs, conversation, handler)
+        await loop._execute_tools(tcs, history, handler)
 
         # "Echo: Error: something" starts with "Echo", not "Error"
         # So this should NOT be flagged as an error
@@ -525,7 +525,7 @@ class TestAgentLoopRun:
     """Integration tests for AgentLoop.run."""
 
     @pytest.mark.asyncio
-    async def test_simple_text_run(self, sample_model_config, empty_registry, conversation):
+    async def test_simple_text_run(self, sample_model_config, empty_registry, history):
         """Full run with a simple text response."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -535,14 +535,14 @@ class TestAgentLoopRun:
             yield StreamChunk(usage=TokenUsage(5, 3, 8))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            result = await loop.run("Hi", conversation)
+            result = await loop.run("Hi", history)
 
         assert result.text == "Hello!"
         assert result.usage.total_tokens == 8
 
     @pytest.mark.asyncio
-    async def test_run_adds_user_message(self, sample_model_config, empty_registry, empty_conversation):
-        """Run adds the user message to conversation."""
+    async def test_run_adds_user_message(self, sample_model_config, empty_registry, empty_history):
+        """Run adds the user message to history."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
 
@@ -551,23 +551,23 @@ class TestAgentLoopRun:
             yield StreamChunk(usage=TokenUsage(1, 1, 2))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            await loop.run("User input here", empty_conversation)
+            await loop.run("User input here", empty_history)
 
-        msgs = empty_conversation.to_openai_messages()
+        msgs = empty_history.to_openai_messages()
         assert msgs[0]["role"] == "user"
         assert msgs[0]["content"] == "User input here"
 
     @pytest.mark.asyncio
-    async def test_context_tokens_isolated_per_conversation(
-        self, sample_model_config, empty_registry, empty_conversation
+    async def test_context_tokens_isolated_per_history(
+        self, sample_model_config, empty_registry, empty_history
     ):
-        """A heartbeat/one-shot conversation's small usage must NOT overwrite
-        the human conversation's context reading (status bar / _sys_note).
+        """A heartbeat/one-shot history's small usage must NOT overwrite
+        the human history's context reading (status bar / _sys_note).
 
-        Regression: the heartbeat runs in a fresh, small conversation every
-        beat; a global _last_usage let it drag the human conversation's
+        Regression: the heartbeat runs in a fresh, small history every
+        beat; a global _last_usage let it drag the human history's
         context measurement down (9.6% while the real context is 26.5%)."""
-        from slife.agent.conversation import Conversation
+        from slife.agent.message_history import MessageHistory
 
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -577,11 +577,11 @@ class TestAgentLoopRun:
             yield StreamChunk(usage=TokenUsage(10_000, 5, 10_005))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_human):
-            await loop.run("hi", empty_conversation)
-        assert loop.context_tokens_for(empty_conversation) == 10_000
+            await loop.run("hi", empty_history)
+        assert loop.context_tokens_for(empty_history) == 10_000
 
-        # A heartbeat-like fresh conversation runs a much smaller call.
-        heartbeat_conv = Conversation(system_prompt="sys")
+        # A heartbeat-like fresh history runs a much smaller call.
+        heartbeat_conv = MessageHistory(system_prompt="sys")
 
         async def mock_heartbeat(messages, tools, **kwargs):
             yield StreamChunk(content=".")
@@ -590,12 +590,12 @@ class TestAgentLoopRun:
         with patch.object(llm, 'chat_stream', side_effect=mock_heartbeat):
             await loop.run("[Heartbeat]", heartbeat_conv)
 
-        # The human conversation's reading is unaffected by the heartbeat.
-        assert loop.context_tokens_for(empty_conversation) == 10_000
+        # The human history's reading is unaffected by the heartbeat.
+        assert loop.context_tokens_for(empty_history) == 10_000
         assert loop.context_tokens_for(heartbeat_conv) == 1_000
 
     @pytest.mark.asyncio
-    async def test_run_with_tool_calls(self, sample_model_config, tool_registry, conversation):
+    async def test_run_with_tool_calls(self, sample_model_config, tool_registry, history):
         """Agent correctly handles tool calls and loops back."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry)
@@ -622,7 +622,7 @@ class TestAgentLoopRun:
         handler = AsyncMock(spec=AgentEventHandler)
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            result = await loop.run("echo hello", conversation, handler=handler)
+            result = await loop.run("echo hello", history, handler=handler)
 
         assert result.text == "Done!"
         # Total usage should be accumulated across both calls
@@ -635,7 +635,7 @@ class TestAgentLoopRun:
         handler.on_token_usage.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_run_max_iterations(self, sample_model_config, tool_registry, conversation):
+    async def test_run_max_iterations(self, sample_model_config, tool_registry, history):
         """Agent returns cancelled result when max iterations exceeded."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry, max_iterations=2)
@@ -649,7 +649,7 @@ class TestAgentLoopRun:
         handler = AsyncMock(spec=AgentEventHandler)
 
         with patch.object(llm, 'chat_stream', side_effect=always_tool_call):
-            result = await loop.run("test", conversation, handler=handler)
+            result = await loop.run("test", history, handler=handler)
             assert result.cancelled is True
             assert result.usage.total_tokens > 0
             # The limit is surfaced via the handler, not left silent.
@@ -657,7 +657,7 @@ class TestAgentLoopRun:
 
     @pytest.mark.asyncio
     async def test_max_iterations_zero_is_unlimited(
-        self, sample_model_config, tool_registry, conversation,
+        self, sample_model_config, tool_registry, history,
     ):
         """max_iterations=0 means no cap — the loop runs past any fixed
         iteration count until a final response arrives (never raises
@@ -680,7 +680,7 @@ class TestAgentLoopRun:
                 yield StreamChunk(usage=TokenUsage(1, 1, 2))
 
         with patch.object(llm, 'chat_stream', side_effect=tool_then_done):
-            result = await loop.run("test", conversation)
+            result = await loop.run("test", history)
 
         assert result.text == "Done!"
         assert result.cancelled is False
@@ -688,7 +688,7 @@ class TestAgentLoopRun:
 
     @pytest.mark.asyncio
     async def test_set_max_iterations_applies_next_turn(
-        self, sample_model_config, tool_registry, conversation,
+        self, sample_model_config, tool_registry, history,
     ):
         """A runtime cap change does not affect the running turn; the next
         run reads the new value."""
@@ -703,7 +703,7 @@ class TestAgentLoopRun:
 
         # Turn 1: capped at 1 → cancelled at the cap.
         with patch.object(llm, 'chat_stream', side_effect=always_tool_call):
-            r1 = await loop.run("test", conversation)
+            r1 = await loop.run("test", history)
             assert r1.cancelled is True
 
         # Raise to unlimited mid-session → the next turn runs freely.
@@ -724,13 +724,13 @@ class TestAgentLoopRun:
                 yield StreamChunk(usage=TokenUsage(1, 1, 2))
 
         with patch.object(llm, 'chat_stream', side_effect=tool_then_done):
-            r2 = await loop.run("test", conversation)
+            r2 = await loop.run("test", history)
             assert r2.text == "Done!"
             assert calls == 4  # cap 0 took effect — not stopped at 1
 
     @pytest.mark.asyncio
     async def test_set_max_iterations_applies_mid_turn(
-        self, sample_model_config, tool_registry, conversation,
+        self, sample_model_config, tool_registry, history,
     ):
         """Tightening the cap mid-turn stops the running turn immediately —
         the cap is checked live, not fixed at run() start."""
@@ -752,7 +752,7 @@ class TestAgentLoopRun:
         handler = AsyncMock(spec=AgentEventHandler)
 
         with patch.object(llm, 'chat_stream', side_effect=shrink_cap):
-            result = await loop.run("test", conversation, handler=handler)
+            result = await loop.run("test", history, handler=handler)
 
         assert result.cancelled is True
         # Stopped at the tightened cap (iteration 2's live check), not the
@@ -761,7 +761,7 @@ class TestAgentLoopRun:
         handler.on_max_iterations.assert_awaited_once_with(1)
 
     @pytest.mark.asyncio
-    async def test_run_with_images(self, sample_model_config, empty_registry, conversation, tmp_path):
+    async def test_run_with_images(self, sample_model_config, empty_registry, history, tmp_path):
         """@path / programmatic attachments auto-invoke attach_image: the
         user message stays verbatim text, the image blocks are injected into
         it, and the harness synthesizes the assistant(tool_use) + tool
@@ -778,7 +778,7 @@ class TestAgentLoopRun:
         from slife.tools.registry import ToolRegistry
         registry = ToolRegistry()
         tool = AttachImageTool()
-        tool._ctx = ToolContext(conversation=conversation)
+        tool._ctx = ToolContext(message_history=history)
         registry.register(tool)
 
         llm = LLMClient(sample_model_config)
@@ -790,16 +790,16 @@ class TestAgentLoopRun:
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
             result = await loop.run(
-                "Describe these", conversation,
+                "Describe these", history,
                 images=[str(img), str(img2)],
             )
 
         assert result.text == "I see images!"
         # Find the just-added user message, then the harness pair after it.
         ui = next(
-            i for i, m in enumerate(conversation.messages) if m["role"] == "user"
+            i for i, m in enumerate(history.messages) if m["role"] == "user"
         )
-        user = conversation.messages[ui]
+        user = history.messages[ui]
         assert user["content"][0] == {"type": "text", "text": "Describe these"}
         # Both images injected as separate image_url blocks.
         assert len(user["content"]) == 3
@@ -808,7 +808,7 @@ class TestAgentLoopRun:
         assert user["content"][2]["type"] == "image_url"
         assert user["content"][2]["image_url"]["url"].startswith("data:image/")
         # Harness-synthesized attach_image pair follows the user message
-        helper = conversation.messages[ui + 1]
+        helper = history.messages[ui + 1]
         assert helper["role"] == "assistant"
         tc = helper["tool_calls"][0]
         assert tc["function"]["name"] == "attach_image"
@@ -817,12 +817,12 @@ class TestAgentLoopRun:
         # separators on Windows — parse to compare reliably).
         args = json.loads(tc["function"].get("arguments", ""))
         assert args.get("sources") == [str(img), str(img2)]
-        res = conversation.messages[ui + 2]
+        res = history.messages[ui + 2]
         assert res["role"] == "tool"
         assert res["content"].startswith("Image included:")
 
     @pytest.mark.asyncio
-    async def test_run_content_accumulation(self, sample_model_config, empty_registry, conversation):
+    async def test_run_content_accumulation(self, sample_model_config, empty_registry, history):
         """Content from multiple chunks is accumulated correctly."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -834,6 +834,6 @@ class TestAgentLoopRun:
             yield StreamChunk(usage=TokenUsage(4, 4, 8))
 
         with patch.object(llm, 'chat_stream', side_effect=mock_stream):
-            result = await loop.run("test", conversation)
+            result = await loop.run("test", history)
 
         assert result.text == "The quick brown fox"

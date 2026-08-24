@@ -32,7 +32,7 @@ logger = logging.getLogger("slife_subagent")
 #: Set by ``run_headless`` — log path so callers can find it.
 _log_path: Path | None = None
 
-#: Cloned parent conversation (received via the stdin "context" message),
+#: Cloned parent history (received via the stdin "context" message),
 #: or None for a clean-context subagent.
 _inherited_context: list[dict] | None = None
 
@@ -206,8 +206,8 @@ async def run_headless() -> None:
     # no turn persistence. worker/send → inbox.post; the
     # reader stays live while a task runs, so worker/cancel can preempt
     # the running loop via inbox.cancel_correlation (→ agent_loop.cancel).
-    from slife.agent.conversation import Conversation
-    from slife.agent.inbox import ConversationStore
+    from slife.agent.message_history import MessageHistory
+    from slife.agent.inbox import MessageHistoryStore
     from slife.agent.system_prompt import build as build_system_prompt
     from slife.a2a.identity import AgentName, AgentMessage
 
@@ -215,18 +215,18 @@ async def run_headless() -> None:
     # agent's memdb plugin (which would make memdb_enabled True).
     service.inbox._on_turn_complete = None
 
-    class _WorkerConversationStore(ConversationStore):
-        """Fresh one-shot conversation per task, seeded with the cloned
+    class _WorkerMessageHistoryStore(MessageHistoryStore):
+        """Fresh one-shot history per task, seeded with the cloned
         parent context (mirrors the main agent's remote-message model)."""
 
-        def get_or_create(self, source: AgentName) -> Conversation:
+        def get_or_create(self, source: AgentName) -> MessageHistory:
             if _inherited_context:
-                return Conversation.from_history(
+                return MessageHistory.from_history(
                     self._system_prompt, _inherited_context,
                 )
-            return Conversation(system_prompt=self._system_prompt)
+            return MessageHistory(system_prompt=self._system_prompt)
 
-    service.inbox._conversations = _WorkerConversationStore(
+    service.inbox._histories = _WorkerMessageHistoryStore(
         system_prompt=build_system_prompt(service.config, is_subagent=True),
     )
     await service.start_inbox()

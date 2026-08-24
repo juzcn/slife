@@ -95,8 +95,8 @@ class TestAttachImageTool:
         assert not result.startswith("Error:")
 
     @pytest.mark.asyncio
-    async def test_execute_with_conversation_context(self):
-        """When _ctx.conversation is set, all image blocks are injected."""
+    async def test_execute_with_message_history(self):
+        """When _ctx.message_history is set, all image blocks are injected."""
         blocks = [
             {"type": "image_url", "image_url": {"url": "data:1"}},
             {"type": "image_url", "image_url": {"url": "data:2"}},
@@ -106,7 +106,7 @@ class TestAttachImageTool:
 
         mock_ctx = MagicMock()
         mock_ctx.config = None
-        mock_ctx.conversation = mock_conv
+        mock_ctx.message_history = mock_conv
 
         with patch(
             "slife.agent.multimodal.include_image_urls",
@@ -173,7 +173,7 @@ class TestAttachImageVisionGate:
     async def test_non_vision_model_refuses(self):
         ctx = MagicMock()
         ctx.config = _config_with_vision(False)
-        ctx.conversation = MagicMock()
+        ctx.message_history = MagicMock()
 
         tool = AttachImageTool()
         object.__setattr__(tool, "_ctx", ctx)
@@ -181,14 +181,14 @@ class TestAttachImageVisionGate:
 
         assert result.startswith("Error:")
         assert "does not support image input" in result
-        # The image must never reach the conversation / vision API.
-        ctx.conversation.inject_images_to_last_user.assert_not_called()
+        # The image must never reach the history / vision API.
+        ctx.message_history.inject_images_to_last_user.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_vision_model_allows(self):
         ctx = MagicMock()
         ctx.config = _config_with_vision(True)
-        ctx.conversation = MagicMock()
+        ctx.message_history = MagicMock()
 
         fake_block = {"type": "image_url", "image_url": {"url": "data:..."}}
         with patch(
@@ -200,7 +200,7 @@ class TestAttachImageVisionGate:
             result = await tool.execute(sources=["D:\\img.jpg"])
 
         assert result == "Image included: D:\\img.jpg"
-        ctx.conversation.inject_images_to_last_user.assert_called_once_with(
+        ctx.message_history.inject_images_to_last_user.assert_called_once_with(
             [fake_block]
         )
 
@@ -209,7 +209,7 @@ class TestAttachImageVisionGate:
         """No config on ctx falls back to the old behavior (best-effort)."""
         ctx = MagicMock()
         ctx.config = None
-        ctx.conversation = MagicMock()
+        ctx.message_history = MagicMock()
 
         fake_block = {"type": "image_url", "image_url": {"url": "data:..."}}
         with patch(

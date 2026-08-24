@@ -1,4 +1,4 @@
-"""Conversation history management in OpenAI message format.
+"""Live message history — the agent's turn-ordered message array (OpenAI message format).
 
 Supports multimodal messages (text + images) for vision-capable models.
 """
@@ -37,11 +37,13 @@ def _format_turn_dt(value) -> str:
 def turn_header(turn: dict) -> str:
     """Compact turn identity: ``[Turn: N · start → end]``.
 
-    Only the id, start time and end time — the conversation carries the
+    Only the id, start time and end time — the history carries the
     content.  Returns ``""`` when neither id nor timestamps are known
     (legacy turns), so the message stays plain.
     """
-    rowid = turn.get("rowid")
+    # Restored turns may carry either key: the store used to emit ``rowid``
+    # (SQLite rowid) and now emits ``turn_id`` — accept both.
+    rowid = turn.get("turn_id") if "turn_id" in turn else turn.get("rowid")
     start = _format_turn_dt(turn.get("created_at"))
     end = _format_turn_dt(turn.get("completed_at"))
     if start and end and end != start:
@@ -55,8 +57,8 @@ def turn_header(turn: dict) -> str:
     return f"{TURN_HEADER_PREFIX}{' · '.join(bits)}]" if bits else ""
 
 
-class Conversation:
-    """Manages the message list for an LLM conversation.
+class MessageHistory:
+    """Manages the message list for an LLM history.
 
     Messages follow the OpenAI format with roles:
     system, user (text or multimodal), assistant, tool.
@@ -71,13 +73,13 @@ class Conversation:
     @classmethod
     def from_history(
         cls, system_prompt: str, messages: list[dict],
-    ) -> "Conversation":
-        """Build a conversation seeded from an inherited message history.
+    ) -> "MessageHistory":
+        """Build a history seeded from an inherited message history.
 
         Used by subagents with a cloned context: *messages* are the parent
-        agent's conversation (any system message is dropped), and the
+        agent's history (any system message is dropped), and the
         subagent's own system prompt is prepended.  Messages are copied so
-        the source conversation is never mutated.
+        the source history is never mutated.
         """
         conv = cls(system_prompt=system_prompt)
         for msg in messages:
@@ -87,19 +89,19 @@ class Conversation:
         return conv
 
     def _ensure_turn_consistent(self, content: str = "") -> int:
-        """Restore the conversation to a consistent state.
+        """Restore the history to a consistent state.
 
         Two idempotent invariants for a turn that may have ended early
         (cancelled / errored / max-iteration, or restored from memory):
 
         1. **No orphaned tool_calls** — every assistant ``tool_call`` must
            have a matching ``tool`` result.  When a request is interrupted
-           the conversation may end with an ``assistant(tool_calls=…)`` that
+           the history may end with an ``assistant(tool_calls=…)`` that
            has no follow-up tool result; the OpenAI API rejects this with a
            400.  Missing results get a synthetic ``Error: request cancelled
            by user`` result inserted right after the owning assistant
            message.
-        2. **Alternating roles** — a conversation ending on a
+        2. **Alternating roles** — a history ending on a
            ``user``/``tool`` message (a tool result is a ``user`` role on
            the Anthropic wire, which rejects two consecutive users) gets a
            closing assistant message so roles keep alternating.
@@ -173,7 +175,7 @@ class Conversation:
         # Turn consistency is enforced at the single save point
         # (save_to_memory, which runs unconditionally after every turn) and on
         # TUI restore — so by the time a new user message is appended the
-        # conversation is already well-formed.
+        # history is already well-formed.
         content = sanitize_secrets(content)
         self.messages.append({"role": "user", "content": content})
         logger.debug("conv_user text=%.80s", content)
@@ -251,7 +253,7 @@ class Conversation:
         """Return a copy of *messages* with ``[TrimContext: N]`` markers removed.
 
         The marker is runtime-only: this keeps it out of the diary.  The
-        live conversation keeps its marker (the LLM needs to know the
+        live history keeps its marker (the LLM needs to know the
         current cut); only what is persisted is cleaned.  Works on the
         list passed in — callers pass the sliced turn messages.
         """
@@ -318,7 +320,7 @@ class Conversation:
         which is the wire-format field DeepSeek / Qwen require when
         thinking mode is enabled.  The API returns a 400 error if
         reasoning_content is missing from *any* assistant message in the
-        conversation — including synthetic harness messages that never
+        history — including synthetic harness messages that never
         carried reasoning.
         """
         cleaned = []
@@ -347,7 +349,7 @@ class Conversation:
         A "turn" starts with a user message and includes all assistant
         and tool messages that follow, up to the next user message or
         end of the list.  Used to rollback a failed turn so the
-        conversation isn't poisoned for the next attempt.
+        history isn't poisoned for the next attempt.
 
         Returns:
             Number of messages removed.
@@ -374,7 +376,7 @@ class Conversation:
         return removed
 
     def clear(self) -> None:
-        """Clear conversation, preserving system prompt if present."""
+        """Clear history, preserving system prompt if present."""
         old_count = len(self.messages)
         system_msg = (
             self.messages[0]
@@ -390,7 +392,7 @@ class Conversation:
         The "current turn" starts with the last user message and includes
         all following assistant and tool messages.  This is safe to call
         from within a tool — the assistant(tool_calls) and pending tool
-        results are preserved so the conversation stays well-formed.
+        results are preserved so the history stays well-formed.
 
         Returns:
             Number of messages removed.
@@ -527,7 +529,7 @@ class Conversation:
         self,
         target: int,
     ) -> tuple[list[dict], int]:
-        """Extract and delete oldest complete turns from the conversation.
+        """Extract and delete oldest complete turns from the history.
 
         Walks forward from after the system prompt, removing complete
         user→… turns until the estimated token count drops to or below
@@ -589,7 +591,7 @@ class Conversation:
         if not removed_messages:
             return [], 0
 
-        turns = Conversation.extract_turns(removed_messages)
+        turns = MessageHistory.extract_turns(removed_messages)
         tokens_freed = sum(
             len(str(m.get("content", ""))) // 3 for m in removed_messages
         )

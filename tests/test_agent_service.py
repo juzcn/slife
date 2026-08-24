@@ -35,7 +35,7 @@ class TestAgentServiceInit:
         assert service.llm_client is not None
         assert service.agent_loop is not None
         assert service.tool_registry is not None
-        assert service.conversation is not None
+        assert service.message_history is not None
         assert isinstance(service.session_usage, TokenUsage)
 
     def test_initial_mcp_state(self, sample_config):
@@ -86,15 +86,15 @@ class TestAgentServiceClear:
 
     def test_clear_preserves_system_prompt(self, sample_config):
         service = AgentService(sample_config)
-        initial_count = len(service.conversation.messages)
+        initial_count = len(service.message_history.messages)
         # System prompt should be present
         assert initial_count >= 1
 
         service.clear()
 
         # clear() preserves the system prompt
-        assert len(service.conversation.messages) == 1
-        assert service.conversation.messages[0]["role"] == "system"
+        assert len(service.message_history.messages) == 1
+        assert service.message_history.messages[0]["role"] == "system"
 
 
 # ── AgentService MCP lifecycle ──────────────────────────────────────────────
@@ -496,14 +496,14 @@ class TestAgentServiceMemory:
         mock_client.call_tool = AsyncMock(return_value="{}")
         service._plugins["memdb"].client = mock_client
 
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message("hello back")
 
         ts = datetime(2026, 8, 12, 14, 32, 9).astimezone()
         await service.save_to_memory(
             user_message="hi", token_count=10,
-            conversation=conv, channel="human", created_at=ts,
+            history=conv, channel="human", created_at=ts,
         )
 
         mock_client.call_tool.assert_awaited_once()
@@ -525,12 +525,12 @@ class TestAgentServiceMemory:
         mock_client.call_tool = AsyncMock(return_value="{}")
         service._plugins["memdb"].client = mock_client
 
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message("hello back")
 
         await service.save_to_memory(
-            user_message="hi", token_count=10, conversation=conv,
+            user_message="hi", token_count=10, history=conv,
         )
         tool_name, args = mock_client.call_tool.await_args.args
         assert tool_name == "__memory_save_turn"
@@ -548,12 +548,12 @@ class TestAgentServiceMemory:
         service._plugins["memdb"].client = mock_client
 
         secret = "sk-" + "a" * 24  # matches sanitize_secrets' sk- pattern
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message(f"my key is {secret}")  # sanitized on store
         conv.add_assistant_message("got it")
 
         await service.save_to_memory(
-            user_message=f"my key is {secret}", conversation=conv,
+            user_message=f"my key is {secret}", history=conv,
         )
 
         mock_client.call_tool.assert_awaited_once()
@@ -563,7 +563,7 @@ class TestAgentServiceMemory:
 
     @pytest.mark.asyncio
     async def test_save_to_memory_skips_when_user_message_absent(self, sample_config):
-        """When the user message is no longer in the conversation (rolled back
+        """When the user message is no longer in the history (rolled back
         on a content-policy error), nothing is saved — no empty diary row."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
@@ -571,7 +571,7 @@ class TestAgentServiceMemory:
         mock_client.call_tool = AsyncMock(return_value="{}")
         service._plugins["memdb"].client = mock_client
 
-        # Empty conversation — no matching user message to anchor the turn.
+        # Empty history — no matching user message to anchor the turn.
         await service.save_to_memory(user_message="hi", token_count=10)
 
         mock_client.call_tool.assert_not_awaited()
@@ -589,7 +589,7 @@ class TestAgentServiceMemory:
         )
         service._plugins["memdb"].client = mock_client
 
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message("hello back")
 
@@ -597,7 +597,7 @@ class TestAgentServiceMemory:
         service.on_memory_broken(surfaced.append)
 
         await service.save_to_memory(
-            user_message="hi", token_count=10, conversation=conv,
+            user_message="hi", token_count=10, history=conv,
         )
 
         assert service._memory_broken is True
@@ -622,7 +622,7 @@ class TestAgentServiceMemory:
         )
         service._plugins["memdb"].client = mock_client
 
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message("hello back")
 
@@ -633,7 +633,7 @@ class TestAgentServiceMemory:
                 seen.append(message)
 
         await service.save_to_memory(
-            user_message="hi", token_count=10, conversation=conv,
+            user_message="hi", token_count=10, history=conv,
             handler=FakeHandler(),
         )
 
@@ -657,7 +657,7 @@ class TestAgentServiceMemory:
         mock_client.call_tool = AsyncMock(side_effect=asyncio.TimeoutError())
         service._plugins["memdb"].client = mock_client
 
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message("hello back")
 
@@ -668,7 +668,7 @@ class TestAgentServiceMemory:
                 seen.append(message)
 
         await service.save_to_memory(
-            user_message="hi", token_count=10, conversation=conv,
+            user_message="hi", token_count=10, history=conv,
             handler=FakeHandler(),
         )
 
@@ -689,7 +689,7 @@ class TestAgentServiceMemory:
         )
         service._plugins["memdb"].client = mock_client
 
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message("hello back")
 
@@ -700,7 +700,7 @@ class TestAgentServiceMemory:
                 seen.append(message)
 
         await service.save_to_memory(
-            user_message="hi", token_count=10, conversation=conv,
+            user_message="hi", token_count=10, history=conv,
             handler=FakeHandler(),
         )
 
@@ -711,7 +711,7 @@ class TestAgentServiceMemory:
     @pytest.mark.asyncio
     async def test_save_to_memory_compacts_oversized_tool_result(self, sample_config):
         """An oversized tool result is compacted to a head+tail digest in the
-        DIARY copy, while the live conversation keeps the full output (the
+        DIARY copy, while the live history keeps the full output (the
         model reasoned over it this turn)."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
@@ -720,7 +720,7 @@ class TestAgentServiceMemory:
         service._plugins["memdb"].client = mock_client
 
         big = "y" * 50000
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("read the big file")
         conv.add_assistant_message(
             "", tool_calls=[{"id": "call_1", "type": "function",
@@ -729,7 +729,7 @@ class TestAgentServiceMemory:
         conv.add_tool_result("call_1", big)
         conv.add_assistant_message("the file is huge.")
 
-        await service.save_to_memory(user_message="read the big file", conversation=conv)
+        await service.save_to_memory(user_message="read the big file", history=conv)
 
         tool_name, args = mock_client.call_tool.await_args.args
         assert tool_name == "__memory_save_turn"
@@ -738,7 +738,7 @@ class TestAgentServiceMemory:
         assert len(persisted_tool["content"]) < 9000
         assert "[compacted at save: original 50000 chars" in persisted_tool["content"]
         assert "by re-running read_file" in persisted_tool["content"]
-        # Live conversation is untouched — the model still has the full result.
+        # Live history is untouched — the model still has the full result.
         live_tool = next(m for m in conv.messages if m.get("role") == "tool")
         assert len(live_tool["content"]) == 50000
 
@@ -752,7 +752,7 @@ class TestAgentServiceMemory:
         service._plugins["memdb"].client = mock_client
 
         small = "z" * 100
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message(
             "", tool_calls=[{"id": "call_1", "type": "function",
@@ -761,7 +761,7 @@ class TestAgentServiceMemory:
         conv.add_tool_result("call_1", small)
         conv.add_assistant_message("checked.")
 
-        await service.save_to_memory(user_message="hi", conversation=conv)
+        await service.save_to_memory(user_message="hi", history=conv)
         _, args = mock_client.call_tool.await_args.args
         persisted_tool = next(m for m in args["messages"] if m.get("role") == "tool")
         assert persisted_tool["content"] == small
@@ -769,23 +769,23 @@ class TestAgentServiceMemory:
     @pytest.mark.asyncio
     async def test_save_strips_runtime_trim_marker(self, sample_config):
         """[TrimContext: N] is runtime-only — a marker on the live
-        conversation (from a prior trim) must not reach the diary."""
+        history (from a prior trim) must not reach the diary."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
         mock_client.call_tool = AsyncMock(
-            return_value=_json.dumps({"rowid": 7, "status": "saved"}),
+            return_value=_json.dumps({"turn_id": 7, "status": "saved"}),
         )
         service._plugins["memdb"].client = mock_client
 
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message("previous reply")
         conv.append_trim_marker(3)  # a trim happened earlier in the session
 
-        await service.save_to_memory(user_message="hi", conversation=conv)
+        await service.save_to_memory(user_message="hi", history=conv)
 
-        # The live conversation still carries the marker...
+        # The live history still carries the marker...
         assert "[TrimContext:" in conv.messages[-1]["content"]
         # ...but the persisted turn is clean.
         _, args = mock_client.call_tool.await_args.args
@@ -803,15 +803,15 @@ class TestAgentServiceMemory:
         mock_client = AsyncMock()
         mock_client.is_connected = True
         mock_client.call_tool = AsyncMock(
-            return_value=_json.dumps({"rowid": 42, "status": "saved"}),
+            return_value=_json.dumps({"turn_id": 42, "status": "saved"}),
         )
         service._plugins["memdb"].client = mock_client
 
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message("hello back")
 
-        await service.save_to_memory(user_message="hi", conversation=conv)
+        await service.save_to_memory(user_message="hi", history=conv)
 
         content = conv.messages[1]["content"]  # [0] is the system prompt
         assert content.startswith("hi [Turn: 42 · ")
@@ -829,17 +829,17 @@ class TestAgentServiceMemory:
         mock_client = AsyncMock()
         mock_client.is_connected = True
         mock_client.call_tool = AsyncMock(
-            return_value=_json.dumps({"rowid": 42, "status": "saved"}),
+            return_value=_json.dumps({"turn_id": 42, "status": "saved"}),
         )
         service._plugins["memdb"].client = mock_client
 
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("[Heartbeat] click.  Reply per your contract.")
         conv.add_assistant_message(".")
 
         await service.save_to_memory(
             user_message="[Heartbeat] click.  Reply per your contract.",
-            conversation=conv,
+            history=conv,
         )
 
         assert conv.messages[1]["content"] == (  # [0] is the system prompt
@@ -856,11 +856,11 @@ class TestAgentServiceMemory:
         mock_client.call_tool = AsyncMock(return_value="{}")
         service._plugins["memdb"].client = mock_client
 
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message("hello back")
 
-        await service.save_to_memory(user_message="hi", conversation=conv)
+        await service.save_to_memory(user_message="hi", history=conv)
 
         assert conv.messages[1]["content"] == "hi"  # [0] is the system prompt
 
@@ -872,11 +872,11 @@ class TestAgentServiceMemory:
         mock_client = AsyncMock()
         mock_client.is_connected = True
         mock_client.call_tool = AsyncMock(
-            return_value=_json.dumps({"rowid": 42, "status": "saved"}),
+            return_value=_json.dumps({"turn_id": 42, "status": "saved"}),
         )
         service._plugins["memdb"].client = mock_client
 
-        conv = service.conversation
+        conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message(
             "", tool_calls=[{
@@ -890,7 +890,7 @@ class TestAgentServiceMemory:
         conv.add_tool_result("c1", '{"status": "captured"}')
         conv.add_assistant_message("done")
 
-        await service.save_to_memory(user_message="hi", conversation=conv)
+        await service.save_to_memory(user_message="hi", history=conv)
 
         _, args = mock_client.call_tool.await_args.args
         assert args["summary"] == "switched model"
@@ -1233,7 +1233,7 @@ class TestAgentServiceInbox:
         assert service.inbox is not None
 
     def test_inbox_has_correct_wiring(self, sample_config):
-        """Inbox is wired with agent_loop, conversations, and on_turn_complete."""
+        """Inbox is wired with agent_loop, histories, and on_turn_complete."""
         service = AgentService(sample_config)
         inbox = service.inbox
 
@@ -1241,8 +1241,8 @@ class TestAgentServiceInbox:
         # _on_activity is a bound method — use equality not identity
         assert inbox._on_activity.__func__ is service._notify_a2a_activity.__func__  # type: ignore[union-attr]
         assert inbox._on_turn_complete.__func__ is service.save_to_memory.__func__  # type: ignore[union-attr]
-        # HUMAN conversation is pre-seeded from service.conversation
-        assert inbox._conversations._convs.get(HUMAN) is service.conversation
+        # HUMAN history is pre-seeded from service.message_history
+        assert inbox._histories._by_source.get(HUMAN) is service.message_history
 
     @pytest.mark.asyncio
     async def test_start_inbox_creates_background_task(self, sample_config):
@@ -1643,7 +1643,7 @@ class TestSwitchModel:
 class TestGetRecentTurns:
     """Restore fetch: page-by-page (batch), start from the persisted
     live-context boundary, select newest within the context-ceiling budget,
-    return oldest-first so the conversation rebuilds chronologically."""
+    return oldest-first so the history rebuilds chronologically."""
 
     def _make_db(self, tmp_path, n, context_start=None):
         import sqlite3

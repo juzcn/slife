@@ -185,7 +185,7 @@ class ConfigEnvGetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
 class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_remove"
     category: ClassVar[str] = "Config"
-    description = "Remove an env var from slife.json5. Does NOT touch the OS keyring."
+    description = "Remove an env var from slife.json5. Does NOT touch credstore."
     parameters = {
         "type": "object",
         "properties": {

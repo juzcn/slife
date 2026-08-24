@@ -431,7 +431,7 @@ class SessionStore:
         Moves the live-context start forward by *count* rows strictly after
         the current boundary and records the result.  Used by the internal
         trim (``AgentLoop._trim_after_save``), which removed that many
-        oldest complete turns from the conversation.
+        oldest complete turns from the history.
 
         Clamps when fewer than *count* rows remain (a trim after a rollback
         can overshoot by dead rows) — the boundary never overshoots the
@@ -653,6 +653,8 @@ class SessionStore:
             params,
         )
         rows = [dict(r) for r in await cursor.fetchall()]
+        for r in rows:
+            r["turn_id"] = r.pop("rowid")
 
         total_billed = sum(r.get("token_count") or 0 for r in rows)
         total_context = sum(r.get("prompt_tokens") or 0 for r in rows)
@@ -665,7 +667,7 @@ class SessionStore:
                 "avg_token_count": (total_billed // len(rows))
                 if rows else 0,
             },
-            "filters": {"rowid": rowid, "since": since, "until": until},
+            "filters": {"turn_id": rowid, "since": since, "until": until},
         }
 
     # ── Summarize ──────────────────────────────────────────────────

@@ -6,7 +6,7 @@ import pytest
 
 from slife.config import Config, ModelConfig
 from slife.agent.llm_client import TokenUsage
-from slife.agent.conversation import Conversation
+from slife.agent.message_history import MessageHistory
 from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
 
@@ -104,19 +104,19 @@ def sample_config(sample_model_config):
     )
 
 
-# ── Conversation fixture ──────────────────────────────────────────────
+# ── MessageHistory fixture ──────────────────────────────────────────────
 
 
 @pytest.fixture
-def conversation():
-    """Fresh conversation with a system prompt."""
-    return Conversation(system_prompt="You are a helpful assistant.")
+def history():
+    """Fresh history with a system prompt."""
+    return MessageHistory(system_prompt="You are a helpful assistant.")
 
 
 @pytest.fixture
-def empty_conversation():
-    """Fresh conversation without system prompt."""
-    return Conversation()
+def empty_history():
+    """Fresh history without system prompt."""
+    return MessageHistory()
 
 
 # ── Token usage fixtures ──────────────────────────────────────────────

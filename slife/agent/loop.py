@@ -14,7 +14,7 @@ from typing import Protocol
 
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.logfmt import sanitize_secrets
-from slife.agent.conversation import Conversation
+from slife.agent.message_history import MessageHistory
 from slife.platform import detect_current_shell
 from slife.tools.registry import ToolRegistry
 from slife.logfmt import request_scope, elapsed
@@ -36,8 +36,8 @@ class AgentCancelled(Exception):
 #: for every turn source (main agent, subagents, heartbeat, WeChat, A2A).
 _LLM_STREAM_MAX_RETRIES = 2  # total attempts = 3
 
-#: Caps on the per-session caches.  Heartbeat / A2A one-shot conversations add
-#: a usage entry keyed by ``id(conversation)`` every turn and the context-date
+#: Caps on the per-session caches.  Heartbeat / A2A one-shot histories add
+#: a usage entry keyed by ``id(history)`` every turn and the context-date
 #: list grows per turn until a trim consumes it — without these bounds a long
 #: session (or a huge context window that never trims) grows them forever.
 _MAX_USAGE_CACHE = 1000
@@ -211,7 +211,7 @@ class AgentLoop:
     """Core function-calling agent loop with real-time streaming.
 
     The loop:
-      1. Sends conversation + tools to the LLM via streaming API
+      1. Sends history + tools to the LLM via streaming API
       2. Emits thinking and text chunks via callbacks in real-time
       3. Accumulates tool call deltas; if the model requests tools,
          executes them and loops back
@@ -261,12 +261,12 @@ class AgentLoop:
         self._presence_provider = presence_provider
         self._cancel_event = asyncio.Event()
         # Last API usage, tracked PER CONVERSATION (keyed by id()).  The
-        # heartbeat / A2A / wechat turns run in their own small conversations,
+        # heartbeat / A2A / wechat turns run in their own small histories,
         # so a global _last_usage would be overwritten by e.g. a heartbeat
-        # (9.6%) and drag the human conversation's status bar / _sys_note
+        # (9.6%) and drag the human history's status bar / _sys_note
         # down to the wrong value.  _last_usage is kept only as the
         # restore-time estimate slot (primed by restore_session).
-        self._usage_by_conv: dict[int, TokenUsage] = {}
+        self._usage_by_history: dict[int, TokenUsage] = {}
         self._last_usage = TokenUsage()
         # Track stable fields — only emit in context footer when they change.
         self._last_cwd: str = ""
@@ -276,12 +276,12 @@ class AgentLoop:
         self._context_time_start: str = ""  # earliest turn date in context; set by restore, advanced by trim
         self._last_context_time_start: str = ""  # for change-detection in the footer
         self._context_turn_dates: list[str] = []  # dates of restored turns, oldest-first; consumed by trim
-        #: ``id(conversation)`` whose restore must not be immediately
-        #: shredded by the ceiling trim.  Restore primes the conversation
+        #: ``id(history)`` whose restore must not be immediately
+        #: shredded by the ceiling trim.  Restore primes the history
         #: up to the ceiling; the first replacement turn would otherwise
         #: compact it straight back to the floor before the user got to
         #: use it.  Consumed on that turn (see :meth:`run`).
-        self._just_restored_conv: int | None = None
+        self._just_restored_history: int | None = None
 
     def set_max_iterations(self, max_iterations: int) -> str:
         """Change the per-turn iteration cap at runtime (0 = unlimited).
@@ -429,40 +429,40 @@ class AgentLoop:
 
     # ── Context trimming ────────────────────────────────────────────
 
-    def context_tokens_for(self, conversation: Conversation) -> int:
+    def context_tokens_for(self, history: MessageHistory) -> int:
         """Context tokens the next API call would send.
 
         Single source for ``_sys_note``, the trim decision
         (``_trim_after_save``), and the TUI status bar — one value, no
         recompute.  Resolution order:
 
-        1. After an API call — that conversation's last call's actual
-           ``prompt_tokens`` (tracked per conversation, so a heartbeat's
-           small context never pollutes the human conversation's reading).
+        1. After an API call — that history's last call's actual
+           ``prompt_tokens`` (tracked per history, so a heartbeat's
+           small context never pollutes the human history's reading).
         2. First round after a restore — the restore-time estimate primed
            on ``_last_usage`` (computed once when the UI rebuilds the
            session to decide how many turns to restore; we have no real
            API usage yet).
-        3. Genuinely fresh session — a live :meth:`Conversation.count_tokens`
+        3. Genuinely fresh session — a live :meth:`MessageHistory.count_tokens`
            estimate.
         """
-        usage = self._usage_by_conv.get(id(conversation))
+        usage = self._usage_by_history.get(id(history))
         if usage is None:
             usage = self._last_usage  # restore-time estimate
         if usage.prompt_tokens:
             return usage.prompt_tokens
         if usage.total_tokens:
             return usage.total_tokens
-        return conversation.count_tokens()
+        return history.count_tokens()
 
     async def _trim_after_save(
-        self, conversation: Conversation, handler: object | None = None,
+        self, history: MessageHistory, handler: object | None = None,
     ) -> None:
         """Trim the oldest turns after a turn is saved to memory.
 
         Called by ``save_to_memory`` once the just-completed turn is
         persisted.  By then the last API call's real ``prompt_tokens`` are
-        known (``context_tokens_for`` reads ``_usage_by_conv``), so the
+        known (``context_tokens_for`` reads ``_usage_by_history``), so the
         ceiling check uses the true context occupancy — not the estimate
         the loop had at the turn's start.
 
@@ -470,7 +470,7 @@ class AgentLoop:
         can show the ``[TrimContext: N]`` note on the turn's last
         assistant message — mirroring the LLM-side marker.
 
-        When occupancy is at/over the ceiling, compacts the conversation
+        When occupancy is at/over the ceiling, compacts the history
         down to the floor (oldest complete turns removed) and appends a
         ``[TrimContext: N]`` marker to the last assistant message so the
         LLM knows how many turns were cut from its context.  The marker is
@@ -478,31 +478,31 @@ class AgentLoop:
         session is already the trimmed state; "a past session was
         truncated" is meaningless to the model, only the *current* cut is).
 
-        A freshly-restored conversation is a legitimate pre-exit state,
-        not growth — the ``_just_restored_conv`` marker (consumed in
+        A freshly-restored history is a legitimate pre-exit state,
+        not growth — the ``_just_restored_history`` marker (consumed in
         :meth:`run`) still guards the first replacement turn.
         """
-        # A freshly-restored conversation is a legitimate pre-exit state,
+        # A freshly-restored history is a legitimate pre-exit state,
         # not growth — never shred it on the very first replacement turn.
         # Consume the marker so from the second turn on the live rules
         # apply.  (Restore primes the context up to the ceiling; the first
         # turn's save would otherwise immediately compact it to the floor.)
-        just_restored = self._just_restored_conv == id(conversation)
+        just_restored = self._just_restored_history == id(history)
         if just_restored:
-            self._just_restored_conv = None
+            self._just_restored_history = None
             return
 
         # Only the just-finished turn exists / nothing to trim — the loop
-        # also needs a boundary to not trim a conversation whose context
+        # also needs a boundary to not trim a history whose context
         # usage is unmeasurable (no API call yet → estimate fallback).
-        current = self.context_tokens_for(conversation)
+        current = self.context_tokens_for(history)
         if current < int(self.context_window * self.context_ceiling):
             return
 
         # Compress to the floor; the current (just-saved) turn is kept by
         # extract_oldest_turns — it only ever removes complete older turns.
         target = int(self.context_window * self.context_floor)
-        turns, tokens_freed = conversation.extract_oldest_turns(target)
+        turns, tokens_freed = history.extract_oldest_turns(target)
         if not turns:
             return
 
@@ -540,7 +540,7 @@ class AgentLoop:
         # Tell the LLM how much of its context was just cut.  Runtime-only
         # marker appended to the last assistant message (guaranteed present
         # and last by _ensure_turn_consistent in save_to_memory).
-        conversation.append_trim_marker(removed)
+        history.append_trim_marker(removed)
         # Mirror it in the live TUI — same [TrimContext: N] note on the
         # turn's last assistant message.
         if handler is not None:
@@ -553,7 +553,7 @@ class AgentLoop:
 
     # ── Harness tool invocation ────────────────────────────────────
 
-    def _footer_kwargs(self, conversation: Conversation, current: int) -> dict:
+    def _footer_kwargs(self, history: MessageHistory, current: int) -> dict:
         """Build the render kwargs for the ``_sys_note`` status tool.
 
         Time + token always shown; model/CWD/shell only when they
@@ -592,7 +592,7 @@ class AgentLoop:
         self,
         name: str,
         args: dict,
-        conversation: Conversation,
+        history: MessageHistory,
     ) -> None:
         """Invoke a declared harness tool on the loop's behalf.
 
@@ -624,30 +624,30 @@ class AgentLoop:
             name=name,
             arguments=args,
         )
-        conversation.add_assistant_message(
+        history.add_assistant_message(
             content=None, tool_calls=self._serialize_tool_calls([tc]),
         )
         try:
-            # Run the tool against the conversation the loop is currently
-            # processing.  `_ctx.conversation` is set once at startup to the
-            # human conversation, but harness tools are invoked per-source
-            # (WeChat / remote-agent turns have their own Conversation) — a
+            # Run the tool against the history the loop is currently
+            # processing.  `_ctx.message_history` is set once at startup to the
+            # human history, but harness tools are invoked per-source
+            # (WeChat / remote-agent turns have their own MessageHistory) — a
             # trim must target the active one, not always the human diary.
             # Swap for the duration of the call and restore afterwards.
             ctx = getattr(tool, "_ctx", None)
-            prev_conversation = None
+            prev_history = None
             if ctx is not None:
-                prev_conversation = ctx.conversation
-                ctx.conversation = conversation
+                prev_history = ctx.message_history
+                ctx.message_history = history
             try:
                 result = await tool.execute(**args)
             finally:
                 if ctx is not None:
-                    ctx.conversation = prev_conversation
+                    ctx.message_history = prev_history
         except Exception as e:
             result = f"Error: Tool '{name}' failed: {type(e).__name__}: {e}."
             logger.warning("auto_invoke_error name=%s err=%s", name, e)
-        conversation.add_tool_result(
+        history.add_tool_result(
             tc.id, sanitize_secrets(result),
             is_error=result.startswith("Error"),
         )
@@ -656,7 +656,7 @@ class AgentLoop:
 
     async def _process_stream(
         self,
-        conversation: Conversation,
+        history: MessageHistory,
         handler: AgentEventHandler | None,
     ) -> _StreamResult:
         """Consume a single streaming LLM response.
@@ -677,7 +677,7 @@ class AgentLoop:
         stream_usage = TokenUsage()
 
         # Transient transport failures (e.g. the peer closing the connection
-        # mid-chunked-read) are retried with linear backoff.  The conversation
+        # mid-chunked-read) are retried with linear backoff.  The history
         # is untouched while streaming — the assistant message is only added
         # after this method returns — so a retry sends identical messages.
         attempts = 0
@@ -686,7 +686,7 @@ class AgentLoop:
             emitted_any = False
             try:
                 async for chunk in self.llm_client.chat_stream(
-                    messages=conversation.to_openai_messages(
+                    messages=history.to_openai_messages(
                         thinking_enabled=self.llm_client.model_config.thinking_enabled,
                     ),
                     tools=self._inject_meta_params(
@@ -735,7 +735,7 @@ class AgentLoop:
                 if attempts > _LLM_STREAM_MAX_RETRIES:
                     # Wrap the exhausted-retries error so the surfaced message
                     # is actionable.  RuntimeError is not a BadRequestError, so
-                    # the inbox keeps the conversation intact — correct for a
+                    # the inbox keeps the history intact — correct for a
                     # transient failure.
                     raise RuntimeError(
                         f"LLM stream failed after {attempts} attempts: {e}"
@@ -761,19 +761,19 @@ class AgentLoop:
                     raise AgentCancelled()
                 await asyncio.sleep(_LLM_STREAM_RETRY_BASE_DELAY * attempts)
 
-        # Remember last API usage per conversation — heartbeat/A2A/wechat
-        # turns run in their own conversations and must not overwrite the
-        # human conversation's context measurement.
+        # Remember last API usage per history — heartbeat/A2A/wechat
+        # turns run in their own histories and must not overwrite the
+        # human history's context measurement.
         if stream_usage.total_tokens > 0:
-            self._usage_by_conv[id(conversation)] = stream_usage
-            if len(self._usage_by_conv) > _MAX_USAGE_CACHE:
+            self._usage_by_history[id(history)] = stream_usage
+            if len(self._usage_by_history) > _MAX_USAGE_CACHE:
                 # Drop the oldest entry (dict preserves insertion order) — a
                 # heartbeat fires every 60s and each A2A remote turn uses a
-                # fresh one-shot conversation, so the cache would otherwise
+                # fresh one-shot history, so the cache would otherwise
                 # grow without bound.  Evicting also makes an id()-reused
-                # conversation miss (fresh estimate) instead of reading a
+                # history miss (fresh estimate) instead of reading a
                 # stale unrelated usage.
-                self._usage_by_conv.pop(next(iter(self._usage_by_conv)))
+                self._usage_by_history.pop(next(iter(self._usage_by_history)))
 
         return _StreamResult(
             content="".join(content_parts),
@@ -813,14 +813,14 @@ class AgentLoop:
     async def _execute_tools(
         self,
         tool_calls: list[ToolCallInfo],
-        conversation: Conversation,
+        history: MessageHistory,
         handler: AgentEventHandler | None,
         iteration: int = 0,
     ) -> None:
         """Execute a batch of tool calls and record results.
 
         Emits on_tool_call/on_tool_result via the handler.
-        Adds tool result messages to the conversation.
+        Adds tool result messages to the history.
 
         Tools are executed **concurrently** — when the LLM issues
         multiple independent tool calls (e.g. two subscribe operations),
@@ -835,9 +835,9 @@ class AgentLoop:
             logger.info("agent_cancelled phase=before_batch iter=%d", iteration)
             return
 
-        # Any tool that reads ctx.conversation (attach_image, clear_context)
-        # must see the conversation this loop is processing — not the startup
-        # human conversation — while a WeChat/remote-agent turn is running.
+        # Any tool that reads ctx.message_history (attach_image, clear_context)
+        # must see the history this loop is processing — not the startup
+        # human history — while a WeChat/remote-agent turn is running.
         # All native tools share one ToolContext, so a single swap covers the
         # concurrent batch; it is restored in the finally below.
         _ctx = None
@@ -850,8 +850,8 @@ class AgentLoop:
                 break
         _prev_conv = None
         if _ctx is not None:
-            _prev_conv = _ctx.conversation
-            _ctx.conversation = conversation
+            _prev_conv = _ctx.message_history
+            _ctx.message_history = history
 
         # Serialize approval prompts — concurrent prompts would overlap
         _approval_lock = asyncio.Lock()
@@ -902,7 +902,7 @@ class AgentLoop:
                     result = sanitize_secrets(result)
                     if handler:
                         await handler.on_tool_result(tc.id, result, is_error=True)
-                    conversation.add_tool_result(tc.id, result, is_error=True)
+                    history.add_tool_result(tc.id, result, is_error=True)
                     return
 
             # ── Handler notification — after the approval gate ────
@@ -923,21 +923,21 @@ class AgentLoop:
 
                 if _ctx is not None:
                     # The background task runs AFTER _execute_tools' finally
-                    # restores ctx.conversation — a tool that reads it (e.g.
+                    # restores ctx.message_history — a tool that reads it (e.g.
                     # attach_image) would otherwise target the wrong
-                    # conversation.  Pin it to the one this turn is processing.
-                    _run_conv = conversation
+                    # history.  Pin it to the one this turn is processing.
+                    _run_conv = history
                     _run_ctx = _ctx
 
                     async def _run_with_conv():
-                        _saved = _run_ctx.conversation
-                        _run_ctx.conversation = _run_conv
+                        _saved = _run_ctx.message_history
+                        _run_ctx.message_history = _run_conv
                         try:
                             return await self.tool_registry.execute(
                                 tc.name, **actual_args,
                             )
                         finally:
-                            _run_ctx.conversation = _saved
+                            _run_ctx.message_history = _saved
 
                     coro = _run_with_conv()
                 else:
@@ -953,7 +953,7 @@ class AgentLoop:
                 result = sanitize_secrets(result)
                 if handler:
                     await handler.on_tool_result(tc.id, result, is_error=False)
-                conversation.add_tool_result(tc.id, result)
+                history.add_tool_result(tc.id, result)
                 return
 
             if has_native_timeout:
@@ -1019,20 +1019,20 @@ class AgentLoop:
             if handler:
                 await handler.on_tool_result(tc.id, result, is_error)
 
-            conversation.add_tool_result(tc.id, result, is_error=is_error)
+            history.add_tool_result(tc.id, result, is_error=is_error)
 
         try:
             await asyncio.gather(*(_run_one(tc) for tc in tool_calls))
         finally:
             if _ctx is not None:
-                _ctx.conversation = _prev_conv
+                _ctx.message_history = _prev_conv
 
     # ── Main loop ──────────────────────────────────────────────────
 
     async def run(
         self,
         user_input: str,
-        conversation: Conversation,
+        history: MessageHistory,
         images: list[str] | None = None,
         handler: AgentEventHandler | None = None,
     ) -> AgentResult:
@@ -1042,7 +1042,7 @@ class AgentLoop:
 
         Args:
             user_input: The user's message text.
-            conversation: The conversation history (mutated in place).
+            history: The message history (mutated in place).
             images: Optional list of image file paths to attach.
             handler: Optional event handler for real-time callbacks.
 
@@ -1062,9 +1062,9 @@ class AgentLoop:
             logger.warning("vision_unsupported imgs=%d model_vision=%s", n_imgs, self.supports_vision)
             # Add text-only — don't encode images the model can't handle.
             # The warning is recorded as the assistant reply so the
-            # conversation doesn't end on a dangling user message.
-            conversation.add_user_message(user_input)
-            conversation.add_assistant_message(content=msg)
+            # history doesn't end on a dangling user message.
+            history.add_user_message(user_input)
+            history.add_assistant_message(content=msg)
             return AgentResult(text=msg, usage=TokenUsage())
 
         # @path / programmatic attachments ride the SAME attach_image path
@@ -1075,10 +1075,10 @@ class AgentLoop:
         # content blocks into the user message in memory (never persisted —
         # restore rebuilds text-only).  All images go in ONE call so a single
         # (user, assistant, tool) triple carries the whole batch.
-        conversation.add_user_message(user_input)
+        history.add_user_message(user_input)
         if images:
             await self._auto_invoke(
-                "attach_image", {"sources": list(images)}, conversation,
+                "attach_image", {"sources": list(images)}, history,
             )
         total_usage = TokenUsage()
         t_request = _time.monotonic()
@@ -1106,9 +1106,9 @@ class AgentLoop:
 
                 # Context usage is computed ONCE and shared: _sys_note
                 # reports it as the usage %, and the TUI status bar.
-                current = self.context_tokens_for(conversation)
+                current = self.context_tokens_for(history)
                 await self._auto_invoke(
-                    "_sys_note", self._footer_kwargs(conversation, current), conversation,
+                    "_sys_note", self._footer_kwargs(history, current), history,
                 )
                 # Context trimming no longer happens here — it moved to
                 # _trim_after_save (after each turn is persisted), where the
@@ -1127,7 +1127,7 @@ class AgentLoop:
                         raise AgentCancelled()
 
                     with elapsed("iter", logger, iter=i + 1):
-                        result = await self._process_stream(conversation, handler)
+                        result = await self._process_stream(history, handler)
 
                         # Capture usage even when cancelled — the API call
                         # already consumed tokens regardless of outcome.
@@ -1150,18 +1150,18 @@ class AgentLoop:
                                 len(tool_calls),
                                 [tc.name for tc in tool_calls],
                             )
-                            conversation.add_assistant_message(
+                            history.add_assistant_message(
                                 content=result.content or None,
                                 tool_calls=self._serialize_tool_calls(tool_calls),
                                 thinking=result.thinking or None,
                             )
                             await self._execute_tools(
-                                tool_calls, conversation, handler, iteration=i + 1
+                                tool_calls, history, handler, iteration=i + 1
                             )
                             continue
 
                         # No tool calls — final response
-                        conversation.add_assistant_message(
+                        history.add_assistant_message(
                             content=result.content or "",
                             thinking=result.thinking or None,
                         )
@@ -1178,7 +1178,7 @@ class AgentLoop:
             except AgentCancelled:
                 # Turn consistency is enforced at the single save point
                 # (save_to_memory runs unconditionally after every turn) —
-                # the conversation is repaired there, not here.
+                # the history is repaired there, not here.
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except MaxIterationsExceeded:
                 logger.warning("max_iterations_exceeded max=%d", self.max_iterations)
@@ -1196,7 +1196,7 @@ class AgentLoop:
                 return AgentResult(text="", usage=total_usage, cancelled=True)
             except Exception:
                 # Re-raise so the caller (inbox) handles the error as before;
-                # the conversation is repaired at the save point.
+                # the history is repaired at the save point.
                 raise
         # Unreachable: the loop above only exits via return or raise, but
         # Pylance can't see that itertools.count() is infinite.

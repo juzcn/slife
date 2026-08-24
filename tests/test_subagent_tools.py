@@ -176,12 +176,12 @@ class TestSpawnSubagentTool:
 
     @pytest.mark.asyncio
     async def test_spawn_clone_context_true_clones(self):
-        """clone_context=True passes the parent conversation messages to spawn."""
-        from slife.agent.conversation import Conversation
+        """clone_context=True passes the parent history messages to spawn."""
+        from slife.agent.message_history import MessageHistory
         from slife.config import Config, ModelConfig
         from slife.tools.context import ToolContext
 
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("t1")
         conv.add_assistant_message("r1")
         mc = ModelConfig(
@@ -194,7 +194,7 @@ class TestSpawnSubagentTool:
         mock_mgr.spawn = AsyncMock(return_value="sub-4")
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SpawnSubagentTool()
-            object.__setattr__(tool, "_ctx", ToolContext(conversation=conv, config=cfg))
+            object.__setattr__(tool, "_ctx", ToolContext(message_history=conv, config=cfg))
             await tool.execute(subagent_name="worker", clone_context=True)
 
         kwargs = mock_mgr.spawn.call_args.kwargs
@@ -205,12 +205,12 @@ class TestSpawnSubagentTool:
 
     def test_serialize_cloned_context_drops_system(self):
         """The parent's system message (incl. footer) is not serialized."""
-        from slife.agent.conversation import Conversation
+        from slife.agent.message_history import MessageHistory
         from slife.config import Config, ModelConfig
         from slife.tools.context import ToolContext
         from slife.tools.subagent import _serialize_cloned_context
 
-        conv = Conversation(system_prompt="PARENT_SYS")
+        conv = MessageHistory(system_prompt="PARENT_SYS")
         conv.add_user_message("t1")
         conv.add_assistant_message("r1")
         mc = ModelConfig(
@@ -219,7 +219,7 @@ class TestSpawnSubagentTool:
         )
         cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
 
-        data = _serialize_cloned_context(ToolContext(conversation=conv, config=cfg))
+        data = _serialize_cloned_context(ToolContext(message_history=conv, config=cfg))
         assert data is not None
         assert all(m.get("role") != "system" for m in data)
 

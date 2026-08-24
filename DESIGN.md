@@ -1,10 +1,10 @@
 # Slife Design
 
-> Developer documentation for the slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md). This document covers the design principles, the agent loop, the tool system, the plugin contract, the MCP gateway, the memory database, the A2A mesh, the credential security model, and the full project structure. It is written for people who work on the code, and it assumes you have read the README.
+> Developer documentation for the slife codebase. For installation, configuration, and everyday usage, see [README.md](README.md). For the authoritative definitions of the project's terminology — model-facing and developer-facing alike — see **[Glossary.md](Glossary.md)**. This document covers the design principles, the agent loop, the tool system, the plugin contract, the MCP gateway, the memory database, the A2A mesh, the credential security model, and the full project structure. It is written for people who work on the code, and it assumes you have read the README.
 
 ## Contents
 
-1. [Language policy](#language-policy)
+1. [Language policy](#language-policy) — also in [Glossary.md](Glossary.md) §Part III
 2. [Architecture](#architecture)
 3. [Agent Loop](#agent-loop) — context management, harness vs internal tools, system prompt, autonomous heartbeat
 4. [LLM Backends](#llm-backends) — wire formats, thinking, prompt caching
@@ -61,7 +61,7 @@ The model input should read uniformly, so text that Slife authors is English:
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
-│  Credstore — OS keyring + AES cryptfile backup                       │
+│  Credstore — credential store + AES cryptfile backup                 │
 │  Win · Mac · Linux (keyutils) · WSL (PowerShell)                     │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -71,7 +71,7 @@ The model input should read uniformly, so text that Slife authors is English:
 Single function-calling loop. Every tool is registered as an OpenAI function definition in one `ToolRegistry`. The LLM decides what to call and when.
 
 ```
-User Input → Conversation.add_user_message()        (secrets sanitized)
+User Input → MessageHistory.add_user_message()        (secrets sanitized)
   → loop (max_iterations):
     → cancel check
     → auto-invoke _sys_note (context status)        (usage computed once)
@@ -91,16 +91,16 @@ User Input → Conversation.add_user_message()        (secrets sanitized)
 - **Background execution**: per-call `_async: true` schedules the tool as a background task and returns a task id immediately; poll with `check_async`, cancel with `cancel_async`
 - **Iteration limit**: `max_iterations` (default 30) prevents infinite loops; **0 = unlimited** (the loop only ends via a final response or cancellation). The cap is checked **live each iteration** (not fixed at `run()` start), so a mid-turn `set_max_iterations` (the `set_max_iterations` meta tool) applies to the running turn immediately and to the next. Hitting the cap returns a cancelled result and notifies the handler via `on_max_iterations` — the TUI shows `✗ Agent exceeded maximum of N iterations` instead of stopping silently.
 - **Cancellation**: `Esc` sets a cancel event; checked before each iteration, after each stream, and before each tool batch
-- **Turn consistency**: one function — `Conversation._ensure_turn_consistent()` — enforces two idempotent invariants before a conversation is persisted (and again on load), so it is always well-formed when it next reaches the wire:
+- **Turn consistency**: one function — `MessageHistory._ensure_turn_consistent()` — enforces two idempotent invariants before a history is persisted (and again on load), so it is always well-formed when it next reaches the wire:
   1. **No orphaned tool_calls** — an assistant `tool_call` whose result never arrived (an interrupted turn, e.g. a hung tool) gets a synthetic `(Tool execution interrupted)` result inserted right after it; otherwise the orphan is persisted and re-repaired on every restore.
-  2. **Alternating roles** — a conversation ending on a `user`/`tool` message (a tool result is a `user` role on the Anthropic wire, which rejects two consecutive users with a 400) gets a closing assistant message.
+  2. **Alternating roles** — a history ending on a `user`/`tool` message (a tool result is a `user` role on the Anthropic wire, which rejects two consecutive users with a 400) gets a closing assistant message.
 
-  It has exactly **two call sites**: `save_to_memory` (before persisting — the save-side guarantee, which runs unconditionally after every turn via the inbox `finally`), and `restore_session` (after loading from memory — the load-side guarantee). Because every turn is saved unconditionally, the conversation is always left consistent before the next user message is appended. Each turn also opens with an auto-invoked `_sys_note` assistant+tool pair, so a user message is always sandwiched between assistant messages.
-- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (actual `prompt_tokens` from the last API call, else the restore-time value primed on `_last_usage` — now the **latest restored turn's persisted `prompt_tokens`** rather than an estimate — before the first call, else the chars÷3 live estimate). It drives `_sys_note`, the trim decision, and the TUI status bar — one value, no recompute. Usage is tracked **per conversation** (`_usage_by_conv`, keyed by `id()`): the heartbeat, A2A, and WeChat turns run in their own (often tiny) conversations, so a global last-usage would let a 9.6% heartbeat drag the human conversation's status bar / `_sys_note` down from its real 26.5%. Each conversation keeps its own reading; `_last_usage` is retained only as the restore-time slot.
+  It has exactly **two call sites**: `save_to_memory` (before persisting — the save-side guarantee, which runs unconditionally after every turn via the inbox `finally`), and `restore_session` (after loading from memory — the load-side guarantee). Because every turn is saved unconditionally, the history is always left consistent before the next user message is appended. Each turn also opens with an auto-invoked `_sys_note` assistant+tool pair, so a user message is always sandwiched between assistant messages.
+- **Context tracking**: `AgentLoop.context_tokens_for()` is the single source for the current context size (actual `prompt_tokens` from the last API call, else the restore-time value primed on `_last_usage` — now the **latest restored turn's persisted `prompt_tokens`** rather than an estimate — before the first call, else the chars÷3 live estimate). It drives `_sys_note`, the trim decision, and the TUI status bar — one value, no recompute. Usage is tracked **per history** (`_usage_by_history`, keyed by `id()`): the heartbeat, A2A, and WeChat turns run in their own (often tiny) histories, so a global last-usage would let a 9.6% heartbeat drag the human history's status bar / `_sys_note` down from its real 26.5%. Each history keeps its own reading; `_last_usage` is retained only as the restore-time slot.
 
 ### Context Window Management
 
-Active conversation stays within `context_floor`–`context_ceiling` (default 20%–80% of `context_window`):
+Active history stays within `context_floor`–`context_ceiling` (default 20%–80% of `context_window`):
 
 ```
                 context_window
@@ -110,12 +110,12 @@ Active conversation stays within `context_floor`–`context_ceiling` (default 20
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Detect**: context usage is computed via `context_tokens_for()` — the conversation's last API call's actual prompt tokens after the first round (per-conversation, so heartbeat turns don't contaminate the human reading), else the restore-time value primed on `_last_usage` (the latest restored turn's **persisted `prompt_tokens`** — the exact context size at exit — not an estimate), else the chars÷3 live estimate; `_sys_note` reports it as the usage %
-- **Trim**: happens **after a turn is saved** (`save_to_memory` → `AgentLoop._trim_after_save`) — by then the last API call's real `prompt_tokens` are known, so the ceiling check uses the true context occupancy, not the estimate the loop had at the turn's start. When occupancy hits the configured `context_ceiling` (default 80%), `extract_oldest_turns` removes the oldest **complete** turns down to `context_window × context_floor` (default 20%), always keeping the current (just-saved) turn. It is an **internal mechanism — no tool call, no LLM-visible pair**: the cut is marked with a runtime-only **`[TrimContext: N]`** note appended to the last assistant message (N = turns removed), mirrored in the live TUI as a dim/italic footnote. `advance_context_start` persists the boundary, and the tracked "Context covers" time range advances by the same count (reset to the current turn if the date list is exhausted). A freshly-restored conversation is exempt from the first-turn trim (`_just_restored_conv`) — a restored context is a pre-exit state, not growth.
+- **Detect**: context usage is computed via `context_tokens_for()` — the history's last API call's actual prompt tokens after the first round (per-history, so heartbeat turns don't contaminate the human reading), else the restore-time value primed on `_last_usage` (the latest restored turn's **persisted `prompt_tokens`** — the exact context size at exit — not an estimate), else the chars÷3 live estimate; `_sys_note` reports it as the usage %
+- **Trim**: happens **after a turn is saved** (`save_to_memory` → `AgentLoop._trim_after_save`) — by then the last API call's real `prompt_tokens` are known, so the ceiling check uses the true context occupancy, not the estimate the loop had at the turn's start. When occupancy hits the configured `context_ceiling` (default 80%), `extract_oldest_turns` removes the oldest **complete** turns down to `context_window × context_floor` (default 20%), always keeping the current (just-saved) turn. It is an **internal mechanism — no tool call, no LLM-visible pair**: the cut is marked with a runtime-only **`[TrimContext: N]`** note appended to the last assistant message (N = turns removed), mirrored in the live TUI as a dim/italic footnote. `advance_context_start` persists the boundary, and the tracked "Context covers" time range advances by the same count (reset to the current turn if the date list is exhausted). A freshly-restored history is exempt from the first-turn trim (`_just_restored_history`) — a restored context is a pre-exit state, not growth.
 - **Status**: once per turn the loop auto-invokes **`_sys_note`** (a normal tool-call pair) — it renders `context_status.j2`: current time, context usage %, token usage, context time range, change notifications (model/CWD/shell/modalities), and any A2A peer presence events since the last turn (online/offline/timeout, drained read-once). On the first round after a restore, `context_tokens_for` falls back to `_last_usage`, which restore primes with the latest restored turn's **persisted `prompt_tokens`** — so `_sys_note` reports the real exit-time occupancy instead of an estimate.
-- **Restore**: on startup, the diary rows recorded **after the persisted live-context boundary** are loaded directly from SQLite **verbatim** — no ceiling re-slicing. The boundary already encodes the trimmed state, so restore simply replays the exact slice that was live at exit (the agent picks up where it left off); only a stale boundary of `0` from a pre-boundary DB is defensively capped at 2× the ceiling. The boundary lives in `diary_meta.context_start` (exclusive rowid): the internal trim advances it by the turns it evicted, `clear_context` flushes it to the latest row (the fresh start). `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept for call-site compatibility only. The just-restored conversation is exempt from the first-turn trim (`_just_restored_conv`). The boundary reuses the existing `diary_meta` table (ships idempotently in `schema.sql`) — no schema migration; real schema changes stay out of the app and go to `scripts/migrate_memdb_*.py`.
+- **Restore**: on startup, the diary rows recorded **after the persisted live-context boundary** are loaded directly from SQLite **verbatim** — no ceiling re-slicing. The boundary already encodes the trimmed state, so restore simply replays the exact slice that was live at exit (the agent picks up where it left off); only a stale boundary of `0` from a pre-boundary DB is defensively capped at 2× the ceiling. The boundary lives in `diary_meta.context_start` (exclusive rowid): the internal trim advances it by the turns it evicted, `clear_context` flushes it to the latest row (the fresh start). `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept for call-site compatibility only. The just-restored history is exempt from the first-turn trim (`_just_restored_history`). The boundary reuses the existing `diary_meta` table (ships idempotently in `schema.sql`) — no schema migration; real schema changes stay out of the app and go to `scripts/migrate_memdb_*.py`.
 - **Tool result cap (HARD constraint)**: a single tool result is truncated at `tool_result_ceiling × context_window × 3` characters (default 20% of the window; ~3 chars/token heuristic). This is the **hard** window-safety limit — it is deliberately generous so a large-but-real file read (≤ ~600K chars) is never truncated, and only pathological outputs that could not fit the window at all are capped. It protects the model's live reasoning; it is not where memory is saved.
-- **Permanent-memory compaction**: the diary does **not** hoard reproducible tool output. At `save_to_memory`, any tool result exceeding `memory_tool_result_chars` (default 8000) is stored as a head+tail digest with an explicit marker (original size + which tool to re-run). Small results are stored as-is. Rationale: tool output is reproducible (re-run the tool), a single result must never starve session restore within the floor budget, and turn_search recall stays cheap. The live conversation keeps the full result — compaction only affects the persisted copy.
+- **Permanent-memory compaction**: the diary does **not** hoard reproducible tool output. At `save_to_memory`, any tool result exceeding `memory_tool_result_chars` (default 8000) is stored as a head+tail digest with an explicit marker (original size + which tool to re-run). Small results are stored as-is. Rationale: tool output is reproducible (re-run the tool), a single result must never starve session restore within the floor budget, and turn_search recall stays cheap. The live history keeps the full result — compaction only affects the persisted copy.
 - **Truncation is announced in the tool output itself** (not the system prompt): both the live cap and the save-side compaction append a marker inside the result telling the model it was truncated, how large it originally was, and that re-running the tool retrieves the full version.
 
 ### Harness vs Internal Tools — a naming distinction
@@ -176,12 +176,12 @@ Design principles:
 
 ### Autonomous Heartbeat
 
-The agent is otherwise purely user-driven — no input, no activity. A heartbeat gives it a periodic **autonomous window** (a precondition for emergent self-initiated behavior): while idle, every `agent.heartbeat_interval` seconds (default 60) the service posts a `[Heartbeat]` message to the inbox, which runs as a **normal agent-loop turn** (own conversation via the heartbeat source, saved to the diary like any turn). The interval is read from `service.config.heartbeat_interval` (parsed from the `agent` section of `slife.json5`), falling back to 60.
+The agent is otherwise purely user-driven — no input, no activity. A heartbeat gives it a periodic **autonomous window** (a precondition for emergent self-initiated behavior): while idle, every `agent.heartbeat_interval` seconds (default 60) the service posts a `[Heartbeat]` message to the inbox, which runs as a **normal agent-loop turn** (own history via the heartbeat source, saved to the diary like any turn). The interval is read from `service.config.heartbeat_interval` (parsed from the `agent` section of `slife.json5`), falling back to 60.
 
 - **Reply contract** (also in the system prompt, under **Autonomy** → Heartbeat in `agent.j2`): real content if the agent has something worth proactively saying, otherwise exactly `.` — never empty (the `.` is the minimal non-empty assistant reply, satisfying the user→assistant role alternation).
 - **TUI filtering** (live + restore): heartbeat turns are recognised by the `[Heartbeat]` mark on the trigger message and filtered — the trigger is never shown, and a real reply renders as `⚡ 自主`. More generally, a bare `.` reply is **silence** and is never rendered from any event (heartbeat, A2A async-completion notification, …) — the TUI handler skips a lone `.` text chunk and restore skips any assistant message whose content is exactly `.`. The status bar shows the last beat (`●` act / `·` quiet).
 - **Main agent only**: subagents (`is_subagent=True`) never start the heartbeat loop — they are task-driven workers, not autonomous agents.
-- The heartbeat conversation is separate (source `heartbeat`), so the autonomous reflections persist in the diary without polluting the human conversation.
+- The heartbeat history is separate (source `heartbeat`), so the autonomous reflections persist in the diary without polluting the human history.
 
 ## LLM Backends
 
@@ -208,9 +208,9 @@ Reasoning ("thinking") support is per-backend:
 
 **Prompt caching (Anthropic system blocks):** `AnthropicBackend._oa_msgs_to_anthropic` emits each OpenAI `system` message as an Anthropic system content block and tags the **last** one with `cache_control: {type: "ephemeral"}` — the static base prompt becomes the cache breakpoint, so only the dynamic `_sys_note` status (a message-stream tool pair, never a second `system` message) changes per turn. Guarded by `_use_system_cache_control()`: on by default for `api.anthropic.com`, off for Anthropic-compatible providers (Bailian/Qwen) that may reject the field, overridable per model via `compat.cacheControl`.
 
-**History validation (H3, resolved):** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_sys_note` is therefore a **declared native tool** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not a conversation-layer fabrication — so its pair validates. The system prompt forbids the LLM from calling it (see Tools & skills, §3 under **Capabilities** in `slife.j2`), and it is side-effect free if it does. DeepSeek (Chat Completions) doesn't validate and is unaffected. Context trimming no longer needs schema validation at all — it is internal (`_trim_after_save`), not a tool call.
+**History validation (H3, resolved):** Anthropic (and OpenAI-Responses) reject tool calls in history whose names aren't in the declared `tools` list. `_sys_note` is therefore a **declared native tool** (schema-present, auto-invoked by `AgentLoop._auto_invoke()`), not a history-layer fabrication — so its pair validates. The system prompt forbids the LLM from calling it (see Tools & skills, §3 under **Capabilities** in `slife.j2`), and it is side-effect free if it does. DeepSeek (Chat Completions) doesn't validate and is unaffected. Context trimming no longer needs schema validation at all — it is internal (`_trim_after_save`), not a tool call.
 
-**History wire shape (W2, resolved):** `OpenAIResponsesBackend._oa_msgs_to_responses` emits the Responses API's native `function_call` / `function_call_output` items for tool history — not the Chat-Completions `role:"tool"` / `tool_calls` shape. Multi-turn tool conversations are accepted by the Responses API (unit-tested; not yet exercised against a live endpoint).
+**History wire shape (W2, resolved):** `OpenAIResponsesBackend._oa_msgs_to_responses` emits the Responses API's native `function_call` / `function_call_output` items for tool history — not the Chat-Completions `role:"tool"` / `tool_calls` shape. Multi-turn tool histories are accepted by the Responses API (unit-tested; not yet exercised against a live endpoint).
 
 **External placeholder injection (upstream, not a slife bug):** An Anthropic-Messages gateway that runs LiteLLM's prompt sanitizer rewrites an empty `text` block sitting next to a `tool_use` into the literal `[System: Empty message content sanitised to satisfy protocol]` — `_EMPTY_TEXT_PLACEHOLDER` / `_sanitize_empty_text_content` in LiteLLM's `litellm_core_utils/prompt_templates/factory.py` (issue BerriAI/litellm#24498; fix PRs #28987, #34822). An assistant turn that is `content: ""` + `tool_calls` is the ordinary shape between a tool call and its result, so Anthropic accepts it with the empty text block dropped — the substitution is a LiteLLM defect, and it runs **outside** the `modify_params` gate, so there is no config knob to disable it. Observed in slife via the `bailian_personal` provider (2026-08-21, 4 copies in the diary). It **poisons history**: the placeholder persists verbatim into the diary and replays into the next request, and the model then echoes it back (one observed echo even garbled it: `protection` for `protocol`). slife stores it as ordinary assistant text — contrast with slife's own wire hardening, which lives on the **outbound** request and cannot see a placeholder the gateway already substituted into the **response**: `OpenAIBackend._normalize_messages` replaces empty assistant content with `"…"` (a copy — storage untouched, so openai-completions providers never 400), and `AnthropicBackend` emits a single empty text block for an empty assistant turn. If the gateway substitutes anyway, the only recourse is cleaning the persisted rows (a one-off migration stripping that placeholder) before restore replays it.
 
@@ -233,18 +233,18 @@ Model switches fire callbacks that rebuild the LLM client, update loop parameter
 
 ### Tool ABC
 
-`Tool` (`slife/tools/base.py`) defines `name`, `description`, `parameters` (JSON Schema), `category`, and `async execute(**kwargs) -> str`. Required fields are validated at class-definition time via `__init_subclass__`. `from_config(cfg, config, ctx)` allows per-tool construction from the `tools:` overrides in `slife.json5` (e.g. `execute_shell` reads its default timeout there); `ctx` carries runtime references (registry, config, MCP client, conversation) as `self._ctx`.
+`Tool` (`slife/tools/base.py`) defines `name`, `description`, `parameters` (JSON Schema), `category`, and `async execute(**kwargs) -> str`. Required fields are validated at class-definition time via `__init_subclass__`. `from_config(cfg, config, ctx)` allows per-tool construction from the `tools:` overrides in `slife.json5` (e.g. `execute_shell` reads its default timeout there); `ctx` carries runtime references (registry, config, MCP client, history) as `self._ctx`.
 
 `execute_shell` runs commands in the **detected shell** — `detect_current_shell()`: PowerShell / cmd on native Windows, `$SHELL` on POSIX incl. WSL — the **same value the system prompt reports**, so the LLM's shell syntax actually executes (previously it ran `COMSPEC`=cmd.exe regardless). Output is decoded with the system code page (GBK/cp936 on zh-CN Windows); `run_python_script` forces the child Python to UTF-8 via `-X utf8`.
 
-Categories in use: 13 native categories (`System`, `Execution`, `Skills`, `CLI`, `REST API`, `Subagent`, `Config`, `Models`, `Credentials`, `Vision`, `Display`, `Harness`, `Meta`) plus the plugin-hosted `A2A` category — the `a2a_*` tools live in the a2a plugin, not in `slife/tools/`. The docstring in `base.py` lists only a subset — treat it as illustrative, not enforced.
+The tool categories and the naming rules (native vs. built-in plugin vs. external-server tools) are defined in [Glossary.md](Glossary.md) — see **Tool naming** and **Appendix B**.
 
 ### Schema Authoring
 
 The schema is the model's only view of a tool — write it for the model, not the maintainer:
 
 - **`description` = what the tool does.** One or two sentences: what it does and what it returns. Do **not** write when-to-use ("Use when…", "when the user says…"), and do **not** restate knowledge the LLM already has (pip, timeouts, env-var concepts). Keep project-specific facts the model cannot infer — idempotency ("upsert — add + update in one call"), blocking ("BLOCKS until the model is loaded"), effect timing ("takes effect after restart"), or that a value comes from a sibling tool.
-- **Parameter docs = how to use.** Per parameter: the accepted format, where the value comes from ("`rowid` from `turn_list`"), what the values mean, and the default. Cross-references to sibling tools are how-to and belong here; only when-to-use is dropped.
+- **Parameter docs = how to use.** Per parameter: the accepted format, where the value comes from ("`turn_id` from `turn_list`"), what the values mean, and the default. Cross-references to sibling tools are how-to and belong here; only when-to-use is dropped.
 - **Mechanism.** Native tools carry parameter docs directly in the `parameters` dict. Plugin tools (`@mcp.tool`) get them from a Google-style `Args:` docstring — fastmcp parses it into the input schema, so a plugin tool whose parameters have no `Args:` yields an undocumented schema.
 - **Language.** Model-visible strings are English (see Language policy). Content authored by an external source (CLI / API / skill descriptions) keeps the source language — do not translate.
 
@@ -252,48 +252,15 @@ The schema is the model's only view of a tool — write it for the model, not th
 
 `slife/tools/factory.py` uses `pkgutil.iter_modules` to import every module in `slife.tools.*` (skipping `base`/`factory`), then walks `Tool.__subclasses__()` recursively. A new `.py` file is automatically picked up. Filtering applies `enabled: false` overrides, `_skip_auto_register` classes (e.g. `MCPProxyTool`, created per-instance at runtime), and per-model requirements enforced at **execute time** rather than load time: tools are always registered, and a tool like `attach_image` refuses at runtime when the active model has no vision (so the LLM sees the tool and gets a clear "vision=false" error instead of a silently-missing tool).
 
-### Tool Categories — native tools (50 total: 49 LLM-visible + 1 harness `_` tool)
+### Tool Categories
 
-`install_python_package` is disabled by default in the shipped config.
-
-All tools unified under `Tool`, registered in a single `ToolRegistry`. The LLM sees only function names and schemas.
-
-| Category | File | Tools |
-|----------|------|-------|
-| System | `system.py` | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_a2a`, `check_watchdog` |
-| Display | `notify.py` | `notify_user` |
-| Execution | `exec.py` | `execute_shell`, `run_python_script`, `install_python_package` |
-| Skills | `skill.py` | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
-| CLI | `cli.py` | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
-| REST API | `rest_api.py` | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
-| A2A | `a2a` plugin | one uniform `a2a_` prefix (hosted in the plugin, mesh-only) — `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
-| Subagent | `subagent.py` | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` (no prefix; local workers, not A2A) |
-| Config | `config.py` | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `models.py` | `model_list`, `model_set`, `model_remove`, `model_switch` |
-| Credentials | `credentials.py` | `credential_check`, `credential_inject`, `credential_uninject` |
-| Vision | `vision.py` | `attach_image` (native — injects one or more image blocks into the conversation; runtime-gated on a vision-capable model) |
-| Harness | `harness.py` | `_sys_note` (visible-but-reserved, see above); trim is internal — no tool |
-| Meta | `meta.py` | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
-
-Plus **plugin tools** — registered at runtime as `{server}__{tool}` proxies via `create_proxy_tools`:
-
-| Server | LLM-visible tools |
-|--------|-------------------|
-| `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
-| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage`, `semantic_index_status`, `semantic_index_config`, `semantic_search_enable` |
-| `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `cabinet_embedding_check` |
-| `sharefile` | `share_file` |
-| `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
-| `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
-
-Naming rule: a plugin tool already carrying its server as a name prefix (`mcp_set`, `wechat_login`) is registered as-is (avoids the redundant `mcp__mcp_set` / `wechat__wechat_login`); otherwise the proxy adds `{server}__`. External MCP servers always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
+All tools are unified under `Tool` and registered in a single `ToolRegistry`; the LLM sees only function names and schemas. The full inventory — native tools by category, built-in plugin tools by plugin, and the naming rule for external-server tools — is maintained in the authoritative [Glossary.md](Glossary.md) (see **Appendix B — Tool Families by Name** and **Tool naming**). The developer-facing mechanism lives here: auto-discovery, the registry, timeouts, and the approval gate.
 
 **Managed categories** (Skills / CLI / REST API / Models / MCP) support a standard **`X_list` / `X_set` / `X_remove`** surface (plus `X_set_enabled` where an enable/disable toggle applies). `X_set` is an idempotent upsert — add + update in one call. Config uses the `config_env_*` prefix (no `config_list`); Models substitutes `model_switch` for `X_set_enabled`. `model_set`'s upsert **merges** into the existing entry (a partial update preserves `reasoning` / `input` / `compat`), so a field-focused change can't strip a model's capabilities; it also accepts a `compat` dict for per-model overrides (see Model Management).
 
 ### Registry
 
-`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. A module-level singleton (`get_registry()`) lets meta-tools introspect without circular imports. Dynamic tools — plugin tools, MCP wrapper tools, and external MCP server tools — are registered at runtime as `MCPProxyTool` instances named `"{server}__{tool}"`. Internal plugin tools (prefixed `__`) are filtered out before registration.
+`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. A module-level singleton (`get_registry()`) lets meta-tools introspect without circular imports. Dynamic tools — built-in plugin tools and the MCP wrapper's own tools — are registered at runtime as `MCPProxyTool` instances under their **bare names**; external MCP server tools are named `"{server}__{tool}"`. Internal plugin tools (prefixed `__`) are filtered out before registration.
 
 ### Timeout Architecture
 
@@ -339,13 +306,14 @@ Six built-in plugins run as independent child processes. Communication is via **
 5. Be importable: `python -m <module>.server`
 
 **Public vs internal tools.** Every `@mcp.tool` is a normal MCP tool. Most are
-**public** — registered as `{server}__{tool}` proxy tools and exposed to the
-LLM. A tool is **internal** when its name is prefixed `__` (double
-underscore): it is *not* exposed to the LLM, and is called programmatically by
-the main process (agent service / TUI) via `client.call_tool("__…")`. The
-`__` marker is the plugin-spec convention — a single shared predicate,
-`is_internal_tool()` (`slife/server_utils.py`), filters these out on both
-registration paths, so an internal tool never leaks into the schema. This is
+**public** — registered as proxy tools under their **bare names** and exposed
+to the LLM (first-class, like native tools). A tool is **internal** when its
+name is prefixed `__` (double underscore): it is *not* exposed to the LLM, and
+is called programmatically by the main process (agent service / TUI) via
+`client.call_tool("__…")`. The `__` marker is the plugin-spec convention — a
+single shared predicate, `is_internal_tool()` (`slife/server_utils.py`),
+filters these out on both registration paths, so an internal tool never leaks
+into the schema. This is
 distinct from the harness concept (single `_`, e.g. the native `_sys_note`),
 which is LLM-visible-but-reserved and auto-invoked by the loop — see [Harness
 vs Internal Tools](#harness-vs-internal-tools--a-naming-distinction).
@@ -451,7 +419,7 @@ enabled  ──[mcp_set_enabled(name, enabled=false)]─→ disabled (disconnect
 enabled  ──[mcp_set(changed config)]───────────────→ restarted with new settings
 ```
 
-All state changes persist to `slife.json5`. Servers needing OAuth use a device-code flow (see below); tokens are stored in the OS keyring via credstore (`mcp_oauth_*`).
+All state changes persist to `slife.json5`. Servers needing OAuth use a device-code flow (see below); tokens are stored in the credential store via credstore (`mcp_oauth_*`).
 
 ### Subagent MCP Tool Discovery
 
@@ -532,7 +500,7 @@ On startup, recent turns are read **directly from SQLite** — no MCP transport,
 
 **Turn headers on restore.** Each restored user message gets a compact `[Turn: N · start → end]` footnote (rowid + created → completed) concatenated into the message text — without it the whole restored history would read as "just happened". The LLM can also use N with `turn_read` / `turn_summarize`, and the human reads the same line in the TUI. Restored turns get it from persisted columns at restore; a just-completed live turn gets the same footnote appended by `save_to_memory` once `__memory_save_turn` returns its rowid — so the model can reference the previous turn precisely, and `turn_summarize`'s latest-rowid default stops being racy. **The footnote is runtime-only and never persisted:** the stored `user_message` / `messages` are written *before* the append, restore regenerates it from columns, so the DB carries the clean original in both paths. The current in-flight turn carries none (it is the one that IS now), and live TUI bubbles are not retro-updated — a missing footnote is itself the "current session" signal. Heartbeat turns are excluded — their user message is the synthetic `[Heartbeat]` trigger, not a real query. Machine annotations share one `[Kind: …]` shape (`[Heartbeat]`, `[TrimContext: N]`); an unreadable image attachment now raises a `ValueError` from `add_user_message` instead of being silently dropped — upstream (`@path` parsing, `attach_image`) validates files first, so a failure here is a bug signal, not a hidden marker. Heartbeat stays its own sentinel: it is a stored turn identity (old diary rows start with it), so renaming it would misclassify every stored heartbeat on the next restore.
 
-Restore rebuilds the **exit-time context verbatim**. The `diary_meta.context_start` row (an exclusive rowid) marks the live-context boundary: the internal trim advances it past every turn it evicts (`advance_context_start`), `clear_context` flushes it to the latest row (`set_context_start_latest`), and `get_recent_turns` reads it directly from SQLite. Turns after the boundary are returned **verbatim — no ceiling re-slicing**: the boundary already encodes the trimmed state, so restore replays the exact slice that was live at exit, and the agent picks up where it left off. `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept only for call-site compatibility; the only cap is a defensive 2×-ceiling guard against a stale `0` boundary from a pre-boundary DB (normal operation never reaches it). The just-restored conversation is exempt from the first-turn trim (`_just_restored_conv`), so nothing is compacted before the user's first exchange. Older turns stay in the diary, searchable via `turn_search`.
+Restore rebuilds the **exit-time context verbatim**. The `diary_meta.context_start` row (an exclusive rowid) marks the live-context boundary: the internal trim advances it past every turn it evicts (`advance_context_start`), `clear_context` flushes it to the latest row (`set_context_start_latest`), and `get_recent_turns` reads it directly from SQLite. Turns after the boundary are returned **verbatim — no ceiling re-slicing**: the boundary already encodes the trimmed state, so restore replays the exact slice that was live at exit, and the agent picks up where it left off. `get_recent_turns` returns `(turns, skipped=0, budget=0)` — skipped/budget are kept only for call-site compatibility; the only cap is a defensive 2×-ceiling guard against a stale `0` boundary from a pre-boundary DB (normal operation never reaches it). The just-restored history is exempt from the first-turn trim (`_just_restored_history`), so nothing is compacted before the user's first exchange. Older turns stay in the diary, searchable via `turn_search`.
 
 The restored context footer is primed with the **latest restored turn's persisted `prompt_tokens`** — the exact context size at exit (what `_sys_note` would have reported) — so the first `_sys_note` / status bar shows the real occupancy instead of an estimate. Legacy turns that predate the `prompt_tokens` column fall back to the token estimate. The `prompt_tokens` column is added to pre-existing databases once with `python scripts/migrate_memdb_prompt_tokens.py` (same standalone-script pattern as `completed_at` / `images`).
 
@@ -571,7 +539,7 @@ The LLM-facing `a2a_*` tools live in the a2a plugin (one uniform prefix; the MCP
 - Slife only **probes** the broker (TCP connect) — Mosquitto is started by the user; if the probe fails, the a2a plugin is not started (A2A disabled) and this is reported via `system_health`
 - The mesh connects **eagerly** when the plugin starts (lifespan hook) so presence is announced at launch; a failed eager connect is tolerated and mesh tools attempt a lazy connect on demand
 - Peer presence **transitions** (online/offline/timeout) reach the LLM context: the a2a plugin queues them; `AgentService._a2a_poll_loop` drains them and appends the TUI-identical line (via `format_presence_line`, which also filters heartbeat-driven `status_change`) to a buffer that `AgentLoop` drains read-once into the `_sys_note` footer each turn. The footer carries only *changes* — the current roster stays queryable via `a2a_list_agents`, so a missed event never leaves the LLM with stale state
-- Async task results **auto-push by default**: a peer's result arrives on `Slife/<agent_name>/tasks/result` over MQTT → the client fires `on_task_result` → the plugin queues a completion → `_a2a_poll_loop` drains it into the conversation ("Peer X completed async task (ID: …): …"). The agent sends async and the result simply arrives — no polling or blocking (MQTT subscription is implicit, so the HTTP/SSE-style `a2a_subscribe_task` was dropped). `a2a_send_task_async` takes `mode="auto"` (default — auto-push) or `mode="poll"` (no push; retrieve via `a2a_get_task_result`), mirroring the subagent delivery mode so a caller that polls a result in-turn isn't also handed the same result as a new turn.
+- Async task results **auto-push by default**: a peer's result arrives on `Slife/<agent_name>/tasks/result` over MQTT → the client fires `on_task_result` → the plugin queues a completion → `_a2a_poll_loop` drains it into the history ("Peer X completed async task (ID: …): …"). The agent sends async and the result simply arrives — no polling or blocking (MQTT subscription is implicit, so the HTTP/SSE-style `a2a_subscribe_task` was dropped). `a2a_send_task_async` takes `mode="auto"` (default — auto-push) or `mode="poll"` (no push; retrieve via `a2a_get_task_result`), mirroring the subagent delivery mode so a caller that polls a result in-turn isn't also handed the same result as a new turn.
 
 ### Unified Inbox
 
@@ -584,7 +552,7 @@ WeChat messages──→ Inbox.post() ──→
 Subagent results─→ Inbox.post() ──→
 ```
 
-Messages are processed sequentially — only one AgentLoop runs at a time. Human and WeChat sources keep persistent conversations; remote agents get fresh one-shot conversations. Status flips to `busy`/`idle` around each turn; `on_turn_complete` fires unconditionally (in `finally`), so memory persistence survives cancellation.
+Messages are processed sequentially — only one AgentLoop runs at a time. Human and WeChat sources keep persistent histories; remote agents get fresh one-shot histories. Status flips to `busy`/`idle` around each turn; `on_turn_complete` fires unconditionally (in `finally`), so memory persistence survives cancellation.
 
 ### Task Store
 
@@ -605,7 +573,7 @@ Local child-process workers, always available — no config toggle.  A subagent 
 
 ### Image Input
 
-User attaches images with `@` directives — **one `@` = one image source**, any number per input, parsed independently. The user message stays verbatim (the `@` reference remains visible like any text); the extracted sources are handed to the loop, which **auto-invokes** the `attach_image` tool once with the whole `sources` list via the harness-call machinery (`_auto_invoke`, same as `_sys_note`) — a single conversation shape (one assistant(tool_use) + tool-result pair), no LLM iteration spent deciding to attach.
+User attaches images with `@` directives — **one `@` = one image source**, any number per input, parsed independently. The user message stays verbatim (the `@` reference remains visible like any text); the extracted sources are handed to the loop, which **auto-invokes** the `attach_image` tool once with the whole `sources` list via the harness-call machinery (`_auto_invoke`, same as `_sys_note`) — a single history shape (one assistant(tool_use) + tool-result pair), no LLM iteration spent deciding to attach.
 
 #### `@` syntax
 
@@ -673,7 +641,7 @@ A standard Streamable HTTP plugin (`slife/plugins/sharefile/server.py`) — self
 1. `share_file(path)` (MCP) → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`.  When the tunnel is offline the tool returns a graceful error rather than being hidden.
 2. `GET /share/{token}` streams the file in 64 KB chunks (403 unknown token, 404 file gone).
 
-No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file).  `__tunnel_status` (harness health check) and `__register_file` are internal `__`-prefixed tools, never exposed to the LLM.  `attach_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/vision.py`) that injects image blocks into the main-process conversation.
+No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file).  `__tunnel_status` (harness health check) and `__register_file` are internal `__`-prefixed tools, never exposed to the LLM.  `attach_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/vision.py`) that injects image blocks into the main-process history.
 
 `GET /share/{token}` streams the file with an RFC 5987 `Content-Disposition` — a non-ASCII filename (e.g. CJK) is emitted as an ASCII fallback in `filename=` plus the real name percent-encoded in `filename*=UTF-8''`, because HTTP header values must be Latin-1 (a raw CJK filename otherwise raises `UnicodeEncodeError` → HTTP 500).
 
@@ -693,11 +661,11 @@ Textual TUI with minimal chrome:
 - **UserMessage** — dim `[HH:MM]` (user input time) + prefix-styled user text, optional image attachments
 - **AssistantMessage** — dim `[HH:MM]` (assistant completion time) on the response text — **not** before the thinking block, so a thinking-only message shows no time — plus streaming text with collapsible thinking blocks (Enter/Space toggle)
 - **ToolCallWidget** — collapsible amber headers: status icon, label, primary-arg preview, iteration counter; Ctrl+Y copies the result
-- **StatusBar** — model name, thinking indicator, inbox state, last-call context tokens + usage % (per conversation, so a heartbeat turn never drags the human reading down)
+- **StatusBar** — model name, thinking indicator, inbox state, last-call context tokens + usage % (per history, so a heartbeat turn never drags the human reading down)
 - **ApprovalPrompt** — inline approve/deny row for `_approve: true` tool calls (Y / N / Esc), re-renders to ✓ Approved / ✗ Denied
 - **Auto-restore** — rebuilds last session's UI from the diary on startup
 
-Timestamps: user messages display `created_at` (the input-box Enter-press moment); assistant messages display `completed_at` (the turn's completion time). Both format as `HH:MM` same-day, `MM-DD HH:MM` same-year, `YYYY-MM-DD HH:MM` older. Live display and restore read the same stored values, so the rebuilt chat matches what was seen live. The status bar's token count is the **per-call** prompt tokens of the conversation's last API call — not the turn's cumulative sum (that sum is the assistant message footer).
+Timestamps: user messages display `created_at` (the input-box Enter-press moment); assistant messages display `completed_at` (the turn's completion time). Both format as `HH:MM` same-day, `MM-DD HH:MM` same-year, `YYYY-MM-DD HH:MM` older. Live display and restore read the same stored values, so the rebuilt chat matches what was seen live. The status bar's token count is the **per-call** prompt tokens of the history's last API call — not the turn's cumulative sum (that sum is the assistant message footer).
 
 All user-supplied text is rendered with `markup=False` to prevent `MarkupError` injection.
 
@@ -721,7 +689,7 @@ Not all tools are in every request. Several categories use lightweight summaries
 
 ```
 ┌──────────────────────────────────────────────┐
-│  OS Keyring (credstore)                      │
+│  Credential store (credstore)                │
 │  Encrypted at OS level + cryptfile backup.   │
 │  credstore set <KEY>    ← masked stdin       │
 └──────────────────┬───────────────────────────┘
@@ -761,14 +729,14 @@ Anything else raises a clear "unsupported platform" error. On a supported platfo
 
 **The input and output gates are the authoritative trust boundary.** A secret may appear as plaintext anywhere *inside* the process (tool internals, `conn.error`, log lines) — that is **not** a vulnerability by itself. Judge any finding by two questions:
 
-1. **Does the secret reach the LLM context / conversation as plaintext?** → blocked by the gates below.
+1. **Does the secret reach the LLM context / history as plaintext?** → blocked by the gates below.
 2. **Does the secret cross the machine trust boundary as plaintext?** — network egress, a file published publicly (`/share`), anything readable outside the running user. → this is a real security finding.
 
 Everything else — including plaintext in `~/.slife/logs/` (readable only by the running user) — is hygiene, not a security issue. Do not report a plaintext string that the gates will mask, or a local log line, as a security finding.
 
 Two gates, single pattern-masking engine (`logfmt.sanitize_secrets`):
-1. **Inbound** — `Conversation.add_user_message()` on every external message
-2. **Outbound** — `AgentLoop._execute_tools()` runs `sanitize_secrets` on **every** tool result before it enters the conversation (tool-call arguments are also masked at `Conversation.add_assistant_message`). So even a tool that returns a secret verbatim (e.g. a config/env lookup) never puts a known-shaped value into the LLM context.
+1. **Inbound** — `MessageHistory.add_user_message()` on every external message
+2. **Outbound** — `AgentLoop._execute_tools()` runs `sanitize_secrets` on **every** tool result before it enters the history (tool-call arguments are also masked at `MessageHistory.add_assistant_message`). So even a tool that returns a secret verbatim (e.g. a config/env lookup) never puts a known-shaped value into the LLM context.
 
 Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bearer` tokens, and credential-named `key=value` pairs are masked with `<MASKED>`. The engine is pattern-based, so a value that matches no known shape is **not** masked at the gates either — the honest boundary is "known-shaped secrets never reach the LLM"; an exact-match denylist from credstore remains a possible hardening.
 
@@ -794,7 +762,7 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 
 ## Health Checks
 
-Health checks fall into two categories. `system_health` runs all of them together, and every dynamic check is also exposed as a standalone native tool (`check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_a2a`, `check_watchdog`) so the LLM can probe a single subsystem directly without the full report. `check_mcp` additionally takes an optional `server` argument (default: all) to diagnose just one external server.
+Health checks fall into two categories. `system_health` runs all of them together, and every dynamic check is also exposed as a standalone native tool (`check_memdb`, `check_wechat`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog`) so the LLM can probe a single subsystem directly without the full report. `check_mcp` additionally takes an optional `server` argument (default: all) to diagnose just one external server.
 
 **Static startup checks** — `check_external_deps()` probes system tooling once at startup; results are recorded via `slife.health.record()` and appear in `system_health`'s report:
 
@@ -811,7 +779,7 @@ Health checks fall into two categories. `system_health` runs all of them togethe
 |-------|-----------------|-------|
 | `check_memdb` | Database file + embedding backend (model, dimension, availability) | Application state (memdb plugin) |
 | `check_wechat` | Login status, session age, QR expiry | Application state (wechat plugin) |
-| `check_memfiles` | File-sharing tunnel online? ngrok URL? | Application state (memfiles plugin) |
+| `check_sharefile` | File-sharing tunnel online? ngrok URL? | Application state (sharefile plugin) |
 | `check_mcp` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, hints) | Application state (MCP wrapper + external servers) |
 | `check_a2a` | A2A mesh connection + peer status (via the a2a plugin's `__a2a_status` internal tool) | Application state (a2a plugin) |
 | `check_watchdog` | Auto-restart status per plugin, deduplicated from health records (latest record per plugin) | Process layer |
@@ -879,12 +847,12 @@ slife/
   agent/               # LLM interaction
     loop.py            #   Function-calling loop (streaming, concurrent tool execution, harness auto-invoke)
     service.py         #   Lifecycle manager (plugins, inbox, model switching)
-    conversation.py    #   Message storage + history (OpenAI-format, sanitization, _ensure_turn_consistent)
+    history.py    #   Message storage + history (OpenAI-format, sanitization, _ensure_turn_consistent)
     llm_client.py      #   Backend router + StreamChunk
     system_prompt.py   #   Prompt rendering (static + dynamic Jinja2)
     templates/         #   agent.j2, subagent.j2, slife.j2, context_status.j2
     llm_backends/      #   API backends: openai.py, anthropic.py, openai_responses.py
-    inbox.py           #   Unified message queue + ConversationStore
+    inbox.py           #   Unified message queue + MessageHistoryStore
     plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle)
     multimodal.py      #   Image encoding for vision models
     heartbeat.py       #   Autonomous heartbeat scheduling
@@ -903,7 +871,7 @@ slife/
     models.py          #   Model management (model_list/set/remove/switch)
     config.py          #   Config env var + native tool toggles
     credentials.py     #   Credential check/inject/uninject
-    vision.py          #   attach_image — vision helper (native, conversation-scoped)
+    vision.py          #   attach_image — vision helper (native, history-scoped)
     notify.py          #   notify_user (pure UI)
     meta.py            #   list_native_tools, check_async, cancel_async, clear_context
   plugins/             # Built-in plugins (auto-discovered server.py packages)

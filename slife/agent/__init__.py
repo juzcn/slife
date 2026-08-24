@@ -1,1 +1,1 @@
-"""Agent core — LLM client, conversation, agent loop, inbox, and service layer."""
+"""Agent core — LLM client, message history, agent loop, inbox, and service layer."""

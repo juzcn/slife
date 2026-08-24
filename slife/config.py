@@ -67,9 +67,9 @@ def _resolve_env_lenient(value: _T) -> _T:
 
 
 def _try_credstore_lookup(key: str) -> str | None:
-    """Look up an env var name in credstore (keyring).
+    """Look up an env var name in the credential store (credstore).
 
-    The env var name IS the credstore key — e.g. ``DEEPSEEK_API_KEY``.
+    The env var name IS the credential-store key — e.g. ``DEEPSEEK_API_KEY``.
 
     Returns the credential value, or None if not found or credstore
     is unavailable.
@@ -375,8 +375,8 @@ class Config:
     context_ceiling: float = 0.8
     tool_result_ceiling: float = 0.2  # max tool result = 20% of context window (HARD constraint, see DESIGN)
     # Per-tool-result char budget for PERMANENT memory (save side).  The live
-    # conversation keeps oversized results whole for the current turn; the
-    # diary stores a head+tail digest so a single result can never starve
+    # context keeps oversized results whole for the current turn; the
+    # Turns DB stores a head+tail digest so a single result can never starve
     # session restore.  Results ≤ budget are stored as-is.  Tool output is
     # reproducible — re-run the tool to retrieve the full version.
     memory_tool_result_chars: int = 8000
@@ -894,7 +894,7 @@ class Config:
 
         Resolution order:
           1. Already set in shell environment → keep
-          2. credstore (keyring) → the canonical source for secrets
+          2. credstore → the canonical source for secrets
           3. ``${VAR}`` reference → resolve VAR through credstore
              or os.environ
           4. Plain config value → inject directly
@@ -905,7 +905,7 @@ class Config:
             if os.environ.get(key):
                 logger.debug("env_from_shell key=%s", key)
                 continue
-            # 2. Try credstore (keyring) — canonical source for secrets
+            # 2. Try credstore — canonical source for secrets
             cred_value = _try_credstore_lookup(key)
             if cred_value:
                 os.environ[key] = cred_value
@@ -986,7 +986,7 @@ class Config:
 
         # Env -- inject into os.environ so child processes (MCP wrappers,
         # sub-agents) inherit credentials.  Resolution order:
-        #   shell env  >  credstore (keyring)  >  config value  >  config ${VAR}
+        #   shell env  >  credstore  >  config value  >  config ${VAR}
         env_section = _parse_section(raw, "env", dict, {})
         cls._inject_env_vars(env_section)
 

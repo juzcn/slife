@@ -10,7 +10,7 @@ from textual.content import Content
 from textual.events import Key
 from textual.widgets import Static
 
-from slife.agent.conversation import TURN_HEADER_PREFIX
+from slife.agent.message_history import TURN_HEADER_PREFIX
 from slife.agent.llm_client import TokenUsage
 
 # ── Clickable link detection ──────────────────────────────────────────
@@ -308,7 +308,7 @@ class AssistantMessage(Static):
 
         Rendered dim/italic (machine metadata, like the ``[Turn: N]``
         footnote on user messages).  Never persisted — the live marker the
-        loop appended to the conversation is stripped before the next save.
+        loop appended to the history is stripped before the next save.
         """
         self._trim_marker = f"[TrimContext: {count}]"
         self._refresh_display()

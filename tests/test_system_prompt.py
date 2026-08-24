@@ -42,16 +42,17 @@ class TestBuild:
         result = build(cfg)
         # 一级标题（不编号）
         assert "**Environment**" in result
-        assert "**Turn(or called conversation), Context & Memory**" in result
+        assert "**Message, Turn, Context & Memory**" in result
         assert "**Capabilities**" in result
         assert "**Coordination**" in result
         # 二级标题（组内编号）
         assert "1. Platform & OS" in result
-        assert "1. Turn" in result
+        assert "1. Message & Turn" in result
         assert "2. LLM Context" in result
-        assert "3. Memory — Turns (memdb)" in result
-        assert "4. Memory — Files Cabinet (memfiles)" in result
-        assert "5. Annotations" in result
+        assert "3. Memory — the persistent layer, two stores" in result
+        assert "Turns DB (memdb)" in result
+        assert "File Cabinet (memfiles)" in result
+        assert "4. Annotations" in result
         assert "1. Images & multimodal" in result
         assert "2. Credential resolution chain" in result
         assert "3. Tools & skills" in result
@@ -93,7 +94,7 @@ class TestBuild:
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "os.environ" in result
-        assert "credential backend" in result
+        assert "credential store" in result
 
     def test_skills_dir_in_prompt(self, cfg):
         from slife.agent.system_prompt import build
@@ -107,9 +108,9 @@ class TestBuild:
         assert "Data root:" in result
         assert "Config file:" in result
         assert "Logs:" in result
-        assert "Turns Memory:" in result
+        assert "Turns DB:" in result
         assert "Skills:" in result
-        assert "File cabinet:" in result
+        assert "File Cabinet:" in result
 
     def test_no_personality_language(self, cfg):
         """No 'helpful assistant' or tone instructions.  (The opening 'You
@@ -159,9 +160,9 @@ class TestBuild:
         assert "subagent_list_tasks" in result
         # Subagents are workers, not A2A peers — mesh tools live in section 9.
         assert "A2A = one tool family, two transports" not in result
-        assert "conversation is not saved" in result
-        assert "cannot interact" in result
-        assert "it only sends" in result
+        assert "turns are not saved" in result
+        assert "no user channel of its own" in result
+        assert "under the parent's identity" in result
 
     def test_subagent_nameentity_when_is_subagent(self, cfg, monkeypatch):
         """is_subagent=True renders the subagent identity template."""
@@ -236,7 +237,7 @@ class TestStructure:
 
     _MAIN_HEADS = [
         "**Identity**", "**Environment**",
-        "**Turn(or called conversation), Context & Memory**",
+        "**Message, Turn, Context & Memory**",
         "**Capabilities**", "**Coordination**", "**Autonomy**",
     ]
 
@@ -315,7 +316,7 @@ class TestStructure:
 
         result = build(cfg)
         assert (
-            "Your memory (conversation history) begins at 2026-01-05T10:00:00+08:00"
+            "Your memory begins at 2026-01-05T10:00:00+08:00"
             in result
         )
 

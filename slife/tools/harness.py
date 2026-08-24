@@ -9,8 +9,9 @@ Context trimming no longer lives here: it runs internally after each turn
 is persisted (``AgentLoop._trim_after_save``), marking the cut with a
 runtime-only ``[TrimContext: N]`` footnote instead of a tool call.
 
-One category per file: ``Harness`` lives here, next to ``a2a.py`` (A2A),
-``exec.py`` (Execution), etc.
+One category per file: ``Harness`` lives here, next to ``exec.py``
+(Execution), etc.  (The A2A tools live in the ``a2a`` plugin —
+``plugins/a2a/server.py``.)
 
 Language policy: descriptions / parameter docs / result strings are English
 (see DESIGN.md) — these are model-visible.

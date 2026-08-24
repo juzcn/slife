@@ -1,8 +1,8 @@
-"""slife-memdb server — FastMCP server for turn-based permanent memory.
+"""slife-memdb server — FastMCP server for the Turns DB (turn-based memory).
 
 Each turn (user message + assistant response) is an independent,
-immutable row.  No sessions, no lifecycle — just turns.
-Restore loads the most recent N turns by rowid.
+immutable row addressed by its turn id.  No sessions, no lifecycle —
+just turns.  Restore loads the most recent N turns by id.
 
 The semantic-search lifecycle (embedder, index-completeness gate, index
 drainer) is owned by ``SemanticManager`` (semantic.py).  This module only
@@ -56,11 +56,13 @@ async def _memdb_lifespan(_app):
 mcp, _log_path, logger = create_plugin_server(
     "slife-memdb",
     instructions=(
-        "slife-memdb — turn-based long-term knowledge. "
-        "Every turn (user question + your response) is one row. "
+        "slife-memdb — the Turns DB: turn-based long-term knowledge. "
+        "Every turn (user question + your response) is one row, addressed by "
+        "its turn id. "
         "LLM-visible tools: turn_list, turn_search (grep/fts5/hybrid/time), "
-        "turn_read, turn_summarize, semantic_index_status / semantic_index_config / "
-        "semantic_search_enable.  All data is automatically scoped to the current agent."
+        "turn_read, turn_token_usage, turn_count, turn_summarize, "
+        "semantic_index_status / semantic_index_config / semantic_search_enable. "
+        "All data is automatically scoped to the current agent."
     ),
     lifespan=_memdb_lifespan,
 )
@@ -69,6 +71,15 @@ _store: SessionStore | None = None
 _manager: SemanticManager | None = None
 _db_path: Path | None = None
 _init_lock: asyncio.Lock | None = None
+
+
+def _rename_rowid_to_turn_id(entries: list[dict]) -> None:
+    """Map a store result's internal ``rowid`` key to the model-visible
+    ``turn_id``, in place.  The store layer uses the SQLite rowid; the LLM
+    sees and addresses turns by their turn id."""
+    for e in entries:
+        if "rowid" in e:
+            e["turn_id"] = e.pop("rowid")
 
 
 def _get_db_path() -> Path:
@@ -187,7 +198,7 @@ async def __memory_save_turn(
         # (non-blocking event.set(), no DB work).
         if _manager is not None:
             _manager.on_saved()
-        return json.dumps({"rowid": rowid, "status": "saved"}, ensure_ascii=False)
+        return json.dumps({"turn_id": rowid, "status": "saved"}, ensure_ascii=False)
     except Exception as e:
         logger.exception("save_turn_failed user_msg=%.80s", user_message)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -253,27 +264,28 @@ async def __memory_context_start_latest() -> str:
     description=(
         "List turns (newest first): turn id, truncated user_message, summary, "
         "tags, created_at. Use turn_read for full content. "
-        "before_rowid / after_rowid anchor the window by turn id (exclusive): "
-        "page older than a [Turn: N · …] footnote with before_rowid, newer "
-        "with after_rowid."
+        "before_turn_id / after_turn_id anchor the window by turn id (exclusive): "
+        "page older than a [Turn: N · …] footnote with before_turn_id, newer "
+        "with after_turn_id."
     ),
 )
 async def turn_list(
     limit: int = 20,
-    before_rowid: int | None = None,
-    after_rowid: int | None = None,
+    before_turn_id: int | None = None,
+    after_turn_id: int | None = None,
 ) -> str:
     """List turns, newest first.
 
     Args:
         limit: Maximum number of turns to return.
-        before_rowid: Only turns with id < this (older) — page back from a turn you can see in context.
-        after_rowid: Only turns with id > this (newer).
+        before_turn_id: Only turns with id < this (older) — page back from a turn you can see in context.
+        after_turn_id: Only turns with id > this (newer).
     """
     store = await _ensure_store()
     try:
         entries = await store.list_recent(
-            limit=limit, before_rowid=before_rowid, after_rowid=after_rowid,
+            limit=limit,
+            before_rowid=before_turn_id, after_rowid=after_turn_id,
         )
         for e in entries:
             um = e.get("user_message", "")
@@ -288,7 +300,7 @@ async def turn_list(
 @mcp.tool(
     name="turn_token_usage",
     description=(
-        "Token consumption per turn. Options: rowid (one turn), since/until "
+        "Token consumption per turn. Options: turn_id (one turn), since/until "
         "(ISO datetime time range), limit (cap on turns returned, default 50). "
         "Each turn reports token_count (cumulative billed tokens) and "
         "prompt_tokens (context size at the last call). Returns the turns "
@@ -296,15 +308,15 @@ async def turn_list(
     ),
 )
 async def turn_token_usage(
-    rowid: int | None = None,
+    turn_id: int | None = None,
     since: str | None = None,
     until: str | None = None,
     limit: int = 50,
 ) -> str:
-    """Token consumption by turn, filtered by rowid or time range.
+    """Token consumption by turn, filtered by turn id or time range.
 
     Args:
-        rowid: Restrict to a single turn by its id.
+        turn_id: Restrict to a single turn by its id.
         since: Lower bound, ISO datetime (relative words like 'yesterday' accepted).
         until: Upper bound, ISO datetime.
         limit: Maximum number of turns to return (newest first).
@@ -312,11 +324,11 @@ async def turn_token_usage(
     store = await _ensure_store()
     try:
         result = await store.token_usage(
-            rowid=rowid, since=since, until=until, limit=limit,
+            rowid=turn_id, since=since, until=until, limit=limit,
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("token_usage_failed rowid=%s", rowid)
+        logger.exception("token_usage_failed turn_id=%s", turn_id)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -361,23 +373,25 @@ async def turn_count(
         "turn_search (each result carries the turn id)."
     ),
 )
-async def turn_read(rowid: int) -> str:
+async def turn_read(turn_id: int) -> str:
     """Load a full turn by turn id.
 
     Args:
-        rowid: The turn id (same id as a `[Turn: N · …]` footnote or a
+        turn_id: The turn id (same id as a `[Turn: N · …]` footnote or a
             turn_list / turn_search result).
     """
     store = await _ensure_store()
     try:
-        turn = await store.get_turn(rowid=rowid)
+        turn = await store.get_turn(rowid=turn_id)
         if turn is None:
             return json.dumps(
-                {"error": f"turn not found rowid={rowid}"}, ensure_ascii=False,
+                {"error": f"turn not found turn_id={turn_id}"}, ensure_ascii=False,
             )
+        if "rowid" in turn:
+            turn["turn_id"] = turn.pop("rowid")
         return json.dumps(turn, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("open_failed rowid=%s", rowid)
+        logger.exception("open_failed turn_id=%s", turn_id)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -421,6 +435,7 @@ async def turn_search(
     if mode == "time":
         try:
             hits = await store.search_time(limit=limit, since=since, until=until)
+            _rename_rowid_to_turn_id(hits)
             return json.dumps({"mode": "time", "since": since, "until": until, "results": hits},
                               ensure_ascii=False, indent=2)
         except Exception as e:
@@ -434,6 +449,7 @@ async def turn_search(
         if mode == "grep":
             hits = await store.search_grep(pattern=query, limit=limit,
                                            since=since, until=until)
+            _rename_rowid_to_turn_id(hits)
             return json.dumps({"mode": "grep", "query": query, "results": hits,
                                "hint": "" if hits else f"no memories contain '{query}'"},
                               ensure_ascii=False, indent=2)
@@ -441,6 +457,7 @@ async def turn_search(
         if mode == "fts5":
             hits = await store.search_keyword(query=query, limit=limit,
                                               since=since, until=until)
+            _rename_rowid_to_turn_id(hits)
             return json.dumps({"mode": "fts5", "query": query, "results": hits,
                                "hint": "" if hits else f"no memories related to '{query}'"},
                               ensure_ascii=False, indent=2)
@@ -503,35 +520,35 @@ async def turn_search(
     ),
 )
 async def turn_summarize(
-    rowid: int | None = None,
+    turn_id: int | None = None,
     summary: str | None = None, tags: str | None = None,
 ) -> str:
     """Write a summary and tags for a turn, making it findable by keyword search.
 
     Args:
-        rowid: The turn id to annotate. Omit to annotate the current
+        turn_id: The turn id to annotate. Omit to annotate the current
             (in-flight) turn — applied when it completes and is saved.
         summary: A 1-2 sentence summary of the turn.
         tags: Comma-separated tags for keyword search.
     """
     store = await _ensure_store()
     try:
-        if rowid is None:
+        if turn_id is None:
             # Current turn — captured at save time: save_to_memory extracts
             # this call and passes summary/tags to __memory_save_turn.  No
             # latest_rowid lookup (cross-source race), no write here.
             return json.dumps({
                 "status": "captured",
-                "rowid": None,
+                "turn_id": None,
                 "message": (
                     "annotation captured for the current turn — applied when "
                     "the turn completes"
                 ),
             }, ensure_ascii=False, indent=2)
-        await store.update_summary(rowid=rowid, summary=summary, tags=tags)
-        return json.dumps({"status": "updated", "rowid": rowid}, ensure_ascii=False, indent=2)
+        await store.update_summary(rowid=turn_id, summary=summary, tags=tags)
+        return json.dumps({"status": "updated", "turn_id": turn_id}, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("summarize_failed rowid=%s", rowid)
+        logger.exception("summarize_failed turn_id=%s", turn_id)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

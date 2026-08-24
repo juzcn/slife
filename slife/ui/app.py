@@ -413,7 +413,7 @@ class SlifeApp(App):
 
         # ── Step 3: A2A + Subagent + callbacks (unchanged) ────────────
         self.service.on_a2a_activity(self._on_a2a_activity)
-        self.service.inbox._conversations.set_default_handler_factory(
+        self.service.inbox._histories.set_default_handler_factory(
             lambda: TUIHandler(self, assistant_prefix=self._assistant_prefix)
         )
 
@@ -861,7 +861,7 @@ class SlifeApp(App):
         await restore_session(
             app=self,
             recovery_info=self._recovery_info,
-            conversation=self.service.conversation,
+            history=self.service.message_history,
             config=self.service.config,
             agent_name=self._agent_name,
             assistant_prefix=self._assistant_prefix,

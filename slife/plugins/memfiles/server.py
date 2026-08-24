@@ -661,7 +661,7 @@ async def diary_read(date: str) -> str:
         "tags, summary.  Returns {total, limit, offset, entries} — if "
         "offset + len(entries) < total, pass a higher offset to page. "
         "Optionally filter by category (images/documents/archives/code/audio/"
-        "video/data/other).  Use read(path) for text content."
+        "video/data/other).  Use cabinet_read(path) for text content."
     ),
 )
 async def list_files(category: str = "", limit: int = 50, offset: int = 0) -> str:

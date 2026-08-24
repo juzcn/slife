@@ -87,7 +87,7 @@ class TestHybridDegradationHint:
 
         srv, store = self._server(
             keyword_hits=[
-                {"rowid": 1, "user_message": "微信登录", "snippet": "…", "rank": -1.0},
+                {"turn_id": 1, "user_message": "微信登录", "snippet": "…", "rank": -1.0},
             ],
             manager=_fake_manager(semantic_ready=False,
                                   reason="hybrid degraded to fts5 — semantic index is building"),
@@ -143,13 +143,13 @@ class TestStoreLifecycleLocking:
         out = await getattr(srv, "__memory_save_turn")(user_message="hi")
 
         assert lock_held == [True]
-        assert json.loads(out)["rowid"] == 1
+        assert json.loads(out)["turn_id"] == 1
 
     @pytest.mark.asyncio
     async def test_save_turn_forwarded_and_wakes_drainer(self, restore_root_logger):
         """__memory_save_turn forwards the turn args and calls on_saved()
         (the drainer wake) — no reindex side-effect on the save path, and no
-        separate images channel (image blocks ride the conversation; the
+        separate images channel (image blocks ride the history; the
         ``images`` column is gone)."""
         import json
 
@@ -170,7 +170,7 @@ class TestStoreLifecycleLocking:
             user_message="hi",
         )
 
-        assert json.loads(out)["rowid"] == 7
+        assert json.loads(out)["turn_id"] == 7
         assert captured["user_message"] == "hi"
         assert "images" not in captured
         # save_turn is insert-only (embedding is internal/reindex); the
@@ -180,8 +180,8 @@ class TestStoreLifecycleLocking:
 
 
 class TestTurnSummarize:
-    """turn_summarize — explicit rowid annotates a past turn;
-    rowid=None captures the current (in-flight) turn for save time."""
+    """turn_summarize — explicit turn_id annotates a past turn;
+    turn_id=None captures the current (in-flight) turn for save time."""
 
     def _server(self):
         srv = _import_memdb_server()
@@ -200,7 +200,7 @@ class TestTurnSummarize:
 
         data = json.loads(out)
         assert data["status"] == "captured"
-        assert data["rowid"] is None
+        assert data["turn_id"] is None
         # No write and no latest_rowid lookup — applied at save time instead.
         store.update_summary.assert_not_awaited()
 
@@ -210,11 +210,11 @@ class TestTurnSummarize:
 
         srv, store = self._server()
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
-            out = await srv.turn_summarize(rowid=3, summary="sum")
+            out = await srv.turn_summarize(turn_id=3, summary="sum")
 
         data = json.loads(out)
         assert data["status"] == "updated"
-        assert data["rowid"] == 3
+        assert data["turn_id"] == 3
         store.update_summary.assert_awaited_once_with(
             rowid=3, summary="sum", tags=None,
         )
@@ -233,7 +233,7 @@ class TestTurnSummarize:
                 user_message="hi", summary="sum", tags="a,b",
             )
 
-        assert json.loads(out)["rowid"] == 9
+        assert json.loads(out)["turn_id"] == 9
         store.update_summary.assert_awaited_once_with(
             rowid=9, summary="sum", tags="a,b",
         )
@@ -251,12 +251,12 @@ class TestTurnSummarize:
         ):
             out = await getattr(srv, "__memory_save_turn")(user_message="hi")
 
-        assert json.loads(out)["rowid"] == 9
+        assert json.loads(out)["turn_id"] == 9
         store.update_summary.assert_not_awaited()
 
 
 class TestListTurns:
-    """turn_list — rowid-anchored lightweight listing."""
+    """turn_list — turn-id-anchored lightweight listing."""
 
     @pytest.mark.asyncio
     async def test_passes_rowid_window_to_store(self, restore_root_logger):
@@ -269,12 +269,12 @@ class TestListTurns:
         ])
         srv._store = store
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
-            out = await srv.turn_list(before_rowid=10, limit=5)
+            out = await srv.turn_list(before_turn_id=10, limit=5)
 
         store.list_recent.assert_awaited_once_with(
             limit=5, before_rowid=10, after_rowid=None,
         )
-        assert json.loads(out)[0]["rowid"] == 2
+        assert json.loads(out)[0]["rowid"] == 2  # store keeps internal rowid
 
 
 class TestTokenUsage:
@@ -294,7 +294,7 @@ class TestTokenUsage:
         srv._store = store
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
             out = await srv.turn_token_usage(
-                rowid=3, since="2026-01-01", until="2026-02-01", limit=10,
+                turn_id=3, since="2026-01-01", until="2026-02-01", limit=10,
             )
 
         store.token_usage.assert_awaited_once_with(

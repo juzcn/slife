@@ -3,7 +3,7 @@
 list_native_tools  — native tool inventory (grouped, with harness markers)
 check_async        — poll background task result
 cancel_async       — cancel a running background task
-clear_context      — reset conversation history
+clear_context      — reset the loaded turns
 set_max_iterations — change the loop's iteration cap at runtime (0 = unlimited)
 """
 
@@ -15,6 +15,7 @@ import uuid
 from collections import defaultdict
 from typing import ClassVar
 
+from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 from slife.tools.base import Tool, make_params
 
 logger = logging.getLogger(__name__)
@@ -24,46 +25,19 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _classify(name: str) -> str:
-    if name.startswith("a2a_"):
-        return "Agent Communication (A2A)"
-    if name.startswith("subagent_"):
-        return "Subagent (local workers)"
-    if name.startswith("cli_"):
-        return "CLI"
-    if name.startswith("rest_api_"):
-        return "REST API"
-    if name.startswith("model_"):
-        return "Models"
-    if name.startswith("config_env") or name == "native_tool_set":
-        return "Config"
-    if name.startswith("skill_"):
-        return "Skills"
-    if name.startswith("check_") or name == "system_health":
-        return "System"
-    if name.startswith("execute_") or name.startswith("install_") or name.startswith("run_"):
-        return "Execution"
-    if name.startswith("credential_"):
-        return "Credentials"
-    if name.startswith("turn_") or name == "semantic_index_status" or \
-            name == "semantic_index_config" or name == "semantic_search_enable":
-        return "Memory (Turns)"
-    if name.startswith("note_") or name.startswith("diary_") or name.startswith("file_") or \
-            name.startswith("url_save") or name.startswith("cabinet_") or name == "list_files":
-        return "File Cabinet (notes / diary / files)"
-    if name == "share_file":
-        return "File Sharing"
-    if name.startswith("generate_") or name.startswith("text_to_speech") or \
-            name.startswith("transcribe_"):
-        return "Media Generation"
-    if name.startswith("mcp_"):
-        return "MCP Management"
-    if name.startswith("wechat_"):
-        return "WeChat"
-    if name in ("list_native_tools", "check_async", "cancel_async", "clear_context",
-                "set_max_iterations"):
-        return "Meta"
-    return "Other"
+def _native_category(tool) -> str:
+    """Display category for a tool in ``list_native_tools``.
+
+    Source-based, no name-prefix guessing:
+      - native tools carry their own ``category`` class attribute;
+      - built-in plugin tools (MCP proxy tools) group by their plugin
+        name — the same identity the ``[<server>] `` description prefix
+        and the ``server`` field carry.
+    External MCP proxy tools are filtered out before this is called.
+    """
+    if isinstance(tool, MCPProxyTool):
+        return getattr(tool, "_server", "") or "Plugins"
+    return getattr(tool, "category", "") or "Other"
 
 
 class ListNativeToolsTool(Tool):
@@ -72,7 +46,7 @@ class ListNativeToolsTool(Tool):
     description: ClassVar[str] = (
         "Inventory of native tools (grouped, first-sentence summaries, "
         "harness/auto-invoked markers). Includes built-in plugin tools "
-        "(turns, file cabinet, sharing, media, WeChat, A2A) — they are "
+        "(Turns DB, File Cabinet, sharing, media, WeChat, A2A) — they are "
         "first-class like native tools. External MCP server tools are NOT "
         "listed — the model already receives their full schemas natively."
     )
@@ -92,8 +66,6 @@ class ListNativeToolsTool(Tool):
         # their full schemas in the native `tools` array of every request, so
         # a second listing here is pure redundant context.  Built-in plugin
         # tools (DIRECT/WRAPPER — bare names) ARE native: included here.
-        from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
-
         natives = [
             t for t in all_tools
             if not (isinstance(t, MCPProxyTool) and t._route == ProxyRoute.EXTERNAL)
@@ -104,7 +76,7 @@ class ListNativeToolsTool(Tool):
         lines = [f"## Native Tools ({len(natives)} total)\n"]
         native_groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for t in sorted(natives, key=lambda t: t.name):
-            cat = getattr(t, "category", "") or _classify(t.name)
+            cat = _native_category(t)
             desc = t.description.split(".")[0].strip() + "."
             native_groups[cat].append((t.name, desc))
 
@@ -229,14 +201,14 @@ class CancelAsyncTool(Tool):
 class ClearContextTool(Tool):
     name = "clear_context"
     category: ClassVar[str] = "Meta"
-    description = "Clear the conversation history, keeping only the system prompt."
+    description = "Clear the loaded turns from context, keeping only the system prompt."
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
         ctx = getattr(self, "_ctx", None)
-        conv = ctx.conversation if ctx is not None else None
+        conv = ctx.message_history if ctx is not None else None
         if conv is None:
-            return "Conversation is not yet initialised. This tool must be called after the agent service has started."
+            return "MessageHistory is not yet initialised. This tool must be called after the agent service has started."
         removed = conv.clear_history()
         if removed == 0:
             return "Context is already clean — no old turns to remove."

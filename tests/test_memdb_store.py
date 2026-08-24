@@ -437,7 +437,7 @@ class TestSessionStoreGetTurn:
         store._conn = mock_conn
 
         result = await store.get_turn(rowid=1)
-        assert result == {"rowid": 1, "user_message": "Hello"}
+        assert result == {"rowid": 1, "user_message": "Hello"}  # store stays internal
 
     @pytest.mark.asyncio
     async def test_get_turn_not_found(self):
@@ -534,7 +534,7 @@ class TestSessionStoreGetRecentTurns:
 
         # All columns should be present in each row
         for turn in result:
-            assert "rowid" in turn
+            assert "rowid" in turn  # get_recent_turns keeps the internal rowid
             assert "user_message" in turn
             assert "messages" in turn
             assert "created_at" in turn
@@ -626,7 +626,7 @@ class TestSessionStoreContextStart:
         assert await store.get_context_start() == 3
         # get_recent_turns sees only the in-context suffix
         turns = await store.get_recent_turns(after_rowid=boundary)
-        assert [t["rowid"] for t in turns] == [5, 4], "newest-first, only after boundary"
+        assert [t["rowid"] for t in turns] == [5, 4]  # get_recent_turns is internal (rowid), "newest-first, only after boundary"
 
         await store._conn.close()
 
@@ -681,7 +681,7 @@ class TestSessionStoreContextStart:
         )
         await store._conn.commit()
         turns = await store.get_recent_turns(after_rowid=3)
-        assert [t["rowid"] for t in turns] == [4]
+        assert [t["rowid"] for t in turns] == [4]  # get_recent_turns is internal (rowid)
 
         await store._conn.close()
 
@@ -839,16 +839,16 @@ class TestSessionStoreListRecent:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 2, "user_message": "Chat 2"},
-            {"rowid": 1, "user_message": "Chat 1"},
+            {"turn_id": 2, "user_message": "Chat 2"},
+            {"turn_id": 1, "user_message": "Chat 1"},
         ])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
         result = await store.list_recent(limit=5)
         assert len(result) == 2
-        # Newest first
-        assert result[0]["rowid"] == 2
+        # Newest first — list_recent maps rowid → turn_id
+        assert result[0]["turn_id"] == 2
 
     @pytest.mark.asyncio
     async def test_list_recent_windowed_by_rowid(self):
@@ -1005,7 +1005,7 @@ class TestSessionStoreSearchKeyword:
 
         result = await store.search_keyword(query="hello")
         assert len(result) == 1
-        assert result[0]["rowid"] == 1
+        assert result[0]["rowid"] == 1  # store layer keeps the internal rowid
 
     @pytest.mark.asyncio
     async def test_search_keyword_handles_parse_error(self):
@@ -1029,7 +1029,7 @@ class TestSessionStoreSearchKeyword:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 1, "user_message": "今天北京天气怎么样？", "snippet": "…", "rank": 0},
+            {"turn_id": 1, "user_message": "今天北京天气怎么样？", "snippet": "…", "rank": 0},
         ])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
@@ -1089,7 +1089,7 @@ class TestSessionStoreSearchGrep:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 1, "user_message": "Hello", "context": "Hello world"},
+            {"turn_id": 1, "user_message": "Hello", "context": "Hello world"},
         ])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn

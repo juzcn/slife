@@ -85,7 +85,7 @@ class A2AClient:
 
         # Callbacks fired when an outbound async task's result arrives (MQTT)
         # — the plugin queues these so the harness can auto-push the result
-        # to the conversation instead of the agent having to poll or block.
+        # into the agent's context instead of the agent having to poll or block.
         self._task_result_callbacks: list[Callable] = []
 
         # Status exposed via AgentCard

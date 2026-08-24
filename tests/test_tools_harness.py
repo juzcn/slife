@@ -16,7 +16,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 import pytest
 
-from slife.agent.conversation import Conversation
+from slife.agent.message_history import MessageHistory
 from slife.agent.loop import AgentLoop
 from slife.tools.factory import create_tools_from_config
 
@@ -90,7 +90,7 @@ class TestTrimAfterSave:
 
     @staticmethod
     def _conv(turns):
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         for i in range(turns):
             conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大Context usage估计。")
             conv.add_assistant_message(f"这是第{i}轮的回复，也需要一定长度以参与 token 估算。")
@@ -107,7 +107,7 @@ class TestTrimAfterSave:
     async def _prime_usage(self, loop, conv):
         """Simulate the just-finished API call's real usage for this conv."""
         from slife.agent.llm_client import TokenUsage
-        loop._usage_by_conv[id(conv)] = TokenUsage(
+        loop._usage_by_history[id(conv)] = TokenUsage(
             prompt_tokens=conv.count_tokens(), total_tokens=conv.count_tokens(),
         )
 
@@ -158,18 +158,18 @@ class TestTrimAfterSave:
 
     @pytest.mark.asyncio
     async def test_restored_context_not_shredded_on_first_turn(self):
-        """A freshly-restored conversation is a pre-exit state — the first
+        """A freshly-restored history is a pre-exit state — the first
         trim after restore must not compact it (even over ceiling)."""
         conv = self._conv(12)
         loop = self._loop(conv, self._cfg())
-        loop._just_restored_conv = id(conv)
+        loop._just_restored_history = id(conv)
         await self._prime_usage(loop, conv)
         assert conv.count_tokens() > 160
 
         await loop._trim_after_save(conv)
 
         # The marker is consumed and nothing was trimmed.
-        assert loop._just_restored_conv is None
+        assert loop._just_restored_history is None
         assert len([m for m in conv.messages if m.get("role") == "user"]) == 12
         assert not any("[TrimContext: " in (m.get("content") or "") for m in conv.messages)
 
@@ -178,11 +178,11 @@ class TestTrimAfterSave:
         """Once the restore marker is consumed, the live rules apply."""
         conv = self._conv(12)
         loop = self._loop(conv, self._cfg())
-        loop._just_restored_conv = id(conv)
+        loop._just_restored_history = id(conv)
         await self._prime_usage(loop, conv)
         # First save consumes the marker without trimming...
         await loop._trim_after_save(conv)
-        assert loop._just_restored_conv is None
+        assert loop._just_restored_history is None
         # ...but the second save trims (real usage still over ceiling).
         await self._prime_usage(loop, conv)
         await loop._trim_after_save(conv)
@@ -213,7 +213,7 @@ class TestTrimAfterSave:
 
 
 class TestConsecutiveUserFix:
-    """A cancelled turn must not leave the conversation ending on a user role."""
+    """A cancelled turn must not leave the history ending on a user role."""
 
     def _anthropic_roles(self, conv):
         from slife.agent.llm_backends.anthropic import AnthropicBackend
@@ -231,7 +231,7 @@ class TestConsecutiveUserFix:
     async def test_cancelled_turn_then_next_user_alternates(self):
         reg = _registry()
         loop = _loop(reg)
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
 
         # Turn 1: user message + harness _sys_note, then cancelled (no reply).
         conv.add_user_message("第一轮：帮我搜一下X")
@@ -248,7 +248,7 @@ class TestConsecutiveUserFix:
     async def test_auto_invoke_produces_normal_tool_pair(self):
         reg = _registry()
         loop = _loop(reg)
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
 
         await loop._auto_invoke("_sys_note", loop._footer_kwargs(conv, conv.count_tokens()), conv)
@@ -264,7 +264,7 @@ class TestConsecutiveUserFix:
         the start time changes (restore sets it, trim advances it)."""
         reg = _registry()
         loop = _loop(reg)
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
 
         loop._context_time_start = "2026-01-01T00:00:00+08:00"
@@ -283,9 +283,9 @@ class TestConsecutiveUserFix:
     def test_ensure_turn_consistent_appends_assistant(self):
         reg = _registry()
         loop = _loop(reg)
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
-        # conversation ends on a user message → close it.
+        # history ends on a user message → close it.
         conv._ensure_turn_consistent("(Turn interrupted)")
         assert conv.messages[-1]["role"] == "assistant"
         assert conv.messages[-1]["content"] == "(Turn interrupted)"
@@ -293,7 +293,7 @@ class TestConsecutiveUserFix:
     def test_ensure_turn_consistent_noop_when_assistant(self):
         reg = _registry()
         loop = _loop(reg)
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         conv.add_assistant_message("reply")
         conv._ensure_turn_consistent("")
@@ -310,7 +310,7 @@ class TestConsecutiveUserFix:
         """
         reg = _registry()
         loop = _loop(reg)
-        conv = Conversation(system_prompt="SYS")
+        conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
         # Turn interrupted mid-tool-call: assistant tool_call, no result.
         conv.add_assistant_message(

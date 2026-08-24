@@ -3,12 +3,12 @@
 ``attach_image`` is a helper for building the image content blocks a
 vision model sees.  It takes one or more image sources — data URIs,
 local file paths, or HTTP(S) URLs — and injects the resulting blocks
-into the active conversation (works exactly like the ``@`` syntax in
+into the current turn (works exactly like the ``@`` syntax in
 chat).  It feeds the vision API only — nothing is ever rendered in the
 terminal.  To *show* a file to the user, hand them a path / URL (opened
 with the OS) or publish it via ``share_file``.
 
-This is an agent-loop concern (it mutates in-conversation state), so it
+This is an agent-loop concern (it mutates the live message history), so it
 stays a native tool in the main process — unrelated to the memfiles
 (file cabinet) / sharefile (public sharing) plugins.
 """
@@ -98,7 +98,7 @@ class AttachImageTool(Tool):
 
         blocks, failed = include_image_urls(sources)
 
-        conv = ctx.conversation if ctx is not None else None
+        conv = ctx.message_history if ctx is not None else None
         if conv is not None and blocks:
             conv.inject_images_to_last_user(blocks)
 

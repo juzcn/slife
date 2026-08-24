@@ -95,7 +95,7 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         "properties": {
             "name": {
                 "type": "string",
-                "description": "Short name. Generated tools are prefixed name__tool.",
+                "description": "Short name. Generated tools are prefixed <name>__ (e.g. github__create_issue).",
             },
             "spec_url": {
                 "type": "string",

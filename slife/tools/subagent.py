@@ -14,7 +14,7 @@ This module is fully decoupled from A2A:
 
 There is deliberately no ``subagent_subscribe_task`` — async results are
 auto-subscribed: when a worker finishes, the result is pushed to the
-parent's conversation automatically.  ``subagent_cancel_task`` cancels a
+parent's history automatically.  ``subagent_cancel_task`` cancels a
 queued or running worker task (drops the queued task, preempts the running
 agent loop via the unified inbox).
 """
@@ -46,18 +46,18 @@ def _manager_or_hint() -> tuple:
 
 
 def _serialize_cloned_context(ctx) -> list[dict] | None:
-    """Return the parent conversation messages for a cloned subagent.
+    """Return the parent history messages for a cloned subagent.
 
     The parent's messages are cloned as-is (the subagent rebuilds its own
     system prompt).  No upfront trimming: context overflow is handled by
     the loop's internal trim (``_trim_after_save``) once real usage is
-    known.  Returns None when no conversation is available.
+    known.  Returns None when no history is available.
     """
-    conversation = getattr(ctx, "conversation", None)
-    if conversation is None:
+    history = getattr(ctx, "message_history", None)
+    if history is None:
         return None
     # Drop the parent's system message (incl. its dynamic context footer).
-    return [m for m in conversation.messages if m.get("role") != "system"]
+    return [m for m in history.messages if m.get("role") != "system"]
 
 
 class ListSubagentsTool(Tool):
@@ -124,8 +124,9 @@ class SpawnSubagentTool(Tool):
                 "type": "boolean",
                 "default": False,
                 "description": (
-                    "Clone the main agent's current conversation (a trimmed "
-                    "copy) into the worker's context. Default false = the "
+                    "True = continue with the main agent's context: the "
+                    "worker starts with the turns loaded in the main "
+                    "agent's context. False (default) = fresh start: the "
                     "worker starts with a clean (empty) context."
                 ),
             },
@@ -286,7 +287,7 @@ class SubagentSendTaskAsyncTool(Tool):
 
     Returns a task_id.  Delivery of the result is chosen at send time:
     ``mode="auto"`` (default) pushes the result to this agent's
-    conversation when the worker finishes; ``mode="poll"`` suppresses the
+    history when the worker finishes; ``mode="poll"`` suppresses the
     push — the caller retrieves it with ``subagent_get_task_result``.
     """
 

@@ -10,7 +10,7 @@ import pytest; pytestmark = pytest.mark.unit
 
 from unittest.mock import MagicMock
 
-from slife.agent.conversation import Conversation
+from slife.agent.message_history import MessageHistory
 from slife.ui.restore import (
     restore_session,
     tool_result_is_error,
@@ -179,7 +179,7 @@ class TestRestoreSkipsEmptyAssistantMessages:
         chat_view = app.query_one.return_value
         am = MagicMock()
         chat_view.add_assistant_message.return_value = am
-        conv = Conversation(system_prompt=None)  # real — exercises the repair
+        conv = MessageHistory(system_prompt=None)  # real — exercises the repair
         config = MagicMock()
         config.active_model.context_window = 100_000
         config.context_ceiling = 0.8
@@ -195,7 +195,7 @@ class TestRestoreSkipsEmptyAssistantMessages:
         ])]
         await self._restore(app, conv, config, turns)
 
-        # The repair closed the conversation in place.
+        # The repair closed the history in place.
         assert conv.messages[-1]["role"] == "assistant"
         assert conv.messages[-1]["content"] == "(Turn interrupted)"
         # …and tagged the synthetic tool result as the interruption error.
@@ -245,7 +245,7 @@ class TestRestoreTurnHeader:
         chat_view = app.query_one.return_value
         am = MagicMock()
         chat_view.add_assistant_message.return_value = am
-        conv = Conversation(system_prompt=None)
+        conv = MessageHistory(system_prompt=None)
         config = MagicMock()
         config.active_model.context_window = 100_000
         config.context_ceiling = 0.8

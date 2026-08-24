@@ -25,7 +25,7 @@ class TestAgentService:
         assert service.config == sample_config
         assert service.llm_client is not None
         assert service.agent_loop is not None
-        assert service.conversation is not None
+        assert service.message_history is not None
         assert service.session_usage.total_tokens == 0
 
     def test_mcp_disabled_initially(self, sample_config):
@@ -70,9 +70,9 @@ class TestAgentService:
         assert service.context_window == sample_config.active_model.context_window
 
     def test_current_context_tokens_fresh_session(self, sample_config):
-        """No API call yet and no restore → live conversation estimate."""
+        """No API call yet and no restore → live history estimate."""
         service = AgentService(sample_config)
-        assert service.current_context_tokens == service.conversation.count_tokens()
+        assert service.current_context_tokens == service.message_history.count_tokens()
 
     def test_current_context_tokens_restore_estimate(self, sample_config):
         """First round after restore → the precomputed estimate (no recompute)."""

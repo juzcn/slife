@@ -1,5 +1,9 @@
 # Slife
 
+> **Terminology.** The authoritative definitions of the project's terms —
+> model-facing and developer-facing alike — live in **[Glossary.md](Glossary.md)**.
+> This README uses those terms without restating them.
+
 **Terminal-based AI agent** — a function-calling loop with minimum harness. Chat with an LLM that calls tools, remembers every turn forever, and orchestrates other agents.
 
 ```
@@ -106,16 +110,16 @@ credstore copy DEEPSEEK_API_KEY BAILIAN_API_KEY
 
 ## Configuration
 
-Secrets in the OS keyring, config in JSON5:
+Secrets in the credential store, config in JSON5:
 
 | Layer | Storage | Contents |
 |-------|---------|----------|
-| **Secrets** | OS keyring (credstore) | API keys — encrypted at OS level, plus an encrypted cryptfile backup |
+| **Secrets** | credential store (credstore) | API keys — encrypted at OS level, plus an encrypted cryptfile backup |
 | **Config** | `~/.slife/slife.json5` | `${VAR}` references + non-secret values |
 
 ```json5
 env: {
-  DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}",   // → resolved from keyring at runtime
+  DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}",   // → resolved from credstore at runtime
 }
 
 models: {
@@ -133,7 +137,7 @@ active_model: "deepseek/deepseek-v4-pro",
 
 `${VAR:-default}` fallback syntax is supported (resolution order: shell env → credstore → literal default). Secrets can also be referenced as `keyring:service/key` URIs.
 
-**sLife does not support credstore's cryptfile mode, but is fully compatible with environment-variable setup.** sLife's credential resolution is password-free and never prompts — it reads the OS keyring via credstore, then falls back to `os.environ`. When credstore falls back to cryptfile-only (no OS keyring available, e.g. Linux where the kernel keyring is blocked by seccomp/policy on an HPC login node), sLife does **not** read the encrypted backup; use one of two methods:
+**sLife does not support credstore's cryptfile mode, but is fully compatible with environment-variable setup.** sLife's credential resolution is password-free and never prompts — it reads the credential store (credstore), then falls back to `os.environ`. (no system keyring available, e.g. Linux where the kernel keyring is blocked by seccomp/policy on an HPC login node), sLife does **not** read the encrypted backup; use one of two methods:
 
 1. **Environment variables only (independent of credstore):** export the secrets in your shell:
    ```bash
@@ -186,7 +190,7 @@ models: {
 
 Switch at runtime: `model_list` → `model_switch(ref="bailian/qwen3.8-max")`.
 
-**Secrets never reach the LLM.** User input, tool-call arguments, and every tool result pass through a pattern-based sanitizer before entering the conversation — API key shapes (`sk-*`, `ghp_*`, Bearer tokens, …) are auto-masked.
+**Secrets never reach the LLM.** User input, tool-call arguments, and every tool result pass through a pattern-based sanitizer before entering the context — API key shapes (`sk-*`, `ghp_*`, Bearer tokens, …) are auto-masked.
 
 ## Features
 
@@ -198,7 +202,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 
 | Category | Tools |
 |----------|-------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_a2a`, `check_watchdog` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
@@ -207,7 +211,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch` |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
-| Vision | `attach_image` (injects a local image or URL into the conversation) |
+| Vision | `attach_image` (injects a local image or URL into the current turn) |
 | Display | `notify_user` |
 | Harness | `_sys_note` (context status) — auto-invoked, not for LLM use |
 | Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
@@ -218,7 +222,7 @@ Every tool additionally accepts three harness meta-parameters: `_timeout` (per-c
 
 **Five managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts. `model_set` upserts **merge** into the existing entry (a partial update preserves `reasoning` / `input` / `compat`), and accepts a `compat` dict for per-model provider overrides.
 
-**Plugin tools** — registered at runtime as `{server}__{tool}` proxies:
+**Plugin tools** — built-in plugin tools are first-class and registered under their bare names; external MCP servers appear as `{server}__{tool}`:
 
 | Server | LLM-visible tools |
 |--------|-------------------|
@@ -230,13 +234,13 @@ Every tool additionally accepts three harness meta-parameters: `_timeout` (per-c
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
 
-Built-in plugin tools that already carry their server as a name prefix (`mcp_set`, `wechat_login`) are registered as-is; the rest are namespaced `{server}__{tool}`. External MCP servers configured in `slife.json5` → `mcp.servers` always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
+Built-in plugin tools are registered under their bare names (e.g. `turn_search`, `wechat_login`, `mcp_set`); each schema carries a `[<server>] ` description prefix. External MCP servers configured in `slife.json5` → `mcp.servers` always appear as `{server}__{tool}` (e.g. `filesystem__read_file`).
 
 **Windows execution.** `execute_shell` runs in the detected shell — PowerShell or cmd (the same value the system prompt reports, so the LLM's syntax actually executes) — and its output is decoded with the system code page (GBK/cp936 on Chinese Windows). `run_python_script` forces the child Python to UTF-8 (`-X utf8`) so non-ASCII output can't crash the child.
 
 ### Memory — Always On
 
-Every conversation turn is permanently recorded in SQLite (`~/.slife/<agent>.db`). Hybrid search across four modes:
+Every turn is permanently recorded in SQLite (`~/.slife/<agent>.db`). Hybrid search across four modes:
 
 **Memory is a core feature — the agent never runs silently without it.** If the memory DB is broken (missing column, corruption, disk error), the agent fails loudly instead of pretending: a session that can't restore aborts at startup with the error; a turn that can't be saved freezes the inbox and shows a red banner — new turns stop until the DB is fixed and the agent is restarted. A memdb plugin that fails to load likewise aborts startup.
 
@@ -249,11 +253,11 @@ Every conversation turn is permanently recorded in SQLite (`~/.slife/<agent>.db`
 
 Embedding backends: local GGUF (BGE-M3, offline), HuggingFace transformers, or OpenAI-compatible API. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
-Each turn records two timestamps — the user's input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers in the chat. User messages carry a compact **`[Turn: N · start → end]`** footnote (the memory rowid plus when the turn happened) so the LLM can reference turns by rowid (`turn_read` / `turn_summarize`) — and the human reads the same line in the TUI.
+Each turn records two timestamps — the user's input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers in the chat. User messages carry a compact **`[Turn: N · start → end]`** footnote (the turn id plus when the turn happened) so the LLM can reference turns by id (`turn_read` / `turn_summarize`) — and the human reads the same line in the TUI.
 
 ### Autonomous Heartbeat
 
-While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_interval` seconds; the code default is 60, the shipped template sets 600) to think or act on its own. It runs as a normal turn (own conversation, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.`. A bare `.` reply is **silence** — never rendered in the chat or session restore, from any event (heartbeat, A2A async-completion notification, etc.); the `[Heartbeat]` trigger is filtered, and a real autonomous reply renders as `⚡ 自主`. A precondition for emergent self-initiated behavior.
+While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_interval` seconds; the code default is 60, the shipped template sets 600) to think or act on its own. It runs as a normal turn (own turn, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.`. A bare `.` reply is **silence** — never rendered in the chat or session restore, from any event (heartbeat, A2A async-completion notification, etc.); the `[Heartbeat]` trigger is filtered, and a real autonomous reply renders as `⚡ 自主`. A precondition for emergent self-initiated behavior.
 
 ### Image & Vision
 
@@ -263,7 +267,7 @@ Attach images with `@path` / `@url` syntax (quotes supported for paths with spac
 Check this screenshot @D:\Downloads\error.png
 ```
 
-Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `attach_image` tool lets the agent attach images mid-conversation. Nothing is ever rendered in the terminal — files open with the OS default app, and `share_file` publishes any local file as a public HTTPS link via the ngrok tunnel (returns a graceful error while the tunnel is offline).
+Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs as-is; the `attach_image` tool lets the agent attach images mid-turn. Nothing is ever rendered in the terminal — files open with the OS default app, and `share_file` publishes any local file as a public HTTPS link via the ngrok tunnel (returns a graceful error while the tunnel is offline).
 
 ### Plugins
 
@@ -281,7 +285,7 @@ Six built-in plugins as independent child processes:
 
 External MCP servers configured in `slife.json5` → `mcp.servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled).
 
-All plugins — built-in and auto-discovered third-party alike — run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_memfiles`, `check_mcp`, `check_a2a`, `check_watchdog` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
+All plugins — built-in and auto-discovered third-party alike — run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
 
 ### A2A — Agent-to-Agent (mesh)
 
@@ -328,6 +332,9 @@ uv tool install "slife[gguf]" --reinstall
 **Windows** — pre-built wheels (no C++ compiler needed); uv is configured to use the llama-cpp-python CPU wheel index. See [install docs](https://github.com/juzcn/slife#optional-extras) for wheel selection and first-use instructions.
 
 ## Development
+
+For the canonical terminology, see [Glossary.md](Glossary.md); for the design
+and architecture, see [DESIGN.md](DESIGN.md).
 
 ```bash
 git clone https://github.com/juzcn/slife.git

@@ -1,8 +1,8 @@
 """Credential management tools.
 
-credential_check    — verify credential in shell/config/keyring
-credential_inject   — load secret from keyring into os.environ
-credential_uninject — remove secret from os.environ (keyring untouched)
+credential_check    — verify credential in shell/config/credstore
+credential_inject   — load secret from credstore into os.environ
+credential_uninject — remove secret from os.environ (credstore untouched)
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _find_json5_refs(raw: dict, key: str) -> list[str]:
 class CredentialCheckTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "credential_check"
     category: ClassVar[str] = "Credentials"
-    description = "Check credential in shell, slife.json5, and OS keyring. Values always masked."
+    description = "Check credential in shell, slife.json5, and credstore. Values always masked."
     parameters = {
         "type": "object",
         "properties": {
@@ -83,7 +83,7 @@ class CredentialCheckTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportInco
 class InjectCredentialTool(Tool):
     name = "credential_inject"
     category: ClassVar[str] = "Credentials"
-    description = "Load a secret from OS keyring into os.environ. Temporary, this process only."
+    description = "Load a secret from credstore into os.environ. Temporary, this process only."
     parameters = {
         "type": "object",
         "properties": {
@@ -97,10 +97,10 @@ class InjectCredentialTool(Tool):
         from credstore import get_credential
         value = get_credential(key)
         if value is None:
-            return f"Error: '{key}' not found in the OS keyring."
+            return f"Error: '{key}' not found in the credential store."
         os.environ[key] = value
         del value
-        return f"Set {key} from keyring (temporary, this process only)."
+        return f"Set {key} from credstore (temporary, this process only)."
 
 
 class UninjectCredentialTool(Tool):

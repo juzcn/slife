@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from openai import BadRequestError, ContentFilterFinishReasonError
 
 from slife.a2a.identity import AgentName, AgentMessage
-from slife.agent.conversation import Conversation
+from slife.agent.message_history import MessageHistory
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -35,23 +35,23 @@ class Inbox:
 
     Usage::
 
-        inbox = Inbox(agent_loop, conversations)
+        inbox = Inbox(agent_loop, histories)
         await inbox.post(AgentMessage(source=AgentName("human"), content="hi"))
     """
 
     def __init__(
         self,
         agent_loop: "AgentLoop",
-        conversations: "ConversationStore",
+        histories: "MessageHistoryStore",
         a2a_client: "A2AClient | None" = None,
         on_activity: "Callable | None" = None,
         on_turn_complete: "Callable | None" = None,
     ):
         self._agent_loop = agent_loop
-        self._conversations = conversations
+        self._histories = histories
         self._a2a_client = a2a_client
         self._on_activity = on_activity  # async cb(kind, **kwargs)
-        self._on_turn_complete = on_turn_complete  # async cb(user_message, token_count, conversation)
+        self._on_turn_complete = on_turn_complete  # async cb(user_message, token_count, history)
         self._queue: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._runner_task: asyncio.Task | None = None
         self._processing: bool = False
@@ -201,7 +201,7 @@ class Inbox:
             except Exception:
                 pass
 
-        conversation = None
+        history = None
         handler = None
         result = None
         rolled_back = False
@@ -209,8 +209,8 @@ class Inbox:
             # Reset cancel state for the new message
             self._agent_loop.reset_cancel()
 
-            # Get or create conversation for this source
-            conversation = self._conversations.get_or_create(msg.source)
+            # Get or create history for this source
+            history = self._histories.get_or_create(msg.source)
 
             # Build a handler appropriate for the source
             # Prefer the handler attached to the message (TUI path).
@@ -218,14 +218,14 @@ class Inbox:
             # (remote A2A messages that don't carry their own handler).
             handler = msg.handler
             if handler is None:
-                handler = self._conversations.handler_for(msg.source)
+                handler = self._histories.handler_for(msg.source)
 
             # Run the agent loop — cancelled / max-iterations are now
             # returned as AgentResult(cancelled=True) with accumulated
             # usage, not raised as exceptions.
             result = await self._agent_loop.run(
                 user_input=msg.content,
-                conversation=conversation,
+                history=history,
                 images=msg.images if msg.images else None,
                 handler=handler,
             )
@@ -280,15 +280,15 @@ class Inbox:
                 except Exception:
                     pass
             # Only rollback on content-policy / bad-request errors
-            # where the conversation itself is the problem.  Transient
+            # where the history itself is the problem.  Transient
             # errors (connection, timeout, rate-limit, server errors)
-            # keep the conversation intact so typing "go" continues
+            # keep the history intact so typing "go" continues
             # with full context.
-            if conversation is not None and isinstance(
+            if history is not None and isinstance(
                 e, (BadRequestError, ContentFilterFinishReasonError),
             ):
                 try:
-                    conversation.pop_last_turn()
+                    history.pop_last_turn()
                     # The rejected turn was rolled back — the finally must NOT
                     # re-save it.  The backward text match in save_to_memory
                     # would otherwise match an earlier turn with identical text
@@ -330,28 +330,28 @@ class Inbox:
         finally:
             # ★ Persist turn unconditionally — even on cancel, error,
             # or max-iterations.  Preserves everything that was produced
-            # so far so the conversation and images are never lost.  The
+            # so far so the history and images are never lost.  The
             # one exception: a content-policy / bad-request rollback, whose
             # rejected turn must not be saved (re-saving would also match an
             # earlier identical turn and duplicate it).
-            if self._on_turn_complete and conversation is not None and not rolled_back:
+            if self._on_turn_complete and history is not None and not rolled_back:
                 try:
                     token_count = 0
                     if result is not None and hasattr(result, "usage"):
                         token_count = result.usage.total_tokens
                     # The LAST LLM call's prompt_tokens = the exact context
-                    # size at turn end (per-conversation, from the loop's
+                    # size at turn end (per-history, from the loop's
                     # usage cache).  Persisted so restore can prime the
                     # footer / _sys_note with the real exit-time occupancy
                     # instead of an estimate.  Absent on cancel-without-API
                     # → 0 (legacy fallback applies on restore).
-                    usage = self._agent_loop._usage_by_conv.get(id(conversation))
+                    usage = self._agent_loop._usage_by_history.get(id(history))
                     prompt_tokens = usage.prompt_tokens if usage else 0
                     await self._on_turn_complete(
                         user_message=msg.content,
                         token_count=token_count,
                         prompt_tokens=prompt_tokens,
-                        conversation=conversation,
+                        history=history,
                         channel=str(msg.source),
                         # The user-input timestamp captured by the TUI
                         # handler — becomes the diary created_at so restore
@@ -388,17 +388,17 @@ class Inbox:
         await self._a2a_client.publish_message(reply_to, payload, qos=1)
 
 
-class ConversationStore:
-    """Manages per-source-agent conversations.
+class MessageHistoryStore:
+    """Manages per-source-agent histories.
 
-    The human's conversation persists across messages (so the operator
-    has a continuous back-and-forth).  Remote agent conversations are
+    The human's history persists across messages (so the operator
+    has a continuous back-and-forth).  Remote agent histories are
     fresh each time (one-shot task model).
     """
 
     def __init__(self, system_prompt: str):
         self._system_prompt = system_prompt
-        self._convs: dict[AgentName, Conversation] = {}
+        self._by_source: dict[AgentName, MessageHistory] = {}
         self._handler_factories: dict[AgentName, "AgentEventHandler | None"] = {}
         self._default_handler_factory: "Callable[[], AgentEventHandler] | None" = (
             None
@@ -441,47 +441,47 @@ class ConversationStore:
             return self._default_handler_factory()
         return None
 
-    def get_or_create(self, source: AgentName) -> Conversation:
-        """Get or create a conversation for *source*.
+    def get_or_create(self, source: AgentName) -> MessageHistory:
+        """Get or create a history for *source*.
 
-        Human (TUI) and WeChat conversations are persistent so the
+        Human (TUI) and WeChat histories are persistent so the
         operator has a continuous back-and-forth.  Remote agent
-        conversations are fresh each message (one-shot).
+        histories are fresh each message (one-shot).
         """
         from slife.a2a.identity import HUMAN, WECHAT
         from slife.subagent.identity import SUBAGENT
 
         if source in (HUMAN, WECHAT, SUBAGENT):
-            # Persistent conversation for human / WeChat / subagent sources.
-            # SUBAGENT shares the HUMAN conversation so the user sees
+            # Persistent history for human / WeChat / subagent sources.
+            # SUBAGENT shares the HUMAN history so the user sees
             # subagent results inline — but the diary records channel
             # as "subagent" for audit/turn_search distinguishability.
-            conv_source = HUMAN if source == SUBAGENT else source
-            if conv_source not in self._convs:
-                self._convs[conv_source] = Conversation(
+            source_key = HUMAN if source == SUBAGENT else source
+            if source_key not in self._by_source:
+                self._by_source[source_key] = MessageHistory(
                     system_prompt=self._system_prompt,
                 )
-            return self._convs[conv_source]
+            return self._by_source[source_key]
 
-        # One-shot conversation for remote agents
-        return Conversation(system_prompt=self._system_prompt)
+        # One-shot history for remote agents
+        return MessageHistory(system_prompt=self._system_prompt)
 
     def update_system_prompt(self, new_prompt: str) -> None:
-        """Rebuild the system prompt for existing persistent conversations and
+        """Rebuild the system prompt for existing persistent histories and
         for ones created later.
 
         Called after a model switch: without it, the persistent WeChat
-        conversation (and any conversation created after the switch) keeps
+        history (and any history created after the switch) keeps
         running on the old model's system prompt (stale model name, vision
         flag, context window, A2A config).
         """
         self._system_prompt = new_prompt
-        for conv in self._convs.values():
+        for conv in self._by_source.values():
             if conv.messages and conv.messages[0]["role"] == "system":
                 conv.messages[0]["content"] = new_prompt
 
     def clear(self, source: AgentName) -> None:
-        """Clear conversation history for *source*."""
-        if source in self._convs:
-            self._convs[source].clear()
-            del self._convs[source]
+        """Clear the message history for *source*."""
+        if source in self._by_source:
+            self._by_source[source].clear()
+            del self._by_source[source]

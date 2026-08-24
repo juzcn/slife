@@ -53,7 +53,8 @@ mcp, _log_path, logger = create_plugin_server(
     instructions=(
         "slife-wechat — bidirectional WeChat messaging. "
         "LLM tools: wechat_login (QR scan), wechat_send_message (reply), "
-        "wechat_check_messages (incoming), wechat_check_status, wechat_logout."
+        "wechat_send_typing (typing indicator), wechat_check_messages "
+        "(incoming), wechat_check_status, wechat_logout."
     ),
     lifespan=_wechat_lifespan,
 )
@@ -624,7 +625,7 @@ async def wechat_send_typing(
     name="wechat_check_messages",
     description=(
         "Check for new incoming WeChat messages (consumed on read). Each has "
-        "from_user_id + context_token for replying with wechat_send_message."
+        "to_user_id + context_token for replying with wechat_send_message."
     ),
 )
 async def wechat_check_messages() -> str:
