@@ -764,6 +764,8 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 
 Health checks fall into two categories. `system_health` runs all of them together, and every dynamic check is also exposed as a standalone native tool (`check_memdb`, `check_wechat`, `check_memfiles`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog`) so the LLM can probe a single subsystem directly without the full report. `check_mcp` additionally takes an optional `server` argument (default: all) to diagnose just one external server.
 
+Because the standalone checks are subsets of `system_health`, their tool schemas state that relationship explicitly ("one subsystem of system_health", and `system_health` states it includes every `check_*` result). This keeps the LLM from calling `system_health` and then re-calling each `check_*` for the same data — each schema describes what it returns and how it relates to the aggregate.
+
 **Static startup checks** — `check_external_deps()` probes system tooling once at startup; results are recorded via `slife.health.record()` and appear in `system_health`'s report:
 
 | Dependency | Use |

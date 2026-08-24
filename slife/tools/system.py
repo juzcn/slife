@@ -117,7 +117,8 @@ class CheckMemdbTool(Tool):
 
     name = "check_memdb"
     category: ClassVar[str] = "System"
-    description = "MemDB plugin status: SQLite database size + embedding backend (gguf/transformer/api/none)."
+    description = ("MemDB plugin status: SQLite database size + embedding backend "
+                   "(gguf/transformer/api/none). One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -204,7 +205,8 @@ class CheckWechatTool(Tool):
 
     name = "check_wechat"
     category: ClassVar[str] = "System"
-    description = "WeChat plugin status: disabled, not_logged_in, logged_in, or session_expired."
+    description = ("WeChat plugin status: disabled, not_logged_in, logged_in, or "
+                   "session_expired. One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -248,7 +250,8 @@ class CheckSharefileTool(Tool):
 
     name = "check_sharefile"
     category: ClassVar[str] = "System"
-    description = "File sharing tunnel status (online/offline) for share_file."
+    description = ("File sharing tunnel status (online/offline) for share_file. "
+                   "One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -300,7 +303,8 @@ class CheckMemfilesTool(Tool):
 
     name = "check_memfiles"
     category: ClassVar[str] = "System"
-    description = "File cabinet (memfiles) status: connected, store, semantic index (search)."
+    description = ("File cabinet (memfiles) status: connected, store, semantic index "
+                   "(search). One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -352,7 +356,8 @@ class CheckWatchdogTool(Tool):
 
     name = "check_watchdog"
     category: ClassVar[str] = "System"
-    description = "Plugin watchdog status: which plugins are auto-restarted, latest restart records."
+    description = ("Plugin watchdog status: which plugins are auto-restarted, latest "
+                   "restart records. One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -493,7 +498,7 @@ class CheckMcpTool(Tool):
     category: ClassVar[str] = "System"
     description = ("External MCP server status: connected/disconnected/disabled per server, "
                    "with tool counts and error details. Pass 'server' to check a single server; "
-                   "omit it to check all.")
+                   "omit it to check all. One subsystem of system_health.")
     parameters = {
         "type": "object",
         "properties": {
@@ -569,7 +574,8 @@ class CheckA2aTool(Tool):
 
     name = "check_a2a"
     category: ClassVar[str] = "System"
-    description = "A2A mesh status: connected / unavailable (no active MQTT port), agent id, status, online peers."
+    description = ("A2A mesh status: connected / unavailable (no active MQTT port), "
+                   "agent id, status, online peers. One subsystem of system_health.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
@@ -721,7 +727,11 @@ class SystemHealthTool(Tool):
 
     name = "system_health"
     category: ClassVar[str] = "System"
-    description = "Unified health report: startup records + MemDB/WeChat/tunnel/MCP/watchdog checks, with healthy flag and summary."
+    description = ("Complete health report in one call: runs every check_* tool "
+                   "(check_memdb, check_wechat, check_memfiles, check_sharefile, "
+                   "check_mcp, check_a2a, check_watchdog) plus startup records, "
+                   "grouped per component with an overall healthy flag and summary. "
+                   "All individual check_* results are already included in this report.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
