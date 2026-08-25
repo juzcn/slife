@@ -275,10 +275,10 @@ class TestPluginLifecycleKill:
         lifecycle.kill()  # Should not raise
 
     def test_kill_terminates_process(self, lifecycle):
-        """kill() terminates the underlying process."""
+        """kill() terminates a running process."""
         mock_subprocess = MagicMock()
         mock_subprocess.terminate = MagicMock()
-        mock_subprocess.wait = MagicMock()
+        mock_subprocess.returncode = None
 
         mock_process = MagicMock()
         mock_process._process = mock_subprocess
@@ -286,11 +286,11 @@ class TestPluginLifecycleKill:
 
         lifecycle.kill()
         mock_subprocess.terminate.assert_called_once()
-        mock_subprocess.wait.assert_called_once_with(timeout=3.0)
 
     def test_kill_terminate_error_does_not_crash(self, lifecycle):
         """kill() swallows terminate errors."""
         mock_subprocess = MagicMock()
+        mock_subprocess.returncode = None
         mock_subprocess.terminate = MagicMock(side_effect=RuntimeError("boom"))
 
         mock_process = MagicMock()
@@ -299,17 +299,18 @@ class TestPluginLifecycleKill:
 
         lifecycle.kill()  # Should not raise
 
-    def test_kill_wait_error_does_not_crash(self, lifecycle):
-        """kill() swallows wait errors."""
+    def test_kill_already_exited_is_noop(self, lifecycle):
+        """kill() skips a process that already exited (returncode set)."""
         mock_subprocess = MagicMock()
         mock_subprocess.terminate = MagicMock()
-        mock_subprocess.wait = MagicMock(side_effect=RuntimeError("boom"))
+        mock_subprocess.returncode = 0
 
         mock_process = MagicMock()
         mock_process._process = mock_subprocess
         lifecycle.process = mock_process
 
-        lifecycle.kill()  # Should not raise
+        lifecycle.kill()
+        mock_subprocess.terminate.assert_not_called()
 
     def test_kill_no_underlying_process(self, lifecycle):
         """kill() handles process wrapper with no _process attribute."""

@@ -20,7 +20,14 @@ and restart-safe:
 Only the newest missed fire is recorded (not every fire inside a long
 downtime) — it is the actionable one.  Missed runs persist so a restart can
 surface them and offer a backfill (:func:`fire_task_now` runs a task now,
-``scheduled_run_confirm`` closes a missed run the user declines).
+``scheduled_run_skip`` closes a missed/failed run the user declines).
+
+Run outcome is **optimistically pending**: a fire is recorded as ``pending``
+and only becomes ``ran`` when the worker's report arrives.  Everything else —
+turn error, Esc-interrupt, restart — leaves it a ``failed``-by-default (the
+turn's reply hook may write a best-effort error detail; startup reaps any
+stale ``pending`` whose process lifetime is gone).  This inversion means an
+incomplete run is *never* recorded as a success.
 """
 
 from __future__ import annotations
@@ -178,13 +185,13 @@ async def _fire(service, client, task: dict, due_at: datetime) -> None:
         source=SCHEDULE,
         content=trigger_text(task["name"], task.get("description", "")),
         handler=_SilentHandler(),
-        on_reply=_schedule_reply(service),
+        on_reply=_schedule_reply(service, client, task, due_iso),
     ))
     logger.info("schedule_fired task=%s due_at=%s", task.get("name"), due_iso)
 
 
-def _schedule_reply(service):
-    """``on_reply`` for a schedule trigger turn — surface a real reply."""
+def _surface_reply(service):
+    """``on_reply`` for notice turns — route the real reply to the TUI."""
     async def _reply(text: str, cancelled: bool = False) -> None:
         t = (text or "").strip()
         if t and t != ".":
@@ -192,25 +199,61 @@ def _schedule_reply(service):
     return _reply
 
 
-async def _missed_notice(service, missed: list[dict]) -> None:
-    """Inject a one-line notice listing missed runs so the main agent can
-    offer to backfill them."""
+def _schedule_reply(service, client, task: dict, due_iso: str):
+    """``on_reply`` for a schedule trigger turn.
+
+    Surfaces a real reply to the user and, best effort only, records a
+    failure reason on the pending run when the turn errored or was
+    interrupted.  Correctness never depends on this writeback — a pending run
+    without a report is a failure by default.
+    """
+    async def _reply(text: str, cancelled: bool = False) -> None:
+        t = (text or "").strip()
+        if cancelled:
+            await _call(client, "__scheduled_mark_run_failed", {
+                "task_id": task["id"], "due_at": due_iso,
+                "error": "interrupted",
+            })
+        elif t.startswith("Error:"):
+            await _call(client, "__scheduled_mark_run_failed", {
+                "task_id": task["id"], "due_at": due_iso, "error": t[:200],
+            })
+        if t and t != ".":
+            await service.surface_autonomous(t)
+    return _reply
+
+
+async def _missed_notice(service, missed: list[dict], stale: list[dict]) -> None:
+    """Inject a notice listing missed and failed-incomplete runs.
+
+    Surfaces everything the user may want to backfill in one turn: *missed*
+    runs (slife was down at the due time) and *stale* runs a restart swept to
+    ``failed`` (dispatched but never produced a report).
+    """
     from slife.a2a.identity import SCHEDULE, AgentMessage
     from slife.agent.heartbeat import _SilentHandler
 
-    lines = ", ".join(f"{m['name']} @ {m['due_at']}" for m in missed)
+    parts: list[str] = []
+    if missed:
+        parts.append("错过（slife 未运行期间到期）: "
+                     + ", ".join(f"{m['name']} @ {m['due_at']}" for m in missed))
+    if stale:
+        parts.append("未完成（已触发但无报告，重启中断）: "
+                     + ", ".join(f"{m['name']} @ {m['due_at']}" for m in stale))
+    if not parts:
+        return
     inbox = getattr(service, "inbox", None)
     if inbox is None:
         return
     await inbox.post(AgentMessage(
         source=SCHEDULE,
         content=(
-            f"{SCHEDULE_MARK} missed] 发现错过的定时任务：{lines}。"
+            f"{SCHEDULE_MARK} missed] 发现需要处理的定时执行：{'；'.join(parts)}。"
             "请告知用户，并询问是否用 run_schedule_now 补做；"
-            "若不需要，用 scheduled_run_confirm 标记为已确认。"
+            "若不需要，用 scheduled_run_skip 标记为已跳过。"
         ),
         handler=_SilentHandler(),
-        on_reply=_schedule_reply(service),
+        on_reply=_surface_reply(service),
     ))
 
 
@@ -219,6 +262,10 @@ async def schedule_loop(service) -> None:
     # Tracks tasks already announced as missed this process lifetime, so the
     # startup missed-notice fires once per task, not every poll.
     announced_missed: set[int] = set()
+    # Restart sweep runs once per process: dispatch-only runs from a previous
+    # lifetime are reaped to ``failed`` and folded into the same notice.
+    stale_swept = False
+    stale_failed: list[dict] = []
 
     while True:
         await asyncio.sleep(POLL_INTERVAL)
@@ -226,8 +273,13 @@ async def schedule_loop(service) -> None:
             client = _memfiles_client(service)
             if client is None:
                 continue
-            tasks = await _load_task_states(client)
             now = datetime.now().astimezone()
+            if not stale_swept:
+                stale_swept = True
+                resp = await _call(client, "__scheduled_fail_unconfirmed")
+                if isinstance(resp, dict):
+                    stale_failed = resp.get("runs") or []
+            tasks = await _load_task_states(client)
             fresh_missed: list[dict] = []
             for task in tasks:
                 decision = _classify(task, now)
@@ -249,8 +301,8 @@ async def schedule_loop(service) -> None:
                         fresh_missed.append(
                             {"name": task.get("name"), "due_at": due_iso},
                         )
-            if fresh_missed:
-                await _missed_notice(service, fresh_missed)
+            if fresh_missed or stale_failed:
+                await _missed_notice(service, fresh_missed, stale_failed)
         except asyncio.CancelledError:
             raise
         except Exception as e:

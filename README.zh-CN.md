@@ -240,7 +240,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 
 让 agent 按计划做事——"每晚 12 点写日记"、"每周五总结本周"——它会注册一个 cron 定时任务（`scheduled_task_set`）。任务触发时，agent 把工作委派给一个 subagent worker 而非亲自执行，worker 完成后把结果作为**报告**存入文件柜（`save_cron_report`）。每次触发都有记录（`scheduled_run_list`），你可以查看跑了什么、产出了什么（`report_list` / `report_read`）。
 
-定时任务**只在 Slife 运行时触发**。Slife 关闭期间到点的执行会被记为**错过（missed）**，并在下次启动时呈现，agent 可以提议补做（`run_schedule_now`），你也可以跳过（`scheduled_run_confirm`）。
+定时任务**只在 Slife 运行时触发**。Slife 关闭期间到点的执行会被记为**错过（missed）**，已触发但未完成（中断、报错、重启）的会记为**未完成（failed）**，并在下次启动时一起呈现，agent 可以提议补做（`run_schedule_now`），你也可以跳过（`scheduled_run_skip`）。
 
 ### 图片与视觉
 

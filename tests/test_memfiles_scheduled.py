@@ -92,7 +92,7 @@ async def test_record_and_mark_missed(tmp_path):
 
         runs = await store.list_scheduled_runs(task_id=task["task_id"])
         assert len(runs) == 1
-        assert runs[0]["status"] == "ran"
+        assert runs[0]["status"] == "pending"  # success unconfirmed until a report
 
         # missed for a different due_at
         await store.mark_run_missed(task["task_id"], "2026-08-26T00:00:00")
@@ -104,21 +104,86 @@ async def test_record_and_mark_missed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_confirm_run_done_only_misses(tmp_path):
+async def test_mark_run_skipped_closes_missed_and_failed(tmp_path):
     store = await _real_store(tmp_path)
     try:
         task = await store.upsert_scheduled_task("daily", schedule="0 0 * * *")
+        await store.record_scheduled_run(task["task_id"], "2026-08-25T00:00:00")
+        await store.mark_run_failed(task["task_id"], "2026-08-25T00:00:00", "boom")
         await store.mark_run_missed(task["task_id"], "2026-08-26T00:00:00")
         await store.record_scheduled_run(task["task_id"], "2026-08-27T00:00:00")
 
-        await store.confirm_run_done(task["task_id"], "2026-08-26T00:00:00")
-        runs = await store.list_scheduled_runs(status="confirmed_done")
-        assert len(runs) == 1
+        await store.mark_run_skipped(task["task_id"], "2026-08-26T00:00:00")
+        await store.mark_run_skipped(task["task_id"], "2026-08-25T00:00:00")
+        runs = await store.list_scheduled_runs(status="skipped")
+        assert {r["due_at"] for r in runs} == {
+            "2026-08-25T00:00:00", "2026-08-26T00:00:00",
+        }
 
-        # a 'ran' row is not touched by confirm
-        await store.confirm_run_done(task["task_id"], "2026-08-27T00:00:00")
-        runs = await store.list_scheduled_runs(status="ran")
+        # a pending (unconfirmed) run is not closed by skip — only missed/failed
+        await store.mark_run_skipped(task["task_id"], "2026-08-27T00:00:00")
+        runs = await store.list_scheduled_runs(status="pending")
         assert len(runs) == 1
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_mark_run_failed_only_pending(tmp_path):
+    store = await _real_store(tmp_path)
+    try:
+        task = await store.upsert_scheduled_task("daily", schedule="0 0 * * *")
+        await store.record_scheduled_run(task["task_id"], "2026-08-25T00:00:00")
+        await store.mark_run_failed(task["task_id"], "2026-08-25T00:00:00",
+                                    "interrupted")
+        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        assert runs[0]["status"] == "failed"
+        assert runs[0]["error"] == "interrupted"
+
+        # a ran (report-backed) run is not downgraded by a late cancel
+        await store.record_scheduled_run(task["task_id"], "2026-08-26T00:00:00")
+        await store.upsert_report(task["task_id"], "Ok", "fine")
+        await store.mark_run_failed(task["task_id"], "2026-08-26T00:00:00",
+                                    "late cancel")
+        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        by_due = {r["due_at"]: r for r in runs}
+        assert by_due["2026-08-26T00:00:00"]["status"] == "ran"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_fail_unconfirmed_runs_sweep(tmp_path):
+    store = await _real_store(tmp_path)
+    try:
+        task = await store.upsert_scheduled_task("daily", schedule="0 0 * * *")
+
+        # pending (current) and legacy 'ran' without a report → both swept
+        await store.record_scheduled_run(task["task_id"], "2026-08-25T00:00:00")
+        await store.record_scheduled_run(task["task_id"], "2026-08-26T00:00:00",
+                                         status="ran")
+
+        # legacy 'ran' WITH a report = confirmed success → never touched
+        await store.record_scheduled_run(task["task_id"], "2026-08-27T00:00:00",
+                                         status="ran")
+        await store.upsert_report(task["task_id"], "Done", "ok")
+
+        stale = await store.fail_unconfirmed_runs()
+        assert {r["due_at"] for r in stale} == {
+            "2026-08-25T00:00:00", "2026-08-26T00:00:00",
+        }
+        assert stale[0]["name"] == "daily"
+
+        runs = await store.list_scheduled_runs(task_id=task["task_id"])
+        by_due = {r["due_at"]: r for r in runs}
+        assert by_due["2026-08-25T00:00:00"]["status"] == "failed"
+        assert by_due["2026-08-26T00:00:00"]["status"] == "failed"
+        assert by_due["2026-08-25T00:00:00"]["error"] == \
+            "slife restarted before completion"
+        assert by_due["2026-08-27T00:00:00"]["status"] == "ran"
+
+        # idempotent — a second sweep can't repeat the run
+        assert await store.fail_unconfirmed_runs() == []
     finally:
         await store.close()
 
@@ -154,9 +219,11 @@ async def test_upsert_report_mirrors_md_and_backfills_run(tmp_path):
         md = (tmp_path / "reports" / "daily-report.md").read_text(encoding="utf-8")
         assert "Today went well." in md
 
-        # report_id backfilled onto the run at the store layer
+        # report_id backfilled onto the run, and the report arrival confirms
+        # it (pending → ran) — the one success writeback
         runs = await store.list_scheduled_runs(task_id=task["task_id"])
         assert runs[0]["report_id"] == rep["doc_id"]
+        assert runs[0]["status"] == "ran"
     finally:
         await store.close()
 
@@ -173,9 +240,10 @@ async def test_upsert_report_append_same_title(tmp_path):
         assert a["doc_id"] == b["doc_id"]  # same title → same report, appended
         md = (tmp_path / "reports" / "summary.md").read_text(encoding="utf-8")
         assert "first" in md and "second" in md
-        # both runs got linked to the (single) report
+        # both runs got linked to the (single) report and confirmed ran
         runs = await store.list_scheduled_runs(task_id=task["task_id"])
         assert all(r["report_id"] == a["doc_id"] for r in runs)
+        assert all(r["status"] == "ran" for r in runs)
     finally:
         await store.close()
 
@@ -285,7 +353,7 @@ class TestScheduledServerTools:
             await store.close()
 
     @pytest.mark.asyncio
-    async def test_run_list_and_confirm(self, tmp_path):
+    async def test_run_list_and_skip(self, tmp_path):
         store = await _real_store(tmp_path)
         try:
             with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
@@ -299,10 +367,29 @@ class TestScheduledServerTools:
                 missed = json.loads(await plugin.scheduled_run_list(name="daily", status="missed"))
                 assert missed["total"] == 1
 
-                confirm = await plugin.scheduled_run_confirm("daily", "2026-08-26T00:00:00")
-                assert "confirmed" in confirm
+                skip = await plugin.scheduled_run_skip("daily", "2026-08-26T00:00:00")
+                assert "skipped" in skip
+                skipped = json.loads(await plugin.scheduled_run_list(name="daily", status="skipped"))
+                assert skipped["total"] == 1
                 # unknown task
                 assert "not found" in await plugin.scheduled_run_list(name="nope")
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_fail_unconfirmed_server_tool(self, tmp_path):
+        store = await _real_store(tmp_path)
+        try:
+            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+                await plugin.scheduled_task_set(name="daily", schedule="0 0 * * *")
+                task = await store.get_scheduled_task("daily")
+                await store.record_scheduled_run(task["id"], "2026-08-25T00:00:00")
+                fail_unconfirmed = getattr(plugin, "__scheduled_fail_unconfirmed")
+                resp = json.loads(await fail_unconfirmed())
+                assert resp["failed"] == 1
+                assert resp["runs"][0]["name"] == "daily"
+                # idempotent
+                assert json.loads(await fail_unconfirmed())["failed"] == 0
         finally:
             await store.close()
 

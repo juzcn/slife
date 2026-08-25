@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess as _subprocess
 import sys
+import time
 import platform as _platform
 
 IS_WINDOWS = sys.platform == "win32"
@@ -226,6 +227,56 @@ async def terminate_process(
         # self._sock.fileno() raises "I/O operation on closed pipe".
         # Closing transports here marks them closed so __del__ is a no-op.
         _close_pipe_transports(process)
+
+
+def terminate_process_sync(
+    process: asyncio.subprocess.Process,
+    *,
+    timeout: float = 3.0,
+    label: str = "",
+) -> None:
+    """Synchronous best-effort child process termination.
+
+    Crash-path version of :func:`terminate_process` for ``finally`` blocks
+    where no event loop is running — ``await process.wait(...)`` and
+    ``asyncio.wait_for`` are out, and ``Process.wait(timeout=…)`` doesn't
+    exist (that signature belongs to ``subprocess.Popen.wait``).
+
+    Windows: ``terminate()`` is ``TerminateProcess`` (immediate hard kill),
+    so waiting is pointless and skipped entirely.
+    POSIX: send SIGTERM, poll ``os.waitpid(pid, os.WNOHANG)`` for up to
+    *timeout* seconds, then escalate to SIGKILL.
+
+    Best-effort: never raises; terminate/kill errors are logged at debug.
+    """
+    if process is None or process.returncode is not None:
+        return
+    tag = f"label={label} " if label else ""
+    try:
+        process.terminate()
+    except Exception:
+        logger.debug("terminate_process_sync_terminate_error %spid=%s", tag, process.pid, exc_info=True)
+        return
+    if IS_WINDOWS:
+        # TerminateProcess — nothing to wait for.
+        return
+    pid = process.pid
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            _, status = os.waitpid(pid, os.WNOHANG)  # type: ignore[attr-defined]
+        except OSError:
+            return  # Already reaped / exited — nothing more to do.
+        if status != 0:
+            return  # Exited.
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    logger.warning("terminate_process_sync_force_kill %spid=%s", tag, pid)
+    try:
+        os.kill(pid, signal.SIGKILL)  # type: ignore[attr-defined]
+    except OSError:
+        pass
 
 
 def desktop_notify(title: str, message: str) -> None:

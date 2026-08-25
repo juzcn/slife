@@ -437,9 +437,11 @@ class MemfilesStore:
             )
             doc_id = cursor.lastrowid
 
-        # Store-layer backfill: link the newest un-linked run for this task.
+        # Store-layer backfill: link the newest un-linked run for this task and
+        # confirm it — a report arriving is the one success signal, so the run
+        # goes pending → ran here (the ONLY 'ran' write).
         await self._c.execute(
-            "UPDATE scheduled_runs SET report_id=? WHERE id = ("
+            "UPDATE scheduled_runs SET report_id=?, status='ran' WHERE id = ("
             "  SELECT id FROM scheduled_runs WHERE task_id=? AND report_id IS NULL "
             "  ORDER BY due_at DESC LIMIT 1)",
             (doc_id, task_id),
@@ -518,15 +520,21 @@ class MemfilesStore:
         return True
 
     async def record_scheduled_run(
-        self, task_id: int, due_at: str, status: str = "ran",
+        self, task_id: int, due_at: str, status: str = "pending",
     ) -> dict:
-        """Insert a scheduled run (idempotent on (task_id, due_at))."""
+        """Insert a scheduled run (idempotent on (task_id, due_at)).
+
+        Fires are recorded as ``pending`` — success is unconfirmed until a
+        report lands (see :meth:`upsert_report`).  A run that already has a
+        report (status ``ran``) is never downgraded by re-recording the same
+        due time.
+        """
         now = _now()
         cursor = await self._c.execute(
             "INSERT INTO scheduled_runs (task_id, due_at, status, ran_at) "
             "VALUES (?, ?, ?, ?) "
             "ON CONFLICT(task_id, due_at) DO UPDATE SET status=excluded.status, "
-            "ran_at=excluded.ran_at",
+            "ran_at=excluded.ran_at WHERE scheduled_runs.report_id IS NULL",
             (task_id, due_at, status, now),
         )
         await self._c.commit()
@@ -537,19 +545,63 @@ class MemfilesStore:
         await self._c.execute(
             "INSERT INTO scheduled_runs (task_id, due_at, status) VALUES (?, ?, 'missed') "
             "ON CONFLICT(task_id, due_at) DO UPDATE SET status='missed' "
-            "WHERE scheduled_runs.status NOT IN ('ran', 'failed', 'confirmed_done')",
+            "WHERE scheduled_runs.status NOT IN "
+            "('pending', 'ran', 'failed', 'skipped')",
             (task_id, due_at),
         )
         await self._c.commit()
 
-    async def confirm_run_done(self, task_id: int, due_at: str) -> None:
-        """Confirm a missed run as done (user said "no need to backfill")."""
+    async def mark_run_failed(
+        self, task_id: int, due_at: str, error: str = "",
+    ) -> None:
+        """Mark a dispatched-but-unconfirmed run as failed (best effort).
+
+        Only a ``pending`` run is moved (a report may have already flipped it
+        to ``ran``; a skipped run the user closed stays skipped).  ``error``
+        is a detail string, not the state itself — the correctness invariant
+        is "no report = failed", so a missing writeback here never matters.
+        """
         await self._c.execute(
-            "UPDATE scheduled_runs SET status='confirmed_done' "
-            "WHERE task_id=? AND due_at=? AND status='missed'",
+            "UPDATE scheduled_runs SET status='failed', error=? "
+            "WHERE task_id=? AND due_at=? AND status='pending'",
+            (error or "", task_id, due_at),
+        )
+        await self._c.commit()
+
+    async def mark_run_skipped(self, task_id: int, due_at: str) -> None:
+        """Close a missed/failed run the user decided not to backfill."""
+        await self._c.execute(
+            "UPDATE scheduled_runs SET status='skipped' "
+            "WHERE task_id=? AND due_at=? AND status IN ('missed', 'failed')",
             (task_id, due_at),
         )
         await self._c.commit()
+
+    async def fail_unconfirmed_runs(self) -> list[dict]:
+        """Startup sweep: dispatch-only runs from a previous process lifetime
+        can never complete, so mark them failed.
+
+        Covers the current ``pending`` state plus legacy ``ran`` rows written
+        by older code at fire time (no report).  A ``ran`` row with a report is
+        a confirmed success and is never touched.  Returns the flipped runs
+        (with task name) so the agent can surface them.
+        """
+        cursor = await self._c.execute(
+            "SELECT r.task_id, t.name, r.due_at, r.status FROM scheduled_runs r "
+            "JOIN scheduled_tasks t ON t.id = r.task_id "
+            "WHERE r.status IN ('pending','ran') AND r.report_id IS NULL "
+            "ORDER BY r.due_at DESC",
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+        if rows:
+            await self._c.execute(
+                "UPDATE scheduled_runs SET status='failed', "
+                "error=COALESCE(NULLIF(error,''), "
+                "  'slife restarted before completion') "
+                "WHERE status IN ('pending','ran') AND report_id IS NULL",
+            )
+            await self._c.commit()
+        return rows
 
     async def last_run_due(self, task_id: int) -> str | None:
         """Return the newest ``due_at`` across all of a task's runs.

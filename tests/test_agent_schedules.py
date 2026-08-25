@@ -3,6 +3,7 @@ manual fire.  Pure-timing tests use no DB; the loop's DB interaction is
 exercised via a mocked memfiles client.
 """
 
+import asyncio
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -178,6 +179,87 @@ async def test_fire_task_now_unknown_task():
     service._tool_ctx = ctx
     result = await S.fire_task_now(service, "ghost")
     assert "not found" in result
+
+
+# ── turn outcome writeback (on_reply hook) ───────────────────────────
+
+@pytest.mark.asyncio
+async def test_schedule_reply_marks_run_failed_on_cancel_and_error():
+    client = AsyncMock()
+    client.call_tool = AsyncMock(return_value="{}")
+    surfaced: list[str] = []
+    service = MagicMock()
+
+    async def fake_surface(t: str) -> None:
+        surfaced.append(t)
+
+    service.surface_autonomous = fake_surface
+    task = {"id": 7, "name": "daily"}
+    reply = S._schedule_reply(service, client, task, "2026-08-25T09:00:00")
+
+    await reply("(Turn interrupted)", cancelled=True)   # Esc → interrupted
+    await reply("Error: boom")                          # turn 400 → reason
+    await reply("all good")                             # normal → no writeback
+
+    calls = [(c.args[0], c.args[1]) for c in client.call_tool.await_args_list]
+    assert [name for name, _ in calls] == [
+        "__scheduled_mark_run_failed", "__scheduled_mark_run_failed",
+    ]
+    assert calls[0][1]["error"] == "interrupted"
+    assert calls[1][1]["error"] == "Error: boom"
+    assert surfaced == ["(Turn interrupted)", "Error: boom", "all good"]
+
+
+# ── startup sweep on a previous process lifetime ─────────────────────
+
+@pytest.mark.asyncio
+async def test_schedule_loop_sweeps_stale_pending_into_notice(monkeypatch):
+    monkeypatch.setattr(S, "POLL_INTERVAL", 0.01)
+    results = [
+        # __scheduled_fail_unconfirmed
+        '{"failed": 1, "runs": [{"task_id": 7, "name": "daily", '
+        '"due_at": "2026-08-25T09:00:00", "status": "failed"}]}',
+        "[]",  # __scheduled_tasks_state
+    ]
+
+    async def fake_call_tool(name, arguments=None):
+        return results.pop(0)
+
+    client = AsyncMock()
+    client.call_tool = fake_call_tool
+
+    posted: list = []
+    inbox = MagicMock()
+
+    async def fake_post(msg):
+        posted.append(msg)
+
+    inbox.post = fake_post
+
+    service = MagicMock()
+    ctx = MagicMock()
+    ctx.memfiles_client = client
+    service._tool_ctx = ctx
+    service.inbox = inbox
+    service.surface_autonomous = AsyncMock()
+
+    task = asyncio.create_task(S.schedule_loop(service))
+    try:
+        for _ in range(300):
+            if posted:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        if not task.done():
+            task.cancel()
+
+    assert posted, "schedule loop never posted a notice"
+    assert "daily @ 2026-08-25T09:00:00" in posted[0].content
+    assert "run_schedule_now" in posted[0].content
+    assert "scheduled_run_skip" in posted[0].content
 
 
 # ── run_schedule_now native tool ─────────────────────────────────────

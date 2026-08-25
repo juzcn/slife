@@ -32,6 +32,7 @@ from slife.agent.plugins import PluginLifecycle, PluginStartStatus
 from slife.a2a.identity import HUMAN
 from slife.tools.factory import create_tools_from_config
 from slife.mcp.tool_adapter import create_proxy_tools
+from slife.platform import terminate_process_sync
 from slife.server_utils import is_internal_tool
 
 logger = logging.getLogger(__name__)
@@ -1468,17 +1469,7 @@ class AgentService:
             p = getattr(wrapper, "_process", None)
             if p is None:
                 continue
-            try:
-                p.terminate()
-            except Exception:
-                pass
-            try:
-                p.wait(timeout=3.0)  # type: ignore[call-arg]
-            except Exception:
-                try:
-                    p.kill()
-                except Exception:
-                    pass
+            terminate_process_sync(p, label=attr_name)
 
         # Subagent manager cleanup
         mgr = self._subagent_manager
@@ -1486,17 +1477,7 @@ class AgentService:
             for name in list(mgr._subagents.keys()):
                 proc = mgr._subagents.get(name)
                 if proc is not None and proc._process is not None:
-                    try:
-                        proc._process.terminate()
-                    except Exception:
-                        pass
-                    try:
-                        proc._process.wait(timeout=2.0)  # type: ignore[call-arg]
-                    except Exception:
-                        try:
-                            proc._process.kill()
-                        except Exception:
-                            pass
+                    terminate_process_sync(proc._process, timeout=2.0, label=f"subagent-{name}")
 
     # ── Memory lifecycle ──────────────────────────────────────────────
 

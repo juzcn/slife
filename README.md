@@ -263,7 +263,7 @@ While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_
 
 Ask the agent to do something on a schedule — "write a diary entry every night at midnight", "summarize the week every Friday" — and it registers a cron-scheduled task (`scheduled_task_set`). When a task fires, the agent delegates the work to a subagent worker rather than doing it inline, and the worker saves the result as a **report** in the file cabinet (`save_cron_report`). Every fire is recorded (`scheduled_run_list`), so you can see what ran and what it produced (`report_list` / `report_read`).
 
-Tasks fire **only while Slife is running**. A run that was due while Slife was closed is recorded as **missed** and surfaced on the next start, so the agent can offer to backfill it (`run_schedule_now`) or you can skip it (`scheduled_run_confirm`).
+Tasks fire **only while Slife is running**. A run that was due while Slife was closed is recorded as **missed** and surfaced on the next start, so the agent can offer to backfill it (`run_schedule_now`) or you can skip it (`scheduled_run_skip`).
 
 ### Image & Vision
 

@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from slife.mcp.client import MCPClient
+from slife.platform import terminate_process_sync
 from slife.server_utils import is_internal_tool
 
 if TYPE_CHECKING:
@@ -439,11 +440,4 @@ class PluginLifecycle:
         p = getattr(self.process, "_process", None)
         if p is None:
             return
-        try:
-            p.terminate()
-        except Exception:
-            logger.debug("plugin_terminate_error name=%s", self.name, exc_info=True)
-        try:
-            p.wait(timeout=3.0)
-        except Exception:
-            logger.debug("plugin_wait_error name=%s", self.name, exc_info=True)
+        terminate_process_sync(p, label=self.name)

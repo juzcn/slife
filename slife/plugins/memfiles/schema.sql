@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS scheduled_runs (
     id         INTEGER PRIMARY KEY,
     task_id    INTEGER NOT NULL,         -- → scheduled_tasks.id
     due_at     TEXT NOT NULL,            -- 计划触发时间（ISO）
-    status     TEXT NOT NULL,            -- 'ran' | 'missed' | 'failed' | 'skipped' | 'confirmed_done'
+    status     TEXT NOT NULL,            -- 'pending' 已派发未确认 | 'ran' 成功(有报告) | 'failed' 未完成 | 'missed' 停机错过 | 'skipped' 用户跳过不补做
     ran_at     TEXT,                     -- 实际执行时间（ISO）
     report_id  INTEGER,                  -- 产出报告 → reports.id（store 层反填）
     error      TEXT DEFAULT '',          -- 失败/跳过原因

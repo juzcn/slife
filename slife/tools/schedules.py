@@ -3,7 +3,7 @@ process (recording a run + injecting its trigger into the inbox).
 
 Task definitions, run history, reports and confirmations live in the memfiles
 plugin as MCP tools (``scheduled_task_set`` / ``scheduled_task_remove`` /
-``scheduled_task_list`` / ``scheduled_run_list`` / ``scheduled_run_confirm`` /
+``scheduled_task_list`` / ``scheduled_run_list`` / ``scheduled_run_skip`` /
 ``save_cron_report`` / ``report_list`` / ``report_read``).  Only
 ``run_schedule_now`` needs the main agent's inbox, so it is native and reaches
 the scheduler through the :class:`~slife.tools.context.ToolContext`
@@ -27,7 +27,8 @@ class RunScheduleNowTool(Tool):
         "dispatches the task to a subagent worker now, regardless of its cron "
         "schedule or enabled state.  Use to backfill a missed run (see "
         "scheduled_run_list) or to trigger a task on demand.  After "
-        "backfilling a missed run, confirm it with scheduled_run_confirm."
+        "backfilling a missed/failed run that won't be re-run, close it with "
+        "scheduled_run_skip."
     )
     parameters = make_params(
         name={

@@ -773,11 +773,11 @@ async def __scheduled_task_by_name(name: str) -> str:
 
 @mcp.tool(
     name="__scheduled_record_run",
-    description="Internal: record a scheduled run (status=ran) for a task.",
+    description="Internal: record a scheduled run (status=pending) for a task.",
 )
 async def __scheduled_record_run(task_id: int, due_at: str) -> str:
     store = await _ensure_store()
-    info = await store.record_scheduled_run(task_id, due_at, status="ran")
+    info = await store.record_scheduled_run(task_id, due_at, status="pending")
     return json.dumps(info, ensure_ascii=False)
 
 
@@ -790,6 +790,36 @@ async def __scheduled_mark_missed(task_id: int, due_at: str) -> str:
     await store.mark_run_missed(task_id, due_at)
     return json.dumps({"task_id": task_id, "due_at": due_at, "status": "missed"},
                       ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__scheduled_fail_unconfirmed",
+    description=(
+        "Internal: startup sweep — mark dispatched-but-unconfirmed runs of a "
+        "previous process lifetime as failed.  Returns the runs that flipped."
+    ),
+)
+async def __scheduled_fail_unconfirmed() -> str:
+    store = await _ensure_store()
+    stale = await store.fail_unconfirmed_runs()
+    return json.dumps({"failed": len(stale), "runs": stale},
+                      ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__scheduled_mark_run_failed",
+    description=(
+        "Internal: best-effort — mark a pending run failed (its work never "
+        "reached a report).  Errors are detail only; pending without a report "
+        "is already treated as failed."
+    ),
+)
+async def __scheduled_mark_run_failed(
+    task_id: int, due_at: str, error: str = "",
+) -> str:
+    store = await _ensure_store()
+    await store.mark_run_failed(task_id, due_at, error)
+    return "{}"
 
 
 @mcp.tool(
@@ -881,8 +911,12 @@ async def scheduled_task_list(enabled_only: bool = False) -> str:
     description=(
         "List scheduled-task run records (due_at, status, ran_at, report_id, "
         "error), newest first.  Filter by task name and/or status "
-        "(ran/missed/failed/skipped/confirmed_done).  A 'missed' run means the "
-        "trigger time passed while slife was not running — offer to backfill it."
+        "(pending/ran/failed/missed/skipped).  A 'missed' run means the trigger "
+        "time passed while slife was not running; 'failed' means it fired but "
+        "never produced a report (interrupted / error / restart) — offer to "
+        "backfill either.  'pending' is an in-flight run (success unconfirmed); "
+        "'ran' is a confirmed success (report saved); 'skipped' is a missed/"
+        "failed run the user decided not to backfill."
     ),
 )
 async def scheduled_run_list(name: str = "", status: str = "", limit: int = 50) -> str:
@@ -907,14 +941,15 @@ async def scheduled_run_list(name: str = "", status: str = "", limit: int = 50) 
 
 
 @mcp.tool(
-    name="scheduled_run_confirm",
+    name="scheduled_run_skip",
     description=(
-        "Confirm a missed scheduled run as done — the user decided it does not "
-        "need to be backfilled.  Only a run in 'missed' status changes."
+        "Mark a missed or failed scheduled run as skipped — the user decided "
+        "it does not need to be backfilled.  Only runs in 'missed' or 'failed' "
+        "status change; a successful ('ran') run is never touched."
     ),
 )
-async def scheduled_run_confirm(name: str, due_at: str) -> str:
-    """Mark a missed run as confirmed_done.
+async def scheduled_run_skip(name: str, due_at: str) -> str:
+    """Mark a missed/failed run as skipped (user declined to backfill).
 
     Args:
         name: The task name the run belongs to.
@@ -924,8 +959,8 @@ async def scheduled_run_confirm(name: str, due_at: str) -> str:
     if task_id is None:
         return f"Scheduled task not found: {name}"
     store = await _ensure_store()
-    await store.confirm_run_done(task_id, due_at)
-    return f"Run '{name}' @ {due_at} confirmed as done."
+    await store.mark_run_skipped(task_id, due_at)
+    return f"Run '{name}' @ {due_at} marked skipped."
 
 
 @mcp.tool(
