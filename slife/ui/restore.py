@@ -11,9 +11,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from slife.agent.message_history import turn_header
-from slife.agent.schedules import is_autonomous_trigger
+from slife.agent.schedules import is_autonomous_trigger, is_schedule_trigger
 from slife.agent.llm_client import TokenUsage
 from slife.ui.chat import ChatView
+from slife.ui.i18n import t
 from slife.ui.tool_display import ToolCallWidget
 
 if TYPE_CHECKING:
@@ -222,7 +223,12 @@ async def restore_session(
             _channel_by_row[i] = turn.get("channel", "")
 
         turn_idx = -1
-        is_autonomous = False
+        # Per-turn synthetic-trigger flags, set on the user message and read
+        # on the assistant messages that follow it.  Initialized here so the
+        # assistant branch is provably bound even if an assistant message
+        # somehow appears before any user message (defaults: treat as real).
+        is_synthetic = False
+        is_schedule = False
         cur_created = ""
         cur_completed = ""
         for idx, msg in enumerate(all_messages):
@@ -250,12 +256,13 @@ async def restore_session(
                     if isinstance(content, list)
                     else content
                 )
-                # Autonomous turns (heartbeat / schedule): the trigger is a
-                # marked system message, not a real user message — filter the
-                # whole turn (the reply renders as ⚡ 自主 below, or not at
-                # all if quiet).
-                is_autonomous = is_autonomous_trigger(raw)
-                if is_autonomous:
+                # Synthetic-trigger turns (heartbeat / schedule): the trigger
+                # is a marked system message, not a real user message — filter
+                # the whole turn (the reply renders as ⚡ autonomous or
+                # 📅 scheduled below, or not at all if quiet).
+                is_synthetic = is_autonomous_trigger(raw)
+                is_schedule = is_schedule_trigger(raw)
+                if is_synthetic:
                     continue
                 ch = _channel_by_row.get(turn_idx, "")
                 prefix = restore_prefix(ch, agent_name)
@@ -287,11 +294,11 @@ async def restore_session(
                     and not visible_calls
                 ):
                     continue
-                if is_autonomous:
-                    # Autonomous beat (heartbeat / schedule): show real
-                    # content as ⚡ 自主.  A bare "." is already skipped by
-                    # the general silence filter above; here we only drop
-                    # empty messages.
+                if is_synthetic:
+                    # Synthetic-trigger beat (heartbeat / schedule): show
+                    # real content as ⚡ autonomous or 📅 scheduled.  A bare "." is
+                    # already skipped by the general silence filter above;
+                    # here we only drop empty messages.
                     content = msg.get("content") or ""
                     if not content.strip():
                         continue
@@ -301,7 +308,10 @@ async def restore_session(
                         "content": content,
                         "tool_calls": [],
                         "is_final": False,
-                        "name_prefix": "⚡ 自主: ",
+                        "name_prefix": (
+                            t("schedule_prefix") if is_schedule
+                            else t("autonomous_prefix")
+                        ),
                         "completed_at": cur_completed,
                     })
                     continue
@@ -339,7 +349,7 @@ async def restore_session(
                 break
 
     except Exception as e:
-        _show_system_message(app, f"✗ 恢复失败: {e}", color="#f85149")
+        _show_system_message(app, t("restore_failed", err=e), color="#f85149")
         return
 
     # ── Phase 2: Replace history messages ────────────────────────
@@ -425,11 +435,11 @@ async def restore_session(
     if skipped > 0:
         _show_system_message(
             app,
-            f"✅ 已恢复退出时的上下文（{len(turns)} 轮；{skipped} 轮更早记录未载入，可用 turn_search 查找）",
+            t("restored_partial", n=len(turns), skipped=skipped),
             color="#3fb950",
         )
     else:
-        _show_system_message(app, "✅ 已恢复退出时的上下文，继续吧", color="#3fb950")
+        _show_system_message(app, t("restored_ok"), color="#3fb950")
 
     # Auto-scroll is live again; settle the view with ONE scroll.
     chat_view._autoscroll = True

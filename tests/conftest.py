@@ -22,6 +22,27 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "slow: mark a test as slow (excluded from quick runs)")
 
 
+# ── UI language pinning ────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _pin_ui_language():
+    """Force the TUI i18n language to English for every test.
+
+    ``slife.ui.i18n`` resolves the language from the OS locale at import
+    time.  On a Chinese Windows dev machine that's ``zh``, which would flip
+    every TUI string to Chinese and break the suite's English assertions
+    (``"Arguments"``, ``"Thinking"``, ``"Switched"``, ``"running"`` …).
+    Pinning to ``en`` keeps those assertions valid and matches the
+    "tests are written in English" convention.  Tests that exercise the
+    i18n layer itself call ``set_language`` explicitly on top of this.
+    """
+    from slife.ui.i18n import set_language
+    set_language("en")
+    yield
+    set_language("en")
+
+
 # ── Model config fixtures ─────────────────────────────────────────────
 
 

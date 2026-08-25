@@ -12,6 +12,7 @@ from textual.widgets import Static
 
 from slife.agent.message_history import TURN_HEADER_PREFIX
 from slife.agent.llm_client import TokenUsage
+from slife.ui.i18n import t
 
 # ── Clickable link detection ──────────────────────────────────────────
 # Detects URIs and absolute paths in assistant output so links are
@@ -349,12 +350,14 @@ class AssistantMessage(Static):
         """One-line thinking summary with character count."""
         n = len(self._thinking)
         return Content.from_markup(
-            f"[dim italic]⟐ Thinking ({n} chars) ▸[/dim italic]"
+            f"[dim italic]⟐ {t('thinking_collapsed', n=n)} ▸[/dim italic]"
         )
 
     def _build_thinking_expanded(self) -> Content:
         """Expanded thinking block, truncated at 500 chars."""
-        content = Content.from_markup("[dim italic]⟐ Thinking…[/dim italic]\n")
+        content = Content.from_markup(
+            f"[dim italic]⟐ {t('thinking_expanded')}[/dim italic]\n"
+        )
         display = (
             self._thinking[:500] + "..."
             if len(self._thinking) > 500

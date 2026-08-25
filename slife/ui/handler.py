@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from slife.agent.llm_client import TokenUsage
 from slife.agent.loop import ToolCallInfo
 from slife.ui.chat import AssistantMessage, ChatView
+from slife.ui.i18n import t
 from slife.ui.tool_display import ToolCallWidget
 
 if TYPE_CHECKING:
@@ -142,7 +143,7 @@ class TUIHandler:
         """Surface the iteration limit being hit — the loop stops silently
         otherwise (cancelled turn, no final text)."""
         self._chat_view.add_system_message(
-            f"✗ Agent exceeded maximum of {iterations} iterations",
+            t("max_iterations", n=iterations),
             color="#f85149",
         )
 

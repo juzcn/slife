@@ -29,6 +29,7 @@ dependencies = [
     "ngrok",
     "croniter>=6.2.4",
     "tzdata>=2026.3",
+    "sys-lang>=1.0.1",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

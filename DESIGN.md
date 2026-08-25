@@ -15,7 +15,7 @@
 9. [A2A — Agent-to-Agent (mesh)](#a2a--agent-to-agent-mesh) — MQTT mesh, unified inbox, task store, subagent workers
 10. [Image & Memfiles](#image--memfiles) — @-syntax, image display, memfiles plugin, ngrok
 11. [Scheduled Tasks](#scheduled-tasks) — schedule loop, trigger→subagent execution, run/report record, missed runs
-12. [UI](#ui) — widgets, timestamps, progressive disclosure
+12. [UI](#ui) — widgets, timestamps, progressive disclosure, i18n
 13. [Config & Credentials](#config--credentials) — two-layer architecture, credstore matrix, secret sanitization, config sections
 14. [Health Checks](#health-checks)
 15. [Logging Convention](#logging-convention) — sinks, log vs TUI
@@ -26,12 +26,38 @@
 
 ## Language policy
 
-The model input should read uniformly, so text that Slife authors is English:
+Two audiences, two languages. The model input reads uniformly in English;
+the human-facing TUI follows the OS locale.
+
+**Model input — English (uniform):**
 
 - **System prompt** (`agent.j2` / `subagent.j2` + `slife.j2`, `context_status.j2`): English.
 - **Native tool schemas** — tool `name`, `description`, parameter docs, and result strings: English.
 - **Plugin tool schemas and result strings**: English (same policy as native tools — they are model-visible).
 - **External tools** (MCP servers, skills, third-party commands): keep the language of the external source — do not translate. They are opaque and pass through as-is.
+- **Logs** (session file + console): English — for developers, per the
+  [Logging Convention](#logging-convention) sink split.
+
+**TUI — bilingual (English / Chinese), by OS locale:**
+
+- Detected once at import via [`sys-lang`](https://pypi.org/project/sys-lang/)
+  (`get_sys_lang(region=False)`): `zh*` → Chinese, everything else → English.
+  `sys-lang` queries `Get-Culture` on Windows (the only path that works on a
+  default install — env vars are unset and `locale.getlocale()` returns
+  `None`) and `LC_ALL`/`LC_MESSAGES`/`LANG`/`LANGUAGE` on *nix.
+- The translation layer is `slife/ui/i18n.py` — a single `t(key, **fmt)`
+  accessor over an `en`/`zh` string table.  No catalogs, no YAML, no Pydantic.
+- Everything the human reads is localized: system messages (plugin load
+  results, memory health, restore outcomes), the approval prompt, the model
+  picker, the tool-call widget labels, the status bar, thinking blocks.
+- **What stays English regardless of locale:** key caps in the status bar
+  (`Ctrl+C`, `Esc`, `Ctrl+S`, `Home/End`) — translating a key label breaks the
+  key→action scan and mismatches what the user actually presses; and the
+  `notify_user` / OAuth notification *body* — that is LLM- or system-supplied
+  text, not Slife-authored chrome (only the framing strings — app title,
+  "Notification sent", the OAuth title — are localized).
+- Tests pin the language to `en` via an autouse fixture in `conftest.py`, so
+  the suite's English assertions hold regardless of the dev machine's locale.
 
 ## Architecture
 
@@ -735,6 +761,14 @@ Not all tools are in every request. Several categories use lightweight summaries
 | MemDB | `turn_search` | `turn_read` |
 | Skills | `skill_list` | `skill_use` |
 | MCP | `mcp_list` / `mcp_list_tools` | `mcp_set_enabled(name, enabled=True)` |
+
+### i18n
+
+`slife/ui/i18n.py` — the bilingual layer (English + Chinese). Every
+user-facing string routes through `t(key, **fmt)`; the language is resolved
+once at import from the OS locale and is overridable via `set_language()`
+(tests use this to pin `en`). See [Language policy](#language-policy) for
+what is localized and what stays English.
 
 ## Config & Credentials
 

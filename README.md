@@ -17,6 +17,8 @@ One TUI window around an LLM tool loop: 52 native tools across 10 categories (in
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
+**Bilingual interface.** The TUI follows your OS language — Chinese on a Chinese system, English everywhere else. Detected at startup via [`sys-lang`](https://pypi.org/project/sys-lang/) (Windows `Get-Culture` / *nix locale); all in-TUI text — system messages, the approval prompt, the model picker, tool-call labels, the status bar — renders in the right language. What the LLM sees (system prompt, tool schemas) stays uniformly English; so do logs.
+
 ## Install
 
 **Zero prerequisites.** The install script auto-installs uv, Node.js, and bun if needed. On WSL, Linux-native versions are installed (Windows executables cannot receive custom env vars via WSL interop). Mosquitto (only needed for the A2A MQTT mesh) is offered interactively.
@@ -301,6 +303,8 @@ The A2A protocol (JSON-RPC operations and Message/Task/AgentCard data shapes mir
 A2A's only implemented transport binding is MQTT — setting `transport` to any other value disables A2A with a warning instead of crashing startup. All messages — human, WeChat, MQTT, subagent results — flow through a single inbox queue and are processed one turn at a time.
 
 ## Keyboard Shortcuts
+
+Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them localize with the interface language.
 
 | Key | Action |
 |-----|--------|

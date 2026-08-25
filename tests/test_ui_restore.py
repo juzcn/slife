@@ -309,7 +309,7 @@ class TestRestoreTurnHeader:
         chat_view.add_user_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_schedule_trigger_reply_renders_autonomous(self):
+    async def test_schedule_trigger_reply_renders_as_scheduler(self):
         app, conv, config, chat_view = self._build()
         await self._restore(app, conv, config, [
             self._turn(
@@ -318,10 +318,13 @@ class TestRestoreTurnHeader:
                 msgs=[{"role": "assistant", "content": "已派发定时任务。"}],
             ),
         ])
-        # The dispatch confirmation surfaces as an autonomous message.
+        # The dispatch confirmation surfaces as a scheduler message (📅
+        # scheduled), not autonomous (⚡ autonomous) — cron fires are
+        # scheduler-driven, not autonomous acts.
+        from slife.ui.i18n import t
         chat_view.add_assistant_message.assert_called_once()
         kwargs = chat_view.add_assistant_message.call_args.kwargs
-        assert kwargs.get("name_prefix") == "⚡ 自主: "
+        assert kwargs.get("name_prefix") == t("schedule_prefix")
         am = chat_view.add_assistant_message.return_value
         am.append_text.assert_called_once_with("已派发定时任务。")
 

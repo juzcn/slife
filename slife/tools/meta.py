@@ -18,6 +18,7 @@ from typing import ClassVar
 
 from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 from slife.tools.base import Tool, make_params
+from slife.ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -296,9 +297,13 @@ class NotifyUserTool(Tool):
         "required": ["message"],
     }
 
-    async def execute(self, title: str = "slife", message: str = "", **kwargs) -> str:
+    async def execute(self, title: str = "", message: str = "", **kwargs) -> str:
         if not message:
             return "Error: message is required."
+
+        # Default title is the localized app name — the LLM may pass its own.
+        if not title:
+            title = t("notify_default_title")
 
         # Log for the session file at WARNING (the console is capped below
         # WARNING, so this is diagnostic-only; the notification below is the
@@ -313,7 +318,7 @@ class NotifyUserTool(Tool):
         from slife.threads import run_daemon
         run_daemon(desktop_notify, title, message, name="desktop-notify")
 
-        return f"Notification sent: [{title}] {message}"
+        return t("notify_sent", title=title, message=message)
 
 
 

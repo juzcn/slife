@@ -20,6 +20,7 @@ from slife.agent.plugins import (
 )
 from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
+from slife.ui.i18n import t
 from slife.ui.restore import restore_session
 from slife.ui.tool_display import ToolCallWidget
 
@@ -64,11 +65,11 @@ class StatusBar(Static):
         if starting:
             # Plugin startup in progress — the service is not open for
             # input yet (input is disabled until startup converges).
-            parts.append("[#d29922]⏳ starting…[/#d29922]")
+            parts.append(f"[#d29922]{t('status_starting')}[/#d29922]")
         elif inbox_busy:
-            parts.append("[#d29922]⏳ processing[/#d29922]")
+            parts.append(f"[#d29922]{t('status_processing')}[/#d29922]")
         elif inbox_pending > 0:
-            parts.append(f"[#6e7681]⏳ {inbox_pending} queued[/#6e7681]")
+            parts.append(f"[#6e7681]{t('status_queued', n=inbox_pending)}[/#6e7681]")
 
         if context_window > 0:
             pct = context_tokens / context_window * 100 if context_tokens else 0.0
@@ -79,7 +80,7 @@ class StatusBar(Static):
             parts.append(f"[#6e7681]↑ {context_tokens:,} tokens[/#6e7681]")
 
         parts.append(
-            "[#484f58]│ Ctrl+C quit  Esc cancel  Ctrl+S model  Home/End scroll[/#484f58]"
+            f"[#484f58]{t('status_keybinds')}[/#484f58]"
         )
 
         self.update("  ".join(parts))
@@ -352,7 +353,7 @@ class SlifeApp(App):
         """Minimal layout: chat fills screen, input + status docked at bottom."""
         yield ChatView(id="chat-view")
         yield HistoryInput(
-            placeholder="Message Slife…",
+            placeholder=t("input_placeholder"),
             id="user-input",
         )
         yield StatusBar(id="status-bar")
@@ -400,10 +401,7 @@ class SlifeApp(App):
         except MemoryDatabaseError as e:
             # Memory is core — a broken memory DB must not start a
             # memory-less session.  Surface the error and abort startup.
-            await self._fatal_exit(
-                f"✗ Memory database unavailable: {e}\n"
-                f"Memory is a core feature — fix the database and restart."
-            )
+            await self._fatal_exit(t("memdb_unavailable", err=e))
         except Exception as e:
             logger.debug("session_restore_skip err=%s", e)
 
@@ -422,9 +420,12 @@ class SlifeApp(App):
             lambda: TUIHandler(self, assistant_prefix=self._assistant_prefix)
         )
 
-        # Autonomous heartbeat — surface ⚡ 自主 messages + status pulse.
+        # Autonomous heartbeat — surface ⚡ autonomous messages + status pulse.
         self.service.on_autonomous(self._on_autonomous_message)
         self.service.on_heartbeat(self._on_heartbeat)
+        # Scheduler-driven output (cron fires / backfill / missed-notice)
+        # — surface 📅 scheduled messages.
+        self.service.on_schedule(self._on_schedule_message)
         # Fatal memory-save failure — persistent red banner (memory is core).
         self.service.on_memory_broken(self._on_memory_broken)
         # File-sharing tunnel down (harness-probed after sharefile loads) —
@@ -534,7 +535,7 @@ class SlifeApp(App):
             return
         self.service.inbox.cancel()
         chat_view = self.query_one("#chat-view", ChatView)
-        chat_view.add_system_message("⏹ 已中断", color="#d29922")
+        chat_view.add_system_message(t("interrupted"), color="#d29922")
 
     def action_scroll_home(self) -> None:
         """Scroll chat view to the top."""
@@ -598,7 +599,7 @@ class SlifeApp(App):
         models = list(self.service.config.models)
         if not models:
             self.query_one("#chat-view", ChatView).add_system_message(
-                "No models configured.", color="#f85149"
+                t("no_models"), color="#f85149"
             )
             return
 
@@ -662,8 +663,7 @@ class SlifeApp(App):
         """
         chat_view = self.query_one("#chat-view", ChatView)
         chat_view.add_system_message(
-            f"✗ 记忆保存失败: {error}\n"
-            f"记忆是核心功能 — 已停止处理新消息,请修复数据库后重启。",
+            t("memory_broken", err=error),
             color="#f85149",
         )
 
@@ -679,12 +679,19 @@ class SlifeApp(App):
         """
         self._show_system_message(message, color="#d29922")
 
-    # ── Autonomous heartbeat (⚡ 自主) ──────────────────────────────
+    # ── Autonomous heartbeat (⚡ autonomous) ───────────────────────
 
     async def _on_autonomous_message(self, text: str) -> None:
-        """Mount an autonomous (heartbeat) message in the chat — ⚡ 自主."""
+        """Mount an autonomous (heartbeat) message in the chat — ⚡ autonomous."""
         self.query_one("#chat-view", ChatView).add_assistant_message(
-            name_prefix="⚡ 自主: ",
+            name_prefix=t("autonomous_prefix"),
+            timestamp=datetime.now().astimezone(),
+        ).append_text(text)
+
+    async def _on_schedule_message(self, text: str) -> None:
+        """Mount a scheduler-driven message in the chat — 📅 scheduled."""
+        self.query_one("#chat-view", ChatView).add_assistant_message(
+            name_prefix=t("schedule_prefix"),
             timestamp=datetime.now().astimezone(),
         ).append_text(text)
 
@@ -720,30 +727,30 @@ class SlifeApp(App):
             status = await coro
         except Exception as e:
             self._show_system_message(
-                f"⚠ 插件启动失败 ({name}): {e}", color="#d29922",
+                t("plugin_start_failed", name=name, err=e), color="#d29922",
             )
             return
         lifecycle = self.service._plugins.get(name)
         if status is PluginStartStatus.STARTED:
             if lifecycle is not None and lifecycle.ready_state == READY_READY:
                 self._show_system_message(
-                    f"🔌 插件已就绪: {name}", color="#3fb950",
+                    t("plugin_ready", name=name), color="#3fb950",
                 )
             else:
                 detail = lifecycle.ready_detail if lifecycle is not None else ""
+                sep = f" — {detail}" if detail else ""
                 self._show_system_message(
-                    f"🔌 插件已就绪（降级）: {name}"
-                    f"{' — ' + detail if detail else ''}",
+                    t("plugin_ready_degraded", name=name, detail=sep),
                     color="#d29922",
                 )
         elif status is PluginStartStatus.SKIPPED:
             logger.debug("plugin_skipped name=%s", name)
             self._show_system_message(
-                f"ℹ️ 插件未启动: {name}", color="#8b949e",
+                t("plugin_skipped", name=name), color="#8b949e",
             )
         else:
             self._show_system_message(
-                f"⚠ 插件就绪失败: {name}", color="#d29922",
+                t("plugin_ready_failed", name=name), color="#d29922",
             )
 
     async def _abort_required_plugin(self, name: str, reason: str) -> None:
@@ -754,10 +761,7 @@ class SlifeApp(App):
         app down), a bounded plugin shutdown (no orphaned children), then
         exit — a required component missing is never silent.
         """
-        msg = (
-            f"✗ 必要组件加载失败: {name}（{reason}）\n"
-            f"{name} 是系统核心组件 — 无法在缺少它的状态下运行，请修复后重启。"
-        )
+        msg = t("required_failed", name=name, reason=reason)
         await self._fatal_exit(msg)
 
 
@@ -847,12 +851,12 @@ class SlifeApp(App):
 
         elif kind == "loop_error":
             error = kwargs.get("error", "")
-            chat_view.add_system_message(f"✗ {error}", color="#f85149")
+            chat_view.add_system_message(t("loop_error", err=error), color="#f85149")
 
         elif kind == "task_completed":
             source = kwargs.get("source", "unknown")
             chat_view.add_system_message(
-                f"✓ task from {source} completed", color="#3fb950",
+                t("task_completed", source=source), color="#3fb950",
             )
 
         elif kind == "busy":
@@ -915,7 +919,7 @@ class SlifeApp(App):
             handler.finalize_current()
         except Exception as e:
             handler.finalize_current()
-            chat_view.add_system_message(f"✗ Error: {e}", color="#f85149")
+            chat_view.add_system_message(t("turn_error", err=e), color="#f85149")
         finally:
             # Clear the tool-widget map only after this turn has finished —
             # clearing at enqueue time (a follow-up worker can start while the

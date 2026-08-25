@@ -337,7 +337,8 @@ class MCPWrapperProcess:
             # notification, which is the user-facing channel.
             if stripped.startswith(_OAUTH_ACTION_MARKER):
                 body = stripped[len(_OAUTH_ACTION_MARKER):].strip()
-                _notify_user("slife — OAuth authorization required", body)
+                from slife.ui.i18n import t
+                _notify_user(t("notify_oauth_title"), body)
                 continue
             if stripped.startswith(_OAUTH_MARKER):
                 body = stripped[len(_OAUTH_MARKER):].strip()

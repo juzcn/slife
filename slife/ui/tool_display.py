@@ -17,6 +17,7 @@ from textual.widgets import Static
 from slife.platform import IS_WINDOWS
 from slife.ui.content import lit as _lit
 from slife.ui.content import mc as _mc
+from slife.ui.i18n import t
 
 # WSL: Linux kernel with Windows interop — clip.exe is the native clipboard.
 _IS_WSL = sys.platform == "linux" and os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop")
@@ -68,11 +69,15 @@ _STATUS_COLOR: dict[str, str] = {
     "pending": "#484f58",
 }
 
-_STATUS_LABEL: dict[str, str] = {
-    "running": "running",
-    "done":    "done",
-    "error":   "error",
-    "pending": "pending",
+# Status → i18n key.  Resolved through t() at render time so the label
+# follows the active language (en/zh).  Kept as a key map (not a pre-built
+# string dict) so a language switch via set_language() takes effect on the
+# next render without rebuilding the table.
+_STATUS_LABEL_KEY: dict[str, str] = {
+    "running": "td_running",
+    "done":    "td_done",
+    "error":   "td_error_label",
+    "pending": "td_pending",
 }
 
 _STATUS_DEFAULT = "pending"
@@ -187,7 +192,8 @@ class ToolCallWidget(Static):
         status = self._status
         color = _STATUS_COLOR.get(status, _STATUS_COLOR[_STATUS_DEFAULT])
         icon = _STATUS_ICON.get(status, _STATUS_ICON[_STATUS_DEFAULT])
-        label_text = _STATUS_LABEL.get(status, _STATUS_LABEL[_STATUS_DEFAULT])
+        label_key = _STATUS_LABEL_KEY.get(status, _STATUS_LABEL_KEY[_STATUS_DEFAULT])
+        label_text = t(label_key)
         indicator = "▾" if not self._is_collapsed else "▸"
         label = _friendly_label(self.tool_name, status)
 
@@ -236,7 +242,7 @@ class ToolCallWidget(Static):
 
         # ── Arguments ────────────────────────────────────────────
         if self.tool_args:
-            content = content + _mc("[bold #8b949e]Arguments[/bold #8b949e]\n")
+            content = content + _mc(f"[bold #8b949e]{t('td_arguments')}[/bold #8b949e]\n")
             for key, value in self.tool_args.items():
                 val_str = str(value)
                 if len(val_str) > 500:
@@ -245,23 +251,23 @@ class ToolCallWidget(Static):
                 content = content + _lit(val_str, style="#c9d1d9")
                 content = content + _mc("\n")
         else:
-            content = content + _mc("[#8b949e](no arguments)[/#8b949e]")
+            content = content + _mc(f"[#8b949e]{t('td_no_args')}[/#8b949e]")
 
         # ── Result ───────────────────────────────────────────────
         if self._result:
             content = content + _mc("\n")
             if self._result_is_error:
-                content = content + _mc("[bold #f85149]Error[/bold #f85149]\n")
+                content = content + _mc(f"[bold #f85149]{t('td_error')}[/bold #f85149]\n")
                 content = content + _lit(self._result, style="#f85149")
             else:
                 result_lines = self._result.split("\n")
-                content = content + _mc("[bold #8b949e]Result[/bold #8b949e]\n")
+                content = content + _mc(f"[bold #8b949e]{t('td_result')}[/bold #8b949e]\n")
                 if len(result_lines) > 20:
                     result_display = "\n".join(result_lines[:20])
                     content = content + _lit(result_display, style="#c9d1d9")
                     content = content + _mc("\n")
                     content = content + _mc(
-                        f"[#484f58]… {len(result_lines) - 20} more lines …[/#484f58]"
+                        f"[#484f58]{t('td_more_lines', n=len(result_lines) - 20)}[/#484f58]"
                     )
                 else:
                     content = content + _lit(self._result, style="#c9d1d9")

@@ -13,6 +13,8 @@
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
+**双语界面。** TUI 跟随系统语言——中文系统显示中文，其它一律英文。启动时通过 [`sys-lang`](https://pypi.org/project/sys-lang/) 检测（Windows `Get-Culture` / *nix locale）；界面内的系统消息、批准提示、模型选择器、工具调用标签、状态栏均按系统语言渲染。LLM 可见内容（系统提示词、工具 schema）始终为英文，日志亦然。
+
 ## 安装
 
 **零前提。** 安装脚本会自动安装 uv、Node.js 和 bun（如需要）。Mosquitto（仅 A2A MQTT 网格需要）会在安装过程中交互式询问。
@@ -275,6 +277,8 @@ A2A 协议（JSON-RPC 操作与 Message/Task/AgentCard 数据形状，镜像官�
 A2A 唯一已实现的传输 binding 是 MQTT——把 `transport` 设为任何其他值会禁用 A2A 并打印警告，而不是导致启动崩溃。所有消息——人类输入、微信、MQTT、子智能体结果——通过单一收件箱队列逐个处理。
 
 ## 键盘快捷键
+
+按键名（`Ctrl+C`、`Esc` 等）通用不变；其后跟随的动作词随界面语言本地化。
 
 | 按键 | 动作 |
 |------|------|

@@ -20,6 +20,7 @@ from textual.content import Content
 from textual.widgets import Static
 
 from slife.config import ModelConfig
+from slife.ui.i18n import t
 
 # Inline picker navigation: ↑/↓ move a cursor, Enter picks, Esc cancels.
 # Every configured model is listed — no cap.
@@ -120,7 +121,7 @@ class ModelPicker(Static):
         if self._decided:
             return self._status_line()
 
-        content = _mc("[bold #d29922]⚠ [/]") + _mc("[bold]Switch model[/bold]")
+        content = _mc("[bold #d29922]⚠ [/]") + _mc(f"[bold]{t('picker_title')}[/bold]")
 
         for i, m in enumerate(self._models, 1):
             row_idx = i - 1
@@ -136,9 +137,9 @@ class ModelPicker(Static):
 
         # Key hints on the last line, same as ApprovalPrompt.
         content = content + _mc(
-            "\n[#6e7681]↑/↓ [/][bold #3fb950]Select[/]  "
-            "[#6e7681]Enter [/][bold #3fb950]Pick[/]  "
-            "[#6e7681]Esc [/][bold #f85149]Cancel[/]"
+            f"\n[#6e7681]↑/↓ [/][bold #3fb950]{t('picker_select')}[/]  "
+            f"[#6e7681]Enter [/][bold #3fb950]{t('picker_pick')}[/]  "
+            f"[#6e7681]Esc [/][bold #f85149]{t('picker_cancel')}[/]"
         )
         return content
 
@@ -156,8 +157,8 @@ class ModelPicker(Static):
     def _status_line(self) -> Content:
         if self._choice is not None:
             return (
-                _mc("[bold #3fb950]✓ Switched[/bold #3fb950]")
+                _mc(f"[bold #3fb950]{t('picker_switched')}[/bold #3fb950]")
                 + _mc(" — ")
                 + _lit(self._choice.ref, "bold")
             )
-        return _mc("[bold #f85149]✗ Canceled[/bold #f85149]")
+        return _mc(f"[bold #f85149]{t('picker_canceled')}[/bold #f85149]")

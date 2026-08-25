@@ -20,6 +20,7 @@ from textual.widgets import Static
 from slife.agent.loop import ToolCallInfo
 from slife.ui.content import lit as _lit
 from slife.ui.content import mc as _mc
+from slife.ui.i18n import t
 
 # Arg display caps — keep the waiting prompt compact.
 _ARG_MAX = 120
@@ -84,7 +85,7 @@ class ApprovalPrompt(Static):
         content = (
             _mc("[bold #d29922]⚠ [/]")
             + _lit(self._tool_call.name, "bold")
-            + _mc(" [dim]requests approval[/dim]")
+            + _mc(f" [dim]{t('approval_requests')}[/dim]")
         )
 
         args = self._tool_call.arguments
@@ -97,12 +98,12 @@ class ApprovalPrompt(Static):
                 arg_lines.append(f"  {k}: {s}")
             display = "\n".join(arg_lines[: _ARG_LINES_MAX])
             if len(arg_lines) > _ARG_LINES_MAX:
-                display += f"\n  … {len(arg_lines) - _ARG_LINES_MAX} more"
+                display += f"\n  {t('approval_more', n=len(arg_lines) - _ARG_LINES_MAX)}"
             content = content + _mc("\n") + _lit(display, "#8b949e")
 
         content = content + _mc(
-            "\n[#6e7681]Y [/][bold #3fb950]Approve[/]  "
-            "[#6e7681]N / Esc [/][bold #f85149]Deny[/]"
+            f"\n[#6e7681]Y [/][bold #3fb950]{t('approval_approve')}[/]  "
+            f"[#6e7681]N / Esc [/][bold #f85149]{t('approval_deny')}[/]"
         )
         return content
 
@@ -110,12 +111,12 @@ class ApprovalPrompt(Static):
         """Post-decision one-liner: ✓ Approved / ✗ Denied + tool name."""
         if self._decided == "approved":
             return (
-                _mc("[bold #3fb950]✓ Approved[/bold #3fb950]")
+                _mc(f"[bold #3fb950]{t('approval_approved')}[/bold #3fb950]")
                 + _mc(" — ")
                 + _lit(self._tool_call.name, "bold")
             )
         return (
-            _mc("[bold #f85149]✗ Denied[/bold #f85149]")
+            _mc(f"[bold #f85149]{t('approval_denied')}[/bold #f85149]")
             + _mc(" — ")
             + _lit(self._tool_call.name, "bold")
         )
