@@ -69,6 +69,11 @@ class TestPluginLifecycleSpawn:
         mock_client.list_tools = AsyncMock(return_value=[
             {"name": "my_tool", "description": "A tool."},
         ])
+        # Readiness handshake: the mocked plugin declares no __ready, so the
+        # probe falls back to method-not-found → ready-if-connected.
+        mock_client.call_tool = AsyncMock(
+            return_value="Error: Tool '__ready' failed: MethodNotFoundException",
+        )
 
         with patch("slife.mcp.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
@@ -99,6 +104,9 @@ class TestPluginLifecycleSpawn:
             {"name": "visible_tool", "description": "For LLM."},
             {"name": "harness_only", "description": "Skip this."},
         ])
+        mock_client.call_tool = AsyncMock(
+            return_value="Error: Tool '__ready' failed: MethodNotFoundException",
+        )
 
         with patch("slife.mcp.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
@@ -148,6 +156,71 @@ class TestPluginLifecycleSpawn:
         assert lifecycle.port == 0
         mock_process.stop.assert_awaited_once()
         os.environ.pop("SLIFE_TEST_PLUGIN_PORT", None)
+
+
+# ── probe_ready (readiness contract) ─────────────────────────────────────
+
+
+class TestPluginLifecycleProbeReady:
+    """Tests for PluginLifecycle.probe_ready()."""
+
+    @pytest.mark.asyncio
+    async def test_ready_true_parses_response(self, lifecycle):
+        mock_client = MagicMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(
+            return_value='{"ready": true, "detail": "store ok"}',
+        )
+        lifecycle.client = mock_client
+        await lifecycle.probe_ready()
+        assert lifecycle.ready is True
+        assert lifecycle.ready_state == "ready"
+        assert lifecycle.ready_detail == "store ok"
+        mock_client.call_tool.assert_awaited_once_with("__ready", {})
+
+    @pytest.mark.asyncio
+    async def test_ready_false_is_degraded(self, lifecycle):
+        mock_client = MagicMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(
+            return_value='{"ready": false, "detail": "store broken"}',
+        )
+        lifecycle.client = mock_client
+        await lifecycle.probe_ready()
+        assert lifecycle.ready is False
+        assert lifecycle.ready_state == "degraded"
+        assert lifecycle.ready_detail == "store broken"
+
+    @pytest.mark.asyncio
+    async def test_missing___ready_falls_back_to_connected(self, lifecycle):
+        # Not-yet-migrated plugin: method-not-found → ready-if-connected.
+        mock_client = MagicMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(
+            return_value="Error: Tool '__ready' failed: MethodNotFoundException",
+        )
+        lifecycle.client = mock_client
+        await lifecycle.probe_ready()
+        assert lifecycle.ready is True
+        assert lifecycle.ready_state == "ready"
+
+    @pytest.mark.asyncio
+    async def test_genuine_error_is_degraded(self, lifecycle):
+        mock_client = MagicMock()
+        mock_client.is_connected = True
+        mock_client.call_tool = AsyncMock(return_value="Error: timeout")
+        lifecycle.client = mock_client
+        await lifecycle.probe_ready()
+        assert lifecycle.ready is False
+        assert lifecycle.ready_state == "degraded"
+        assert "Error: timeout" in lifecycle.ready_detail
+
+    @pytest.mark.asyncio
+    async def test_not_connected_is_degraded(self, lifecycle):
+        lifecycle.client = None
+        await lifecycle.probe_ready()
+        assert lifecycle.ready is False
+        assert lifecycle.ready_state == "degraded"
 
 
 # ── connect_http ──────────────────────────────────────────────────────────

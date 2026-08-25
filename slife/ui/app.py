@@ -14,21 +14,16 @@ from textual.widgets import Static, TextArea
 from slife.config import Config
 from slife.a2a.card import format_presence_line
 from slife.agent.service import AgentService, MemoryDatabaseError
-from slife.agent.plugins import PluginStartStatus
+from slife.agent.plugins import (
+    READY_READY,
+    PluginStartStatus,
+)
 from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
 from slife.ui.restore import restore_session
 from slife.ui.tool_display import ToolCallWidget
 
 logger = logging.getLogger(__name__)
-
-# memdb is a required component — a load failure aborts startup.  Bounded
-# so a hung plugin spawn (e.g. a Streamable HTTP SSE session stuck on
-# Windows/Proactor, which a plain wait_for can't always break) surfaces as
-# a fatal error instead of limping along without memory.  Generous enough
-# for the plugin's slow first gguf model load (child-side, ~4s observed).
-_MEMDB_SPAWN_TIMEOUT = 30.0
-
 
 # ── Status bar ─────────────────────────────────────────────────────
 
@@ -47,6 +42,7 @@ class StatusBar(Static):
         thinking: bool = False,
         heartbeat: str = "",
         heartbeat_color: str = "",
+        starting: bool = False,
         inbox_busy: bool = False,
         inbox_pending: int = 0,
     ) -> None:
@@ -65,7 +61,11 @@ class StatusBar(Static):
             color = heartbeat_color or "#d29922"
             parts.append(f"[{color}]{heartbeat}[/{color}]")
 
-        if inbox_busy:
+        if starting:
+            # Plugin startup in progress — the service is not open for
+            # input yet (input is disabled until startup converges).
+            parts.append("[#d29922]⏳ starting…[/#d29922]")
+        elif inbox_busy:
             parts.append("[#d29922]⏳ processing[/#d29922]")
         elif inbox_pending > 0:
             parts.append(f"[#6e7681]⏳ {inbox_pending} queued[/#6e7681]")
@@ -380,6 +380,11 @@ class SlifeApp(App):
         # All input (human, A2A, WeChat) flows through this inbox.
         await self.service.start_inbox()
 
+        # The service opens for user input only after every plugin spawn
+        # converged — keep the input disabled (status bar shows "⏳
+        # starting…") until _open_service_when_ready() fires.
+        self.query_one("#user-input").disabled = True
+
         plugins = discover_plugins()
 
         # ── Step 1: Restore session from SQLite (pure read, no services needed) ─
@@ -432,6 +437,31 @@ class SlifeApp(App):
             self.service.start_subagent(),
             exclusive=False, group="subagent-startup",
         )
+
+        # ── Step 4: open the service for input ──────────────────────
+        # Enable the TUI input the moment every plugin spawn has converged
+        # (the inbox consumer gates on the same event).  Until then the
+        # status bar shows "⏳ starting…" and Enter does nothing.
+        self.run_worker(
+            self._open_service_when_ready(),
+            exclusive=False, group="startup-gate",
+        )
+
+    async def _open_service_when_ready(self) -> None:
+        """Enable user input once all plugin spawns have converged.
+
+        Awaits the same readiness gate as the inbox consumer, so user
+        input can never race ahead of core services — the very first
+        processed message is whatever was posted at startup (e.g. the
+        [Schedule missed] notice), with the normal processing indicator.
+        """
+        await self.service.wait_startup_settled()
+        try:
+            self.query_one("#user-input").disabled = False
+            self.query_one("#user-input").focus()
+        except Exception:
+            pass
+        self._update_status()
 
     # ── Actions ──────────────────────────────────────────────────
 
@@ -527,6 +557,7 @@ class SlifeApp(App):
             thinking=self.service.thinking_enabled,
             heartbeat=self._heartbeat_indicator,
             heartbeat_color=self._heartbeat_color,
+            starting=not self.service.startup_settled,
             inbox_busy=inbox.busy if inbox else False,
             inbox_pending=inbox.pending if inbox else 0,
         )
@@ -674,52 +705,45 @@ class SlifeApp(App):
     # ── Plugin startup helpers ────────────────────────────────────
 
     async def _start_plugin_safe(self, name: str, coro) -> None:
-        """Start a plugin and show success / skip / failure in chat.
+        """Start a plugin and show its readiness outcome in chat.
 
-        ``SKIPPED`` is an expected no-op (e.g. mqtt without a running MQTT
-        broker, or a plugin disabled in config) — shown as neutral info,
-        never as an error warning.
-
-        ``memdb`` is special-cased: it is a required component, so a load
-        failure — including a bounded timeout on a hung spawn — aborts
-        startup instead of silently running without memory.
+        All plugins are equal peers under the unified readiness contract —
+        there is no required set.  ``SKIPPED`` is an expected no-op (e.g.
+        a2a without a running MQTT broker) and stays neutral; ``FAILED``
+        is a warning — the missing service is surfaced where it is used,
+        and a broken memory backend freezes the inbox with a red banner
+        the first time a turn cannot be saved.  The spawn hang-guard
+        lives in ``AgentService.start_plugin_server``, so a stuck child
+        still lets startup convergence fire.
         """
         try:
-            if name == "memdb":
-                # asyncio.timeout raises at the deadline without waiting for
-                # the inner task to finish cancelling — a hung Streamable HTTP
-                # SSE session on Windows/Proactor can defeat asyncio.wait_for,
-                # so this is the reliable way to surface the hang as a failure.
-                async with asyncio.timeout(_MEMDB_SPAWN_TIMEOUT):
-                    status = await coro
-            else:
-                status = await coro
+            status = await coro
         except Exception as e:
-            if name == "memdb":
-                await self._abort_required_plugin(
-                    "memdb", f"{type(e).__name__}: {e}",
-                )
-                return
             self._show_system_message(
                 f"⚠ 插件启动失败 ({name}): {e}", color="#d29922",
             )
             return
+        lifecycle = self.service._plugins.get(name)
         if status is PluginStartStatus.STARTED:
-            self._show_system_message(
-                f"🔌 插件已加载: {name}", color="#3fb950",
-            )
+            if lifecycle is not None and lifecycle.ready_state == READY_READY:
+                self._show_system_message(
+                    f"🔌 插件已就绪: {name}", color="#3fb950",
+                )
+            else:
+                detail = lifecycle.ready_detail if lifecycle is not None else ""
+                self._show_system_message(
+                    f"🔌 插件已就绪（降级）: {name}"
+                    f"{' — ' + detail if detail else ''}",
+                    color="#d29922",
+                )
         elif status is PluginStartStatus.SKIPPED:
             logger.debug("plugin_skipped name=%s", name)
             self._show_system_message(
-                f"ℹ️ 插件未加载: {name}", color="#8b949e",
-            )
-        elif name == "memdb":
-            await self._abort_required_plugin(
-                "memdb", f"status={status.name}",
+                f"ℹ️ 插件未启动: {name}", color="#8b949e",
             )
         else:
             self._show_system_message(
-                f"⚠ 插件启动失败: {name}", color="#d29922",
+                f"⚠ 插件就绪失败: {name}", color="#d29922",
             )
 
     async def _abort_required_plugin(self, name: str, reason: str) -> None:

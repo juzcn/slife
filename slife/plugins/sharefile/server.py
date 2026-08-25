@@ -261,6 +261,26 @@ async def __tunnel_status() -> str:
     )
 
 
+@mcp.tool(
+    name="__ready",
+    description="Internal — readiness handshake (plugin contract): {ready, detail}.",
+)
+async def __ready() -> str:
+    """Readiness handshake — the sharefile server itself can serve.
+
+    The ngrok tunnel is a subordinate/external dependency and is NOT a
+    readiness condition: its state rides along as informational ``detail``
+    (a down tunnel is surfaced separately as a warning), so tunnel latency
+    or failure never gates startup.
+    """
+    st = status()
+    return json.dumps(
+        {"ready": True,
+         "detail": f"server serving (tunnel state: {st.get('state', 'unknown')})"},
+        ensure_ascii=False,
+    )
+
+
 @mcp.tool(name="__register_file", description="Register a file and return its share URL.")
 async def __register_file(path: str) -> str:
     """Register *path* and return ``{file_id, url}`` for the harness."""

@@ -161,6 +161,34 @@ async def _ensure_store_locked() -> SessionStore:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+@mcp.tool(
+    name="__ready",
+    description=(
+        "Internal — readiness handshake (plugin contract). Returns "
+        '{"ready": bool, "detail": str}. Never exposed to the LLM.'
+    ),
+)
+async def __ready() -> str:
+    """Readiness handshake — part of the unified plugin readiness contract.
+
+    ``ready: true`` means the turn store can serve (connection open, schema
+    in place, a query succeeds).  The embedding/vec backend is NOT a
+    readiness condition — the store degrades to keyword-only search without
+    it, so model loading never gates startup.
+    """
+    try:
+        store = await _ensure_store()
+        async with store._c.execute("SELECT 1") as cur:
+            await cur.fetchone()
+    except Exception as e:
+        return json.dumps(
+            {"ready": False,
+             "detail": f"store unusable: {type(e).__name__}: {e}"},
+            ensure_ascii=False,
+        )
+    return json.dumps({"ready": True, "detail": "store ok"}, ensure_ascii=False)
+
+
 @mcp.tool(name="__memory_save_turn", description="Save a turn. Internal — called by the agent loop.")
 async def __memory_save_turn(
     user_message: str = "",

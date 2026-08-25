@@ -258,6 +258,14 @@ class AgentService:
         #: purely a firing loop.
         self._schedule_startup_task: asyncio.Task | None = None
 
+        # ── Plugin startup convergence ──────────────────────────────
+        # The service opens for user input only after every attempted
+        # plugin spawn has converged (ready / degraded / skipped /
+        # failed) — the TUI input and the inbox consumer gate on this.
+        # Event-driven: set by the last spawn's ``finally``, never polled.
+        self._startup_plugins: set[str] = set()
+        self._startup_settled = asyncio.Event()
+
         # ── MCP tool-registry self-healing ───────────────────────────
         # The wrapper reconnects dead external servers on its own; these
         # reconcile the agent's tool registry with the wrapper's live state
@@ -281,6 +289,14 @@ class AgentService:
             a2a_client=None,  # (legacy, unused)
             on_activity=self._notify_a2a_activity,  # always active for WeChat etc.
             on_turn_complete=self.save_to_memory,
+            # Startup gate: no turn runs until every plugin spawn converged.
+            # Main agent only — subagents share the main process's plugins
+            # and spawn none themselves, so nothing would ever set the
+            # event; their inbox must not gate on it.
+            ready=(
+                None if self.is_subagent
+                else self.wait_startup_settled
+            ),
         )
         self._inbox_task: asyncio.Task | None = None
 
@@ -451,7 +467,31 @@ class AgentService:
         expected no-ops (not configured / dependency absent — e.g. a2a
         without a running MQTT broker), ``FAILED`` on controlled failure,
         and raises on unexpected errors.
+
+        Tracks startup convergence: this call is one of the plugin-start
+        batch; when every attempted spawn has returned (ready, degraded,
+        skipped, or failed) the ``_startup_settled`` event fires — the
+        service is then open for user input.
         """
+        from slife.agent.plugins import PLUGIN_SPAWN_TIMEOUT
+
+        self._startup_plugins.add(name)
+        try:
+            # Hang guard on the spawn await — convergence must fire even for
+            # a stuck child, so the service can still open (degraded).  Not a
+            # readiness deadline: the normal path settles as fast as the real
+            # spawn, no timing guess involved.
+            async with asyncio.timeout(PLUGIN_SPAWN_TIMEOUT):
+                return await self._start_plugin_server_impl(name, module)
+        finally:
+            self._startup_plugins.discard(name)
+            if not self._startup_plugins:
+                self._startup_settled.set()
+
+    async def _start_plugin_server_impl(
+        self, name: str, module: str,
+    ) -> PluginStartStatus:
+        """Dispatch the plugin spawn without the startup-tracking wrapper."""
         # ── MCP wrapper: custom command, auto-connects external servers ──
         if name == "mcp":
             if not self.config.mcp_config:
@@ -666,6 +706,9 @@ class AgentService:
             self._plugins[name].port = process.port
             os.environ[f"SLIFE_{name.upper()}_PORT"] = str(process.port)
 
+            # Readiness handshake — part of spawn, not a later poll.
+            await self._plugins[name].probe_ready()
+
             return True
         except BaseException:
             # A failed spawn must not leave the lifecycle pointing at a
@@ -700,6 +743,9 @@ class AgentService:
                 on_server_removed=self._unpersist_server,
                 on_server_updated=self._on_server_updated,
             )
+            # Readiness = the wrapper's own client is usable; external MCP
+            # servers connect in background and are never part of it.
+            await self._plugins["mcp"].probe_ready()
             from slife.health import record
             record(
                 "mcp_wrapper", "ok",
@@ -2192,6 +2238,21 @@ class AgentService:
         return await fire_task_now(self, name)
 
     # ── Inbox lifecycle (always active) ────────────────────────────────
+
+    async def wait_startup_settled(self) -> None:
+        """Wait until every attempted plugin spawn has converged.
+
+        The service opens for user input only after this: the inbox
+        consumer and the TUI input both await it.  Event-driven — set
+        ``finally`` by the last ``start_plugin_server`` call, never
+        polled and never time-bounded.
+        """
+        await self._startup_settled.wait()
+
+    @property
+    def startup_settled(self) -> bool:
+        """True once every attempted plugin spawn has converged."""
+        return self._startup_settled.is_set()
 
     async def start_inbox(self) -> None:
         """Start the inbox background processor.

@@ -610,8 +610,9 @@ this text. *See also* Language policy.
 The convention a plugin package must follow: a server module with an entry
 point, discovered and spawned as a child process over the Streamable HTTP
 transport, exposing tools through the model-context protocol. Tools whose
-names begin with a double underscore are treated as internal. *See also*
-Built-in plugin; Internal tool.
+names begin with a double underscore are treated as internal. Every plugin
+also declares a ``__ready`` handshake reporting whether it can serve. *See
+also* Built-in plugin; Internal tool; Readiness (Part III).
 
 **Process watchdog**
 The supervisor that monitors a plugin's child process and restarts it on
@@ -624,6 +625,19 @@ unexpected exit, with exponential backoff up to a bounded restart count.
 The runtime collection of registered tools, supporting lookup, registration,
 and conversion to the function definitions sent to the model. *See also*
 Tool (Part II); Auto-discovery.
+
+**Readiness**
+The state of a plugin under the unified readiness contract: a standard
+internal ``__ready`` tool whose return marks whether the plugin can serve.
+The condition is **plugin-specific** and covers ONLY the plugin's own
+serving capacity — its local store/process. Subordinate or external
+dependencies (mcp's external servers, sharefile's tunnel, wechat's login,
+media's providers, a2a's broker, a store's embedding backend) are NOT
+readiness conditions: they are uncontrollable, self-heal at runtime, and
+are reported as informational ``detail`` instead. A plugin without
+``__ready`` (not yet migrated) is ready-if-connected. Startup holds the
+service open until every plugin spawn has converged (Startup convergence).
+*See also* Plugin contract (Part II); Startup convergence.
 
 ### S
 
@@ -652,14 +666,30 @@ logs or the model. *See also* Credential (Part II).
 Orderly process termination, ensuring background tasks and child processes
 are stopped and no thread can block exit. *See also* Daemon thread.
 
+**Startup convergence**
+The point at which every attempted plugin spawn has reached a terminal
+readiness state — ready, degraded, skipped, or failed. The service opens
+for user input only after convergence: the inbox consumer and the TUI
+input both wait on the same event, so user input can never race ahead of
+core services (this is what visibly fixes the startup-timing problems of
+the missed-notice and the processing indicator). Event-driven — set by the
+last spawn's completion, never polled and never time-bounded; the only
+timeout is a hang-guard on a stuck spawn so convergence still fires.
+There is no "required" plugin list any more: all plugins are peers, and a
+breakdown (e.g. a broken memory backend) fails loudly where it is used —
+the inbox freezes with a red banner on the first turn that cannot be
+saved. *See also* Readiness; Startup missed notice.
+
 **Startup missed notice**
 The one-shot startup pass that surfaces scheduled runs a previous process
 lifetime could not finish: fires due while the agent was down (marked
 `missed`) and runs dispatched but never confirmed (swept to `failed`). It
-runs exactly once at process start, outside the schedule loop, and posts a
-single `[Schedule missed]` notice listing both, from which the agent offers
-to backfill with `run_schedule_now` or skip with `scheduled_run_skip`. *See
-also* Schedule loop; Scheduled run.
+runs exactly once, outside the schedule loop, awaiting Startup convergence
+(event-driven — no polling) so it is the service's first message, ahead of
+any user input, and posts a single `[Schedule missed]` notice listing
+both, from which the agent offers to backfill with `run_schedule_now` or
+skip with `scheduled_run_skip`. *See also* Schedule loop; Scheduled run;
+Startup convergence.
 
 **Streamable HTTP**
 The transport over which plugins communicate with the main process: a

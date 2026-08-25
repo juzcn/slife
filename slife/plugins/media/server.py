@@ -21,6 +21,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from slife.plugins.media.adapters import (
@@ -110,6 +111,22 @@ def _error(e: Exception) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 # LLM-visible tools
 # ═══════════════════════════════════════════════════════════════════════
+
+
+@mcp.tool(
+    name="__ready",
+    description="Internal — readiness handshake (plugin contract): {ready, detail}.",
+)
+async def __ready() -> str:
+    """Readiness handshake — the media server itself is the service.
+
+    Media providers are OPTIONAL: none configured is not a degraded state
+    (generation tools simply error at use), so readiness is just "the
+    server responds" — no provider/config involved.
+    """
+    return json.dumps(
+        {"ready": True, "detail": "media server serving"}, ensure_ascii=False
+    )
 
 
 @mcp.tool(

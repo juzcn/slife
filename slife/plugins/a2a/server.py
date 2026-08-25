@@ -220,6 +220,29 @@ async def _on_agent_change(card: AgentCard, event: str) -> None:
 
 
 @mcp.tool(
+    name="__ready",
+    description="Internal — readiness handshake (plugin contract): {ready, detail}.",
+)
+async def __ready() -> str:
+    """Readiness handshake — the a2a server itself can serve.
+
+    The MQTT broker is an external dependency and is NOT a readiness
+    condition (an absent broker → SKIPPED at startup; a dead broker
+    mid-run surfaces through the drain/health surface).  Broker
+    reachability rides along as informational ``detail`` only — it is
+    read, never induced (no connect attempt inside the handshake).
+    """
+    client = globals().get("_client")
+    bound = client is not None and bool(client.is_connected)
+    return json.dumps(
+        {"ready": True,
+         "detail": ("server serving; MQTT binding connected" if bound
+                    else "server serving; MQTT binding not connected")},
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool(
     name="a2a_send_task",
     description="Send a task to a remote A2A mesh peer and wait for the result. "
     "Requires the A2A mesh (MQTT broker running).",

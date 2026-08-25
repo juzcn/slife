@@ -62,14 +62,6 @@ MISS_GRACE = 120
 #: Bound on stepping through fires when hunting the newest missed one.
 _MAX_FIRE_STEPS = 5000
 
-#: Retry granularity for the startup missed-notice while it waits for the
-#: memfiles plugin to connect.  Deliberately short (not the 30 s POLL_INTERVAL):
-#: the notice must be the inbox's FIRST message — a user typing in the first
-#: half-minute of startup must not get queued ahead of it.  With 1 s retries
-#: the notice lands ~2-4 s in, ahead of heartbeat (+60 s) and any schedule
-#: fire (+30 s).
-_STARTUP_RETRY_INTERVAL = 1.0
-
 
 def trigger_text(name: str, description: str) -> str:
     """Build the trigger message injected into the inbox when a task fires."""
@@ -285,15 +277,17 @@ async def schedule_startup_notice(service) -> None:
     ``schedule_loop`` fires only and never re-announces — the missed
     notice fires exactly once, at startup.
     """
-    # The memfiles plugin connects shortly after startup — wait (bounded by
-    # the process lifetime, cancelled at shutdown) until it is reachable.
-    # Retry fast so the notice is the inbox's FIRST message: a 30 s retry
-    # would let the user's first input queue ahead of it.
-    while True:
-        client = _memfiles_client(service)
-        if client is not None:
-            break
-        await asyncio.sleep(_STARTUP_RETRY_INTERVAL)
+    # The notice must be the service's FIRST message: wait for the service to
+    # open (every plugin spawn converged — memfiles confirmed serving by its
+    # own __ready handshake), then read the client once.  Event-driven, no
+    # polling, no timing guess — the inbox consumer and the TUI input gate
+    # on the same event, so nothing can be queued ahead of this notice.
+    await service.wait_startup_settled()
+    client = _memfiles_client(service)
+    if client is None:
+        # memfiles unavailable (failed/degraded) — nothing coherent to sweep
+        # or announce; the failure is surfaced elsewhere.
+        return
 
     # 1. Reap dispatch-only runs from a previous lifetime → failed.
     stale_failed: list[dict] = []

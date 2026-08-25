@@ -242,7 +242,7 @@ Built-in plugin tools are registered under their bare names (e.g. `turn_search`,
 
 Every turn is permanently recorded in SQLite (`~/.slife/<agent>.db`). Hybrid search across four modes:
 
-**Memory is a core feature — the agent never runs silently without it.** If the memory DB is broken (missing column, corruption, disk error), the agent fails loudly instead of pretending: a session that can't restore aborts at startup with the error; a turn that can't be saved freezes the inbox and shows a red banner — new turns stop until the DB is fixed and the agent is restarted. A memdb plugin that fails to load likewise aborts startup.
+**Memory is a core feature — the agent never runs silently without it.** If the memory DB is broken (missing column, corruption, disk error), the agent fails loudly instead of pretending: a session that can't restore aborts at startup with the error; a turn that can't be saved freezes the inbox and shows a red banner — new turns stop until the DB is fixed and the agent is restarted.
 
 | Mode | Best for |
 |------|----------|
@@ -292,6 +292,8 @@ Six built-in plugins as independent child processes:
 External MCP servers configured in `slife.json5` → `mcp.servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled).
 
 All plugins — built-in and auto-discovered third-party alike — run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
+
+Every plugin declares a **readiness handshake** (`__ready` internal tool) telling the harness whether its own serving capacity is usable. External/subordinate dependencies — external MCP servers, the ngrok tunnel, WeChat login, media providers, the A2A broker, embedding backends — never gate readiness: they are uncontrollable, self-heal at runtime, and are reported separately. The service opens for user input only once every plugin spawn has converged (ready / degraded / skipped / failed), so input can never race ahead of plugin startup.
 
 ### A2A — Agent-to-Agent (mesh)
 

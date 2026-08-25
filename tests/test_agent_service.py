@@ -1857,6 +1857,10 @@ class TestSpawnPluginListToolsRetry:
             "name": "turn_search", "description": "d",
             "inputSchema": {"type": "object", "properties": {}},
         }]
+        second_client.call_tool = AsyncMock(
+            # Readiness handshake runs at the end of the spawn.
+            return_value='{"ready": true, "detail": "store ok"}',
+        )
         fake_process.create_client.side_effect = [first_client, second_client]
 
         with patch(

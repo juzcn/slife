@@ -316,6 +316,29 @@ async def __mcp_connection_status(ctx: Context | None = None) -> str:
 
 
 @mcp.tool(
+    name="__ready",
+    description="Internal — readiness handshake (plugin contract): {ready, detail}.",
+)
+async def __ready() -> str:
+    """Readiness handshake — the wrapper's own service is usable.
+
+    External MCP servers are NOT a readiness condition: they connect in
+    the background and have their own health status, so their (slow)
+    connection never gates startup.  ``ready`` stays true as long as the
+    wrapper serving this tool answers; external-server connectivity is
+    reported in ``detail`` only.
+    """
+    servers = _pool.list_servers()
+    running = sum(1 for s in servers if s.get("state") == "running")
+    total = len(servers)
+    return json.dumps(
+        {"ready": True,
+         "detail": f"wrapper serving; {running}/{total} external servers running"},
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool(
     name="mcp_list_tools",
     description=(
         "List a connected MCP server's tools. Names are prefixed server__tool."

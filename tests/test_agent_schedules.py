@@ -225,6 +225,8 @@ def _make_service(client, posted):
     service._tool_ctx = ctx
     service.inbox = inbox
     service.surface_autonomous = AsyncMock()
+    # Startup gate: the one-shot awaits service.wait_startup_settled().
+    service.wait_startup_settled = AsyncMock()
     return service
 
 

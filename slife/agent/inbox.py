@@ -18,7 +18,7 @@ from slife.a2a.identity import AgentName, AgentMessage
 from slife.agent.message_history import MessageHistory
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from slife.a2a.client import A2AClient
     from slife.agent.loop import AgentLoop, AgentEventHandler
@@ -46,12 +46,18 @@ class Inbox:
         a2a_client: "A2AClient | None" = None,
         on_activity: "Callable | None" = None,
         on_turn_complete: "Callable | None" = None,
+        ready: "Callable[[], Awaitable[None]] | None" = None,
     ):
         self._agent_loop = agent_loop
         self._histories = histories
         self._a2a_client = a2a_client
         self._on_activity = on_activity  # async cb(kind, **kwargs)
         self._on_turn_complete = on_turn_complete  # async cb(user_message, token_count, history)
+        #: Startup gate — awaited once before the first message is consumed.
+        #: The service opens for input only after every plugin spawn
+        #: converged, so user input can never race ahead of core services.
+        #: ``None`` (no gate) preserves the old behaviour for standalone use.
+        self._ready = ready
         self._queue: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._runner_task: asyncio.Task | None = None
         self._processing: bool = False
@@ -133,7 +139,14 @@ class Inbox:
     # ── Run ───────────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        """Process messages forever.  Call as a background task."""
+        """Process messages forever.  Call as a background task.
+
+        Await the startup gate (when one is wired) before consuming — the
+        service must not process any turn until every plugin spawn has
+        converged.  Posts made before the gate queue as usual.
+        """
+        if self._ready is not None:
+            await self._ready()
         logger.info("inbox_start")
         while True:
             msg = await self._queue.get()
