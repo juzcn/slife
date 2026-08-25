@@ -62,6 +62,14 @@ MISS_GRACE = 120
 #: Bound on stepping through fires when hunting the newest missed one.
 _MAX_FIRE_STEPS = 5000
 
+#: Retry granularity for the startup missed-notice while it waits for the
+#: memfiles plugin to connect.  Deliberately short (not the 30 s POLL_INTERVAL):
+#: the notice must be the inbox's FIRST message — a user typing in the first
+#: half-minute of startup must not get queued ahead of it.  With 1 s retries
+#: the notice lands ~2-4 s in, ahead of heartbeat (+60 s) and any schedule
+#: fire (+30 s).
+_STARTUP_RETRY_INTERVAL = 1.0
+
 
 def trigger_text(name: str, description: str) -> str:
     """Build the trigger message injected into the inbox when a task fires."""
@@ -279,11 +287,13 @@ async def schedule_startup_notice(service) -> None:
     """
     # The memfiles plugin connects shortly after startup — wait (bounded by
     # the process lifetime, cancelled at shutdown) until it is reachable.
+    # Retry fast so the notice is the inbox's FIRST message: a 30 s retry
+    # would let the user's first input queue ahead of it.
     while True:
         client = _memfiles_client(service)
         if client is not None:
             break
-        await asyncio.sleep(POLL_INTERVAL)
+        await asyncio.sleep(_STARTUP_RETRY_INTERVAL)
 
     # 1. Reap dispatch-only runs from a previous lifetime → failed.
     stale_failed: list[dict] = []
