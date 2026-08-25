@@ -105,8 +105,19 @@ _KIND_SPECS = {
         "snippet_col": 3,        # files_fts(title, original_path, tags, summary)
         "like_cols": ["title", "original_path", "tags", "summary"],
     },
+    "report": {
+        "id_label": "report",
+        "table": "reports",
+        "fts": "reports_fts",
+        "semantic": "reports_semantic",
+        "key_col": "title",
+        "text_col": "content",
+        "file_col": "file_path",
+        "snippet_col": 0,        # reports_fts(title, content, tags)
+        "like_cols": ["title", "content", "tags"],
+    },
 }
-_KIND_NAMES = ("note", "diary", "file")
+_KIND_NAMES = ("note", "diary", "file", "report")
 
 
 class MemfilesStore:
@@ -376,6 +387,206 @@ class MemfilesStore:
         return {"kind": "file", "doc_id": cursor.lastrowid,
                 "key": saved_path, "file_path": saved_path}
 
+    async def upsert_report(
+        self, task_id: int, title: str, content: str, tags: str = "",
+        period_start: str | None = None, period_end: str | None = None,
+    ) -> dict:
+        """Save a scheduled-task report (md + DB row + run backfill).
+
+        Writes the report to ``reports/<slug>.md`` and the DB, then backfills
+        the newest ``scheduled_runs`` row for this task that has no report yet
+        (``report_id IS NULL``), so the run's report link is closed at the
+        store layer.  The caller only needs the task (not the run's due_at).
+        """
+        if not content.strip():
+            raise ValueError("content is required")
+        if not title.strip():
+            raise ValueError("title is required")
+        slug = _slugify(title) or f"report-{task_id}"
+        rel = f"reports/{slug}.md"
+        abs_path = self._mem_dir / rel
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        now = _now()
+        body = content.strip()
+        if abs_path.exists():
+            # Same title → append a timestamped section (like diary).
+            existing = abs_path.read_text(encoding="utf-8").rstrip()
+            new_md = f"{existing}\n\n## {now}\n\n{body}\n"
+        else:
+            new_md = f"# {title}\n\n{body}\n"
+        abs_path.write_text(new_md, encoding="utf-8")
+
+        cursor = await self._c.execute(
+            "SELECT id FROM reports WHERE file_path = ?", (rel,),
+        )
+        row = await cursor.fetchone()
+        if row:
+            await self._c.execute(
+                "UPDATE reports SET content=?, tags=?, file_path=?, "
+                "period_start=?, period_end=?, updated_at=? WHERE id=?",
+                (new_md, tags, rel, period_start, period_end, now, row["id"]),
+            )
+            await self._clear_kind_chunks("report", row["id"])
+            doc_id = row["id"]
+        else:
+            cursor = await self._c.execute(
+                "INSERT INTO reports (task_id, title, content, tags, file_path, "
+                "period_start, period_end, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (task_id, title, new_md, tags, rel, period_start, period_end, now, now),
+            )
+            doc_id = cursor.lastrowid
+
+        # Store-layer backfill: link the newest un-linked run for this task.
+        await self._c.execute(
+            "UPDATE scheduled_runs SET report_id=? WHERE id = ("
+            "  SELECT id FROM scheduled_runs WHERE task_id=? AND report_id IS NULL "
+            "  ORDER BY due_at DESC LIMIT 1)",
+            (doc_id, task_id),
+        )
+        await self._c.commit()
+        return {"kind": "report", "doc_id": doc_id, "key": title,
+                "file_path": rel, "content": new_md}
+
+    # ── scheduled-task registry ─────────────────────────────────────
+
+    async def upsert_scheduled_task(
+        self, name: str, description: str = "", schedule: str = "",
+        timezone: str = "", enabled: bool = True,
+    ) -> dict:
+        """Create or update a scheduled task by name.  Returns its row."""
+        now = _now()
+        cursor = await self._c.execute(
+            "SELECT id FROM scheduled_tasks WHERE name = ?", (name,),
+        )
+        row = await cursor.fetchone()
+        if row:
+            await self._c.execute(
+                "UPDATE scheduled_tasks SET description=?, schedule=?, "
+                "timezone=?, enabled=?, updated_at=? WHERE id=?",
+                (description, schedule, timezone, 1 if enabled else 0, now, row["id"]),
+            )
+            task_id = row["id"]
+        else:
+            cursor = await self._c.execute(
+                "INSERT INTO scheduled_tasks (name, description, schedule, timezone, "
+                "enabled, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (name, description, schedule, timezone, 1 if enabled else 0, now, now),
+            )
+            task_id = cursor.lastrowid
+        await self._c.commit()
+        return {"task_id": task_id, "name": name}
+
+    async def get_scheduled_task(self, name: str) -> dict | None:
+        cursor = await self._c.execute(
+            "SELECT id, name, description, schedule, timezone, enabled, "
+            "created_at, updated_at FROM scheduled_tasks WHERE name = ?",
+            (name,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def list_scheduled_tasks(self, enabled_only: bool = False) -> list[dict]:
+        where = "WHERE enabled = 1" if enabled_only else ""
+        cursor = await self._c.execute(
+            f"SELECT id, name, description, schedule, timezone, enabled, "
+            f"created_at, updated_at FROM scheduled_tasks {where} "
+            f"ORDER BY name",
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def remove_scheduled_task(self, name: str) -> bool:
+        """Delete a scheduled task and its run history.  Reports stay.
+
+        Returns True if a task was removed.
+        """
+        cursor = await self._c.execute(
+            "SELECT id FROM scheduled_tasks WHERE name = ?", (name,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        task_id = row["id"]
+        await self._c.execute(
+            "DELETE FROM scheduled_runs WHERE task_id = ?", (task_id,),
+        )
+        await self._c.execute(
+            "DELETE FROM scheduled_tasks WHERE id = ?", (task_id,),
+        )
+        await self._c.commit()
+        return True
+
+    async def record_scheduled_run(
+        self, task_id: int, due_at: str, status: str = "ran",
+    ) -> dict:
+        """Insert a scheduled run (idempotent on (task_id, due_at))."""
+        now = _now()
+        cursor = await self._c.execute(
+            "INSERT INTO scheduled_runs (task_id, due_at, status, ran_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(task_id, due_at) DO UPDATE SET status=excluded.status, "
+            "ran_at=excluded.ran_at",
+            (task_id, due_at, status, now),
+        )
+        await self._c.commit()
+        return {"run_id": cursor.lastrowid, "task_id": task_id, "due_at": due_at}
+
+    async def mark_run_missed(self, task_id: int, due_at: str) -> None:
+        """Mark a due-but-not-dispatched run as missed (idempotent)."""
+        await self._c.execute(
+            "INSERT INTO scheduled_runs (task_id, due_at, status) VALUES (?, ?, 'missed') "
+            "ON CONFLICT(task_id, due_at) DO UPDATE SET status='missed' "
+            "WHERE scheduled_runs.status NOT IN ('ran', 'failed', 'confirmed_done')",
+            (task_id, due_at),
+        )
+        await self._c.commit()
+
+    async def confirm_run_done(self, task_id: int, due_at: str) -> None:
+        """Confirm a missed run as done (user said "no need to backfill")."""
+        await self._c.execute(
+            "UPDATE scheduled_runs SET status='confirmed_done' "
+            "WHERE task_id=? AND due_at=? AND status='missed'",
+            (task_id, due_at),
+        )
+        await self._c.commit()
+
+    async def last_run_due(self, task_id: int) -> str | None:
+        """Return the newest ``due_at`` across all of a task's runs.
+
+        Any status counts (ran/missed/confirmed) — the anchor for computing
+        the next trigger must advance past missed runs too, or the loop would
+        keep re-detecting the same overdue fire.
+        """
+        cursor = await self._c.execute(
+            "SELECT MAX(due_at) FROM scheduled_runs WHERE task_id = ?",
+            (task_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if (row and row[0]) else None
+
+    async def list_scheduled_runs(
+        self, task_id: int | None = None, status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List runs, newest-first; filter by task and/or status."""
+        limit = _clamp_limit(limit)
+        clauses: list[str] = []
+        params: list[str] = []
+        if task_id is not None:
+            clauses.append("task_id = ?")
+            params.append(str(task_id))
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor = await self._c.execute(
+            f"SELECT id, task_id, due_at, status, ran_at, report_id, error "
+            f"FROM scheduled_runs {where} ORDER BY due_at DESC LIMIT ? OFFSET 0",
+            (*params, limit),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     # ── browse / read ────────────────────────────────────────────────
 
     async def list_notes(self, limit: int = 50, offset: int = 0) -> dict:
@@ -429,6 +640,44 @@ class MemfilesStore:
         )
         entries = [dict(row) for row in await cursor.fetchall()]
         return {"entries": entries, "total": total}
+
+    async def list_reports(
+        self, task_id: int | None = None, limit: int = 50, offset: int = 0,
+    ) -> dict:
+        """List reports, newest first, optionally filtered by task.
+
+        Returns ``{"entries": [...], "total": n}``.
+        """
+        limit = _clamp_limit(limit)
+        offset = max(0, offset)
+        where = ""
+        params: list[str] = []
+        if task_id is not None:
+            where = "WHERE task_id = ?"
+            params.append(str(task_id))
+        cursor = await self._c.execute(
+            f"SELECT COUNT(*) FROM reports {where}", params,
+        )
+        row = await cursor.fetchone()
+        total = row[0] if row else 0
+        cursor = await self._c.execute(
+            f"SELECT id, task_id, title, tags, file_path, period_start, "
+            f"period_end, created_at, updated_at "
+            f"FROM reports {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        entries = [dict(row) for row in await cursor.fetchall()]
+        return {"entries": entries, "total": total}
+
+    async def get_report(self, report_id: int) -> dict | None:
+        """Return one report (with full content), or None."""
+        cursor = await self._c.execute(
+            "SELECT id, task_id, title, content, tags, file_path, period_start, "
+            "period_end, created_at, updated_at FROM reports WHERE id = ?",
+            (report_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
     async def list_files(
         self, category: str = "", limit: int = 50, offset: int = 0,
@@ -588,7 +837,8 @@ class MemfilesStore:
         limit = _clamp_limit(limit)
         kinds = {
             "note": ["note"], "diary": ["diary"], "file": ["file"],
-            "all": ["note", "diary", "file"],
+            "report": ["report"],
+            "all": ["note", "diary", "file", "report"],
         }[kind]
         use_semantic = mode == "hybrid" and bool(embed_query)
         out: list[dict] = []

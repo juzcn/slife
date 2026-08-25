@@ -11,7 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from slife.agent.message_history import turn_header
-from slife.agent.heartbeat import HEARTBEAT_MARK
+from slife.agent.schedules import is_autonomous_trigger
 from slife.agent.llm_client import TokenUsage
 from slife.ui.chat import ChatView
 from slife.ui.tool_display import ToolCallWidget
@@ -165,11 +165,11 @@ async def restore_session(
             # (The images column is gone — image blocks live only in the
             # in-memory user message and are never persisted; restore is
             # text-only.  The user message here is plain text + turn header.)
-            # Heartbeat turns carry a synthetic "[Heartbeat]…" trigger as the
-            # user message, not a real query — no turn header (restore also
-            # filters them from the TUI).
+            # Autonomous turns (heartbeat / schedule) carry a synthetic
+            # trigger as the user message, not a real query — no turn header
+            # (restore also filters them from the TUI).
             header = (
-                "" if user_msg_text.startswith(HEARTBEAT_MARK)
+                "" if is_autonomous_trigger(user_msg_text)
                 else turn_header(turn)
             )
             # The turn header is an inline footnote concatenated onto the end
@@ -222,7 +222,7 @@ async def restore_session(
             _channel_by_row[i] = turn.get("channel", "")
 
         turn_idx = -1
-        is_heartbeat = False
+        is_autonomous = False
         cur_created = ""
         cur_completed = ""
         for idx, msg in enumerate(all_messages):
@@ -250,11 +250,12 @@ async def restore_session(
                     if isinstance(content, list)
                     else content
                 )
-                # Heartbeat turns: the trigger is a marked system message,
-                # not a real user message — filter the whole turn (the
-                # reply renders as ⚡ 自主 below, or not at all if quiet).
-                is_heartbeat = raw.startswith(HEARTBEAT_MARK)
-                if is_heartbeat:
+                # Autonomous turns (heartbeat / schedule): the trigger is a
+                # marked system message, not a real user message — filter the
+                # whole turn (the reply renders as ⚡ 自主 below, or not at
+                # all if quiet).
+                is_autonomous = is_autonomous_trigger(raw)
+                if is_autonomous:
                     continue
                 ch = _channel_by_row.get(turn_idx, "")
                 prefix = restore_prefix(ch, agent_name)
@@ -286,10 +287,11 @@ async def restore_session(
                     and not visible_calls
                 ):
                     continue
-                if is_heartbeat:
-                    # Autonomous beat: show real content as ⚡ 自主.  A bare
-                    # "." is already skipped by the general silence filter
-                    # above; here we only drop empty messages.
+                if is_autonomous:
+                    # Autonomous beat (heartbeat / schedule): show real
+                    # content as ⚡ 自主.  A bare "." is already skipped by
+                    # the general silence filter above; here we only drop
+                    # empty messages.
                     content = msg.get("content") or ""
                     if not content.strip():
                         continue

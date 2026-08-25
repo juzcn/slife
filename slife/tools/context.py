@@ -61,6 +61,11 @@ class ToolContext:
     (0 = unlimited).  Populated by AgentService after the loop is built;
     used by the ``set_max_iterations`` meta tool."""
 
+    fire_schedule_now: Callable[[str], Awaitable[str]] | None = None
+    """Run a scheduled task immediately (record a run + inject its trigger).
+    Populated by AgentService (main agent only); used by the
+    ``run_schedule_now`` tool to backfill a missed run or fire a task now."""
+
     advance_context_start: Callable[[int], Awaitable[bool]] | None = None
     """Persist the live-context start boundary after a trim evicted
     *count* oldest turns, so restart rebuilds the exit-time context.

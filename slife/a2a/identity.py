@@ -21,6 +21,10 @@ WECHAT = AgentName("wechat")
 HEARTBEAT = AgentName("heartbeat")
 """Internal autonomous heartbeat — not a peer terminal."""
 
+SCHEDULE = AgentName("schedule")
+"""Internal scheduled-task trigger — not a peer terminal.  The main agent
+handles it by delegating the task to a subagent worker."""
+
 
 @dataclass
 class AgentMessage:

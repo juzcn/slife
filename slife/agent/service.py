@@ -26,7 +26,6 @@ from slife.agent.system_prompt import build as build_system_prompt
 from slife.config import Config
 from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.message_history import MessageHistory, turn_header
-from slife.agent.heartbeat import HEARTBEAT_MARK
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
 from slife.agent.inbox import Inbox, MessageHistoryStore
 from slife.agent.plugins import PluginLifecycle, PluginStartStatus
@@ -231,6 +230,10 @@ class AgentService:
         self._tool_ctx.message_history = self.message_history
         # Runtime iteration-cap hook for the set_max_iterations meta tool.
         self._tool_ctx.set_max_iterations = self.agent_loop.set_max_iterations
+        # Scheduled-task manual-fire hook for the run_schedule_now tool.
+        # Subagents are workers, never the scheduler — leave it None there.
+        if not is_subagent:
+            self._tool_ctx.fire_schedule_now = self.fire_schedule_now
         # Live-context boundary hooks — _trim_after_save advances the
         # boundary so a restart rebuilds the exit-time context; clear_context
         # flushes it for a fresh start.  Bound methods resolve the memdb
@@ -245,6 +248,9 @@ class AgentService:
         self._on_autonomous = None
         self._on_heartbeat = None
         self._heartbeat_task: asyncio.Task | None = None
+
+        # Scheduled-task trigger loop — times tasks and injects triggers.
+        self._schedule_task: asyncio.Task | None = None
 
         # ── MCP tool-registry self-healing ───────────────────────────
         # The wrapper reconnects dead external servers on its own; these
@@ -1958,15 +1964,17 @@ class AgentService:
         msgs = history.messages
         if not (0 <= user_idx < len(msgs)) or msgs[user_idx].get("role") != "user":
             return
+        from slife.agent.schedules import is_autonomous_trigger
+
         content = msgs[user_idx].get("content", "")
         if isinstance(content, str):
-            if content.startswith(HEARTBEAT_MARK):
+            if is_autonomous_trigger(content):
                 return
         elif isinstance(content, list):
             joined = "".join(
                 p.get("text", "") for p in content if p.get("type") == "text"
             )
-            if joined.startswith(HEARTBEAT_MARK):
+            if is_autonomous_trigger(joined):
                 return
         else:
             return
@@ -2187,6 +2195,16 @@ class AgentService:
             logger.info("heartbeat_quiet")
             await self._notify_heartbeat("quiet")
 
+    async def fire_schedule_now(self, name: str) -> str:
+        """Run a scheduled task immediately (backfill / manual trigger).
+
+        Delegates to :func:`slife.agent.schedules.fire_task_now`, which
+        records a run and injects the task's trigger into the inbox.
+        """
+        from slife.agent.schedules import fire_task_now
+
+        return await fire_task_now(self, name)
+
     # ── Inbox lifecycle (always active) ────────────────────────────────
 
     async def start_inbox(self) -> None:
@@ -2210,6 +2228,14 @@ class AgentService:
                 self._heartbeat_task = asyncio.create_task(heartbeat_loop(self))
                 logger.info("heartbeat_started")
 
+            # Scheduled-task trigger loop — same "main agent only" rule: a
+            # subagent is a worker, never the scheduler.
+            from slife.agent.schedules import schedule_loop
+
+            if self._schedule_task is None or self._schedule_task.done():
+                self._schedule_task = asyncio.create_task(schedule_loop(self))
+                logger.info("schedule_loop_started")
+
     async def stop_inbox(self) -> None:
         """Stop the inbox background processor (and the heartbeat)."""
         if self._heartbeat_task is not None:
@@ -2219,6 +2245,13 @@ class AgentService:
             except asyncio.CancelledError:
                 pass
             self._heartbeat_task = None
+        if self._schedule_task is not None:
+            self._schedule_task.cancel()
+            try:
+                await self._schedule_task
+            except asyncio.CancelledError:
+                pass
+            self._schedule_task = None
         if self._inbox_task is None:
             return
         self._inbox_task.cancel()

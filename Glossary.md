@@ -144,6 +144,14 @@ Trim.
 The time range the currently loaded context spans, reported to the model so
 it knows how far back its working set reaches.
 
+**Context injection**
+The introduction of information into the context on the system's own
+initiative, rather than in response to the user. It takes three forms: a
+marker-carrying user message injected as a turn (heartbeat, scheduled-task
+trigger); a harness tool-pair contributed by an auto-invoked harness tool;
+and marker-carrying info appended to an existing message (turn footnote,
+trim note). *See also* Heartbeat; Scheduled task; Harness tool; Annotation.
+
 **Context status**
 A per-turn report of the current operating conditions: the time, the context
 usage (tokens and percentage of the window), and any recent changes to the
@@ -298,6 +306,12 @@ Active model; Model ref.
 
 ### R
 
+**Report**
+A document a scheduled task produces when it runs. A report is saved to the
+file cabinet, belongs to its task, and records the period it covers; it can
+be listed, read, and searched like any cabinet document. *See also*
+Scheduled task; File Cabinet.
+
 **Restore**
 The reconstruction of the exit-time context at startup, so that the agent
 resumes as if it had never been interrupted. Restore reads from memory and
@@ -309,6 +323,24 @@ agent automatically when complete) or *poll* (retrieved on request by its
 task identifier). *See also* Async task; Task.
 
 ### S
+
+**Scheduled task**
+A recurring task the agent runs on a schedule: a named definition carrying a
+description, a cron schedule, and a timezone. When a task fires, the agent
+delegates the work to a subagent and does not perform it inline. Scheduled
+tasks fire only while the agent is running. *See also* Scheduled run; Report;
+Schedule marker; Subagent.
+
+**Scheduled run**
+One occasion of a scheduled task firing. A run records when it was due and
+its outcome — ran, missed (due while the agent was not running), failed, or
+confirmed done — and, once the task finishes, links to the report that was
+produced. A missed run can be backfilled by running the task immediately.
+*See also* Scheduled task; Report.
+
+**Schedule marker**
+The annotation that marks a scheduled-task trigger. *See also* Scheduled
+task.
 
 **Semantic index**
 The auxiliary structure that enables meaning-based (vector) search over the
@@ -434,7 +466,7 @@ Health check.
 
 ## Appendix A — Annotation Notation
 
-Three annotations may appear inside messages. They are machine-generated
+Four annotations may appear inside messages. They are machine-generated
 metadata, not content:
 
 | Notation | Meaning |
@@ -442,6 +474,7 @@ metadata, not content:
 | `[Turn: N · start → end]` | The turn footnote: turn id `N` and when it happened. |
 | `[TrimContext: N]` | The trim note: `N` oldest complete turns were trimmed from context. |
 | `[Heartbeat]` | The heartbeat marker: a synthetic autonomous trigger. |
+| `[Schedule <name>]` | The schedule marker: the scheduled task `<name>` is due (or `[Schedule missed]` lists runs missed while the agent was not running). |
 
 ---
 
@@ -453,6 +486,8 @@ bare names or prefixes:
 - **Turns & memory** — listing, reading, searching, summarizing turns; token
   usage; the semantic index.
 - **File Cabinet** — notes, diary, saving and listing files; cabinet search.
+- **Scheduled tasks** — defining, listing, and removing scheduled tasks; run
+  history and confirmation; running a task now; saving and reading reports.
 - **File sharing** — publishing a local file as a public URL.
 - **Generation** — image, video, speech synthesis, and transcription.
 - **Messaging** — login, send, receive, and status for the messaging channel.
@@ -588,6 +623,13 @@ and conversion to the function definitions sent to the model. *See also*
 Tool (Part II); Auto-discovery.
 
 ### S
+
+**Schedule loop**
+The main-process background loop that times scheduled tasks: it decides when
+each enabled task is due, injects the trigger, and records a missed run when
+a fire was due while the agent was down. It never executes a task — the
+agent delegates execution to a subagent. *See also* Scheduled task;
+Scheduled run.
 
 **Schema authoring**
 The convention for writing tool schemas: a tool's description states what it

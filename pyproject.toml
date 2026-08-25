@@ -27,6 +27,8 @@ dependencies = [
     "requests>=2.31.0",
     "credstore",
     "ngrok",
+    "croniter>=6.2.4",
+    "tzdata>=2026.3",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

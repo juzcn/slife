@@ -727,6 +727,290 @@ async def list_files(category: str = "", limit: int = 50, offset: int = 0) -> st
     )
 
 
+# ── Scheduled tasks & reports ───────────────────────────────────────
+
+
+async def _task_id_by_name(name: str) -> int | None:
+    """Resolve a scheduled-task name to its id, or None if absent."""
+    store = await _ensure_store()
+    task = await store.get_scheduled_task(name)
+    return task["id"] if task else None
+
+
+# Internal (``__``) tools — used by the main process's schedule loop, never
+# exposed to the LLM (filtered by is_internal_tool).
+
+
+@mcp.tool(
+    name="__scheduled_tasks_state",
+    description="Internal: enabled scheduled tasks with their last run anchor.",
+)
+async def __scheduled_tasks_state() -> str:
+    """Return enabled tasks, each with its newest run ``due_at`` (anchor)."""
+    store = await _ensure_store()
+    tasks = await store.list_scheduled_tasks(enabled_only=True)
+    out = []
+    for t in tasks:
+        t = dict(t)
+        t["last_run_due"] = await store.last_run_due(t["id"])
+        out.append(t)
+    return json.dumps(out, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__scheduled_task_by_name",
+    description="Internal: return one scheduled task by name (any enabled state).",
+)
+async def __scheduled_task_by_name(name: str) -> str:
+    store = await _ensure_store()
+    task = await store.get_scheduled_task(name)
+    if task is None:
+        return "null"
+    task = dict(task)
+    task["last_run_due"] = await store.last_run_due(task["id"])
+    return json.dumps(task, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__scheduled_record_run",
+    description="Internal: record a scheduled run (status=ran) for a task.",
+)
+async def __scheduled_record_run(task_id: int, due_at: str) -> str:
+    store = await _ensure_store()
+    info = await store.record_scheduled_run(task_id, due_at, status="ran")
+    return json.dumps(info, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__scheduled_mark_missed",
+    description="Internal: mark a due-but-not-fired run as missed.",
+)
+async def __scheduled_mark_missed(task_id: int, due_at: str) -> str:
+    store = await _ensure_store()
+    await store.mark_run_missed(task_id, due_at)
+    return json.dumps({"task_id": task_id, "due_at": due_at, "status": "missed"},
+                      ensure_ascii=False)
+
+
+@mcp.tool(
+    name="scheduled_task_set",
+    description=(
+        "Create or update a scheduled task (idempotent upsert by name).  "
+        "Stores the task's description, cron schedule, timezone and enabled "
+        "flag in the cabinet.  Returns the task's name and id."
+    ),
+)
+async def scheduled_task_set(
+    name: str, description: str = "", schedule: str = "",
+    timezone: str = "", enabled: bool = True,
+) -> str:
+    """Create or update a scheduled task by name.
+
+    Args:
+        name: Unique task name (e.g. "daily_diary") — also the worker identity.
+        description: The task text handed to the worker when it fires.
+        schedule: 5-field cron expression ("minute hour dom month dow"), or
+            "manual" for a task that only runs via run_schedule_now.
+        timezone: IANA timezone for the trigger (empty = system local).
+        enabled: Whether the schedule loop fires this task (default true).
+    """
+    if not name.strip():
+        return "Error: name is required."
+    from slife.schedules import is_valid
+
+    if schedule and schedule != "manual" and not is_valid(schedule):
+        return f"Error: invalid cron expression {schedule!r}."
+    store = await _ensure_store()
+    try:
+        info = await store.upsert_scheduled_task(
+            name=name.strip(), description=description, schedule=schedule,
+            timezone=timezone, enabled=enabled,
+        )
+    except Exception as e:
+        return f"Error: {e}"
+    return json.dumps(
+        {"name": info["name"], "task_id": info["task_id"],
+         "schedule": schedule, "enabled": enabled},
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool(
+    name="scheduled_task_remove",
+    description=(
+        "Delete a scheduled task and its run history by name.  Saved reports "
+        "are kept.  Returns whether a task was removed."
+    ),
+)
+async def scheduled_task_remove(name: str) -> str:
+    """Delete a scheduled task by name.
+
+    Args:
+        name: The task name to remove (from scheduled_task_list).
+    """
+    if not name.strip():
+        return "Error: name is required."
+    store = await _ensure_store()
+    removed = await store.remove_scheduled_task(name.strip())
+    if not removed:
+        return f"Scheduled task not found: {name}"
+    return f"Scheduled task '{name}' removed (its run history was cleared; reports are kept)."
+
+
+@mcp.tool(
+    name="scheduled_task_list",
+    description=(
+        "List scheduled tasks with name, description, schedule, timezone and "
+        "enabled flag.  Set enabled_only to list only active tasks."
+    ),
+)
+async def scheduled_task_list(enabled_only: bool = False) -> str:
+    """List scheduled tasks.
+
+    Args:
+        enabled_only: When true, list only enabled tasks.
+    """
+    store = await _ensure_store()
+    tasks = await store.list_scheduled_tasks(enabled_only=enabled_only)
+    return json.dumps({"total": len(tasks), "tasks": tasks},
+                      ensure_ascii=False, indent=2)
+
+
+@mcp.tool(
+    name="scheduled_run_list",
+    description=(
+        "List scheduled-task run records (due_at, status, ran_at, report_id, "
+        "error), newest first.  Filter by task name and/or status "
+        "(ran/missed/failed/skipped/confirmed_done).  A 'missed' run means the "
+        "trigger time passed while slife was not running — offer to backfill it."
+    ),
+)
+async def scheduled_run_list(name: str = "", status: str = "", limit: int = 50) -> str:
+    """List scheduled-task runs.
+
+    Args:
+        name: Optional task name to filter on (empty = all tasks).
+        status: Optional status filter (empty = all statuses).
+        limit: Maximum records to return.
+    """
+    store = await _ensure_store()
+    task_id = None
+    if name.strip():
+        task_id = await _task_id_by_name(name.strip())
+        if task_id is None:
+            return f"Scheduled task not found: {name}"
+    runs = await store.list_scheduled_runs(
+        task_id=task_id, status=status or None, limit=limit,
+    )
+    return json.dumps({"total": len(runs), "runs": runs},
+                      ensure_ascii=False, indent=2)
+
+
+@mcp.tool(
+    name="scheduled_run_confirm",
+    description=(
+        "Confirm a missed scheduled run as done — the user decided it does not "
+        "need to be backfilled.  Only a run in 'missed' status changes."
+    ),
+)
+async def scheduled_run_confirm(name: str, due_at: str) -> str:
+    """Mark a missed run as confirmed_done.
+
+    Args:
+        name: The task name the run belongs to.
+        due_at: The run's scheduled time (ISO, from scheduled_run_list).
+    """
+    task_id = await _task_id_by_name(name.strip())
+    if task_id is None:
+        return f"Scheduled task not found: {name}"
+    store = await _ensure_store()
+    await store.confirm_run_done(task_id, due_at)
+    return f"Run '{name}' @ {due_at} confirmed as done."
+
+
+@mcp.tool(
+    name="save_cron_report",
+    description=(
+        "Save a scheduled-task report into the cabinet (reports/<slug>.md) and "
+        "link it to the newest un-reported run of that task.  Called by the "
+        "worker at the end of a scheduled task.  Returns the report's file path."
+    ),
+)
+async def save_cron_report(
+    name: str, title: str, content: str, tags: str = "",
+    period_start: str | None = None, period_end: str | None = None,
+) -> str:
+    """Save a scheduled-task report by task name.
+
+    Args:
+        name: The scheduled task's name (from the [Schedule <name>] trigger).
+        title: Report title — also its filename (reports/<title>.md).
+        content: The report body (Markdown).
+        tags: Optional comma-separated tags for search.
+        period_start: Optional ISO start of the period the report covers.
+        period_end: Optional ISO end of the period the report covers.
+    """
+    task_id = await _task_id_by_name(name.strip())
+    if task_id is None:
+        return f"Error: scheduled task not found — {name}"
+    store = await _ensure_store()
+    try:
+        info = await store.upsert_report(
+            task_id=task_id, title=title, content=content, tags=tags,
+            period_start=period_start, period_end=period_end,
+        )
+    except ValueError as e:
+        return f"Error: {e}"
+    return _saved_result(store.mem_dir / info["file_path"])
+
+
+@mcp.tool(
+    name="report_list",
+    description=(
+        "List scheduled-task reports (newest first) with title, task_id, "
+        "period and file_path.  Optionally filter by task name.  Use "
+        "report_read(report_id) for full content."
+    ),
+)
+async def report_list(name: str = "", limit: int = 50, offset: int = 0) -> str:
+    """List scheduled-task reports.
+
+    Args:
+        name: Optional task name to filter on (empty = all tasks).
+        limit: Maximum entries to return.
+        offset: Skip this many entries (for paging).
+    """
+    store = await _ensure_store()
+    task_id = None
+    if name.strip():
+        task_id = await _task_id_by_name(name.strip())
+        if task_id is None:
+            return f"Scheduled task not found: {name}"
+    data = await store.list_reports(task_id=task_id, limit=limit, offset=offset)
+    return json.dumps(
+        {"total": data["total"], "limit": len(data["entries"]),
+         "offset": max(0, offset), "entries": data["entries"]},
+        ensure_ascii=False, indent=2,
+    )
+
+
+@mcp.tool(
+    name="report_read",
+    description="Read a scheduled-task report's full content by its report_id.",
+)
+async def report_read(report_id: int) -> str:
+    """Read a report's full content.
+
+    Args:
+        report_id: The report's id (from report_list).
+    """
+    store = await _ensure_store()
+    report = await store.get_report(report_id)
+    if report is None:
+        return f"Error: report not found — {report_id}"
+    return report["content"]
+
+
 # ── SSRF guard (shared with url_save) ─────────────────────────────
 
 

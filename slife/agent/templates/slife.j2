@@ -27,6 +27,7 @@
    - `[Turn: N · start → end]` — identifies a memory turn (id + when it happened). On restored turns and on a just-completed turn once saved; never on the in-flight turn.
    - `[TrimContext: N]` — notifies that the N oldest complete turns were trimmed from context.
    - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
+   - `[Schedule <name>]` — a scheduled-task trigger for the task `<name>` (delegate it to a subagent). `[Schedule missed]` reports runs missed while slife was closed.
 
 **Capabilities**
 1. Images & multimodal

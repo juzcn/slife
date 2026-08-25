@@ -297,6 +297,35 @@ class TestRestoreTurnHeader:
         chat_view.add_user_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_schedule_trigger_turn_gets_no_header(self):
+        app, conv, config, chat_view = self._build()
+        await self._restore(app, conv, config, [
+            self._turn("[Schedule daily_diary] 定时任务触发。", channel="schedule"),
+        ])
+
+        # The synthetic trigger carries no turn header.
+        assert conv.messages[0]["content"] == "[Schedule daily_diary] 定时任务触发。"
+        # The trigger renders nowhere in the chat.
+        chat_view.add_user_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_schedule_trigger_reply_renders_autonomous(self):
+        app, conv, config, chat_view = self._build()
+        await self._restore(app, conv, config, [
+            self._turn(
+                "[Schedule daily_diary] 定时任务触发。",
+                channel="schedule",
+                msgs=[{"role": "assistant", "content": "已派发定时任务。"}],
+            ),
+        ])
+        # The dispatch confirmation surfaces as an autonomous message.
+        chat_view.add_assistant_message.assert_called_once()
+        kwargs = chat_view.add_assistant_message.call_args.kwargs
+        assert kwargs.get("name_prefix") == "⚡ 自主: "
+        am = chat_view.add_assistant_message.return_value
+        am.append_text.assert_called_once_with("已派发定时任务。")
+
+    @pytest.mark.asyncio
     async def test_legacy_turn_without_identity_stays_plain(self):
         app, conv, config, chat_view = self._build()
         turn = self._turn("hi")

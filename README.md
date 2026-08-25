@@ -259,6 +259,12 @@ Each turn records two timestamps — the user's input time (`created_at`, the En
 
 While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_interval` seconds; the code default is 60, the shipped template sets 600) to think or act on its own. It runs as a normal turn (own turn, saved to memory); the reply contract is real content if it has something worth saying, otherwise a single `.`. A bare `.` reply is **silence** — never rendered in the chat or session restore, from any event (heartbeat, A2A async-completion notification, etc.); the `[Heartbeat]` trigger is filtered, and a real autonomous reply renders as `⚡ 自主`. A precondition for emergent self-initiated behavior.
 
+### Scheduled Tasks
+
+Ask the agent to do something on a schedule — "write a diary entry every night at midnight", "summarize the week every Friday" — and it registers a cron-scheduled task (`scheduled_task_set`). When a task fires, the agent delegates the work to a subagent worker rather than doing it inline, and the worker saves the result as a **report** in the file cabinet (`save_cron_report`). Every fire is recorded (`scheduled_run_list`), so you can see what ran and what it produced (`report_list` / `report_read`).
+
+Tasks fire **only while Slife is running**. A run that was due while Slife was closed is recorded as **missed** and surfaced on the next start, so the agent can offer to backfill it (`run_schedule_now`) or you can skip it (`scheduled_run_confirm`).
+
 ### Image & Vision
 
 Attach images with `@path` / `@url` syntax (quotes supported for paths with spaces) to feed them to a vision-capable model:

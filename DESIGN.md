@@ -14,12 +14,13 @@
 8. [Memory (MemDB)](#memory-memdb) — schema, search, embedding, session restore, agent isolation
 9. [A2A — Agent-to-Agent (mesh)](#a2a--agent-to-agent-mesh) — MQTT mesh, unified inbox, task store, subagent workers
 10. [Image & Memfiles](#image--memfiles) — @-syntax, image display, memfiles plugin, ngrok
-11. [UI](#ui) — widgets, timestamps, progressive disclosure
-12. [Config & Credentials](#config--credentials) — two-layer architecture, credstore matrix, secret sanitization, config sections
-13. [Health Checks](#health-checks)
-14. [Logging Convention](#logging-convention) — sinks, log vs TUI
-15. [Dev vs. Production Data Directory](#dev-vs-production-data-directory)
-16. [Project Structure](#project-structure)
+11. [Scheduled Tasks](#scheduled-tasks) — schedule loop, trigger→subagent execution, run/report record, missed runs
+12. [UI](#ui) — widgets, timestamps, progressive disclosure
+13. [Config & Credentials](#config--credentials) — two-layer architecture, credstore matrix, secret sanitization, config sections
+14. [Health Checks](#health-checks)
+15. [Logging Convention](#logging-convention) — sinks, log vs TUI
+16. [Dev vs. Production Data Directory](#dev-vs-production-data-directory)
+17. [Project Structure](#project-structure)
 
 ---
 
@@ -182,6 +183,16 @@ The agent is otherwise purely user-driven — no input, no activity. A heartbeat
 - **TUI filtering** (live + restore): heartbeat turns are recognised by the `[Heartbeat]` mark on the trigger message and filtered — the trigger is never shown, and a real reply renders as `⚡ 自主`. More generally, a bare `.` reply is **silence** and is never rendered from any event (heartbeat, A2A async-completion notification, …) — the TUI handler skips a lone `.` text chunk and restore skips any assistant message whose content is exactly `.`. The status bar shows the last beat (`●` act / `·` quiet).
 - **Main agent only**: subagents (`is_subagent=True`) never start the heartbeat loop — they are task-driven workers, not autonomous agents.
 - The heartbeat history is separate (source `heartbeat`), so the autonomous reflections persist in the diary without polluting the human history.
+
+### Context Injection
+
+The system introduces information into the context on its own initiative in three ways, distinguished by *what* is injected and *whether it persists*:
+
+1. **A new user message, marker-carrying — persistent.** The heartbeat (`[Heartbeat]`) and scheduled-task triggers (`[Schedule <name>]`, `[Schedule missed]`) are posted to the inbox as synthetic user messages. Each runs as a normal agent-loop turn and is saved to the diary like any turn. The marker lets the TUI filter the trigger (never shown) and surface only a real reply (`⚡ 自主`). See *Autonomous Heartbeat* and *Scheduled Tasks*.
+2. **A harness tool-pair — persistent.** A harness tool is auto-invoked once per turn and contributes an assistant `tool_call` plus its tool-result to the history — `_sys_note` (context status) and `_sys_trim` (trim bookkeeping). The pair is part of the turn, so it persists; it exists to keep the context state visible to the model without spending an LLM iteration deciding to call it.
+3. **Info appended to an existing message, marker-carrying — not persistent content.** The turn footnote (`[Turn: N · start → end]`) is appended to a user message after the turn saves (so the next call can reference the turn), and the trim note (`[TrimContext: N]`) announces evicted turns. These annotate a message already present rather than injecting a standalone one; they are reconstructed as metadata, not stored as injected content.
+
+Forms 1 and 2 add real turns/pairs to the record; form 3 decorates what is already there. All three keep the model informed without waiting for user input.
 
 ## LLM Backends
 
@@ -652,6 +663,20 @@ Started **by the sharefile plugin** (eagerly in its lifespan, non-blocking; grac
 A tunnel failure is **temporary, not permanent** — free-tier sessions get recycled and another instance may free the tunnel at any time.  So the sharefile plugin **always loads** (even if the eager tunnel start fails): the monitor keeps retrying in the background, and the tunnel comes up automatically the moment it's available.  The harness surfaces a one-time warning only on a terminal `failed` state.
 
 ngrok free tier limits: **1 online agent** (one tunnel per token — only the first agent to start gets the sharefile tunnel; subsequent agents fail to bind), 1 GB transfer/month, 20k HTTP requests/month. Endpoint pooling requires no paid plan. Subagents reuse the main agent's sharefile plugin via Streamable HTTP (`SLIFE_SHAREFILE_PORT`) instead of spawning a second tunnel.
+
+## Scheduled Tasks
+
+Recurring tasks the agent runs on a cron schedule. The design separates three concerns: **timing** (a thin main-process loop), **execution** (a subagent worker), and **record** (the memfiles DB). The agent both starts and finishes each task visibly — it dispatches the work and later sees the completion — rather than the scheduler silently running it.
+
+**Timing — `schedule_loop` (`slife/agent/schedules.py`).** Main-agent-only (subagents are workers, never the scheduler), started alongside the heartbeat in `start_inbox`. Every 30 s it recomputes each enabled task's next fire **from the DB, not from memory**: the anchor is the newest `due_at` across *all* of a task's runs (ran *and* missed both advance the anchor, so a missed fire is never re-detected), falling back to `created_at`. Cron parsing uses `croniter` (`slife/schedules.py` is a thin wrapper: validation, next-run, timezone policy). When a fire is due the loop compares the newest fire `≤ now` against a short grace window (120 s): within it, the fire just became due → **fire**; past it, slife was down when it was due → **mark missed**. Only the newest missed fire is recorded, not every fire inside a long downtime.
+
+**Trigger → execution.** Firing writes a `scheduled_runs` row (`status='ran'`) and injects a `[Schedule <name>]` message into the unified inbox (source `SCHEDULE`, silent handler like heartbeat — excluded from "remote" handling in `inbox.py`). The main agent handles the trigger by delegating, not doing: it spawns/reuses a subagent named `<name>` and sends the task via `subagent_send_task_async` (mode=auto), instructing the worker to call `save_cron_report` when done. Completion rides the existing subagent auto-push back to the main agent, which sees "task finished."
+
+**Record — three memfiles tables.** `scheduled_tasks` (definition: name, description, cron, timezone, enabled — stored in the DB so tasks are runtime-mutable, added in conversation), `scheduled_runs` (per-fire state + report link), and `reports` (a fourth cabinet document kind, `reports/<slug>.md`, with FTS5 + vec0 indexes via the `_KIND_SPECS` extension). `save_cron_report` writes the report and backfills the newest un-linked run's `report_id` at the store layer, so the run→report link closes without depending on a second LLM call. Existing DBs upgrade via `scripts/migrate_memfiles_scheduled.py` (the app itself carries no migration code); fresh DBs get the tables from `schema.sql` and the runtime self-heals `reports_semantic`.
+
+**Missed runs.** Persisted, so a restart surfaces them. On first detection the loop injects a `[Schedule missed]` notice (once per task per process); the agent tells the user and offers to backfill (`run_schedule_now` fires a task immediately, recording a run) or skip (`scheduled_run_confirm` marks it done). Scheduled tasks fire **only while slife is running** — a run due while closed is missed, never silently lost.
+
+Tools: `scheduled_task_set` / `scheduled_task_remove` / `scheduled_task_list`, `scheduled_run_list` / `scheduled_run_confirm`, `save_cron_report` / `report_list` / `report_read` (all memfiles MCP tools, visible to main agent and worker alike), plus the native `run_schedule_now` (the one operation that needs the main-process inbox, reached through the `fire_schedule_now` tool-context hook).
 
 ## UI
 
