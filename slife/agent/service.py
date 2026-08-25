@@ -248,6 +248,8 @@ class AgentService:
         # Autonomous heartbeat — background idle task + TUI surfacing hooks.
         self._on_autonomous = None
         self._on_heartbeat = None
+        # Scheduler-driven output (cron fires / backfill / missed-notice).
+        self._on_schedule = None
         self._heartbeat_task: asyncio.Task | None = None
 
         # Scheduled-task trigger loop — times tasks and injects triggers.
@@ -2179,6 +2181,11 @@ class AgentService:
         """Register a callback for autonomous (heartbeat) output."""
         self._on_autonomous = callback
 
+    def on_schedule(self, callback) -> None:
+        """Register a callback for scheduler-driven output (cron fires,
+        run_schedule_now backfills, startup missed-run notices)."""
+        self._on_schedule = callback
+
     def on_heartbeat(self, callback) -> None:
         """Register a callback for every heartbeat outcome (quiet|act)."""
         self._on_heartbeat = callback
@@ -2199,6 +2206,19 @@ class AgentService:
                 await cb(text)
             except Exception:
                 logger.debug("surface_autonomous_error", exc_info=True)
+
+    async def surface_schedule(self, text: str) -> None:
+        """Deliver a scheduler-driven message to the TUI (📅 定时).
+
+        Cron fires, ``run_schedule_now`` backfills, and the startup
+        missed-run notice are scheduler output, not autonomous acts — they
+        surface here, not through :meth:`surface_autonomous`."""
+        cb = self._on_schedule
+        if cb is not None:
+            try:
+                await cb(text)
+            except Exception:
+                logger.debug("surface_schedule_error", exc_info=True)
 
     async def _notify_heartbeat(self, outcome: str) -> None:
         """Notify the TUI that a heartbeat beat happened (status-bar pulse)."""

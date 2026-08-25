@@ -43,10 +43,21 @@ logger = logging.getLogger(__name__)
 SCHEDULE_MARK = "[Schedule"
 
 
+def is_schedule_trigger(text: str) -> bool:
+    """True when *text* is a schedule trigger (cron fire, manual
+    ``run_schedule_now`` backfill, or the startup missed-run notice) — a
+    scheduler-driven turn, not a real user query and not autonomous."""
+    return text.startswith(SCHEDULE_MARK)
+
+
 def is_autonomous_trigger(text: str) -> bool:
-    """True when *text* is a synthetic autonomous trigger (heartbeat or a
-    schedule trigger), not a real user query.  Used to filter these turns
-    from the TUI and to skip turn-footnote annotation."""
+    """True when *text* is a synthetic non-user trigger: a heartbeat
+    (autonomous) or a schedule trigger (scheduler-driven).  Used to filter
+    these turns from the TUI and to skip turn-footnote annotation.
+
+    Covers both trigger families for the *suppression* they share (hide the
+    synthetic user message, skip the turn footnote); distinguishing them for
+    *rendering* (⚡ 自主 vs 📅 定时) uses :func:`is_schedule_trigger`."""
     from slife.agent.heartbeat import HEARTBEAT_MARK
 
     return text.startswith(HEARTBEAT_MARK) or text.startswith(SCHEDULE_MARK)
@@ -195,7 +206,7 @@ def _surface_reply(service):
     async def _reply(text: str, cancelled: bool = False) -> None:
         t = (text or "").strip()
         if t and t != ".":
-            await service.surface_autonomous(t)
+            await service.surface_schedule(t)
     return _reply
 
 
@@ -219,7 +230,7 @@ def _schedule_reply(service, client, task: dict, due_iso: str):
                 "task_id": task["id"], "due_at": due_iso, "error": t[:200],
             })
         if t and t != ".":
-            await service.surface_autonomous(t)
+            await service.surface_schedule(t)
     return _reply
 
 

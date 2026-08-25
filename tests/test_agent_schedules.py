@@ -157,7 +157,7 @@ async def test_fire_task_now_records_and_posts():
     service = MagicMock()
     service._tool_ctx = ctx
     service.inbox = inbox
-    service.surface_autonomous = AsyncMock()
+    service.surface_schedule = AsyncMock()
 
     result = await S.fire_task_now(service, "daily")
     assert "dispatched" in result
@@ -193,7 +193,7 @@ async def test_schedule_reply_marks_run_failed_on_cancel_and_error():
     async def fake_surface(t: str) -> None:
         surfaced.append(t)
 
-    service.surface_autonomous = fake_surface
+    service.surface_schedule = fake_surface
     task = {"id": 7, "name": "daily"}
     reply = S._schedule_reply(service, client, task, "2026-08-25T09:00:00")
 
@@ -224,7 +224,7 @@ def _make_service(client, posted):
     service = MagicMock()
     service._tool_ctx = ctx
     service.inbox = inbox
-    service.surface_autonomous = AsyncMock()
+    service.surface_schedule = AsyncMock()
     # Startup gate: the one-shot awaits service.wait_startup_settled().
     service.wait_startup_settled = AsyncMock()
     return service
