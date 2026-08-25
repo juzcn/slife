@@ -100,20 +100,43 @@ def parse_cli_config_path(argv: list[str]) -> str | None:
     """Extract the first positional CLI arg as an explicit config path.
 
     ``python -m slife myconf.json5`` must use ``myconf.json5`` (the docstring
-    promises it); flags (``--headless``, ``--agent <id>``) are skipped.
-    Returns ``None`` when no positional path is given.
+    promises it); flags (``--headless``, ``--agent <id>``, ``--lang <en|zh>``)
+    are skipped along with their values.  Returns ``None`` when no positional
+    path is given.
     """
     args = argv[1:]
     i = 0
     while i < len(args):
         a = args[i]
         if a.startswith("-"):
-            if a == "--agent" and i + 1 < len(args):
+            if a in ("--agent", "--lang") and i + 1 < len(args):
                 i += 2
                 continue
             i += 1
             continue
         return a
+    return None
+
+
+def parse_cli_lang(argv: list[str]) -> str | None:
+    """Extract ``--lang <en|zh>`` from CLI args; ``None`` → auto-detect.
+
+    ``python -m slife --lang zh`` forces the TUI language; omitting the
+    flag keeps the OS-locale detection in ``slife.ui.i18n``.  A missing or
+    invalid value exits with a message — a typo must fail loudly, not
+    silently fall back to the detected language.
+    """
+    args = argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--lang":
+            if i + 1 >= len(args):
+                raise SystemExit("--lang needs a value: en or zh")
+            value = args[i + 1]
+            if value not in ("en", "zh"):
+                raise SystemExit(f"--lang must be 'en' or 'zh', got {value!r}")
+            return value
+        i += 1
     return None
 
 

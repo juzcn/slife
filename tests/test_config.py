@@ -746,6 +746,36 @@ class TestParseCLI:
         result = parse_cli_agent(["slife"])
         assert result == "slife"
 
+    def test_parse_cli_lang_found(self):
+        from slife.config import parse_cli_lang
+        assert parse_cli_lang(["slife", "--lang", "zh"]) == "zh"
+        assert parse_cli_lang(["slife", "--lang", "en"]) == "en"
+        # flag after a positional is still found
+        assert parse_cli_lang(["slife", "myconf.json5", "--lang", "zh"]) == "zh"
+
+    def test_parse_cli_lang_default(self):
+        from slife.config import parse_cli_lang
+        assert parse_cli_lang(["slife"]) is None
+        assert parse_cli_lang(["slife", "--agent", "bob"]) is None
+
+    def test_parse_cli_lang_invalid_value(self):
+        from slife.config import parse_cli_lang
+        with pytest.raises(SystemExit):
+            parse_cli_lang(["slife", "--lang", "fr"])
+
+    def test_parse_cli_lang_missing_value(self):
+        from slife.config import parse_cli_lang
+        with pytest.raises(SystemExit):
+            parse_cli_lang(["slife", "--lang"])
+
+    def test_parse_cli_config_path_skips_lang(self):
+        from slife.config import parse_cli_config_path
+        assert parse_cli_config_path(["slife", "--lang", "zh", "myconf.json5"]) == "myconf.json5"
+        assert parse_cli_config_path(
+            ["slife", "--agent", "bob", "--lang", "zh", "myconf.json5"]
+        ) == "myconf.json5"
+        assert parse_cli_config_path(["slife", "--lang", "zh"]) is None
+
 
 # ── Config.from_json5 — subagent / A2A ────────────────────────────────
 

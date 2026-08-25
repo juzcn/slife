@@ -322,6 +322,7 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 | Flag | Description |
 |------|-------------|
 | `--agent <id>` | Agent identity — separate diary database + A2A mesh name (default: `slife`) |
+| `--lang <en\|zh>` | TUI language — force English / Chinese (default: auto-detect from OS locale) |
 | `<config-path>` | Positional — use a specific config file (its parent dir becomes the data dir) |
 
 ## Optional Extras

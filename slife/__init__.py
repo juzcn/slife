@@ -14,10 +14,11 @@ import sys
 from pathlib import Path
 
 from slife.bootstrap import restore_windows_console, seed_skills, setup_logging
-from slife.config import Config, parse_cli_agent, parse_cli_config_path
+from slife.config import Config, parse_cli_agent, parse_cli_config_path, parse_cli_lang
 from slife.logfmt import init_session_id
 from slife.paths import get_config_path, get_data_dir, get_skills_dir
 from slife.ui.app import SlifeApp
+from slife.ui.i18n import set_language
 
 logger = logging.getLogger("slife")
 
@@ -28,10 +29,14 @@ def main(config_path: str | None = None):
     Dev mode (detected via pyproject.toml): data files stay in CWD.
     Otherwise: everything lives in ``~/.slife/``.  An explicit config path
     (positional CLI arg or the *config_path* parameter) is honored — its
-    parent directory becomes the data dir.
+    parent directory becomes the data dir.  ``--lang en|zh`` overrides the
+    TUI language; without it the OS locale is detected at import.
     """
     agent_name = parse_cli_agent(sys.argv)
     explicit = config_path or parse_cli_config_path(sys.argv)
+    lang = parse_cli_lang(sys.argv)
+    if lang is not None:
+        set_language(lang)
 
     # Resolve data dir BEFORE logging setup so logs go to the right place.
     # Only two modes:

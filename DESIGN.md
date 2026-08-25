@@ -45,6 +45,9 @@ the human-facing TUI follows the OS locale.
   `sys-lang` queries `Get-Culture` on Windows (the only path that works on a
   default install — env vars are unset and `locale.getlocale()` returns
   `None`) and `LC_ALL`/`LC_MESSAGES`/`LANG`/`LANGUAGE` on *nix.
+- `--lang en|zh` CLI flag overrides detection — `python -m slife --lang zh`
+  forces Chinese regardless of the OS locale (`parse_cli_lang` →
+  `set_language` in `slife.ui.i18n`).
 - The translation layer is `slife/ui/i18n.py` — a single `t(key, **fmt)`
   accessor over an `en`/`zh` string table.  No catalogs, no YAML, no Pydantic.
 - Everything the human reads is localized: system messages (plugin load
