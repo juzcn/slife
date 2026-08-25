@@ -367,4 +367,7 @@ async def fire_task_now(service, name: str) -> str:
     if not task:
         return f"Scheduled task not found: {name}"
     await _fire(service, client, task, datetime.now().astimezone())
-    return f"Scheduled task '{name}' dispatched now."
+    return (
+        f"Scheduled task '{name}' trigger queued — the agent will dispatch "
+        f"it to a subagent worker on the next turn."
+    )

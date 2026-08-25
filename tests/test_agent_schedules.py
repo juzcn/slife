@@ -160,7 +160,8 @@ async def test_fire_task_now_records_and_posts():
     service.surface_schedule = AsyncMock()
 
     result = await S.fire_task_now(service, "daily")
-    assert "dispatched" in result
+    assert "queued" in result
+    assert "next turn" in result
     assert len(posted) == 1
     assert posted[0].content.startswith(S.SCHEDULE_MARK + " daily]")
 
