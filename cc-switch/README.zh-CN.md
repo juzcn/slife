@@ -72,9 +72,9 @@ cc-switch activate deepseek/deepseek-chat
 `ANTHROPIC_MODEL`、`ANTHROPIC_CLAUDE_CODE_EFFORT_LEVEL`。
 输入值即覆盖，回车保留默认。覆盖是一次性的：从不改动存储的 provider 配置。
 
-### `cc-switch list`
+### `cc-switch`
 
-每行列出所有已配置的 provider/model 对：
+不带任何命令时，每行列出所有已配置的 provider/model 对：
 
 ```
 deepseek/deepseek-chat
@@ -82,10 +82,10 @@ deepseek/deepseek-reasoner
 scnet/scnet-1m
 ```
 
-### `cc-switch list-providers`
+### `cc-switch list`
 
-显示 provider 元数据（base URL、API key name、models），不使用 `list` 的
-每模型一行布局。
+显示 provider 元数据（base URL、API key name、models）——每个 provider
+一块。
 
 ### `cc-switch remove <provider-name>`
 

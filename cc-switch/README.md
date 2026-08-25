@@ -77,9 +77,10 @@ Like `activate`, but lets you override every model slot first —
 Enter a value to override, or Enter to keep the default.  Overrides are
 one-shot: they never touch the stored provider config.
 
-### `cc-switch list`
+### `cc-switch`
 
-Lists every configured provider/model pair, one per line:
+With no command, lists every configured provider/model pair, one per
+line:
 
 ```
 deepseek/deepseek-chat
@@ -87,10 +88,10 @@ deepseek/deepseek-reasoner
 scnet/scnet-1m
 ```
 
-### `cc-switch list-providers`
+### `cc-switch list`
 
-Shows provider metadata (base URL, API key name, models) without the
-model-per-line layout of `list`.
+Shows provider metadata (base URL, API key name, models) — one block
+per provider.
 
 ### `cc-switch remove <provider-name>`
 

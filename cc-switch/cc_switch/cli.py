@@ -12,10 +12,10 @@ Commands::
         from credstore into ANTHROPIC_AUTH_TOKEN (env only).
     cc-switch activate <provider>[/<model>] --custom
         Interactive override of every model slot, then write.
-    cc-switch list
+    cc-switch (no command)
         List providers and their models as provider/model.
-    cc-switch list-providers
-        Show all providers and their models (list is for provider/model rows).
+    cc-switch list
+        Show all providers and their metadata.
 
 Non-secret interactive values use plain ``input()``.  The API key name
 is stored in the config; the key value is read from credstore only at
@@ -229,7 +229,7 @@ def _cmd_list(args) -> int:
 
 
 def _cmd_list_providers(args) -> int:
-    """Show providers with their metadata (base URL, API key name)."""
+    """Show providers with their metadata (base URL, API key name) for ``list``."""
     providers = _api.load_config().get("providers", {})
     if not providers:
         print("No providers configured.")
@@ -255,7 +255,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="cc-switch",
         description="Generate ~/.claude/settings.json from saved provider/model configs.",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     set_p = sub.add_parser("set", help="Create or edit a provider config")
     set_p.add_argument("provider", help="Provider name, e.g. deepseek")
@@ -271,8 +271,7 @@ def _build_parser() -> argparse.ArgumentParser:
                        default="auto",
                        help="Shell format for the exported env var (default: auto-detect)")
 
-    sub.add_parser("list", help="List providers and models as provider/model")
-    sub.add_parser("list-providers", help="Show providers with their base URL and API key name")
+    sub.add_parser("list", help="Show providers with their base URL and API key name")
 
     return parser
 
@@ -286,15 +285,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        if args.command == "set":
+        if args.command is None:
+            return _cmd_list(args)
+        elif args.command == "set":
             return _cmd_set(args)
         elif args.command == "remove":
             return _cmd_remove(args)
         elif args.command == "activate":
             return _cmd_activate(args)
         elif args.command == "list":
-            return _cmd_list(args)
-        elif args.command == "list-providers":
             return _cmd_list_providers(args)
         else:
             parser.print_help()

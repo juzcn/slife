@@ -105,14 +105,14 @@ class TestRemove:
 
 class TestList:
     def test_empty(self, config_path, capsys):
-        assert cli.main(["list"]) == 0
+        assert cli.main([]) == 0
         out = capsys.readouterr().out
         assert "No providers configured" in out
 
     def test_lists_provider_model(self, config_path, capsys):
         _api.add_provider("ds", "https://x", "K", ["a", "b"])
         _api.add_provider("sc", "https://y", "SK", ["c"])
-        assert cli.main(["list"]) == 0
+        assert cli.main([]) == 0
         out = capsys.readouterr().out
         assert "ds/a" in out and "ds/b" in out and "sc/c" in out
 
