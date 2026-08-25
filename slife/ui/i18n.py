@@ -22,11 +22,12 @@ def _detect_language() -> str:
     ``sys-lang`` returns an ISO code like ``zh`` / ``zh_CN`` / ``zh_HK``;
     any ``zh*`` prefix counts as Chinese (Simplified / Traditional / region
     variants share the same zh strings here).  Detection never raises —
-    ``get_sys_lang`` falls back to ``en`` internally on failure.
+    ``get_sys_lang`` can raise (missing ``powershell``, non-zero subprocess,
+    undetectable locale), and any failure degrades to ``en`` here.
     """
     try:
         code = get_sys_lang(region=False).lower()
-    except Exception:
+    except Exception:  # noqa: BLE001 - degrade to English on any detection failure
         return "en"
     return "zh" if code.startswith("zh") else "en"
 
