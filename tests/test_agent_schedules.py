@@ -210,43 +210,126 @@ async def test_schedule_reply_marks_run_failed_on_cancel_and_error():
     assert surfaced == ["(Turn interrupted)", "Error: boom", "all good"]
 
 
-# ── startup sweep on a previous process lifetime ─────────────────────
+# ── startup one-shot: runs missed across a downtime ──────────────────
 
-@pytest.mark.asyncio
-async def test_schedule_loop_sweeps_stale_pending_into_notice(monkeypatch):
-    monkeypatch.setattr(S, "POLL_INTERVAL", 0.01)
-    results = [
-        # __scheduled_fail_unconfirmed
-        '{"failed": 1, "runs": [{"task_id": 7, "name": "daily", '
-        '"due_at": "2026-08-25T09:00:00", "status": "failed"}]}',
-        "[]",  # __scheduled_tasks_state
-    ]
-
-    async def fake_call_tool(name, arguments=None):
-        return results.pop(0)
-
-    client = AsyncMock()
-    client.call_tool = fake_call_tool
-
-    posted: list = []
+def _make_service(client, posted):
     inbox = MagicMock()
 
     async def fake_post(msg):
         posted.append(msg)
 
     inbox.post = fake_post
-
-    service = MagicMock()
     ctx = MagicMock()
     ctx.memfiles_client = client
+    service = MagicMock()
     service._tool_ctx = ctx
     service.inbox = inbox
     service.surface_autonomous = AsyncMock()
+    return service
+
+
+@pytest.mark.asyncio
+async def test_schedule_startup_notice_announces_stale_failed_once():
+    client = AsyncMock()
+    calls: list[str] = []
+
+    async def fake_call_tool(name, arguments=None):
+        calls.append(name)
+        if name == "__scheduled_fail_unconfirmed":
+            return ('{"failed": 1, "runs": [{"task_id": 7, "name": "daily", '
+                    '"due_at": "2026-08-25T09:00:00", "status": "failed"}]}')
+        if name == "__scheduled_tasks_state":
+            return "[]"
+        return "{}"
+
+    client.call_tool = fake_call_tool
+
+    posted: list = []
+    service = _make_service(client, posted)
+
+    await S.schedule_startup_notice(service)
+
+    assert len(posted) == 1, "the missed notice must fire exactly once"
+    assert "daily @ 2026-08-25T09:00:00" in posted[0].content
+    assert "未完成（已触发但无报告，重启中断）" in posted[0].content
+    assert "run_schedule_now" in posted[0].content
+    assert "scheduled_run_skip" in posted[0].content
+    assert "__scheduled_fail_unconfirmed" in calls
+
+
+@pytest.mark.asyncio
+async def test_schedule_startup_notice_marks_and_announces_missed(monkeypatch):
+    # Fix the clock so _classify deterministically sees a fire older than the
+    # grace window (missed while slife was down).  Local-aware times in the
+    # task mirror what the memfiles store emits, matching the other classify
+    # tests.
+    fixed_now = datetime(2026, 8, 25, 14, 0).astimezone()
+    last_due = datetime(2026, 8, 24, 9, 0).astimezone()
+    created = datetime(2026, 8, 20, 9, 0).astimezone()
+
+    class _FixedClock:
+        @staticmethod
+        def now():
+            return fixed_now
+
+        fromisoformat = staticmethod(datetime.fromisoformat)
+
+    monkeypatch.setattr(S, "datetime", _FixedClock)
+
+    client = AsyncMock()
+    mark_calls: list[dict] = []
+
+    async def fake_call_tool(name, arguments=None):
+        if name == "__scheduled_fail_unconfirmed":
+            return '{"failed": 0, "runs": []}'
+        if name == "__scheduled_tasks_state":
+            return ('[{"id": 1, "name": "daily", "schedule": "0 9 * * *", '
+                    '"timezone": "", '
+                    f'"created_at": "{_iso(created)}", '
+                    f'"last_run_due": "{_iso(last_due)}"}}]')
+        if name == "__scheduled_mark_missed":
+            mark_calls.append(arguments)
+            return '{"status": "missed"}'
+        return "{}"
+
+    client.call_tool = fake_call_tool
+
+    posted: list = []
+    service = _make_service(client, posted)
+
+    await S.schedule_startup_notice(service)
+
+    assert mark_calls == [
+        {"task_id": 1, "due_at": _iso(datetime(2026, 8, 25, 9, 0).astimezone())},
+    ]
+    assert len(posted) == 1
+    assert "错过（slife 未运行期间到期）" in posted[0].content
+    assert "daily @ " + _iso(datetime(2026, 8, 25, 9, 0).astimezone()) \
+        in posted[0].content
+
+
+@pytest.mark.asyncio
+async def test_schedule_loop_never_announces_missed_or_stale(monkeypatch):
+    # The timed loop fires only — even with unconfirmed runs around, it must
+    # never call the sweep nor post a missed notice.  Regression: the notice
+    # used to be posted on every poll while a failed run stayed unresolved.
+    monkeypatch.setattr(S, "POLL_INTERVAL", 0.02)
+    calls: list[str] = []
+
+    async def fake_call_tool(name, arguments=None):
+        calls.append(name)
+        return "[]"
+
+    client = AsyncMock()
+    client.call_tool = fake_call_tool
+
+    posted: list = []
+    service = _make_service(client, posted)
 
     task = asyncio.create_task(S.schedule_loop(service))
     try:
-        for _ in range(300):
-            if posted:
+        for _ in range(200):
+            if calls.count("__scheduled_tasks_state") >= 2:
                 break
             await asyncio.sleep(0.01)
         task.cancel()
@@ -256,10 +339,8 @@ async def test_schedule_loop_sweeps_stale_pending_into_notice(monkeypatch):
         if not task.done():
             task.cancel()
 
-    assert posted, "schedule loop never posted a notice"
-    assert "daily @ 2026-08-25T09:00:00" in posted[0].content
-    assert "run_schedule_now" in posted[0].content
-    assert "scheduled_run_skip" in posted[0].content
+    assert "__scheduled_fail_unconfirmed" not in calls
+    assert not posted
 
 
 # ── run_schedule_now native tool ─────────────────────────────────────

@@ -257,16 +257,68 @@ async def _missed_notice(service, missed: list[dict], stale: list[dict]) -> None
     ))
 
 
-async def schedule_loop(service) -> None:
-    """Time enabled scheduled tasks and inject triggers (main agent only)."""
-    # Tracks tasks already announced as missed this process lifetime, so the
-    # startup missed-notice fires once per task, not every poll.
-    announced_missed: set[int] = set()
-    # Restart sweep runs once per process: dispatch-only runs from a previous
-    # lifetime are reaped to ``failed`` and folded into the same notice.
-    stale_swept = False
-    stale_failed: list[dict] = []
+async def schedule_startup_notice(service) -> None:
+    """One-shot startup pass: surface runs that failed to complete.
 
+    Runs exactly once per process lifetime, outside the timed loop.  The
+    poll catches every fire within a few seconds (30 s cadence << 120 s
+    grace), so while the process is up a run can never be missed — an
+    incomplete run only exists across a downtime.  This pass is the single
+    place that reaps it and tells the LLM:
+
+      1. Mark every run that never produced a report ``failed``
+         (``__scheduled_fail_unconfirmed`` — whatever the reason: turn
+         error, interruption, restart).
+      2. Detect fires that were due while slife was down and mark them
+         ``missed``.
+      3. Post one ``[Schedule missed]`` notice covering both, so the LLM
+         can offer ``run_schedule_now`` backfill or ``scheduled_run_skip``.
+
+    ``schedule_loop`` fires only and never re-announces — the missed
+    notice fires exactly once, at startup.
+    """
+    # The memfiles plugin connects shortly after startup — wait (bounded by
+    # the process lifetime, cancelled at shutdown) until it is reachable.
+    while True:
+        client = _memfiles_client(service)
+        if client is not None:
+            break
+        await asyncio.sleep(POLL_INTERVAL)
+
+    # 1. Reap dispatch-only runs from a previous lifetime → failed.
+    stale_failed: list[dict] = []
+    resp = await _call(client, "__scheduled_fail_unconfirmed")
+    if isinstance(resp, dict):
+        stale_failed = resp.get("runs") or []
+
+    # 2. Detect fires that were due while slife was down → missed.
+    now = datetime.now().astimezone()
+    fresh_missed: list[dict] = []
+    for task in await _load_task_states(client):
+        decision = _classify(task, now)
+        if decision is None or decision[0] != "missed":
+            continue
+        _, due_dt = decision
+        due_iso = due_dt.astimezone().isoformat(timespec="seconds")
+        await _call(client, "__scheduled_mark_missed",
+                    {"task_id": task["id"], "due_at": due_iso})
+        logger.info("schedule_missed task=%s due_at=%s",
+                    task.get("name"), due_iso)
+        fresh_missed.append({"name": task.get("name"), "due_at": due_iso})
+
+    # 3. Tell the LLM once — it decides backfill vs skip.
+    if fresh_missed or stale_failed:
+        await _missed_notice(service, fresh_missed, stale_failed)
+
+
+async def schedule_loop(service) -> None:
+    """Time enabled scheduled tasks and inject triggers (main agent only).
+
+    Fires due runs only.  A fire is always observed within the grace window
+    (30 s poll << 120 s grace), so while the process is up no run can slip
+    past being fired; runs missed across a downtime are marked and announced
+    exactly once at startup by :func:`schedule_startup_notice`.
+    """
     while True:
         await asyncio.sleep(POLL_INTERVAL)
         try:
@@ -274,35 +326,13 @@ async def schedule_loop(service) -> None:
             if client is None:
                 continue
             now = datetime.now().astimezone()
-            if not stale_swept:
-                stale_swept = True
-                resp = await _call(client, "__scheduled_fail_unconfirmed")
-                if isinstance(resp, dict):
-                    stale_failed = resp.get("runs") or []
-            tasks = await _load_task_states(client)
-            fresh_missed: list[dict] = []
-            for task in tasks:
+            for task in await _load_task_states(client):
                 decision = _classify(task, now)
                 if decision is None:
                     continue
                 action, due_dt = decision
                 if action == "fire":
                     await _fire(service, client, task, due_dt)
-                else:  # missed
-                    due_iso = due_dt.astimezone().isoformat(timespec="seconds")
-                    await _call(client, "__scheduled_mark_missed",
-                                {"task_id": task["id"], "due_at": due_iso})
-                    logger.info(
-                        "schedule_missed task=%s due_at=%s",
-                        task.get("name"), due_iso,
-                    )
-                    if task["id"] not in announced_missed:
-                        announced_missed.add(task["id"])
-                        fresh_missed.append(
-                            {"name": task.get("name"), "due_at": due_iso},
-                        )
-            if fresh_missed or stale_failed:
-                await _missed_notice(service, fresh_missed, stale_failed)
         except asyncio.CancelledError:
             raise
         except Exception as e:

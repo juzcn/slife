@@ -252,6 +252,11 @@ class AgentService:
 
         # Scheduled-task trigger loop — times tasks and injects triggers.
         self._schedule_task: asyncio.Task | None = None
+        #: One-shot startup sweep (``schedules.schedule_startup_notice``):
+        #: reaps and announces runs missed across a downtime, then exits.
+        #: Kept separately from ``_schedule_task`` so the timed loop stays
+        #: purely a firing loop.
+        self._schedule_startup_task: asyncio.Task | None = None
 
         # ── MCP tool-registry self-healing ───────────────────────────
         # The wrapper reconnects dead external servers on its own; these
@@ -2210,12 +2215,25 @@ class AgentService:
                 logger.info("heartbeat_started")
 
             # Scheduled-task trigger loop — same "main agent only" rule: a
-            # subagent is a worker, never the scheduler.
+            # subagent is a worker, never the scheduler.  Fires due tasks;
+            # it never announces missed runs (see schedule_startup_notice).
             from slife.agent.schedules import schedule_loop
 
             if self._schedule_task is None or self._schedule_task.done():
                 self._schedule_task = asyncio.create_task(schedule_loop(self))
                 logger.info("schedule_loop_started")
+
+            # One-shot startup pass for runs missed across a downtime: reaps
+            # unconfirmed runs to failed, marks new missed fires, posts one
+            # notice.  Runs once and exits.
+            from slife.agent.schedules import schedule_startup_notice
+
+            if (self._schedule_startup_task is None
+                    or self._schedule_startup_task.done()):
+                self._schedule_startup_task = asyncio.create_task(
+                    schedule_startup_notice(self)
+                )
+                logger.info("schedule_startup_notice_started")
 
     async def stop_inbox(self) -> None:
         """Stop the inbox background processor (and the heartbeat)."""
@@ -2233,6 +2251,13 @@ class AgentService:
             except asyncio.CancelledError:
                 pass
             self._schedule_task = None
+        if self._schedule_startup_task is not None:
+            self._schedule_startup_task.cancel()
+            try:
+                await self._schedule_startup_task
+            except asyncio.CancelledError:
+                pass
+            self._schedule_startup_task = None
         if self._inbox_task is None:
             return
         self._inbox_task.cancel()
