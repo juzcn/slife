@@ -39,7 +39,7 @@ import re
 import secrets
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 # ── Context variables (async-safe) ──────────────────────────────────────
@@ -160,8 +160,12 @@ class SessionFormatter(logging.Formatter):
     def formatTime(
         self, record: logging.LogRecord, datefmt: str | None = None
     ) -> str:
-        """Return timestamp with milliseconds, e.g. 10:30:15.123."""
-        dt = datetime.fromtimestamp(record.created, tz=timezone.utc)
+        """Return timestamp with milliseconds, e.g. 10:30:15.123.
+
+        Local time — matches the session log filename (built with
+        ``datetime.now()``) so file content and file name stay consistent.
+        """
+        dt = datetime.fromtimestamp(record.created)
         if datefmt:
             s = dt.strftime(datefmt)
         else:

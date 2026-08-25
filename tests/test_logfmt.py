@@ -6,6 +6,7 @@ import pytest; pytestmark = pytest.mark.unit
 import asyncio
 import logging
 import sys
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -149,7 +150,10 @@ class TestSessionFormatter:
         record.created = 1234567890.456
         record.msecs = 456
         ts = fmt.formatTime(record, datefmt="%H:%M:%S")
-        assert ts == "23:31:30.456"
+        # Local time — matches the log filename convention.  Compute the
+        # expected value in the runner's own timezone rather than pinning UTC.
+        expected = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
+        assert ts == f"{expected}.456"
 
     def test_format_time_no_datefmt(self):
         fmt = SessionFormatter()
@@ -159,7 +163,8 @@ class TestSessionFormatter:
         record.created = 1234567890.789
         record.msecs = 789
         ts = fmt.formatTime(record)
-        assert "2009-02-13" in ts
+        expected = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d")
+        assert expected in ts
         assert "789" in ts
 
 
