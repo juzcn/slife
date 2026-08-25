@@ -335,12 +335,15 @@ Schedule marker; Subagent.
 One occasion of a scheduled task firing. A run records when it was due and
 its outcome — ran, missed (due while the agent was not running), failed, or
 confirmed done — and, once the task finishes, links to the report that was
-produced. A missed run can be backfilled by running the task immediately.
-*See also* Scheduled task; Report.
+produced. Missed and failed runs from a downtime are announced once, at the
+next startup, in a single `[Schedule missed]` notice; a missed run can be
+backfilled by running the task immediately, or skipped at the user's
+choice. *See also* Scheduled task; Report.
 
 **Schedule marker**
-The annotation that marks a scheduled-task trigger. *See also* Scheduled
-task.
+The annotation that marks a scheduled-task trigger: `[Schedule <name>]` when
+a task fires and `[Schedule missed]` for the startup notice listing runs
+that could not complete. *See also* Scheduled task; Scheduled run.
 
 **Semantic index**
 The auxiliary structure that enables meaning-based (vector) search over the
@@ -474,7 +477,7 @@ metadata, not content:
 | `[Turn: N · start → end]` | The turn footnote: turn id `N` and when it happened. |
 | `[TrimContext: N]` | The trim note: `N` oldest complete turns were trimmed from context. |
 | `[Heartbeat]` | The heartbeat marker: a synthetic autonomous trigger. |
-| `[Schedule <name>]` | The schedule marker: the scheduled task `<name>` is due (or `[Schedule missed]` lists runs missed while the agent was not running). |
+| `[Schedule <name>]` | The schedule marker: the scheduled task `<name>` is due. `[Schedule missed]` is the one-time startup notice listing runs missed while the agent was not running. |
 
 ---
 
@@ -625,11 +628,14 @@ Tool (Part II); Auto-discovery.
 ### S
 
 **Schedule loop**
-The main-process background loop that times scheduled tasks: it decides when
-each enabled task is due, injects the trigger, and records a missed run when
-a fire was due while the agent was down. It never executes a task — the
-agent delegates execution to a subagent. *See also* Scheduled task;
-Scheduled run.
+The main-process background loop that times scheduled tasks. Each poll it
+recomputes every enabled task's next fire from the database and injects the
+trigger for fires due within the grace window — the poll cadence runs well
+inside the window, so while the process is up no fire can slip past
+unfired. It fires only: it never records or announces missed runs, which is
+the startup missed notice's job. It never executes a task — the agent
+delegates execution to a subagent. *See also* Scheduled task; Scheduled
+run; Startup missed notice.
 
 **Schema authoring**
 The convention for writing tool schemas: a tool's description states what it
@@ -645,6 +651,15 @@ logs or the model. *See also* Credential (Part II).
 **Shutdown**
 Orderly process termination, ensuring background tasks and child processes
 are stopped and no thread can block exit. *See also* Daemon thread.
+
+**Startup missed notice**
+The one-shot startup pass that surfaces scheduled runs a previous process
+lifetime could not finish: fires due while the agent was down (marked
+`missed`) and runs dispatched but never confirmed (swept to `failed`). It
+runs exactly once at process start, outside the schedule loop, and posts a
+single `[Schedule missed]` notice listing both, from which the agent offers
+to backfill with `run_schedule_now` or skip with `scheduled_run_skip`. *See
+also* Schedule loop; Scheduled run.
 
 **Streamable HTTP**
 The transport over which plugins communicate with the main process: a
