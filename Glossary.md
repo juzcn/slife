@@ -326,24 +326,34 @@ task identifier). *See also* Async task; Task.
 
 **Scheduled task**
 A recurring task the agent runs on a schedule: a named definition carrying a
-description, a cron schedule, and a timezone. When a task fires, the agent
-delegates the work to a subagent and does not perform it inline. Scheduled
-tasks fire only while the agent is running. *See also* Scheduled run; Report;
-Schedule marker; Subagent.
+description, a cron schedule, and a timezone. Its name is also the name of
+the subagent worker that executes it, so it must be a safe identifier. When a
+task fires, the agent is prompted (via a ``[Schedule <name>]`` message) to
+call ``run_schedule_now``, which records a run and dispatches the work to
+that worker; the agent does not perform the work inline. The worker saves the
+result as a report and notifies the user. Scheduled tasks fire only while the
+agent is running. *See also* Scheduled run; Report; Schedule marker;
+Subagent.
 
 **Scheduled run**
-One occasion of a scheduled task firing. A run records when it was due and
-its outcome — ran, missed (due while the agent was not running), failed, or
-confirmed done — and, once the task finishes, links to the report that was
-produced. Missed and failed runs from a downtime are announced once, at the
-next startup, in a single `[Schedule missed]` notice; a missed run can be
-backfilled by running the task immediately, or skipped at the user's
-choice. *See also* Scheduled task; Report.
+One occasion of a scheduled task firing, recorded optimistically as
+``pending`` and confirmed only when the worker's report arrives. A run
+records when it was due and its outcome — ``ran`` (a report landed),
+``failed`` (no report: interrupted, errored, or a previous process lifetime
+left it undone), ``missed`` (due while the agent was not running), or
+``skipped`` (the user declined a backfill) — and, once the task finishes,
+links to the report that was produced. Missed and failed runs from a
+downtime are announced once, at the next startup, in a single
+``[Schedule missed]`` notice; a missed run can be backfilled with
+``run_schedule_now``, or skipped at the user's choice. *See also* Scheduled
+task; Report.
 
 **Schedule marker**
-The annotation that marks a scheduled-task trigger: `[Schedule <name>]` when
-a task fires and `[Schedule missed]` for the startup notice listing runs
-that could not complete. *See also* Scheduled task; Scheduled run.
+The annotation that marks a scheduled-task trigger: ``[Schedule <name>]``
+when a task fires — prompting the agent to dispatch it via
+``run_schedule_now`` — and ``[Schedule missed]`` for the startup notice
+listing runs that could not complete. *See also* Scheduled task; Scheduled
+run; Schedule loop.
 
 **Semantic index**
 The auxiliary structure that enables meaning-based (vector) search over the
@@ -375,8 +385,9 @@ server): its source type, URL, and version, so that it can be updated later.
 A local worker process spawned by the agent to carry out delegated work in
 parallel. A subagent has the same capabilities as the agent that spawned it
 but no independent identity: externally it acts as its parent, its own turns
-are not saved, and all replies and management return to the parent. *See
-also* Task (worker).
+are not saved, and all replies and management return to the parent. A
+scheduled task's worker is named after the task itself, so the two are
+identified by the same name. *See also* Task (worker); Scheduled task.
 
 **Summary / Tags**
 Optional annotations written for a turn — a short summary and keyword tags —
@@ -589,7 +600,10 @@ Harness tool; Plugin contract.
 The rule that all model-visible text authored by Slife — the system prompt,
 tool names, descriptions, parameter documentation, and result strings — is
 written in English, while content from external sources (commands, APIs,
-skills, servers) keeps its own language. *See also* Model-visible (Part II).
+skills, servers) keeps its own language. Scheduled-task messages (the
+``[Schedule <name>]`` trigger, the ``[Schedule missed]`` notice, and the
+completion notification) are operator-facing and written in the operator's
+own language. *See also* Model-visible (Part II).
 
 ### M
 
@@ -648,8 +662,10 @@ trigger for fires due within the grace window — the poll cadence runs well
 inside the window, so while the process is up no fire can slip past
 unfired. It fires only: it never records or announces missed runs, which is
 the startup missed notice's job. It never executes a task — the agent
-delegates execution to a subagent. *See also* Scheduled task; Scheduled
-run; Startup missed notice.
+delegates execution to a subagent by calling ``run_schedule_now``. The loop
+also reaps idle schedule workers: a worker whose task has no run still in
+flight is stopped, to be respawned at the next fire. *See also* Scheduled
+task; Scheduled run; Startup missed notice.
 
 **Schema authoring**
 The convention for writing tool schemas: a tool's description states what it

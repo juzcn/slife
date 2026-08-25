@@ -780,13 +780,16 @@ async def _task_id_by_name(name: str) -> int | None:
     description="Internal: enabled scheduled tasks with their last run anchor.",
 )
 async def __scheduled_tasks_state() -> str:
-    """Return enabled tasks, each with its newest run ``due_at`` (anchor)."""
+    """Return enabled tasks, each with its newest run ``due_at`` (anchor)
+    and whether it currently has a ``pending`` run."""
     store = await _ensure_store()
     tasks = await store.list_scheduled_tasks(enabled_only=True)
+    pending_ids = await store.pending_run_task_ids()
     out = []
     for t in tasks:
         t = dict(t)
         t["last_run_due"] = await store.last_run_due(t["id"])
+        t["has_pending_run"] = t["id"] in pending_ids
         out.append(t)
     return json.dumps(out, ensure_ascii=False)
 
@@ -856,6 +859,12 @@ async def __scheduled_mark_run_failed(
     return "{}"
 
 
+#: Task names double as the subagent worker name (``run_schedule_now`` spawns
+#: a worker named after the task), so they must satisfy the subagent safe-name
+#: rule — the same pattern as ``slife/subagent/process.py _SAFE_SUBAGENT_NAME``.
+_SAFE_TASK_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
 @mcp.tool(
     name="scheduled_task_set",
     description=(
@@ -871,7 +880,12 @@ async def scheduled_task_set(
     """Create or update a scheduled task by name.
 
     Args:
-        name: Unique task name (e.g. "daily_diary") — also the worker identity.
+        name: Unique task name (e.g. "daily_report", "morning_digest",
+            "diary_worker") — it is ALSO the subagent worker name that runs
+            the task, so it appears in list_subagents / save_cron_report /
+            run_schedule_now.  Use a short ASCII slug like the examples: it
+            must start with a letter or digit and contain only A-Za-z0-9_.-
+            (max 64 chars).
         description: The task text handed to the worker when it fires.
         schedule: 5-field cron expression ("minute hour dom month dow"), or
             "manual" for a task that only runs via run_schedule_now.
@@ -880,6 +894,13 @@ async def scheduled_task_set(
     """
     if not name.strip():
         return "Error: name is required."
+    if not _SAFE_TASK_NAME_RE.match(name.strip()):
+        return (
+            f"Error: name {name!r} is not a valid task/worker name — it is "
+            "also the subagent worker name, so it must start with a letter "
+            "or digit and contain only A-Za-z0-9_.- (max 64 chars).  Use an "
+            'ASCII slug like "daily_report".'
+        )
     from slife.schedules import is_valid
 
     if schedule and schedule != "manual" and not is_valid(schedule):

@@ -336,6 +336,25 @@ class TestScheduledServerTools:
             await store.close()
 
     @pytest.mark.asyncio
+    async def test_task_set_rejects_invalid_name(self, tmp_path):
+        """Task names double as the subagent worker name, so they must be safe
+        identifiers — Chinese/space/over-long names are rejected."""
+        store = await _real_store(tmp_path)
+        try:
+            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+                for bad in ("每日日报", "Daily Report", "-lead", ".dot", "x" * 65):
+                    err = await plugin.scheduled_task_set(
+                        name=bad, schedule="0 9 * * *",
+                    )
+                    assert "not a valid task/worker name" in err, bad
+                ok = await plugin.scheduled_task_set(
+                    name="daily_report", schedule="0 9 * * *",
+                )
+                assert "task_id" in json.loads(ok)
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
     async def test_task_remove_and_list(self, tmp_path):
         store = await _real_store(tmp_path)
         try:

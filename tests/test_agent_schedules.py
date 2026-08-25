@@ -24,17 +24,34 @@ def _iso(dt):
 
 # ── trigger text ─────────────────────────────────────────────────────
 
-def test_trigger_text_has_mark_name_and_instructions():
+def test_trigger_text_has_mark_name_and_dispatch_hint():
     text = S.trigger_text("daily_diary", "Write today's diary")
     assert text.startswith(S.SCHEDULE_MARK + " daily_diary]")
     assert "Write today's diary" in text
-    assert "save_cron_report" in text
-    assert "subagent_send_task_async" in text
+    assert 'run_schedule_now(name="daily_diary")' in text
+    # Dispatch is delegated to the tool — no subagent instructions leak.
+    assert "subagent_send_task_async" not in text
+    assert "spawn_subagent" not in text
 
 
 def test_trigger_text_handles_empty_description():
     text = S.trigger_text("t", "")
     assert "(no description)" in text
+
+
+# ── build_worker_task ───────────────────────────────────────────────
+
+def test_build_worker_task_self_contained():
+    task = S.build_worker_task("daily_report", "Write today's report")
+    assert "daily_report" in task
+    assert "Write today's report" in task
+    assert "save_cron_report" in task
+    assert "Current time:" in task  # date context for relative tasks
+
+
+def test_build_worker_task_handles_empty_description():
+    task = S.build_worker_task("t", "")
+    assert "(no description)" in task
 
 
 # ── _parse_iso ───────────────────────────────────────────────────────
@@ -130,7 +147,10 @@ async def test_fire_task_now_no_client():
 
 
 @pytest.mark.asyncio
-async def test_fire_task_now_records_and_posts():
+async def test_fire_task_now_dispatches_directly(monkeypatch):
+    """Records a pending run and dispatches the task to a worker named after
+    the task — no inbox trigger, no next turn."""
+    S._SCHEDULE_WORKERS.clear()
     client = AsyncMock()
 
     async def fake_call_tool(name, arguments=None):
@@ -143,27 +163,56 @@ async def test_fire_task_now_records_and_posts():
         return "null"
 
     client.call_tool = fake_call_tool
-
-    posted = []
-    inbox = MagicMock()
-
-    async def fake_post(msg):
-        posted.append(msg)
-
-    inbox.post = fake_post
-
     ctx = MagicMock()
     ctx.memfiles_client = client
     service = MagicMock()
     service._tool_ctx = ctx
-    service.inbox = inbox
-    service.surface_schedule = AsyncMock()
+    service.inbox = MagicMock()
+    service.inbox.post = AsyncMock()
+
+    manager = AsyncMock()
+    manager.spawn = AsyncMock(return_value="daily")
+    manager.send_task_async = AsyncMock(return_value="rpc-1")
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     result = await S.fire_task_now(service, "daily")
-    assert "queued" in result
-    assert "next turn" in result
-    assert len(posted) == 1
-    assert posted[0].content.startswith(S.SCHEDULE_MARK + " daily]")
+    assert "dispatched now to worker 'daily'" in result
+    manager.spawn.assert_awaited_once_with(name="daily")
+    manager.send_task_async.assert_awaited_once()
+    agent_name, task = manager.send_task_async.call_args[0]
+    assert agent_name == "daily"
+    assert "save_cron_report" in task
+    assert manager.send_task_async.call_args.kwargs["mode"] == "auto"
+    assert service.inbox.post.await_count == 0  # no inbox relay
+    assert "daily" in S._SCHEDULE_WORKERS  # tracked for reword + recycle
+
+
+@pytest.mark.asyncio
+async def test_fire_task_now_marks_run_failed_on_dispatch_error(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+    client = AsyncMock()
+
+    async def fake_call_tool(name, arguments=None):
+        calls.append((name, arguments))
+        if name == "__scheduled_task_by_name":
+            return ('{"id": 7, "name": "daily", "description": "d", '
+                    '"schedule": "manual", "timezone": "", '
+                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+        return "{}"
+
+    client.call_tool = fake_call_tool
+    ctx = MagicMock()
+    ctx.memfiles_client = client
+    service = MagicMock()
+    service._tool_ctx = ctx
+
+    manager = AsyncMock()
+    manager.spawn = AsyncMock(side_effect=RuntimeError("max subagents reached"))
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
+
+    result = await S.fire_task_now(service, "daily")
+    assert "Error: dispatch failed" in result
+    assert any(name == "__scheduled_mark_run_failed" for name, _ in calls)
 
 
 @pytest.mark.asyncio
@@ -182,33 +231,84 @@ async def test_fire_task_now_unknown_task():
     assert "not found" in result
 
 
-# ── turn outcome writeback (on_reply hook) ───────────────────────────
+# ── pending-fire guard ──────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_schedule_reply_marks_run_failed_on_cancel_and_error():
-    client = AsyncMock()
-    client.call_tool = AsyncMock(return_value="{}")
-    surfaced: list[str] = []
+async def test_fire_marks_pending_guard_then_clears_on_dispatch(monkeypatch):
+    S._pending_fires.clear()
     service = MagicMock()
+    service.inbox = MagicMock()
+    service.inbox.post = AsyncMock()
+    await S._fire(service, {"name": "daily", "description": "d"})
+    assert "daily" in S._pending_fires
 
-    async def fake_surface(t: str) -> None:
-        surfaced.append(t)
+    client = AsyncMock()
 
-    service.surface_schedule = fake_surface
-    task = {"id": 7, "name": "daily"}
-    reply = S._schedule_reply(service, client, task, "2026-08-25T09:00:00")
+    async def fake_call_tool(name, arguments=None):
+        if name == "__scheduled_task_by_name":
+            return ('{"id": 7, "name": "daily", "description": "d", '
+                    '"schedule": "0 9 * * *", "timezone": "", '
+                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+        return "{}"
 
-    await reply("(Turn interrupted)", cancelled=True)   # Esc → interrupted
-    await reply("Error: boom")                          # turn 400 → reason
-    await reply("all good")                             # normal → no writeback
+    client.call_tool = fake_call_tool
+    ctx = MagicMock()
+    ctx.memfiles_client = client
+    service._tool_ctx = ctx
 
-    calls = [(c.args[0], c.args[1]) for c in client.call_tool.await_args_list]
-    assert [name for name, _ in calls] == [
-        "__scheduled_mark_run_failed", "__scheduled_mark_run_failed",
+    manager = AsyncMock()
+    manager.spawn = AsyncMock(return_value="daily")
+    manager.send_task_async = AsyncMock(return_value="rpc-1")
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
+
+    await S.fire_task_now(service, "daily")
+    assert "daily" not in S._pending_fires  # cleared after dispatch
+
+
+# ── worker recycling ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_recycle_idle_workers(monkeypatch):
+    S._SCHEDULE_WORKERS.clear()
+    S._SCHEDULE_WORKERS.add("daily")
+
+    idle_proc = MagicMock()
+    idle_proc.is_running = True
+    idle_proc.is_busy = False
+    idle_proc.pending_async_count = 0
+    busy_proc = MagicMock()
+    busy_proc.is_running = True
+    busy_proc.is_busy = True
+
+    manager = AsyncMock()
+    manager.get = MagicMock(side_effect=lambda name: {
+        "daily": idle_proc, "other": busy_proc,
+    }.get(name))
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
+
+    states = [
+        {"name": "daily", "has_pending_run": False},   # settled + idle → recycle
+        {"name": "other", "has_pending_run": True},    # pending → keep
     ]
-    assert calls[0][1]["error"] == "interrupted"
-    assert calls[1][1]["error"] == "Error: boom"
-    assert surfaced == ["(Turn interrupted)", "Error: boom", "all good"]
+    await S._recycle_idle_workers(states)
+    manager.stop.assert_awaited_once_with("daily")
+
+
+@pytest.mark.asyncio
+async def test_recycle_skips_non_schedule_workers(monkeypatch):
+    S._SCHEDULE_WORKERS.clear()
+    S._SCHEDULE_WORKERS.add("daily")
+    proc = MagicMock()
+    proc.is_running = True
+    proc.is_busy = False
+    proc.pending_async_count = 0
+    manager = AsyncMock()
+    manager.get = MagicMock(return_value=proc)
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
+
+    # "other" is not a schedule-dispatched worker → never recycled.
+    await S._recycle_idle_workers([{"name": "other", "has_pending_run": False}])
+    manager.stop.assert_not_awaited()
 
 
 # ── startup one-shot: runs missed across a downtime ──────────────────

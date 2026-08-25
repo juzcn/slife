@@ -2598,18 +2598,22 @@ class AgentService:
         set_manager(self._subagent_manager)
 
         # When a subagent completes an async task, push the result into
-        # the inbox so the user sees it without having to poll.
+        # the inbox so the user sees it without having to poll.  A worker
+        # that ran a scheduled task is reported as the task completing
+        # (hides the subagent detail).
         async def _on_subagent_done(agent_name: str, task_id: str, result: str) -> None:
             from slife.a2a.identity import AgentMessage
             from slife.subagent.identity import SUBAGENT
-            msg = AgentMessage(
-                source=SUBAGENT,
-                content=(
+            from slife.agent.schedules import _SCHEDULE_WORKERS
+            if agent_name in _SCHEDULE_WORKERS:
+                content = f"定时任务 {agent_name} 已完成，报告已保存。"
+            else:
+                content = (
                     f"Subagent **{agent_name}** completed async task "
                     f"(ID: `{task_id}`):\n\n"
                     f"{result}"
-                ),
-            )
+                )
+            msg = AgentMessage(source=SUBAGENT, content=content)
             await self.inbox.post(msg)
 
         self._subagent_manager.on_task_complete = _on_subagent_done

@@ -1,9 +1,11 @@
 """Scheduled-task trigger loop — the main-process scheduler.
 
 The loop is deliberately thin: it *times* tasks and *injects* a trigger
-message into the unified inbox.  Execution happens elsewhere — the main
-agent handles the trigger by delegating to a subagent worker, which saves
-its report via ``save_cron_report``.  The loop itself never runs a task.
+message into the unified inbox.  Execution happens elsewhere — the agent
+calls ``run_schedule_now`` on the trigger turn, which records a pending run
+and dispatches the task to a subagent worker (worker name = task name); the
+worker saves its report via ``save_cron_report``.  The loop itself never
+runs a task.
 
 State lives in the memfiles DB (``scheduled_tasks`` / ``scheduled_runs``),
 not in memory.  Each poll recomputes from the DB, so the loop is stateless
@@ -35,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time as _time
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -73,17 +76,59 @@ MISS_GRACE = 120
 #: Bound on stepping through fires when hunting the newest missed one.
 _MAX_FIRE_STEPS = 5000
 
+#: Scheduled-task worker names dispatched this session — used to reword the
+#: completion notification (hide the subagent) and to target recycling.
+_SCHEDULE_WORKERS: set[str] = set()
+
+#: Tasks whose trigger was injected but whose dispatch is not yet confirmed by
+#: ``run_schedule_now`` — prevents the 30s poll re-firing mid-turn.
+#: name → monotonic fire time (for stale purging).
+_pending_fires: dict[str, float] = {}
+
 
 def trigger_text(name: str, description: str) -> str:
-    """Build the trigger message injected into the inbox when a task fires."""
+    """Build the trigger message injected into the inbox when a task fires.
+
+    The message prompts the agent to dispatch via ``run_schedule_now``; the
+    worker then does the task, saves the report and notifies the user.
+    """
     desc = (description or "").strip() or "(no description)"
     return (
-        f"{SCHEDULE_MARK} {name}] 定时任务触发。\n"
+        f"{SCHEDULE_MARK} {name}] 定时任务已到触发时间。\n"
         f"任务描述：{desc}\n"
-        f'请创建（或复用）名为 "{name}" 的 subagent，用 '
-        f"subagent_send_task_async(mode=\"auto\") 异步执行该任务；任务文本里要求 "
-        f"worker 完成后调用 save_cron_report(name=\"{name}\", title=..., content=...) "
-        f"保存结果。你只需派发，不必自己执行；完成后简短确认即可。"
+        f'请调用 run_schedule_now(name="{name}") 触发执行，调用后简短确认即可。'
+    )
+
+
+def build_worker_task(name: str, description: str) -> str:
+    """Self-contained task text for the worker running scheduled task *name*.
+
+    The worker starts with a clean context but has the full toolset (incl.
+    ``save_cron_report`` and a way to notify the user).  The headless worker
+    wraps this as ``[Task <rpc_id> from <agent>] …``.
+    """
+    desc = (description or "").strip() or "(no description)"
+    now = datetime.now().astimezone()
+    return (
+        f'You are executing the scheduled task "{name}".\n'
+        f'Current time: {now.strftime("%Y-%m-%d %H:%M:%S %z")}\n'
+        f"\n"
+        f"Task description:\n{desc}\n"
+        f"\n"
+        f"Carry out the task fully, using whatever tools you need. "
+        f"When done, you MUST finish up as follows:\n"
+        f"\n"
+        f'1. Save the report: call save_cron_report(name="{name}", '
+        f"title=<one-line title>, content=<Markdown report>).\n"
+        f'   - title: one sentence summarizing the result, e.g. "{name}: '
+        f'{now.strftime("%m-%d")} summary";\n'
+        f"   - content: complete, well-structured Markdown (sections/lists/tables).\n"
+        f"2. Notify the user that the task is done, then close with one or two "
+        f"sentences on what you did and the report title.\n"
+        f"\n"
+        f"Both finishing steps (saving the report and notifying the user) are "
+        f"part of the task — do not skip them. If the task partially fails, "
+        f"report it honestly and complete what you can."
     )
 
 
@@ -179,56 +224,36 @@ def _classify(task: dict, now: datetime):
     return ("missed", latest)
 
 
-async def _fire(service, client, task: dict, due_at: datetime) -> None:
-    """Record a run and inject the trigger message for *task*."""
+async def _fire(service, task: dict) -> None:
+    """Inject the trigger message for *task*.
+
+    The run itself is recorded by ``run_schedule_now`` when the agent
+    dispatches; this only prompts it and holds the pending-fire guard so the
+    30s poll does not re-fire while the agent is mid-turn.
+    """
     from slife.a2a.identity import SCHEDULE, AgentMessage
     from slife.agent.heartbeat import _SilentHandler
 
-    due_iso = due_at.astimezone().isoformat(timespec="seconds")
-    await _call(client, "__scheduled_record_run",
-                {"task_id": task["id"], "due_at": due_iso})
+    name = task.get("name", "")
+    _pending_fires[name] = _time.monotonic()
 
     inbox = getattr(service, "inbox", None)
     if inbox is None:
-        logger.warning("schedule_fire_no_inbox task=%s", task.get("name"))
+        logger.warning("schedule_fire_no_inbox task=%s", name)
         return
     await inbox.post(AgentMessage(
         source=SCHEDULE,
-        content=trigger_text(task["name"], task.get("description", "")),
+        content=trigger_text(name, task.get("description", "")),
         handler=_SilentHandler(),
-        on_reply=_schedule_reply(service, client, task, due_iso),
+        on_reply=_surface_reply(service),
     ))
-    logger.info("schedule_fired task=%s due_at=%s", task.get("name"), due_iso)
+    logger.info("schedule_fired task=%s", name)
 
 
 def _surface_reply(service):
-    """``on_reply`` for notice turns — route the real reply to the TUI."""
+    """``on_reply`` for schedule turns — route the real reply to the TUI."""
     async def _reply(text: str, cancelled: bool = False) -> None:
         t = (text or "").strip()
-        if t and t != ".":
-            await service.surface_schedule(t)
-    return _reply
-
-
-def _schedule_reply(service, client, task: dict, due_iso: str):
-    """``on_reply`` for a schedule trigger turn.
-
-    Surfaces a real reply to the user and, best effort only, records a
-    failure reason on the pending run when the turn errored or was
-    interrupted.  Correctness never depends on this writeback — a pending run
-    without a report is a failure by default.
-    """
-    async def _reply(text: str, cancelled: bool = False) -> None:
-        t = (text or "").strip()
-        if cancelled:
-            await _call(client, "__scheduled_mark_run_failed", {
-                "task_id": task["id"], "due_at": due_iso,
-                "error": "interrupted",
-            })
-        elif t.startswith("Error:"):
-            await _call(client, "__scheduled_mark_run_failed", {
-                "task_id": task["id"], "due_at": due_iso, "error": t[:200],
-            })
         if t and t != ".":
             await service.surface_schedule(t)
     return _reply
@@ -326,13 +351,45 @@ async def schedule_startup_notice(service) -> None:
         await _missed_notice(service, fresh_missed, stale_failed)
 
 
+async def _recycle_idle_workers(states) -> None:
+    """Stop schedule workers whose task is settled (no pending run) and idle.
+
+    Runs on the schedule cadence.  Only workers named after a scheduled task
+    that was dispatched this session (in ``_SCHEDULE_WORKERS``) are touched,
+    and only when they are not busy and have no pending async tasks — so a
+    result still in flight is never cut off.
+    """
+    from slife.subagent.process import get_manager
+
+    manager = get_manager()
+    if manager is None:
+        return
+    for task in states:
+        name = task.get("name")
+        if not name or name not in _SCHEDULE_WORKERS:
+            continue
+        if task.get("has_pending_run"):
+            continue  # a run is still in flight — keep the worker
+        proc = manager.get(name)
+        if proc is None or not proc.is_running:
+            continue
+        if proc.is_busy or proc.pending_async_count > 0:
+            continue
+        try:
+            await manager.stop(name)
+            logger.info("schedule_worker_recycled name=%s", name)
+        except Exception as e:
+            logger.debug("schedule_worker_recycle_error name=%s err=%s", name, e)
+
+
 async def schedule_loop(service) -> None:
     """Time enabled scheduled tasks and inject triggers (main agent only).
 
     Fires due runs only.  A fire is always observed within the grace window
     (30 s poll << 120 s grace), so while the process is up no run can slip
     past being fired; runs missed across a downtime are marked and announced
-    exactly once at startup by :func:`schedule_startup_notice`.
+    exactly once at startup by :func:`schedule_startup_notice`.  Also reaps
+    idle schedule workers whose task has settled.
     """
     while True:
         await asyncio.sleep(POLL_INTERVAL)
@@ -341,13 +398,24 @@ async def schedule_loop(service) -> None:
             if client is None:
                 continue
             now = datetime.now().astimezone()
-            for task in await _load_task_states(client):
+            states = await _load_task_states(client)
+            await _recycle_idle_workers(states)
+
+            # Drop stale pending-fire guards (the agent never dispatched).
+            stale = [n for n, t in _pending_fires.items()
+                     if _time.monotonic() - t > MISS_GRACE]
+            for n in stale:
+                _pending_fires.pop(n, None)
+
+            for task in states:
+                if task.get("name") in _pending_fires:
+                    continue  # trigger injected, dispatch pending
                 decision = _classify(task, now)
                 if decision is None:
                     continue
-                action, due_dt = decision
+                action = decision[0]
                 if action == "fire":
-                    await _fire(service, client, task, due_dt)
+                    await _fire(service, task)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -355,19 +423,52 @@ async def schedule_loop(service) -> None:
 
 
 async def fire_task_now(service, name: str) -> str:
-    """Run a scheduled task immediately (backfill / manual trigger).
+    """Trigger a scheduled task now — the single dispatch path.
 
-    Records a run with ``due_at = now`` and injects the trigger.  Works for
-    disabled tasks too (a manual run is explicit).  Returns a result string.
+    Used by both the cron trigger (the agent calls ``run_schedule_now`` after
+    the ``[Schedule <name>]`` message) and missed-run backfill.  Records a
+    pending run (``due_at = now``) and dispatches the task to its worker
+    (worker name = task name) asynchronously; the worker must call
+    ``save_cron_report`` so the run's ``pending`` transitions to ``ran``.
+    Works for disabled tasks too (an explicit run is explicit).
     """
+    from slife.subagent.process import get_manager
+
     client = _memfiles_client(service)
     if client is None:
         return "Error: memfiles plugin not connected — cannot run scheduled task."
     task = await _call(client, "__scheduled_task_by_name", {"name": name})
     if not task:
         return f"Scheduled task not found: {name}"
-    await _fire(service, client, task, datetime.now().astimezone())
+
+    due_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+    await _call(client, "__scheduled_record_run",
+                {"task_id": task["id"], "due_at": due_iso})
+
+    worker = task["name"]
+    manager = get_manager()
+    if manager is None:
+        return (
+            "Error: the subagent manager is not available yet — call this "
+            "after the agent service has started."
+        )
+    try:
+        await manager.spawn(name=worker)
+        rpc_id = await manager.send_task_async(
+            worker,
+            build_worker_task(worker, task.get("description", "")),
+            mode="auto",
+        )
+    except Exception as e:
+        logger.warning("schedule_dispatch_failed task=%s err=%s", name, e)
+        await _call(client, "__scheduled_mark_run_failed",
+                    {"task_id": task["id"], "due_at": due_iso,
+                     "error": str(e)[:200]})
+        return f"Error: dispatch failed — {e}"
+
+    _SCHEDULE_WORKERS.add(worker)
+    _pending_fires.pop(worker, None)
     return (
-        f"Scheduled task '{name}' trigger queued — the agent will dispatch "
-        f"it to a subagent worker on the next turn."
+        f"Scheduled task '{name}' dispatched now to worker "
+        f"'{worker}' (task_id: {rpc_id})."
     )

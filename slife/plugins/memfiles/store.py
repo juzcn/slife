@@ -617,6 +617,17 @@ class MemfilesStore:
         row = await cursor.fetchone()
         return row[0] if (row and row[0]) else None
 
+    async def pending_run_task_ids(self) -> set[int]:
+        """Return the set of task ids that currently have a ``pending`` run.
+
+        A pending run means the worker may still be working (or its report has
+        not landed yet) — the task's worker must NOT be recycled.
+        """
+        cursor = await self._c.execute(
+            "SELECT DISTINCT task_id FROM scheduled_runs WHERE status = 'pending'",
+        )
+        return {row["task_id"] for row in await cursor.fetchall()}
+
     async def list_scheduled_runs(
         self, task_id: int | None = None, status: str | None = None,
         limit: int = 50,

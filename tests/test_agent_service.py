@@ -1101,6 +1101,32 @@ class TestAgentServiceSubagent:
         service = AgentService(sample_config)
         await service.stop_subagent()  # Should not raise
 
+    @pytest.mark.asyncio
+    async def test_subagent_done_rewords_schedule_workers(self, sample_config):
+        """A worker that ran a scheduled task is reported as the task
+        completing (hides the subagent); plain subagents keep the detail."""
+        from slife.agent.schedules import _SCHEDULE_WORKERS
+
+        service = AgentService(sample_config)
+        await service.start_subagent()
+        cb = service._subagent_manager.on_task_complete
+        assert cb is not None
+        service.inbox.post = AsyncMock()
+
+        _SCHEDULE_WORKERS.add("daily_report")
+        try:
+            await cb("daily_report", "t-1", "result text")
+            content = service.inbox.post.call_args.args[0].content
+            assert "Subagent" not in content
+            assert "daily_report" in content
+
+            await cb("researcher", "t-2", "the result")
+            content2 = service.inbox.post.call_args.args[0].content
+            assert "Subagent **researcher**" in content2
+            assert "the result" in content2
+        finally:
+            _SCHEDULE_WORKERS.discard("daily_report")
+
 
 # ── AgentService callbacks ─────────────────────────────────────────────────
 

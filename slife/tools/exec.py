@@ -335,17 +335,18 @@ class InstallPythonPackageTool(Tool):
 # ═══════════════════════════════════════════════════════════════════════
 
 class RunScheduleNowTool(Tool):
-    """Backfill a missed scheduled task (queue its trigger for dispatch)."""
+    """Trigger a scheduled task now (cron fire / missed backfill)."""
 
     name = "run_schedule_now"
     category: ClassVar[str] = "Execution"
     description = (
-        "Backfill a missed scheduled task — records a pending run and queues "
-        "the task's '[Schedule <name>]' trigger message to the agent inbox.  "
-        "The agent dispatches it to a subagent worker on the NEXT turn — this "
-        "tool call does not dispatch itself.  Use when the startup notice "
-        "reports a missed/failed run (see scheduled_run_list) and you decide "
-        "to re-run it; after backfilling, close the run with scheduled_run_skip."
+        "Trigger a scheduled task now — records a pending run and dispatches "
+        "it immediately to the task's subagent worker (worker name = task "
+        "name).  Called when a '[Schedule <name>]' trigger fires (cron) and "
+        "to backfill a missed/failed run (see scheduled_run_list).  The "
+        "worker saves the report via save_cron_report and notifies the user "
+        "when done.  After backfilling a run that won't be re-run, close it "
+        "with scheduled_run_skip."
     )
     parameters = make_params(
         name={
