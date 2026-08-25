@@ -311,7 +311,7 @@ wheels = [
 
 [[package]]
 name = "cc-switch"
-version = "0.9.7"
+version = "0.9.8"
 source = { editable = "cc-switch" }
 dependencies = [
     { name = "credstore" },
@@ -539,7 +539,7 @@ wheels = [
 
 [[package]]
 name = "credstore"
-version = "0.9.9"
+version = "0.10.0"
 source = { editable = "credstore" }
 dependencies = [
     { name = "keyring" },

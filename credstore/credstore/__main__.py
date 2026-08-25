@@ -10,7 +10,7 @@ Commands::
     credstore set <key>           Store a credential (keyring + cryptfile)
     credstore get <key>           Retrieve (keyring; cryptfile fallback on miss)
     credstore delete <key>        Delete a credential
-    credstore list                List credentials (keyring + cryptfile + env)
+    credstore (no command)       List credentials (keyring + cryptfile + env)
     credstore reset-keyring       Restore keyring from cryptfile backup
     credstore reset-backup        Sync system keyring → cryptfile backup
     credstore inject KEY...       Print shell export commands (for eval)
@@ -63,7 +63,9 @@ def requires_tty(func):
     def wrapper(*args, **kwargs):
         if not sys.stdin.isatty():
             cmd = func.__name__.replace("_cmd_", "")
-            _err(f"'credstore {cmd}' requires an interactive terminal.")
+            # _cmd_list is the bare-command default — no subcommand to name.
+            shown = "credstore" if cmd == "list" else f"credstore {cmd}"
+            _err(f"'{shown}' requires an interactive terminal.")
             return 1
         return func(*args, **kwargs)
     return wrapper
@@ -78,7 +80,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="credstore",
         description="Secure credential storage via OS keyring.",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("set-password", help="Set or change the cryptfile master password (interactive)")
     sub.add_parser("status", help="Show backend status")
@@ -98,7 +100,6 @@ def _build_parser() -> argparse.ArgumentParser:
     copy_p.add_argument("source", help="Source credential key")
     copy_p.add_argument("dest", help="Destination credential key")
 
-    sub.add_parser("list", help="List all stored credential keys")
     sub.add_parser("reset-keyring", help="Restore all credentials from cryptfile backup to system keyring")
     sub.add_parser("reset-backup", help="Sync credentials from system keyring to cryptfile backup")
 
@@ -135,7 +136,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Dispatch via explicit routing (clearer than dict for argument-passing)
     try:
-        if args.command == "set-password":
+        if args.command is None:
+            return _cmd_list()
+        elif args.command == "set-password":
             return _cmd_set_password()
         elif args.command == "status":
             return _cmd_status()
@@ -147,8 +150,6 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_delete(args.key)
         elif args.command == "copy":
             return _cmd_copy(args.source, args.dest)
-        elif args.command == "list":
-            return _cmd_list()
         elif args.command == "reset-keyring":
             return _cmd_reset_keyring()
         elif args.command == "reset-backup":

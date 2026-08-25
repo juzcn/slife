@@ -39,7 +39,7 @@ Path overridable via `CREDSTORE_FILE` env var or `credstore.json5`.
 | `get KEY -p` | master | Dual-query keyring + cryptfile, plaintext. Fails on mismatch |
 | `delete KEY` | master | Remove from both stores |
 | `copy SOURCE DEST` | master | Idempotent copy (keyring + cryptfile). Re-injects dest to env if previously injected |
-| `list` | master¹ | Triple-read: keyring + cryptfile + env. Shows sync status per key |
+| *(no command)* | master¹ | Triple-read: keyring + cryptfile + env. Shows sync status per key |
 | `inject KEY… [--shell]` | master¹ | Persist to system env: registry (Win) or shell profile (Unix). Reads keyring; in cryptfile-only mode reads the backup (prompts master pw) |
 | `uninject KEY… [--shell]` | — | Remove from system env |
 | `reset-keyring` | master | Restore all from cryptfile → keyring (disaster recovery) |
@@ -81,7 +81,7 @@ Invoke-Expression (credstore inject DEEPSEEK_API_KEY)  # PowerShell — activate
 
 `uninject` reverses the operation — removes from registry or profile and prints the unset command.
 
-### `list` Output
+### Default (bare) Output
 
 ```
   KEY                  SYSTEM KEYRING   CRYPTFILE        ENV    STATUS
@@ -213,7 +213,7 @@ macOS uses `keyring.backends.macOS.Keyring` (the login keychain) in GUI sessions
 
 ### Credential Enumeration
 
-`credstore list` reads keys from the OS credential store using platform-specific APIs:
+`credstore` (the default, no-command view) reads keys from the OS credential store using platform-specific APIs:
 
 | Platform | API |
 |----------|-----|

@@ -34,7 +34,7 @@ class TestTtyGuards:
         ["get", "test/key"],
         ["get", "--password", "test/key"],
         ["delete", "test/key"],
-        ["list"],
+        [],
         ["reset-keyring"],
         ["reset-backup"],
     ]
@@ -277,7 +277,7 @@ class TestCliDelete:
 class TestCliList:
     def test_list_empty(self, capsys, mock_backend, in_mem_cryptfile, monkeypatch):
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
-        assert main(["list"]) == 0
+        assert main([]) == 0
         out = capsys.readouterr().out
         assert "No credentials" in out
 
@@ -286,7 +286,7 @@ class TestCliList:
         in_mem_cryptfile["svc/key2"] = "v2"
         in_mem_cryptfile["svc/alpha"] = "v3"
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
-        assert main(["list"]) == 0
+        assert main([]) == 0
         out = capsys.readouterr().out
         assert "3 credential(s)" in out
         # Sorted alphabetically
@@ -299,11 +299,11 @@ class TestCliList:
 
     def test_list_empty_password_rejected(self, mock_backend, monkeypatch):
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "")
-        assert main(["list"]) == 1
+        assert main([]) == 1
 
     def test_list_cryptfile_unavailable(self, mock_backend_no_cryptfile, monkeypatch):
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
-        assert main(["list"]) == 0
+        assert main([]) == 0
 
     def test_list_cryptfile_read_fails(self, mock_backend, in_mem_cryptfile, monkeypatch):
         """Exception during cryptfile key read → exit 1, master_pw cleaned up."""
@@ -312,7 +312,7 @@ class TestCliList:
         # Make _read_cryptfile_keys raise
         import credstore._store as sm
         monkeypatch.setattr(sm, "_read_cryptfile_keys", lambda cf: (_ for _ in ()).throw(RuntimeError("boom")))
-        assert main(["list"]) == 1
+        assert main([]) == 1
 
     def test_list_with_synced_keys(self, capsys, mock_backend, in_mem_store, in_mem_cryptfile, monkeypatch):
         """Keys in both stores with same value → show 'synced'."""
@@ -324,7 +324,7 @@ class TestCliList:
             lambda service, with_values=False: [("svc/k1", "")],
         )
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
-        assert main(["list"]) == 0
+        assert main([]) == 0
         out = capsys.readouterr().out
         assert "synced" in out
         assert "1 credential" in out
@@ -339,7 +339,7 @@ class TestCliList:
             lambda service, with_values=False: [("svc/k1", "")],
         )
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
-        assert main(["list"]) == 0
+        assert main([]) == 0
         out = capsys.readouterr().out
         assert "MISMATCH" in out
 
@@ -347,7 +347,7 @@ class TestCliList:
         """Key only in cryptfile → show 'cryptfile only' and suggest reset-keyring."""
         in_mem_cryptfile["svc/k1"] = "v1"
         monkeypatch.setattr("credstore.__main__.masked_input", lambda prompt="": "master-pw")
-        assert main(["list"]) == 0
+        assert main([]) == 0
         out = capsys.readouterr().out
         assert "reset-keyring" in out
 

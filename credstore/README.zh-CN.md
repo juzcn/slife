@@ -40,7 +40,7 @@ credstore set-password    # 创建 ~/.credstore/credentials.crypt
 | `get KEY -p` | 主密码 | 双查询密钥链 + cryptfile，明文输出。不一致时报错 |
 | `delete KEY` | 主密码 | 从两个存储中删除 |
 | `copy SOURCE DEST` | 主密码 | 幂等复制（密钥链 + cryptfile）。若目标已注入环境变量则自动重新注入 |
-| `list` | 主密码¹ | 三重读取：密钥链 + cryptfile + 环境变量。显示每个 key 的同步状态 |
+| *（无命令）* | 主密码¹ | 三重读取：密钥链 + cryptfile + 环境变量。显示每个 key 的同步状态 |
 | `inject KEY… [--shell]` | 主密码¹ | 持久化到系统环境：注册表（Win）或 shell 配置文件（Unix）。读密钥链；cryptfile-only 模式下读加密备份（询问主密码） |
 | `uninject KEY… [--shell]` | — | 从系统环境中移除 |
 | `reset-keyring` | 主密码 | 从 cryptfile 恢复全部 → 密钥链（灾难恢复） |
@@ -82,7 +82,7 @@ Invoke-Expression (credstore inject DEEPSEEK_API_KEY)  # PowerShell — 立即�
 
 `uninject` 执行反向操作——从注册表或配置文件中移除，并打印 unset 命令。
 
-### `list` 输出
+### 默认（无命令）输出
 
 ```
   KEY                  SYSTEM KEYRING   CRYPTFILE        ENV    STATUS
@@ -214,7 +214,7 @@ macOS 在 GUI 会话中使用 `keyring.backends.macOS.Keyring`（登录钥匙串
 
 ### 凭据枚举
 
-`credstore list` 通过平台特定 API 从 OS 凭据存储读取 key：
+`credstore`（默认、无命令视图）通过平台特定 API 从 OS 凭据存储读取 key：
 
 | 平台 | API |
 |------|-----|
