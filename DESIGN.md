@@ -127,7 +127,7 @@ tiers of the same thing:
 1. **`_` (single underscore) = harness, LLM-visible but reserved.** Harness
    tools are invoked by the agent loop *on the agent's behalf* — the LLM does
    not decide to call them. The only one is the native `_sys_note`
-   (`slife/tools/harness.py`): `AgentLoop._auto_invoke()` injects it each turn
+   (`slife/tools/models.py`): `AgentLoop._auto_invoke()` injects it each turn
    as a normal `assistant(tool_calls)` + `tool` pair. It **does** appear in the
    schema — required so the Anthropic / OpenAI-Responses backends accept its
    tool-call pair in history — and the system prompt forbids the LLM from
@@ -678,7 +678,7 @@ A standard Streamable HTTP plugin (`slife/plugins/sharefile/server.py`) — self
 1. `share_file(path)` (MCP) → registers the file under a random 30-char hex token (`secrets.token_hex(15)`) → returns `https://xxx.ngrok-free.dev/share/<token>`.  When the tunnel is offline the tool returns a graceful error rather than being hidden.
 2. `GET /share/{token}` streams the file in 64 KB chunks (403 unknown token, 404 file gone).
 
-No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file).  `__tunnel_status` (harness health check) and `__register_file` are internal `__`-prefixed tools, never exposed to the LLM.  `attach_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/vision.py`) that injects image blocks into the main-process history.
+No BLOBs, no database, no HMAC — token→path mappings are an in-process dict (server and tunnel share one process, so no shared registry file).  `__tunnel_status` (harness health check) and `__register_file` are internal `__`-prefixed tools, never exposed to the LLM.  `attach_image` is **not** part of this plugin — it is a native vision helper (`slife/tools/models.py`) that injects image blocks into the main-process history.
 
 `GET /share/{token}` streams the file with an RFC 5987 `Content-Disposition` — a non-ASCII filename (e.g. CJK) is emitted as an ASCII fallback in `filename=` plus the real name percent-encoded in `filename*=UTF-8''`, because HTTP header values must be Latin-1 (a raw CJK filename otherwise raises `UnicodeEncodeError` → HTTP 500).
 
@@ -912,24 +912,21 @@ slife/
     plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle)
     multimodal.py      #   Image encoding for vision models
     heartbeat.py       #   Autonomous heartbeat scheduling
-  tools/               # Native tools (auto-discovered, 50: 49 LLM-visible + _sys_note)
+  tools/               # Native tools (auto-discovered, 52: 51 LLM-visible + _sys_note)
     base.py            #   Tool ABC + make_params/NO_PARAMS/require_params
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
     _config_io.py      #   JSON5 read/write helpers
-    harness.py         #   _sys_note (visible-but-reserved harness tool); trim is internal
     system.py          #   system_health + per-plugin checks
-    exec.py            #   Shell, Python, package install (+ _kill_process_tree)
+    exec.py            #   Shell, Python, package install, run_schedule_now (+ _kill_process_tree)
     skill.py           #   Skill management (SKILL.md)
     cli.py             #   External CLI tool management
     rest_api.py        #   REST API tool management (OpenAPI → MCP)
     subagent.py        #   Local worker tools (spawn/list/stop + delegation + task mgmt)
-    models.py          #   Model management (model_list/set/remove/switch)
+    models.py          #   Model management + attach_image (vision) + _sys_note (harness)
     config.py          #   Config env var + native tool toggles
     credentials.py     #   Credential check/inject/uninject
-    vision.py          #   attach_image — vision helper (native, history-scoped)
-    notify.py          #   notify_user (pure UI)
-    meta.py            #   list_native_tools, check_async, cancel_async, clear_context
+    meta.py            #   list_native_tools, check_async, cancel_async, clear_context, notify_user
   plugins/             # Built-in plugins (auto-discovered server.py packages)
     mcp/               #   External MCP gateway (raw JSON-RPC: stdio/SSE/streamable)
     memdb/             #   Diary database (store, search, embeddings, schema.sql)

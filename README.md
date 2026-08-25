@@ -13,7 +13,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: 51 native tools across 13 categories (plus a reserved harness tool, `_sys_note`), six built-in plugin services, always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: 52 native tools across 10 categories (including a reserved harness tool, `_sys_note`), six built-in plugin services, always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -198,23 +198,20 @@ Switch at runtime: `model_list` → `model_switch(ref="bailian/qwen3.8-max")`.
 
 All unified as OpenAI function definitions. The LLM sees no difference between native, plugin, and external MCP tools.
 
-**51 native tools in 13 categories** — auto-discovered from `slife/tools/` (50 LLM-visible + 1 harness `_sys_note`; `attach_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
+**52 native tools in 10 categories** — auto-discovered from `slife/tools/` (51 LLM-visible + 1 harness `_sys_note`; `attach_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
 
 | Category | Tools |
 |----------|-------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
-| Execution | `execute_shell`, `run_python_script`, `install_python_package` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
+| Execution | `execute_shell`, `run_python_script`, `install_python_package`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `model_list`, `model_set`, `model_remove`, `model_switch` |
+| Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image` (feed images to a vision model), `_sys_note` (context status, auto-invoked) |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
-| Vision | `attach_image` (injects a local image or URL into the current turn) |
-| Display | `notify_user` |
-| Harness | `_sys_note` (context status) — auto-invoked, not for LLM use |
-| Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
+| Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user` |
 
 The A2A mesh tools (`a2a_*`, 8 of them) and all plugin tools are hosted in plugins, not the native tool set — see below.
 

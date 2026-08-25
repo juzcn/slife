@@ -1,4 +1,4 @@
-"""Tests for slife.tools.vision — AttachImageTool."""
+"""Tests for AttachImageTool (slife.tools.models)."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -6,7 +6,7 @@ import pytest; pytestmark = pytest.mark.unit
 from unittest.mock import MagicMock, patch
 
 from slife.config import Config, ModelConfig
-from slife.tools.vision import AttachImageTool
+from slife.tools.models import AttachImageTool
 
 
 class TestAttachImageTool:
@@ -16,7 +16,7 @@ class TestAttachImageTool:
         assert AttachImageTool.name == "attach_image"
 
     def test_category(self):
-        assert AttachImageTool.category == "Vision"
+        assert AttachImageTool.category == "Models"
 
     def test_requires_vision(self):
         assert AttachImageTool._requires_vision is True

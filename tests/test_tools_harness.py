@@ -46,9 +46,9 @@ class TestRegistration:
         assert "_sys_note" in fnames
         assert "_sys_trim" not in fnames
 
-    def test_harness_category(self):
+    def test_sys_note_category(self):
         reg = _registry()
-        assert reg.get("_sys_note").category == "Harness"
+        assert reg.get("_sys_note").category == "Models"
 
 
 # ── Tool execution ───────────────────────────────────────────────────────

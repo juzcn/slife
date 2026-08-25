@@ -9,7 +9,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：13 个类别共 51 个原生工具（另有 1 个保留的 harness 工具 `_sys_note`）、六个内置插件服务、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：10 个类别共 52 个原生工具（含 1 个保留的 harness 工具 `_sys_note`）、六个内置插件服务、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -177,23 +177,20 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 统一为 OpenAI 函数定义。LLM 看不出原生、插件与外部 MCP 工具的区别。
 
-**13 个类别共 51 个原生工具** — 从 `slife/tools/` 自动发现（50 个 LLM 可见 + 1 个 harness `_sys_note`；`attach_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
+**10 个类别共 52 个原生工具** — 从 `slife/tools/` 自动发现（51 个 LLM 可见 + 1 个 harness `_sys_note`；`attach_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
 
 | 类别 | 工具 |
 |------|------|
 | System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
-| Execution | `execute_shell`, `run_python_script`, `install_python_package` |
+| Execution | `execute_shell`, `run_python_script`, `install_python_package`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
 | Subagent | `spawn_subagent`, `list_subagents`, `stop_subagent`, `subagent_send_task`, `subagent_send_task_async`, `subagent_get_task_result`, `subagent_list_tasks`, `subagent_cancel_task` |
 | Config | `config_env_set`, `config_env_get`, `config_env_remove`, `native_tool_set` |
-| Models | `model_list`, `model_set`, `model_remove`, `model_switch` |
+| Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image`（把本地图片或 URL 注入对话）, `_sys_note`（上下文状态，loop 代调） |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
-| Vision | `attach_image`（把本地图片或 URL 注入对话） |
-| Display | `notify_user` |
-| Harness | `_sys_note`（上下文状态）——由 loop 代调，LLM 保留不可调 |
-| Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations` |
+| Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user` |
 
 A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，不属于原生工具集——见下文。
 

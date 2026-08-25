@@ -4,6 +4,8 @@ model_list            — list all configured models grouped by provider
 model_set              — add or update a model (creates provider if new)
 model_remove           — remove a model by ref (cannot remove the active model)
 model_switch           — switch the active model (instant, no restart)
+attach_image           — feed images to a vision-capable model in the current turn
+_sys_note              — current context status (auto-invoked once per turn)
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from slife.tools._config_io import _ConfigPathMixin, read_config, write_config
-from slife.tools.base import Tool
+from slife.tools.base import Tool, make_params
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -455,3 +457,171 @@ class SwitchModelTool(_ModelConfigTool):
             pass
 
         return f"[OK] Switched active model from `{old}` to `{ref}` ({display})."
+
+
+# ── Attach Image ─────────────────────────────────────────────────────
+
+
+class AttachImageTool(Tool):
+    """Attach one or more images for the LLM to process with vision.
+
+    Takes data URIs, local file paths, or HTTP(S) URLs and makes them
+    visible to the vision model.  Works exactly like the ``@`` syntax
+    in chat.  Pass a list via ``sources`` for multiple images in one
+    call (a single one also works via ``source``).
+    """
+
+    name: ClassVar[str] = "attach_image"
+    category: ClassVar[str] = "Models"
+    _requires_vision: ClassVar[bool] = True
+    description: ClassVar[str] = (
+        "Attach one or more images for vision processing. "
+        "Pass a list via 'sources' (data URI, local file path, or "
+        "HTTP(S) URL each); a single image also works via 'source'. "
+        "Works like @ syntax."
+    )
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "sources": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "description": (
+                        "Data URI (e.g. 'data:image/png;base64,<b64>'), "
+                        "local file path (e.g. 'D:\\Downloads\\photo.jpg'), "
+                        "or HTTP(S) URL (e.g. 'https://example.com/photo.jpg')."
+                    ),
+                },
+                "description": (
+                    "One or more image sources to attach in this call."
+                ),
+            },
+            "source": {
+                "type": "string",
+                "description": (
+                    "A single image source (data URI, local file path, or "
+                    "HTTP(S) URL).  Alias for 'sources' with one element — "
+                    "prefer 'sources' when attaching multiple images."
+                ),
+            },
+        },
+        "oneOf": [
+            {"required": ["sources"]},
+            {"required": ["source"]},
+        ],
+    }
+
+    async def execute(self, **kwargs) -> str:
+        from slife.agent.multimodal import include_image_urls
+        sources = self._resolve_sources(kwargs)
+
+        # Guard against a non-vision model — this is the runtime gate that
+        # replaces the build-time filter in tools/factory.py (removed: the
+        # tool is always registered).  The tool can exist in the registry
+        # when the config is loaded (vision enabled) and the user then
+        # switches to a non-vision model: only this per-call check can stop
+        # the image from being fed to a model that can't see it.
+        active = None
+        ctx = getattr(self, "_ctx", None)
+        if ctx is not None and ctx.config is not None:
+            try:
+                active = ctx.config.active_model
+            except KeyError:
+                active = None
+        if active is not None and not active.supports_vision:
+            return (
+                "Error: the current model does not support image input "
+                "(vision=false). Switch to a vision-capable model, then retry."
+            )
+
+        blocks, failed = include_image_urls(sources)
+
+        conv = ctx.message_history if ctx is not None else None
+        if conv is not None and blocks:
+            conv.inject_images_to_last_user(blocks)
+
+        if not blocks:
+            return f"Error: cannot read image(s) — {', '.join(failed)}"
+
+        parts = []
+        if blocks:
+            parts.append(f"Image included: {', '.join(sources)}")
+        if failed:
+            parts.append(f"Could not read: {', '.join(failed)}")
+        return " | ".join(parts)
+
+    @staticmethod
+    def _resolve_sources(kwargs: dict) -> list[str]:
+        """Return the ordered, deduplicated list of sources from ``sources``
+        (list) or ``source`` (single), validating the argument shape.
+
+        Exact duplicates are dropped (order-preserving): attaching the same
+        source twice would inject two identical base64 blocks — wasted
+        context with no information gain.  Dedup happens here so the
+        reported message and the injected blocks both reflect it.
+        """
+        raw = kwargs.get("sources")
+        if raw is None:
+            single = kwargs.get("source")
+            if single is None:
+                raise ValueError("attach_image requires 'sources' or 'source'")
+            if isinstance(single, str):
+                sources = [single]
+            else:
+                sources = list(single)
+        elif isinstance(raw, (list, tuple)):
+            sources = [str(s) for s in raw]
+        else:
+            # LLM occasionally sends a single string in the array slot — treat
+            # it as one source rather than failing.
+            sources = [str(raw)]
+
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for s in sources:
+            if s not in seen:
+                seen.add(s)
+                deduped.append(s)
+        return deduped
+
+
+# ── Context Status (harness auto-invoke) ───────────────────────────────
+
+
+#: Optional render kwargs the loop passes to ``_sys_note`` each turn.
+#: All optional — the tool degrades to a default status if called bare.
+_SYS_NOTE_PARAMS = make_params(
+    context_window={"type": "integer", "default": 0,
+                    "description": "Context window size."},
+    last_context_tokens={"type": "integer", "default": 0,
+                         "description": "Context token count from the previous turn."},
+    model_name={"type": "string", "default": "",
+                "description": "Current model display name."},
+    input_modalities={"type": "string", "default": "",
+                      "description": "Model input modalities."},
+    cwd={"type": "string", "default": "",
+         "description": "Current working directory."},
+    shell={"type": "string", "default": "",
+           "description": "Current shell."},
+    context_time_start={"type": "string", "default": "",
+                        "description": "Context coverage start time."},
+    presence_events={"type": "array", "default": [],
+                     "description": "Peer online/offline events since the last poll."},
+)
+
+
+class SysNoteTool(Tool):
+    """Report the current context status (time, usage %, tokens, peers)."""
+
+    name = "_sys_note"
+    category = "Models"
+    description = "Current context status: time, context usage %, token usage, peer online/offline events."
+    parameters = _SYS_NOTE_PARAMS
+
+    async def execute(self, **kwargs) -> str:
+        # Strip harness meta params (_timeout/_async/_approve) the schema
+        # injects on every tool — they are not build_context_status params.
+        clean = {k: v for k, v in kwargs.items() if k not in ("_timeout", "_async", "_approve")}
+        from slife.agent.system_prompt import build_context_status
+        return build_context_status(**clean)

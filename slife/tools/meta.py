@@ -5,6 +5,7 @@ check_async        — poll background task result
 cancel_async       — cancel a running background task
 clear_context      — reset the loaded turns
 set_max_iterations — change the loop's iteration cap at runtime (0 = unlimited)
+notify_user        — push a desktop notification to the human operator
 """
 
 from __future__ import annotations
@@ -261,6 +262,58 @@ class SetMaxIterationsTool(Tool):
         if setter is None:
             return "Error: agent loop is not available yet — call this after the agent service has started."
         return setter(max_iterations)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# notify_user
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class NotifyUserTool(Tool):
+    """Push a desktop notification to the human operator.
+
+    A pure UI tool — it only triggers the display; the LLM never sees
+    the notification itself.
+    """
+
+    name: ClassVar[str] = "notify_user"
+    category: ClassVar[str] = "Meta"
+    description: ClassVar[str] = (
+        "Send a desktop notification to the human user."
+    )
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Short notification title (e.g. 'Task Complete', 'Alert').",
+            },
+            "message": {
+                "type": "string",
+                "description": "The notification body — be concise (one sentence).",
+            },
+        },
+        "required": ["message"],
+    }
+
+    async def execute(self, title: str = "slife", message: str = "", **kwargs) -> str:
+        if not message:
+            return "Error: message is required."
+
+        # Log for the session file at WARNING (the console is capped below
+        # WARNING, so this is diagnostic-only; the notification below is the
+        # user-facing channel).
+        logging.getLogger(__name__).warning(
+            "USER_NOTIFICATION title=%s message=%s", title, message,
+        )
+
+        # Fire desktop notification (best-effort, non-blocking).
+        # Daemon thread: a hung notify backend must never block shutdown.
+        from slife.platform import desktop_notify
+        from slife.threads import run_daemon
+        run_daemon(desktop_notify, title, message, name="desktop-notify")
+
+        return f"Notification sent: [{title}] {message}"
 
 
 

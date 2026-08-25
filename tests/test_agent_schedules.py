@@ -349,7 +349,7 @@ async def test_schedule_loop_never_announces_missed_or_stale(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_schedule_now_tool_requires_name():
-    from slife.tools.schedules import RunScheduleNowTool
+    from slife.tools.exec import RunScheduleNowTool
 
     tool = RunScheduleNowTool()
     result = await tool.execute(name="")
@@ -358,7 +358,7 @@ async def test_run_schedule_now_tool_requires_name():
 
 @pytest.mark.asyncio
 async def test_run_schedule_now_tool_no_hook():
-    from slife.tools.schedules import RunScheduleNowTool
+    from slife.tools.exec import RunScheduleNowTool
 
     tool = RunScheduleNowTool()
     object.__setattr__(tool, "_ctx", None)
@@ -368,7 +368,7 @@ async def test_run_schedule_now_tool_no_hook():
 
 @pytest.mark.asyncio
 async def test_run_schedule_now_tool_calls_hook():
-    from slife.tools.schedules import RunScheduleNowTool
+    from slife.tools.exec import RunScheduleNowTool
 
     tool = RunScheduleNowTool()
     ctx = MagicMock()

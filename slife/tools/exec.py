@@ -4,6 +4,7 @@ Tools:
     execute_shell          — run shell commands (default timeout 30s)
     run_python_script      — run Python scripts with JSON arguments
     install_python_package — install PyPI packages into slife's environment
+    run_schedule_now       — trigger a scheduled task immediately (dispatch worker)
 """
 
 import asyncio
@@ -14,10 +15,11 @@ import os
 import signal
 import subprocess
 import sys
+from typing import ClassVar
 
 from slife.platform import _resolve_skill_script
 from slife.logfmt import sanitize_secrets
-from slife.tools.base import Tool
+from slife.tools.base import Tool, make_params, require_params
 
 
 async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
@@ -326,3 +328,40 @@ class InstallPythonPackageTool(Tool):
         else:
             logger.warning("pip_install_failed packages=%s err=%s", packages, err)
             return f"Error installing {', '.join(packages)}:\n{err}" if err else f"Error installing {', '.join(packages)} (exit {proc.returncode})"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# run_schedule_now
+# ═══════════════════════════════════════════════════════════════════════
+
+class RunScheduleNowTool(Tool):
+    """Run a scheduled task immediately (backfill a missed run / manual fire)."""
+
+    name = "run_schedule_now"
+    category: ClassVar[str] = "Execution"
+    description = (
+        "Run a scheduled task immediately by name — records a run and "
+        "dispatches the task to a subagent worker now, regardless of its cron "
+        "schedule or enabled state.  Use to backfill a missed run (see "
+        "scheduled_run_list) or to trigger a task on demand.  After "
+        "backfilling a missed/failed run that won't be re-run, close it with "
+        "scheduled_run_skip."
+    )
+    parameters = make_params(
+        name={
+            "type": "string",
+            "description": "The scheduled task's name (from scheduled_task_list).",
+        },
+    )
+
+    async def execute(self, name: str = "", **kwargs) -> str:
+        if err := require_params(name=name):
+            return err
+        ctx = getattr(self, "_ctx", None)
+        fire = getattr(ctx, "fire_schedule_now", None) if ctx is not None else None
+        if fire is None:
+            return (
+                "Error: the scheduler is not available yet — call this after "
+                "the agent service has started."
+            )
+        return await fire(name)

@@ -1,17 +1,17 @@
-"""Tests for slife.tools.notify — NotifyUserTool."""
+"""Tests for NotifyUserTool (slife.tools.meta)."""
 
 import pytest; pytestmark = pytest.mark.unit
 
 from unittest.mock import patch
 
-from slife.tools.notify import NotifyUserTool
+from slife.tools.meta import NotifyUserTool
 
 
 class TestNotifyUserTool:
     """Desktop notification — a pure UI tool in the Display category."""
 
     def test_category(self):
-        assert NotifyUserTool.category == "Display"
+        assert NotifyUserTool.category == "Meta"
 
     def test_name(self):
         assert NotifyUserTool.name == "notify_user"

@@ -773,7 +773,7 @@ class TestAgentLoopRun:
         img2 = tmp_path / "test2.png"
         img2.write_bytes(b"\x89PNG\r\n\x1a\nfake png 2")
 
-        from slife.tools.vision import AttachImageTool
+        from slife.tools.models import AttachImageTool
         from slife.tools.context import ToolContext
         from slife.tools.registry import ToolRegistry
         registry = ToolRegistry()
