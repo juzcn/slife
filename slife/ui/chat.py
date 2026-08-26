@@ -10,7 +10,7 @@ from textual.content import Content
 from textual.events import Key
 from textual.widgets import Static
 
-from slife.agent.message_history import TURN_HEADER_PREFIX
+from slife.agent.message_history import INFO_PREFIX, trim_note
 from slife.agent.llm_client import TokenUsage
 from slife.ui.i18n import t
 
@@ -192,10 +192,11 @@ class UserMessage(Static):
         content = content.stylize(
             "bold #d97706", start=len(time_str), end=len(time_str) + prefix_len
         )
-        # A restored turn's footnote (`[Turn: N · …]`) renders dim/italic —
-        # the same style as thinking text — inline, right after the user's
-        # words, so it reads as machine metadata, not part of the message.
-        footnote = text.rfind(TURN_HEADER_PREFIX)
+        # A restored turn's footnote (`[INFO: {"turn_id": …, …}]`) renders
+        # dim/italic — the same style as thinking text — inline, right after
+        # the user's words, so it reads as machine metadata, not part of the
+        # message.
+        footnote = text.rfind(INFO_PREFIX)
         if footnote != -1:
             content = content.stylize(
                 "dim italic",
@@ -253,7 +254,7 @@ class AssistantMessage(Static):
         self._usage: TokenUsage | None = None
         self._is_thinking_collapsed: bool = False
         self._show_usage: bool = True
-        self._trim_marker: str = ""  # runtime-only "[TrimContext: N]" note
+        self._trim_marker: str = ""  # runtime-only trim note text
 
     def append_thinking(self, chunk: str) -> None:
         """Append a chunk of reasoning/thinking content."""
@@ -285,13 +286,13 @@ class AssistantMessage(Static):
         self._refresh_display()
 
     def set_trim_marker(self, count: int) -> None:
-        """Display a runtime-only ``[TrimContext: N]`` note after the text.
+        """Display a runtime-only trim note after the text.
 
-        Rendered dim/italic (machine metadata, like the ``[Turn: N]``
-        footnote on user messages).  Never persisted — the live marker the
-        loop appended to the history is stripped before the next save.
+        Rendered dim/italic (machine metadata, like the turn footnote on
+        user messages).  Never persisted — the live note the loop appended
+        to the history is stripped before the next save.
         """
-        self._trim_marker = f"[TrimContext: {count}]"
+        self._trim_marker = trim_note(count)
         self._refresh_display()
 
     def finalize(self, intermediate: bool = False) -> None:
@@ -410,8 +411,8 @@ class AssistantMessage(Static):
         elif not self._has_thinking:
             content = content + Content.from_markup("[dim]…[/dim]")
 
-        # Runtime trim marker — dim italic metadata after the response,
-        # styled like the [Turn: N] footnote on user messages.
+        # Runtime trim note — dim italic metadata after the response,
+        # styled like the turn footnote on user messages.
         if self._trim_marker:
             content = content + Content.from_text(
                 f" {self._trim_marker}", markup=False,

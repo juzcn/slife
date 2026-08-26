@@ -1836,12 +1836,12 @@ class AgentService:
         # Context trimming happens after this save, in
         # AgentLoop._trim_after_save (invoked below once the row is written)
         # — it uses this turn's real API usage and appends a runtime
-        # [TrimContext: N] marker.  Each turn is saved here via
+        # trim note.  Each turn is saved here via
         # memory_save_turn, so trimmed turns remain searchable.
 
-        # The runtime [TrimContext: N] marker must never reach the Turns DB —
-        # it is meaningful only in the live session.  Strip it from the
-        # copy being persisted (the live history keeps its marker).
+        # The runtime trim note must never reach the Turns DB — it is
+        # meaningful only in the live session.  Strip it from the copy
+        # being persisted (the live history keeps its note).
         from slife.agent.message_history import MessageHistory as _MH
         turn_messages = _MH.strip_trim_markers(turn_messages)
 
@@ -1999,7 +1999,7 @@ class AgentService:
         """Append the turn footnote to the just-saved turn's user message.
 
         Called after a successful ``__memory_save_turn`` so the rowid is
-        known: the next LLM call sees ``[Turn: N · start → end]`` and can
+        known: the next LLM call sees ``[INFO: {"turn_id": N, …}]`` and can
         reference the turn precisely.  Heartbeat turns are skipped (their
         user message is a synthetic trigger).  Purely additive and
         best-effort — a failure leaves the message unannotated.

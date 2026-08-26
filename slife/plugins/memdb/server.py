@@ -293,7 +293,7 @@ async def __memory_context_start_latest() -> str:
         "List turns (newest first): turn id, truncated user_message, summary, "
         "tags, created_at. Use turn_read for full content. "
         "before_turn_id / after_turn_id anchor the window by turn id (exclusive): "
-        "page older than a [Turn: N · …] footnote with before_turn_id, newer "
+        "page older than a [INFO: {\"turn_id\": N, …}] footnote with before_turn_id, newer "
         "with after_turn_id."
     ),
 )
@@ -405,7 +405,7 @@ async def turn_read(turn_id: int) -> str:
     """Load a full turn by turn id.
 
     Args:
-        turn_id: The turn id (same id as a `[Turn: N · …]` footnote or a
+        turn_id: The turn id (same id as a `[INFO: {"turn_id": N, …}]` footnote or a
             turn_list / turn_search result).
     """
     store = await _ensure_store()

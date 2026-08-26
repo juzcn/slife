@@ -110,12 +110,11 @@ class TUIHandler:
                 self._current_assistant.finalize(intermediate=False)
 
     def on_trim(self, count: int) -> None:
-        """Show the runtime ``[TrimContext: N]`` note on the turn's last
-        assistant message.
+        """Show the runtime trim note on the turn's last assistant message.
 
         Called by the loop after a trim (which happens after this turn was
-        saved).  The marker is appended to the last assistant message of the
-        turn — the same message whose text carries the LLM-side marker.
+        saved).  The note is appended to the last assistant message of the
+        turn — the same message whose text carries the LLM-side note.
         """
         if self._turn_assistants:
             self._turn_assistants[-1].set_trim_marker(count)

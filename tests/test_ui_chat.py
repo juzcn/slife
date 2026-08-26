@@ -35,15 +35,15 @@ class TestUserMessage:
         assert plain.startswith("[") and "> hi" in plain
 
     def test_turn_footnote_styled_dim_italic(self):
-        """A restored turn's `[Turn: N · …]` footnote renders dim/italic
-        (the thinking style) inline, right after the user's words — readable,
-        but clearly machine metadata, not part of the message."""
+        """A restored turn's `[INFO: {"turn_id": N, …}]` footnote renders
+        dim/italic (the thinking style) inline, right after the user's words
+        — readable, but clearly machine metadata, not part of the message."""
         from slife.ui.chat import UserMessage
-        text = "switch model [Turn: 30 · 2026-08-18 17:24 → 17:25]"
+        text = 'switch model [INFO: {"turn_id": 30, "begin": "2026-08-18 17:24", "end": "17:25"}]'
         rendered = UserMessage(text, prefix="> ").render()
         # Text is intact; the footnote sits right after the user's words.
         assert rendered.plain == "> " + text
-        foot = rendered.plain.index("[Turn: ")
+        foot = rendered.plain.index("[INFO: ")
         covering = [s for s in rendered.spans if s.start <= foot < s.end]
         assert covering, "footnote carries no style span"
         assert covering[0].style == "dim italic"
@@ -304,24 +304,26 @@ class TestAssistantMessage:
         assert "Thinking" in text
 
     def test_trim_marker_rendered_after_text(self):
-        """[TrimContext: N] renders dim/italic after the reply."""
+        """The runtime trim note renders dim/italic after the reply."""
         msg = self._make_msg()
         msg._buffer = "The answer"
-        msg._trim_marker = "[TrimContext: 3]"
+        msg._trim_marker = "[INFO: 3 oldest turns have been removed from context]"
         msg.update = MagicMock()
         msg._refresh_display()
         content = msg.update.call_args[0][0]
-        assert content.plain.endswith("The answer [TrimContext: 3]")
+        assert content.plain.endswith(
+            "The answer [INFO: 3 oldest turns have been removed from context]"
+        )
 
     def test_trim_marker_set_keeps_buffer(self):
-        """set_trim_marker records the marker without touching the buffer."""
+        """set_trim_marker records the note without touching the buffer."""
         msg = self._make_msg()
         msg.update = MagicMock()
         msg._buffer = "The answer"
         msg._trim_marker = ""
         msg.set_trim_marker(2)
         assert msg._buffer == "The answer"
-        assert msg._trim_marker == "[TrimContext: 2]"
+        assert msg._trim_marker == "[INFO: 2 oldest turns have been removed from context]"
         msg.update.assert_called_once()
 
 

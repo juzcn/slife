@@ -67,8 +67,9 @@ class TestBuild:
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "20%" in result and "80%" in result  # floor/ceiling defaults
-        assert "_sys_trim" not in result  # trim is now internal (marker, not tool)
-        assert "[TrimContext:" in result  # the runtime trim marker is documented
+        assert "_sys_trim" not in result  # trim is now internal (note, not tool)
+        assert "oldest turns have been removed from context" in result
+        assert '[INFO: {"turn_id"' in result  # the turn footnote is documented
         assert "turn_search" in result
 
     def test_heartbeat_interval_rendered_from_config(self, cfg):

@@ -219,10 +219,11 @@ class TestRestoreSkipsEmptyAssistantMessages:
 
 
 class TestRestoreTurnHeader:
-    """Each restored user message carries a ``[Turn: N · …]`` footnote — id +
-    created → completed — concatenated into the message text so the LLM can
-    tell old turns apart and reference them by rowid, and the human reads it
-    in the TUI.  Generated at restore only; heartbeat turns get none."""
+    """Each restored user message carries a ``[INFO: {"turn_id": N, …}]``
+    footnote — id + begin → end — concatenated into the message text so the
+    LLM can tell old turns apart and reference them by rowid, and the human
+    reads it in the TUI.  Generated at restore only; heartbeat turns get
+    none."""
 
     @staticmethod
     def _turn(user, rowid=27, created="2026-08-10T14:03:05+08:00",
@@ -266,7 +267,8 @@ class TestRestoreTurnHeader:
         assert user["role"] == "user"
         # Concatenated inline footnote — one text part, no separate marker.
         assert user["content"] == (
-            "switch model [Turn: 27 · 2026-08-10 14:03 → 14:05]"
+            'switch model [INFO: {"turn_id": 27, "begin": "2026-08-10 14:03", '
+            '"end": "14:05"}]'
         )
         # TUI bubble shows the same footnote the model sees.
         chat_view.add_user_message.assert_called_once()
@@ -280,7 +282,7 @@ class TestRestoreTurnHeader:
         await self._restore(app, conv, config, [turn])
 
         assert conv.messages[0]["content"] == (
-            "hi [Turn: 27 · 2026-08-10 14:03]"
+            'hi [INFO: {"turn_id": 27, "begin": "2026-08-10 14:03"}]'
         )
 
     @pytest.mark.asyncio

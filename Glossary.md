@@ -431,7 +431,8 @@ note. *See also* Context ceiling / Context floor; Trim note.
 
 **Trim note**
 The annotation that reports how many oldest complete turns were trimmed from
-the context. It is a runtime notice and is not part of the persisted record.
+the context, written as `[INFO: N oldest turns have been removed from
+context]`. It is a runtime notice and is not part of the persisted record.
 *See also* Trim.
 
 **Turn**
@@ -442,8 +443,9 @@ Message; Turn footnote; In-flight turn.
 
 **Turn footnote**
 The annotation that identifies a turn by its turn id and the time it
-occurred. It appears on restored turns and on a just-completed turn once
-saved, but never on the turn currently in progress. *See also* Turn; Turn id.
+occurred, written as `[INFO: {"turn_id": N, "begin": …, "end": …}]`. It
+appears on restored turns and on a just-completed turn once saved, but never
+on the turn currently in progress. *See also* Turn; Turn id.
 
 **Turn id**
 The identifier by which a turn is addressed. It appears in turn footnotes
@@ -485,8 +487,8 @@ metadata, not content:
 
 | Notation | Meaning |
 |---|---|
-| `[Turn: N · start → end]` | The turn footnote: turn id `N` and when it happened. |
-| `[TrimContext: N]` | The trim note: `N` oldest complete turns were trimmed from context. |
+| `[INFO: {"turn_id": N, "begin": "…", "end": "…"}]` | The turn footnote: turn id `N` and when it happened. |
+| `[INFO: N oldest turns have been removed from context]` | The trim note: the `N` oldest complete turns were trimmed from context. |
 | `[Heartbeat]` | The heartbeat marker: a synthetic autonomous trigger. |
 | `[Schedule <name>]` | The schedule marker: the scheduled task `<name>` is due. `[Schedule missed]` is the one-time startup notice listing runs missed while the agent was not running. |
 
@@ -530,6 +532,13 @@ architecture, the extension contract, and the notation that governs the
 codebase. These are not model-facing; they describe how Slife is built and
 how it is extended.
 
+Two design disciplines organise how the system steers the agent on its own
+initiative (neither waits for the user's input nor the model's decision):
+**context engineering**, which sets and dynamically changes the content of
+the context, and the **Harness** pattern, which autonomously invokes tools
+to change the agent's behavior. The entries below define them and the
+mechanics they use.
+
 ### A
 
 **Agent Loop**
@@ -559,6 +568,19 @@ environment variables, the active model and model registry, tool overrides,
 skills, external servers, the turns database, messaging, the mesh, and the
 media providers. *See also* Configuration (Part II).
 
+**Context engineering**
+The design discipline of *setting and dynamically changing the content of
+the LLM context* — what the model reads on every call. The static half is
+the baseline always given to the model: the system prompt (identity and
+world spec) and the tool schemas. The dynamic half is the layer that evolves
+that content across turns without waiting for user input: the turn footnote
+and the trim note, the heartbeat and schedule triggers, context trimming,
+and the tool-result cap. Context engineering works directly on the content
+the model *sees*; it is the content-side counterpart of the Harness pattern,
+which steers the agent through tool invocation instead. *See also* Context
+injection (Part II); Harness (Part III); System prompt (Part II); Turn
+footnote (Part II); Trim (Part II).
+
 **Cryptfile backup**
 The encrypted fallback store maintained by the credential store, used on
 platforms without a system keyring. Slife's own credential resolution does
@@ -574,12 +596,24 @@ start). *See also* Shutdown.
 
 ### H
 
+**Harness**
+The design discipline of *steering the agent by autonomously invoking tools
+on its behalf*: the agent loop performs a tool call without waiting for the
+user's input or the model's decision, and the agent's behavior changes as a
+side effect of a tool execution it appears to have made. The instrument is
+the harness tool — a schema-visible, underscore-prefixed tool the model is
+forbidden to call, whose call/result pair the loop auto-invokes each turn
+(the context-status tool). Harness is the tool-invocation-side counterpart
+of context engineering, which works directly on context content instead.
+*See also* Harness tool (Part II, Part III); Context engineering; Agent
+Loop.
+
 **Harness tool**
 The developer sense: a tool that is schema-visible but auto-invoked by the
 agent loop on the agent's behalf, reserved against direct calls. In Slife
 the single harness tool is the context-status tool, identified by a leading
 underscore. The model-facing sense (Part II) is the same. *See also*
-Internal tool; Auto-invoke.
+Harness; Internal tool; Agent Loop.
 
 ### I
 

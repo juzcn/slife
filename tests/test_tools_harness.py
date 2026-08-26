@@ -6,7 +6,7 @@ Covers:
 - _sys_note execute output.
 - The loop's auto-invoke producing normal tool-call pairs.
 - _trim_after_save: internal trim (after a turn is saved) uses real usage,
-  appends a [TrimContext: N] marker, and respects the restore exemption.
+  appends a runtime trim note, and respects the restore exemption.
 - The _ensure_turn_consistent guarantee: an interrupted turn is restored to
   a consistent state — no orphaned tool_calls, and no consecutive user
   messages on the Anthropic wire (which rejects them).
@@ -76,7 +76,7 @@ class TestSysNote:
 
 class TestTrimAfterSave:
     """_trim_after_save: called after a turn is saved, uses real usage,
-    appends a [TrimContext: N] marker, and never shreds a restored context."""
+    appends a runtime trim note, and never shreds a restored context."""
 
     @staticmethod
     def _cfg():
@@ -122,8 +122,8 @@ class TestTrimAfterSave:
 
         # oldest turns removed (each turn carries one user message)
         assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
-        # marker appended to the last assistant message
-        assert "[TrimContext: " in conv.messages[-1].get("content", "")
+        # trim note appended to the last assistant message
+        assert "oldest turns have been removed from context" in conv.messages[-1].get("content", "")
         # no tool-call pair was produced (internal mechanism, not a tool)
         assert not any(m.get("tool_calls") for m in conv.messages)
 
@@ -137,7 +137,7 @@ class TestTrimAfterSave:
         await loop._trim_after_save(conv)
 
         assert len([m for m in conv.messages if m.get("role") == "user"]) == 1
-        assert not any("[TrimContext: " in (m.get("content") or "") for m in conv.messages)
+        assert not any("oldest turns have been removed from context" in (m.get("content") or "") for m in conv.messages)
 
     @pytest.mark.asyncio
     async def test_advances_context_start(self):
@@ -171,7 +171,7 @@ class TestTrimAfterSave:
         # The marker is consumed and nothing was trimmed.
         assert loop._just_restored_history is None
         assert len([m for m in conv.messages if m.get("role") == "user"]) == 12
-        assert not any("[TrimContext: " in (m.get("content") or "") for m in conv.messages)
+        assert not any("oldest turns have been removed from context" in (m.get("content") or "") for m in conv.messages)
 
     @pytest.mark.asyncio
     async def test_second_turn_after_restore_trims(self):
@@ -187,7 +187,7 @@ class TestTrimAfterSave:
         await self._prime_usage(loop, conv)
         await loop._trim_after_save(conv)
         assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
-        assert "[TrimContext: " in conv.messages[-1].get("content", "")
+        assert "oldest turns have been removed from context" in conv.messages[-1].get("content", "")
 
     @pytest.mark.asyncio
     async def test_trim_resets_time_start_when_dates_exhausted(self):

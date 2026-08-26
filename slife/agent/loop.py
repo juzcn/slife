@@ -483,13 +483,13 @@ class AgentLoop:
         the loop had at the turn's start.
 
         *handler* (optional) receives ``on_trim(count)`` so the live TUI
-        can show the ``[TrimContext: N]`` note on the turn's last
-        assistant message — mirroring the LLM-side marker.
+        can show the trim note on the turn's last assistant message —
+        mirroring the LLM-side note.
 
         When occupancy is at/over the ceiling, compacts the history
         down to the floor (oldest complete turns removed) and appends a
-        ``[TrimContext: N]`` marker to the last assistant message so the
-        LLM knows how many turns were cut from its context.  The marker is
+        trim note to the last assistant message so the LLM knows how many
+        turns were cut from its context.  The note is
         runtime-only — never persisted, discarded on restore (a restored
         session is already the trimmed state; "a past session was
         truncated" is meaningless to the model, only the *current* cut is).
@@ -554,11 +554,11 @@ class AgentLoop:
         )
 
         # Tell the LLM how much of its context was just cut.  Runtime-only
-        # marker appended to the last assistant message (guaranteed present
+        # note appended to the last assistant message (guaranteed present
         # and last by _ensure_turn_consistent in save_to_memory).
         history.append_trim_marker(removed)
-        # Mirror it in the live TUI — same [TrimContext: N] note on the
-        # turn's last assistant message.
+        # Mirror it in the live TUI — same trim note on the turn's last
+        # assistant message.
         if handler is not None:
             on_trim = getattr(handler, "on_trim", None)
             if on_trim is not None:

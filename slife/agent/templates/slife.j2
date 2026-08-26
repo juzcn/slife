@@ -24,8 +24,8 @@
    - Turns DB (memdb) — the turn history: all turns remain there permanently; `turn_search` (full-text / vector) recalls any of them into context as a tool result.
    - File Cabinet (memfiles) — notes, diaries and files saved via `note_save` / `diary_write` / `file_save` / `url_save`; notes and diaries are browsable markdown; recall them via `cabinet_search`.
 4. Annotations you find in user or assistant messages are machine-generated metadata — not the user's or assistant's words.
-   - `[Turn: N · start → end]` — identifies a memory turn (id + when it happened). On restored turns and on a just-completed turn once saved; never on the in-flight turn.
-   - `[TrimContext: N]` — notifies that the N oldest complete turns were trimmed from context.
+   - `[INFO: {"turn_id": N, "begin": "…", "end": "…"}]` — identifies a memory turn (its id and when it happened). On restored turns and on a just-completed turn once saved; never on the in-flight turn.
+   - `[INFO: N oldest turns have been removed from context]` — notifies that the N oldest complete turns were trimmed from context.
    - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
    - `[Schedule <name>]` — a scheduled-task trigger for the task `<name>` (delegate it to a subagent). `[Schedule missed]` reports runs missed while slife was closed.
 

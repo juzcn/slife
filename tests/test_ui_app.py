@@ -335,7 +335,7 @@ class TestTUIHandler:
 
     @pytest.mark.asyncio
     async def test_on_trim_marks_turn_last_assistant(self):
-        """on_trim shows [TrimContext: N] on the turn's last assistant."""
+        """on_trim shows the runtime trim note on the turn's last assistant."""
         app = self._make_app_mock()
         mock_a1 = MagicMock()
         mock_a2 = MagicMock()

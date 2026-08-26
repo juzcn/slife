@@ -768,7 +768,7 @@ class TestAgentServiceMemory:
 
     @pytest.mark.asyncio
     async def test_save_strips_runtime_trim_marker(self, sample_config):
-        """[TrimContext: N] is runtime-only — a marker on the live
+        """The trim note is runtime-only — a note on the live
         history (from a prior trim) must not reach the diary."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
@@ -785,20 +785,21 @@ class TestAgentServiceMemory:
 
         await service.save_to_memory(user_message="hi", history=conv)
 
-        # The live history still carries the marker...
-        assert "[TrimContext:" in conv.messages[-1]["content"]
+        # The live history still carries the note...
+        assert "oldest turns have been removed from context" in conv.messages[-1]["content"]
         # ...but the persisted turn is clean.
         _, args = mock_client.call_tool.await_args.args
         assert all(
-            "[TrimContext:" not in (m.get("content") or "")
+            "[INFO: " not in (m.get("content") or "")
             for m in args["messages"]
         )
 
     @pytest.mark.asyncio
     async def test_saved_turn_annotated_with_footnote(self, sample_config):
         """After a successful save, the turn's user message gets the inline
-        `[Turn: N · …]` footnote so the next LLM call can reference it by
-        rowid (and turn_summarize need not race latest_rowid)."""
+        `[INFO: {"turn_id": N, …}]` footnote so the next LLM call can
+        reference it by rowid (and turn_summarize need not race
+        latest_rowid)."""
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
@@ -814,13 +815,13 @@ class TestAgentServiceMemory:
         await service.save_to_memory(user_message="hi", history=conv)
 
         content = conv.messages[1]["content"]  # [0] is the system prompt
-        assert content.startswith("hi [Turn: 42 · ")
+        assert content.startswith('hi [INFO: {"turn_id": 42')
         assert content.endswith("]")
         # Runtime-only invariant: the footnote is appended AFTER the DB write,
         # so the stored user_message stays the clean original.
         _, args = mock_client.call_tool.await_args.args
         assert args["user_message"] == "hi"
-        assert "[Turn:" not in args["user_message"]
+        assert "[INFO:" not in args["user_message"]
 
     @pytest.mark.asyncio
     async def test_heartbeat_turn_not_annotated(self, sample_config):

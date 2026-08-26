@@ -50,9 +50,9 @@ def estimate_turn_tokens(turn: dict) -> int:
 
 # ── Turn header (restore-time annotation) ────────────────────────────
 #
-# Every restored user message gets a compact `[Turn: N · …]` footnote,
-# concatenated into the message text — the LLM needs to tell old turns
-# apart: which turn (rowid), when it started, when it finished.  Without
+# Every restored user message gets a compact `[INFO: {"turn_id": N, …}]`
+# footnote, concatenated into the message text — the LLM needs to tell old
+# turns apart: which turn (rowid), when it started, when it finished.  Without
 # it the whole restored history reads as "just happened".  The builder
 # lives in ``history.turn_header`` so the save path annotates
 # completed live turns with the same format.  The current in-flight turn

@@ -3,28 +3,32 @@
 Supports multimodal messages (text + images) for vision-capable models.
 """
 
+import json
 import logging
 
 from slife.logfmt import sanitize_secrets
 
 logger = logging.getLogger(__name__)
 
-# Machine-injected annotations inside a user message share one `[<Kind>: …]`
-# shape.  The restore turn header is the only one — concatenated as a
-# trailing footnote into the restored user-message text (see
-# ``slife.ui.restore._turn_header``) so the LLM can tell which turn (rowid) a
-# restored message belongs to and when it happened.  Deliberately NOT
+# Machine-injected annotations appended to a message share one envelope,
+# ``[INFO: <payload>]``.  The payload is either a JSON object — the turn
+# footnote (see ``turn_header``) — or a prose notice — the trim note (see
+# ``trim_note``).  The restore turn header is the only annotation
+# concatenated into the restored user-message text (see
+# ``slife.ui.restore._turn_header``) so the LLM can tell which turn (rowid)
+# a restored message belongs to and when it happened.  Deliberately NOT
 # excluded from the TUI — the human reads it too.
 # Heartbeat is NOT an annotation: `[Heartbeat]` is a stored turn identity
 # (old diary rows start with it), so it stays a distinct sentinel.
-#: Kind tag of the turn footnote (``[Turn: N · start → end]``).  Shared by
-#: the restore path, the save path, and the TUI ``UserMessage`` styler.
-TURN_HEADER_PREFIX = "[Turn: "
-#: Runtime-only marker of a context trim (``[TrimContext: N]``).  Appended
-#: to the last assistant message by the loop after a trim — NEVER persisted:
-#: a restored session is already the trimmed state, so a "past session was
-#: truncated" note is meaningless.  Stripped before every diary save.
-TRIM_MARKER_PREFIX = "[TrimContext: "
+#: Envelope of machine-injected annotations (``[INFO: …]``).  Shared by the
+#: restore path, the save path, and the TUI ``UserMessage`` styler.
+INFO_PREFIX = "[INFO: "
+#: Runtime-only trim note: ``[INFO: <N> oldest turns have been removed from
+#: context]``.  Appended by the loop after a trim — NEVER persisted: a
+#: restored session is already the trimmed state, so a "past session was
+#: truncated" note is meaningless.  Stripped before every diary save.  It is
+#: told apart from the JSON turn footnote by its payload head — a digit; the
+#: turn footnote's JSON starts with ``{`` (see ``_trim_note_in``).
 
 
 def _format_turn_dt(value) -> str:
@@ -35,26 +39,52 @@ def _format_turn_dt(value) -> str:
 
 
 def turn_header(turn: dict) -> str:
-    """Compact turn identity: ``[Turn: N · start → end]``.
+    """Compact turn identity: ``[INFO: {"turn_id": N, "begin": …, "end": …}]``.
 
-    Only the id, start time and end time — the history carries the
-    content.  Returns ``""`` when neither id nor timestamps are known
-    (legacy turns), so the message stays plain.
+    Only the id, begin time and end time — the history carries the content.
+    The end collapses to a time alone when it falls on the begin's day
+    (``{"turn_id": 27, "begin": "2026-08-10 14:03", "end": "14:05"}``).
+    Returns ``""`` when neither id nor timestamps are known (legacy turns),
+    so the message stays plain.
     """
     # Restored turns may carry either key: the store used to emit ``rowid``
     # (SQLite rowid) and now emits ``turn_id`` — accept both.
     rowid = turn.get("turn_id") if "turn_id" in turn else turn.get("rowid")
     start = _format_turn_dt(turn.get("created_at"))
     end = _format_turn_dt(turn.get("completed_at"))
-    if start and end and end != start:
+    if start and end and start[:10] == end[:10]:
         # Same day → end time only; otherwise full end datetime.
-        if end[:10] == start[:10]:
-            end = end[11:]
-        span = f"{start} → {end}"
-    else:
-        span = start or end
-    bits = ([str(rowid)] if rowid is not None else []) + ([span] if span else [])
-    return f"{TURN_HEADER_PREFIX}{' · '.join(bits)}]" if bits else ""
+        end = end[11:]
+    payload: dict[str, object] = {}
+    if rowid is not None:
+        payload["turn_id"] = rowid
+    if start:
+        payload["begin"] = start
+    if end:
+        payload["end"] = end
+    if not payload:
+        return ""
+    return f"{INFO_PREFIX}{json.dumps(payload, ensure_ascii=False)}]"
+
+
+def trim_note(count: int) -> str:
+    """Build the runtime trim marker ``[INFO: N oldest turns have been
+    removed from context]``."""
+    return f"{INFO_PREFIX}{count} oldest turns have been removed from context]"
+
+
+def _trim_note_in(content: str) -> int | None:
+    """Index of the trailing trim note inside *content*, or ``None``.
+
+    Within the shared ``[INFO: …]`` envelope the trim note is the payload
+    that starts with a digit (``"3 oldest turns …"``); the turn footnote is
+    JSON and starts with ``{``.
+    """
+    start = content.rfind(INFO_PREFIX)
+    if start == -1:
+        return None
+    payload = content[start + len(INFO_PREFIX):].lstrip()
+    return start if payload[:1].isdigit() else None
 
 
 class MessageHistory:
@@ -221,12 +251,12 @@ class MessageHistory:
         self.messages.append(msg)
 
     def append_trim_marker(self, count: int) -> None:
-        """Append a runtime-only ``[TrimContext: N]`` marker to the last
+        """Append a runtime-only trim note (``trim_note``) to the last
         assistant message.
 
         Tells the LLM how many of its oldest turns were just cut from the
         context by a trim (tool results the model may still reference are
-        gone).  Unlike the persisted ``[Turn: N]`` footnotes, this marker
+        gone).  Unlike the turn footnotes on user messages, this note
         is **not** written to memory — a restored session is already the
         trimmed state, so a "past session was truncated" note is
         meaningless; only the current cut is relevant.  It is therefore
@@ -243,27 +273,31 @@ class MessageHistory:
         if idx < 0:
             return
         msg = self.messages[idx]
-        marker = f"[TrimContext: {count}]"
+        marker = trim_note(count)
         content = msg.get("content") or ""
         msg["content"] = f"{content} {marker}".strip() if content else marker
         logger.debug("conv_trim_marker count=%d msg_idx=%d", count, idx)
 
     @staticmethod
     def strip_trim_markers(messages: list[dict]) -> list[dict]:
-        """Return a copy of *messages* with ``[TrimContext: N]`` markers removed.
+        """Return a copy of *messages* with the trim note removed.
 
-        The marker is runtime-only: this keeps it out of the diary.  The
-        live history keeps its marker (the LLM needs to know the
-        current cut); only what is persisted is cleaned.  Works on the
-        list passed in — callers pass the sliced turn messages.
+        The note is runtime-only: this keeps it out of the diary.  The
+        live history keeps it (the LLM needs to know the current cut); only
+        what is persisted is cleaned.  Works on the list passed in — callers
+        pass the sliced turn messages.  Only the assistant-message prose
+        trim note is touched: the JSON turn footnote on user messages shares
+        the ``[INFO: `` envelope but is not a trim note.
         """
         cleaned = []
         for m in messages:
             if m.get("role") == "assistant" and m.get("content"):
                 content = m["content"]
-                if isinstance(content, str) and TRIM_MARKER_PREFIX in content:
-                    m = dict(m)
-                    m["content"] = content.split(TRIM_MARKER_PREFIX)[0].rstrip()
+                if isinstance(content, str):
+                    start = _trim_note_in(content)
+                    if start is not None:
+                        m = dict(m)
+                        m["content"] = content[:start].rstrip()
             cleaned.append(m)
         return cleaned
 

@@ -584,9 +584,9 @@ class SessionStore:
         """List turns, newest first. Lightweight — no full messages.
 
         ``before_rowid`` / ``after_rowid`` anchor the window by rowid
-        (exclusive) so the LLM can page the diary from a ``[Turn: N · …]``
-        footnote: ``before_rowid`` = older turns only, ``after_rowid`` =
-        newer turns only.
+        (exclusive) so the LLM can page the diary from a
+        ``[INFO: {"turn_id": N, …}]`` footnote: ``before_rowid`` = older
+        turns only, ``after_rowid`` = newer turns only.
         """
         limit = _clamp_limit(limit)
         clauses: list[str] = []
