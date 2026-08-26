@@ -236,6 +236,8 @@ class AgentLoop:
         input_modalities: str = "",
         presence_provider: Callable[[], list[tuple[float, str]]] | None = None,
         advance_context_start: Callable[[int], Awaitable[bool]] | None = None,
+        stream_timeout: float | None = None,
+        stream_max_retries: int | None = None,
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -246,6 +248,20 @@ class AgentLoop:
         self.context_ceiling = context_ceiling
         self.context_floor = context_floor
         self.memdb_enabled = memdb_enabled
+        #: Wall-clock cap on a single LLM stream call (``None`` = unlimited).
+        #: A silent provider stall would otherwise block the ``async for``
+        #: forever with no exception — set for subagents so a hang becomes a
+        #: catchable ``TimeoutError`` that flows back through the error path.
+        self.stream_timeout = stream_timeout
+        #: Retries for transient LLM stream failures.  ``None`` inherits the
+        #: module default; ``0`` = fail fast (one attempt) — used by
+        #: subagents, which have no user to wait on and should surface the
+        #: error to the caller instead of retrying a flaky provider.
+        self.stream_max_retries = (
+            stream_max_retries
+            if stream_max_retries is not None
+            else _LLM_STREAM_MAX_RETRIES
+        )
         #: Persist the live-context start boundary after a trim evicted
         #: *count* oldest turns, so a restart rebuilds the exit-time context
         #: from exactly where the live one now stands.  Best-effort: an
@@ -654,6 +670,59 @@ class AgentLoop:
 
     # ── Stream processing ──────────────────────────────────────────
 
+    async def _consume_stream(
+        self,
+        stream_iter,
+        handler: AgentEventHandler | None,
+        content_parts: list[str],
+        thinking_parts: list[str],
+        tool_accum: dict[int, dict],
+        emitted: list[bool],
+    ) -> TokenUsage:
+        """Consume one LLM stream, accumulating content / thinking / tools.
+
+        Extracted so ``asyncio.wait_for`` can cap the whole iteration — a
+        silent provider stall (no chunk, no error) would otherwise block
+        ``async for`` forever.  ``emitted`` is a one-element holder the
+        caller owns; it is set ``True`` as soon as any chunk arrives, so the
+        retry path can tell "partial output was shown" even when the stream
+        later raises.  Returns the accumulated usage.
+        """
+        stream_usage = TokenUsage()
+        async for chunk in stream_iter:
+            emitted[0] = True
+
+            if chunk.thinking:
+                thinking_parts.append(chunk.thinking)
+                if handler and not self._cancel_event.is_set():
+                    await handler.on_thinking_chunk(chunk.thinking)
+
+            if chunk.content:
+                content_parts.append(chunk.content)
+                if handler and not self._cancel_event.is_set():
+                    await handler.on_text_chunk(chunk.content)
+
+            if chunk.tool_deltas:
+                for td in chunk.tool_deltas:
+                    idx = td["index"]
+                    if idx not in tool_accum:
+                        tool_accum[idx] = {
+                            "id": "",
+                            "name": "",
+                            "arguments": "",
+                        }
+                    acc = tool_accum[idx]
+                    if td["id"]:
+                        acc["id"] = td["id"]
+                    if td["function"]["name"]:
+                        acc["name"] = td["function"]["name"]
+                    if td["function"]["arguments"]:
+                        acc["arguments"] += td["function"]["arguments"]
+
+            if chunk.usage:
+                stream_usage = chunk.usage
+        return stream_usage
+
     async def _process_stream(
         self,
         history: MessageHistory,
@@ -680,12 +749,18 @@ class AgentLoop:
         # mid-chunked-read) are retried with linear backoff.  The history
         # is untouched while streaming — the assistant message is only added
         # after this method returns — so a retry sends identical messages.
+        # ``stream_max_retries == 0`` disables retry entirely (fail fast);
+        # ``stream_timeout`` caps a single stream call so a silent provider
+        # stall surfaces as a catchable TimeoutError instead of hanging.
         attempts = 0
+        max_retries = self.stream_max_retries
+        # One-element holder so `emitted_any` survives a mid-stream raise —
+        # the retry path needs to know partial output was already shown.
+        emitted: list[bool] = [False]
         while True:
             attempts += 1
-            emitted_any = False
             try:
-                async for chunk in self.llm_client.chat_stream(
+                stream_iter = self.llm_client.chat_stream(
                     messages=history.to_openai_messages(
                         thinking_enabled=self.llm_client.model_config.thinking_enabled,
                     ),
@@ -693,38 +768,25 @@ class AgentLoop:
                         self.tool_registry.to_openai_functions()
                     ),
                     cancel_event=self._cancel_event,
-                ):
-                    emitted_any = True
-
-                    if chunk.thinking:
-                        thinking_parts.append(chunk.thinking)
-                        if handler and not self._cancel_event.is_set():
-                            await handler.on_thinking_chunk(chunk.thinking)
-
-                    if chunk.content:
-                        content_parts.append(chunk.content)
-                        if handler and not self._cancel_event.is_set():
-                            await handler.on_text_chunk(chunk.content)
-
-                    if chunk.tool_deltas:
-                        for td in chunk.tool_deltas:
-                            idx = td["index"]
-                            if idx not in tool_accum:
-                                tool_accum[idx] = {
-                                    "id": "",
-                                    "name": "",
-                                    "arguments": "",
-                                }
-                            acc = tool_accum[idx]
-                            if td["id"]:
-                                acc["id"] = td["id"]
-                            if td["function"]["name"]:
-                                acc["name"] = td["function"]["name"]
-                            if td["function"]["arguments"]:
-                                acc["arguments"] += td["function"]["arguments"]
-
-                    if chunk.usage:
-                        stream_usage = chunk.usage
+                )
+                if self.stream_timeout is not None:
+                    try:
+                        stream_usage = await asyncio.wait_for(
+                            self._consume_stream(
+                                stream_iter, handler, content_parts,
+                                thinking_parts, tool_accum, emitted,
+                            ),
+                            timeout=self.stream_timeout,
+                        )
+                    except TimeoutError as e:
+                        raise TimeoutError(
+                            f"LLM stream timed out after {self.stream_timeout}s"
+                        ) from e
+                else:
+                    stream_usage = await self._consume_stream(
+                        stream_iter, handler, content_parts, thinking_parts,
+                        tool_accum, emitted,
+                    )
                 break  # stream completed cleanly
             except asyncio.CancelledError:
                 # Cancellation is a control-flow signal — never retry it.
@@ -732,7 +794,7 @@ class AgentLoop:
             except Exception as e:
                 if not _is_retryable_stream_error(e):
                     raise
-                if attempts > _LLM_STREAM_MAX_RETRIES:
+                if attempts > max_retries:
                     # Wrap the exhausted-retries error so the surfaced message
                     # is actionable.  RuntimeError is not a BadRequestError, so
                     # the inbox keeps the history intact — correct for a
@@ -742,7 +804,7 @@ class AgentLoop:
                     ) from e
                 # Reset partial state + TUI display before retrying, so the
                 # retried request starts visually clean.
-                if emitted_any and handler is not None:
+                if emitted[0] and handler is not None:
                     on_retry = getattr(handler, "on_stream_retry", None)
                     if on_retry is not None:
                         try:
@@ -755,7 +817,7 @@ class AgentLoop:
                 stream_usage = TokenUsage()
                 logger.warning(
                     "llm_stream_retry attempt=%d max=%d err=%s",
-                    attempts, _LLM_STREAM_MAX_RETRIES, e,
+                    attempts, max_retries, e,
                 )
                 if self._cancel_event.is_set():
                     raise AgentCancelled()

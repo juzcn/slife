@@ -209,6 +209,15 @@ class AgentService:
         # since last turn"; the guard below only protects against a
         # pathological long-idle + heavy-flapping session.
         self._presence_events: deque[tuple[float, str]] = deque()
+        # Subagents fail fast on LLM errors and cap a single stream call:
+        # they have no user to wait on, so a raised provider error / timeout
+        # must surface as a pushed-back result rather than retrying a flaky
+        # provider or hanging on a silent stall.  The main agent keeps the
+        # module defaults (retry transient transport errors, no stream cap).
+        subagent_stream_timeout = (
+            (config.subagent_config or {}).get("task_timeout", 120)
+            if is_subagent else None
+        )
         self.agent_loop = AgentLoop(
             llm_client=self.llm_client,
             tool_registry=self.tool_registry,
@@ -224,6 +233,8 @@ class AgentService:
             input_modalities=", ".join(config.active_model.input_modalities),
             presence_provider=self._drain_presence_events,
             advance_context_start=self.advance_context_start,
+            stream_timeout=subagent_stream_timeout,
+            stream_max_retries=0 if is_subagent else None,
         )
         self.message_history = MessageHistory(
             system_prompt=build_system_prompt(self.config),

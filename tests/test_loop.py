@@ -3,6 +3,7 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
+import asyncio
 import json
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -439,6 +440,53 @@ class TestProcessStream:
                 await loop._process_stream(history, None)
 
         assert len(calls) == 3
+
+    @pytest.mark.asyncio
+    async def test_stream_timeout_turns_stall_into_error(
+        self, sample_model_config, empty_registry, history,
+    ):
+        """A silent provider stall (no chunk, no error) is cut by
+        ``stream_timeout`` into a catchable TimeoutError instead of hanging."""
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, empty_registry, stream_timeout=0.05)
+
+        async def stalled_stream(messages, tools, **kwargs):
+            # Never yields, never raises — a provider that accepted the
+            # request but went silent (the observed worker-2 hang).
+            await asyncio.sleep(3600)
+            yield  # pragma: no cover — marks this as an async generator
+
+        with patch.object(llm, "chat_stream", side_effect=stalled_stream):
+            with pytest.raises(TimeoutError, match="LLM stream timed out after 0.05s"):
+                await loop._process_stream(history, None)
+
+    @pytest.mark.asyncio
+    async def test_stream_max_retries_zero_fails_fast(
+        self, sample_model_config, empty_registry, history,
+    ):
+        """``stream_max_retries=0`` disables retry — one attempt, then the
+        transient error propagates immediately (subagent fail-fast)."""
+        import httpx
+
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, empty_registry, stream_max_retries=0)
+        calls: list[int] = []
+
+        async def flaky_stream(messages, tools, **kwargs):
+            calls.append(1)
+            raise httpx.RemoteProtocolError("peer closed connection")
+            yield  # pragma: no cover — marks this as an async generator
+
+        with (
+            patch.object(llm, "chat_stream", side_effect=flaky_stream),
+            patch("slife.agent.loop._LLM_STREAM_RETRY_BASE_DELAY", 0),
+        ):
+            with pytest.raises(
+                RuntimeError, match="LLM stream failed after 1 attempts",
+            ):
+                await loop._process_stream(history, None)
+
+        assert len(calls) == 1
 
 
 # ── _execute_tools ────────────────────────────────────────────────────
