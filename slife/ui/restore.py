@@ -68,15 +68,19 @@ def restore_prefix(channel: str | None, _agent_name: str) -> str:
     """Consistent prefix mapping for restored turns.
 
     Matches the real-time display prefixes used during live operation:
-      - human  → "You> "
-      - wechat → "<agent_name>(Wechat)"
-      - other   → "<remote_agent_name>(a2a)" (external agent id, A2A peer, etc.)
+      - human     → "You> "
+      - wechat    → "<agent_name>(Wechat)"
+      - subagent  → "⚙️ subagent> " (local worker completion, routed into
+        the human history — not an A2A peer)
+      - other     → "<remote_agent_name>(a2a)" (external agent id, A2A peer, etc.)
     """
     ch = channel or ""
     if ch == "human":
         return "You> "
     if ch == "wechat":
         return "You(Wechat)> "
+    if ch == "subagent":
+        return t("subagent_prefix")
     if ch:
         return f"{ch}(a2a)"
     return "You> "
