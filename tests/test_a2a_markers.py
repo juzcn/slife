@@ -62,24 +62,21 @@ class TestParseMarker:
         assert identity == {"kind": "Remote", "peer_id": "a", "task_id": "t}"}
         assert rest == "hi"
 
-    def test_legacy_heartbeat_no_json(self):
+    def test_no_marker_prefix_is_not_a_marker(self):
+        # A bare `[Heartbeat]` (no `{json}`) is not a valid marker — the
+        # grammar requires a payload, so it parses as plain human text.
         identity, rest = parse_marker("[Heartbeat] click")
-        assert identity == {"kind": "Heartbeat"}
-        assert rest == "click"
+        assert identity is None
+        assert rest == "[Heartbeat] click"
 
-    def test_legacy_schedule_no_json(self):
-        identity, rest = parse_marker("[Schedule daily_diary] 定时任务触发")
-        assert identity == {"kind": "Schedule"}
-        assert rest == "定时任务触发"
-
-    def test_legacy_schedule_missed(self):
-        identity, _ = parse_marker("[Schedule missed] 发现需要处理")
-        assert identity == {"kind": "Schedule"}
-
-    def test_unknown_kind(self):
+    def test_unknown_kind_normalized(self):
         identity, rest = parse_marker("[Foo:{}] x")
-        assert identity == {"kind": "Foo"}
+        assert identity == {"kind": UNKNOWN}
         assert rest == "x"
+
+    def test_unknown_kind_preserves_payload(self):
+        identity, _ = parse_marker('[Foo:{"bar": 1}] x')
+        assert identity == {"kind": UNKNOWN, "bar": 1}
 
 
 # ── Kind constants ──────────────────────────────────────────────────────

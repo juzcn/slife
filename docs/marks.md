@@ -38,11 +38,11 @@ channel=其他(peer id) →  [Remote:{"peer_id":...}]
 
 插入顺序(`restore.py:236-254`):
 
-1. 先 `_strip_legacy()` 剥掉残留的旧 `[Heartbeat]`/`[Schedule …]` 前缀(旧行兼容)
+1. 先 `_strip_trigger_prefix()` 剥掉 live 写入的 `[Heartbeat]`/`[Schedule …]` 前缀(当前数据归一化——live 路径仍写这些前缀进 diary)
 2. marker 前置(identity 在前)
 3. `[Turn: N]` footnote 追加到**末尾**(`turn_header()`,`restore.py:245`);heartbeat/schedule 合成触发 turn **跳过 header**
 
-`parse_marker`(`slife/a2a/markers.py:59-82`)同时容错两种 legacy 无 JSON 前缀(`[Heartbeat]`、`[Schedule …]`),保证旧行 restore 统一。`render_marker` 与 `parse_marker` 是纯逆运算(`markers.py:48-82`)。
+`parse_marker`(`slife/a2a/markers.py:68-91`)不再容错裸 `[Heartbeat]`/`[Schedule …]` 前缀(无 JSON payload 不是合法 marker);未识别 kind 归一化为 `UNKNOWN`。`render_marker` 与 `parse_marker` 是纯逆运算。
 
 ### 谁被排除在 LLM context 之外
 
@@ -60,7 +60,8 @@ channel=其他(peer id) →  [Remote:{"peer_id":...}]
 |---|---|---|
 | human 输入 | `app.py:800` `add_user_message(raw, prefix="You> ", timestamp)` | `[HH:MM] **You>** text` |
 | WeChat | `app.py:846` `prefix="You(Wechat)> "` | 同上但前缀不同 |
-| A2A task | `app.py:836` `prefix="{source}(a2a)"` | `← source`(`add_a2a_task_message` 在 `chat.py:171` 是另一种左箭头样式,但 `_on_a2a_activity` 实际走 `add_user_message`) |
+| A2A task | `app.py:836` `prefix="{source}(a2a)"` | `[HH:MM] **{source}(a2a)** text` |
+| subagent 完成 | `inbox.py` → `app.py:846` `subagent_message` | `[HH:MM] **⚙️ subagent>** text`(与 restore 同一前缀) |
 | assistant 流式 | `ui/handler.py:66-84` `TUIHandler._ensure_assistant` | `AssistantMessage`:`⟐ 思考`(可折叠)+ `[HH:MM] prefix> 正文` + token usage 页脚 |
 | 心跳 act | `service.surface_autonomous` → `app.py:684` | `name_prefix="⚡ 自主: "` |
 | 定时 act | `service.surface_schedule` → `app.py:691` | `name_prefix="📅 定时: "` |
@@ -82,8 +83,16 @@ channel=其他(peer id) →  [Remote:{"peer_id":...}]
 
 ---
 
-## 4. 观察到的几处不一致(候选修复)
+## 4. 已修复的不一致(2026-08-26)
 
-1. **Subagent 前缀双轨**:live 用默认工厂的 `Jack> `,restore 用 `⚙️ subagent> `。`restore_prefix` 的 docstring 声称"matches the real-time display prefixes used during live operation",但 subagent 这格并不成立。
-2. **`add_a2a_task_message` 疑似死代码**:`chat.py:171` 定义了专属的 `← source` 左箭头样式,但实际 A2A task 走 `_on_a2a_activity("task_received")` 的 `add_user_message(prefix="{source}(a2a)")`——前者可能从未被调用。
-3. **`Unknown` kind 常量**:`markers.py:29` 定义了 `UNKNOWN`,但 `restore_prefix` 对未知 kind 落到 `You> `,`Unknown` 无处使用。
+1. **Subagent 前缀双轨 → 已统一**。live 之前不渲染 subagent 完成通知的用户气泡(SUBAGENT 被排除在 `task_received`/`peer_message` 之外),restore 却渲染 `⚙️ subagent> `。修复:`inbox.py` 现在对 SUBAGENT 源发出 `subagent_message` activity,`app.py._on_a2a_activity` 渲染与 restore 相同的 `⚙️ subagent> ` 用户气泡。live 与 restore 共用 `t("subagent_prefix")` 同一字符串。
+2. **`add_a2a_task_message` 死代码 → 已删除**。它渲染 `← source` 左箭头,与 live/restore/`restore_prefix` 共享的 `{source}(a2a)` 约定不一致,且无任何调用点。
+3. **`UNKNOWN` 常量 → 已接线**。`parse_marker` 现在把未识别 kind 归一化为 `UNKNOWN`(payload 保留);`restore_prefix` 对 `UNKNOWN` 返回 `❔ unknown> `,不再误标为 human 的 `You> `。新增 `unknown_prefix` i18n 字符串(en `"❔ unknown> "`,zh `"❔ 未知> "`)。
+
+### 同时移除的后向兼容代码
+
+- `markers.py` 的 `_match_legacy`:不再把裸 `[Heartbeat]` / `[Schedule …]` 解析为 marker(旧行无 JSON payload 的格式)。现在无 marker = human,未识别 kind = `UNKNOWN`。
+- `restore.py` 的 `tool_result_is_error` 内容嗅探:restore 只读持久化的 `is_error` 字段(loop 的记录裁决),缺失即成功。不再 `startswith("Error")` 回退。
+- `restore_prefix` 的 `Remote` 无 `peer_id` 回退 `subagent_prefix`:Remote marker 必带 `peer_id`(`marker_for_channel` 保证),回退删除。
+
+> 注意:live 路径仍写 `[Heartbeat]` / `[Schedule name]` 前缀到 diary 的 `user_message`(heartbeat.py / schedules.py 未改),所以 restore 保留 `_strip_trigger_prefix` 折叠这些**当前数据**的前缀——这不是旧行兼容,是当前格式归一化。若要让 `[Heartbeat]`/`[Schedule name]` 完全退出 diary,需迁移 live 写入路径(另行变更)。

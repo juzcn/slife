@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from slife.agent.message_history import turn_header
 from slife.a2a.markers import (
-    HEARTBEAT, REMOTE, SCHEDULE, SUBAGENT, WECHAT,
+    HEARTBEAT, REMOTE, SCHEDULE, SUBAGENT, UNKNOWN, WECHAT,
     parse_marker, render_marker,
 )
 from slife.agent.llm_client import TokenUsage
@@ -67,15 +67,17 @@ def estimate_turn_tokens(turn: dict) -> int:
 
 # ── Prefix mapping ────────────────────────────────────────────────────
 
+#: The live trigger prefixes still written into the diary user_message by
+#: the current heartbeat/schedule paths.  Once their identity has been
+#: folded into the unified ``[Kind:{json}]`` marker, the old prefix is
+#: redundant — strip it so the LLM sees one clean identity, not two.
+_TRIGGER_PREFIX = re.compile(r"^\[Heartbeat\]|^\[Schedule[^\]]*\]")
 
-#: Legacy live prefixes stripped when a unified marker replaces them.
-_LEGACY_PREFIX = re.compile(r"^\[Heartbeat\]|^\[Schedule[^\]]*\]")
 
-
-def _strip_legacy(text: str) -> str:
-    """Remove a legacy ``[Heartbeat]`` / ``[Schedule …]`` prefix once its
-    identity has been folded into the unified marker (restore-generated)."""
-    m = _LEGACY_PREFIX.match(text)
+def _strip_trigger_prefix(text: str) -> str:
+    """Drop the live ``[Heartbeat]`` / ``[Schedule …]`` trigger prefix once
+    its identity has been folded into the unified marker (restore-generated)."""
+    m = _TRIGGER_PREFIX.match(text)
     return text[m.end():].lstrip() if m else text
 
 
@@ -110,7 +112,7 @@ def _extract_name(user_text: str) -> str:
     worker/peer name survives into the marker payload.
     """
     patterns = (
-        r"^\[Schedule\s+([^\]]+)\]",                       # [Schedule daily_diary]
+        r"^\[Schedule\s+([^\]]+)\]",                       # live trigger [Schedule daily_diary]
         r"定时任务\s+([A-Za-z0-9_.-]+)",                     # scheduled-task completion
         r"Subagent\s+\*\*([A-Za-z0-9_.-]+)\*\*",            # async subagent completion
         r"from\s+([A-Za-z0-9_.-]+)",                        # a2a / task framing
@@ -127,10 +129,12 @@ def restore_prefix(text: str, _agent_name: str) -> str:
 
     Matches the real-time display prefixes used during live operation:
       - human (no marker) → "You> "
-      - wechat → "<agent_name>(Wechat)"
+      - wechat → "You(Wechat)> "
       - subagent → "⚙️ subagent> " (local worker completion, routed into
         the human history — not an A2A peer)
       - remote → "<peer_id>(a2a)" (external agent id, A2A peer, etc.)
+      - unknown kind → "❔ unknown> " (a marker always means non-human;
+        an unrecognised kind must not read as the human default)
     """
     identity, _ = parse_marker(text)
     kind = identity.get("kind") if identity else None
@@ -139,9 +143,10 @@ def restore_prefix(text: str, _agent_name: str) -> str:
     if kind == SUBAGENT:
         return t("subagent_prefix")
     if kind == REMOTE:
-        peer = (identity or {}).get("peer_id", "")
-        return f"{peer}(a2a)" if peer else t("subagent_prefix")
-    # human (None) and anything else → plain user
+        return f"{identity.get('peer_id', '')}(a2a)"
+    if kind == UNKNOWN:
+        return t("unknown_prefix")
+    # No marker (None) — the human default.
     return "You> "
 
 
@@ -157,17 +162,10 @@ def _safe_parse_args(raw: str) -> dict:
 
 
 def tool_result_is_error(msg: dict) -> bool:
-    """Error state of a restored ``tool`` message.
-
-    The persisted ``is_error`` flag wins — it is the loop's recorded
-    verdict.  Legacy turns (saved before the flag existed) fall back to
-    the same heuristic the live loop uses, so old errors don't render
-    as successful.
-    """
-    if "is_error" in msg:
-        return bool(msg["is_error"])
-    content = msg.get("content", "") or ""
-    return isinstance(content, str) and content.startswith("Error")
+    """Error state of a restored ``tool`` message — the persisted
+    ``is_error`` flag, the loop's recorded verdict.  Absent flag means
+    the result succeeded (default False)."""
+    return bool(msg.get("is_error", False))
 
 
 # ── Main restore orchestrator ─────────────────────────────────────────
@@ -234,10 +232,10 @@ async def restore_session(
             # trigger as the user message, not a real query — no turn header
             # (restore also filters them from the TUI).
             marker = marker_for_channel(turn.get("channel"), user_msg_text)
-            # A legacy live prefix whose identity is now in the marker is
-            # redundant — drop it so the LLM sees one clean marker, not two.
+            # The live trigger prefix whose identity is now in the marker
+            # is redundant — drop it so the LLM sees one clean marker.
             if marker:
-                user_msg_text = _strip_legacy(user_msg_text)
+                user_msg_text = _strip_trigger_prefix(user_msg_text)
             identity, _ = parse_marker(marker + user_msg_text)
             is_synthetic = identity is not None and identity.get("kind") in (
                 HEARTBEAT, SCHEDULE,

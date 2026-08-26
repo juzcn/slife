@@ -526,6 +526,27 @@ class TestStatusBar:
         assert app._heartbeat_indicator == "·"
         assert app._heartbeat_color != ""
 
+    @pytest.mark.asyncio
+    async def test_on_a2a_activity_subagent_message(self):
+        """A subagent completion renders the `⚙️ subagent> ` user bubble —
+        the same prefix session restore uses."""
+        from slife.ui.app import SlifeApp
+        from slife.ui.i18n import t
+
+        app = object.__new__(SlifeApp)
+        chat_view = MagicMock()
+        app.query_one = MagicMock(return_value=chat_view)
+
+        await app._on_a2a_activity(
+            "subagent_message",
+            content="Subagent **researcher** completed",
+        )
+
+        chat_view.add_user_message.assert_called_once()
+        call = chat_view.add_user_message.call_args
+        assert call.args[0] == "Subagent **researcher** completed"
+        assert call.kwargs["prefix"] == t("subagent_prefix")
+
     def test_update_info_no_model(self):
         with patch("slife.ui.app.Static.__init__", return_value=None):
             bar = StatusBar()

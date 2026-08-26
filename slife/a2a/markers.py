@@ -25,8 +25,6 @@ import json
 import re
 from typing import Any
 
-#: Kind of a message whose identity is unknown / not one of the known kinds.
-UNKNOWN = "Unknown"
 #: The operator at the keyboard (TUI).  Never marked — absence == human.
 HUMAN = "Human"
 #: WeChat peer terminal.
@@ -39,6 +37,17 @@ SCHEDULE = "Schedule"
 SUBAGENT = "Subagent"
 #: Remote A2A peer.
 REMOTE = "Remote"
+#: Kind of a message whose identity is unknown / not one of the known kinds.
+#: ``parse_marker`` normalizes any unrecognized kind tag to this — so a
+#: restored turn is either human (no marker) or one of the known kinds,
+#: and an unknown tag never slips through as if it were the human default.
+UNKNOWN = "Unknown"
+
+#: The closed vocabulary of recognized kinds.  A marker whose kind is not
+#: in this set parses to :data:`UNKNOWN` (its JSON payload is preserved).
+_KNOWN_KINDS = frozenset({
+    HUMAN, WECHAT, HEARTBEAT, SCHEDULE, SUBAGENT, REMOTE,
+})
 
 #: ``[Kind:{json}]  remainder`` — kind, JSON payload, then the real text.
 #: ``re.DOTALL`` so a payload containing newlines still matches.
@@ -63,16 +72,16 @@ def parse_marker(text: str) -> tuple[dict[str, Any] | None, str]:
     human turn (absence == human).  When a marker is present, returns
     ``({"kind": ..., **payload}, remainder_text)``.
 
-    Also tolerates the legacy live prefixes ``[Heartbeat]`` and
-    ``[Schedule …]`` (no JSON payload) so restore of old rows is uniform.
+    A kind tag outside the known vocabulary normalizes to :data:`UNKNOWN`
+    (the payload is preserved) — a marker always means "non-human", and a
+    tag we don't recognise must not read as the human default.
     """
     m = _KIND_TAG.match(text)
     if not m:
-        kind, rest = _match_legacy(text)
-        if kind is None:
-            return None, text
-        return {"kind": kind}, rest
+        return None, text
     kind, payload, rest = m.group(1), m.group(2), m.group(3)
+    if kind not in _KNOWN_KINDS:
+        kind = UNKNOWN
     try:
         data = json.loads(payload)
     except json.JSONDecodeError:
@@ -80,16 +89,3 @@ def parse_marker(text: str) -> tuple[dict[str, Any] | None, str]:
     if not isinstance(data, dict):
         data = {}
     return {"kind": kind, **data}, rest
-
-
-def _match_legacy(text: str) -> tuple[str | None, str]:
-    """Match the legacy no-JSON live prefixes: ``[Heartbeat]`` / ``[Schedule …]``."""
-    if text.startswith("[Heartbeat]"):
-        return HEARTBEAT, text[len("[Heartbeat]"):].lstrip()
-    if text.startswith("[Schedule"):
-        # ``[Schedule name]`` / ``[Schedule missed]`` — kind + optional name.
-        m = re.match(r"^\[Schedule\s+([^\]]+)\]\s?(.*)$", text, re.DOTALL)
-        if m:
-            return SCHEDULE, m.group(2)
-        return SCHEDULE, text[len("[Schedule"):].lstrip()
-    return None, text

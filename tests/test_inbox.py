@@ -331,6 +331,37 @@ class TestInboxProcessOne:
         assert "peer_message" in calls
 
     @pytest.mark.asyncio
+    async def test_process_subagent_message(self, mock_loop, mock_store):
+        """A subagent completion gets a subagent_message activity so the live
+        TUI shows the same `⚙️ subagent> ` bubble that restore renders."""
+        from slife.agent.inbox import Inbox
+        from slife.subagent.identity import SUBAGENT
+
+        on_activity = AsyncMock()
+        inbox = Inbox(mock_loop, mock_store, on_activity=on_activity)
+
+        mock_result = MagicMock()
+        mock_result.text = "done"
+        mock_result.usage.total_tokens = 30
+        mock_loop.run = AsyncMock(return_value=mock_result)
+        mock_store.get_or_create.return_value = MagicMock()
+
+        msg = self._make_msg(
+            source=SUBAGENT, content="Subagent **researcher** completed",
+        )
+        await inbox._process_one(msg)
+
+        # on_activity should have been called for subagent_message
+        calls = [c[0][0] for c in on_activity.call_args_list]
+        assert "subagent_message" in calls
+        subagent_call = next(
+            c for c in on_activity.call_args_list if c[0][0] == "subagent_message"
+        )
+        assert subagent_call.kwargs["content"] == (
+            "Subagent **researcher** completed"
+        )
+
+    @pytest.mark.asyncio
     async def test_process_error_handling(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
         inbox = Inbox(mock_loop, mock_store)

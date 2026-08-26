@@ -849,6 +849,17 @@ class SlifeApp(App):
                 timestamp=datetime.now().astimezone(),
             )
 
+        elif kind == "subagent_message":
+            # Local worker completion — same `⚙️ subagent> ` bubble session
+            # restore shows, so live and restored turns read identically.
+            content = kwargs.get("content", "").strip()
+            if content:
+                chat_view.add_user_message(
+                    content,
+                    prefix=t("subagent_prefix"),
+                    timestamp=datetime.now().astimezone(),
+                )
+
         elif kind == "loop_error":
             error = kwargs.get("error", "")
             chat_view.add_system_message(t("loop_error", err=error), color="#f85149")

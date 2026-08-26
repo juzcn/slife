@@ -199,6 +199,18 @@ class Inbox:
             except Exception:
                 pass
 
+        # Notify TUI of subagent completions so they get the same
+        # `⚙️ subagent> ` user bubble that session restore shows (the
+        # channel="subagent" turns restore to that prefix).  Live and
+        # restore must agree on how a local worker completion reads.
+        if msg.source == SUBAGENT and self._on_activity:
+            try:
+                await self._on_activity(
+                    "subagent_message", content=msg.content,
+                )
+            except Exception:
+                pass
+
         # Mark busy while processing
         if self._a2a_client:
             await self._a2a_client.update_status("busy")
