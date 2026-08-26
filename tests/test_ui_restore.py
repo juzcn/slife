@@ -12,7 +12,6 @@ from unittest.mock import MagicMock
 
 from slife.agent.message_history import MessageHistory
 from slife.ui.restore import (
-    restore_prefix,
     restore_session,
     tool_result_is_error,
 )
@@ -22,8 +21,8 @@ from slife.ui.restore import (
 
 
 class TestToolResultIsError:
-    """The persisted ``is_error`` flag is the loop's recorded verdict —
-    restore reads it, it never re-derives error state from content."""
+    """Persisted ``is_error`` flag wins; legacy turns fall back to the
+    live loop's heuristic so pre-flag errors don't render as done."""
 
     def test_flag_true_wins_over_content(self):
         msg = {"role": "tool", "content": "all good", "is_error": True}
@@ -35,16 +34,15 @@ class TestToolResultIsError:
         msg = {"role": "tool", "content": "Error-looking stdout", "is_error": False}
         assert tool_result_is_error(msg) is False
 
-    def test_error_text_without_flag_is_not_error(self):
-        # No flag persisted → success.  Restore never sniffs content.
+    def test_legacy_error_content_detected(self):
         msg = {"role": "tool", "content": "Error: Edit 1: old_string not found."}
-        assert tool_result_is_error(msg) is False
+        assert tool_result_is_error(msg) is True
 
-    def test_missing_flag_defaults_false(self):
+    def test_legacy_ok_content_not_error(self):
         msg = {"role": "tool", "content": "Search results here."}
         assert tool_result_is_error(msg) is False
 
-    def test_empty_content_defaults_false(self):
+    def test_legacy_empty_content(self):
         msg = {"role": "tool", "content": ""}
         assert tool_result_is_error(msg) is False
 
@@ -56,35 +54,6 @@ class TestToolResultIsError:
             "is_error": True,
         }
         assert tool_result_is_error(msg) is True
-
-
-# ── Restore prefix from identity marker ──────────────────────────────
-
-
-class TestRestorePrefix:
-    """The restored user bubble's prefix comes from the identity marker —
-    human is absence, and an unknown kind is never mislabelled as human."""
-
-    def test_human_no_marker(self):
-        assert restore_prefix("switch model", "Jack") == "You> "
-
-    def test_wechat(self):
-        assert restore_prefix("[Wechat:{}] 发个文件", "Jack") == "You(Wechat)> "
-
-    def test_subagent(self):
-        from slife.ui.i18n import t
-        assert restore_prefix(
-            '[Subagent:{"subagent_name": "researcher"}] done', "Jack",
-        ) == t("subagent_prefix")
-
-    def test_remote_peer_id(self):
-        assert restore_prefix('[Remote:{"peer_id": "desk-01"}] task', "Jack") == (
-            "desk-01(a2a)"
-        )
-
-    def test_unknown_kind_is_not_human(self):
-        from slife.ui.i18n import t
-        assert restore_prefix("[Foo:{}] x", "Jack") == t("unknown_prefix")
 
 
 # ── Empty assistant messages on restore ──────────────────────────────
@@ -318,14 +287,11 @@ class TestRestoreTurnHeader:
     async def test_heartbeat_turn_gets_no_header(self):
         app, conv, config, chat_view = self._build()
         await self._restore(app, conv, config, [
-            self._turn("[Heartbeat] click.  Reply per your contract.",
-                       channel="heartbeat"),
+            self._turn("[Heartbeat] click.  Reply per your contract."),
         ])
 
-        # The live `[Heartbeat]` trigger prefix is folded into the marker
-        # and the synthetic trigger carries no turn header.
         assert conv.messages[0]["content"] == (
-            "[Heartbeat:{}] click.  Reply per your contract."
+            "[Heartbeat] click.  Reply per your contract."
         )
         # Heartbeat turns render nowhere in the chat.
         chat_view.add_user_message.assert_not_called()
@@ -337,11 +303,8 @@ class TestRestoreTurnHeader:
             self._turn("[Schedule daily_diary] 定时任务触发。", channel="schedule"),
         ])
 
-        # The synthetic trigger carries no turn header; the live
-        # `[Schedule name]` prefix is folded into the unified marker.
-        assert conv.messages[0]["content"] == (
-            '[Schedule:{"name": "daily_diary"}] 定时任务触发。'
-        )
+        # The synthetic trigger carries no turn header.
+        assert conv.messages[0]["content"] == "[Schedule daily_diary] 定时任务触发。"
         # The trigger renders nowhere in the chat.
         chat_view.add_user_message.assert_not_called()
 
@@ -366,7 +329,7 @@ class TestRestoreTurnHeader:
         am.append_text.assert_called_once_with("已派发定时任务。")
 
     @pytest.mark.asyncio
-    async def test_turn_without_identity_stays_plain(self):
+    async def test_legacy_turn_without_identity_stays_plain(self):
         app, conv, config, chat_view = self._build()
         turn = self._turn("hi")
         del turn["rowid"]

@@ -229,15 +229,15 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 
 嵌入后端：本地 GGUF（BGE-M3，离线）、HuggingFace transformers 或 OpenAI 兼容 API。无嵌入后端时关键词搜索照常工作。语义（hybrid）结果只在**当前模型的索引完整构建后**才返回——全量重建期间（新/换模型、重启中断续跑）hybrid 退回关键词搜索，索引完成后自动恢复。
 
-每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。用户消息会带一条紧凑的 **`[Turn: N · 开始 → 结束]`** 脚注（记忆 rowid 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 rowid 引用（`turn_read` / `turn_summarize`），用户在 TUI 里也能读到同一行。**会话恢复**时，非人类轮次还会被打上统一的 **身份标记** `[Kind:{json}]`（如 `[Subagent:{...}]`、`[Schedule:{...}]`、`[Remote:{...}]`），让恢复后的 agent 仍能分辨消息来源；人类轮次不带标记。
+每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。用户消息会带一条紧凑的 **`[Turn: N · 开始 → 结束]`** 脚注（记忆 rowid 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 rowid 引用（`turn_read` / `turn_summarize`），用户在 TUI 里也能读到同一行。
 
 ### 自主心跳
 
-空闲时，agent 按 `agent.heartbeat_interval` 秒（默认 60）获得一次自主思考/行动的窗口。它作为一个正常 turn 运行（独立会话，存入记忆）；回复契约：有值得说的话就输出内容，否则只输出一个 `.`。单独的 `.` 回复统一表示**沉默**——无论来自心跳、A2A 异步完成通知还是任何事件，都不会在聊天或会话恢复中显示；`[Heartbeat]` 触发消息被过滤，真正的自主回复显示为 `⚡ 自主`。会话恢复时，心跳回合的身份被折叠为统一的 `[Heartbeat:{}]` 标识标记。这是涌现自发性行为的前提。
+空闲时，agent 按 `agent.heartbeat_interval` 秒（默认 60）获得一次自主思考/行动的窗口。它作为一个正常 turn 运行（独立会话，存入记忆）；回复契约：有值得说的话就输出内容，否则只输出一个 `.`。单独的 `.` 回复统一表示**沉默**——无论来自心跳、A2A 异步完成通知还是任何事件，都不会在聊天或会话恢复中显示；`[Heartbeat]` 触发消息被过滤，真正的自主回复显示为 `⚡ 自主`。这是涌现自发性行为的前提。
 
 ### 定时任务
 
-让 agent 按计划做事——"每晚 12 点写日记"、"每周五总结本周"——它会注册一个 cron 定时任务（`scheduled_task_set`）。任务名同时也是执行它的 worker 名，所以用简短 ASCII 标识符。任务触发时，agent 把工作派发给一个以任务名命名的 subagent worker（`run_schedule_now`）而非亲自执行，worker 完成后把结果作为**报告**存入文件柜（`save_cron_report`）并通知你。每次触发都有记录（`scheduled_run_list`），你可以查看跑了什么、产出了什么（`report_list` / `report_read`）。会话恢复时，定时与 subagent 回合会被打上 `[Schedule:{...}]` / `[Subagent:{...}]` 标识标记，让恢复后的 agent 能区分 worker 完成消息与真实用户输入。
+让 agent 按计划做事——"每晚 12 点写日记"、"每周五总结本周"——它会注册一个 cron 定时任务（`scheduled_task_set`）。任务名同时也是执行它的 worker 名，所以用简短 ASCII 标识符。任务触发时，agent 把工作派发给一个以任务名命名的 subagent worker（`run_schedule_now`）而非亲自执行，worker 完成后把结果作为**报告**存入文件柜（`save_cron_report`）并通知你。每次触发都有记录（`scheduled_run_list`），你可以查看跑了什么、产出了什么（`report_list` / `report_read`）。
 
 定时任务**只在 Slife 运行时触发**。Slife 关闭期间到点的执行会被记为**错过（missed）**，已触发但未完成（中断、报错、重启）的会记为**未完成（failed）**，并在下次启动时一起呈现，agent 可以提议补做（`run_schedule_now`），你也可以跳过（`scheduled_run_skip`）。
 

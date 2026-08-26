@@ -150,10 +150,7 @@ initiative, rather than in response to the user. It takes three forms: a
 marker-carrying user message injected as a turn (heartbeat, scheduled-task
 trigger); a harness tool-pair contributed by an auto-invoked harness tool;
 and marker-carrying info appended to an existing message (turn footnote,
-trim note). Restored non-human turns additionally carry the unified
-identity marker `[Kind:{json}]`, derived from the persisted `channel`.
-*See also* Heartbeat; Scheduled task; Harness tool; Annotation; Identity
-marker.
+trim note). *See also* Heartbeat; Scheduled task; Harness tool; Annotation.
 
 **Context status**
 A per-turn report of the current operating conditions: the time, the context
@@ -221,26 +218,12 @@ act on its own. When the agent has nothing worth surfacing, it replies with
 silence. *See also* Heartbeat marker; Silence output.
 
 **Heartbeat marker**
-The annotation that marks a heartbeat stimulus. Live turns carry the bare `[Heartbeat]` prefix; on restore it is folded into the unified identity marker `[Heartbeat:{}]`. *See also* Heartbeat; Identity marker.
+The annotation that marks a heartbeat stimulus. *See also* Heartbeat.
 
 **Hybrid search**
 *See* Full-text search modes; Semantic index.
 
 ### I
-
-**Identity marker**
-The unified ``[Kind:{json}]`` marker that identifies a restored turn's
-source. It is generated at **restore time** from the persisted ``channel``
-column and prepended to non-human user messages: ``[Subagent:{...}]``,
-``[Heartbeat:{}]``, ``[Schedule:{...}]``, ``[Wechat:{}]``,
-``[Remote:{...}]``. **Human turns carry no marker** — absence == human. The
-marker is the single carrier of turn identity for the LLM and for
-restore-time display and filtering (parsing it replaced the bare-`channel`
-guess that mislabeled subagent turns as `(a2a)`). It is **restore-time
-only** — the live message stream keeps its own markers (`[Heartbeat]`,
-`[Schedule <name>]`, `[Turn: N]`, `[TrimContext: N]`), and a legacy
-`[Heartbeat]` / `[Schedule …]` prefix is folded into the unified marker on
-restore. *See also* Context injection; Restore; Annotation.
 
 **In-flight turn**
 The turn currently being processed — not yet complete and therefore not yet
@@ -332,9 +315,7 @@ Scheduled task; File Cabinet.
 **Restore**
 The reconstruction of the exit-time context at startup, so that the agent
 resumes as if it had never been interrupted. Restore reads from memory and
-does not affect it. Restored non-human user messages carry the unified
-identity marker `[Kind:{json}]`, derived from the persisted `channel`.
-*See also* LLM context; Memory; Identity marker.
+does not affect it. *See also* LLM context; Memory.
 
 **Result delivery mode**
 How the result of an asynchronous task is returned: *auto* (delivered to the
@@ -371,10 +352,8 @@ task; Report.
 The annotation that marks a scheduled-task trigger: ``[Schedule <name>]``
 when a task fires — prompting the agent to dispatch it via
 ``run_schedule_now`` — and ``[Schedule missed]`` for the startup notice
-listing runs that could not complete. Live turns carry this bare prefix; on
-restore it is folded into the unified identity marker
-``[Schedule:{"name": …}]``. *See also* Scheduled task; Scheduled run;
-Schedule loop; Identity marker.
+listing runs that could not complete. *See also* Scheduled task; Scheduled
+run; Schedule loop.
 
 **Semantic index**
 The auxiliary structure that enables meaning-based (vector) search over the
@@ -508,9 +487,8 @@ metadata, not content:
 |---|---|
 | `[Turn: N · start → end]` | The turn footnote: turn id `N` and when it happened. |
 | `[TrimContext: N]` | The trim note: `N` oldest complete turns were trimmed from context. |
-| `[Heartbeat]` | The heartbeat marker (live): a synthetic autonomous trigger. |
-| `[Schedule <name>]` | The schedule marker (live): the scheduled task `<name>` is due. `[Schedule missed]` is the one-time startup notice listing runs missed while the agent was not running. |
-| `[Kind:{json}]` | The unified **identity marker** (restore-time only): identifies the source of a restored non-human turn — `[Subagent:{"subagent_name": …}]`, `[Heartbeat:{}]`, `[Schedule:{"name": …}]`, `[Wechat:{}]`, `[Remote:{"peer_id": …}]`. Human turns carry no marker (absence == human). |
+| `[Heartbeat]` | The heartbeat marker: a synthetic autonomous trigger. |
+| `[Schedule <name>]` | The schedule marker: the scheduled task `<name>` is due. `[Schedule missed]` is the one-time startup notice listing runs missed while the agent was not running. |
 
 ---
 

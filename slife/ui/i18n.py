@@ -65,10 +65,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "⚙️ subagent> ",
         "zh": "⚙️ 子代理> ",
     },
-    "unknown_prefix": {
-        "en": "❔ unknown> ",
-        "zh": "❔ 未知> ",
-    },
     "interrupted": {
         "en": "⏹ Interrupted",
         "zh": "⏹ 已中断",
