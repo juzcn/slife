@@ -143,6 +143,7 @@ def restore_prefix(text: str, _agent_name: str) -> str:
     if kind == SUBAGENT:
         return t("subagent_prefix")
     if kind == REMOTE:
+        assert identity is not None  # kind == REMOTE implies a marker
         return f"{identity.get('peer_id', '')}(a2a)"
     if kind == UNKNOWN:
         return t("unknown_prefix")
