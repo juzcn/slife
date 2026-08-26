@@ -303,8 +303,11 @@ class TestRestoreTurnHeader:
             self._turn("[Schedule daily_diary] 定时任务触发。", channel="schedule"),
         ])
 
-        # The synthetic trigger carries no turn header.
-        assert conv.messages[0]["content"] == "[Schedule daily_diary] 定时任务触发。"
+        # The synthetic trigger carries no turn header, and its legacy
+        # `[Schedule name]` prefix is folded into the unified marker.
+        assert conv.messages[0]["content"] == (
+            '[Schedule:{"name": "daily_diary"}] 定时任务触发。'
+        )
         # The trigger renders nowhere in the chat.
         chat_view.add_user_message.assert_not_called()
 

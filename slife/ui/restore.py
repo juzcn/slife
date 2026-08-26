@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from slife.agent.message_history import turn_header
-from slife.agent.schedules import is_autonomous_trigger, is_schedule_trigger
+from slife.a2a.markers import (
+    HEARTBEAT, REMOTE, SCHEDULE, SUBAGENT, WECHAT,
+    parse_marker, render_marker,
+)
 from slife.agent.llm_client import TokenUsage
 from slife.ui.chat import ChatView
 from slife.ui.i18n import t
@@ -64,25 +68,80 @@ def estimate_turn_tokens(turn: dict) -> int:
 # ── Prefix mapping ────────────────────────────────────────────────────
 
 
-def restore_prefix(channel: str | None, _agent_name: str) -> str:
-    """Consistent prefix mapping for restored turns.
+#: Legacy live prefixes stripped when a unified marker replaces them.
+_LEGACY_PREFIX = re.compile(r"^\[Heartbeat\]|^\[Schedule[^\]]*\]")
 
-    Matches the real-time display prefixes used during live operation:
-      - human     → "You> "
-      - wechat    → "<agent_name>(Wechat)"
-      - subagent  → "⚙️ subagent> " (local worker completion, routed into
-        the human history — not an A2A peer)
-      - other     → "<remote_agent_name>(a2a)" (external agent id, A2A peer, etc.)
+
+def _strip_legacy(text: str) -> str:
+    """Remove a legacy ``[Heartbeat]`` / ``[Schedule …]`` prefix once its
+    identity has been folded into the unified marker (restore-generated)."""
+    m = _LEGACY_PREFIX.match(text)
+    return text[m.end():].lstrip() if m else text
+
+
+def marker_for_channel(channel: str | None, user_text: str) -> str:
+    """Build the ``[Kind:{json}]`` identity marker for a restored turn.
+
+    ``channel`` is the persisted ``diary.channel``; ``user_text`` supplies
+    best-effort identity details (task / peer / name) where the channel alone
+    cannot.  Human and empty channels carry no marker (absence == human).
     """
     ch = channel or ""
-    if ch == "human":
-        return "You> "
-    if ch == "wechat":
-        return "You(Wechat)> "
+    if not ch or ch == "human":
+        return ""
     if ch == "subagent":
+        name = _extract_name(user_text)
+        return render_marker(SUBAGENT, subagent_name=name) if name else render_marker(SUBAGENT)
+    if ch == "heartbeat":
+        return render_marker(HEARTBEAT)
+    if ch == "schedule":
+        name = _extract_name(user_text)
+        return render_marker(SCHEDULE, name=name) if name else render_marker(SCHEDULE)
+    if ch == "wechat":
+        return render_marker(WECHAT)
+    # Remote A2A peer — the channel IS the peer id.
+    return render_marker(REMOTE, peer_id=ch)
+
+
+def _extract_name(user_text: str) -> str:
+    """Best-effort name/task id from restored text (subagent / schedule).
+
+    Tries the source's own framing first, in source-specific order, so a
+    worker/peer name survives into the marker payload.
+    """
+    patterns = (
+        r"^\[Schedule\s+([^\]]+)\]",                       # [Schedule daily_diary]
+        r"定时任务\s+([A-Za-z0-9_.-]+)",                     # scheduled-task completion
+        r"Subagent\s+\*\*([A-Za-z0-9_.-]+)\*\*",            # async subagent completion
+        r"from\s+([A-Za-z0-9_.-]+)",                        # a2a / task framing
+    )
+    for pat in patterns:
+        m = re.search(pat, user_text)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def restore_prefix(text: str, _agent_name: str) -> str:
+    """Prefix for a restored user message, derived from its identity marker.
+
+    Matches the real-time display prefixes used during live operation:
+      - human (no marker) → "You> "
+      - wechat → "<agent_name>(Wechat)"
+      - subagent → "⚙️ subagent> " (local worker completion, routed into
+        the human history — not an A2A peer)
+      - remote → "<peer_id>(a2a)" (external agent id, A2A peer, etc.)
+    """
+    identity, _ = parse_marker(text)
+    kind = identity.get("kind") if identity else None
+    if kind == WECHAT:
+        return "You(Wechat)> "
+    if kind == SUBAGENT:
         return t("subagent_prefix")
-    if ch:
-        return f"{ch}(a2a)"
+    if kind == REMOTE:
+        peer = (identity or {}).get("peer_id", "")
+        return f"{peer}(a2a)" if peer else t("subagent_prefix")
+    # human (None) and anything else → plain user
     return "You> "
 
 
@@ -169,18 +228,28 @@ async def restore_session(
             )
             # (The images column is gone — image blocks live only in the
             # in-memory user message and are never persisted; restore is
-            # text-only.  The user message here is plain text + turn header.)
+            # text-only.  The user message here is plain text + marker +
+            # turn header.)
             # Autonomous turns (heartbeat / schedule) carry a synthetic
             # trigger as the user message, not a real query — no turn header
             # (restore also filters them from the TUI).
-            header = (
-                "" if is_autonomous_trigger(user_msg_text)
-                else turn_header(turn)
+            marker = marker_for_channel(turn.get("channel"), user_msg_text)
+            # A legacy live prefix whose identity is now in the marker is
+            # redundant — drop it so the LLM sees one clean marker, not two.
+            if marker:
+                user_msg_text = _strip_legacy(user_msg_text)
+            identity, _ = parse_marker(marker + user_msg_text)
+            is_synthetic = identity is not None and identity.get("kind") in (
+                HEARTBEAT, SCHEDULE,
             )
+            header = "" if is_synthetic else turn_header(turn)
             # The turn header is an inline footnote concatenated onto the end
             # of the user-message text (not a separate part or line) — so
             # both the LLM context and the restored TUI bubble carry it,
-            # reading as metadata right after the user's words.
+            # reading as metadata right after the user's words.  The identity
+            # marker leads, so the LLM can tell "who/what" before the content.
+            if marker:
+                user_msg_text = marker + " " + user_msg_text
             if header:
                 user_msg_text = user_msg_text + " " + header
             user_msg: dict = {"role": "user", "content": user_msg_text}
@@ -222,10 +291,6 @@ async def restore_session(
         ]
         last_assistant_idx = assistant_indices[-1] if assistant_indices else -1
 
-        _channel_by_row: dict[int, str] = {}
-        for i, turn in enumerate(turns):
-            _channel_by_row[i] = turn.get("channel", "")
-
         turn_idx = -1
         # Per-turn synthetic-trigger flags, set on the user message and read
         # on the assistant messages that follow it.  Initialized here so the
@@ -263,16 +328,18 @@ async def restore_session(
                 # Synthetic-trigger turns (heartbeat / schedule): the trigger
                 # is a marked system message, not a real user message — filter
                 # the whole turn (the reply renders as ⚡ autonomous or
-                # 📅 scheduled below, or not at all if quiet).
-                is_synthetic = is_autonomous_trigger(raw)
-                is_schedule = is_schedule_trigger(raw)
+                # 📅 scheduled below, or not at all if quiet).  The marker was
+                # already prepended in Phase 1, so parse it from the message.
+                identity, body = parse_marker(raw)
+                kind = identity.get("kind") if identity else None
+                is_synthetic = kind in (HEARTBEAT, SCHEDULE)
+                is_schedule = kind == SCHEDULE
                 if is_synthetic:
                     continue
-                ch = _channel_by_row.get(turn_idx, "")
-                prefix = restore_prefix(ch, agent_name)
+                prefix = restore_prefix(raw, agent_name)
                 ui_ops.append({
                     "type": "user",
-                    "content": raw,
+                    "content": body if body else raw,
                     "prefix": prefix,
                     "created_at": cur_created,
                 })
