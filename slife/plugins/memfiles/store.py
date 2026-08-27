@@ -719,6 +719,10 @@ class MemfilesStore:
     ) -> dict:
         """List reports, newest first, optionally filtered by task.
 
+        ``created_at`` is second-precision — the ``id DESC`` tiebreaker makes
+        same-second inserts order deterministically (newest insert first)
+        instead of leaving the tie to the database.
+
         Returns ``{"entries": [...], "total": n}``.
         """
         limit = _clamp_limit(limit)
@@ -736,7 +740,8 @@ class MemfilesStore:
         cursor = await self._c.execute(
             f"SELECT id, task_id, title, tags, file_path, period_start, "
             f"period_end, created_at, updated_at "
-            f"FROM reports {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            f"FROM reports {where} "
+            f"ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         )
         entries = [dict(row) for row in await cursor.fetchall()]

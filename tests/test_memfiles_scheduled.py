@@ -288,7 +288,11 @@ async def test_list_and_get_report(tmp_path):
         titles = {e["title"] for e in listed["entries"]}
         assert titles == {"Alpha", "Beta"}
 
-        one = await store.get_report(listed["entries"][0]["id"])
+        # Pick Alpha by title, not by position: listing is newest-first and
+        # both reports were inserted within the same second, so the tie on
+        # the second-precision created_at makes entries[0] ambiguous.
+        alpha = next(e for e in listed["entries"] if e["title"] == "Alpha")
+        one = await store.get_report(alpha["id"])
         assert one is not None
         assert one["period_start"] == "2026-08-01"
         assert one["period_end"] == "2026-08-07"
