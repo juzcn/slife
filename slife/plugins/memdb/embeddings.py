@@ -30,21 +30,30 @@ _KNOWN_MODELS: dict[str, tuple[int, int]] = {
     "nomic-embed-text":        (768,  8192),
 }
 
+#: Fallback dim/token-limit for an unknown model — *provisional* until the
+#: backend reports the real width (see ``dimension_known``).
+_DEFAULT_DIM = 1024
+_DEFAULT_MAX_TOKENS = 8192
+
+
+def _known_model(model: str) -> tuple[int, int] | None:
+    """Best-effort (dimension, max_tokens) for a model family we recognise."""
+    for key, pair in _KNOWN_MODELS.items():
+        if key in model.lower():
+            return pair
+    return None
+
 
 def _guess_dim(model: str, gguf_path: str | None = None) -> int:
     """Guess the embedding dimension from the model name."""
-    for key, (dim, _) in _KNOWN_MODELS.items():
-        if key in model.lower():
-            return dim
-    return 1024
+    pair = _known_model(model)
+    return pair[0] if pair else _DEFAULT_DIM
 
 
 def _guess_max_tokens(model: str) -> int:
     """Guess the token limit from the model name."""
-    for key, (_, limit) in _KNOWN_MODELS.items():
-        if key in model.lower():
-            return limit
-    return 8192
+    pair = _known_model(model)
+    return pair[1] if pair else _DEFAULT_MAX_TOKENS
 
 
 #: Maps each backend to the import that proves it's usable at runtime.
@@ -108,6 +117,7 @@ class EmbeddingClient:
         base_url: str = "",
         gguf_path: str | None = None,
         dim: int = 0,
+        dim_known: bool | None = None,
         quiet: bool = False,
         backend: str = "",
         device: str = "",
@@ -118,6 +128,14 @@ class EmbeddingClient:
         self._base_url = base_url
         self._gguf_path = gguf_path
         self._dim = dim or _guess_dim(model, gguf_path)
+        # A configured ``dim`` or a recognised model family makes the width
+        # authoritative; a bare guess must be confirmed by probing the
+        # backend before the vec0 table is created — a wrong width silently
+        # drops every mis-sized embedding.
+        if dim_known is not None:
+            self._dim_known = dim_known
+        else:
+            self._dim_known = (dim or 0) > 0 or _known_model(model) is not None
         self._client: Any = None        # AsyncOpenAI, Llama, or SentenceTransformer
         # Serializes the lazy AsyncOpenAI client creation — two concurrent
         # first-time API embeds would otherwise both create a client and leak
@@ -242,16 +260,24 @@ class EmbeddingClient:
         device = emb_cfg.get("device", "")
         enabled = emb_cfg.get("enabled", True)
 
+        # A configured ``dim`` or a recognised model family makes the width
+        # authoritative; otherwise it is a provisional guess (1024) that must
+        # be confirmed by the backend before the vec0 table uses it — the
+        # server defers vec0 creation until ``dimension_known``.
+        _dim_known = bool(emb_cfg.get("dim")) or _known_model(model) is not None
+
         # If a GGUF path is configured, use it (takes priority over API)
         if gguf_path:
             gguf_path = str(Path(gguf_path).expanduser())
             dim = emb_cfg.get("dim", _guess_dim(model, gguf_path))
-            return cls(model=model, gguf_path=gguf_path, dim=dim, quiet=quiet, enabled=enabled)
+            return cls(model=model, gguf_path=gguf_path, dim=dim, dim_known=_dim_known,
+                       quiet=quiet, enabled=enabled)
 
         # If backend is explicitly "transformer", use local HF model
         if cfg_backend == "transformer":
             dim = emb_cfg.get("dim", _guess_dim(model))
-            return cls(model=model, backend="transformer", dim=dim, device=device, quiet=quiet, enabled=enabled)
+            return cls(model=model, backend="transformer", dim=dim, dim_known=_dim_known,
+                       device=device, quiet=quiet, enabled=enabled)
 
         # Otherwise, try API backend
         api_key = ""
@@ -277,7 +303,8 @@ class EmbeddingClient:
             )
 
         dim = emb_cfg.get("dim", _guess_dim(model))
-        return cls(model=model, api_key=api_key, base_url=base_url, dim=dim, quiet=quiet, enabled=enabled)
+        return cls(model=model, api_key=api_key, base_url=base_url, dim=dim,
+                   dim_known=_dim_known, quiet=quiet, enabled=enabled)
 
     @property
     def available(self) -> bool:
@@ -305,6 +332,17 @@ class EmbeddingClient:
         return self._dim
 
     @property
+    def dimension_known(self) -> bool:
+        """Whether ``dimension`` is authoritative or a provisional guess.
+
+        False when the model is outside ``_KNOWN_MODELS`` and no ``dim`` was
+        configured — the real width is only known once the backend reports it
+        (gguf ``n_embd`` after load, API after a probe embed).  Callers use
+        this to defer creating the vec0 table until the width is real.
+        """
+        return self._dim_known
+
+    @property
     def backend(self) -> str:
         """Which backend is in use: 'gguf', 'api', or ''."""
         return self._backend
@@ -318,11 +356,11 @@ class EmbeddingClient:
         """Ensure the backend model is loaded and ``self._dim`` reflects its
         real output dimension; return the dimension.
 
-        Only the transformer backend needs this — its dimension is only known
-        once the model loads, whereas gguf/api dimensions are known up front.
-        Call before the vec0 table is created so the schema uses the real
-        width: a guessed dimension silently drops every embedding of a
-        different width.
+        Local models (transformer, and gguf via ``_load_gguf``) only report
+        their width once loaded — the width is never a guess here.  Call
+        before the vec0 table is created so the schema uses the real width:
+        a guessed dimension silently drops every embedding of a different
+        width.
         """
         if self._backend == "transformer" and self._client is None:
             try:
@@ -414,7 +452,48 @@ class EmbeddingClient:
             ),
             name="gguf-load",
         )
+        # llama-cpp exposes the model's real width after load — correct a
+        # guessed dimension now, before the vec0 table is created (a wrong
+        # width silently drops every mis-sized embedding).
+        actual_dim = int(getattr(self._client, "n_embd", 0) or 0)
+        if actual_dim and actual_dim != self._dim:
+            logger.info(
+                "gguf_dim_override model=%s configured=%d actual=%d",
+                self._model, self._dim, actual_dim,
+            )
+            self._dim = actual_dim
+            self._dim_known = True
         logger.info("gguf_loaded model=%s", self._model)
+
+    async def _probe_api_dim(self) -> None:
+        """Pin the real API embedding width with one cheap single-token embed.
+
+        For models outside ``_KNOWN_MODELS`` the guessed dimension may be
+        wrong, and a wrong width silently drops every vec0 insert of a
+        different size.  Called from ``load()`` before the semantic gate
+        opens; on failure the guess stays and the next ``load()`` retries.
+        """
+        try:
+            response = await self._call_api(["."])
+        except Exception as e:
+            logger.warning(
+                "embedding_dim_probe_failed backend=api model=%s err=%s",
+                self._model, e,
+            )
+            return
+        if not response or not response[0]:
+            logger.warning(
+                "embedding_dim_probe_empty backend=api model=%s", self._model,
+            )
+            return
+        actual = len(response[0])
+        if actual and actual != self._dim:
+            logger.info(
+                "api_dim_override model=%s guessed=%d actual=%d",
+                self._model, self._dim, actual,
+            )
+            self._dim = actual
+        self._dim_known = True
 
     async def load(self) -> bool:
         """Force the local backend model into memory; return True when loaded.
@@ -423,9 +502,15 @@ class EmbeddingClient:
         there is nothing left to embed when the index is already complete,
         so nothing would materialise the model and the semantic gate would
         stay locked off — load it here so the gate can open.  Idempotent;
-        the API backend is always ready.
+        the API backend is always ready (but probes its real dimension once
+        when the configured model is not recognised).
         """
         if self._client is not None or self._backend == "api":
+            # The API backend has no local model to load — but an unknown
+            # model name still carries a guessed dimension that must be
+            # confirmed before the vec0 table uses it.
+            if self._backend == "api" and not self._dim_known:
+                await self._probe_api_dim()
             return True
         if self._loading is not None:
             return await self._loading  # share the in-flight load

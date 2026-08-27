@@ -151,12 +151,18 @@ async def _ensure_store_locked() -> SessionStore:
 
     from slife.logfmt import elapsed
 
-    # Probe the embedding config just to size the vec0 table up front
-    # (gguf/api know their dim; transformer defers until the model loads).
-    # The model itself is loaded later by SemanticManager.enable() in the
-    # background — saves never wait on it.
+    # Probe the embedding config just to size the vec0 table up front.
+    # Only defer (create vec0 with the real width after the model loads)
+    # when the width can't be trusted yet: transformer reports its dim only
+    # once loaded, and an unknown gguf/api model carries a provisional guess
+    # that would silently drop every mis-sized embedding.  The model itself
+    # is loaded later by SemanticManager.enable() in the background — saves
+    # never wait on it.
     probe = EmbeddingClient.from_config()
-    defer_vec0 = bool(probe.available and probe.backend == "transformer")
+    defer_vec0 = bool(
+        probe.available
+        and (probe.backend == "transformer" or not probe.dimension_known)
+    )
     dim = 0 if defer_vec0 else (probe.dimension if probe.available else 0)
     model_id = (
         f"{probe.backend}:{probe._model}"

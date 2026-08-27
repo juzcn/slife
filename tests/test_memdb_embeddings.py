@@ -3,7 +3,7 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -171,6 +171,44 @@ class TestEmbeddingClientFromConfig:
 
         client = EmbeddingClient.from_config("/nonexistent.json5")
         assert client.available is False
+
+    @patch("pathlib.Path.read_text")
+    @patch("pathlib.Path.exists")
+    def test_api_unknown_model_dim_is_provisional(self, mock_exists, mock_read_text):
+        """An unrecognised API model carries a provisional dim (1024) until
+        the backend reports the real width."""
+        mock_exists.return_value = True
+        mock_read_text.return_value = '{}'
+
+        mock_config = {
+            "memdb": {"embedding": {"model": "my-custom-embedder"}},
+            "models": {"providers": {"openai": {"api_key": "sk-key"}}},
+        }
+
+        with patch("json5.loads", return_value=mock_config):
+            client = EmbeddingClient.from_config("/fake/config.json5")
+            assert client.backend == "api"
+            assert client.available is True
+            assert client.dimension == 1024
+            assert client.dimension_known is False
+
+    @patch("pathlib.Path.read_text")
+    @patch("pathlib.Path.exists")
+    def test_api_known_model_dim_is_authoritative(self, mock_exists, mock_read_text):
+        """A recognised model needs no probe — its width is authoritative."""
+        mock_exists.return_value = True
+        mock_read_text.return_value = '{}'
+
+        mock_config = {
+            "memdb": {"embedding": {"model": "text-embedding-3-small"}},
+            "models": {"providers": {"openai": {"api_key": "sk-key"}}},
+        }
+
+        with patch("json5.loads", return_value=mock_config):
+            client = EmbeddingClient.from_config("/fake/config.json5")
+            assert client.backend == "api"
+            assert client.dimension == 1536
+            assert client.dimension_known is True
 
     def test_json5_not_installed(self):
         with patch("slife.plugins.memdb.embeddings.json5", create=True, side_effect=ImportError):
@@ -340,3 +378,125 @@ class TestEmbeddingLoad:
         await asyncio.gather(client.load(), client.load())
         assert calls == 1
         assert client._client is not None
+
+
+class TestDimensionKnown:
+    """dimension_known distinguishes authoritative widths from bare guesses."""
+
+    def test_known_model_is_authoritative(self):
+        client = EmbeddingClient(model="bge-m3")
+        assert client.dimension_known is True
+
+    def test_known_api_model_is_authoritative(self):
+        client = EmbeddingClient(model="text-embedding-3-small", api_key="sk-key")
+        assert client.dimension_known is True
+
+    def test_unknown_model_is_provisional(self):
+        client = EmbeddingClient(model="my-custom-embedder")
+        assert client.dimension_known is False
+        assert client.dimension == 1024  # the provisional guess
+
+    def test_explicit_dim_is_authoritative(self):
+        client = EmbeddingClient(model="my-custom-embedder", dim=768)
+        assert client.dimension_known is True
+        assert client.dimension == 768
+
+
+class TestDimProbe:
+    """Real width is discovered from the backend, not trusted from a guess."""
+
+    @pytest.mark.asyncio
+    async def test_load_gguf_corrects_dim_from_n_embd(self):
+        import sys
+        import threading
+        from types import ModuleType
+
+        client = EmbeddingClient.__new__(EmbeddingClient)
+        client._backend = "gguf"
+        client._available = True
+        client._gguf_path = "/tmp/m.gguf"
+        client._model = "my-custom-embedder"
+        client._dim = 1024
+        client._dim_known = False
+        client._client = None
+        client._loading = None
+        client._embed_lock = threading.Lock()
+
+        class FakeLlama:
+            n_embd = 768
+
+        fake_mod = ModuleType("llama_cpp")
+        fake_mod.Llama = lambda **kw: FakeLlama()
+
+        async def _fake_run(fn, **_kw):
+            return fn()
+
+        with (
+            patch.dict(sys.modules, {"llama_cpp": fake_mod}),
+            patch(
+                "slife.threads.run_daemon",
+                new=AsyncMock(side_effect=_fake_run),
+            ),
+        ):
+            ok = await client.load()
+
+        assert ok is True
+        assert client.dimension == 768
+        assert client.dimension_known is True
+
+    @pytest.mark.asyncio
+    async def test_load_api_probes_dim(self):
+        """An unknown model's guessed API dim is corrected with a cheap probe."""
+        client = EmbeddingClient.__new__(EmbeddingClient)
+        client._backend = "api"
+        client._available = True
+        client._model = "my-custom-embedder"
+        client._dim = 1024
+        client._dim_known = False
+        client._client = None
+
+        with patch.object(
+            client, "_call_api", new=AsyncMock(return_value=[[0.1] * 768])
+        ):
+            ok = await client.load()
+
+        assert ok is True
+        assert client.dimension == 768
+        assert client.dimension_known is True
+
+    @pytest.mark.asyncio
+    async def test_load_api_probe_failure_keeps_guess(self):
+        """A failed probe leaves the provisional dim and retries next load."""
+        client = EmbeddingClient.__new__(EmbeddingClient)
+        client._backend = "api"
+        client._available = True
+        client._model = "my-custom-embedder"
+        client._dim = 1024
+        client._dim_known = False
+        client._client = None
+
+        with patch.object(
+            client, "_call_api", new=AsyncMock(side_effect=Exception("boom"))
+        ):
+            ok = await client.load()
+
+        assert ok is True
+        assert client.dimension == 1024
+        assert client.dimension_known is False
+
+    @pytest.mark.asyncio
+    async def test_load_api_known_dim_skips_probe(self):
+        """A recognised model never pays the probe request."""
+        client = EmbeddingClient.__new__(EmbeddingClient)
+        client._backend = "api"
+        client._available = True
+        client._model = "text-embedding-3-small"
+        client._dim = 1536
+        client._dim_known = True
+        client._client = None
+
+        with patch.object(client, "_probe_api_dim", new=AsyncMock()) as probe:
+            ok = await client.load()
+
+        assert ok is True
+        probe.assert_not_awaited()
