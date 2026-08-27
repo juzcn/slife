@@ -390,13 +390,15 @@ class MemfilesStore:
     async def upsert_report(
         self, task_id: int, title: str, content: str, tags: str = "",
         period_start: str | None = None, period_end: str | None = None,
+        due_at: str | None = None,
     ) -> dict:
         """Save a scheduled-task report (md + DB row + run backfill).
 
-        Writes the report to ``reports/<slug>.md`` and the DB, then backfills
-        the newest ``scheduled_runs`` row for this task that has no report yet
-        (``report_id IS NULL``), so the run's report link is closed at the
-        store layer.  The caller only needs the task (not the run's due_at).
+        Writes the report to ``reports/<slug>.md`` and the DB, then confirms a
+        ``scheduled_runs`` row: with *due_at* the exact run (a backfill of a
+        missed/failed run, whose row was flipped to ``pending`` at dispatch);
+        without it the newest un-reported run (the cron-fire dispatch).  The
+        confirmed run goes ``pending → ran`` — the one success writeback.
         """
         if not content.strip():
             raise ValueError("content is required")
@@ -437,15 +439,23 @@ class MemfilesStore:
             )
             doc_id = cursor.lastrowid
 
-        # Store-layer backfill: link the newest un-linked run for this task and
-        # confirm it — a report arriving is the one success signal, so the run
-        # goes pending → ran here (the ONLY 'ran' write).
-        await self._c.execute(
-            "UPDATE scheduled_runs SET report_id=?, status='ran' WHERE id = ("
-            "  SELECT id FROM scheduled_runs WHERE task_id=? AND report_id IS NULL "
-            "  ORDER BY due_at DESC LIMIT 1)",
-            (doc_id, task_id),
-        )
+        # Store-layer backfill: confirm the run this report is *for*, pending →
+        # ran here (the ONLY 'ran' write).  A due_at targets the exact run —
+        # the backfilled failed/missed run — so a newer stale run is never
+        # grabbed; without one it links the newest un-linked run (cron fire).
+        if due_at is not None:
+            await self._c.execute(
+                "UPDATE scheduled_runs SET report_id=?, status='ran' "
+                "WHERE task_id=? AND due_at=? AND report_id IS NULL",
+                (doc_id, task_id, due_at),
+            )
+        else:
+            await self._c.execute(
+                "UPDATE scheduled_runs SET report_id=?, status='ran' WHERE id = ("
+                "  SELECT id FROM scheduled_runs WHERE task_id=? AND report_id IS NULL "
+                "  ORDER BY due_at DESC LIMIT 1)",
+                (doc_id, task_id),
+            )
         await self._c.commit()
         return {"kind": "report", "doc_id": doc_id, "key": title,
                 "file_path": rel, "content": new_md}

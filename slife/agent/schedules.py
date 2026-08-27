@@ -105,13 +105,15 @@ def trigger_text(name: str, description: str) -> str:
     )
 
 
-def build_worker_task(name: str, description: str) -> str:
+def build_worker_task(name: str, description: str, due_at: str = "") -> str:
     """Self-contained task text for the worker running scheduled task *name*.
 
     The worker starts with a clean context but has the full toolset (incl.
     ``save_cron_report`` and a way to notify the user).  The headless worker
     wraps this as ``[Task <rpc_id> from <agent>] …``.  The text lives in
     ``schedule.j2`` (rendered through ``system_prompt.render_template``).
+    *due_at* is the exact run the worker must confirm in ``save_cron_report``
+    — a backfill's missed/failed run, or the cron fire's dispatch time.
     """
     desc = (description or "").strip() or "(no description)"
     now = datetime.now().astimezone()
@@ -120,6 +122,7 @@ def build_worker_task(name: str, description: str) -> str:
         name=name,
         description=desc,
         month_day=now.strftime("%m-%d"),
+        due_at=due_at,
     )
 
 
@@ -432,15 +435,19 @@ async def schedule_loop(service) -> None:
             logger.debug("schedule_loop_error err=%s", e)
 
 
-async def fire_task_now(service, name: str) -> str:
+async def fire_task_now(service, name: str, due_at: str = "") -> str:
     """Trigger a scheduled task now — the single dispatch path.
 
     Used by both the cron trigger (the agent calls ``run_schedule_now`` after
-    the ``[Schedule <name>]`` message) and missed-run backfill.  Records a
-    pending run (``due_at = now``) and dispatches the task to its worker
-    (worker name = task name) asynchronously; the worker must call
-    ``save_cron_report`` so the run's ``pending`` transitions to ``ran``.
-    Works for disabled tasks too (an explicit run is explicit).
+    the ``[Schedule <name>]`` message) and missed/failed-run backfill.
+
+    *due_at* selects the run to record: a backfill passes the failed/missed
+    run's due time, which ``__scheduled_record_run`` transitions to
+    ``pending`` in place (update, not insert), so the same run the footer
+    nagged about later becomes ``ran``; the cron path omits it and records a
+    fresh run at now.  The dispatched worker receives *due_at* and confirms
+    the exact run via ``save_cron_report(due_at=…)`` so ``pending`` →
+    ``ran``.  Works for disabled tasks too (an explicit run is explicit).
     """
     from slife.subagent.process import get_manager
 
@@ -451,7 +458,8 @@ async def fire_task_now(service, name: str) -> str:
     if not task:
         return f"Scheduled task not found: {name}"
 
-    due_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+    due_iso = due_at.strip() or datetime.now().astimezone().isoformat(
+        timespec="seconds")
     await _call(client, "__scheduled_record_run",
                 {"task_id": task["id"], "due_at": due_iso})
 
@@ -466,7 +474,8 @@ async def fire_task_now(service, name: str) -> str:
         await manager.spawn(name=worker)
         rpc_id = await manager.send_task_async(
             worker,
-            build_worker_task(worker, task.get("description", "")),
+            build_worker_task(worker, task.get("description", ""),
+                              due_at=due_iso),
             mode="auto",
         )
     except Exception as e:

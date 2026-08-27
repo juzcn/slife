@@ -343,19 +343,30 @@ class RunScheduleNowTool(Tool):
         "Trigger a scheduled task now — records a pending run and dispatches "
         "it immediately to the task's subagent worker (worker name = task "
         "name).  Called when a '[Schedule <name>]' trigger fires (cron) and "
-        "to backfill a missed/failed run (see scheduled_run_list).  The "
-        "worker saves the report via save_cron_report and notifies the user "
-        "when done.  After backfilling a run that won't be re-run, close it "
-        "with scheduled_run_skip."
+        "to backfill a missed/failed run.  A backfill passes the run's due_at "
+        "(the footer reminder / scheduled_run_list shows it) so THAT run "
+        "transitions missed/failed → pending → ran; without due_at a fresh "
+        "run is recorded at now.  The worker saves the report via "
+        "save_cron_report (confirming the run) and notifies the user when done."
     )
     parameters = make_params(
         name={
             "type": "string",
             "description": "The scheduled task's name (from scheduled_task_list).",
         },
+        due_at={
+            "type": "string",
+            "default": "",
+            "description": (
+                "Optional ISO due time of the exact run to trigger — pass the "
+                "missed/failed run's due_at from the footer reminder or "
+                "scheduled_run_list when backfilling.  Omit for a fresh "
+                "cron-fire run."
+            ),
+        },
     )
 
-    async def execute(self, name: str = "", **kwargs) -> str:
+    async def execute(self, name: str = "", due_at: str = "", **kwargs) -> str:
         if err := require_params(name=name):
             return err
         ctx = getattr(self, "_ctx", None)
@@ -365,4 +376,4 @@ class RunScheduleNowTool(Tool):
                 "Error: the scheduler is not available yet — call this after "
                 "the agent service has started."
             )
-        return await fire(name)
+        return await fire(name, due_at)

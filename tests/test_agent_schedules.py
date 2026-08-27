@@ -219,6 +219,77 @@ async def test_fire_task_now_marks_run_failed_on_dispatch_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fire_task_now_backfill_transitions_given_due_at(monkeypatch):
+    """A backfill passes the failed/missed run's due_at: that exact run is
+    recorded pending (the ON-CONFLICT update, not a fresh now-run) and the
+    worker task tells save_cron_report to confirm it."""
+    S._SCHEDULE_WORKERS.clear()
+    records: list[dict] = []
+    client = AsyncMock()
+
+    async def fake_call_tool(name, arguments=None):
+        if name == "__scheduled_task_by_name":
+            return ('{"id": 7, "name": "daily", "description": "d", '
+                    '"schedule": "0 9 * * *", "timezone": "", '
+                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+        if name == "__scheduled_record_run":
+            records.append(arguments or {})
+            return "{}"
+        return "null"
+
+    client.call_tool = fake_call_tool
+    ctx = MagicMock()
+    ctx.memfiles_client = client
+    service = MagicMock()
+    service._tool_ctx = ctx
+
+    manager = AsyncMock()
+    manager.spawn = AsyncMock(return_value="daily")
+    manager.send_task_async = AsyncMock(return_value="rpc-1")
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
+
+    due = "2026-08-27T10:55:00+08:00"
+    result = await S.fire_task_now(service, "daily", due_at=due)
+    assert "dispatched now to worker 'daily'" in result
+    assert records == [{"task_id": 7, "due_at": due}]  # the run, not a new now
+    _, task = manager.send_task_async.call_args[0]
+    assert f'due_at="{due}"' in task  # worker confirms the exact run
+
+
+@pytest.mark.asyncio
+async def test_fire_task_now_dispatch_error_fails_given_due_at(monkeypatch):
+    """A failed dispatch of a backfill marks the targeted run failed (its
+    original due_at), not some fresh now-run."""
+    mark_calls: list[dict] = []
+    client = AsyncMock()
+
+    async def fake_call_tool(name, arguments=None):
+        if name == "__scheduled_task_by_name":
+            return ('{"id": 7, "name": "daily", "description": "d", '
+                    '"schedule": "manual", "timezone": "", '
+                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+        if name == "__scheduled_mark_run_failed":
+            mark_calls.append(arguments or {})
+        return "{}"
+
+    client.call_tool = fake_call_tool
+    ctx = MagicMock()
+    ctx.memfiles_client = client
+    service = MagicMock()
+    service._tool_ctx = ctx
+
+    manager = AsyncMock()
+    manager.spawn = AsyncMock(side_effect=RuntimeError("max subagents reached"))
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
+
+    due = "2026-08-27T10:55:00+08:00"
+    result = await S.fire_task_now(service, "daily", due_at=due)
+    assert "Error: dispatch failed" in result
+    assert mark_calls == [{"task_id": 7, "due_at": due,
+                           "error": "max subagents reached"}]
+
+
+@pytest.mark.asyncio
 async def test_fire_task_now_unknown_task():
     client = AsyncMock()
 
@@ -521,4 +592,18 @@ async def test_run_schedule_now_tool_calls_hook():
     object.__setattr__(tool, "_ctx", ctx)
     result = await tool.execute(name="daily")
     assert result == "dispatched"
-    ctx.fire_schedule_now.assert_awaited_once_with("daily")
+    ctx.fire_schedule_now.assert_awaited_once_with("daily", "")
+
+
+@pytest.mark.asyncio
+async def test_run_schedule_now_tool_passes_backfill_due_at():
+    from slife.tools.exec import RunScheduleNowTool
+
+    tool = RunScheduleNowTool()
+    ctx = MagicMock()
+    ctx.fire_schedule_now = AsyncMock(return_value="dispatched")
+    object.__setattr__(tool, "_ctx", ctx)
+    due = "2026-08-27T10:55:00+08:00"
+    result = await tool.execute(name="daily", due_at=due)
+    assert result == "dispatched"
+    ctx.fire_schedule_now.assert_awaited_once_with("daily", due)

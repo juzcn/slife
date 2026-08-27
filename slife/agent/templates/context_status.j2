@@ -18,7 +18,7 @@ Current turn info you need to know:
 {%- for run in schedule_status %}
    - {{ run.name }} @ {{ run.due_at }} ({{ run.status }})
 {%- endfor %}
-   Backfill with run_schedule_now, or mark skipped with scheduled_run_skip.
+   Backfill with run_schedule_now (passing its due_at), or mark skipped with scheduled_run_skip.
 {%- endif %}
 {%- if presence_events %}
 ▸ Recent peer online/offline

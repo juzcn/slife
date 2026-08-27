@@ -2269,15 +2269,17 @@ class AgentService:
             logger.info("heartbeat_quiet")
             await self._notify_heartbeat("quiet")
 
-    async def fire_schedule_now(self, name: str) -> str:
+    async def fire_schedule_now(self, name: str, due_at: str = "") -> str:
         """Run a scheduled task immediately (backfill / manual trigger).
 
         Delegates to :func:`slife.agent.schedules.fire_task_now`, which
-        records a run and injects the task's trigger into the inbox.
+        records a run and injects the task's trigger into the inbox.  *due_at*
+        targets an exact run (a missed/failed backfill); omit for a fresh
+        cron-fire run at now.
         """
         from slife.agent.schedules import fire_task_now
 
-        return await fire_task_now(self, name)
+        return await fire_task_now(self, name, due_at)
 
     # ── Inbox lifecycle (always active) ────────────────────────────────
 

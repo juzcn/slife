@@ -249,6 +249,32 @@ async def test_upsert_report_append_same_title(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_upsert_report_with_due_at_confirms_exact_run(tmp_path):
+    """A backfill report with due_at confirms the targeted run even when a
+    newer (staler) missed run exists — never grabs the wrong one."""
+    store = await _real_store(tmp_path)
+    try:
+        task = await store.upsert_scheduled_task("daily", schedule="0 0 * * *")
+        newer, old = "2026-08-26T00:00:00", "2026-08-25T00:00:00"
+        for due in (newer, old):
+            await store.mark_run_missed(task["task_id"], due)
+        # Backfill transitions the OLD run to pending in place (ON CONFLICT).
+        await store.record_scheduled_run(task["task_id"], old)
+        rep = await store.upsert_report(
+            task_id=task["task_id"], title="Backfill", content="done",
+            due_at=old,
+        )
+        runs = {r["due_at"]: r for r in
+                await store.list_scheduled_runs(task_id=task["task_id"])}
+        assert runs[old]["status"] == "ran"           # the backfilled run
+        assert runs[old]["report_id"] == rep["doc_id"]
+        assert runs[newer]["status"] == "missed"      # newer stale run untouched
+        assert runs[newer]["report_id"] is None
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_list_and_get_report(tmp_path):
     store = await _real_store(tmp_path)
     try:

@@ -1022,13 +1022,17 @@ async def scheduled_run_skip(name: str, due_at: str) -> str:
     name="save_cron_report",
     description=(
         "Save a scheduled-task report into the cabinet (reports/<slug>.md) and "
-        "link it to the newest un-reported run of that task.  Called by the "
-        "worker at the end of a scheduled task.  Returns the report's file path."
+        "confirm the run it was dispatched for (pending → ran).  Called by the "
+        "worker at the end of a scheduled task — this is what marks the run "
+        "completed.  Pass due_at (from the schedule.j2 task text) to confirm an "
+        "exact run, e.g. a backfilled missed/failed run; omit to confirm the "
+        "newest un-reported run.  Returns the report's file path."
     ),
 )
 async def save_cron_report(
     name: str, title: str, content: str, tags: str = "",
     period_start: str | None = None, period_end: str | None = None,
+    due_at: str | None = None,
 ) -> str:
     """Save a scheduled-task report by task name.
 
@@ -1039,6 +1043,9 @@ async def save_cron_report(
         tags: Optional comma-separated tags for search.
         period_start: Optional ISO start of the period the report covers.
         period_end: Optional ISO end of the period the report covers.
+        due_at: Optional ISO due time of the exact run to confirm (from the
+            worker's task text).  Backfills pass it so the missed/failed run
+            they transitioned is the one confirmed.
     """
     task_id = await _task_id_by_name(name.strip())
     if task_id is None:
@@ -1048,6 +1055,7 @@ async def save_cron_report(
         info = await store.upsert_report(
             task_id=task_id, title=title, content=content, tags=tags,
             period_start=period_start, period_end=period_end,
+            due_at=due_at,
         )
     except ValueError as e:
         return f"Error: {e}"

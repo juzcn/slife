@@ -5,9 +5,9 @@ Task description:
 
 Carry out the task fully, using whatever tools you need. When done, you MUST finish up as follows:
 
-1. Save the report: call save_cron_report(name="{{ name }}", title=<one-line title>, content=<Markdown report>).
+1. Complete the run: call save_cron_report(name="{{ name }}"{% if due_at %}, due_at="{{ due_at }}"{% endif %}, title=<one-line title>, content=<Markdown report>).
    - title: one sentence summarizing the result, e.g. "{{ name }}: {{ month_day }} summary";
    - content: complete, well-structured Markdown (sections/lists/tables).
 2. Notify the user that the task is done, then close with one or two sentences on what you did and the report title.
 
-Both finishing steps (saving the report and notifying the user) are part of the task — do not skip them. If the task partially fails, report it honestly and complete what you can.
+Both steps are part of the task — do not skip them. On partial failure, report it honestly and save the report anyway.
