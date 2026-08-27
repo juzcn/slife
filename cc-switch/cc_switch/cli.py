@@ -254,6 +254,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cc-switch",
         description="Generate ~/.claude/settings.json from saved provider/model configs.",
+        epilog="Run 'cc-switch' with no subcommand to list providers "
+               "and their models.",
     )
     sub = parser.add_subparsers(dest="command")
 

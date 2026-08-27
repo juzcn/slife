@@ -79,6 +79,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="credstore",
         description="Secure credential storage via OS keyring.",
+        epilog="Run 'credstore' with no subcommand to list credentials "
+               "from the system keyring, cryptfile backup, and env vars.",
     )
     sub = parser.add_subparsers(dest="command")
 
