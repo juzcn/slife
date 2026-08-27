@@ -150,7 +150,8 @@ initiative, rather than in response to the user. It takes three forms: a
 marker-carrying user message injected as a turn (heartbeat, scheduled-task
 trigger); a harness tool-pair contributed by an auto-invoked harness tool;
 and marker-carrying info appended to an existing message (turn footnote,
-trim note). *See also* Heartbeat; Scheduled task; Harness tool; Annotation.
+trim note). *See also* Heartbeat; Scheduled task; Harness tool; Marker
+(Part III); Channel (Part III); Annotation.
 
 **Context status**
 A per-turn report of the current operating conditions: the time, the context
@@ -539,6 +540,12 @@ the context, and the **Harness** pattern, which autonomously invokes tools
 to change the agent's behavior. The entries below define them and the
 mechanics they use.
 
+Within context engineering the annotation layer is organised along two
+orthogonal axes: **channel**, the origin of a message as it enters the
+inbox, and **marker**, the machine-generated notation written into the
+context. The two are independent of one another: a channel names the
+sender and is always present; a marker conveys information and is optional.
+
 ### A
 
 **Agent Loop**
@@ -561,6 +568,25 @@ file sharing, media generation, and the mesh. *See also* Plugin (Part II);
 Plugin contract.
 
 ### C
+
+**Channel**
+The identity of the source to which a message entering the inbox is
+attributed, taken with reference to the main agent that consumes it.
+Every message belongs to exactly one channel, and the channel is
+recoverable from the message alone; it is a property of the message's
+origin, not of its transport, which imposes no constraint upon it. A
+channel is orthogonal to a marker: the channel reports *who* addressed the
+agent, whereas a marker reports information *about* the context. Channel
+identity is persisted with the turn and governs the prefix under which the
+turn is presented in the chat; by default it does not enter the LLM
+context. The recognised channels are the operator at the keyboard
+(*human*), a peer terminal (*WeChat*), a subagent worker (*subagent*), the
+periodic heartbeat (*heartbeat*), a remote mesh peer (*A2A*), and Slife
+itself (*system*), the last of which is suppressed from the chat view. A
+scheduled task is not a channel: its trigger enters under the *system*
+channel and its completion under the *subagent* channel, the schedule
+being carried as a marker. *See also* Inbox; Marker; Annotation (Part II);
+Context injection (Part II).
 
 **Config sections**
 The named sections of the configuration file that control subsystems:
@@ -640,6 +666,21 @@ operator-facing and written in the operator's own language. *See also*
 Model-visible (Part II).
 
 ### M
+
+**Marker**
+A brief, machine-generated notation written into the context on the
+system's initiative, distinguishable from the words of the user or the
+assistant. Markers constitute the annotation layer of context
+engineering: the turn footnote, the trim note, the heartbeat marker, and
+the schedule marker are all markers. A marker is orthogonal to a channel:
+the channel names the source of a message, the marker conveys information
+about the context. Whether a marker persists is independent of its
+function — the heartbeat and schedule markers ride the stored message text
+as turn identity, whereas the ``[INFO: …]`` footnote and trim note are
+runtime constructions, reproduced at restore and never stored. Markers are
+the unit in which context injection operates. *See also* Channel; Context
+injection (Part II); Annotation (Part II); Turn footnote (Part II); Trim
+note (Part II).
 
 **Meta-parameter**
 The developer sense of tool meta-parameters (Part II): the universal

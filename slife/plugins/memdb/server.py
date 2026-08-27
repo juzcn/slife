@@ -198,6 +198,7 @@ async def __memory_save_turn(
     who_helped: str = "",
     what_model: str = "",
     channel: str = "",
+    channel_data: str = "{}",
     created_at: str | None = None,
     completed_at: str | None = None,
     summary: str | None = None,
@@ -213,7 +214,8 @@ async def __memory_save_turn(
                 token_count=token_count,
                 prompt_tokens=prompt_tokens,
                 who_helped=who_helped, what_model=what_model,
-                channel=channel, created_at=created_at,
+                channel=channel, channel_data=channel_data,
+                created_at=created_at,
                 completed_at=completed_at,
             )
             # A rowid-less turn_summarize captured the current turn's

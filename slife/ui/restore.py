@@ -10,6 +10,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from slife.a2a.identity import Channel
 from slife.agent.message_history import turn_header
 from slife.agent.schedules import is_autonomous_trigger, is_schedule_trigger
 from slife.agent.llm_client import TokenUsage
@@ -64,26 +65,25 @@ def estimate_turn_tokens(turn: dict) -> int:
 # ── Prefix mapping ────────────────────────────────────────────────────
 
 
-def restore_prefix(channel: str | None, _agent_name: str) -> str:
+def restore_prefix(channel: "Channel | None", _agent_name: str = "") -> str | None:
     """Consistent prefix mapping for restored turns.
 
-    Matches the real-time display prefixes used during live operation:
+    Delegates to the channel type's display prefix, which matches the
+    real-time prefixes used during live operation:
       - human     → "You> "
-      - wechat    → "<agent_name>(Wechat)"
-      - subagent  → "⚙️ subagent> " (local worker completion, routed into
-        the human history — not an A2A peer)
-      - other     → "<remote_agent_name>(a2a)" (external agent id, A2A peer, etc.)
+      - wechat    → "Wechat> "
+      - subagent  → "Subagent(<name>)> " (local worker completion, routed
+        into the human history — not an A2A peer)
+      - a2a       → "A2A(<peer name>)"
+      - system    → None (filtered from the chat view)
+    ``None`` channel (legacy rows / empty channel) restores as human.
     """
-    ch = channel or ""
-    if ch == "human":
+    if channel is None:
         return "You> "
-    if ch == "wechat":
-        return "You(Wechat)> "
-    if ch == "subagent":
-        return t("subagent_prefix")
-    if ch:
-        return f"{ch}(a2a)"
-    return "You> "
+    if channel.kind == "subagent":
+        # i18n so live and restored subagent bubbles agree in both languages.
+        return t("subagent_prefix", name=channel.data.get("name") or "subagent")
+    return channel.display_prefix()
 
 
 # ── Safe arg parse ────────────────────────────────────────────────────
@@ -222,9 +222,11 @@ async def restore_session(
         ]
         last_assistant_idx = assistant_indices[-1] if assistant_indices else -1
 
-        _channel_by_row: dict[int, str] = {}
+        _channel_by_row: dict[int, "Channel | None"] = {}
         for i, turn in enumerate(turns):
-            _channel_by_row[i] = turn.get("channel", "")
+            _channel_by_row[i] = Channel.from_db(
+                turn.get("channel", ""), turn.get("channel_data", "{}"),
+            )
 
         turn_idx = -1
         # Per-turn synthetic-trigger flags, set on the user message and read
@@ -268,8 +270,11 @@ async def restore_session(
                 is_schedule = is_schedule_trigger(raw)
                 if is_synthetic:
                     continue
-                ch = _channel_by_row.get(turn_idx, "")
+                ch = _channel_by_row.get(turn_idx)
                 prefix = restore_prefix(ch, agent_name)
+                if prefix is None:
+                    # System channel — filtered from the chat view.
+                    continue
                 ui_ops.append({
                     "type": "user",
                     "content": raw,

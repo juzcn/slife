@@ -228,7 +228,7 @@ class TestRestoreTurnHeader:
     @staticmethod
     def _turn(user, rowid=27, created="2026-08-10T14:03:05+08:00",
               completed="2026-08-10T14:05:12+08:00", channel="human",
-              msgs=None):
+              channel_data="{}", msgs=None):
         return {
             "rowid": rowid,
             "user_message": user,
@@ -237,6 +237,7 @@ class TestRestoreTurnHeader:
             ], ensure_ascii=False),
             "images": "",
             "channel": channel,
+            "channel_data": channel_data,
             "created_at": created,
             "completed_at": completed,
         }
@@ -340,3 +341,45 @@ class TestRestoreTurnHeader:
         await self._restore(app, conv, config, [turn])
 
         assert conv.messages[0]["content"] == "hi"
+
+    @pytest.mark.asyncio
+    async def test_a2a_turn_renders_peer_name_prefix(self):
+        """A2A turns restore with the peer name from the channel payload."""
+        from slife.ui.i18n import t
+
+        app, conv, config, chat_view = self._build()
+        turn = self._turn("GO", channel="Jack",
+                          channel_data='{"agent_name": "Jack"}')
+        await self._restore(app, conv, config, [turn])
+
+        # Needs the peer name from the channel payload, not a fallback.
+        chat_view.add_user_message.assert_called_once()
+        kwargs = chat_view.add_user_message.call_args.kwargs
+        assert kwargs["prefix"] == "A2A(Jack)"
+        call_kwargs = chat_view.add_user_message.call_args
+        assert call_kwargs.args[0].startswith("GO")
+
+    @pytest.mark.asyncio
+    async def test_a2a_legacy_turn_name_from_channel_string(self):
+        """A pre-type a2a row (channel=peer name, no payload) still renders."""
+        from slife.ui.i18n import t
+
+        app, conv, config, chat_view = self._build()
+        turn = self._turn("GO", channel="desk-01")
+        await self._restore(app, conv, config, [turn])
+
+        kwargs = chat_view.add_user_message.call_args.kwargs
+        assert kwargs["prefix"] == "A2A(desk-01)"
+
+    @pytest.mark.asyncio
+    async def test_subagent_turn_renders_name_prefix(self):
+        """Subagent turns restore with the worker name in the prefix."""
+        from slife.ui.i18n import t
+
+        app, conv, config, chat_view = self._build()
+        turn = self._turn("done", channel="subagent",
+                          channel_data='{"name": "researcher"}')
+        await self._restore(app, conv, config, [turn])
+
+        kwargs = chat_view.add_user_message.call_args.kwargs
+        assert kwargs["prefix"] == t("subagent_prefix", name="researcher")

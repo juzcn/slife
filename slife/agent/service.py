@@ -1688,7 +1688,7 @@ class AgentService:
         messages with an on_reply callback.
         """
         import json as _json
-        from slife.a2a.identity import AgentMessage, WECHAT
+        from slife.a2a.identity import AgentMessage, Channel, WECHAT
 
         logger.info("wechat_poll_loop_start interval=%.1fs", interval)
 
@@ -1729,6 +1729,7 @@ class AgentService:
                         content=text,
                         metadata={"channel": "wechat"},
                         on_reply=_reply,
+                        channel=Channel.wechat(),
                     )
                     await self.inbox.post(msg)
                     logger.debug("wechat_in from=%s text=%.100s", from_id, text)
@@ -1749,6 +1750,7 @@ class AgentService:
         prompt_tokens: int | None = None,
         history: "MessageHistory | None" = None,
         channel: str = "",
+        channel_data: str = "{}",
         created_at: "datetime | str | None" = None,
         handler: "object | None" = None,
     ) -> None:
@@ -1762,7 +1764,10 @@ class AgentService:
                 footer / _sys_note with the real exit-time occupancy.
             history: The history to extract messages from.
                 Defaults to self.message_history (the TUI history).
-            channel: Source channel — 'human', 'wechat', or remote agent id.
+            channel: Source channel identity — 'human', 'wechat', or remote agent id.
+            channel_data: JSON payload for the channel's own fields (A2A
+                peer name, subagent name/task, …).  Written to the sibling
+                ``turn_channel`` row so restore renders ``A2A(<name>)> ``.
             created_at: The user-input timestamp (Enter-press moment, aware
                 datetime or ISO-8601 str).  Written as the turn row's
                 ``created_at`` so restore matches the live [HH:MM].
@@ -1873,6 +1878,7 @@ class AgentService:
             "who_helped": self.config.agent_name,
             "what_model": self.config.active_model.ref,
             "channel": channel,
+            "channel_data": channel_data,
         }
         if created_at:
             # Normalise an aware datetime to the store's ISO format; a str
@@ -2461,7 +2467,7 @@ class AgentService:
         routed back through the plugin via ``__a2a_dispatch_result``.
         """
         import json as _json
-        from slife.a2a.identity import AgentName, AgentMessage
+        from slife.a2a.identity import AgentName, AgentMessage, Channel
         from slife.a2a.card import AgentCard, format_presence_line
 
         logger.info("a2a_poll_loop_start interval=%.1fs", interval)
@@ -2513,6 +2519,7 @@ class AgentService:
                         reply_to=ev.get("reply_to", ""),
                         correlation_id=ev.get("correlation_id", ""),
                         on_reply=_reply,
+                        channel=Channel.a2a(src),
                     )
                     await self.inbox.post(msg)
                     logger.debug(
@@ -2554,6 +2561,7 @@ class AgentService:
                             f"Peer **{peer}** {state} async task "
                             f"(ID: `{corr_id}`):\n\n{result}"
                         ),
+                        channel=Channel.a2a(peer),
                     ))
                     logger.debug("a2a_task_completed_autopushed peer=%s task=%s", peer, corr_id)
             except asyncio.CancelledError:
@@ -2617,10 +2625,11 @@ class AgentService:
         # that ran a scheduled task is reported as the task completing
         # (hides the subagent detail).
         async def _on_subagent_done(agent_name: str, task_id: str, result: str) -> None:
-            from slife.a2a.identity import AgentMessage
+            from slife.a2a.identity import AgentMessage, Channel
             from slife.subagent.identity import SUBAGENT
             from slife.agent.schedules import _SCHEDULE_WORKERS
-            if agent_name in _SCHEDULE_WORKERS:
+            scheduled = agent_name in _SCHEDULE_WORKERS
+            if scheduled:
                 content = f"定时任务 {agent_name} 已完成，报告已保存。"
             else:
                 content = (
@@ -2628,7 +2637,13 @@ class AgentService:
                     f"(ID: `{task_id}`):\n\n"
                     f"{result}"
                 )
-            msg = AgentMessage(source=SUBAGENT, content=content)
+            msg = AgentMessage(
+                source=SUBAGENT,
+                content=content,
+                channel=Channel.subagent(
+                    agent_name, task_id=task_id, scheduled=scheduled,
+                ),
+            )
             await self.inbox.post(msg)
 
         self._subagent_manager.on_task_complete = _on_subagent_done
@@ -2720,13 +2735,14 @@ class AgentService:
         All messages (human keyboard, A2A, WeChat) go through the
         unified inbox queue — processed serially, never cancelled.
         """
-        from slife.a2a.identity import AgentMessage
+        from slife.a2a.identity import AgentMessage, Channel
 
         msg = AgentMessage(
             source=HUMAN,
             content=user_input,
             images=images if images else [],
             handler=handler,
+            channel=Channel.human(),
         )
         await self.inbox.post(msg)
 

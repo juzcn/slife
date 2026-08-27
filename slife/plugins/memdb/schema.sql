@@ -101,3 +101,14 @@ CREATE TABLE IF NOT EXISTS diary_meta (
 -- ── 索引 ──────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_diary_created ON diary(created_at);
 
+-- ── 通道负载 ──────────────────────────────────────────────────
+-- Sibling row per turn: the channel's JSON payload (A2A peer name,
+-- subagent name/task, …).  ``diary.channel`` stays the identity string
+-- and its FTS triggers are untouched; this table holds the per-channel
+-- data.  CREATE IF NOT EXISTS covers existing DBs on the next setup() —
+-- no migration, no ALTER.
+CREATE TABLE IF NOT EXISTS turn_channel (
+    turn_id  INTEGER PRIMARY KEY,
+    data     TEXT NOT NULL DEFAULT '{}'
+);
+

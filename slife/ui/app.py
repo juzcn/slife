@@ -836,7 +836,7 @@ class SlifeApp(App):
             # Show source agent ID as prefix so user knows who sent the task
             chat_view.add_user_message(
                 content,
-                prefix=f"{source}(a2a)",
+                prefix=f"A2A({source})",
                 timestamp=datetime.now().astimezone(),
             )
 
@@ -846,7 +846,7 @@ class SlifeApp(App):
             content = kwargs.get("content", "").strip()
             chat_view.add_user_message(
                 content,
-                prefix="You(Wechat)> ",
+                prefix="Wechat> ",
                 timestamp=datetime.now().astimezone(),
             )
 
@@ -857,7 +857,7 @@ class SlifeApp(App):
             if content:
                 chat_view.add_user_message(
                     content,
-                    prefix=t("subagent_prefix"),
+                    prefix=t("subagent_prefix", name=kwargs.get("name") or "subagent"),
                     timestamp=datetime.now().astimezone(),
                 )
 

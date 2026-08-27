@@ -545,7 +545,7 @@ class TestStatusBar:
         chat_view.add_user_message.assert_called_once()
         call = chat_view.add_user_message.call_args
         assert call.args[0] == "Subagent **researcher** completed"
-        assert call.kwargs["prefix"] == t("subagent_prefix")
+        assert call.kwargs["prefix"] == t("subagent_prefix", name="subagent")
 
     def test_update_info_no_model(self):
         with patch("slife.ui.app.Static.__init__", return_value=None):

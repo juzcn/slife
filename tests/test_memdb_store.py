@@ -48,6 +48,11 @@ async def _create_diary_table(conn) -> None:
             token_count    INTEGER NOT NULL DEFAULT 0,
             prompt_tokens  INTEGER NOT NULL DEFAULT 0
         )""")
+    await conn.execute("""\
+        CREATE TABLE IF NOT EXISTS turn_channel (
+            turn_id  INTEGER PRIMARY KEY,
+            data     TEXT NOT NULL DEFAULT '{}'
+        )""")
 
 
 class TestNow:
@@ -464,13 +469,21 @@ class TestSessionStoreGetRecentTurns:
             {"rowid": 1, "user_message": "Turn 1"},
             {"rowid": 2, "user_message": "Turn 2"},
         ])
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+        # get_recent_turns now issues a second query (the turn_channel
+        # payload merge) — no rows → every turn falls back to "{}".
+        channel_cursor = AsyncMock()
+        channel_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(
+            side_effect=[mock_cursor, channel_cursor],
+        )
         store._conn = mock_conn
 
         result = await store.get_recent_turns(limit=50)
         assert len(result) == 2
         assert result[0]["user_message"] == "Turn 1"
+        assert result[0]["channel_data"] == "{}"
         assert result[1]["user_message"] == "Turn 2"
+        assert result[1]["channel_data"] == "{}"
 
     @pytest.mark.asyncio
     async def test_get_recent_turns_real_db(self, tmp_path):
@@ -499,6 +512,11 @@ class TestSessionStoreGetRecentTurns:
                 what_model     TEXT DEFAULT '',
                 token_count    INTEGER NOT NULL DEFAULT 0,
                 prompt_tokens  INTEGER NOT NULL DEFAULT 0
+            )""")
+        await conn.execute("""\
+            CREATE TABLE IF NOT EXISTS turn_channel (
+                turn_id  INTEGER PRIMARY KEY,
+                data     TEXT NOT NULL DEFAULT '{}'
             )""")
         await conn.commit()
 
@@ -557,6 +575,45 @@ class TestSessionStoreGetRecentTurns:
         assert len(boundary_result) == 3
         assert boundary_result[0]["user_message"] == "User message 5"
         assert boundary_result[-1]["user_message"] == "User message 3"
+
+        await store._conn.close()
+
+    @pytest.mark.asyncio
+    async def test_channel_data_round_trip(self, tmp_path):
+        """The per-channel payload survives save → reload (A2A peer name)."""
+        import aiosqlite
+
+        db_path = tmp_path / "memory.db"
+        conn = await aiosqlite.connect(str(db_path))
+        conn.row_factory = aiosqlite.Row
+        await _create_diary_table(conn)
+        await conn.close()
+
+        store = SessionStore(db_path)
+        store._conn = await aiosqlite.connect(str(db_path))
+        store._conn.row_factory = aiosqlite.Row
+
+        # A2A turn with a peer-name payload → sibling row written.
+        a2a_rowid = await store.save_turn(
+            user_message="GO",
+            channel="Jack",
+            channel_data='{"agent_name": "Jack"}',
+        )
+        # Built-in turn with no payload → no sibling row.
+        await store.save_turn(user_message="hi", channel="human", channel_data="{}")
+
+        cur = await store._conn.execute(
+            "SELECT turn_id, data FROM turn_channel WHERE turn_id = ?",
+            (a2a_rowid,),
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        assert row["data"] == '{"agent_name": "Jack"}'
+
+        turns = await store.get_recent_turns(limit=10)
+        by_user = {t["user_message"]: t for t in turns}
+        assert by_user["GO"]["channel_data"] == '{"agent_name": "Jack"}'
+        assert by_user["hi"]["channel_data"] == "{}"
 
         await store._conn.close()
 

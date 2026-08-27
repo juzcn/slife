@@ -9,6 +9,7 @@ not *processing* logic.
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,22 @@ if TYPE_CHECKING:
     from slife.agent.loop import AgentLoop, AgentEventHandler
 
 logger = logging.getLogger(__name__)
+
+
+def _channel_persist(msg: AgentMessage) -> tuple[str, str]:
+    """(``diary.channel`` identity, payload JSON) for the turn save.
+
+    A ``None`` channel (legacy sites that construct no typed channel) falls
+    back to the old source-string classification; otherwise the typed
+    channel yields its identity and JSON payload.
+    """
+    ch = msg.channel
+    if ch is None:
+        return str(msg.source), "{}"
+    identity, data = ch.to_db()
+    if not data:
+        return identity, "{}"
+    return identity, _json.dumps(data, ensure_ascii=False)
 
 
 class Inbox:
@@ -169,12 +186,13 @@ class Inbox:
 
     async def _process_one(self, msg: AgentMessage) -> None:
         """Process a single message through the agent loop."""
-        from slife.a2a.identity import HEARTBEAT, HUMAN, SCHEDULE, WECHAT
+        from slife.a2a.identity import HEARTBEAT, HUMAN, SYSTEM, WECHAT
         from slife.subagent.identity import SUBAGENT
 
-        # Heartbeat / schedule are internal (not peer terminals) — no A2A busy
-        # status or task_received/completed TUI noise for autonomous turns.
-        is_remote = msg.source not in (HUMAN, WECHAT, SUBAGENT, HEARTBEAT, SCHEDULE)
+        # Heartbeat / system (schedule triggers) are internal (not peer
+        # terminals) — no A2A busy status or task_received/completed TUI noise
+        # for autonomous turns.
+        is_remote = msg.source not in (HUMAN, WECHAT, SUBAGENT, HEARTBEAT, SYSTEM)
         logger.info(
             "inbox_process source=%s corr_id=%s content=%.80s remote=%s",
             msg.source, msg.correlation_id, msg.content, is_remote,
@@ -205,8 +223,14 @@ class Inbox:
         # restore must agree on how a local worker completion reads.
         if msg.source == SUBAGENT and self._on_activity:
             try:
+                # Thread the worker name so the live bubble renders
+                # ``Subagent(<name>)> `` and agrees with restore.
                 await self._on_activity(
-                    "subagent_message", content=msg.content,
+                    "subagent_message",
+                    content=msg.content,
+                    name=(msg.channel.data.get("name", "")
+                          if msg.channel and msg.channel.kind == "subagent"
+                          else ""),
                 )
             except Exception:
                 pass
@@ -372,12 +396,14 @@ class Inbox:
                     # → 0 (legacy fallback applies on restore).
                     usage = self._agent_loop._usage_by_history.get(id(history))
                     prompt_tokens = usage.prompt_tokens if usage else 0
+                    channel_identity, channel_data = _channel_persist(msg)
                     await self._on_turn_complete(
                         user_message=msg.content,
                         token_count=token_count,
                         prompt_tokens=prompt_tokens,
                         history=history,
-                        channel=str(msg.source),
+                        channel=channel_identity,
+                        channel_data=channel_data,
                         # The user-input timestamp captured by the TUI
                         # handler — becomes the diary created_at so restore
                         # shows the same time as the live display.  Absent

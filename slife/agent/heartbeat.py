@@ -95,7 +95,7 @@ async def heartbeat_loop(service: "AgentService") -> None:
     flows through the normal inbox pipeline (own turn, loop, and save);
     ``on_reply`` surfaces non-``.`` output to the TUI (⚡ 自主).
     """
-    from slife.a2a.identity import HEARTBEAT, AgentMessage
+    from slife.a2a.identity import HEARTBEAT, AgentMessage, Channel
 
     try:
         interval = float(getattr(service.config, "heartbeat_interval", HEARTBEAT_INTERVAL))
@@ -117,6 +117,7 @@ async def heartbeat_loop(service: "AgentService") -> None:
                     content=HEARTBEAT_PROMPT,
                     handler=_SilentHandler(),
                     on_reply=service.surface_autonomous_reply,
+                    channel=Channel.heartbeat(),
                 )
             )
             logger.info("heartbeat_posted")

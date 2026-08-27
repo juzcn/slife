@@ -222,7 +222,7 @@ async def _fire(service, task: dict) -> None:
     dispatches; this only prompts it and holds the pending-fire guard so the
     30s poll does not re-fire while the agent is mid-turn.
     """
-    from slife.a2a.identity import SCHEDULE, AgentMessage
+    from slife.a2a.identity import SYSTEM, AgentMessage, Channel
     from slife.agent.heartbeat import _SilentHandler
 
     name = task.get("name", "")
@@ -233,10 +233,11 @@ async def _fire(service, task: dict) -> None:
         logger.warning("schedule_fire_no_inbox task=%s", name)
         return
     await inbox.post(AgentMessage(
-        source=SCHEDULE,
+        source=SYSTEM,
         content=trigger_text(name, task.get("description", "")),
         handler=_SilentHandler(),
         on_reply=_surface_reply(service),
+        channel=Channel.system(),
     ))
     logger.info("schedule_fired task=%s", name)
 

@@ -306,6 +306,7 @@ class SessionStore:
         who_helped: str = "",
         what_model: str = "",
         channel: str = "",
+        channel_data: str = "",
         created_at: str | None = None,
         completed_at: str | None = None,
     ) -> int:
@@ -325,6 +326,13 @@ class SessionStore:
         ``prompt_tokens`` is the LAST LLM call's prompt_tokens — the exact
         context size at turn end, which restore uses to prime the footer /
         _sys_note with the real exit-time occupancy instead of an estimate.
+
+        ``channel`` is the identity string; ``channel_data`` is the JSON
+        payload for the channel's own fields (A2A peer name, subagent
+        name/task, …), written to the sibling ``turn_channel`` table under
+        the same lock/commit as the diary row.  An empty payload writes no
+        row (the table is absent only on legacy DBs that predate the
+        schema — see :meth:`get_recent_turns`, which tolerates missing rows).
         """
         now = created_at or _now()
         done = completed_at or _now()
@@ -340,6 +348,13 @@ class SessionStore:
                 (user_message, messages_json, channel, now, done,
                  who_helped, what_model, token_count, prompt_tokens),
             )
+            if channel_data and channel_data != "{}":
+                # Per-channel payload rides a sibling row — CREATE IF NOT
+                # EXISTS covers existing DBs, no ALTER/migration needed.
+                await self._c.execute(
+                    "INSERT INTO turn_channel (turn_id, data) VALUES (?, ?)",
+                    (cursor.lastrowid, channel_data),
+                )
             await self._c.commit()
         rowid = cursor.lastrowid
         assert rowid is not None  # insert just succeeded
@@ -382,7 +397,24 @@ class SessionStore:
                ORDER BY rowid DESC""",
             (after_rowid, limit, offset),
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        rows = [dict(row) for row in await cursor.fetchall()]
+        if rows:
+            # Merge the per-channel payload rows (sibling table, one per
+            # turn).  Missing rows (pre-feature turns / schema-bypass
+            # fixtures) read back as "{}" so callers fall back to the
+            # identity string.  The table itself is created on existing DBs
+            # by setup() → _run_schema (CREATE IF NOT EXISTS).
+            ids = [r["rowid"] for r in rows]
+            placeholders = ",".join("?" * len(ids))
+            cur = await self._c.execute(
+                "SELECT turn_id, data FROM turn_channel "
+                f"WHERE turn_id IN ({placeholders})",
+                ids,
+            )
+            payloads = {r["turn_id"]: r["data"] for r in await cur.fetchall()}
+            for r in rows:
+                r["channel_data"] = payloads.get(r["rowid"], "{}")
+        return rows
 
     # ── Live-context boundary ────────────────────────────────────────
     #

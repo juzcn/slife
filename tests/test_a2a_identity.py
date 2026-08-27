@@ -5,7 +5,13 @@ import pytest; pytestmark = pytest.mark.unit
 
 import pytest
 
-from slife.a2a.identity import AgentName, AgentMessage, HUMAN, WECHAT
+from slife.a2a.identity import (
+    AgentName,
+    AgentMessage,
+    Channel,
+    HUMAN,
+    WECHAT,
+)
 
 
 # ── AgentName ──────────────────────────────────────────────────────────────
@@ -80,6 +86,7 @@ class TestAgentMessage:
         assert msg.metadata == {}
         assert msg.on_reply is None
         assert msg.handler is None
+        assert msg.channel is None
 
     def test_full_creation(self):
         """All fields can be set explicitly."""
@@ -136,3 +143,88 @@ class TestAgentMessage:
         m2 = AgentMessage(source=HUMAN, content="b")
         m1.images.append("img.png")
         assert m2.images == []
+
+
+# ── Channel ──────────────────────────────────────────────────────────────
+
+
+class TestChannel:
+    """Tests for the Channel type — kind + per-channel payload."""
+
+    def test_factories(self):
+        """Each factory produces the right kind."""
+        assert Channel.human().kind == "human"
+        assert Channel.wechat().kind == "wechat"
+        assert Channel.subagent("w1").kind == "subagent"
+        assert Channel.heartbeat().kind == "heartbeat"
+        assert Channel.a2a("Jack").kind == "a2a"
+        assert Channel.system().kind == "system"
+
+    def test_a2a_payload_holds_peer_name(self):
+        """A2A channel carries the peer agent name as payload."""
+        assert Channel.a2a("Jack").data == {"agent_name": "Jack"}
+
+    def test_subagent_payload(self):
+        """Subagent channel carries name/task_id/scheduled."""
+        ch = Channel.subagent("w1", task_id="t9", scheduled=True)
+        assert ch.data == {"name": "w1", "task_id": "t9", "scheduled": True}
+
+    def test_display_prefixes(self):
+        """Prefixes match the settled display labels."""
+        assert Channel.human().display_prefix() == "You> "
+        assert Channel.wechat().display_prefix() == "Wechat> "
+        assert Channel.heartbeat().display_prefix() == "Heartbeat> "
+        assert Channel.a2a("Jack").display_prefix() == "A2A(Jack)"
+        assert Channel.subagent("w1").display_prefix() == "Subagent(w1)> "
+        # No name → fallback label, still renders.
+        assert Channel.subagent("").display_prefix() == "Subagent(subagent)> "
+        # System is filtered from the chat view.
+        assert Channel.system().display_prefix() is None
+
+    def test_to_db_a2a_keeps_peer_as_identity(self):
+        """A2A identity stays the peer name (FTS-searchable), name in data."""
+        assert Channel.a2a("Jack").to_db() == ("Jack", {"agent_name": "Jack"})
+
+    def test_to_db_builtins(self):
+        """Built-in kinds persist as kind + payload."""
+        assert Channel.human().to_db() == ("human", {})
+        ch = Channel.subagent("w1", task_id="t9", scheduled=False)
+        assert ch.to_db() == ("subagent", {"name": "w1", "task_id": "t9", "scheduled": False})
+
+    def test_from_db_round_trip(self):
+        """to_db → from_db round-trips every kind unchanged."""
+        for ch in (Channel.human(), Channel.wechat(),
+                   Channel.heartbeat(), Channel.subagent("w1"),
+                   Channel.a2a("Jack"), Channel.system()):
+            identity, data = ch.to_db()
+            restored = Channel.from_db(identity, data)
+            assert restored == ch
+            assert restored.data == ch.data
+
+    def test_from_db_legacy_peer_name(self):
+        """Unknown identity string → legacy A2A peer (pre-type rows)."""
+        ch = Channel.from_db("Jack", "{}")
+        assert ch.kind == "a2a"
+        assert ch.data == {"agent_name": "Jack"}
+        assert ch.display_prefix() == "A2A(Jack)"
+
+    def test_from_db_legacy_schedule(self):
+        """Legacy 'schedule' channel classifies as an A2A peer."""
+        ch = Channel.from_db("schedule", "{}")
+        assert ch.kind == "a2a"
+        assert ch.data == {"agent_name": "schedule"}
+
+    def test_from_db_empty_identity_is_human(self):
+        """Empty channel string (legacy human rows) → human."""
+        assert Channel.from_db("", "{}") == Channel.human()
+
+    def test_from_db_bad_payload_json(self):
+        """Bad payload JSON degrades to {} — never raises."""
+        ch = Channel.from_db("subagent", "not-json")
+        assert ch.kind == "subagent"
+        assert ch.data == {}
+
+    def test_from_db_merges_legacy_data(self):
+        """Legacy row with an explicit payload merges identity + data."""
+        ch = Channel.from_db("Jack", '{"agent_name": "Jack", "extra": 1}')
+        assert ch.data == {"agent_name": "Jack", "extra": 1}
