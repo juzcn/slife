@@ -13,7 +13,7 @@ pip install mcp-plugin
 uv tool install git+https://github.com/juzcn/slife.git
 ```
 
-Verify: `mcp-plugin list`
+Verify: `mcp-plugin`
 
 ## Config
 
@@ -68,15 +68,25 @@ resolved in order **shell env → credstore → literal**:
 | Command | Description |
 |---------|-------------|
 | `mcp-plugin` | Overview of configured servers |
-| `mcp-plugin list` | All servers + their tools |
-| `mcp-plugin list <server>` | Tools of one server |
 | `mcp-plugin set <server>` | Interactive add/configure a server |
 | `mcp-plugin remove <server>` | Remove a server from config (takes effect at next server start) |
-| `mcp-plugin test` | Test every server |
-| `mcp-plugin test <server>` | Test one server |
+| `mcp-plugin test [--port N]` | Start the real plugin server and verify it serves MCP; show the auto-connected servers |
+| `mcp-plugin test mcp <server>` | Bare-connect to one server (no framework) + list its tools |
 
 `set` accepts `--transport stdio|http`, `--command`, `--url`, `--args`,
 `--env` (`KEY=VALUE`), `--enabled/--no-enabled`, and `--auth oauth` prompts.
+
+### Testing
+
+`mcp-plugin test` verifies the plugin itself end-to-end: it spawns the real
+plugin server (`python -m mcp_plugin.server` — the same entry Slife launches),
+reads its `{"port": N}` ready signal, connects over Streamable HTTP, checks the
+management tools are served, and reports the external servers the plugin
+auto-connected. `--port N` pins the server's port instead of auto-assigning.
+
+`mcp-plugin test mcp <server>` is the opposite check — it bare-connects to one
+external MCP server using the raw `mcp` SDK (no plugin framework), confirms it
+speaks MCP, and lists its tools.
 
 ## Plugin contract
 

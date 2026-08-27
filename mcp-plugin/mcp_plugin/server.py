@@ -459,11 +459,20 @@ async def __mcp_call_tool(
 
 def main():
     """Run the mcp-plugin wrapper server on Streamable HTTP transport."""
+    import argparse
+
     from mcp_plugin.server_runtime import run_plugin_server, shutdown_server_logging
+
+    parser = argparse.ArgumentParser(prog="mcp-plugin-server")
+    parser.add_argument(
+        "--port", type=int, default=0,
+        help="Port to serve on (default: auto-assign a free port).",
+    )
+    args = parser.parse_args()
 
     logger.info("mcp_start log=%s pid=%s", _log_path, os.getpid())
     try:
-        run_plugin_server(mcp)
+        run_plugin_server(mcp, port=args.port)
     finally:
         logger.info("mcp_stop log=%s pid=%s", _log_path, os.getpid())
         shutdown_server_logging()
