@@ -44,9 +44,29 @@ if platform.system() == "Linux":
 
 # ── syscall / keyctl constants ──────────────────────────────────────────────
 
-# Architecture-specific syscall numbers for add_key(2) and keyctl(2)
+# Architecture-specific syscall numbers for add_key(2) and keyctl(2).
 # Both are called via syscall() to avoid glibc wrapper availability issues.
-_SYS_add_key: int = {
+# An unsupported machine must NOT default to a foreign table — guessing
+# x86_64 numbers on ARM would address the wrong kernel interfaces.
+# ``_check_viable`` rejects these architectures so the backend stack
+# degrades to the cryptfile fallback instead.
+
+#: ``platform.machine()`` spellings that name the same instruction set on
+#: non-Linux platforms (macOS/Windows report "AMD64"/"arm64").  Same Linux
+#: syscall numbers — a real alias, not a guess.
+_ARCH_ALIASES = {
+    "amd64": "x86_64",
+    "arm64": "aarch64",
+}
+
+
+def _machine_key() -> str:
+    """Canonical architecture name for the current machine ("x86_64", …)."""
+    machine = platform.machine().lower()
+    return _ARCH_ALIASES.get(machine, machine)
+
+
+_SYS_add_key: int | None = {
     "x86_64":  248,
     "aarch64": 217,
     "armv7l":  309,
@@ -54,9 +74,9 @@ _SYS_add_key: int = {
     "ppc64le": 310,
     "s390x":   278,
     "riscv64": 259,
-}.get(platform.machine(), 248)
+}.get(_machine_key())
 
-_SYS_KEYCTL: int = {
+_SYS_KEYCTL: int | None = {
     "x86_64":  250,
     "aarch64": 219,
     "armv7l":  311,
@@ -64,7 +84,7 @@ _SYS_KEYCTL: int = {
     "ppc64le": 300,
     "s390x":   279,
     "riscv64": 261,
-}.get(platform.machine(), 250)
+}.get(_machine_key())
 
 # keyctl(2) operation codes
 KEYCTL_READ       = 11
@@ -91,6 +111,12 @@ def _check_viable() -> str | None:
         return "KeyutilsBackend requires Linux"
     if is_wsl():
         return "WSL detected — prefer keyring-wincred"
+    if _SYS_add_key is None or _SYS_KEYCTL is None:
+        return (
+            f"Unsupported CPU architecture {platform.machine()!r} — no "
+            "keyutils syscall table for this machine; use the cryptfile "
+            "backend instead"
+        )
     assert _libc is not None  # guaranteed by platform check above
     # Probe: can we access the persistent keyring?
     result = _libc.syscall(_SYS_KEYCTL, KEYCTL_READ,

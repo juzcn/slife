@@ -60,6 +60,24 @@ class TestCheckViable:
         assert err is not None
         assert "unavailable" in err
 
+    def test_unsupported_arch_returns_error(self, monkeypatch):
+        """Unknown CPU architecture → error message (no x86_64 guess).
+
+        Guessing a foreign syscall table would address the wrong kernel
+        interfaces on ARM — reject instead so the stack degrades to the
+        cryptfile backend.
+        """
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        monkeypatch.setattr(
+            "credstore._keyutils_backend.is_wsl", lambda: False
+        )
+        monkeypatch.setattr("credstore._keyutils_backend._SYS_add_key", None)
+        monkeypatch.setattr("credstore._keyutils_backend._SYS_KEYCTL", None)
+        from credstore._keyutils_backend import _check_viable
+        err = _check_viable()
+        assert err is not None
+        assert "architecture" in err
+
     def test_viable(self, monkeypatch):
         """Everything OK → None."""
         monkeypatch.setattr("platform.system", lambda: "Linux")
@@ -97,6 +115,18 @@ class TestKeyutilsBackendPriority:
         )
         from credstore._keyutils_backend import KeyutilsBackend
         with pytest.raises(RuntimeError):
+            _ = KeyutilsBackend.priority
+
+    def test_unsupported_arch_priority_raises(self, monkeypatch):
+        """Unknown CPU architecture → backend skipped (cryptfile fallback)."""
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        monkeypatch.setattr(
+            "credstore._keyutils_backend.is_wsl", lambda: False
+        )
+        monkeypatch.setattr("credstore._keyutils_backend._SYS_add_key", None)
+        monkeypatch.setattr("credstore._keyutils_backend._SYS_KEYCTL", None)
+        from credstore._keyutils_backend import KeyutilsBackend
+        with pytest.raises(RuntimeError, match="architecture"):
             _ = KeyutilsBackend.priority
 
 
