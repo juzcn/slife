@@ -10,7 +10,7 @@ from textual.content import Content
 from textual.events import Key
 from textual.widgets import Static
 
-from slife.agent.message_history import INFO_PREFIX, trim_note
+from slife.agent.message_history import INFO_PREFIX, trim_note, unwrap_info_envelope
 from slife.agent.llm_client import TokenUsage
 from slife.ui.i18n import t
 
@@ -178,6 +178,12 @@ class UserMessage(Static):
         prefix: str = "> ",
         timestamp=None,
     ):
+        # The INFO marker envelope is machine-facing — the LLM tells an
+        # injected annotation apart from user text by its prefix — so the
+        # TUI shows the payload alone: `[INFO: {"turn_id": N, …}]` renders
+        # as `{"turn_id": N, …}`.  Live messages carry no envelope, so they
+        # pass through unchanged.
+        display = unwrap_info_envelope(text)
         # Build as single string then style only the timestamp + prefix
         # portions.  Avoids Content concatenation quirks that can insert
         # newlines.
@@ -185,23 +191,22 @@ class UserMessage(Static):
         time_str = f"[{ts}] " if ts else ""
         prefix_len = len(prefix)
         content = Content.from_text(
-            f"{time_str}{prefix}{text}", markup=False,
+            f"{time_str}{prefix}{display}", markup=False,
         )
         if ts:
             content = content.stylize("dim #6e7681", start=0, end=len(time_str))
         content = content.stylize(
             "bold #d97706", start=len(time_str), end=len(time_str) + prefix_len
         )
-        # A restored turn's footnote (`[INFO: {"turn_id": …, …}]`) renders
-        # dim/italic — the same style as thinking text — inline, right after
-        # the user's words, so it reads as machine metadata, not part of the
-        # message.
+        # The unwrapped footnote keeps the machine-metadata style
+        # (dim/italic, the same as thinking) inline, right after the user's
+        # words, so it still reads as a footnote, not part of the message.
         footnote = text.rfind(INFO_PREFIX)
         if footnote != -1:
             content = content.stylize(
                 "dim italic",
                 start=len(time_str) + len(prefix) + footnote,
-                end=len(time_str) + len(prefix) + len(text),
+                end=len(time_str) + len(prefix) + len(display),
             )
         super().__init__(content)
         self.add_class("user-message")
@@ -412,10 +417,11 @@ class AssistantMessage(Static):
             content = content + Content.from_markup("[dim]…[/dim]")
 
         # Runtime trim note — dim italic metadata after the response,
-        # styled like the turn footnote on user messages.
+        # styled like the turn footnote on user messages.  The envelope is
+        # machine-facing; the human sees the payload alone.
         if self._trim_marker:
             content = content + Content.from_text(
-                f" {self._trim_marker}", markup=False,
+                f" {unwrap_info_envelope(self._trim_marker)}", markup=False,
             ).stylize("dim italic")
 
         # Token usage footer

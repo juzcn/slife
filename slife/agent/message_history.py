@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 # ``trim_note``).  The restore turn header is the only annotation
 # concatenated into the restored user-message text (see
 # ``slife.ui.restore._turn_header``) so the LLM can tell which turn (rowid)
-# a restored message belongs to and when it happened.  Deliberately NOT
-# excluded from the TUI — the human reads it too.
+# a restored message belongs to and when it happened.  The envelope is
+# machine-facing; the TUI renders the payload alone (see
+# ``unwrap_info_envelope``).
 # Heartbeat is NOT an annotation: `[Heartbeat]` is a stored turn identity
 # (old diary rows start with it), so it stays a distinct sentinel.
 #: Envelope of machine-injected annotations (``[INFO: …]``).  Shared by the
@@ -85,6 +86,29 @@ def _trim_note_in(content: str) -> int | None:
         return None
     payload = content[start + len(INFO_PREFIX):].lstrip()
     return start if payload[:1].isdigit() else None
+
+
+def unwrap_info_envelope(text: str) -> str:
+    """Display form of a machine-injected ``[INFO: …]`` annotation.
+
+    The envelope is machine-facing — the LLM reads the full marker to tell
+    an injected annotation apart from user text.  For the human the
+    envelope is noise, so the payload alone is shown: the JSON turn
+    footnote renders as ``{"turn_id": N, …}`` and the prose trim note as
+    ``N oldest turns have been removed from context``.
+
+    Only the *trailing* envelope is unwrapped (``rfind``) — an annotation
+    is always a suffix, and a user message may legitimately contain the
+    literal ``[INFO:`` in prose.  Returns *text* unchanged when no
+    envelope is present.
+    """
+    start = text.rfind(INFO_PREFIX)
+    if start == -1:
+        return text
+    payload = text[start + len(INFO_PREFIX):]
+    if payload.endswith("]"):
+        payload = payload[:-1]
+    return text[:start] + payload
 
 
 class MessageHistory:

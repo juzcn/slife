@@ -35,15 +35,18 @@ class TestUserMessage:
         assert plain.startswith("[") and "> hi" in plain
 
     def test_turn_footnote_styled_dim_italic(self):
-        """A restored turn's `[INFO: {"turn_id": N, …}]` footnote renders
-        dim/italic (the thinking style) inline, right after the user's words
-        — readable, but clearly machine metadata, not part of the message."""
+        """A restored turn's footnote renders the payload alone — the
+        `[INFO: …]` envelope is machine-facing — in dim/italic (the
+        thinking style) inline, right after the user's words: readable,
+        but clearly machine metadata, not part of the message."""
         from slife.ui.chat import UserMessage
         text = 'switch model [INFO: {"turn_id": 30, "begin": "2026-08-18 17:24", "end": "17:25"}]'
+        payload = '{"turn_id": 30, "begin": "2026-08-18 17:24", "end": "17:25"}'
         rendered = UserMessage(text, prefix="> ").render()
-        # Text is intact; the footnote sits right after the user's words.
-        assert rendered.plain == "> " + text
-        foot = rendered.plain.index("[INFO: ")
+        # Envelope stripped from the display; the payload sits right after
+        # the user's words.
+        assert rendered.plain == "> switch model " + payload
+        foot = rendered.plain.index('{"turn_id":')
         covering = [s for s in rendered.spans if s.start <= foot < s.end]
         assert covering, "footnote carries no style span"
         assert covering[0].style == "dim italic"
@@ -304,7 +307,8 @@ class TestAssistantMessage:
         assert "Thinking" in text
 
     def test_trim_marker_rendered_after_text(self):
-        """The runtime trim note renders dim/italic after the reply."""
+        """The runtime trim note renders dim/italic after the reply, with
+        the machine-facing `[INFO: …]` envelope unwrapped for display."""
         msg = self._make_msg()
         msg._buffer = "The answer"
         msg._trim_marker = "[INFO: 3 oldest turns have been removed from context]"
@@ -312,7 +316,7 @@ class TestAssistantMessage:
         msg._refresh_display()
         content = msg.update.call_args[0][0]
         assert content.plain.endswith(
-            "The answer [INFO: 3 oldest turns have been removed from context]"
+            "The answer 3 oldest turns have been removed from context"
         )
 
     def test_trim_marker_set_keeps_buffer(self):

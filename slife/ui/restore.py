@@ -58,8 +58,10 @@ def estimate_turn_tokens(turn: dict) -> int:
 # lives in ``history.turn_header`` so the save path annotates
 # completed live turns with the same format.  The current in-flight turn
 # gets nothing (it is the one that IS now), and the human reads the
-# footnote in the TUI.  Heartbeat turns are excluded: their user message
-# is a synthetic `[Heartbeat]` trigger, not a real query.
+# footnote's payload alone in the TUI — the ``[INFO: …]`` envelope is
+# machine-facing and unwrapped by ``UserMessage`` at render time.
+# Heartbeat turns are excluded: their user message is a synthetic
+# `[Heartbeat]` trigger, not a real query.
 
 
 # ── Prefix mapping ────────────────────────────────────────────────────
