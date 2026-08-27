@@ -19,10 +19,13 @@ Verify: `mcp-plugin list`
 
 Server definitions live in `mcp-plugin.json5`, located by precedence:
 
-1. `mcp-plugin --config <path> …` (CLI flag)
-2. `MCP_PLUGIN_FILE=<path>` (env var — Slife exports this to the same directory
+1. `MCP_PLUGIN_FILE=<path>` (env var — Slife exports this to the same directory
    as `slife.json5` when it launches the plugin)
+2. `./mcp-plugin.json5` (dev — when the current directory is the Slife source
+   root, i.e. its `pyproject.toml` has `project.name == "slife"`)
 3. `~/.mcp-plugin/mcp-plugin.json5` (default, standalone use)
+
+This is the same resolution credstore uses for its `credentials.crypt`.
 
 Keys in `env` and `auth.client_id`/`client_secret` support these references,
 resolved in order **shell env → credstore → literal**:

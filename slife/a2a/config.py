@@ -1,6 +1,7 @@
 """A2A configuration — parsed from the ``a2a`` section of slife.json5.
 
-Follows the same pattern as ``MCPConfig`` (slife/config.py:92-152).
+Follows the same pattern as mcp_plugin.config (the mcp-plugin config that
+now owns the ``mcp`` section).
 """
 
 from __future__ import annotations

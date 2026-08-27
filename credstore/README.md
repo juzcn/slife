@@ -26,7 +26,7 @@ No configuration needed. Run `credstore set-password` to enable encrypted backup
 credstore set-password    # creates ~/.credstore/credentials.crypt
 ```
 
-Path overridable via `CREDSTORE_FILE` env var or `credstore.json5`.
+Path overridable via the `CREDSTORE_FILE` env var.
 
 ### Commands
 
@@ -152,16 +152,12 @@ Callers of `get_credential()` and `resolve_uri()` must `del` the returned value 
 
 ## Configuration
 
-Optional `credstore.json5` (searched at `./credstore.json5` then `~/.credstore/config.json5`):
+The encrypted credential file's path is resolved by precedence:
 
-```json5
-{
-  // Override default cryptfile path
-  cryptfile_path: "/custom/path/credentials.crypt",
-}
-```
-
-Priority: `CREDSTORE_FILE` env var → `credstore.json5` → `~/.credstore/credentials.crypt` (or `./credentials.crypt` in Slife dev mode).
+1. `CREDSTORE_FILE=<path>` (env var)
+2. `./credentials.crypt` (dev — when the current directory is the Slife source
+   root, i.e. its `pyproject.toml` has `project.name == "slife"`)
+3. `~/.credstore/credentials.crypt` (default, standalone use)
 
 ## Architecture
 

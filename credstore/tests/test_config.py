@@ -1,4 +1,4 @@
-"""Tests for credstore._config — config file loading and path resolution."""
+"""Tests for credstore._config — cryptfile path resolution."""
 
 import importlib
 import os
@@ -9,7 +9,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from credstore._config import get_cryptfile_path, load_config
+from credstore._config import get_cryptfile_path
 
 # _config.py conditionally defines is_slife_dev; Pylance can't resolve the
 # symbol across the try/except.  Use getattr so it works at runtime and
@@ -18,63 +18,6 @@ is_slife_dev = getattr(
     __import__("credstore._config", fromlist=["is_slife_dev"]),
     "is_slife_dev",
 )
-
-
-class TestLoadConfig:
-    """Tests for load_config."""
-
-    def test_no_config_files_returns_empty(self):
-        with patch("credstore._config._DEFAULT_CONFIG_FILES", []):
-            result = load_config()
-            assert result == {}
-
-    def test_file_not_found_returns_empty(self):
-        with patch.object(Path, "exists", return_value=False):
-            result = load_config()
-            assert result == {}
-
-    def test_loads_valid_json5(self, tmp_path):
-        config_file = tmp_path / "credstore.json5"
-        config_file.write_text('{"cryptfile_path": "/tmp/secrets.crypt"}', encoding="utf-8")
-
-        with patch("credstore._config._DEFAULT_CONFIG_FILES", [config_file]):
-            result = load_config()
-            assert result["cryptfile_path"] == "/tmp/secrets.crypt"
-
-    def test_parse_error_returns_empty(self, tmp_path):
-        config_file = tmp_path / "credstore.json5"
-        config_file.write_text("{invalid json5", encoding="utf-8")
-
-        with patch("credstore._config._DEFAULT_CONFIG_FILES", [config_file]):
-            result = load_config()
-            assert result == {}
-
-    def test_non_dict_json_returns_empty(self, tmp_path):
-        config_file = tmp_path / "credstore.json5"
-        config_file.write_text('"just a string"', encoding="utf-8")
-
-        with patch("credstore._config._DEFAULT_CONFIG_FILES", [config_file]):
-            result = load_config()
-            assert result == {}
-
-    def test_first_found_file_wins(self, tmp_path):
-        first = tmp_path / "credstore.json5"
-        first.write_text('{"key": "first"}', encoding="utf-8")
-        second = tmp_path / "second.json5"
-        second.write_text('{"key": "second"}', encoding="utf-8")
-
-        with patch("credstore._config._DEFAULT_CONFIG_FILES", [first, second]):
-            result = load_config()
-            assert result["key"] == "first"
-
-    def test_falls_through_to_second_file(self, tmp_path):
-        first = tmp_path / "missing.json5"
-        second = tmp_path / "present.json5"
-        second.write_text('{"key": "second"}', encoding="utf-8")
-
-        with patch("credstore._config._DEFAULT_CONFIG_FILES", [first, second]):
-            result = load_config()
-            assert result["key"] == "second"
 
 
 class TestIsSlifeDev:
@@ -117,39 +60,19 @@ class TestGetCryptfilePath:
             result = get_cryptfile_path()
             assert result.replace("\\", "/") == "/env/path/credentials.crypt"
 
-    def test_config_file_second_priority(self):
-        cfg_path = os.path.join("cfg", "path", "secrets.crypt")
-        with patch.dict(os.environ, {}, clear=True):
-            with patch("credstore._config.load_config", return_value={"cryptfile_path": cfg_path}):
-                result = get_cryptfile_path()
-                assert "cfg" in result
-                assert result.endswith("secrets.crypt")
-
-    def test_config_path_expands_user(self, monkeypatch):
-        monkeypatch.delenv("CREDSTORE_FILE", raising=False)
-        # expanduser resolves "~" via USERPROFILE on Windows, HOME on POSIX.
-        monkeypatch.setenv("USERPROFILE", "C:\\Users\\testuser")
-        monkeypatch.setenv("HOME", "/home/testuser")
-        with patch("credstore._config.load_config", return_value={"cryptfile_path": "~/my/secrets.crypt"}):
-            result = get_cryptfile_path()
-            assert "~" not in result
-            assert "testuser" in result
-
     def test_dev_default(self, monkeypatch):
         monkeypatch.delenv("CREDSTORE_FILE", raising=False)
-        with patch("credstore._config.load_config", return_value={}):
-            with patch("credstore._config.is_slife_dev", return_value=True):
-                result = get_cryptfile_path()
-                assert result.endswith("credentials.crypt")
+        with patch("credstore._config.is_slife_dev", return_value=True):
+            result = get_cryptfile_path()
+            assert result.endswith("credentials.crypt")
 
     def test_production_default(self, monkeypatch):
         monkeypatch.delenv("CREDSTORE_FILE", raising=False)
         monkeypatch.setenv("USERPROFILE", "C:\\Users\\testuser")
-        with patch("credstore._config.load_config", return_value={}):
-            with patch("credstore._config.is_slife_dev", return_value=False):
-                result = get_cryptfile_path()
-                assert ".credstore" in result
-                assert result.endswith("credentials.crypt")
+        with patch("credstore._config.is_slife_dev", return_value=False):
+            result = get_cryptfile_path()
+            assert ".credstore" in result
+            assert result.endswith("credentials.crypt")
 
 
 # ── Fallback is_slife_dev (standalone credstore) ──────────────────────────

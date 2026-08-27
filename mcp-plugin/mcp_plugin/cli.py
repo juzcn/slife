@@ -1,6 +1,6 @@
 """mcp-plugin CLI — configure and test external MCP servers.
 
-Commands (global flag ``--config PATH`` overrides the config location):
+Commands:
   ``mcp-plugin``             overview of configured servers
   ``mcp-plugin list [s]``    list servers and each server's tools
   ``mcp-plugin set <s>``     interactively add/configure a server
@@ -32,11 +32,6 @@ def build_parser() -> argparse.ArgumentParser:
         prog="mcp-plugin",
         description="Standalone MCP gateway — manage external MCP servers.",
     )
-    parser.add_argument(
-        "--config",
-        help="Path to mcp-plugin.json5 (default: $MCP_PLUGIN_FILE, "
-        "then ~/.mcp-plugin/mcp-plugin.json5).",
-    )
     sub = parser.add_subparsers(dest="command")
 
     p_list = sub.add_parser("list", help="List servers and their tools.")
@@ -56,7 +51,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    plugin_config.set_config_path(args.config)
 
     command = args.command
     if command is None:

@@ -27,7 +27,7 @@ uv tool install git+https://gitee.com/juzcn/slife.git       # 国内
 credstore set-password    # 创建 ~/.credstore/credentials.crypt
 ```
 
-路径可通过 `CREDSTORE_FILE` 环境变量或 `credstore.json5` 覆盖。
+路径可通过 `CREDSTORE_FILE` 环境变量覆盖。
 
 ### 命令
 
@@ -153,16 +153,11 @@ credstore.get_backend_name()   # → "system keyring + cryptfile (dual-write)"
 
 ## 配置
 
-可选 `credstore.json5`（按 `./credstore.json5` → `~/.credstore/config.json5` 顺序查找）：
+加密凭据文件路径按以下优先级解析：
 
-```json5
-{
-  // 覆盖默认 cryptfile 路径
-  cryptfile_path: "/custom/path/credentials.crypt",
-}
-```
-
-优先级：`CREDSTORE_FILE` 环境变量 → `credstore.json5` → `~/.credstore/credentials.crypt`（或在 Slife 开发模式下为 `./credentials.crypt`）。
+1. `CREDSTORE_FILE=<path>`（环境变量）
+2. `./credentials.crypt`（开发模式——当前目录为 Slife 源码根目录，即其 `pyproject.toml` 中 `project.name == "slife"`）
+3. `~/.credstore/credentials.crypt`（独立使用时的默认值）
 
 ## 架构
 
