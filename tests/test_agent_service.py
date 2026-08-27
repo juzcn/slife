@@ -1853,7 +1853,7 @@ class TestSpawnPluginCancellationCleanup:
         client.list_tools.side_effect = asyncio.CancelledError()
 
         with patch(
-            "slife.mcp.process.MCPWrapperProcess", return_value=fake_process,
+            "mcp_plugin.process.MCPWrapperProcess", return_value=fake_process,
         ):
             with pytest.raises(asyncio.CancelledError):
                 await service._spawn_plugin_generic(
@@ -1891,7 +1891,7 @@ class TestSpawnPluginListToolsRetry:
         fake_process.create_client.side_effect = [first_client, second_client]
 
         with patch(
-            "slife.mcp.process.MCPWrapperProcess", return_value=fake_process,
+            "mcp_plugin.process.MCPWrapperProcess", return_value=fake_process,
         ):
             started = await service._spawn_plugin_generic(
                 "memdb", "slife.plugins.memdb.server",
@@ -1916,7 +1916,7 @@ class TestSpawnPluginListToolsRetry:
         fake_process.create_client.side_effect = [first_client, second_client]
 
         with patch(
-            "slife.mcp.process.MCPWrapperProcess", return_value=fake_process,
+            "mcp_plugin.process.MCPWrapperProcess", return_value=fake_process,
         ):
             with pytest.raises(TimeoutError):
                 await service._spawn_plugin_generic(

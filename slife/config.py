@@ -15,13 +15,11 @@ Model refs: "provider-id/model-name"
 import json5
 import logging
 import os
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
 from slife.env import resolve_env
-from slife.tools._config_io import with_fetched_at
 from slife.a2a.config import A2AConfig
 
 logger = logging.getLogger(__name__)
@@ -147,24 +145,6 @@ def _parse_section(raw: dict, key: str, expected_type, default):
     return value if isinstance(value, expected_type) else default
 
 
-def _mcp_servers_section(raw: dict) -> dict:
-    """Return (creating if needed) the ``mcp.servers`` dict.
-
-    A malformed config with a non-dict ``mcp`` section (e.g. ``mcp: "foo"``)
-    must not crash the config tools with an AttributeError — reset it to a
-    fresh dict so the write path repairs the structure.
-    """
-    mcp = raw.get("mcp")
-    if not isinstance(mcp, dict):
-        mcp = {}
-        raw["mcp"] = mcp
-    servers = mcp.get("servers")
-    if not isinstance(servers, dict):
-        servers = {}
-        mcp["servers"] = servers
-    return servers
-
-
 @dataclass
 class ModelConfig:
     """Configuration for a single LLM model."""
@@ -253,84 +233,6 @@ class ModelConfig:
 
 
 @dataclass
-class MCPConfig:
-    """Configuration for the MCP wrapper and external MCP servers.
-
-    Always enabled -- slife-mcp is a built-in plugin.
-    """
-
-    wrapper_command: str = sys.executable
-    wrapper_args: list = None  # type: ignore[assignment]
-    servers: dict[str, dict] = None  # type: ignore[assignment]
-
-    def __post_init__(self):
-        if self.wrapper_args is None:
-            self.wrapper_args = ["-m", "slife.plugins.mcp.server"]
-        if self.servers is None:
-            self.servers = {}
-
-    @classmethod
-    def from_dict(cls, data: Any) -> "MCPConfig":
-        """Parse mcp config section from JSON5 config."""
-        if not isinstance(data, dict):
-            return cls()
-
-        servers = data.get("servers", {})
-        if not isinstance(servers, dict):
-            servers = {}
-
-        # Resolve ${VAR} and keyring: references in each server's env + auth.
-        # Resolution order: shell env > credstore > config literal
-        for sname, scfg in servers.items():
-            if isinstance(scfg, dict) and "env" in scfg:
-                senv = scfg["env"]
-                if isinstance(senv, dict):
-                    for k, v in senv.items():
-                        raw_val = str(v)
-                        resolved = _resolve_secret(raw_val)
-                        senv[k] = resolved
-                        if raw_val != resolved:
-                            logger.info(
-                                "mcp_env_resolved server=%s key=%s", sname, k,
-                            )
-                        elif raw_val.startswith("${") and raw_val.endswith("}"):
-                            logger.warning(
-                                "mcp_env_unresolved server=%s key=%s var=%s — "
-                                "not in shell or credstore",
-                                sname, k, raw_val[2:-1],
-                            )
-            # Resolve ${VAR} in auth section (client_id, client_secret)
-            if isinstance(scfg, dict) and "auth" in scfg:
-                auth = scfg["auth"]
-                if isinstance(auth, dict):
-                    for auth_key in ("client_id", "client_secret"):
-                        if auth_key in auth:
-                            raw_val = str(auth[auth_key])
-                            resolved = _resolve_secret(raw_val)
-                            auth[auth_key] = resolved
-                            if raw_val != resolved:
-                                logger.info(
-                                    "mcp_auth_resolved server=%s key=%s", sname, auth_key,
-                                )
-                            elif raw_val.startswith("${") and raw_val.endswith("}"):
-                                logger.warning(
-                                    "mcp_auth_unresolved server=%s key=%s var=%s — "
-                                    "not in shell or credstore",
-                                    sname, auth_key, raw_val[2:-1],
-                                )
-
-        wrapper = data.get("wrapper", {})
-        if not isinstance(wrapper, dict):
-            wrapper = {}
-
-        return cls(
-            wrapper_command=wrapper.get("command", sys.executable),
-            wrapper_args=wrapper.get("args", ["-m", "slife.plugins.mcp.server"]),
-            servers=servers,
-        )
-
-
-@dataclass
 class MemdbConfig:
     """Configuration for the slife-memdb service.
 
@@ -398,19 +300,15 @@ class Config:
     agent_name: str = "slife"
     tool_timeout: float = 60.0  # seconds, 0 to disable — applies to ALL tools
     heartbeat_interval: int = 60  # seconds — autonomous idle heartbeat period
-    mcp_config: MCPConfig | None = None
     memdb_config: MemdbConfig | None = None
     wechat_config: WechatConfig | None = None
     a2a_config: A2AConfig | None = None
     subagent_config: dict | None = None
-    # Sections previously only read ad-hoc by tools:
-    rest_apis: dict = field(default_factory=dict)
+    plugins_external: list[dict] = field(default_factory=list)
     cli_tools: dict = field(default_factory=dict)
     _path: Path | None = None
 
     def __post_init__(self):
-        if self.mcp_config is None:
-            self.mcp_config = MCPConfig()
         if self.memdb_config is None:
             self.memdb_config = MemdbConfig()
         if self.wechat_config is None:
@@ -443,12 +341,11 @@ class Config:
             "tool_result_ceiling": self.tool_result_ceiling,
             "memory_tool_result_chars": self.memory_tool_result_chars,
             "agent_name": self.agent_name,
-            "mcp_config": asdict(self.mcp_config) if self.mcp_config else None,
             "memdb_config": asdict(self.memdb_config) if self.memdb_config else None,
             "wechat_config": asdict(self.wechat_config) if self.wechat_config else None,
             "a2a_config": asdict(self.a2a_config) if self.a2a_config else None,
             "subagent_config": self.subagent_config,
-            "rest_apis": self.rest_apis,
+            "plugins_external": self.plugins_external,
             "cli_tools": self.cli_tools,
         }
 
@@ -459,10 +356,6 @@ class Config:
         Used by subagents to deserialize ``SLIFE_CONFIG``.
         """
         models = [ModelConfig(**m) for m in data.get("models", [])]
-
-        mcp_cfg = data.get("mcp_config")
-        if isinstance(mcp_cfg, dict):
-            mcp_cfg = MCPConfig(**mcp_cfg)
 
         mem_cfg = data.get("memdb_config")
         if isinstance(mem_cfg, dict):
@@ -488,12 +381,11 @@ class Config:
             context_ceiling=data.get("context_ceiling", 0.8),
             tool_result_ceiling=data.get("tool_result_ceiling", 0.2),
             agent_name=data.get("agent_name", "slife"),
-            mcp_config=mcp_cfg,
             memdb_config=mem_cfg,
             wechat_config=wc_cfg,
             a2a_config=a2a_cfg,
             subagent_config=data.get("subagent_config"),
-            rest_apis=data.get("rest_apis", {}),
+            plugins_external=data.get("plugins_external", []),
             cli_tools=data.get("cli_tools", {}),
         )
 
@@ -513,96 +405,7 @@ class Config:
         from slife.tools._config_io import write_config
         write_config(self._path, raw)
 
-    def save_mcp_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None, description: str = "", source: dict | None = None, url: str = "", headers: dict[str, str] | None = None, auth: dict | None = None, enabled: bool = True) -> None:
-        """Persist an MCP server to the config file.
-
-        When *name* already exists in the config, the existing entry is
-        used as a base and only explicitly-provided fields are overridden
-        (merge semantics).  When *name* is new, a fresh entry is created.
-        """
-        raw = self._read_config("save_mcp", name)
-        if raw is None:
-            return
-
-        servers = _mcp_servers_section(raw)
-        existing = servers.get(name, {})
-
-        # ── Merge into existing entry (update) or build fresh (add) ──
-        server_entry: dict = dict(existing) if existing else {}
-        if command:
-            server_entry["command"] = command
-        elif not existing:
-            server_entry["command"] = command
-        if args:
-            server_entry["args"] = args
-        elif not existing:
-            server_entry["args"] = args
-        if url:
-            server_entry["url"] = url
-        if headers:
-            server_entry["headers"] = headers
-        if description:
-            server_entry["description"] = description
-        if env:
-            server_entry["env"] = dict(env)
-        if auth:
-            server_entry["auth"] = dict(auth)
-        if not enabled:
-            server_entry["enabled"] = False
-        elif enabled and "enabled" in server_entry:
-            # Re-enabling: remove the enabled: false flag
-            server_entry.pop("enabled", None)
-        source = with_fetched_at(source)
-        if source:
-            server_entry["source"] = source
-        servers[name] = server_entry
-
-        self._write_config(raw)
-        assert self.mcp_config is not None  # guaranteed by __post_init__
-        self.mcp_config.servers[name] = server_entry
-        logger.info("config_save_mcp server=%s", name)
-
-    def remove_mcp_server(self, name: str) -> None:
-        """Remove an MCP server from the config file."""
-        raw = self._read_config("remove_mcp", name)
-        if raw is None:
-            return
-
-        servers = _mcp_servers_section(raw)
-        if name in servers:
-            del servers[name]
-            self._write_config(raw)
-            assert self.mcp_config is not None  # guaranteed by __post_init__
-            self.mcp_config.servers.pop(name, None)
-            logger.info("config_remove_mcp server=%s", name)
-
-    def set_server_enabled(self, name: str, enabled: bool) -> None:
-        """Persist the enabled flag for an MCP server to the config file.
-
-        enabled=True removes the flag (enabled is the default); enabled=False
-        writes ``"enabled": false``.
-        """
-        raw = self._read_config("set_enabled", name)
-        if raw is None:
-            return
-
-        servers = _mcp_servers_section(raw)
-        if name in servers:
-            if enabled:
-                servers[name].pop("enabled", None)
-            else:
-                servers[name]["enabled"] = False
-            self._write_config(raw)
-            # Update in-memory state
-            assert self.mcp_config is not None  # guaranteed by __post_init__
-            if name in self.mcp_config.servers:
-                if enabled:
-                    self.mcp_config.servers[name].pop("enabled", None)
-                else:
-                    self.mcp_config.servers[name]["enabled"] = False
-            logger.info("config_set_enabled server=%s enabled=%s", name, enabled)
-
-    # ── REST API + CLI tool persistence ──────────────────────────────
+    # ── CLI tool persistence ─────────────────────────────────────────
 
     def _typed_section(self, raw: dict, key: str) -> dict:
         section = raw.setdefault(key, {})
@@ -610,66 +413,6 @@ class Config:
             section = {}
             raw[key] = section
         return section
-
-    def save_rest_api(
-        self,
-        name: str,
-        spec_url: str = "",
-        base_url: str = "",
-        api_key: str = "",
-        description: str = "",
-        source: dict | None = None,
-    ) -> bool:
-        """Persist a REST API entry. Returns True if persisted to file.
-
-        Always updates the in-memory ``rest_apis`` snapshot even when no
-        config path is set (tests, headless consumers).
-        """
-        entry: dict = {
-            "spec_url": spec_url,
-            "base_url": base_url,
-            "api_key": api_key,
-            "description": description,
-        }
-        if source:
-            entry["source"] = source
-        existing = self.rest_apis.get(name, {})
-        if isinstance(existing, dict) and "enabled" in existing:
-            entry["enabled"] = existing["enabled"]
-        # Always update in-memory snapshot
-        self.rest_apis[name] = entry
-
-        if not self._path:
-            logger.debug("config_no_path — rest_api %s in memory only", name)
-            return False
-        raw = self._read_config("save_rest_api", name)
-        if raw is None:
-            return False
-        section = self._typed_section(raw, "rest_apis")
-        section[name] = dict(entry)
-        self._write_config(raw)
-        logger.info("config_save_rest_api name=%s", name)
-        return True
-
-    def remove_rest_api(self, name: str) -> bool:
-        """Remove a REST API entry. Returns True if removed from file.
-
-        Always updates the in-memory ``rest_apis`` snapshot.
-        """
-        # Always update in-memory snapshot
-        existed = self.rest_apis.pop(name, None) is not None
-
-        if not self._path:
-            logger.debug("config_no_path — rest_api %s removed from memory only", name)
-            return existed
-        raw = self._read_config("remove_rest_api", name)
-        if raw is None:
-            return existed
-        section = self._typed_section(raw, "rest_apis")
-        section.pop(name, None)
-        self._write_config(raw)
-        logger.info("config_remove_rest_api name=%s existed=%s", name, existed)
-        return existed
 
     def save_cli_tool(
         self,
@@ -1010,16 +753,6 @@ class Config:
         # it's left as-is for a downstream resolver, like every other section.
         tools = _resolve_env_lenient(_parse_section(raw, "tools", list, []))
 
-        # MCP (built-in plugin, always enabled)
-        # Resolve ${VAR} in MCP server env vars
-        mcp_raw = _resolve_env_lenient(raw.get("mcp", {}))
-        mcp_config = MCPConfig.from_dict(mcp_raw)
-        logger.debug(
-            "mcp_config wrapper=%s servers=%d",
-            mcp_config.wrapper_command,
-            len(mcp_config.servers),
-        )
-
         # Memory -- built-in plugin, always enabled.  DB files live in
         # ~/.slife/<agent_name>.db — no configuration needed.
         memdb_config = MemdbConfig.from_dict(raw.get("memdb", {}))
@@ -1054,9 +787,16 @@ class Config:
             subagent_config["task_timeout"],
         )
 
-        # REST API tools + CLI tools — managed sections, no config classes
-        rest_apis = _parse_section(raw, "rest_apis", dict, {})
+        # CLI tools — managed section, no config class
         cli_tools = _parse_section(raw, "cli_tools", dict, {})
+
+        # External plugins — registered via config (e.g. [{name, module}]).
+        # These merge into the built-in source-scan result at discovery time,
+        # and route through the same generic plugin lifecycle.
+        plugins_section = _parse_section(raw, "plugins", dict, {})
+        plugins_external = plugins_section.get("external")
+        if not isinstance(plugins_external, list):
+            plugins_external = []
 
         # Active model — a stale ref (provider renamed/removed) must not
         # crash startup; fall back to the first model.  Switching models in
@@ -1082,13 +822,16 @@ class Config:
             tool_result_ceiling=tool_result_ceiling,
             memory_tool_result_chars=memory_tool_result_chars,
             agent_name=agent_name,
-            mcp_config=mcp_config,
             memdb_config=memdb_config,
             wechat_config=wechat_config,
             a2a_config=a2a_config,
             subagent_config=subagent_config,
-            rest_apis=rest_apis,
+            plugins_external=plugins_external,
             cli_tools=cli_tools,
         )
         config._path = path
+        # Point the mcp-plugin (external MCP plugin) at a config file living
+        # next to slife.json5 — the plugin resolves it via $MCP_PLUGIN_FILE.
+        if path is not None:
+            os.environ["MCP_PLUGIN_FILE"] = str(path.parent / "mcp-plugin.json5")
         return config

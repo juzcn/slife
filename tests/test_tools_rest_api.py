@@ -1,69 +1,70 @@
-"""Tests for slife.tools.rest_api — RestApiSetTool, RestApiRemoveTool, RestApiListTool, RestApiSetEnabledTool."""
+"""Tests for slife.tools.rest_api — RestApiSetTool et al.
+
+REST API definitions now live in mcp-plugin.json5 (owned by mcp-plugin) as
+ordinary ``npx anyapi-mcp-server`` server entries tagged
+``source.type == "rest_api"``.  These tests exercise the tools against a
+throwaway config file located via ``$MCP_PLUGIN_FILE``.
+"""
 
 import pytest; pytestmark = pytest.mark.unit
 
-
 import json5
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
+from mcp_plugin import config as mcp_plugin_config
 from slife.tools.rest_api import (
     RestApiSetTool,
     RestApiRemoveTool,
     RestApiListTool,
     RestApiSetEnabledTool,
     get_rest_apis_summary,
-    _rest_api_section,
 )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def temp_config():
-    """Create a temporary JSON5 config file for testing."""
-    with tempfile.NamedTemporaryFile(suffix=".json5", mode="w", delete=False) as f:
-        f.write("{}")
-        path = Path(f.name)
+@pytest.fixture(autouse=True)
+def mcp_config_path(tmp_path, monkeypatch):
+    """Point mcp-plugin.config at a throwaway mcp-plugin.json5 per test."""
+    path = tmp_path / "mcp-plugin.json5"
+    monkeypatch.setenv("MCP_PLUGIN_FILE", str(path))
+    # Pin the resolver BEFORE the test runs — a stale _CURRENT_PATH from a
+    # previous test would otherwise make reads/writes land in the wrong file.
+    mcp_plugin_config.set_config_path(str(path))
     yield path
-    # Cleanup
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
 
 
-def _write_config(path: Path, data: dict) -> None:
-    path.write_text(json5.dumps(data, indent=2, trailing_commas=False, ensure_ascii=False), encoding="utf-8")
+def _entry(spec_url: str, base_url: str, *, api_key: str = "", description: str = "",
+           enabled: bool = True) -> dict:
+    args = [
+        "-y", "anyapi-mcp-server",
+        "--name", "x", "--spec", spec_url, "--base-url", base_url,
+    ]
+    if api_key:
+        args += ["--header", f"Authorization: Bearer ${{{api_key}}}"]
+    entry: dict = {"command": "npx", "args": args, "source": {"type": "rest_api"}}
+    if description:
+        entry["description"] = description
+    if not enabled:
+        entry["enabled"] = False
+    return entry
 
 
-# ── _rest_api_section ─────────────────────────────────────────────────────
+def _write_config(path: Path, servers: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json5.dumps({"servers": servers}, indent=2, trailing_commas=False, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
-class TestRestApiSection:
-    """Tests for _rest_api_section helper."""
-
-    def test_creates_section_when_missing(self):
-        raw = {}
-        section = _rest_api_section(raw)
-        assert "rest_apis" in raw
-        assert section == {}
-
-    def test_returns_existing_section(self):
-        raw = {"rest_apis": {"existing": {}}}
-        section = _rest_api_section(raw)
-        assert section == {"existing": {}}
-
-    def test_replaces_non_dict(self):
-        """When rest_apis is not a dict, replaces it with empty dict."""
-        raw = {"rest_apis": "not a dict"}
-        section = _rest_api_section(raw)
-        assert section == {}
-        assert raw["rest_apis"] == {}
+def _entries_from_file(path: Path) -> dict:
+    raw = json5.loads(path.read_text(encoding="utf-8"))
+    return raw.get("servers", {})
 
 
 # ── get_rest_apis_summary ─────────────────────────────────────────────────
@@ -72,79 +73,54 @@ class TestRestApiSection:
 class TestGetRestApisSummary:
     """Tests for get_rest_apis_summary()."""
 
-    def test_no_rest_apis(self, temp_config):
-        result = get_rest_apis_summary(temp_config)
+    def test_no_rest_apis(self, mcp_config_path):
+        _write_config(mcp_config_path, {})
+        result = get_rest_apis_summary(mcp_config_path)
         assert "No REST APIs registered" in result
 
-    def test_single_api(self, temp_config):
-        _write_config(temp_config, {
-            "rest_apis": {
-                "github": {
-                    "spec_url": "https://api.github.com/openapi.json",
-                    "base_url": "https://api.github.com",
-                    "description": "GitHub API",
-                }
-            }
+    def test_single_api(self, mcp_config_path):
+        _write_config(mcp_config_path, {
+            "github": _entry("https://api.github.com/openapi.json",
+                             "https://api.github.com", description="GitHub API"),
         })
-        result = get_rest_apis_summary(temp_config)
+        result = get_rest_apis_summary(mcp_config_path)
         assert "github" in result
         assert "GitHub API" in result
         assert "api.github.com" in result
 
-    def test_multiple_apis(self, temp_config):
-        _write_config(temp_config, {
-            "rest_apis": {
-                "github": {
-                    "spec_url": "https://api.github.com/openapi.json",
-                    "base_url": "https://api.github.com",
-                    "description": "GitHub API",
-                },
-                "slack": {
-                    "spec_url": "https://api.slack.com/openapi.json",
-                    "base_url": "https://slack.com/api",
-                    "description": "Slack API",
-                    "api_key": "SLACK_TOKEN",
-                },
-            }
+    def test_multiple_apis(self, mcp_config_path):
+        _write_config(mcp_config_path, {
+            "github": _entry("https://api.github.com/openapi.json",
+                             "https://api.github.com", description="GitHub API"),
+            "slack": _entry("https://api.slack.com/openapi.json",
+                            "https://slack.com/api", description="Slack API",
+                            api_key="SLACK_TOKEN"),
         })
-        result = get_rest_apis_summary(temp_config)
+        result = get_rest_apis_summary(mcp_config_path)
         assert "github" in result
         assert "slack" in result
         assert "SLACK_TOKEN" in result  # api_key shown as ${...}
 
-    def test_rest_apis_not_a_dict(self, temp_config):
-        _write_config(temp_config, {"rest_apis": "not a dict"})
-        result = get_rest_apis_summary(temp_config)
+    def test_rest_apis_not_a_dict(self, mcp_config_path):
+        _write_config(mcp_config_path, {"bad": "not a dict"})
+        result = get_rest_apis_summary(mcp_config_path)
         assert "No REST APIs registered" in result
 
-    def test_rest_apis_empty_dict(self, temp_config):
-        _write_config(temp_config, {"rest_apis": {}})
-        result = get_rest_apis_summary(temp_config)
-        assert "No REST APIs registered" in result
-
-    def test_skips_non_dict_entries(self, temp_config):
-        _write_config(temp_config, {
-            "rest_apis": {
-                "valid": {"spec_url": "s", "base_url": "b", "description": "d"},
-                "invalid": "not a dict",
-            }
+    def test_skips_non_dict_entries(self, mcp_config_path):
+        _write_config(mcp_config_path, {
+            "valid": _entry("https://spec.example.com/x", "https://example.com", description="d"),
+            "invalid": "not a dict",
         })
-        result = get_rest_apis_summary(temp_config)
+        result = get_rest_apis_summary(mcp_config_path)
         assert "valid" in result
         assert "invalid" not in result
 
-    def test_with_source_info(self, temp_config):
-        _write_config(temp_config, {
-            "rest_apis": {
-                "myservice": {
-                    "spec_url": "https://example.com/openapi.json",
-                    "base_url": "https://example.com",
-                    "description": "My Service",
-                    "source": {"type": "github", "url": "https://github.com/x/y"},
-                }
-            }
-        })
-        result = get_rest_apis_summary(temp_config)
+    def test_with_source_info(self, mcp_config_path):
+        entry = _entry("https://example.com/openapi.json", "https://example.com",
+                       description="My Service")
+        entry["source"] = {"type": "github", "url": "https://github.com/x/y"}
+        _write_config(mcp_config_path, {"myservice": entry})
+        result = get_rest_apis_summary(mcp_config_path)
         assert "myservice" in result
         assert "github" in result
 
@@ -164,9 +140,9 @@ class TestRestApiSetTool:
         assert "base_url" in tool.parameters["required"]
 
     @pytest.mark.asyncio
-    async def test_add_new_api(self, temp_config):
-        """Adding a new REST API writes to config and returns success."""
-        tool = RestApiSetTool(config_path=temp_config)
+    async def test_add_new_api(self, mcp_config_path):
+        """Adding a new REST API writes an anyapi server entry and succeeds."""
+        tool = RestApiSetTool(config_path=mcp_config_path)
         result = await tool.execute(
             name="github",
             spec_url="https://api.github.com/openapi.json",
@@ -176,15 +152,17 @@ class TestRestApiSetTool:
         assert "[OK]" in result
         assert "github" in result
 
-        # Verify config was written
-        raw = json5.loads(temp_config.read_text(encoding="utf-8"))
-        assert "github" in raw["rest_apis"]
-        assert raw["rest_apis"]["github"]["spec_url"] == "https://api.github.com/openapi.json"
+        servers = _entries_from_file(mcp_config_path)
+        assert "github" in servers
+        entry = servers["github"]
+        assert entry["command"] == "npx"
+        assert "anyapi-mcp-server" in entry["args"]
+        assert entry["source"]["type"] == "rest_api"
 
     @pytest.mark.asyncio
-    async def test_add_with_api_key(self, temp_config):
-        """Adding with api_key stores the credential reference."""
-        tool = RestApiSetTool(config_path=temp_config)
+    async def test_add_with_api_key(self, mcp_config_path):
+        """Adding with api_key stores the credential reference, not the secret."""
+        tool = RestApiSetTool(config_path=mcp_config_path)
         result = await tool.execute(
             name="protected",
             spec_url="https://example.com/openapi.json",
@@ -193,18 +171,18 @@ class TestRestApiSetTool:
         )
         assert "[OK]" in result
 
-        raw = json5.loads(temp_config.read_text(encoding="utf-8"))
-        assert raw["rest_apis"]["protected"]["api_key"] == "MY_TOKEN"
+        servers = _entries_from_file(mcp_config_path)
+        header = servers["protected"]["args"][-1]
+        assert header == "Authorization: Bearer ${MY_TOKEN}"
+        assert "MY_TOKEN" not in json5.dumps(servers["protected"]).replace("MY_TOKEN}", "")
 
     @pytest.mark.asyncio
-    async def test_add_duplicate(self, temp_config):
+    async def test_add_duplicate(self, mcp_config_path):
         """Adding an already-registered API updates it (upsert)."""
-        _write_config(temp_config, {
-            "rest_apis": {
-                "github": {"spec_url": "https://api.github.com/spec", "base_url": "https://api.github.com"},
-            }
+        _write_config(mcp_config_path, {
+            "github": _entry("https://api.github.com/spec", "https://api.github.com"),
         })
-        tool = RestApiSetTool(config_path=temp_config)
+        tool = RestApiSetTool(config_path=mcp_config_path)
         result = await tool.execute(
             name="github",
             spec_url="https://api.github.com/spec",
@@ -213,9 +191,9 @@ class TestRestApiSetTool:
         assert "Updated" in result
 
     @pytest.mark.asyncio
-    async def test_add_rejects_non_http_scheme(self, temp_config):
+    async def test_add_rejects_non_http_scheme(self, mcp_config_path):
         """REVIEW S2: file:// (and other non-http) specs are rejected."""
-        tool = RestApiSetTool(config_path=temp_config)
+        tool = RestApiSetTool(config_path=mcp_config_path)
         with pytest.raises(ValueError, match="URL with a host"):
             await tool.execute(
                 name="evil",
@@ -224,9 +202,9 @@ class TestRestApiSetTool:
             )
 
     @pytest.mark.asyncio
-    async def test_add_rejects_url_without_host(self, temp_config):
+    async def test_add_rejects_url_without_host(self, mcp_config_path):
         """REVIEW S2: a bare string with no http(s) host is rejected."""
-        tool = RestApiSetTool(config_path=temp_config)
+        tool = RestApiSetTool(config_path=mcp_config_path)
         with pytest.raises(ValueError, match="URL with a host"):
             await tool.execute(
                 name="bare",
@@ -235,7 +213,7 @@ class TestRestApiSetTool:
             )
 
     @pytest.mark.asyncio
-    async def test_add_with_mcp_client(self, temp_config):
+    async def test_add_with_mcp_client(self, mcp_config_path):
         """When MCP client is available, it's called after config save."""
         mock_client = MagicMock()
         mock_client.call_tool = MagicMock()
@@ -243,7 +221,7 @@ class TestRestApiSetTool:
 
         try:
             from slife.tools.context import ToolContext
-            tool = RestApiSetTool(config_path=temp_config)
+            tool = RestApiSetTool(config_path=mcp_config_path)
             tool._ctx = ToolContext(mcp_client=mock_client, config=None)
             result = await tool.execute(
                 name="github",
@@ -263,34 +241,30 @@ class TestRestApiRemoveTool:
     """Tests for RestApiRemoveTool."""
 
     @pytest.mark.asyncio
-    async def test_remove_existing(self, temp_config):
-        """Removing a registered API updates config."""
-        _write_config(temp_config, {
-            "rest_apis": {
-                "github": {"spec_url": "u", "base_url": "b"},
-            }
+    async def test_remove_existing(self, mcp_config_path):
+        """Removing a registered API removes its server entry."""
+        _write_config(mcp_config_path, {
+            "github": _entry("https://u.example.com/spec", "https://u.example.com"),
         })
-        tool = RestApiRemoveTool(config_path=temp_config)
+        tool = RestApiRemoveTool(config_path=mcp_config_path)
         result = await tool.execute(name="github")
         assert "[OK]" in result
 
-        raw = json5.loads(temp_config.read_text(encoding="utf-8"))
-        assert "github" not in raw["rest_apis"]
+        servers = _entries_from_file(mcp_config_path)
+        assert "github" not in servers
 
     @pytest.mark.asyncio
-    async def test_remove_not_registered(self, temp_config):
+    async def test_remove_not_registered(self, mcp_config_path):
         """Removing a non-existent API returns error."""
-        tool = RestApiRemoveTool(config_path=temp_config)
+        tool = RestApiRemoveTool(config_path=mcp_config_path)
         result = await tool.execute(name="nonexistent")
         assert "not registered" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_remove_with_mcp_client(self, temp_config):
+    async def test_remove_with_mcp_client(self, mcp_config_path):
         """When MCP client is available, calls mcp_remove."""
-        _write_config(temp_config, {
-            "rest_apis": {
-                "github": {"spec_url": "u", "base_url": "b"},
-            }
+        _write_config(mcp_config_path, {
+            "github": _entry("https://u.example.com/spec", "https://u.example.com"),
         })
         mock_client = MagicMock()
         mock_client.call_tool = MagicMock()
@@ -298,7 +272,7 @@ class TestRestApiRemoveTool:
 
         try:
             from slife.tools.context import ToolContext
-            tool = RestApiRemoveTool(config_path=temp_config)
+            tool = RestApiRemoveTool(config_path=mcp_config_path)
             tool._ctx = ToolContext(mcp_client=mock_client, config=None)
             result = await tool.execute(name="github")
             assert "[OK]" in result
@@ -314,31 +288,26 @@ class TestRestApiListTool:
     """Tests for RestApiListTool."""
 
     @pytest.mark.asyncio
-    async def test_list_empty(self, temp_config):
+    async def test_list_empty(self, mcp_config_path):
         """Listing with no APIs returns appropriate message."""
-        tool = RestApiListTool(config_path=temp_config)
+        tool = RestApiListTool(config_path=mcp_config_path)
         result = await tool.execute()
         assert "No REST APIs registered" in result
 
     @pytest.mark.asyncio
-    async def test_list_with_apis(self, temp_config):
+    async def test_list_with_apis(self, mcp_config_path):
         """Lists all registered APIs with details."""
-        _write_config(temp_config, {
-            "rest_apis": {
-                "github": {
-                    "spec_url": "https://api.github.com/openapi.json",
-                    "base_url": "https://api.github.com",
-                    "description": "GitHub API",
-                },
-            }
+        _write_config(mcp_config_path, {
+            "github": _entry("https://api.github.com/openapi.json",
+                             "https://api.github.com", description="GitHub API"),
         })
-        tool = RestApiListTool(config_path=temp_config)
+        tool = RestApiListTool(config_path=mcp_config_path)
         result = await tool.execute()
         assert "github" in result
         assert "GitHub API" in result
 
 
-# ── RestApiSetEnabledTool ────────────────────────────────────────────────────────────
+# ── RestApiSetEnabledTool ────────────────────────────────────────────────
 
 
 class TestRestApiSetEnabledTool:
@@ -353,63 +322,46 @@ class TestRestApiSetEnabledTool:
         assert "enabled" in tool.parameters["required"]
 
     @pytest.mark.asyncio
-    async def test_not_found(self, temp_config):
+    async def test_not_found(self, mcp_config_path):
         """Setting a non-existent API returns error."""
-        tool = RestApiSetEnabledTool(config_path=temp_config)
+        tool = RestApiSetEnabledTool(config_path=mcp_config_path)
         result = await tool.execute(name="nonexistent", enabled=True)
         assert "not found" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_malformed_entry(self, temp_config):
-        """Setting a malformed entry returns error."""
-        _write_config(temp_config, {
-            "rest_apis": {
-                "bad": "not a dict",
-            }
+    async def test_enable_api(self, mcp_config_path):
+        """Enabling an API clears the disabled flag."""
+        _write_config(mcp_config_path, {
+            "github": _entry("https://u.example.com/spec", "https://u.example.com",
+                             enabled=False),
         })
-        tool = RestApiSetEnabledTool(config_path=temp_config)
-        result = await tool.execute(name="bad", enabled=True)
-        assert "malformed" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_enable_api(self, temp_config):
-        """Enabling an API sets enabled=True in config."""
-        _write_config(temp_config, {
-            "rest_apis": {
-                "github": {"spec_url": "u", "base_url": "b"},
-            }
-        })
-        tool = RestApiSetEnabledTool(config_path=temp_config)
+        tool = RestApiSetEnabledTool(config_path=mcp_config_path)
         result = await tool.execute(name="github", enabled=True)
         assert "[OK]" in result
         assert "enabled" in result.lower()
 
-        raw = json5.loads(temp_config.read_text(encoding="utf-8"))
-        assert raw["rest_apis"]["github"]["enabled"] is True
+        servers = _entries_from_file(mcp_config_path)
+        assert "enabled" not in servers["github"]  # enabled is the default
 
     @pytest.mark.asyncio
-    async def test_disable_api(self, temp_config):
-        """Disabling an API sets enabled=False in config."""
-        _write_config(temp_config, {
-            "rest_apis": {
-                "github": {"spec_url": "u", "base_url": "b", "enabled": True},
-            }
+    async def test_disable_api(self, mcp_config_path):
+        """Disabling an API sets enabled=false in config."""
+        _write_config(mcp_config_path, {
+            "github": _entry("https://u.example.com/spec", "https://u.example.com"),
         })
-        tool = RestApiSetEnabledTool(config_path=temp_config)
+        tool = RestApiSetEnabledTool(config_path=mcp_config_path)
         result = await tool.execute(name="github", enabled=False)
         assert "[OK]" in result
         assert "disabled" in result.lower()
 
-        raw = json5.loads(temp_config.read_text(encoding="utf-8"))
-        assert raw["rest_apis"]["github"]["enabled"] is False
+        servers = _entries_from_file(mcp_config_path)
+        assert servers["github"]["enabled"] is False
 
     @pytest.mark.asyncio
-    async def test_set_with_mcp_client(self, temp_config):
+    async def test_set_with_mcp_client(self, mcp_config_path):
         """When MCP client is available, calls mcp_set."""
-        _write_config(temp_config, {
-            "rest_apis": {
-                "github": {"spec_url": "u", "base_url": "b"},
-            }
+        _write_config(mcp_config_path, {
+            "github": _entry("https://u.example.com/spec", "https://u.example.com"),
         })
         mock_client = MagicMock()
         mock_client.call_tool = MagicMock()
@@ -417,7 +369,7 @@ class TestRestApiSetEnabledTool:
 
         try:
             from slife.tools.context import ToolContext
-            tool = RestApiSetEnabledTool(config_path=temp_config)
+            tool = RestApiSetEnabledTool(config_path=mcp_config_path)
             tool._ctx = ToolContext(mcp_client=mock_client, config=None)
             result = await tool.execute(name="github", enabled=True)
             assert "[OK]" in result

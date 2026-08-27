@@ -75,7 +75,7 @@ Non-MCP endpoints on an MCP plugin
   :func:`run_plugin_server(mcp, sockets=[sock])`.
 
 Minimal example
-  See :file:`slife/plugins/mcp/server.py` (the simplest built-in plugin)::
+  See :file:`slife/plugins/memdb/server.py` (a built-in plugin)::
 
       # server.py
       from fastmcp import FastMCP

@@ -16,18 +16,18 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from slife.mcp.client import MCPClient
+    from mcp_plugin.client import MCPClient
 
-from slife.logfmt import get_session_id, sanitize_secrets
-from slife.platform import terminate_process
+from mcp_plugin.logging import get_session_id, sanitize_secrets
+from mcp_plugin.platform import terminate_process
 
 logger = logging.getLogger(__name__)
 
 # Default wrapper module path
-_DEFAULT_SERVER_MODULE = "slife.plugins.mcp.server"
+_DEFAULT_SERVER_MODULE = "mcp_plugin.server"
 
 # stderr markers emitted by the OAuth device flow inside the gateway child
-# (slife.mcp.oauth) — the gateway's stdout is closed after the port signal,
+# (mcp_plugin.oauth) — the gateway's stdout is closed after the port signal,
 # so user instructions come over stderr.
 _OAUTH_MARKER = "[OAUTH]"
 _OAUTH_ACTION_MARKER = "[OAUTH-ACTION]"
@@ -35,8 +35,8 @@ _OAUTH_ACTION_MARKER = "[OAUTH-ACTION]"
 
 def _notify_user(title: str, message: str) -> None:
     """Best-effort desktop notification via the project's daemon convention."""
-    from slife.platform import desktop_notify
-    from slife.threads import run_daemon
+    from mcp_plugin.platform import desktop_notify
+    from mcp_plugin.threads import run_daemon
     run_daemon(desktop_notify, title, message, name="desktop-notify")
 
 
@@ -44,7 +44,7 @@ class MCPWrapperProcess:
     """Manages the plugin child process lifecycle.
 
     Usage:
-        wrapper = MCPWrapperProcess(args=["-m", "slife.plugins.mcp.server"])
+        wrapper = MCPWrapperProcess(args=["-m", "mcp_plugin.server"])
         await wrapper.start()
         client = await wrapper.create_client()
         # ... use client ...
@@ -61,7 +61,7 @@ class MCPWrapperProcess:
         Args:
             command: Executable to run (default: sys.executable).
             args: Command args. If None, defaults to
-                  ``['-m', 'slife.plugins.mcp.server']``.
+                  ``['-m', 'mcp_plugin.server']``.
         """
         self._command = command if command is not None else sys.executable
         if args is not None:
@@ -205,7 +205,7 @@ class MCPWrapperProcess:
         Disconnecting the client does NOT stop the process — call stop()
         separately to terminate the plugin.
         """
-        from slife.mcp.client import MCPClient
+        from mcp_plugin.client import MCPClient
 
         if not self._process or not self._running:
             raise RuntimeError(
@@ -305,9 +305,10 @@ class MCPWrapperProcess:
         WARNING and muted during the TUI).
         """
         import re
-        from slife.logfmt import read_stderr_lines
+        from mcp_plugin.logging import read_stderr_lines
 
-        # Matches slife logger output: "HH:MM:SS [LEVEL] logger_name ..."
+        # Matches the child's structured logger output:
+        # "HH:MM:SS [LEVEL] logger_name ..."
         _SUBPROCESS_LOG = re.compile(
             r'^\d{2}:\d{2}:\d{2}\s+\[(?:DEBUG|INFO ?|WARN(?:ING)?|ERROR)\]\s+\S+'
         )
@@ -330,14 +331,14 @@ class MCPWrapperProcess:
                 continue
 
             # OAuth device-flow instructions from the gateway child
-            # (slife.mcp.oauth).  The full box is relayed at WARNING for the
+            # (mcp_plugin.oauth).  The full box is relayed at WARNING for the
             # session log (the console is capped below WARNING, so it never
             # prints to the terminal — in the TUI that box was garbled
             # anyway); the compact URL+code line fires the desktop
             # notification, which is the user-facing channel.
             if stripped.startswith(_OAUTH_ACTION_MARKER):
                 body = stripped[len(_OAUTH_ACTION_MARKER):].strip()
-                from slife.ui.i18n import t
+                from mcp_plugin.i18n import t
                 _notify_user(t("notify_oauth_title"), body)
                 continue
             if stripped.startswith(_OAUTH_MARKER):
@@ -361,5 +362,5 @@ class MCPWrapperProcess:
             # Only relay lines that don't match any filter.
             # All at DEBUG — never reaches the terminal.  The wrapper's stderr
             # can echo config/env values, so mask secrets before logging
-            # (this relay bypasses logfmt.drain_stderr's sanitizer).
+            # (this relay bypasses mcp_plugin.logging.drain_stderr's sanitizer).
             logger.debug("[wrapper] %s", sanitize_secrets(text))

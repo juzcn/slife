@@ -7,7 +7,7 @@ transparently before each connection.
 
 Usage::
 
-    from slife.mcp.oauth import get_valid_token, run_device_code_flow, OAuthTokens
+    from mcp_plugin.oauth import get_valid_token, run_device_code_flow, OAuthTokens
 
     tokens = get_valid_token("my-server")
     if tokens is None:
@@ -25,6 +25,8 @@ import time as _time
 from dataclasses import dataclass
 
 import httpx
+
+from credstore import delete_credential, get_credential, set_credential
 
 logger = logging.getLogger(__name__)
 
@@ -101,12 +103,6 @@ def get_valid_token(server_name: str) -> OAuthTokens | None:
     ``expires_at`` is at least 60 seconds in the future.  If the
     stored data is malformed, it is treated as expired (returns None).
     """
-    try:
-        from credstore import get_credential
-    except ImportError:
-        logger.warning("oauth_credstore_unavailable server=%s", server_name)
-        return None
-
     raw = get_credential(_credstore_key(server_name))
     if not raw:
         return None
@@ -130,12 +126,6 @@ def get_valid_token(server_name: str) -> OAuthTokens | None:
 
 def _store_tokens(server_name: str, tokens: OAuthTokens) -> None:
     """Persist tokens to the OS keyring via credstore."""
-    try:
-        from credstore import set_credential
-    except ImportError:
-        logger.warning("oauth_credstore_unavailable server=%s", server_name)
-        return
-
     raw = _serialize(tokens)
     set_credential(_credstore_key(server_name), raw)
     logger.info("oauth_tokens_stored server=%s", server_name)
@@ -143,10 +133,6 @@ def _store_tokens(server_name: str, tokens: OAuthTokens) -> None:
 
 def _delete_tokens(server_name: str) -> None:
     """Remove stored tokens (best-effort)."""
-    try:
-        from credstore import delete_credential
-    except ImportError:
-        return
     try:
         delete_credential(_credstore_key(server_name))
     except Exception:
@@ -373,11 +359,6 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
         )
 
     # Even if expired, try to load the stored data for the refresh_token
-    try:
-        from credstore import get_credential
-    except ImportError:
-        raise RuntimeError("credstore unavailable — cannot refresh OAuth token.")
-
     raw = get_credential(_credstore_key(server_name))
     if not raw:
         raise RuntimeError(

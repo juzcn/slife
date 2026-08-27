@@ -1,18 +1,15 @@
-"""MCP client integration for Slife.
+"""slife-side MCP adapters.
 
-Provides:
-  - MCPClient: connects to the slife-mcp wrapper via stdio
-  - MCPProxyTool: adapts MCP tools to slife's Tool interface
-  - MCPWrapperProcess: manages the wrapper child process lifecycle
+The MCP machinery (client, oauth, wrapper process, connection pool) moved
+to the standalone ``mcp-plugin`` package; what remains in slife is the
+boundary adapter that wraps MCP tools as slife native ``Tool`` objects
+(:mod:`slife.mcp.tool_adapter`).
 """
 
-from slife.mcp.client import MCPClient
-from slife.mcp.tool_adapter import MCPProxyTool, create_proxy_tools
-from slife.mcp.process import MCPWrapperProcess
+from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute, create_proxy_tools
 
 __all__ = [
-    "MCPClient",
     "MCPProxyTool",
+    "ProxyRoute",
     "create_proxy_tools",
-    "MCPWrapperProcess",
 ]

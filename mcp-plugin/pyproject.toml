@@ -1,0 +1,71 @@
+[project]
+name = "mcp-plugin"
+version = "0.1.0"
+description = "Standalone MCP gateway — persistent connections to external MCP servers"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "juzcn", email = "zhangjun@cueb.edu.cn" },
+]
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "mcp>=1.0.0",
+    "httpx>=0.27.0",
+    "json5>=0.15.0",
+    "credstore",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Terminals",
+]
+
+[project.urls]
+Homepage = "https://github.com/juzcn/slife"
+Repository = "https://github.com/juzcn/slife"
+Documentation = "https://github.com/juzcn/slife/blob/main/mcp-plugin/README.md"
+
+[project.scripts]
+mcp-plugin = "mcp_plugin.__main__:main"
+
+[build-system]
+# See root pyproject.toml: pin below hatchling 1.27 so the wheel stays at
+# Metadata-Version 2.3 (twine/pkginfo caps there; 2.4/2.5 fail to upload).
+requires = ["hatchling>=1.24,<1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mcp_plugin"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+]
+
+[tool.pytest.ini_options]
+minversion = "9.1"
+testpaths = ["tests"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "module"
+addopts = "-q --tb=short --strict-markers --strict-config --no-header --color=yes --durations=10"
+filterwarnings = [
+    # CPython 3.13+: unittest.mock._AsyncMockMixin creates unawaited
+    # coroutine wrappers at class-definition time.  GC may collect them
+    # during any module import — not just unittest.mock.
+    # https://github.com/python/cpython/issues/126242
+    "ignore:coroutine .* was never awaited:RuntimeWarning",
+]
+markers = [
+    "asyncio: mark a test as an async test (auto-applied by asyncio_mode=strict)",
+    "slow: mark a test as slow (excluded from quick test runs with -m 'not slow')",
+    "unit: fast, isolated unit test (no I/O, no subprocess)",
+    "integration: test requiring I/O, network, or subprocess",
+    "e2e: end-to-end test requiring a full running system",
+]

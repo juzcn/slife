@@ -278,15 +278,6 @@ class AgentService:
         self._startup_plugins: set[str] = set()
         self._startup_settled = asyncio.Event()
 
-        # ── MCP tool-registry self-healing ───────────────────────────
-        # The wrapper reconnects dead external servers on its own; these
-        # reconcile the agent's tool registry with the wrapper's live state
-        # so a slow cold start (or a mid-session reconnect) can't leave the
-        # external servers' tools permanently missing.
-        self._mcp_syncing: set[str] = set()          # per-server in-flight guard
-        self._mcp_reconcile_task: asyncio.Task | None = None  # periodic poll
-        self._mcp_reconcile_inflight = False         # notification coalescing
-
         # ── Unified message queue (always active) ──────────────────
         # Every input — human keyboard, A2A MQTT, WeChat — flows
         # through the same inbox queue.  Processed serially.
@@ -334,6 +325,9 @@ class AgentService:
             "sharefile": PluginLifecycle("sharefile", self),
             "a2a": PluginLifecycle("a2a", self),
         }
+        # MCP enrichment guard: coalesces per-server tool discovery between
+        # startup glue and mcp_set callbacks.
+        self._mcp_syncing: set[str] = set()
 
         # A2A integration state
         self._subagent_manager = None
@@ -503,15 +497,19 @@ class AgentService:
         self, name: str, module: str,
     ) -> PluginStartStatus:
         """Dispatch the plugin spawn without the startup-tracking wrapper."""
-        # ── MCP wrapper: custom command, auto-connects external servers ──
+        # ── MCP: fully generic spawn + watchdog; enrichment glue on top —
+        # exposes the wrapper client and registers {server}__{tool} proxies.
+        # (mcp-plugin is an external standalone distribution that self-hosts
+        # its config; this branch is the only mcp-aware integration in the
+        # harness, and it runs through the SAME generic lifecycle as every
+        # other plugin.)
         if name == "mcp":
-            if not self.config.mcp_config:
-                logger.debug("mcp_skipped reason=no_config")
-                return PluginStartStatus.SKIPPED
-            await self.start_mcp()
+            started = await self._spawn_plugin_generic(name, module)
+            if started:
+                await self._wire_mcp_glue()
+                self._start_generic_watchdog(name, module)
             return (
-                PluginStartStatus.STARTED
-                if self.mcp_enabled else PluginStartStatus.FAILED
+                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
             )
 
         # ── WeChat: needs poll loop after registration ──────────────────
@@ -584,6 +582,13 @@ class AgentService:
                 # but the harness's ToolContext still points at the dead client —
                 # re-point it or check_sharefile reports the restarted plugin offline.
                 self._tool_ctx.sharefile_client = self._plugins[name].client
+            if name == "mcp":
+                # The wrapper restarted on a NEW port — subagents that share it
+                # still point at the dead one; tell them to reconnect.  Re-arming
+                # the mcp enrichment also re-points the ToolContext and
+                # re-registers the external servers' tools.
+                await self._wire_mcp_glue()
+                await self._notify_subagents_plugin_restart("mcp", self._plugins[name].port)
 
         self._plugins[name].start_watchdog(restart_cb=_restart)
 
@@ -648,7 +653,7 @@ class AgentService:
 
     async def _spawn_plugin_generic(self, name: str, module: str) -> bool:
         """Spawn a plugin child, connect, and register its ``<name>__*`` tools."""
-        from slife.mcp.process import MCPWrapperProcess
+        from mcp_plugin.process import MCPWrapperProcess
 
         logger.info("plugin_spawn name=%s module=%s", name, module)
 
@@ -739,68 +744,104 @@ class AgentService:
                 pass
             raise
 
-    # ── MCP lifecycle ──────────────────────────────────────────────────
+    # ── MCP enrichment adapter ─────────────────────────────────────────
+    # mcp-plugin is an external standalone distribution that self-hosts its
+    # config (mcp-plugin.json5) and self-connects servers on startup.  This
+    # is the ONE bounded, mcp-aware integration left in the harness: expose
+    # the wrapper client to slife tools and register the external servers'
+    # ``{server}__{tool}`` proxies as native tools.  Persistence, auto-connect
+    # and reconciliation happen inside the plugin, not here.  The lifecycle
+    # itself (spawn / connect / watchdog) is the generic one all plugins use.
 
-    async def start_mcp(self) -> None:
-        """Start the MCP wrapper as a child process and register its tools."""
-        mcp_cfg = self.config.mcp_config
-        assert mcp_cfg is not None  # guaranteed by Config.__post_init__
+    async def _wire_mcp_glue(self) -> None:
+        """Wire the mcp enrichment after (re)connect: client + tool proxies.
 
-        logger.info("mcp_init_start")
+        Idempotent — re-arming after a watchdog respawn re-points the tool
+        context and re-registers the external servers' tools.
+        """
+        client = self._plugins["mcp"].client
+        self._tool_ctx.mcp_client = client
+        if client is not None:
+            client.on_notification = self._on_mcp_tools_changed
+        await self._discover_mcp_external_tools()
+
+    async def _on_mcp_tools_changed(self, method: str = "", _params=None) -> None:
+        """A ``notifications/tools/list_changed`` from the wrapper: re-sync.
+
+        Preserves the mid-session reconnect tool-sync (no periodic poll) —
+        the wrapper fires this whenever a server (re)connects; full-diff
+        registration on the agent side keeps it idempotent.
+        """
+        if method and not method.endswith("tools/list_changed"):
+            return
         try:
-            await self._connect_mcp_wrapper()
-            self._wire_mcp_reconcile()
-            await self._register_plugin_tools(
-                "mcp",
-                on_server_added=self._persist_server,
-                on_server_removed=self._unpersist_server,
-                on_server_updated=self._on_server_updated,
-            )
-            # Readiness (MCP plugin contract): the wrapper's initialize handshake
-            # completed; external MCP servers connect in background and are
-            # never part of it.
-            self._plugins["mcp"].mark_initialized()
-            from slife.health import record
-            record(
-                "mcp_wrapper", "ok",
-                key="status", value="connected",
-                hint="MCP wrapper started and management tools registered.",
-            )
+            await self._discover_mcp_external_tools()
+        except Exception:
+            logger.debug("mcp_tools_changed_sync_failed", exc_info=True)
+
+    async def _discover_mcp_external_tools(self) -> None:
+        """Register ``{server}__{tool}`` native proxies for connected servers.
+
+        Reads the configured server list LIVE from the wrapper (``mcp_list``),
+        so neither slife nor subagents need mcp-plugin.json5.
+        """
+        client = self._plugins["mcp"].client
+        if client is None or not client.is_connected:
+            return
+        try:
+            raw = await client.call_tool("mcp_list")
+            servers = json.loads(raw)
         except Exception as e:
-            logger.error("mcp_wrapper_init_failed err=%s", e)
-            from slife.health import record
-            record(
-                "mcp_wrapper", "error",
-                key="status", value="failed",
-                hint=f"MCP wrapper failed to start: {e}. "
-                     "MCP tools (filesystem, search, etc.) are unavailable.",
-            )
-            raise
-        # Fire-and-forget: external MCP servers connect in background
-        # so the UI appears immediately. Tools register as each server
-        # connects — no need to block startup on slow/hung servers.
-        asyncio.create_task(self._auto_connect_mcp_servers())
-        asyncio.create_task(self._auto_connect_rest_apis())
+            logger.debug("mcp_external_discover_failed err=%s", e)
+            return
+        if not isinstance(servers, list):
+            return
+        for server in servers:
+            if not isinstance(server, dict) or server.get("enabled") is False:
+                continue
+            name = server.get("name")
+            if not name:
+                continue
+            try:
+                await self._discover_and_register_external_tools(server_name=name)
+            except Exception:
+                logger.debug("mcp_external_tools_failed server=%s", name, exc_info=True)
 
-        # Watchdog: on MCP wrapper crash, respawn + reconnect external servers
-        async def _restart_mcp():
-            await self._connect_mcp_wrapper()
-            self._wire_mcp_reconcile()
-            await self._register_plugin_tools(
-                "mcp",
-                on_server_added=self._persist_server,
-                on_server_removed=self._unpersist_server,
-                on_server_updated=self._on_server_updated,
-            )
-            asyncio.create_task(self._auto_connect_mcp_servers())
-            asyncio.create_task(self._auto_connect_rest_apis())
-            # The wrapper restarted on a NEW port — subagents that share it
-            # still point at the dead one, so tell them to reconnect.
-            await self._notify_subagents_mcp_restart()
+    async def _register_external_server_tools(self, name: str = "", **kwargs) -> None:
+        """mcp_set / mcp_set_enabled connected a server — register its tools.
 
-        self._plugins["mcp"].start_watchdog(restart_cb=_restart_mcp)
+        (Persistence happens inside mcp-plugin; this only touches the registry.)
+        """
+        if name:
+            await self._discover_and_register_external_tools(server_name=name)
 
-        logger.info("mcp_init_done tools=%d", len(self.tool_registry.list_tools()))
+    async def _unregister_external_server_tools(self, name: str = "", **kwargs) -> None:
+        """mcp_remove / mcp_set_enabled disabled a server — drop its tools."""
+        if not name:
+            return
+        removed = self.tool_registry.unregister_by_prefix(f"{name}__")
+        if removed:
+            logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
+
+    async def _notify_subagents_plugin_restart(self, name: str, port: int) -> None:
+        """Tell every live subagent a plugin restarted on a new port.
+
+        Subagents share the main agent's plugins instead of spawning their
+        own.  When the watchdog respawns a plugin, it lands on a fresh
+        auto-assigned port; workers still holding the old session are dead
+        until they reconnect.  This broadcasts the new port so they rebuild
+        their client (``worker/plugin_restart`` in headless.py).  Best-effort.
+        """
+        if not port:
+            return
+        from slife.subagent.process import get_manager
+        manager = get_manager()
+        if manager is None:
+            return
+        logger.info("plugin_restart_notify_subagents plugin=%s port=%d", name, port)
+        await manager.broadcast(
+            "worker/plugin_restart", {"plugin": name, "port": port},
+        )
 
     # ── HTTP-connect helpers (subagents share the main agent's plugins) ──
 
@@ -816,28 +857,13 @@ class AgentService:
     async def connect_mcp_http(self, port: int) -> None:
         """Connect to an already-running MCP wrapper via Streamable HTTP.
 
-        Used by subagents to share the main agent's plugin servers
-        instead of spawning their own.
-
-        Both main agents and subagents eagerly discover external MCP
-        tools and register them as direct tools (e.g.
-        ``tavily-mcp__tavily_search``).  Subagents use
-        :meth:`_discover_existing_mcp_tools` which only lists tools
-        from already-connected servers — it never spawns new processes.
+        Used by subagents to share the main agent's mcp plugin instead of
+        spawning their own.  Registers the wrapper's management tools (bare
+        names) and the external servers' ``{server}__{tool}`` proxies.
         """
         await self._connect_plugin_http("mcp", port)
-        await self._register_plugin_tools(
-            "mcp",
-            on_server_added=self._persist_server,
-            on_server_removed=self._unpersist_server,
-            on_server_updated=self._on_server_updated,
-        )
-        if not self.is_subagent:
-            self._wire_mcp_reconcile()
-            await self._auto_connect_mcp_servers()
-            await self._auto_connect_rest_apis()
-        else:
-            await self._discover_existing_mcp_tools()
+        await self._register_plugin_tools("mcp")
+        await self._discover_mcp_external_tools()
         logger.info("mcp_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_memdb_http(self, port: int) -> None:
@@ -891,40 +917,7 @@ class AgentService:
         self._tool_ctx.a2a_mcp_client = self._plugins["a2a"].client
         logger.info("a2a_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
-    # ── MCP private helpers ──────────────────────────────────────────
-
-    async def _connect_mcp_wrapper(self) -> None:
-        """Spawn the MCP wrapper as a child process via Streamable HTTP."""
-        from slife.mcp.process import MCPWrapperProcess
-
-        mcp_cfg = self.config.mcp_config
-        assert mcp_cfg is not None
-
-        logger.info("mcp_wrapper_spawn transport=streamable-http")
-        self._mcp_process = MCPWrapperProcess(
-            command=mcp_cfg.wrapper_command,
-            args=mcp_cfg.wrapper_args,
-        )
-        try:
-            await self._mcp_process.start()
-            self._plugins["mcp"].process = self._mcp_process
-            self._plugins["mcp"].port = self._mcp_process.port
-            os.environ["SLIFE_MCP_PORT"] = str(self._plugins["mcp"].port)
-            self._plugins["mcp"].client = await self._mcp_process.create_client()
-        except Exception:
-            # A failed connect must not leave the lifecycle pointing at a
-            # live-but-unconnected child — the mcp watchdog would block on
-            # its wait() forever instead of backing off and retrying
-            self._plugins["mcp"].process = None
-            self._plugins["mcp"].port = 0
-            self._plugins["mcp"].client = None
-            try:
-                await self._mcp_process.stop()
-            except Exception:
-                pass
-            raise
-
-    async def _register_plugin_tools(self, name: str, **kwargs) -> None:
+    async def _register_plugin_tools(self, name: str) -> None:
         """Discover and register a connected plugin's tools as proxy tools.
 
         Filters out internal tools (names starting with ``__``), creates
@@ -936,8 +929,6 @@ class AgentService:
             name: Plugin short name (``"mcp"``, ``"memdb"``, ``"wechat"``,
                 ``"memfiles"``, ``"a2a"`` — internal tools are ``__``-prefixed
                 and filtered; the ``a2a_*`` mesh tools register as proxy tools).
-            **kwargs: Forwarded to :func:`create_proxy_tools` (e.g.
-                ``on_server_added``, ``on_server_removed``).
         """
         client = self._plugins[name].client
         assert client is not None
@@ -955,7 +946,7 @@ class AgentService:
             if not is_internal_tool(t["name"])
         ]
 
-        proxy_tools = create_proxy_tools(self._plugins[name].client, tagged, **kwargs)
+        proxy_tools = create_proxy_tools(self._plugins[name].client, tagged)
         # Record the exact registered names so dead-process cleanup and stop
         # can unregister this plugin's bare-name tools without a prefix.
         self._plugins[name].registered_tools = {t.name for t in proxy_tools}
@@ -967,252 +958,6 @@ class AgentService:
         if name == "mcp":
             self._tool_ctx.mcp_client = self._plugins["mcp"].client
 
-    async def _notify_subagents_mcp_restart(self) -> None:
-        """Tell every live subagent the MCP wrapper restarted on a new port.
-
-        Subagents share the main agent's MCP wrapper instead of spawning
-        their own.  When the watchdog respawns the wrapper (a crash or a
-        kill), it lands on a fresh auto-assigned port; workers still holding
-        the old session are dead until they reconnect.  This broadcasts the
-        new port so they rebuild their client (see ``worker/plugin_restart``
-        in ``headless.py``).  Best-effort — a worker busy mid-task simply
-        processes the notification when its current task finishes.
-        """
-        port = self._plugins["mcp"].port
-        if not port:
-            return
-        from slife.subagent.process import get_manager
-        manager = get_manager()
-        if manager is None:
-            return
-        logger.info("mcp_restart_notify_subagents port=%d", port)
-        await manager.broadcast(
-            "worker/plugin_restart", {"plugin": "mcp", "port": port},
-        )
-
-    async def _auto_connect_mcp_servers(self) -> None:
-        """Auto-connect to pre-configured MCP servers and discover
-        their tools.
-
-        Servers are connected in parallel — each spawns its own
-        subprocess independently, so total time is max(single-server)
-        rather than sum(all-servers).  For 5 servers this cuts
-        startup from ~18 s to ~9 s.
-        """
-        mcp_cfg = self.config.mcp_config
-        assert mcp_cfg is not None
-        assert self._plugins["mcp"].client is not None
-        servers = mcp_cfg.servers
-        if not servers:
-            return
-
-        logger.info("mcp_auto_connect servers=%d", len(servers))
-        mcp_client = self._plugins["mcp"].client  # narrow for closure
-
-        async def _connect_one(name: str, cfg: dict) -> None:
-            try:
-                if cfg.get("enabled") is False:
-                    # Load into pool but don't connect or register tools.
-                    # Server stays in pool (disabled) — no connection made.
-                    # Use mcp_set_enabled(name=..., enabled=true) to enable later.
-                    logger.debug("mcp_server_loading_disabled name=%s", name)
-                    result = await mcp_client.call_tool(
-                        "mcp_set",
-                        {
-                            "name": name,
-                            "command": cfg.get("command", ""),
-                            "args": cfg.get("args", []),
-                            "env": cfg.get("env"),
-                            "url": cfg.get("url", ""),
-                            "headers": cfg.get("headers"),
-                            "auth": cfg.get("auth"),
-                            "enabled": False,
-                        },
-                    )
-                    logger.debug(
-                        "mcp_server_loaded_disabled name=%s result=%.200s",
-                        name, result,
-                    )
-                    return
-                # ── os_paths: auto-detect OS-accessible paths ──────────
-                # When a file MCP has ``os_paths: true``, inject every
-                # OS-accessible path as a ``--allow-path`` arg so the LLM
-                # can reach anything the OS user can.  Permissions are
-                # enforced by the OS kernel — not by the MCP config.
-                args = list(cfg.get("args", []))
-                if cfg.get("os_paths"):
-                    from slife.os_detect import get_os_accessible_paths
-                    os_paths = get_os_accessible_paths()
-                    for p in os_paths:
-                        args.extend(["--allow-path", p])
-                    logger.debug(
-                        "mcp_os_paths server=%s paths=%s", name, os_paths,
-                    )
-
-                result = await mcp_client.call_tool(
-                    "mcp_set",
-                    {
-                        "name": name,
-                        "command": cfg.get("command", ""),
-                        "args": args,
-                        "env": cfg.get("env"),
-                        "url": cfg.get("url", ""),
-                        "headers": cfg.get("headers"),
-                        "auth": cfg.get("auth"),
-                    },
-                )
-                logger.debug(
-                    "mcp_server_connected name=%s result=%.200s",
-                    name, result,
-                )
-                from slife.health import record
-                try:
-                    status = json.loads(result).get("status", "")
-                except Exception:
-                    status = ""
-                if status in ("connected", "already_connected"):
-                    record(
-                        "mcp_server", "ok",
-                        key=name, value="connected",
-                        hint=f"MCP server '{name}' connected.",
-                    )
-                    # Register tools immediately — enabled implies eager.
-                    await self._discover_and_register_external_tools(server_name=name)
-                else:
-                    # Handshake timed out (slow uvx/npx cold start) or the
-                    # server is still coming up — don't claim success.  The
-                    # wrapper reconnects in the background and fires a
-                    # tools/list_changed notification; the reconcile poll
-                    # backstops it, so the tools land once the server is up.
-                    logger.warning(
-                        "mcp_auto_connect_pending server=%s status=%s result=%.120s",
-                        name, status, result,
-                    )
-                    record(
-                        "mcp_server", "warning",
-                        key=name, value=status or "connect_pending",
-                        hint=(
-                            f"MCP server '{name}' is enabled but not yet "
-                            f"connected (status={status}); retrying in background."
-                        ),
-                    )
-            except Exception as e:
-                logger.error("mcp_auto_connect_failed server=%s err=%s", name, e)
-                from slife.health import record
-                record(
-                    "mcp_server", "error",
-                    key=name, value="connect_failed",
-                    hint=f"MCP server '{name}' failed to connect: {e}",
-                )
-
-        await asyncio.gather(
-            *(_connect_one(name, cfg) for name, cfg in servers.items())
-        )
-
-    async def _auto_connect_rest_apis(self) -> None:
-        """Auto-connect REST APIs from the ``rest_apis`` config section.
-
-        Each entry is connected via ``mcp_set`` with
-        anyapi-mcp-server as the backend.  The LLM never sees npx or
-        anyapi-mcp-server — it only sees the generated tools prefixed
-        with the API name.
-        """
-        if not self._plugins["mcp"].client:
-            return
-
-        rest_apis = self.config.rest_apis
-        if not rest_apis:
-            return
-
-        mcp_client = self._plugins["mcp"].client
-        logger.info("rest_api_auto_connect count=%d", len(rest_apis))
-
-        async def _connect_one(name: str, cfg: dict) -> None:
-            try:
-                if cfg.get("enabled") is False:
-                    logger.debug("rest_api_skipped name=%s reason=disabled", name)
-                    return
-                spec_url = cfg.get("spec_url", "")
-                base_url = cfg.get("base_url", "")
-                api_key = cfg.get("api_key", "")
-                description = cfg.get("description", "")
-
-                if not spec_url or not base_url:
-                    logger.warning(
-                        "rest_api_skip name=%s reason=missing_spec_or_base", name,
-                    )
-                    return
-
-                mcp_args = [
-                    "-y", "anyapi-mcp-server",
-                    "--name", name,
-                    "--spec", spec_url,
-                    "--base-url", base_url,
-                ]
-                if api_key:
-                    mcp_args.extend([
-                        "--header", f"Authorization: Bearer ${{{api_key}}}",
-                    ])
-
-                result = await mcp_client.call_tool(
-                    "mcp_set",
-                    {
-                        "name": name,
-                        "command": "npx",
-                        "args": mcp_args,
-                        "description": description,
-                    },
-                )
-                logger.debug(
-                    "rest_api_connected name=%s result=%.200s", name, result,
-                )
-            except Exception as e:
-                logger.warning("rest_api_connect_failed name=%s err=%s", name, e)
-
-        await asyncio.gather(
-            *(_connect_one(name, cfg) for name, cfg in rest_apis.items())
-        )
-
-    async def _discover_existing_mcp_tools(self) -> None:
-        """Discover tools from already-connected external MCP servers.
-
-        Used by subagents — they share the main agent's MCP gateway, so
-        external servers are already spawned.  Unlike
-        :meth:`_auto_connect_mcp_servers`, this never calls
-        ``mcp_set`` — it only lists tools from connected servers
-        and registers them as proxy tools.
-
-        Each ``mcp_list_tools`` call uses its own POST SSE stream,
-        so concurrent requests are safe with the standard MCP library
-        transport.
-        """
-        mcp_cfg = self.config.mcp_config
-        assert mcp_cfg is not None
-        assert self._plugins["mcp"].client is not None
-        servers = mcp_cfg.servers
-        if not servers:
-            return
-
-        logger.info("mcp_discover_existing servers=%d", len(servers))
-
-        async def _discover_one(name: str, cfg: dict) -> None:
-            try:
-                if cfg.get("enabled") is False:
-                    logger.debug("mcp_server_skipped name=%s reason=disabled", name)
-                    return
-                await self._discover_and_register_external_tools(server_name=name)
-            except Exception as e:
-                logger.debug("mcp_discover_existing_failed server=%s err=%s", name, e)
-
-        await asyncio.gather(
-            *(_discover_one(name, cfg) for name, cfg in servers.items())
-        )
-
-        logger.info(
-            "mcp_discover_existing_done tools=%d",
-            len(self.tool_registry.list_tools()),
-        )
-
     # ── MCP tool discovery & registration ────────────────────────────
 
     async def _discover_and_register_external_tools(self, server_name: str) -> None:
@@ -1220,10 +965,10 @@ class AgentService:
 
         Idempotent full diff: registers tools the server offers that aren't
         registered yet, and unregisters tools it no longer offers.  Safe to
-        call concurrently from several triggers (auto-connect, reconnect
-        notification, reconcile poll) — a per-server in-flight guard coalesces
-        races, and an empty tool list leaves the registry untouched so a
-        half-connected server can't flicker its tools out.
+        call concurrently from several triggers (startup glue, reconnect
+        notification, mcp_set callbacks) — a per-server in-flight guard
+        coalesces races, and an empty tool list leaves the registry untouched
+        so a half-connected server can't flicker its tools out.
         """
         client = self._plugins["mcp"].client
         assert client is not None
@@ -1247,9 +992,9 @@ class AgentService:
 
             proxy_tools = create_proxy_tools(
                 client, external,
-                on_server_added=self._persist_server,
-                on_server_removed=self._unpersist_server,
-                on_server_updated=self._on_server_updated,
+                on_server_added=self._register_external_server_tools,
+                on_server_removed=self._unregister_external_server_tools,
+                on_server_updated=self._register_external_server_tools,
             )
             new_names = {t.name for t in proxy_tools}
             old_names = {
@@ -1290,184 +1035,6 @@ class AgentService:
         finally:
             self._mcp_syncing.discard(server_name)
 
-    async def _reconcile_mcp_tools(self, *, full: bool = False) -> None:
-        """Reconcile the tool registry with the wrapper's live server state.
-
-        For each enabled, connected external server that reports tools:
-          - ``full=True`` (reconnect notification): sync every such server —
-            the diff registers new tools and unregisters dropped ones.
-          - ``full=False`` (periodic poll): only repair servers whose tools
-            are entirely missing from the registry (add-only — never tears
-            down existing tools, so a transient status blip can't flicker
-            them out).
-        """
-        client = self._plugins["mcp"].client
-        if client is None or not client.is_connected:
-            return
-        try:
-            raw = await client.call_tool("__mcp_connection_status")
-            servers = json.loads(raw)
-        except Exception as e:
-            logger.debug("mcp_reconcile_status_failed err=%s", e)
-            return
-
-        for s in servers:
-            name = s.get("name")
-            if not name or not s.get("enabled"):
-                continue
-            if s.get("state") != "running" or s.get("tool_count", 0) <= 0:
-                continue
-            if not full:
-                has_tools = any(
-                    t.name.startswith(f"{name}__")
-                    for t in self.tool_registry.list_tools()
-                )
-                if has_tools:
-                    # Tools are already registered — the only thing the poll
-                    # could still repair is a stale health record (e.g. the
-                    # reconnect notification registered the tools but a startup
-                    # "not yet connected" warning lingers).  Add-only: never
-                    # downgrade an ok record; only supersede a warning/error.
-                    self._restore_mcp_health(name)
-                    continue
-            logger.info("mcp_reconcile_sync server=%s full=%s", name, full)
-            await self._discover_and_register_external_tools(server_name=name)
-
-    def _restore_mcp_health(self, name: str) -> None:
-        """Add-only health reconciliation: replace a stale non-ok ``mcp_server``
-        record for *name* with an ``ok`` one.
-
-        The live wrapper state says this server is running with tools, so any
-        lingering startup "not yet connected" warning / error is stale.  This
-        mirrors :func:`_fire_on_reconnect`'s replace=True record, but is driven
-        from the agent side so it also covers paths where the wrapper's hook
-        never fired (e.g. the tools were registered by the reconcile diff
-        itself).  Add-only: an existing ``ok`` record is left alone — never
-        downgrades.
-        """
-        from slife.health import get_report, record
-
-        has_ok = any(
-            e.get("component") == "mcp_server"
-            and e.get("key") == name
-            and e.get("level") == "ok"
-            for e in get_report()
-        )
-        if has_ok:
-            return
-        record(
-            "mcp_server", "ok",
-            key=name, value="connected",
-            hint=f"MCP server '{name}' connected.",
-            replace=True,
-        )
-
-    async def _on_mcp_notification(self, method: str, _params: dict) -> None:
-        """Handle a server-initiated notification from the MCP wrapper.
-
-        ``notifications/tools/list_changed`` means an external server
-        connected/reconnected (or its tool set changed) — re-sync the
-        registry.  Runs as a fire-and-forget task: the SDK receive loop awaits
-        this handler, so it must never block on a call_tool against the same
-        session (that would deadlock the loop).
-        """
-        if method != "notifications/tools/list_changed":
-            return
-        if self._mcp_reconcile_inflight:
-            return
-        self._mcp_reconcile_inflight = True
-
-        async def _run() -> None:
-            try:
-                await self._reconcile_mcp_tools(full=True)
-            except Exception:
-                logger.exception("mcp_reconcile_task_failed")
-            finally:
-                self._mcp_reconcile_inflight = False
-
-        asyncio.create_task(_run())
-
-    async def _mcp_reconcile_loop(self, interval: float = 30.0) -> None:
-        """Periodic reconciliation backstop for external MCP tool registration.
-
-        The wrapper's reconnect notification is the primary trigger; this poll
-        repairs any server whose tools are still missing (e.g. the notification
-        was lost because the SSE channel dropped).
-        """
-        while True:
-            try:
-                await self._reconcile_mcp_tools(full=False)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.debug("mcp_reconcile_error err=%s", e)
-            await asyncio.sleep(interval)
-
-    def _wire_mcp_reconcile(self) -> None:
-        """Attach the notification handler to the wrapper client and ensure the
-        reconciliation poll is running.
-
-        Called on wrapper connect and after every wrapper restart — a fresh
-        client needs the handler re-attached.
-        """
-        client = self._plugins["mcp"].client
-        if client is not None:
-            client.on_notification = self._on_mcp_notification
-        if self._mcp_reconcile_task is None or self._mcp_reconcile_task.done():
-            self._mcp_reconcile_task = asyncio.create_task(
-                self._mcp_reconcile_loop()
-            )
-
-    async def _persist_server(self, name: str, command: str, args: list[str], env: dict | None = None, description: str = "", source: dict | None = None, url: str = "", headers: dict[str, str] | None = None):
-        """Callback: persist a newly-added (or updated) MCP server to config
-        file and immediately discover and register its tools.
-
-        If a server with the same name already exists, its old proxy tools
-        are unregistered first — this handles reconfiguration of servers
-        like anyapi-mcp-server when the user provides new args.
-        """
-        mcp_cfg = self.config.mcp_config
-        assert mcp_cfg is not None
-        existing = mcp_cfg.servers.get(name)
-        if existing:
-            logger.debug(
-                "mcp_server_update name=%s", name
-            )
-            self.tool_registry.unregister_by_prefix(f"{name}__")
-
-        self.config.save_mcp_server(name, command, args, env, description, source, url=url, headers=headers)
-        # Discover and register the new server's tools right away
-        await self._discover_and_register_external_tools(server_name=name)
-
-    async def _unpersist_server(self, name: str):
-        """Callback: remove server from config and unregister its tools."""
-        self.config.remove_mcp_server(name)
-        removed = self.tool_registry.unregister_by_prefix(f"{name}__")
-        if removed:
-            logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
-
-    async def _on_server_updated(self, name: str, enabled: bool):
-        """Callback: persist the enabled flag and update tool registration.
-
-        - enabled=False → unregister tools, persist enabled=False.
-        - enabled=True  → persist enabled=True, re-discover + register tools.
-        """
-        mcp_cfg = self.config.mcp_config
-        assert mcp_cfg is not None
-
-        if not enabled:
-            # Unregister tools from agent loop, persist disabled
-            removed = self.tool_registry.unregister_by_prefix(f"{name}__")
-            if removed:
-                logger.debug("mcp_tools_unregistered server=%s count=%d", name, removed)
-            self.config.set_server_enabled(name, False)
-            return
-
-        # enabled=True — persist, re-discover and register tools
-        self.tool_registry.unregister_by_prefix(f"{name}__")
-        await self._discover_and_register_external_tools(server_name=name)
-        self.config.set_server_enabled(name, True)
-
     # ── Stop helpers ────────────────────────────────────────────────────
 
     async def _stop_plugin(self, name: str, *, has_poll_task: bool = False) -> None:
@@ -1479,16 +1046,9 @@ class AgentService:
         """
         await self._plugins[name].stop(has_poll_task=has_poll_task)
 
-    async def stop_mcp(self) -> None:
-        """Shut down the MCP wrapper and clean up."""
-        if self._mcp_reconcile_task is not None:
-            self._mcp_reconcile_task.cancel()
-            try:
-                await self._mcp_reconcile_task
-            except asyncio.CancelledError:
-                pass
-            self._mcp_reconcile_task = None
-        await self._stop_plugin("mcp")
+    async def stop_plugin(self, name: str, *, has_poll_task: bool = False) -> None:
+        """Shut down a plugin by name (external or built-in)."""
+        await self._stop_plugin(name, has_poll_task=has_poll_task)
 
     async def stop_memdb(self) -> None:
         """Disconnect and shut down the memdb service."""

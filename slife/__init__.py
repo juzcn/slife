@@ -87,11 +87,17 @@ def main(config_path: str | None = None):
             print(f"Config: {_cp}  Log: {log_path}", file=sys.stderr)
             raise SystemExit(1)
     from slife.health import record
+    _mcp_servers = 0
+    try:
+        from mcp_plugin import config as _mcp_cfg
+        _mcp_servers = _mcp_cfg.count_servers()
+    except Exception:
+        pass
     record(
         "config", "ok",
         key="path", value=str(_cp),
         hint=f"Config loaded: {len(config.models)} models, "
-             f"{len(config.mcp_config.servers) if config.mcp_config else 0} MCP servers, "
+             f"{_mcp_servers} MCP servers, "
              f"memory={'enabled' if config.memdb_config else 'disabled'}.",
     )
 

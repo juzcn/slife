@@ -26,6 +26,7 @@ dependencies = [
     "paho-mqtt>=2.0.0",
     "requests>=2.31.0",
     "credstore",
+    "mcp-plugin",
     "ngrok",
     "croniter>=6.2.4",
     "tzdata>=2026.3",
@@ -96,11 +97,12 @@ extra-index-url = [
 ]
 
 [tool.uv.workspace]
-members = ["credstore", "cc-switch"]
+members = ["credstore", "cc-switch", "mcp-plugin"]
 
 [tool.uv.sources]
 credstore = { workspace = true }
 cc-switch = { workspace = true }
+mcp-plugin = { workspace = true }
 
 [tool.pytest.ini_options]
 minversion = "9.1"
@@ -124,9 +126,9 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["slife", "credstore", "cc_switch"]
+source = ["slife", "credstore", "cc_switch", "mcp_plugin"]
 branch = true
-omit = ["tests/*", "credstore/tests/*", "cc-switch/tests/*"]
+omit = ["tests/*", "credstore/tests/*", "cc-switch/tests/*", "mcp-plugin/tests/*"]
 
 [tool.coverage.report]
 exclude_also = [
@@ -141,9 +143,9 @@ skip_covered = false
 [tool.pyright]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
-include = ["slife", "credstore", "cc_switch"]
-exclude = ["**/__pycache__/**", "**/.venv/**", ".venv/**", "tests/**", "credstore/tests/**", "cc-switch/tests/**", "**/node_modules", "**/.*"]
-extraPaths = ["credstore", "cc-switch"]
+include = ["slife", "credstore", "cc_switch", "mcp-plugin"]
+exclude = ["**/__pycache__/**", "**/.venv/**", ".venv/**", "tests/**", "credstore/tests/**", "cc-switch/tests/**", "mcp-plugin/tests/**", "**/node_modules", "**/.*"]
+extraPaths = ["credstore", "cc-switch", "mcp-plugin"]
 reportMissingImports = true
 reportMissingTypeStubs = false
 reportOptionalSubscript = true

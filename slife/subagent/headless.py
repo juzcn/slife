@@ -29,6 +29,11 @@ from slife.logfmt import elapsed
 
 logger = logging.getLogger("slife_subagent")
 
+
+def _external_plugin_configured(config, name: str) -> bool:
+    """True when *name* is registered via the ``plugins.external`` config."""
+    return any(p.get("name") == name for p in config.plugins_external)
+
 #: Set by ``run_headless`` — log path so callers can find it.
 _log_path: Path | None = None
 
@@ -107,7 +112,7 @@ async def run_headless() -> None:
         config.active_model.ref,
         len(config.tools),
         "on" if config.memdb_config else "off",
-        "on" if config.mcp_config else "off",
+        "on" if _external_plugin_configured(config, "mcp") else "off",
         "on" if config.a2a_config else "off",
     )
 
@@ -118,7 +123,7 @@ async def run_headless() -> None:
     # of spawning their own — avoids duplicate processes and shared state.
     _mcp_port = os.environ.get("SLIFE_MCP_PORT", "")
 
-    if _mcp_port and config.mcp_config:
+    if _mcp_port and _external_plugin_configured(config, "mcp"):
         try:
             with elapsed("mcp_startup", logger, level=logging.INFO, port=_mcp_port):
                 await service.connect_mcp_http(int(_mcp_port))
@@ -338,7 +343,7 @@ async def run_headless() -> None:
             service.session_usage.completion_tokens,
             service.session_usage.total_tokens,
         )
-        await service.stop_mcp()
+        await service.stop_plugin("mcp")
         await service.stop_memdb()
         await service.stop_wechat()
         shutdown_server_logging()

@@ -383,7 +383,7 @@ class SlifeApp(App):
         # starting…") until _open_service_when_ready() fires.
         self.query_one("#user-input").disabled = True
 
-        plugins = discover_plugins()
+        plugins = discover_plugins(external=self.service.config.plugins_external)
 
         # ── Step 1: Restore session from SQLite (pure read, no services needed) ─
         # get_recent_turns reads the DB directly via aiosqlite —
@@ -519,7 +519,7 @@ class SlifeApp(App):
         await asyncio.gather(
             _stop_one("subagent", self.service.stop_subagent()),
             _stop_one("a2a", self.service.stop_a2a()),
-            _stop_one("mcp", self.service.stop_mcp()),
+            _stop_one("mcp", self.service.stop_plugin("mcp")),
             _stop_one("memdb", self.service.stop_memdb()),
             _stop_one("wechat", self.service.stop_wechat()),
             _stop_one("memfiles", self.service.stop_memfiles()),

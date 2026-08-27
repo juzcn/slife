@@ -1,4 +1,4 @@
-"""Tests for slife.mcp.oauth — device code flow and token management."""
+"""Tests for mcp_plugin.oauth — device code flow and token management."""
 
 import pytest; pytestmark = pytest.mark.unit
 
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import httpx
 
-from slife.mcp.oauth import (
+from mcp_plugin.oauth import (
     OAuthTokens,
     get_valid_token,
     run_device_code_flow,
@@ -85,21 +85,21 @@ class TestOAuthTokensSerialize:
 class TestStoreTokens:
     def test_store_and_retrieve(self):
         tokens = make_tokens()
-        with patch("credstore.set_credential") as mock_set:
+        with patch("mcp_plugin.oauth.set_credential") as mock_set:
             _store_tokens("test-server", tokens)
             mock_set.assert_called_once()
             key = mock_set.call_args[0][0]
             assert _credstore_key("test-server") in key
 
     def test_get_valid_token_returns_none_when_not_stored(self):
-        with patch("credstore.get_credential", return_value=None):
+        with patch("mcp_plugin.oauth.get_credential", return_value=None):
             result = get_valid_token("no-such-server")
             assert result is None
 
     def test_get_valid_token_returns_tokens_when_valid(self):
         tokens = make_tokens(expires_in=3600)
         raw = _serialize(tokens)
-        with patch("credstore.get_credential", return_value=raw):
+        with patch("mcp_plugin.oauth.get_credential", return_value=raw):
             result = get_valid_token("test-server")
             assert result is not None
             assert result.access_token == tokens.access_token
@@ -107,7 +107,7 @@ class TestStoreTokens:
     def test_get_valid_token_expired(self):
         tokens = make_tokens(expires_in=30)  # expires in 30s (< 60s buffer)
         raw = _serialize(tokens)
-        with patch("credstore.get_credential", return_value=raw):
+        with patch("mcp_plugin.oauth.get_credential", return_value=raw):
             result = get_valid_token("test-server")
             assert result is None
 
@@ -197,9 +197,9 @@ class TestDeviceCodeFlow:
         }
         mock_http = _make_http_mock(device_data, token_data)
 
-        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
-             patch("slife.mcp.oauth._store_tokens") as mock_store, \
-             patch("slife.mcp.oauth.asyncio.sleep", AsyncMock()):
+        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("mcp_plugin.oauth._store_tokens") as mock_store, \
+             patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             result = await run_device_code_flow(AUTH, "test-server")
 
         assert result.access_token == "gh_token_abc"
@@ -228,11 +228,11 @@ class TestDeviceCodeFlow:
         poll_client = _closed_aware_client(token_data)
 
         with patch(
-            "slife.mcp.oauth.httpx.AsyncClient",
+            "mcp_plugin.oauth.httpx.AsyncClient",
             side_effect=[device_client, poll_client],
         ), \
-            patch("slife.mcp.oauth._store_tokens") as mock_store, \
-            patch("slife.mcp.oauth.asyncio.sleep", AsyncMock()):
+            patch("mcp_plugin.oauth._store_tokens") as mock_store, \
+            patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             result = await run_device_code_flow(AUTH, "test-server")
 
         assert result.access_token == "gh_token_abc"
@@ -246,7 +246,7 @@ class TestDeviceCodeFlow:
     def test_emit_user_message_uses_stderr_with_marker(self, capsys):
         """REVIEW H7: instructions go to stderr (stdout is closed in the
         gateway child), prefixed so the parent can surface them."""
-        from slife.mcp.oauth import (
+        from mcp_plugin.oauth import (
             _emit_user_message, _OAUTH_MARKER, _OAUTH_ACTION_MARKER,
         )
 
@@ -287,9 +287,9 @@ class TestDeviceCodeFlow:
         }
         mock_http = _make_http_mock(device_data, token_data)
 
-        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
-             patch("slife.mcp.oauth._store_tokens") as mock_store, \
-             patch("slife.mcp.oauth.asyncio.sleep", AsyncMock()):
+        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("mcp_plugin.oauth._store_tokens") as mock_store, \
+             patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             result = await run_device_code_flow(AUTH, "test-server")
 
         assert result.access_token == "gh_token_abc"
@@ -297,8 +297,8 @@ class TestDeviceCodeFlow:
 
     def test_oauth_markers_match_wrapper_detection(self):
         """The gateway emits and the wrapper detects the SAME markers."""
-        from slife.mcp import oauth
-        from slife.mcp import process
+        from mcp_plugin import oauth
+        from mcp_plugin import process
         assert oauth._OAUTH_MARKER == process._OAUTH_MARKER
         assert oauth._OAUTH_ACTION_MARKER == process._OAUTH_ACTION_MARKER
 
@@ -327,9 +327,9 @@ class TestDeviceCodeFlow:
         }
         mock_http = _make_http_mock(device_data, pending, token_data)
 
-        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
-             patch("slife.mcp.oauth._store_tokens") as mock_store, \
-             patch("slife.mcp.oauth.asyncio.sleep", AsyncMock()):
+        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("mcp_plugin.oauth._store_tokens") as mock_store, \
+             patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             result = await run_device_code_flow(AUTH, "test-server")
 
         assert result.access_token == "tok_after_pending"
@@ -347,9 +347,9 @@ class TestDeviceCodeFlow:
         expired = {"error": "expired_token"}
         mock_http = _make_http_mock(device_data, expired)
 
-        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
-             patch("slife.mcp.oauth._delete_tokens") as mock_delete, \
-             patch("slife.mcp.oauth.asyncio.sleep", AsyncMock()):
+        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("mcp_plugin.oauth._delete_tokens") as mock_delete, \
+             patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             with pytest.raises(RuntimeError, match="expired"):
                 await run_device_code_flow(AUTH, "test-server")
 
@@ -366,8 +366,8 @@ class TestDeviceCodeFlow:
         denied = {"error": "access_denied", "error_description": "user said no"}
         mock_http = _make_http_mock(device_data, denied)
 
-        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
-             patch("slife.mcp.oauth.asyncio.sleep", AsyncMock()):
+        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             with pytest.raises(RuntimeError, match="access_denied"):
                 await run_device_code_flow(AUTH, "test-server")
 
@@ -393,9 +393,9 @@ class TestRefreshToken:
         }
         mock_http.post = AsyncMock(return_value=refresh_resp)
 
-        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
-             patch("credstore.get_credential", return_value=raw), \
-             patch("slife.mcp.oauth._store_tokens") as mock_store:
+        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("mcp_plugin.oauth.get_credential", return_value=raw), \
+             patch("mcp_plugin.oauth._store_tokens") as mock_store:
             result = await refresh_access_token(AUTH, "test-server")
 
         assert result.access_token == "new_access"
@@ -404,7 +404,7 @@ class TestRefreshToken:
 
     @pytest.mark.asyncio
     async def test_no_stored_tokens(self):
-        with patch("credstore.get_credential", return_value=None):
+        with patch("mcp_plugin.oauth.get_credential", return_value=None):
             with pytest.raises(RuntimeError, match="No stored tokens"):
                 await refresh_access_token(AUTH, "test-server")
 
@@ -412,7 +412,7 @@ class TestRefreshToken:
     async def test_no_refresh_token(self):
         tokens = OAuthTokens(access_token="tok", refresh_token="")
         raw = _serialize(tokens)
-        with patch("credstore.get_credential", return_value=raw):
+        with patch("mcp_plugin.oauth.get_credential", return_value=raw):
             with pytest.raises(RuntimeError, match="No refresh token"):
                 await refresh_access_token(AUTH, "test-server")
 
@@ -426,9 +426,9 @@ class TestRefreshToken:
         mock_http.__aexit__ = AsyncMock(return_value=None)
         mock_http.post = AsyncMock(side_effect=httpx.ConnectError("connection reset"))
 
-        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
-             patch("credstore.get_credential", return_value=raw), \
-             patch("slife.mcp.oauth._delete_tokens") as mock_delete:
+        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("mcp_plugin.oauth.get_credential", return_value=raw), \
+             patch("mcp_plugin.oauth._delete_tokens") as mock_delete:
             with pytest.raises(RuntimeError, match="refresh failed"):
                 await refresh_access_token(AUTH, "test-server")
 
@@ -446,9 +446,9 @@ class TestRefreshToken:
             400, request=httpx.Request("POST", "https://token.example.com"),
         ))
 
-        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
-             patch("credstore.get_credential", return_value=raw), \
-             patch("slife.mcp.oauth._delete_tokens") as mock_delete:
+        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("mcp_plugin.oauth.get_credential", return_value=raw), \
+             patch("mcp_plugin.oauth._delete_tokens") as mock_delete:
             with pytest.raises(RuntimeError, match="refresh failed"):
                 await refresh_access_token(AUTH, "test-server")
 
@@ -476,9 +476,9 @@ class TestSlowDown:
         }
         mock_http = _make_http_mock(device_data, slow_down, token_data)
 
-        with patch("slife.mcp.oauth.httpx.AsyncClient", return_value=mock_http), \
-             patch("slife.mcp.oauth._store_tokens"), \
-             patch("slife.mcp.oauth.asyncio.sleep", AsyncMock()):
+        with patch("mcp_plugin.oauth.httpx.AsyncClient", return_value=mock_http), \
+             patch("mcp_plugin.oauth._store_tokens"), \
+             patch("mcp_plugin.oauth.asyncio.sleep", AsyncMock()):
             result = await run_device_code_flow(AUTH, "test-server")
 
         assert result.access_token == "tok_slow"

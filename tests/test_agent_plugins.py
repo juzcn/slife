@@ -70,7 +70,7 @@ class TestPluginLifecycleSpawn:
             {"name": "my_tool", "description": "A tool."},
         ])
 
-        with patch("slife.mcp.process.MCPWrapperProcess") as MockProc:
+        with patch("mcp_plugin.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
             mock_process.start = AsyncMock()
             mock_process.create_client = AsyncMock(return_value=mock_client)
@@ -80,7 +80,7 @@ class TestPluginLifecycleSpawn:
                 mock_create.return_value = [mock_tool]
 
                 await lifecycle.spawn(
-                    module="slife.plugins.mcp.server",
+                    module="mcp_plugin.server",
                 )
 
         import os
@@ -104,7 +104,7 @@ class TestPluginLifecycleSpawn:
             {"name": "__internal_tool", "description": "Internal (__ prefix)."},
         ])
 
-        with patch("slife.mcp.process.MCPWrapperProcess") as MockProc:
+        with patch("mcp_plugin.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
             mock_process.start = AsyncMock()
             mock_process.create_client = AsyncMock(return_value=mock_client)
@@ -114,7 +114,7 @@ class TestPluginLifecycleSpawn:
                 mock_create.return_value = [mock_tool]
 
                 await lifecycle.spawn(
-                    module="slife.plugins.mcp.server",
+                    module="mcp_plugin.server",
                 )
 
         assert mock_service.tool_registry.register.called
@@ -141,10 +141,10 @@ class TestPluginLifecycleSpawn:
         )
         mock_process.stop = AsyncMock()
 
-        with patch("slife.mcp.process.MCPWrapperProcess") as MockProc:
+        with patch("mcp_plugin.process.MCPWrapperProcess") as MockProc:
             MockProc.return_value = mock_process
             with pytest.raises(ConnectionError):
-                await lifecycle.spawn(module="slife.plugins.mcp.server")
+                await lifecycle.spawn(module="mcp_plugin.server")
 
         assert lifecycle.process is None
         assert lifecycle.client is None

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from slife.mcp.process import MCPWrapperProcess
+from mcp_plugin.process import MCPWrapperProcess
 
 
 class TestMCPWrapperProcessInit:
@@ -21,7 +21,7 @@ class TestMCPWrapperProcessInit:
 
     def test_default_args_use_server_module(self):
         wp = MCPWrapperProcess()
-        assert wp._args == ["-m", "slife.plugins.mcp.server"]
+        assert wp._args == ["-m", "mcp_plugin.server"]
 
     def test_custom_command(self):
         wp = MCPWrapperProcess(command="/usr/bin/python3")
@@ -79,7 +79,7 @@ class TestMCPWrapperProcessStart:
         wp._process = MagicMock(spec=asyncio.subprocess.Process)
         wp._process.pid = 999
 
-        with patch("slife.mcp.process.logger") as mock_logger:
+        with patch("mcp_plugin.process.logger") as mock_logger:
             await wp.start()
             mock_logger.warning.assert_called_once()
             assert "wrapper_already_running" in mock_logger.warning.call_args[0][0]
@@ -92,10 +92,10 @@ class TestMCPWrapperProcessStart:
         mock_proc.stderr = MagicMock()
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            with patch("slife.mcp.process.logger"):
+            with patch("mcp_plugin.process.logger"):
                 with patch.object(wp, "_read_port_signal", AsyncMock()):
                     with patch.object(wp, "_log_stderr", MagicMock()), \
-                         patch("slife.mcp.process.asyncio.create_task", lambda c: None):
+                         patch("mcp_plugin.process.asyncio.create_task", lambda c: None):
                         await wp.start()
 
                 assert wp._running is True
@@ -110,12 +110,12 @@ class TestMCPWrapperProcessStart:
 
         with patch("asyncio.create_subprocess_exec") as mock_create:
             mock_create.return_value = mock_proc
-            with patch("slife.mcp.process.logger"):
+            with patch("mcp_plugin.process.logger"):
                 with patch.object(wp, "_read_port_signal", AsyncMock()), \
                      patch.object(wp, "_log_stderr", MagicMock()):
-                    with patch("slife.mcp.process.get_session_id",
+                    with patch("mcp_plugin.process.get_session_id",
                                return_value="test-sid-1234"):
-                        with patch("slife.mcp.process.asyncio.create_task"):
+                        with patch("mcp_plugin.process.asyncio.create_task"):
                             await wp.start()
 
             call_kwargs = mock_create.call_args[1]
@@ -127,7 +127,7 @@ class TestMCPWrapperProcessStart:
         wp = MCPWrapperProcess()
         with patch("asyncio.create_subprocess_exec",
                    side_effect=FileNotFoundError("not found")):
-            with patch("slife.mcp.process.logger"):
+            with patch("mcp_plugin.process.logger"):
                 with pytest.raises(FileNotFoundError):
                     await wp.start()
                 assert wp._running is False
@@ -137,7 +137,7 @@ class TestMCPWrapperProcessStart:
         wp = MCPWrapperProcess()
         with patch("asyncio.create_subprocess_exec",
                    side_effect=OSError("something broke")):
-            with patch("slife.mcp.process.logger"):
+            with patch("mcp_plugin.process.logger"):
                 with pytest.raises(OSError):
                     await wp.start()
                 assert wp._running is False
@@ -190,7 +190,7 @@ class TestMCPWrapperProcessCreateClient:
         mock_proc.returncode = None  # Still running
         wp._process = mock_proc
 
-        with patch("slife.mcp.client.MCPClient") as MockClient:
+        with patch("mcp_plugin.client.MCPClient") as MockClient:
             mock_client = MagicMock()
             mock_client.connect = AsyncMock()
             MockClient.return_value = mock_client
@@ -273,7 +273,7 @@ class TestMCPWrapperProcessStop:
     @pytest.mark.asyncio
     async def test_stop_not_running_noop(self):
         wp = MCPWrapperProcess()
-        with patch("slife.mcp.process.terminate_process") as mock_term:
+        with patch("mcp_plugin.process.terminate_process") as mock_term:
             await wp.stop()
             mock_term.assert_not_called()
 
@@ -282,7 +282,7 @@ class TestMCPWrapperProcessStop:
         wp = MCPWrapperProcess()
         wp._running = False
         wp._process = None
-        with patch("slife.mcp.process.terminate_process") as mock_term:
+        with patch("mcp_plugin.process.terminate_process") as mock_term:
             await wp.stop()
             mock_term.assert_not_called()
 
@@ -294,7 +294,7 @@ class TestMCPWrapperProcessStop:
         mock_proc.pid = 1234
         wp._process = mock_proc
 
-        with patch("slife.mcp.process.terminate_process") as mock_term:
+        with patch("mcp_plugin.process.terminate_process") as mock_term:
             mock_term.return_value = None  # terminate_process returns None
             await wp.stop()
 
@@ -318,12 +318,12 @@ class TestMCPWrapperProcessLogStderr:
 
         # read_stderr_lines is imported inside _log_stderr via:
         #   from slife.logfmt import read_stderr_lines
-        with patch("slife.logfmt.read_stderr_lines") as mock_read:
+        with patch("mcp_plugin.logging.read_stderr_lines") as mock_read:
             async def _gen():
                 yield "error: something went wrong"
 
             mock_read.return_value = _gen()
-            with patch("slife.mcp.process.logger") as mock_logger:
+            with patch("mcp_plugin.process.logger") as mock_logger:
                 await wp._log_stderr()
                 mock_logger.debug.assert_called()
 
@@ -334,14 +334,14 @@ class TestMCPWrapperProcessLogStderr:
         mock_proc.stderr = MagicMock()
         wp._process = mock_proc
 
-        with patch("slife.logfmt.read_stderr_lines") as mock_read:
+        with patch("mcp_plugin.logging.read_stderr_lines") as mock_read:
             async def _gen():
                 yield "╭── FastMCP ──────"
                 yield "│    Serving on http://localhost:8000     │"
                 yield "╰─────────"
 
             mock_read.return_value = _gen()
-            with patch("slife.mcp.process.logger") as mock_logger:
+            with patch("mcp_plugin.process.logger") as mock_logger:
                 await wp._log_stderr()
                 mock_logger.debug.assert_not_called()
 
@@ -352,13 +352,13 @@ class TestMCPWrapperProcessLogStderr:
         mock_proc.stderr = MagicMock()
         wp._process = mock_proc
 
-        with patch("slife.logfmt.read_stderr_lines") as mock_read:
+        with patch("mcp_plugin.logging.read_stderr_lines") as mock_read:
             async def _gen():
                 yield "12:34:56 [INFO] slife_mcp some log message"
                 yield "12:34:57 [WARNING] slife_mcp another log"
 
             mock_read.return_value = _gen()
-            with patch("slife.mcp.process.logger") as mock_logger:
+            with patch("mcp_plugin.process.logger") as mock_logger:
                 await wp._log_stderr()
                 mock_logger.debug.assert_not_called()
 
@@ -370,14 +370,14 @@ class TestMCPWrapperProcessLogStderr:
         mock_proc.stderr = MagicMock()
         wp._process = mock_proc
 
-        with patch("slife.logfmt.read_stderr_lines") as mock_read:
+        with patch("mcp_plugin.logging.read_stderr_lines") as mock_read:
             async def _gen():
                 yield '  File "/some/path.py", line 42, in <module>'
                 yield '    raise ValueError("boom")'
                 yield "ValueError: boom"
 
             mock_read.return_value = _gen()
-            with patch("slife.mcp.process.logger") as mock_logger:
+            with patch("mcp_plugin.process.logger") as mock_logger:
                 await wp._log_stderr()
                 assert mock_logger.debug.call_count == 3
 
@@ -388,12 +388,12 @@ class TestMCPWrapperProcessLogStderr:
         mock_proc.stderr = MagicMock()
         wp._process = mock_proc
 
-        with patch("slife.logfmt.read_stderr_lines") as mock_read:
+        with patch("mcp_plugin.logging.read_stderr_lines") as mock_read:
             async def _gen():
                 yield ""
                 yield "  "
 
             mock_read.return_value = _gen()
-            with patch("slife.mcp.process.logger") as mock_logger:
+            with patch("mcp_plugin.process.logger") as mock_logger:
                 await wp._log_stderr()
                 mock_logger.debug.assert_not_called()

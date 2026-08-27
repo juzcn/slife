@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from slife.plugins.mcp.connection import (
+from mcp_plugin.connection import (
     ServerConfig,
     ServerStatus,
     MCPServerConnection,
@@ -789,7 +789,7 @@ class TestMCPServerConnectionHealthMonitor:
     @pytest.mark.asyncio
     async def test_reconnects_a_dead_server(self):
         """CONNECTED + unresponsive → marked DISCONNECTED, then reconnected."""
-        from slife.plugins.mcp import connection as conn_mod
+        from mcp_plugin import connection as conn_mod
 
         cfg = ServerConfig(name="test", command="echo")
         conn = MCPServerConnection(cfg)
@@ -824,7 +824,7 @@ class TestMCPServerConnectionHealthMonitor:
     @pytest.mark.asyncio
     async def test_exits_when_server_disabled(self):
         """A deliberately-disabled server stops the monitor, no reconnect."""
-        from slife.plugins.mcp import connection as conn_mod
+        from mcp_plugin import connection as conn_mod
 
         cfg = ServerConfig(name="test", command="echo", enabled=False)
         conn = MCPServerConnection(cfg)
@@ -840,7 +840,7 @@ class TestMCPServerConnectionHealthMonitor:
     @pytest.mark.asyncio
     async def test_retries_a_failed_initial_connect(self):
         """A server in FAILED state is retried (with backoff) until it recovers."""
-        from slife.plugins.mcp import connection as conn_mod
+        from mcp_plugin import connection as conn_mod
 
         cfg = ServerConfig(name="test", command="echo")
         conn = MCPServerConnection(cfg)
@@ -963,8 +963,8 @@ class TestMCPServerConnectionTreeKill:
         proc.stdin = None
         conn._process = proc
 
-        with patch("slife.plugins.mcp.connection.terminate_process") as mock_term, \
-                patch("slife.tools.exec._kill_process_tree") as mock_tree:
+        with patch("mcp_plugin.connection.terminate_process") as mock_term, \
+                patch("mcp_plugin.connection.kill_process_tree") as mock_tree:
             await conn._cleanup_resources()
 
         mock_tree.assert_awaited_once_with(proc)
@@ -973,21 +973,22 @@ class TestMCPServerConnectionTreeKill:
 
 
 class TestMCPServerConnectionReconnectNotify:
-    """on_connected fires only on RECONNECTS, never the first connect.
+    """on_connected fires on EVERY successful connect (first and reconnects).
 
-    The first connect is handled by the caller (mcp_set / auto-connect) which
-    already registers tools; firing here too would trigger a redundant full
-    reconcile for every server at startup.
+    The standalone server connects asynchronously from mcp-plugin.json5 on
+    startup — a listener (a host re-syncing its tool registry) must be told
+    about first connects too.  Full-diff registration on the listener side
+    keeps the extra notification idempotent.
     """
 
     @pytest.mark.asyncio
-    async def test_first_connect_does_not_notify(self):
+    async def test_first_connect_notifies(self):
         cb = AsyncMock()
         conn = MCPServerConnection(
             ServerConfig(name="test", command="echo"), on_connected=cb,
         )
         await conn._fire_on_reconnect()
-        cb.assert_not_called()
+        cb.assert_awaited_once()
         assert conn._ever_connected is True
 
     @pytest.mark.asyncio
@@ -996,10 +997,10 @@ class TestMCPServerConnectionReconnectNotify:
         conn = MCPServerConnection(
             ServerConfig(name="test", command="echo"), on_connected=cb,
         )
-        await conn._fire_on_reconnect()  # first connect — no notify
-        cb.assert_not_called()
-        await conn._fire_on_reconnect()  # reconnect — notify
+        await conn._fire_on_reconnect()  # first connect — notifies
         cb.assert_awaited_once()
+        await conn._fire_on_reconnect()  # reconnect — notifies again
+        cb.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_recovery_after_failed_initial_connect_notifies(self):

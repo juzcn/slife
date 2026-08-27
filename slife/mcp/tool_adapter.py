@@ -164,7 +164,10 @@ class MCPProxyTool(Tool):
     # ── Callback helpers ────────────────────────────────────────────
 
     async def _handle_set(self, result: str, source: dict | None, **kwargs) -> None:
-        """Persist mcp_set / mcp_set_enabled side effects."""
+        """Register tools for a server that mcp_set / mcp_set_enabled connected.
+
+        Config persistence happens inside mcp-plugin (its own mcp-plugin.json5);
+        the slife-side callbacks only refresh the tool registry."""
         if self._tool_name not in (_MCP_SET, _MCP_SET_ENABLED) or not (self._on_server_added or self._on_server_updated):
             return
         try:
@@ -210,7 +213,7 @@ class MCPProxyTool(Tool):
             )
 
     async def _handle_remove(self, result: str, **kwargs) -> None:
-        """Persist MCP server removals to config."""
+        """Unregister a removed MCP server's tools (config removed in-plugin)."""
         if self._tool_name != _MCP_REMOVE or not self._on_server_removed:
             return
         try:

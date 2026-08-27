@@ -1,25 +1,30 @@
 """Slife plugin auto-discovery — like native tools, but as child processes.
 
-Each plugin is a Python package under ``slife.plugins/<name>/`` with a
-``server.py`` entry point.  The harness auto-discovers them at startup
-via ``pkgutil.iter_modules`` — no config entry needed.
-
-Third-party plugin
-  Drop a package into ``slife/plugins/my_plugin/`` with a ``server.py``
-  that follows the plugin contract (DESIGN.md → "The Plugin Contract").
-  It will be discovered and started automatically on next launch.
+Each plugin is a Python package with a ``server.py`` entry point exposing a
+``main()`` that host its own FastMCP server.  There is ONE framework for every
+plugin; "built-in" vs "external" is only a *registration source* — where the
+``(name, module)`` tuple comes from:
 
 Built-in plugins
-  ``mcp``, ``memdb``, ``wechat``, ``memfiles``, ``sharefile``, and ``a2a``
-  are discovered the same way.  Each has a small amount of harness-side
-  post‑connect logic (MCP auto‑connect, memory restore, WeChat poll loop,
-  memfiles/sharefile client wiring, A2A mesh) that is triggered by plugin
-  name rather than by special registration.
+  Discovered by a source scan of ``slife.plugins.*`` packages containing a
+  ``server.py`` (``memdb``, ``wechat``, ``memfiles``, ``sharefile``, ``a2a``).
+  They ship inside the slife wheel, so the scan is the right registration —
+  no config entry needed.
+
+External plugins
+  Standalone distributions (e.g. ``mcp_plugin``) registered via the
+  ``plugins.external`` section of ``slife.json5`` — a list of
+  ``{"name": ..., "module": ...}`` entries.  Integrating one requires
+  ``pip install`` + one config line, zero slife code changes.
+
+Once discovered, both feed the identical generic lifecycle (spawn via
+``sys.executable -m <module>``, connect over Streamable HTTP, register tools,
+watchdog) — runtime never distinguishes them.
 
 External (non‑Python) MCP servers
-  npm‑/uvx‑based servers (filesystem, fetch, serper, etc.) are NOT
-  Python plugins — they are configured in ``slife.json5`` →
-  ``mcp.servers`` and connected via the ``mcp_set`` tool.
+  npm‑/uvx‑based servers (filesystem, fetch, serper, etc.) are NOT Python
+  plugins — they live inside ``mcp-plugin.json5`` and are connected by the
+  ``mcp-plugin`` gateway, not by the harness.
 """
 
 import pkgutil
@@ -28,18 +33,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def discover_plugins() -> list[tuple[str, str]]:
+def _scan_builtins() -> list[tuple[str, str]]:
     """Scan ``slife.plugins.*`` for packages containing ``server.py``.
 
-    Returns a list of ``(name, module_path)`` tuples::
+    Returns ``(name, module_path)`` tuples::
 
         [("memdb", "slife.plugins.memdb.server"),
-         ("mcp",    "slife.plugins.mcp.server"),
          ("wechat", "slife.plugins.wechat.server"),
          …]
-
-    Third-party packages under ``slife.plugins/`` are discovered
-    automatically — just add a ``server.py`` with a ``main()``.
     """
     import slife.plugins as _pkg
 
@@ -63,6 +64,53 @@ def discover_plugins() -> list[tuple[str, str]]:
             plugins.append((short_name, server_module))
         except Exception:
             continue
+    return plugins
+
+
+def discover_plugins(external: list[dict] | None = None) -> list[tuple[str, str]]:
+    """Merge built-in source-scan plugins with config-declared external ones.
+
+    Args:
+        external: The ``plugins.external`` list parsed from slife.json5 —
+            ``[{"name": ..., "module": ...}, ...]``.  An entry whose module
+            cannot be imported is skipped (logged); on a name collision with a
+            built-in the external entry wins (a standalone distribution that
+            replaces a built-in, e.g. ``mcp``).
+
+    Returns a list of ``(name, module_path)`` tuples, e.g.::
+
+        [("memdb", "slife.plugins.memdb.server"),
+         ("mcp",   "mcp_plugin.server"),
+         ("wechat", "slife.plugins.wechat.server"),
+         …]
+    """
+    plugins = _scan_builtins()
+    seen = {name for name, _ in plugins}
+
+    for entry in external or []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        module = entry.get("module")
+        if not name or not module:
+            logger.warning("plugins_external_skip entry=%s", entry)
+            continue
+        try:
+            import importlib.util as _util
+            if _util.find_spec(str(module)) is None:
+                logger.warning(
+                    "plugins_external_missing name=%s module=%s", name, module,
+                )
+                continue
+        except Exception:
+            logger.warning(
+                "plugins_external_missing name=%s module=%s", name, module,
+            )
+            continue
+        if name in seen:
+            plugins = [(n, m) for n, m in plugins if n != name]
+        plugins.append((name, str(module)))
+        seen.add(name)
 
     logger.debug("plugins_discovered count=%d names=%s",
                  len(plugins), [n for n, _ in plugins])

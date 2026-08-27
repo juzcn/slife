@@ -1,24 +1,24 @@
 """REST API management — register external APIs backed by anyapi-mcp-server.
 
-rest_api_set / rest_api_remove / rest_api_list.
-Persisted to slife.json5 → rest_apis: section.
+rest_api_set / rest_api_remove / rest_api_list / rest_api_set_enabled.
+
+Server definitions live in ``mcp-plugin.json5`` (owned by ``mcp-plugin``,
+resolved via ``$MCP_PLUGIN_FILE``); REST APIs are ordinary ``command: npx``
+server entries tagged ``source.type == "rest_api"``.  This module is the
+sLife-side face: it re-points persistence to :mod:`mcp_plugin.config` and
+keeps a live ``mcp_set``-style warm-up through the mcp plugin so an API
+connects immediately.
 """
 
 import logging
-from pathlib import Path
 from urllib.parse import urlparse
 
-from slife.tools._config_io import (
-    _ConfigPathMixin,
-    format_source_info,
-    read_config,
-    write_config,
-)
+from mcp_plugin import config as mcp_plugin_config
+
+from slife.tools._config_io import _ConfigPathMixin, format_source_info
 from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
-
-_REST_APIS_KEY = "rest_apis"
 
 
 def _validate_http_url(url: str, what: str) -> str:
@@ -40,16 +40,8 @@ def _validate_http_url(url: str, what: str) -> str:
     return url
 
 
-def _rest_api_section(raw: dict) -> dict:
-    section = raw.setdefault(_REST_APIS_KEY, {})
-    if not isinstance(section, dict):
-        section = {}
-        raw[_REST_APIS_KEY] = section
-    return section
-
-
 def _format_rest_apis(rest_apis: dict) -> str:
-    """Format a rest_apis dict into a human-readable summary."""
+    """Format a rest-api entries dict into a human-readable summary."""
     if not rest_apis:
         return "No REST APIs registered."
 
@@ -57,10 +49,11 @@ def _format_rest_apis(rest_apis: dict) -> str:
     for name, cfg in rest_apis.items():
         if not isinstance(cfg, dict):
             continue
-        spec = cfg.get("spec_url", "")
-        base = cfg.get("base_url", "")
+        parsed = mcp_plugin_config.parse_anyapi_args(cfg)
+        spec = parsed["spec_url"]
+        base = parsed["base_url"]
+        api_key = parsed["api_key"]
         desc = cfg.get("description", "(no description)")
-        api_key = cfg.get("api_key", "")
         source = cfg.get("source")
 
         line = f"- **{name}**: {desc}\n  spec: `{spec}`\n  base_url: `{base}`"
@@ -74,13 +67,13 @@ def _format_rest_apis(rest_apis: dict) -> str:
     return "\n".join(lines)
 
 
-def get_rest_apis_summary(config_path: Path) -> str:
-    """Read rest_apis from file (fallback when Config is not available)."""
-    raw = read_config(config_path)
-    rest_apis = raw.get(_REST_APIS_KEY, {})
-    if not isinstance(rest_apis, dict) or not rest_apis:
-        return "No REST APIs registered."
-    return _format_rest_apis(rest_apis)
+def get_rest_apis_summary(config_path) -> str:
+    """Read rest-api entries from mcp-plugin.json5 (fallback for offline use).
+
+    The config path is resolved by mcp-plugin ($MCP_PLUGIN_FILE), so
+    *config_path* is accepted for signature compatibility and ignored.
+    """
+    return _format_rest_apis(mcp_plugin_config.list_rest_apis())
 
 
 class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
@@ -127,35 +120,11 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         api_key: str = kwargs.get("api_key", "")
         description: str = kwargs.get("description", "")
 
-
-
-        is_update = False
-        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
-        
-        if config is not None and config._path is not None:
-            is_update = name in config.rest_apis
-            config.save_rest_api(
-                name=name, spec_url=spec_url, base_url=base_url,
-                api_key=api_key, description=description,
-            )
-        else:
-            # Fallback: write directly to file (e.g. in tests)
-            raw = read_config(self._config_path)
-            section = _rest_api_section(raw)
-            is_update = name in section
-            old = section.get(name)
-            old_enabled = old.get("enabled") if isinstance(old, dict) else None
-            entry: dict = {"spec_url": spec_url, "base_url": base_url}
-            if api_key:
-                entry["api_key"] = api_key
-            if description:
-                entry["description"] = description
-            if old_enabled is not None:
-                # Preserve the enable/disable flag across an update.
-                entry["enabled"] = old_enabled
-            section[name] = entry
-            write_config(self._config_path, raw)
-
+        is_update = name in mcp_plugin_config.list_rest_apis()
+        mcp_plugin_config.save_rest_api(
+            name=name, spec_url=spec_url, base_url=base_url,
+            api_key=api_key, description=description,
+        )
         logger.info("rest_api_saved name=%s spec=%s", name, spec_url)
 
         mcp_args = [
@@ -178,6 +147,7 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         if description:
             result_lines.append(f"  description: {description}")
 
+        ctx = getattr(self, "_ctx", None)
         mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is not None:
             try:
@@ -220,25 +190,11 @@ class RestApiRemoveTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompati
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
 
-        
-
-        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
-        
-        if config is not None and config._path is not None:
-            if name not in config.rest_apis:
-                return f"REST API '{name}' is not registered."
-            config.remove_rest_api(name)
-        else:
-            # Fallback: write directly to file
-            raw = read_config(self._config_path)
-            rest_apis = raw.get(_REST_APIS_KEY, {})
-            if not isinstance(rest_apis, dict) or name not in rest_apis:
-                return f"REST API '{name}' is not registered."
-            del rest_apis[name]
-            write_config(self._config_path, raw)
-
+        if not mcp_plugin_config.remove_rest_api(name):
+            return f"REST API '{name}' is not registered."
         logger.info("rest_api_removed name=%s", name)
 
+        ctx = getattr(self, "_ctx", None)
         mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is not None:
             try:
@@ -260,13 +216,7 @@ class RestApiListTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibl
     }
 
     async def execute(self, **kwargs) -> str:
-        
-
-        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
-        
-        if config is not None and config._path is not None and config.rest_apis:
-            return _format_rest_apis(config.rest_apis)
-        return get_rest_apis_summary(self._config_path)
+        return _format_rest_apis(mcp_plugin_config.list_rest_apis())
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -291,36 +241,11 @@ class RestApiSetEnabledTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIn
         name: str = kwargs["name"]
         enabled: bool = kwargs["enabled"]
 
-        
+        if name not in mcp_plugin_config.list_rest_apis():
+            return f"'{name}' not found in rest_apis."
+        mcp_plugin_config.set_server_enabled(name, enabled)
 
-        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
-        
-        if config is not None and config._path is not None:
-            if name not in config.rest_apis:
-                return f"'{name}' not found in rest_apis."
-            entry = config.rest_apis[name]
-            if not isinstance(entry, dict):
-                return f"'{name}' in rest_apis is malformed."
-            entry["enabled"] = enabled
-            config.save_rest_api(
-                name=name,
-                spec_url=entry.get("spec_url", ""),
-                base_url=entry.get("base_url", ""),
-                api_key=entry.get("api_key", ""),
-                description=entry.get("description", ""),
-                source=entry.get("source"),
-            )
-        else:
-            raw = read_config(self._config_path)
-            entries = raw.get("rest_apis", {})
-            if not isinstance(entries, dict) or name not in entries:
-                return f"'{name}' not found in rest_apis."
-            entry = entries[name]
-            if not isinstance(entry, dict):
-                return f"'{name}' in rest_apis is malformed."
-            entry["enabled"] = enabled
-            write_config(self._config_path, raw)
-
+        ctx = getattr(self, "_ctx", None)
         mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is not None:
             try:

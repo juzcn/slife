@@ -1,4 +1,4 @@
-"""Tests for slife.plugins.mcp.server — wrapper-server tool registration.
+"""Tests for mcp_plugin.server — wrapper-server tool registration.
 
 Regression test for a decorator-detachment bug: the
 ``@mcp.tool(name="mcp_set")`` decorator must bind to the
@@ -35,12 +35,12 @@ def restore_root_logger():
 
 def _import_mcp_server():
     """Import the wrapper server fresh, stubbing the logging side-effect."""
-    sys.modules.pop("slife.plugins.mcp.server", None)
+    sys.modules.pop("mcp_plugin.server", None)
     with patch(
-        "slife.server_utils.setup_server_logging",
+        "mcp_plugin.server_runtime.setup_server_logging",
         return_value=Path("unused.log"),
     ):
-        return importlib.import_module("slife.plugins.mcp.server")
+        return importlib.import_module("mcp_plugin.server")
 
 
 class TestAddServerToolRegistration:

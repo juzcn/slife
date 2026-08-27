@@ -24,13 +24,10 @@ from enum import Enum
 
 import httpx
 
-from slife.platform import resolve_command, terminate_process
+from mcp_plugin.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
+from mcp_plugin.platform import kill_process_tree, resolve_command, terminate_process
 
 logger = logging.getLogger(__name__)
-
-# Pattern for embedded ${VAR} references in arg strings
-import re as _re
-_ENV_REF = _re.compile(r"\$\{(\w+)\}")
 
 # ── Health check / reconnect ────────────────────────────────────────────
 _HEALTH_CHECK_INTERVAL = 30.0      # seconds between health pings
@@ -41,27 +38,6 @@ _RECONNECT_BACKOFF_MULTIPLIER = 2.0
 # Bound on the connect handshake (initialize) — a server that accepts the
 # transport but never answers initialize must not hang connect() forever.
 _CONNECT_HANDSHAKE_TIMEOUT = 30.0
-
-
-def _is_env_ref(value: str) -> bool:
-    """True if value is a pure ``${VAR}`` reference (no surrounding text)."""
-    return bool(_ENV_REF.fullmatch(value))
-
-
-def _resolve_embedded_refs(value: str) -> str:
-    """Resolve embedded ``${VAR}`` refs through os.environ → credstore."""
-    from slife.config import _try_credstore_lookup
-
-    def _replace(m):
-        var = m.group(1)
-        env_val = os.environ.get(var)
-        if env_val:
-            return env_val
-        cred_val = _try_credstore_lookup(var)
-        if cred_val:
-            return cred_val
-        return m.group(0)  # unresolved — leave as-is
-    return _ENV_REF.sub(_replace, value)
 
 
 class ServerStatus(Enum):
@@ -82,6 +58,8 @@ class ServerConfig:
     enabled: bool = True  # False = don't auto-connect at startup
     description: str = ""
     auth: dict | None = None  # OAuth config for device code flow
+    source: dict | None = None  # provenance metadata (e.g. {"type": "rest_api"})
+    os_paths: bool = False  # inject --allow-path from the OS-accessible path set
 
     @property
     def transport(self) -> str:
@@ -161,7 +139,7 @@ class MCPServerConnection:
         Mutates ``self.config.headers`` in place — the transport layer
         picks up the token automatically.
         """
-        from slife.mcp.oauth import (
+        from mcp_plugin.oauth import (
             get_valid_token,
             run_device_code_flow,
             refresh_access_token,
@@ -236,7 +214,7 @@ class MCPServerConnection:
                     self._request("initialize", {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {},
-                        "clientInfo": {"name": "slife-mcp", "version": "0.1.0"},
+                        "clientInfo": {"name": "mcp-plugin", "version": "0.1.0"},
                     }),
                     timeout=_CONNECT_HANDSHAKE_TIMEOUT,
                 )
@@ -278,11 +256,9 @@ class MCPServerConnection:
                     self._status = ServerStatus.DISCONNECTED
                     return
 
-                # A reconnect (not the first connect) can mean the server's
-                # tool surface changed — notify listeners so they re-discover
-                # and re-register.  The first connect is excluded: the caller
-                # (mcp_set / auto-connect) registers tools for it, so firing
-                # here too would trigger a redundant reconcile at startup.
+                # A connect (first or reconnect) can mean the server's tool surface
+                # appeared or changed — notify listeners so they re-discover
+                # and re-register (idempotent full-diff registration).
                 await self._fire_on_reconnect()
 
                 if self._health_task is None or self._health_task.done():
@@ -326,36 +302,18 @@ class MCPServerConnection:
                     self._health_task = asyncio.create_task(self._health_monitor())
 
     async def _fire_on_reconnect(self) -> None:
-        """Notify listeners when a connect succeeded but the caller didn't
-        register tools for it.
+        """Notify listeners that the server is connected.
 
-        Two cases:
-          - a RECONNECT (the server was connected before, then recovered) —
-            the tool surface may have changed;
-          - a recovery after the INITIAL connect failed — the caller
-            (mcp_set / auto-connect) saw the failure and skipped registration.
-
-        The plain first connect is excluded: the caller handles it and fires
-        here too would trigger a redundant full reconcile for every server at
-        startup.  Best-effort: a failing listener never breaks the connection.
+        Fires on EVERY successful connect (first and reconnects).  A server
+        connecting asynchronously from mcp-plugin.json5 — the standalone
+        startup path — must also reach registered listeners; full-diff
+        registration on the listener side keeps this idempotent.  Best-effort:
+        a failing listener never breaks the connection.
         """
-        should_notify = self._ever_connected or self._notify_on_next_success
         self._ever_connected = True
         self._notify_on_next_success = False
-        # A background recovery supersedes the startup "retrying" warning —
-        # record the healthy state so system_health stops reporting this
-        # server as failed even though it is now connected.
-        try:
-            from slife.health import record
-            record(
-                "mcp_server", "ok",
-                key=self.config.name, value="connected",
-                hint=f"MCP server '{self.config.name}' connected.",
-                replace=True,
-            )
-        except Exception:
-            pass
-        if should_notify and self._on_connected is not None:
+        logger.info("mcp_connected server=%s", self.config.name)
+        if self._on_connected is not None:
             try:
                 await self._on_connected()
             except Exception:
@@ -366,8 +324,6 @@ class MCPServerConnection:
 
     async def _connect_stdio(self) -> None:
         """Spawn server as subprocess and set up pipe I/O."""
-        from slife.config import _resolve_secret
-
         exe = resolve_command(self.config.command)
         env = dict(os.environ)
         if self.config.env:
@@ -380,6 +336,10 @@ class MCPServerConnection:
             else _resolve_embedded_refs(arg)
             for arg in self.config.args
         ]
+        if self.config.os_paths:
+            from mcp_plugin.os_detect import get_os_accessible_paths
+            for p in get_os_accessible_paths():
+                resolved_args += ["--allow-path", p]
 
         self._process = await asyncio.create_subprocess_exec(
             exe, *resolved_args,
@@ -850,7 +810,7 @@ class MCPServerConnection:
 
     async def _drain_stderr(self) -> None:
         assert self._process and self._process.stderr
-        from slife.logfmt import read_stderr_lines, sanitize_secrets
+        from mcp_plugin.logging import read_stderr_lines, sanitize_secrets
         try:
             # Shared hardened reader — an over-long stderr line must not
             # kill this relay (a dead relay wedges the server's stderr
@@ -913,8 +873,7 @@ class MCPServerConnection:
             # terminate_process kills only the direct child — npx/uvx spawn
             # grandchildren that outlive it on Windows.  Kill the whole tree
             # first, then terminate_process cleans up the pipe transports
-            from slife.tools.exec import _kill_process_tree
-            await _kill_process_tree(self._process)
+            await kill_process_tree(self._process)
             await terminate_process(self._process, label=f"mcp_conn:{self.config.name}")
         self._process = None
 
