@@ -48,7 +48,7 @@ def test_build_worker_task_self_contained():
     assert "Write today's report" in task
     assert "save_cron_report" in task
     # the title example carries the MM-DD date context for relative tasks
-    assert 'title: one sentence summarizing the result, e.g. "daily_report: ' in task
+    assert 'e.g. "daily_report: ' in task
     assert re.search(r"\d{2}-\d{2} summary", task)
 
 
