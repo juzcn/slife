@@ -91,6 +91,7 @@ class ToolCallInfo:
     id: str
     name: str
     arguments: dict
+    args_truncated: bool = False
 
 
 @dataclass
@@ -343,6 +344,22 @@ class AgentLoop:
     # ── Tool call helpers ──────────────────────────────────────────
 
     @staticmethod
+    def _flag_truncated_args(tc: ToolCallInfo, result: str) -> str:
+        """Prepend a visible marker when the provider truncated the tool's
+        argument JSON mid-stream and the call ran with no arguments.
+
+        The marker lands in the tool result the LLM and the UI both see —
+        a log line alone would let the empty-argument rerun pass silently.
+        """
+        if not tc.args_truncated:
+            return result
+        return (
+            "⚠ Provider truncated this tool call's arguments (JSON cut "
+            "mid-stream) — the tool ran with NO arguments. If arguments "
+            "were required, re-issue the call.\n\n" + result
+        )
+
+    @staticmethod
     def _truncate_args(args: dict, max_len: int = 80) -> dict:
         """Truncate (and mask) long argument values for readable log output.
 
@@ -390,18 +407,23 @@ class AgentLoop:
                 )
             except json.JSONDecodeError:
                 # Truncated by max_tokens / provider mid-argument — surface it
-                # instead of silently running the tool with no arguments (a
-                # destructive command would otherwise become a confusing no-op).
+                # in the tool result instead of silently running the tool with
+                # no arguments (a destructive command would otherwise become a
+                # confusing no-op, and a default-arg tool a wrong effect).
                 logger.warning(
                     "tool_args_malformed id=%s name=%s raw=%.120s",
                     acc["id"], acc["name"], acc["arguments"],
                 )
                 args = {}
+                truncated = True
+            else:
+                truncated = False
             result.append(
                 ToolCallInfo(
                     id=acc["id"],
                     name=acc["name"],
                     arguments=args,
+                    args_truncated=truncated,
                 )
             )
         return result
@@ -1020,6 +1042,7 @@ class AgentLoop:
                     f"  Poll with check_async(task_id=\"{task_id}\").\n"
                     f"  Cancel with cancel_async(task_id=\"{task_id}\")."
                 )
+                result = self._flag_truncated_args(tc, result)
                 result = sanitize_secrets(result)
                 if handler:
                     await handler.on_tool_result(tc.id, result, is_error=False)
@@ -1071,6 +1094,9 @@ class AgentLoop:
                         "tool_error name=%s err=%s", tc.name, e,
                     )
 
+            # Surface provider-truncated arguments before secrets handling —
+            # the marker is plain text and must not be sanitized away.
+            result = self._flag_truncated_args(tc, result)
             # Sanitize secrets BEFORE anything else — prevents API keys
             # from reaching the LLM context or TUI display.
             result = sanitize_secrets(result)

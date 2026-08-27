@@ -177,6 +177,25 @@ class TestBuildToolCallsFromDeltas:
         result = AgentLoop._build_tool_calls_from_deltas(accum)
         assert result[0].arguments == {}
 
+    def test_invalid_json_marks_truncated(self):
+        """Malformed (truncated) JSON flags args_truncated=True."""
+        accum = {0: {"id": "c1", "name": "echo", "arguments": "not valid json {"}}
+        result = AgentLoop._build_tool_calls_from_deltas(accum)
+        assert result[0].arguments == {}
+        assert result[0].args_truncated is True
+
+    def test_valid_json_not_marked_truncated(self):
+        """Valid argument JSON leaves args_truncated=False."""
+        accum = {0: {"id": "c1", "name": "echo", "arguments": '{"a": 1}'}}
+        result = AgentLoop._build_tool_calls_from_deltas(accum)
+        assert result[0].args_truncated is False
+
+    def test_whitespace_arguments_not_marked_truncated(self):
+        """Empty/whitespace args are intentional, not truncation."""
+        accum = {0: {"id": "c1", "name": "echo", "arguments": ""}}
+        result = AgentLoop._build_tool_calls_from_deltas(accum)
+        assert result[0].args_truncated is False
+
 
 # ── AgentLoop construction ────────────────────────────────────────────
 
@@ -536,6 +555,32 @@ class TestExecuteTools:
         msgs = history.to_openai_messages()
         tool_msg = [m for m in msgs if m["role"] == "tool"][0]
         assert "Intentional failure" in tool_msg["content"]
+
+    @pytest.mark.asyncio
+    async def test_truncated_args_surface_in_result(
+        self, sample_model_config, tool_registry, history
+    ):
+        """A provider-truncated-args call shows the marker in the result."""
+        llm = LLMClient(sample_model_config)
+        loop = AgentLoop(llm, tool_registry)
+
+        tcs = [
+            ToolCallInfo(
+                id="c1", name="echo",
+                arguments={"message": "hi"}, args_truncated=True,
+            )
+        ]
+        handler = AsyncMock(spec=AgentEventHandler)
+
+        await loop._execute_tools(tcs, history, handler)
+
+        result_call = handler.on_tool_result.call_args
+        assert result_call[0][1].startswith("⚠ Provider truncated")
+        assert "Echo: hi" in result_call[0][1]
+        # The marker reaches the LLM context (history) too, not just the TUI.
+        msgs = history.to_openai_messages()
+        tool_msgs = [m for m in msgs if m["role"] == "tool"]
+        assert "Provider truncated" in tool_msgs[0]["content"]
 
     @pytest.mark.asyncio
     async def test_no_handler(self, sample_model_config, tool_registry, history):
