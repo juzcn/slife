@@ -1456,7 +1456,7 @@ wheels = [
 
 [[package]]
 name = "mcp-plugin"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "mcp-plugin" }
 dependencies = [
     { name = "credstore" },
