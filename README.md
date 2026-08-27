@@ -13,7 +13,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: 52 native tools across 10 categories (including a reserved harness tool, `_sys_note`), seven built-in plugin services, always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: 52 native tools across 10 categories (including a reserved harness tool, `_sys_note`), six built-in plugin services plus the standalone `mcp-plugin` MCP gateway, always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -84,17 +84,24 @@ User data (`~/.slife/`, `~/.credstore/`) is **not removed** — delete manually 
 
 ### Related tools
 
-The repo also ships three standalone PyPI packages — install each independently (neither pulls the others in):
+The repo also ships four standalone PyPI packages — install each independently:
 
-| Package | One-click install | Purpose |
-|---------|-------------------|---------|
+| Package | Install | Purpose |
+|---------|---------|---------|
 | `slife` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh \| bash` | The agent (this README) |
 | `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh \| bash` | Cross-platform credential storage |
 | `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | Generate `~/.claude/settings.json` |
+| `mcp-plugin` | installed with slife, or `uv tool install mcp-plugin` | MCP gateway for external MCP servers |
 
-Installing slife depends on [credstore](credstore/README.md) only — it does **not** install cc-switch. See the [cc-switch](cc-switch/README.md) and [credstore](credstore/README.md) READMEs for details.
+Installing slife depends on [credstore](credstore/README.md) and
+[mcp-plugin](mcp-plugin/README.md) — it does **not** install cc-switch. See the
+[cc-switch](cc-switch/README.md), [credstore](credstore/README.md), and
+[mcp-plugin](mcp-plugin/README.md) READMEs for details.
 
-All three packages also support a plain `uv tool install <name>` from PyPI. Each has its own one-click installer (macOS / Linux / WSL: `install.sh`, Windows: `install.ps1`) and uninstaller, kept in its package directory.
+`slife`, `credstore`, and `cc-switch` each have a one-click installer
+(macOS / Linux / WSL: `install.sh`, Windows: `install.ps1`) and uninstaller kept
+in their package directories; `mcp-plugin` ships no installer of its own — it is
+installed as a slife dependency or via `uv tool install mcp-plugin` from PyPI.
 
 ## Quick Start
 
@@ -278,11 +285,12 @@ Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs a
 
 ### Plugins
 
-Seven built-in plugins as independent child processes:
+Six built-in plugins as independent child processes, plus the standalone
+`mcp-plugin` MCP gateway:
 
 | Plugin | Role |
 |--------|------|
-| **slife-mcp** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) |
+| **slife-mcp** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) — the standalone `mcp-plugin` package, registered via `plugins.external` |
 | **slife-memdb** | Turns database with hybrid search |
 | **slife-wechat** | Bidirectional WeChat messaging |
 | **slife-memfiles** | Notes / diary / files cabinet (private). Notes & diary dual-written to markdown + a SQLite hybrid index. All save tools return local paths — never auto-publish |

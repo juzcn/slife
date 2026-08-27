@@ -12,7 +12,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：10 个类别共 52 个原生工具（含 1 个保留的 harness 工具 `_sys_note`）、七个内置插件服务、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：10 个类别共 52 个原生工具（含 1 个保留的 harness 工具 `_sys_note`）、六个内置插件服务外加独立的 `mcp-plugin` MCP 网关、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -81,17 +81,24 @@ powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/r
 
 ### 相关工具
 
-本仓库还发布三个独立的 PyPI 包，各自可独立安装（互不依赖）：
+本仓库还发布四个独立的 PyPI 包，各自可独立安装：
 
-| 包 | 一键安装 | 用途 |
+| 包 | 安装 | 用途 |
 |---------|-------------------|---------|
 | `slife` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh \| bash` | 智能体（本 README） |
 | `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh \| bash` | 跨平台凭据存储 |
 | `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | 生成 `~/.claude/settings.json` |
+| `mcp-plugin` | 随 slife 安装，或 `uv tool install mcp-plugin` | 外部 MCP 服务器网关 |
 
-安装 slife 仅依赖 [credstore](credstore/README.md)——**不会**安装 cc-switch。详见 [cc-switch](cc-switch/README.md) 与 [credstore](credstore/README.md) 各自的 README。
+安装 slife 依赖 [credstore](credstore/README.md) 与
+[mcp-plugin](mcp-plugin/README.md)——**不会**安装 cc-switch。详见
+[cc-switch](cc-switch/README.md)、[credstore](credstore/README.md) 与
+[mcp-plugin](mcp-plugin/README.md) 各自的 README。
 
-三个包也都支持直接 `uv tool install <name>`（从 PyPI 安装）。每个包在其目录下都有独立的一键安装脚本（macOS/Linux/WSL 用 `install.sh`，Windows 用 `install.ps1`）与卸载脚本。
+`slife`、`credstore`、`cc-switch` 各自有独立的一键安装脚本
+（macOS/Linux/WSL 用 `install.sh`，Windows 用 `install.ps1`）与卸载脚本，位于
+各自的包目录；`mcp-plugin` 没有自带安装脚本——随 slife 安装，或从 PyPI
+`uv tool install mcp-plugin`。
 
 ## 快速开始
 
@@ -275,11 +282,11 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 
 ### 插件
 
-七个内置插件，独立进程运行：
+六个内置插件（外加独立的 `mcp-plugin` MCP 网关），独立进程运行：
 
 | 插件 | 角色 |
 |------|------|
-| **slife-mcp** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP） |
+| **slife-mcp** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP）——独立包 `mcp-plugin`，经 `plugins.external` 注册 |
 | **slife-memdb** | 对话记录数据库 + 混合搜索 |
 | **slife-wechat** | 双向微信消息 |
 | **slife-memfiles** | 笔记 / 日记 / 文件柜（私有）。所有保存工具返回本地路径——绝不自动发布。笔记与日记双写为 markdown + SQLite 混合索引 |

@@ -567,10 +567,12 @@ containing a server are collected automatically. *See also* Tool module.
 ### B
 
 **Built-in plugin**
-One of the plugins shipped with Slife, discovered and started like any other
-plugin: the MCP gateway, the turns database, messaging, the file cabinet,
-file sharing, media generation, and the mesh. *See also* Plugin (Part II);
-Plugin contract.
+One of the plugins shipped inside the slife wheel, discovered by scanning
+`slife.plugins.*` and started like any other plugin: the turns database,
+messaging, the file cabinet, file sharing, media generation, and the mesh.
+The MCP gateway is no longer a built-in — it is the standalone `mcp-plugin`
+package, registered via `plugins.external`. *See also* Plugin (Part II);
+mcp-plugin; Plugin contract.
 
 ### C
 
@@ -686,6 +688,15 @@ runtime constructions, reproduced at restore and never stored. Markers are
 the unit in which context injection operates. *See also* Channel; Context
 injection (Part II); Annotation (Part II); Turn footnote (Part II); Trim
 note (Part II).
+
+**mcp-plugin**
+The standalone PyPI package that implements the MCP gateway — the plugin that
+connects Slife to external MCP servers (stdio / SSE / Streamable HTTP). It
+lives in the `mcp-plugin/` workspace member (module `mcp_plugin.server`), is
+registered via `plugins.external` in `slife.json5`, and exposes the `mcp_set` /
+`mcp_list` / … management tools plus its own `mcp-plugin` CLI (`set`, `remove`,
+`test [--port N]`, `test mcp <server>`). *See also* Plugin (Part II); Built-in
+plugin; Plugin contract.
 
 **Meta-parameter**
 The developer sense of tool meta-parameters (Part II): the universal

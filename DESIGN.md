@@ -333,7 +333,9 @@ Picker rules (hard-won):
 
 ## Plugin Architecture
 
-Seven built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) for all of them — the sharefile plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`), but its control surface is pure MCP.
+Six built-in plugins run as independent child processes, plus the standalone
+`mcp-plugin` MCP gateway. Communication is via **Streamable HTTP** (MCP
+protocol) for all of them — the sharefile plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`), but its control surface is pure MCP.
 
 **WSL note:** Custom env vars set via `create_subprocess_exec(env=…)` are NOT forwarded to Windows `.exe` processes through WSL interop. `WSLENV` is only read by the WSL `/init` at session start, not by child processes. Therefore, **all MCP server runtimes on WSL must be Linux-native binaries** — the install script enforces this by detecting `/mnt/*` paths and installing native versions.
 
@@ -391,7 +393,7 @@ plugins are peers — a broken memory backend fails loudly where it is used
 (the inbox freezes with a red banner on the first unsavable turn) instead
 of aborting startup.
 
-No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. sharefile's ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal. In practice uvicorn finishes mounting the Streamable HTTP endpoint ~1 s *after* the lifespan signals, so a session established in that window can get a bad SSE transport on Windows/Proactor that hangs `tools/list`; the harness runs that call through `asyncio.timeout` (which, unlike `asyncio.wait_for`, breaks the hang reliably) and, on a timeout, reconnects a fresh session and retries once — by then the plugin is serving, so the race self-heals instead of failing the load.
+No base class, no import hook, no SDK. Built-in plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`; standalone distributions (e.g. `mcp-plugin`, the external MCP gateway) register instead via `plugins.external` in `slife.json5` and are spawned through the same generic lifecycle. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. sharefile's ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal. In practice uvicorn finishes mounting the Streamable HTTP endpoint ~1 s *after* the lifespan signals, so a session established in that window can get a bad SSE transport on Windows/Proactor that hangs `tools/list`; the harness runs that call through `asyncio.timeout` (which, unlike `asyncio.wait_for`, breaks the hang reliably) and, on a timeout, reconnects a fresh session and retries once — by then the plugin is serving, so the race self-heals instead of failing the load.
 
 The MCP client keeps bounded retry (6 attempts, 0.5 s apart, each attempt time-boxed at 10 s including transport setup) as **defense-in-depth**: a plugin that signals early (violating the contract) still loads instead of hanging.
 
@@ -425,9 +427,10 @@ legitimately exclude for loopback-only traffic, and it removes the dependency
 on the user's proxy config being correct.
 
 **Scope — external MCP servers are unaffected.** Outbound traffic to the
-configured external MCP servers (`mcp.servers`) goes through the *mcp plugin's*
-own client (`slife/plugins/mcp/connection.py`), which keeps `trust_env=True`
-— a remote server that genuinely needs the proxy still gets it. Only the local
+configured external MCP servers (`mcp.servers`) goes through the *mcp-plugin*
+gateway's own client (`mcp-plugin/mcp_plugin/connection.py`), which keeps
+`trust_env=True` — a remote server that genuinely needs the proxy still gets
+it. Only the local
 plugin client is proxy-free. Regression test:
 `TestMCPClientConnect::test_connect_passes_proxy_free_http_client`.
 
@@ -979,7 +982,6 @@ slife/
     credentials.py     #   Credential check/inject/uninject
     meta.py            #   list_native_tools, check_async, cancel_async, clear_context, notify_user
   plugins/             # Built-in plugins (auto-discovered server.py packages)
-    mcp/               #   External MCP gateway (raw JSON-RPC: stdio/SSE/streamable)
     memdb/             #   Turns database (store, search, embeddings, schema.sql)
     wechat/            #   WeChat messaging (iLink ClawBot client)
     memfiles/          #   Private notes/diary/files cabinet (server.py tools, store.py + schema.sql)
@@ -1041,6 +1043,13 @@ credstore/
     _shell.py          # Shell formatting (export/unset) + persistence
     _config.py         # Config file loading
     _tty.py            # Masked terminal input
+
+mcp-plugin/             # Standalone workspace member — the external MCP gateway
+  mcp_plugin/           #   (raw JSON-RPC: stdio/SSE/streamable), registered via plugins.external
+    cli.py              #   mcp-plugin CLI (set / remove / test [--port N] / test mcp <server>)
+    server.py           #   FastMCP gateway server; main() accepts --port
+    connection.py       #   ConnectionPool / MCPServerConnection
+    client.py           #   Streamable HTTP client (used by the harness & CLI)
 
 skills/                # On-demand SKILL.md skills (seeded to ~/.slife/skills/)
 ```
