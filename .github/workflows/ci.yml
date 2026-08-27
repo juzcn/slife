@@ -29,10 +29,11 @@ jobs:
           uv build --out-dir dist
           uv build --out-dir dist --package credstore
           uv build --out-dir dist --package cc-switch
+          uv build --out-dir dist --package mcp-plugin
 
       - name: Install
         run: |
-          uv pip install dist/slife-*.whl dist/credstore-*.whl dist/cc_switch-*.whl
+          uv pip install dist/slife-*.whl dist/credstore-*.whl dist/cc_switch-*.whl dist/mcp_plugin-*.whl
           uv pip install pytest pytest-asyncio
 
       - name: Run tests
@@ -45,3 +46,4 @@ jobs:
           uv run pytest -v --tb=short --no-header --maxfail=5
           uv run --directory credstore pytest -v --tb=short --no-header --maxfail=5
           uv run --directory cc-switch pytest -v --tb=short --no-header --maxfail=5
+          uv run --directory mcp-plugin pytest -v --tb=short --no-header --maxfail=5
