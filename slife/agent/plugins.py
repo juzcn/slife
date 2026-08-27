@@ -9,20 +9,22 @@ Each ``PluginLifecycle`` can run a **watchdog** background task that monitors
 the child process and auto-restarts it on unexpected exit, with exponential
 backoff up to a configurable max restart count.
 
-Readiness (plugin contract): every plugin exposes a standard internal
-``__ready`` tool whose return marks whether the plugin can serve.  The
-condition is **plugin-specific** and covers ONLY the plugin's own serving
-capacity — subordinate/external dependencies (mcp's external servers,
-sharefile's tunnel, embedding backends under a store) are reported
-separately and never gate readiness.  A plugin without ``__ready`` (not yet
-migrated) is ready-if-connected.
+Readiness (MCP plugin contract): a plugin is READY when the MCP
+``initialize`` handshake completes — ``MCPClient.connect()`` runs it
+(``await session.initialize()``), and a plugin server only answers
+``initialize`` after its own initialization (lifespan) succeeded, so a
+returned handshake means the plugin can serve.  The per-plugin serving
+requirement is encoded server-side in the lifespan (e.g. memdb/memfiles
+require their store); it is never probed by a harness tool.
+Subordinate/external dependencies (mcp's external servers, sharefile's
+tunnel, embedding backends under a store) are reported separately and never
+gate readiness.
 """
 
 from __future__ import annotations
 
 import asyncio
 import enum
-import json
 import logging
 import os
 import sys
@@ -68,34 +70,13 @@ class PluginStartStatus(enum.Enum):
     FAILED = "failed"
 
 
-#: Readiness states (plugin contract).  ``READY_PENDING`` → a terminal
-#: state after the ``__ready`` handshake runs: ``READY_READY`` (can serve),
-#: ``READY_DEGRADED`` (serving but degraded/broken — surfaced, not gating),
-#: ``READY_FAILED`` (startup failed).  ``SKIPPED`` plugins stay PENDING.
+#: Readiness states.  ``READY_PENDING`` → ``READY_READY`` once the MCP
+#: ``initialize`` handshake completes (the plugin can serve) — see the
+#: module docstring.  ``SKIPPED`` plugins stay PENDING; failed startups
+#: surface via ``PluginStartStatus.FAILED``.
 READY_PENDING = "pending"
 READY_READY = "ready"
-READY_DEGRADED = "degraded"
 READY_FAILED = "failed"
-
-
-def _is_unknown_tool_error(text: str) -> bool:
-    """True when an MCP ``Error:`` string means the tool doesn't exist.
-
-    Used by :meth:`PluginLifecycle.probe_ready` to treat a missing
-    ``__ready`` (plugin not yet migrated) as ready-if-connected rather
-    than a genuine readiness failure.
-    """
-    low = text.lower()
-    return any(
-        needle in low
-        for needle in (
-            "not found",
-            "methodnotfound",
-            "unknown tool",
-            "does not exist",
-            "no such tool",
-        )
-    )
 
 
 class PluginLifecycle:
@@ -128,9 +109,10 @@ class PluginLifecycle:
         self._max_restarts: int = _WATCHDOG_MAX_RESTARTS
         self._restart_count: int = 0
 
-        # ── Readiness (plugin contract) ─────────────────────────────
-        # Filled by probe_ready() during spawn; terminal states are
-        # READY_READY / READY_DEGRADED / READY_FAILED (SKIPPED stays PENDING).
+        # ── Readiness (MCP plugin contract) ─────────────────────────
+        # Filled by mark_initialized() once the spawn's MCP initialize
+        # handshake completed; terminal state is READY_READY (SKIPPED
+        # stays PENDING; spawn failure → FAILED via PluginStartStatus).
         self.ready: bool = False
         self.ready_state: str = READY_PENDING
         self.ready_detail: str = ""
@@ -197,8 +179,10 @@ class PluginLifecycle:
                 self._service.tool_registry.register(tool)
             logger.debug("%s_tools_registered count=%d", self.name, len(proxy_tools))
 
-            # Readiness handshake — part of spawn, not a later poll.
-            await self.probe_ready()
+            # Readiness (MCP plugin contract): connect() already ran the
+            # initialize handshake — completing it is the plugin's ready
+            # declaration; record it.
+            self.mark_initialized()
         except Exception:
             # A failed spawn must not leave the lifecycle pointing at a
             # live-but-unconnected child — the watchdog would block on its
@@ -214,50 +198,24 @@ class PluginLifecycle:
 
     # ── readiness (plugin contract) ─────────────────────────────────────
 
-    def set_ready(self, ready: bool, state: str, detail: str = "") -> None:
-        """Record this plugin's readiness outcome and surface it."""
-        self.ready = ready
-        self.ready_state = state
-        self.ready_detail = detail
+    def mark_initialized(self) -> None:
+        """Record that the plugin's MCP ``initialize`` handshake completed.
+
+        Readiness (MCP plugin contract): a plugin is ready exactly when its
+        ``session.initialize()`` handshake succeeded — the server only
+        answers it after its own initialization (lifespan) completed.  The
+        per-plugin serving requirement is encoded server-side in the
+        lifespan, never probed here.  Called once the client connected;
+        informational in itself, made explicit so the readiness state shows
+        in logs and the TUI.
+        """
+        self.ready = True
+        self.ready_state = READY_READY
+        self.ready_detail = "initialized (MCP handshake)"
         logger.info(
             "%s_ready ready=%s state=%s detail=%s",
-            self.name, ready, state, detail,
+            self.name, self.ready, self.ready_state, self.ready_detail,
         )
-
-    async def probe_ready(self) -> None:
-        """Run the plugin's ``__ready`` handshake; record readiness.
-
-        Unified readiness contract.  A plugin declares a standard internal
-        ``__ready`` tool; its return marks whether the plugin can serve.
-        The condition is **plugin-specific** and covers ONLY the plugin's
-        own serving capacity — subordinate/external dependencies (mcp's
-        external servers, sharefile's tunnel, embedding backends under a
-        store) are reported separately and never gate readiness.
-
-        A plugin without ``__ready`` (not yet migrated) is
-        ready-if-connected, preserving the old behaviour — detected from
-        the method-not-found error the call returns.
-        """
-        client = self.client
-        if client is None or not client.is_connected:
-            self.set_ready(False, READY_DEGRADED, "not connected")
-            return
-        raw = await client.call_tool("__ready", {})
-        if raw.startswith("Error:"):
-            if _is_unknown_tool_error(raw):
-                self.set_ready(True, READY_READY, "connected (no __ready declared)")
-            else:
-                self.set_ready(False, READY_DEGRADED, raw[:120])
-            return
-        try:
-            data = json.loads(raw) if raw else {}
-        except ValueError:
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        ok = bool(data.get("ready"))
-        detail = str(data.get("detail") or data.get("state") or "")
-        self.set_ready(ok, READY_READY if ok else READY_DEGRADED, detail)
 
     # ── watchdog ────────────────────────────────────────────────────────
 
@@ -480,6 +438,9 @@ class PluginLifecycle:
         await client.connect(f"http://127.0.0.1:{port}/mcp")
         self.client = client
         self.port = port
+        # Readiness (MCP plugin contract): the connect ran the initialize
+        # handshake — record the plugin as ready for subagent sharing too.
+        self.mark_initialized()
 
     # ── stop ─────────────────────────────────────────────────────────────
 

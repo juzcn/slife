@@ -98,10 +98,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "🔌 Plugin ready: {name}",
         "zh": "🔌 插件已就绪: {name}",
     },
-    "plugin_ready_degraded": {
-        "en": "🔌 Plugin ready (degraded): {name}{detail}",
-        "zh": "🔌 插件已就绪（降级）: {name}{detail}",
-    },
     "plugin_skipped": {
         "en": "ℹ️ Plugin not started: {name}",
         "zh": "ℹ️ 插件未启动: {name}",

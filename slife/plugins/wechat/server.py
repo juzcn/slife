@@ -314,26 +314,6 @@ def _stop_typing_keepalive(from_id: str) -> None:
 
 
 @mcp.tool(
-    name="__ready",
-    description="Internal — readiness handshake (plugin contract): {ready, detail}.",
-)
-async def __ready() -> str:
-    """Readiness handshake — the WeChat server itself can serve.
-
-    Login (QR scan) is a runtime state, not a readiness condition: it can
-    take until the user scans, so it must not gate startup.  It rides
-    along as informational ``detail`` only.
-    """
-    logged_in = bool(getattr(_client, "is_logged_in", False))
-    return json.dumps(
-        {"ready": True,
-         "detail": ("server serving; logged in"
-                    if logged_in else "server serving; awaiting login")},
-        ensure_ascii=False,
-    )
-
-
-@mcp.tool(
     name="__wechat_drain_incoming",
     description="Drain queued incoming WeChat messages. Internal — called by the agent service poll loop.",
 )

@@ -704,9 +704,10 @@ this text. *See also* Language policy.
 The convention a plugin package must follow: a server module with an entry
 point, discovered and spawned as a child process over the Streamable HTTP
 transport, exposing tools through the model-context protocol. Tools whose
-names begin with a double underscore are treated as internal. Every plugin
-also declares a ``__ready`` handshake reporting whether it can serve. *See
-also* Built-in plugin; Internal tool; Readiness (Part III).
+names begin with a double underscore are treated as internal. A plugin is
+ready when its MCP ``initialize`` handshake completes — its lifespan has
+established its own serving capacity, so no ``__ready`` probe tool exists.
+*See also* Built-in plugin; Internal tool; Readiness (Part III).
 
 **Process watchdog**
 The supervisor that monitors a plugin's child process and restarts it on
@@ -721,17 +722,21 @@ and conversion to the function definitions sent to the model. *See also*
 Tool (Part II); Auto-discovery.
 
 **Readiness**
-The state of a plugin under the unified readiness contract: a standard
-internal ``__ready`` tool whose return marks whether the plugin can serve.
-The condition is **plugin-specific** and covers ONLY the plugin's own
-serving capacity — its local store/process. Subordinate or external
+The state of a plugin under the MCP initialize handshake: a plugin is ready
+when the harness's ``initialize`` handshake completes — the server only
+answers it after its own FastMCP lifespan established its serving capacity,
+so the completed handshake is the ready declaration. The per-plugin
+requirement is encoded in the lifespan and covers ONLY the plugin's own
+serving capacity — its local store/process (memdb/memfiles require their
+store; the other plugins have no local requirement). Subordinate or external
 dependencies (mcp's external servers, sharefile's tunnel, wechat's login,
 media's providers, a2a's broker, a store's embedding backend) are NOT
 readiness conditions: they are uncontrollable, self-heal at runtime, and
-are reported as informational ``detail`` instead. A plugin without
-``__ready`` (not yet migrated) is ready-if-connected. Startup holds the
-service open until every plugin spawn has converged (Startup convergence).
-*See also* Plugin contract (Part II); Startup convergence.
+are surfaced separately via status tools. A lifespan that fails its
+requirement traps it — the plugin is reported FAILED and its watchdog
+retries. Startup holds the service open until every plugin spawn has
+converged (Startup convergence). *See also* Plugin contract (Part II);
+Startup convergence.
 
 ### S
 
@@ -764,7 +769,9 @@ are stopped and no thread can block exit. *See also* Daemon thread.
 
 **Startup convergence**
 The point at which every attempted plugin spawn has reached a terminal
-readiness state — ready, degraded, skipped, or failed. The service opens
+outcome — ready (the MCP initialize handshake completed), skipped, or
+failed. Readiness is binary, so there is no start-time "degraded"; runtime
+degradation of dependencies lives in the status surfaces. The service opens
 for user input only after convergence: the inbox consumer and the TUI
 input both wait on the same event, so user input can never race ahead of
 core services (this is what visibly fixes the startup-timing problems of

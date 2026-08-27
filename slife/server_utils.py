@@ -32,6 +32,19 @@ Entry point
   harness's first ``initialize`` always lands on a ready server (see
   :func:`signal_port`).
 
+Readiness (MCP initialize handshake)
+  Readiness is defined by MCP itself: the harness's ``initialize``
+  handshake completes only when the server is up and can respond, so a
+  completed handshake IS the plugin's ready declaration — no ``__ready``
+  tool.  A plugin that needs a local resource to serve (memdb/memfiles
+  require their store) must establish it in its FastMCP lifespan; a failure
+  there fails the lifespan, the port signal never fires, and the harness
+  reports the plugin FAILED (its watchdog backs off and retries).  Dependencies
+  that are NOT required to serve (external MCP servers, ngrok tunnel, MQTT
+  broker, login state, media providers) are deliberately left out of the
+  lifespan and surfaced separately via status tools — they never gate
+  readiness.
+
 Tool registration
   The harness connects to the plugin via Streamable HTTP, calls
   ``tools/list``, and wraps every tool as an ``MCPProxyTool`` via

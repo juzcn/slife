@@ -52,13 +52,17 @@ _MAX_SAVE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 @asynccontextmanager
 async def _memfiles_lifespan(_app):
-    """Ensure the store is ready, then serve.  Public sharing lives in the
-    separate ``sharefile`` plugin, so no tunnel lifecycle here."""
+    """Establish the store, then serve.  Public sharing lives in the
+    separate ``sharefile`` plugin, so no tunnel lifecycle here.
+
+    Readiness (MCP plugin contract): the store must be able to serve before
+    the server answers the harness's ``initialize`` — a store that can't (no
+    connection, missing schema, failing query) is fatal to startup.  It
+    raises here, so the lifespan fails, the port signal never fires, and the
+    harness reports the plugin FAILED instead of serving broken.
+    """
+    await _ensure_store_ready()
     try:
-        try:
-            await _ensure_store()
-        except Exception as e:
-            logger.warning("memfiles_store_init_error err=%s", e)
         yield
     finally:
         global _store, _manager
@@ -69,6 +73,25 @@ async def _memfiles_lifespan(_app):
         if _store is not None:
             await _store.close()
             _store = None
+
+
+async def _ensure_store_ready() -> None:
+    """Establish the plugin's serving capacity (the cabinet/schedule store).
+
+    The readiness requirement encoded in initialization: the store can serve
+    — connection open, schema in place, a query succeeds.  A failure here is
+    fatal (the lifespan raises, so ``initialize`` never completes); the
+    harness's watchdog retries the whole process instead.
+    """
+    try:
+        store = await _ensure_store()
+        if store is None:
+            raise RuntimeError("store not initialized")
+        async with store._c.execute("SELECT 1") as cur:
+            await cur.fetchone()
+    except Exception as e:
+        logger.error("store_unusable_at_startup err=%s", e)
+        raise
 
 
 mcp, _log_path, logger = create_plugin_server(
@@ -579,40 +602,6 @@ async def __cabinet_status() -> str:
     else:
         result["hint"] = "Cabinet connected; semantic index ready."
     return json.dumps(result, ensure_ascii=False)
-
-
-@mcp.tool(
-    name="__ready",
-    description=(
-        "Internal — readiness handshake (plugin contract). Returns "
-        '{"ready": bool, "detail": str}. Never exposed to the LLM.'
-    ),
-)
-async def __ready() -> str:
-    """Readiness handshake — part of the unified plugin readiness contract.
-
-    ``ready: true`` means the cabinet/schedule store can serve (connection
-    open, schema in place, a query succeeds).  The semantic index and its
-    embeddings are NOT a readiness condition — keyword search keeps working
-    without them, so their (re)loading never gates startup.
-    """
-    try:
-        await _ensure_store()
-        store = _store
-        if store is None:
-            return json.dumps(
-                {"ready": False, "detail": "store not initialized"},
-                ensure_ascii=False,
-            )
-        async with store._c.execute("SELECT 1") as cur:
-            await cur.fetchone()
-    except Exception as e:
-        return json.dumps(
-            {"ready": False,
-             "detail": f"store unusable: {type(e).__name__}: {e}"},
-            ensure_ascii=False,
-        )
-    return json.dumps({"ready": True, "detail": "store ok"}, ensure_ascii=False)
 
 
 @mcp.tool(

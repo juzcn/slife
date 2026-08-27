@@ -301,3 +301,72 @@ class TestTokenUsage:
             rowid=3, since="2026-01-01", until="2026-02-01", limit=10,
         )
         assert json.loads(out)["summary"]["count"] == 1
+
+
+class _QueryCursor:
+    """An aiosqlite-like cursor: async context manager with async fetchone."""
+
+    async def __aenter__(self) -> "_QueryCursor":
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+    async def fetchone(self) -> tuple:
+        return (1,)
+
+
+class TestMemdbLifespan:
+    """Readiness (MCP plugin contract): the lifespan gates ``initialize``.
+
+    The store is the plugin's serving requirement, now encoded in
+    initialization — an unusable store raises in the lifespan (the port
+    signal never fires, so the harness reports FAILED) instead of answering
+    a ``__ready`` tool with ``ready: false``.
+    """
+
+    @staticmethod
+    def _ok_store():
+        """A store whose SELECT 1 succeeds — the store can serve."""
+        store = AsyncMock()
+        # aiosqlite's ``Connection.execute`` returns a cursor that supports
+        # ``async with`` — a MagicMock (not AsyncMock) models that.
+        store._c.execute = MagicMock(return_value=_QueryCursor())
+        return store
+
+    @pytest.mark.asyncio
+    async def test_store_failure_raises(self, restore_root_logger):
+        """Store cannot be established → the lifespan raises on enter."""
+        srv = _import_memdb_server()
+        with patch.object(
+            srv, "_ensure_store",
+            AsyncMock(side_effect=RuntimeError("db locked")),
+        ):
+            with pytest.raises(RuntimeError, match="db locked"):
+                async with srv._memdb_lifespan(None):
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_store_query_failure_raises(self, restore_root_logger):
+        """Connection open but the verification query fails → lifespan raises."""
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        store._c.execute = MagicMock(side_effect=RuntimeError("query boom"))
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            with pytest.raises(RuntimeError, match="query boom"):
+                async with srv._memdb_lifespan(None):
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_store_ok_yields_then_closes(self, restore_root_logger):
+        """Store can serve → lifespan yields, and teardown closes it."""
+        srv = _import_memdb_server()
+        store = self._ok_store()
+        srv._store = store
+        srv._manager = None
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            entered = False
+            async with srv._memdb_lifespan(None):
+                entered = True
+        assert entered
+        store.close.assert_awaited_once()

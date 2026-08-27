@@ -14,10 +14,7 @@ from textual.widgets import Static, TextArea
 from slife.config import Config
 from slife.a2a.card import format_presence_line
 from slife.agent.service import AgentService, MemoryDatabaseError
-from slife.agent.plugins import (
-    READY_READY,
-    PluginStartStatus,
-)
+from slife.agent.plugins import PluginStartStatus
 from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
 from slife.ui.i18n import t
@@ -715,14 +712,17 @@ class SlifeApp(App):
     async def _start_plugin_safe(self, name: str, coro) -> None:
         """Start a plugin and show its readiness outcome in chat.
 
-        All plugins are equal peers under the unified readiness contract —
-        there is no required set.  ``SKIPPED`` is an expected no-op (e.g.
-        a2a without a running MQTT broker) and stays neutral; ``FAILED``
-        is a warning — the missing service is surfaced where it is used,
-        and a broken memory backend freezes the inbox with a red banner
-        the first time a turn cannot be saved.  The spawn hang-guard
-        lives in ``AgentService.start_plugin_server``, so a stuck child
-        still lets startup convergence fire.
+        All plugins are equal peers under the readiness contract — there is no
+        required set.  A plugin that returns ``STARTED`` completed its MCP
+        ``initialize`` handshake, which is its ready declaration (the
+        per-plugin serving requirement was encoded server-side in the
+        lifespan).  ``SKIPPED`` is an expected no-op (e.g. a2a without a
+        running MQTT broker) and stays neutral; ``FAILED`` is a warning —
+        the missing service is surfaced where it is used, and a broken
+        memory backend freezes the inbox with a red banner the first time a
+        turn cannot be saved.  The spawn hang-guard lives in
+        ``AgentService.start_plugin_server``, so a stuck child still lets
+        startup convergence fire.
         """
         try:
             status = await coro
@@ -731,19 +731,13 @@ class SlifeApp(App):
                 t("plugin_start_failed", name=name, err=e), color="#d29922",
             )
             return
-        lifecycle = self.service._plugins.get(name)
         if status is PluginStartStatus.STARTED:
-            if lifecycle is not None and lifecycle.ready_state == READY_READY:
-                self._show_system_message(
-                    t("plugin_ready", name=name), color="#3fb950",
-                )
-            else:
-                detail = lifecycle.ready_detail if lifecycle is not None else ""
-                sep = f" — {detail}" if detail else ""
-                self._show_system_message(
-                    t("plugin_ready_degraded", name=name, detail=sep),
-                    color="#d29922",
-                )
+            # STARTED means the MCP initialize handshake completed — the
+            # plugin is ready (its serving requirement was encoded in the
+            # server's lifespan, not probed afterwards).
+            self._show_system_message(
+                t("plugin_ready", name=name), color="#3fb950",
+            )
         elif status is PluginStartStatus.SKIPPED:
             logger.debug("plugin_skipped name=%s", name)
             self._show_system_message(

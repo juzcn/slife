@@ -83,7 +83,6 @@ class TestAddServerToolRegistration:
             "mcp_list_tools",
             "__mcp_call_tool",
             "__mcp_connection_status",
-            "__ready",
         }
 
     @pytest.mark.asyncio

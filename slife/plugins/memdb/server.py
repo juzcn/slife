@@ -32,13 +32,13 @@ from slife.server_utils import create_plugin_server
 async def _memdb_lifespan(_app):
     """Initialise the store, then serve; graceful shutdown.
 
-    Best-effort: if the store fails to init, the server still starts and
-    retries lazily on the first tool call.
+    Readiness (MCP plugin contract): the store must be able to serve before
+    the server answers the harness's ``initialize`` — an unusable store is
+    fatal to startup.  It raises here, so the lifespan fails, the port signal
+    never fires, and the harness reports the plugin FAILED instead of
+    serving broken.
     """
-    try:
-        await _ensure_store()
-    except Exception as e:
-        logger.warning("eager_store_init_error err=%s", e)
+    await _ensure_store_ready()
     try:
         yield
     finally:
@@ -51,6 +51,24 @@ async def _memdb_lifespan(_app):
         if _store is not None:
             await _store.close()
             _store = None
+
+
+async def _ensure_store_ready() -> None:
+    """Establish the plugin's serving capacity (the turn store).
+
+    The readiness requirement encoded in initialization: the store can serve
+    — connection open, schema in place, a query succeeds.  A failure here is
+    fatal (the lifespan raises, so ``initialize`` never completes); runtime
+    self-healing is no longer available, the harness's watchdog retries the
+    whole process instead.
+    """
+    try:
+        store = await _ensure_store()
+        async with store._c.execute("SELECT 1") as cur:
+            await cur.fetchone()
+    except Exception as e:
+        logger.error("store_unusable_at_startup err=%s", e)
+        raise
 
 
 mcp, _log_path, logger = create_plugin_server(
@@ -159,34 +177,6 @@ async def _ensure_store_locked() -> SessionStore:
 # ═══════════════════════════════════════════════════════════════════════
 # Harness tools (programmatic only — not exposed to LLM)
 # ═══════════════════════════════════════════════════════════════════════
-
-
-@mcp.tool(
-    name="__ready",
-    description=(
-        "Internal — readiness handshake (plugin contract). Returns "
-        '{"ready": bool, "detail": str}. Never exposed to the LLM.'
-    ),
-)
-async def __ready() -> str:
-    """Readiness handshake — part of the unified plugin readiness contract.
-
-    ``ready: true`` means the turn store can serve (connection open, schema
-    in place, a query succeeds).  The embedding/vec backend is NOT a
-    readiness condition — the store degrades to keyword-only search without
-    it, so model loading never gates startup.
-    """
-    try:
-        store = await _ensure_store()
-        async with store._c.execute("SELECT 1") as cur:
-            await cur.fetchone()
-    except Exception as e:
-        return json.dumps(
-            {"ready": False,
-             "detail": f"store unusable: {type(e).__name__}: {e}"},
-            ensure_ascii=False,
-        )
-    return json.dumps({"ready": True, "detail": "store ok"}, ensure_ascii=False)
 
 
 @mcp.tool(name="__memory_save_turn", description="Save a turn. Internal — called by the agent loop.")

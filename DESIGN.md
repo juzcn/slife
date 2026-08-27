@@ -358,29 +358,38 @@ distinct from the harness concept (single `_`, e.g. the native `_sys_note`),
 which is LLM-visible-but-reserved and auto-invoked by the loop — see [Harness
 vs Internal Tools](#harness-vs-internal-tools--a-naming-distinction).
 
-**Unified readiness handshake.** Every plugin declares a standard internal
-tool `__ready` returning `{"ready": bool, "detail": str}`. The condition is
-**plugin-specific** and covers ONLY the plugin's own serving capacity — its
-local store/process. Subordinate or external dependencies (mcp's external
-servers, sharefile's tunnel, wechat's login, media's providers, a2a's
-broker, a store's embedding backend) are NOT readiness conditions: they are
-uncontrollable and self-heal at runtime, and ride along as informational
-`detail`. The harness runs the handshake as the last step of spawn, so a
-spawn returning means the plugin has already declared its readiness state
-(ready / degraded / failed; skipped plugins stay pending). A plugin without
-`__ready` (not yet migrated) is ready-if-connected.
+**Readiness (MCP initialize handshake).** Readiness is defined by MCP
+itself: a plugin is ready when the harness's `initialize` handshake
+completes — the client sends `initialize`, the server answers, the client
+sends `initialized`, and the session enters READY. A plugin server only
+answers `initialize` after its own FastMCP lifespan has completed, and each
+plugin encodes its *own* serving requirement in that lifespan — memdb and
+memfiles require their store to be usable (connection open, schema in
+place, a query succeeds); the other plugins have no local requirement, so
+serving is their readiness. A lifespan that cannot meet the requirement
+fails, the port signal never fires, and the spawn fails — the plugin is
+reported FAILED (its watchdog backs off and retries). Subordinate or
+external dependencies (mcp's external servers, sharefile's tunnel, wechat's
+login, media's providers, a2a's broker, a store's embedding backend) are
+NOT readiness conditions: they are uncontrollable and self-heal at runtime,
+and are surfaced separately via their own status tools (`__mcp_connection_status`,
+`__tunnel_status`, `__a2a_status`, `system_health`, …) — they never gate
+readiness.
 
 **Startup convergence gate.** The service opens for user input only after
-every attempted plugin spawn has converged — each reached ready, degraded,
-skipped, or failed. The inbox consumer and the TUI input both await the
-single event (`_startup_settled`), so no turn runs and nothing can be typed
-while plugin startup is still settling — this is what keeps user input from
-racing ahead of core services. The gate is event-driven: set by the last
-spawn's completion, never polled, never time-bounded; the only timeout is a
-30 s hang-guard on a stuck spawn so convergence still fires. There is **no
-"required" plugin** any more: all plugins are peers — a broken memory
-backend fails loudly where it is used (the inbox freezes with a red banner
-on the first unsavable turn) instead of aborting startup.
+every attempted plugin spawn has converged — each reached ready, skipped, or
+failed. Readiness is binary: the initialize handshake either completed
+(ready) or the spawn failed; there is no start-time "degraded" — runtime
+degradation of subordinates lives in the status surfaces. The inbox consumer
+and the TUI input both await the single event (`_startup_settled`), so no
+turn runs and nothing can be typed while plugin startup is still settling —
+this is what keeps user input from racing ahead of core services. The gate
+is event-driven: set by the last spawn's completion, never polled, never
+time-bounded; the only timeout is a 30 s hang-guard on a stuck spawn so
+convergence still fires. There is **no "required" plugin** any more: all
+plugins are peers — a broken memory backend fails loudly where it is used
+(the inbox freezes with a red banner on the first unsavable turn) instead
+of aborting startup.
 
 No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. sharefile's ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal. In practice uvicorn finishes mounting the Streamable HTTP endpoint ~1 s *after* the lifespan signals, so a session established in that window can get a bad SSE transport on Windows/Proactor that hangs `tools/list`; the harness runs that call through `asyncio.timeout` (which, unlike `asyncio.wait_for`, breaks the hang reliably) and, on a timeout, reconnects a fresh session and retries once — by then the plugin is serving, so the race self-heals instead of failing the load.
 

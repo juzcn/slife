@@ -736,3 +736,56 @@ class TestMemfilesStore:
                 store.resolve_safe_path("/etc/passwd")
         finally:
             await store.close()
+
+
+class _QueryCursor:
+    """An aiosqlite-like cursor: async context manager with async fetchone."""
+
+    async def __aenter__(self) -> "_QueryCursor":
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+    async def fetchone(self) -> tuple:
+        return (1,)
+
+
+class TestMemfilesLifespan:
+    """Readiness (MCP plugin contract): the lifespan gates ``initialize``.
+
+    The store is the plugin's serving requirement, now encoded in
+    initialization — an unusable store raises in the lifespan (the port
+    signal never fires, so the harness reports FAILED) instead of answering
+    a ``__ready`` tool with ``ready: false``.
+    """
+
+    @staticmethod
+    def _ok_store(tmp_path):
+        store = _fake_store(tmp_path / "files")
+        # aiosqlite's ``Connection.execute`` returns a cursor that supports
+        # ``async with`` — a MagicMock (not AsyncMock) models that.
+        store._c.execute = MagicMock(return_value=_QueryCursor())
+        return store
+
+    @pytest.mark.asyncio
+    async def test_store_failure_raises(self):
+        """Store cannot be established → the lifespan raises on enter."""
+        with patch.object(plugin, "_ensure_store",
+                          AsyncMock(side_effect=RuntimeError("db locked"))):
+            with pytest.raises(RuntimeError, match="db locked"):
+                async with plugin._memfiles_lifespan(None):
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_store_ok_yields_then_closes(self, tmp_path):
+        """Store can serve → lifespan yields, and teardown closes it."""
+        store = self._ok_store(tmp_path)
+        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            plugin._store = store
+            plugin._manager = None
+            entered = False
+            async with plugin._memfiles_lifespan(None):
+                entered = True
+        assert entered
+        store.close.assert_awaited_once()

@@ -271,8 +271,9 @@ class AgentService:
 
         # ── Plugin startup convergence ──────────────────────────────
         # The service opens for user input only after every attempted
-        # plugin spawn has converged (ready / degraded / skipped /
-        # failed) — the TUI input and the inbox consumer gate on this.
+        # plugin spawn has converged (ready / skipped / failed — the
+        # initialize handshake either completed or the spawn failed).
+        # The TUI input and the inbox consumer gate on this.
         # Event-driven: set by the last spawn's ``finally``, never polled.
         self._startup_plugins: set[str] = set()
         self._startup_settled = asyncio.Event()
@@ -479,18 +480,18 @@ class AgentService:
         and raises on unexpected errors.
 
         Tracks startup convergence: this call is one of the plugin-start
-        batch; when every attempted spawn has returned (ready, degraded,
-        skipped, or failed) the ``_startup_settled`` event fires — the
-        service is then open for user input.
+        batch; when every attempted spawn has returned (ready, skipped, or
+        failed) the ``_startup_settled`` event fires — the service is then
+        open for user input.
         """
         from slife.agent.plugins import PLUGIN_SPAWN_TIMEOUT
 
         self._startup_plugins.add(name)
         try:
             # Hang guard on the spawn await — convergence must fire even for
-            # a stuck child, so the service can still open (degraded).  Not a
-            # readiness deadline: the normal path settles as fast as the real
-            # spawn, no timing guess involved.
+            # a stuck child, so the service can still open.  Not a
+            # readiness deadline: the normal path settles as fast as the
+            # real spawn, no timing guess involved.
             async with asyncio.timeout(PLUGIN_SPAWN_TIMEOUT):
                 return await self._start_plugin_server_impl(name, module)
         finally:
@@ -716,8 +717,10 @@ class AgentService:
             self._plugins[name].port = process.port
             os.environ[f"SLIFE_{name.upper()}_PORT"] = str(process.port)
 
-            # Readiness handshake — part of spawn, not a later poll.
-            await self._plugins[name].probe_ready()
+            # Readiness (MCP plugin contract): create_client() ran the
+            # initialize handshake — completing it is the plugin's ready
+            # declaration; record it.
+            self._plugins[name].mark_initialized()
 
             return True
         except BaseException:
@@ -753,9 +756,10 @@ class AgentService:
                 on_server_removed=self._unpersist_server,
                 on_server_updated=self._on_server_updated,
             )
-            # Readiness = the wrapper's own client is usable; external MCP
-            # servers connect in background and are never part of it.
-            await self._plugins["mcp"].probe_ready()
+            # Readiness (MCP plugin contract): the wrapper's initialize handshake
+            # completed; external MCP servers connect in background and are
+            # never part of it.
+            self._plugins["mcp"].mark_initialized()
             from slife.health import record
             record(
                 "mcp_wrapper", "ok",
