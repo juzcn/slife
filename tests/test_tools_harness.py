@@ -70,6 +70,18 @@ class TestSysNote:
         out = await reg.execute("_sys_note")
         assert "Context usage" in out
 
+    @pytest.mark.asyncio
+    async def test_renders_schedule_reminder(self):
+        reg = _registry()
+        out = await reg.execute(
+            "_sys_note",
+            schedule_status=[{"name": "daily", "due_at": "2026-08-25T09:00:00",
+                              "status": "failed"}],
+        )
+        assert "Scheduled runs not settled" in out
+        assert "daily @ 2026-08-25T09:00:00 (failed)" in out
+        assert "run_schedule_now" in out
+
 
 # ── Internal trim after save (_trim_after_save) ──────────────────────────
 
@@ -258,6 +270,26 @@ class TestConsecutiveUserFix:
         assert last[0]["tool_calls"][0]["function"]["name"] == "_sys_note"
         assert last[1]["role"] == "tool"
         assert "Context usage" in last[1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_auto_invoked_note_injects_schedule_reminder(self):
+        """The loop injects the schedule_provider's open runs into _sys_note
+        each turn — the reminder rides the existing per-turn footer pair."""
+        reg = _registry()
+        loop = _loop(reg)
+        loop._schedule_provider = lambda: [
+            {"name": "daily", "due_at": "2026-08-25T09:00:00",
+             "status": "missed"},
+        ]
+        conv = MessageHistory(system_prompt="SYS")
+        conv.add_user_message("hi")
+
+        await loop._auto_invoke(
+            "_sys_note", loop._footer_kwargs(conv, conv.count_tokens()), conv,
+        )
+
+        assert "Scheduled runs not settled" in conv.messages[-1]["content"]
+        assert "daily @ 2026-08-25T09:00:00 (missed)" in conv.messages[-1]["content"]
 
     def test_context_time_start_change_detected(self):
         """'Context covers' is reported on the first footer, then only when

@@ -342,18 +342,18 @@ records when it was due and its outcome — ``ran`` (a report landed),
 ``failed`` (no report: interrupted, errored, or a previous process lifetime
 left it undone), ``missed`` (due while the agent was not running), or
 ``skipped`` (the user declined a backfill) — and, once the task finishes,
-links to the report that was produced. Missed and failed runs from a
-downtime are announced once, at the next startup, in a single
-``[Schedule missed]`` notice; a missed run can be backfilled with
-``run_schedule_now``, or skipped at the user's choice. *See also* Scheduled
-task; Report.
+links to the report that was produced. A one-shot startup sweep settles
+what a previous process lifetime left behind — unconfirmed runs swept to
+``failed``, fires that were due while the agent was down marked ``missed``
+— silently, with nothing announced; either can still be backfilled with
+``run_schedule_now`` or closed with ``scheduled_run_skip`` at the user's
+choice. *See also* Scheduled task; Report; Startup sweep.
 
 **Schedule marker**
 The annotation that marks a scheduled-task trigger: ``[Schedule <name>]``
 when a task fires — prompting the agent to dispatch it via
-``run_schedule_now`` — and ``[Schedule missed]`` for the startup notice
-listing runs that could not complete. *See also* Scheduled task; Scheduled
-run; Schedule loop.
+``run_schedule_now``. *See also* Scheduled task; Scheduled run; Schedule
+loop.
 
 **Semantic index**
 The auxiliary structure that enables meaning-based (vector) search over the
@@ -490,7 +490,7 @@ metadata, not content:
 | `[INFO: {"turn_id": N, "begin": "…", "end": "…"}]` | The turn footnote: turn id `N` and when it happened. |
 | `[INFO: N oldest turns have been removed from context]` | The trim note: the `N` oldest complete turns were trimmed from context. |
 | `[Heartbeat]` | The heartbeat marker: a synthetic autonomous trigger. |
-| `[Schedule <name>]` | The schedule marker: the scheduled task `<name>` is due. `[Schedule missed]` is the one-time startup notice listing runs missed while the agent was not running. |
+| `[Schedule <name>]` | The schedule marker: the scheduled task `<name>` is due. |
 
 ---
 
@@ -635,9 +635,9 @@ The rule that all model-visible text authored by Slife — the system prompt,
 tool names, descriptions, parameter documentation, and result strings — is
 written in English, while content from external sources (commands, APIs,
 skills, servers) keeps its own language. Scheduled-task messages (the
-``[Schedule <name>]`` trigger, the ``[Schedule missed]`` notice, and the
-completion notification) are operator-facing and written in the operator's
-own language. *See also* Model-visible (Part II).
+``[Schedule <name>]`` trigger and the completion notification) are
+operator-facing and written in the operator's own language. *See also*
+Model-visible (Part II).
 
 ### M
 
@@ -694,12 +694,12 @@ The main-process background loop that times scheduled tasks. Each poll it
 recomputes every enabled task's next fire from the database and injects the
 trigger for fires due within the grace window — the poll cadence runs well
 inside the window, so while the process is up no fire can slip past
-unfired. It fires only: it never records or announces missed runs, which is
-the startup missed notice's job. It never executes a task — the agent
+unfired. It fires only: it never sweeps or announces unfinished runs, which
+is the startup sweep's job. It never executes a task — the agent
 delegates execution to a subagent by calling ``run_schedule_now``. The loop
 also reaps idle schedule workers: a worker whose task has no run still in
 flight is stopped, to be respawned at the next fire. *See also* Scheduled
-task; Scheduled run; Startup missed notice.
+task; Scheduled run; Startup sweep.
 
 **Schema authoring**
 The convention for writing tool schemas: a tool's description states what it
@@ -722,24 +722,25 @@ readiness state — ready, degraded, skipped, or failed. The service opens
 for user input only after convergence: the inbox consumer and the TUI
 input both wait on the same event, so user input can never race ahead of
 core services (this is what visibly fixes the startup-timing problems of
-the missed-notice and the processing indicator). Event-driven — set by the
-last spawn's completion, never polled and never time-bounded; the only
-timeout is a hang-guard on a stuck spawn so convergence still fires.
+the processing indicator). Event-driven — set by the last spawn's
+completion, never polled and never time-bounded; the only timeout is a
+hang-guard on a stuck spawn so convergence still fires.
 There is no "required" plugin list any more: all plugins are peers, and a
 breakdown (e.g. a broken memory backend) fails loudly where it is used —
 the inbox freezes with a red banner on the first turn that cannot be
-saved. *See also* Readiness; Startup missed notice.
+saved. *See also* Readiness; Startup sweep.
 
-**Startup missed notice**
-The one-shot startup pass that surfaces scheduled runs a previous process
-lifetime could not finish: fires due while the agent was down (marked
-`missed`) and runs dispatched but never confirmed (swept to `failed`). It
-runs exactly once, outside the schedule loop, awaiting Startup convergence
-(event-driven — no polling) so it is the service's first message, ahead of
-any user input, and posts a single `[Schedule missed]` notice listing
-both, from which the agent offers to backfill with `run_schedule_now` or
-skip with `scheduled_run_skip`. *See also* Schedule loop; Scheduled run;
-Startup convergence.
+**Startup sweep**
+The one-shot startup pass that settles scheduled runs a previous process
+lifetime could not finish: runs still `pending` (and legacy
+`ran`-without-report) are swept to `failed` — the process that dispatched
+them is gone, so they can never complete — and fires that were due while
+the agent was down are marked `missed`. It runs exactly once, outside the
+schedule loop, awaiting Startup convergence (event-driven — no polling),
+and posts no message; the settled runs just show up in `scheduled_run_list`,
+where one can be backfilled with `run_schedule_now` or closed with
+`scheduled_run_skip`. *See also* Schedule loop; Scheduled run; Startup
+convergence.
 
 **Streamable HTTP**
 The transport over which plugins communicate with the main process: a

@@ -11,25 +11,25 @@ State lives in the memfiles DB (``scheduled_tasks`` / ``scheduled_runs``),
 not in memory.  Each poll recomputes from the DB, so the loop is stateless
 and restart-safe:
 
-  * anchor = newest ``due_at`` across all of a task's runs (ran *and* missed
-    both advance the anchor — a missed fire is never re-detected forever),
-    falling back to ``created_at`` before the first run.
+  * anchor = newest ``due_at`` across all of a task's runs (any run advances
+    the anchor — a fire is never re-detected forever), falling back to
+    ``created_at`` before the first run.
   * candidate = ``next_run(anchor)``.  If it is in the future, wait.
   * If it is due-or-overdue, compare the newest fire ``<= now`` against a
     short grace window: within the window the fire just became due (fire it);
-    past it, slife was down when the fire was due (mark it ``missed``).
-
-Only the newest missed fire is recorded (not every fire inside a long
-downtime) — it is the actionable one.  Missed runs persist so a restart can
-surface them and offer a backfill (:func:`fire_task_now` runs a task now,
-``scheduled_run_skip`` closes a missed/failed run the user declines).
+    past it, slife was down when the fire was due — the loop leaves it, and
+    the one-shot startup sweep (:func:`schedule_startup_sweep`) records the
+    fire as ``missed``.
 
 Run outcome is **optimistically pending**: a fire is recorded as ``pending``
 and only becomes ``ran`` when the worker's report arrives.  Everything else —
 turn error, Esc-interrupt, restart — leaves it a ``failed``-by-default (the
-turn's reply hook may write a best-effort error detail; startup reaps any
-stale ``pending`` whose process lifetime is gone).  This inversion means an
-incomplete run is *never* recorded as a success.
+turn's reply hook may write a best-effort error detail; a one-shot startup
+sweep (:func:`schedule_startup_sweep`) reaps any ``pending`` a previous
+process lifetime could never complete).  This inversion means an incomplete
+run is *never* recorded as a success.  :func:`fire_task_now` runs or
+backfills a task on demand; ``scheduled_run_skip`` closes a failed run the
+user declines.
 """
 
 from __future__ import annotations
@@ -40,6 +40,8 @@ import logging
 import time as _time
 from datetime import datetime
 
+from slife.agent.system_prompt import render_template
+
 logger = logging.getLogger(__name__)
 
 #: TUI filter mark — a trigger turn's user message starts with this prefix.
@@ -47,9 +49,9 @@ SCHEDULE_MARK = "[Schedule"
 
 
 def is_schedule_trigger(text: str) -> bool:
-    """True when *text* is a schedule trigger (cron fire, manual
-    ``run_schedule_now`` backfill, or the startup missed-run notice) — a
-    scheduler-driven turn, not a real user query and not autonomous."""
+    """True when *text* is a schedule trigger (a cron fire or a manual
+    ``run_schedule_now`` backfill) — a scheduler-driven turn, not a real
+    user query and not autonomous."""
     return text.startswith(SCHEDULE_MARK)
 
 
@@ -91,12 +93,15 @@ def trigger_text(name: str, description: str) -> str:
 
     The message prompts the agent to dispatch via ``run_schedule_now``; the
     worker then does the task, saves the report and notifies the user.
+    Template-managed in ``schedule_trigger.j2`` (whose first line must keep
+    the ``[Schedule `` prefix — ``SCHEDULE_MARK`` / ``is_autonomous_trigger``
+    rely on it).
     """
     desc = (description or "").strip() or "(no description)"
-    return (
-        f"{SCHEDULE_MARK} {name}] 定时任务已到触发时间。\n"
-        f"任务描述：{desc}\n"
-        f'请调用 run_schedule_now(name="{name}") 触发执行，调用后简短确认即可。'
+    return render_template(
+        "schedule_trigger.j2",
+        name=name,
+        description=desc,
     )
 
 
@@ -105,30 +110,16 @@ def build_worker_task(name: str, description: str) -> str:
 
     The worker starts with a clean context but has the full toolset (incl.
     ``save_cron_report`` and a way to notify the user).  The headless worker
-    wraps this as ``[Task <rpc_id> from <agent>] …``.
+    wraps this as ``[Task <rpc_id> from <agent>] …``.  The text lives in
+    ``schedule.j2`` (rendered through ``system_prompt.render_template``).
     """
     desc = (description or "").strip() or "(no description)"
     now = datetime.now().astimezone()
-    return (
-        f'You are executing the scheduled task "{name}".\n'
-        f'Current time: {now.strftime("%Y-%m-%d %H:%M:%S %z")}\n'
-        f"\n"
-        f"Task description:\n{desc}\n"
-        f"\n"
-        f"Carry out the task fully, using whatever tools you need. "
-        f"When done, you MUST finish up as follows:\n"
-        f"\n"
-        f'1. Save the report: call save_cron_report(name="{name}", '
-        f"title=<one-line title>, content=<Markdown report>).\n"
-        f'   - title: one sentence summarizing the result, e.g. "{name}: '
-        f'{now.strftime("%m-%d")} summary";\n'
-        f"   - content: complete, well-structured Markdown (sections/lists/tables).\n"
-        f"2. Notify the user that the task is done, then close with one or two "
-        f"sentences on what you did and the report title.\n"
-        f"\n"
-        f"Both finishing steps (saving the report and notifying the user) are "
-        f"part of the task — do not skip them. If the task partially fails, "
-        f"report it honestly and complete what you can."
+    return render_template(
+        "schedule.j2",
+        name=name,
+        description=desc,
+        month_day=now.strftime("%m-%d"),
     )
 
 
@@ -259,81 +250,96 @@ def _surface_reply(service):
     return _reply
 
 
-async def _missed_notice(service, missed: list[dict], stale: list[dict]) -> None:
-    """Inject a notice listing missed and failed-incomplete runs.
+#: Cap on runs shown in the per-turn footer reminder.
+_SYS_NOTE_MAX_RUNS = 20
 
-    Surfaces everything the user may want to backfill in one turn: *missed*
-    runs (slife was down at the due time) and *stale* runs a restart swept to
-    ``failed`` (dispatched but never produced a report).
+
+async def _pending_schedule_runs(client) -> list[dict]:
+    """Open failed/missed runs, ready for the ``_sys_note`` footer.
+
+    Failed and missed are the same question to the user ("backfill or
+    skip?"), so they are merged into one deduplicated list of
+    ``{name, due_at, status}`` items, newest first.  ``status`` keeps the
+    failed/missed distinction visible per line.  A run has exactly one
+    status, and the ``(task_id, due_at)`` guard guarantees it is never
+    rendered twice.
     """
-    from slife.a2a.identity import SCHEDULE, AgentMessage
-    from slife.agent.heartbeat import _SilentHandler
+    names: dict[int, str] = {}
+    tasks = await _call(client, "scheduled_task_list")
+    if isinstance(tasks, dict):
+        for t in tasks.get("tasks", []):
+            tid = t.get("id")
+            if tid is not None:
+                names[tid] = t.get("name", "")
 
-    parts: list[str] = []
-    if missed:
-        parts.append("错过（slife 未运行期间到期）: "
-                     + ", ".join(f"{m['name']} @ {m['due_at']}" for m in missed))
-    if stale:
-        parts.append("未完成（已触发但无报告，重启中断）: "
-                     + ", ".join(f"{m['name']} @ {m['due_at']}" for m in stale))
-    if not parts:
-        return
-    inbox = getattr(service, "inbox", None)
-    if inbox is None:
-        return
-    await inbox.post(AgentMessage(
-        source=SCHEDULE,
-        content=(
-            f"{SCHEDULE_MARK} missed] 发现需要处理的定时执行：{'；'.join(parts)}。"
-            "请告知用户，并询问是否用 run_schedule_now 补做；"
-            "若不需要，用 scheduled_run_skip 标记为已跳过。"
-        ),
-        handler=_SilentHandler(),
-        on_reply=_surface_reply(service),
-    ))
+    seen: set[tuple] = set()
+    runs: list[dict] = []
+    for status in ("failed", "missed"):
+        data = await _call(client, "scheduled_run_list", {"status": status})
+        if not isinstance(data, dict):
+            continue
+        for r in data.get("runs", []):
+            key = (r.get("task_id"), r.get("due_at"))
+            if key in seen:
+                continue  # never render the same run twice
+            seen.add(key)
+            runs.append({
+                "name": names.get(r.get("task_id"), ""),
+                "due_at": r.get("due_at", ""),
+                "status": r.get("status", status),
+            })
+
+    runs.sort(key=lambda r: r["due_at"], reverse=True)
+    return runs[:_SYS_NOTE_MAX_RUNS]
 
 
-async def schedule_startup_notice(service) -> None:
-    """One-shot startup pass: surface runs that failed to complete.
+async def _refresh_schedule_status(service, client) -> None:
+    """Re-publish the open failed/missed runs for the ``_sys_note`` footer."""
+    runs = await _pending_schedule_runs(client)
+    try:
+        service.set_schedule_pending(runs)
+    except Exception:
+        logger.debug("schedule_note_refresh_error", exc_info=True)
 
-    Runs exactly once per process lifetime, outside the timed loop.  The
-    poll catches every fire within a few seconds (30 s cadence << 120 s
-    grace), so while the process is up a run can never be missed — an
-    incomplete run only exists across a downtime.  This pass is the single
-    place that reaps it and tells the LLM:
 
-      1. Mark every run that never produced a report ``failed``
-         (``__scheduled_fail_unconfirmed`` — whatever the reason: turn
-         error, interruption, restart).
-      2. Detect fires that were due while slife was down and mark them
-         ``missed``.
-      3. Post one ``[Schedule missed]`` notice covering both, so the LLM
-         can offer ``run_schedule_now`` backfill or ``scheduled_run_skip``.
+async def schedule_startup_sweep(service) -> None:
+    """One-shot startup sweep: settle runs a previous lifetime left behind.
 
-    ``schedule_loop`` fires only and never re-announces — the missed
-    notice fires exactly once, at startup.
+    Runs exactly once per process lifetime, outside the timed loop, and
+    posts no message (nothing is announced; the settled records feed the
+    per-turn footer reminder and ``scheduled_run_list``):
+
+      1. Sweep unconfirmed runs to ``failed``
+         (``__scheduled_fail_unconfirmed``) — a run is recorded ``pending``
+         optimistically and only becomes ``ran`` when the worker's report
+         arrives, so anything still ``pending`` (or a legacy
+         ``ran``-without-report) at startup can never complete: the process
+         that dispatched it is gone.
+      2. Mark fires that were due while slife was down ``missed``
+         (``__scheduled_mark_missed``), so the downtime shows in history
+         and the anchor advances past the missed fire.
+
+    ``schedule_loop`` fires due tasks only and never sweeps, so these run
+    records survive across a downtime precisely until this pass settles
+    them.
     """
-    # The notice must be the service's FIRST message: wait for the service to
-    # open (every plugin spawn converged — memfiles confirmed serving by its
-    # own __ready handshake), then read the client once.  Event-driven, no
-    # polling, no timing guess — the inbox consumer and the TUI input gate
-    # on the same event, so nothing can be queued ahead of this notice.
+    # The sweep must read the client only after every plugin has converged
+    # (memfiles confirms serving by its own __ready handshake).  Event-
+    # driven, no polling, no timing guess.
     await service.wait_startup_settled()
     client = _memfiles_client(service)
     if client is None:
-        # memfiles unavailable (failed/degraded) — nothing coherent to sweep
-        # or announce; the failure is surfaced elsewhere.
+        # memfiles unavailable (failed/degraded) — nothing coherent to
+        # settle; the failure is surfaced elsewhere.
         return
 
     # 1. Reap dispatch-only runs from a previous lifetime → failed.
-    stale_failed: list[dict] = []
     resp = await _call(client, "__scheduled_fail_unconfirmed")
-    if isinstance(resp, dict):
-        stale_failed = resp.get("runs") or []
+    if isinstance(resp, dict) and (resp.get("runs") or []):
+        logger.info("schedule_startup_swept_failed count=%d", len(resp["runs"]))
 
-    # 2. Detect fires that were due while slife was down → missed.
+    # 2. Mark fires that were due while slife was down → missed.
     now = datetime.now().astimezone()
-    fresh_missed: list[dict] = []
     for task in await _load_task_states(client):
         decision = _classify(task, now)
         if decision is None or decision[0] != "missed":
@@ -344,11 +350,9 @@ async def schedule_startup_notice(service) -> None:
                     {"task_id": task["id"], "due_at": due_iso})
         logger.info("schedule_missed task=%s due_at=%s",
                     task.get("name"), due_iso)
-        fresh_missed.append({"name": task.get("name"), "due_at": due_iso})
 
-    # 3. Tell the LLM once — it decides backfill vs skip.
-    if fresh_missed or stale_failed:
-        await _missed_notice(service, fresh_missed, stale_failed)
+    # Feed the footer's backfill reminder with what we just settled.
+    await _refresh_schedule_status(service, client)
 
 
 async def _recycle_idle_workers(states) -> None:
@@ -387,9 +391,10 @@ async def schedule_loop(service) -> None:
 
     Fires due runs only.  A fire is always observed within the grace window
     (30 s poll << 120 s grace), so while the process is up no run can slip
-    past being fired; runs missed across a downtime are marked and announced
-    exactly once at startup by :func:`schedule_startup_notice`.  Also reaps
-    idle schedule workers whose task has settled.
+    past being fired; runs a previous process lifetime left unfinished are
+    settled exactly once at startup by :func:`schedule_startup_sweep`
+    (unconfirmed runs → ``failed``, fires due while down → ``missed``).
+    Also reaps idle schedule workers whose task has settled.
     """
     while True:
         await asyncio.sleep(POLL_INTERVAL)
@@ -400,6 +405,10 @@ async def schedule_loop(service) -> None:
             now = datetime.now().astimezone()
             states = await _load_task_states(client)
             await _recycle_idle_workers(states)
+
+            # Keep the footer's failed/missed reminder current (it renders
+            # only while open runs exist).
+            await _refresh_schedule_status(service, client)
 
             # Drop stale pending-fire guards (the agent never dispatched).
             stale = [n for n, t in _pending_fires.items()

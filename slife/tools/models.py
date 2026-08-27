@@ -608,15 +608,19 @@ _SYS_NOTE_PARAMS = make_params(
                         "description": "Context coverage start time."},
     presence_events={"type": "array", "default": [],
                      "description": "Peer online/offline events since the last poll."},
+    schedule_status={"type": "array", "default": [],
+                     "description": "Open failed/missed scheduled runs "
+                                    "(objects with name / due_at / status)."},
 )
 
 
 class SysNoteTool(Tool):
-    """Report the current context status (time, usage %, tokens, peers)."""
+    """Report the current context status (time, usage %, tokens, peers,
+    and any unresolved failed/missed scheduled runs)."""
 
     name = "_sys_note"
     category = "Models"
-    description = "Current context status: time, context usage %, token usage, peer online/offline events."
+    description = "Current context status: time, context usage %, token usage, peer online/offline events, unresolved scheduled runs."
     parameters = _SYS_NOTE_PARAMS
 
     async def execute(self, **kwargs) -> str:

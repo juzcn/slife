@@ -423,8 +423,8 @@ class SlifeApp(App):
         # Autonomous heartbeat — surface ⚡ autonomous messages + status pulse.
         self.service.on_autonomous(self._on_autonomous_message)
         self.service.on_heartbeat(self._on_heartbeat)
-        # Scheduler-driven output (cron fires / backfill / missed-notice)
-        # — surface 📅 scheduled messages.
+        # Scheduler-driven output (cron fires / backfill) — surface
+        # 📅 scheduled messages.
         self.service.on_schedule(self._on_schedule_message)
         # Fatal memory-save failure — persistent red banner (memory is core).
         self.service.on_memory_broken(self._on_memory_broken)
@@ -453,8 +453,9 @@ class SlifeApp(App):
 
         Awaits the same readiness gate as the inbox consumer, so user
         input can never race ahead of core services — the very first
-        processed message is whatever was posted at startup (e.g. the
-        [Schedule missed] notice), with the normal processing indicator.
+        processed message is whatever was posted before the input gate
+        opened (e.g. a [Schedule <name>] trigger or a heartbeat), with the
+        normal processing indicator.
         """
         await self.service.wait_startup_settled()
         try:

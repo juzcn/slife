@@ -209,6 +209,10 @@ class AgentService:
         # since last turn"; the guard below only protects against a
         # pathological long-idle + heavy-flapping session.
         self._presence_events: deque[tuple[float, str]] = deque()
+        # Open failed/missed scheduled runs, surfaced in the ``_sys_note``
+        # footer until the user backfills or skips them.  Refreshed by the
+        # schedule loop and the startup sweep (see schedules.py).
+        self._schedule_pending: list[dict] = []
         # Subagents fail fast on LLM errors and cap a single stream call:
         # they have no user to wait on, so a raised provider error / timeout
         # must surface as a pushed-back result rather than retrying a flaky
@@ -232,6 +236,7 @@ class AgentService:
             model_name=config.active_model.display_name,
             input_modalities=", ".join(config.active_model.input_modalities),
             presence_provider=self._drain_presence_events,
+            schedule_provider=self._schedule_pending_provider,
             advance_context_start=self.advance_context_start,
             stream_timeout=subagent_stream_timeout,
             stream_max_retries=0 if is_subagent else None,
@@ -259,16 +264,16 @@ class AgentService:
         # Autonomous heartbeat — background idle task + TUI surfacing hooks.
         self._on_autonomous = None
         self._on_heartbeat = None
-        # Scheduler-driven output (cron fires / backfill / missed-notice).
+        # Scheduler-driven output (cron fires / backfill).
         self._on_schedule = None
         self._heartbeat_task: asyncio.Task | None = None
 
         # Scheduled-task trigger loop — times tasks and injects triggers.
         self._schedule_task: asyncio.Task | None = None
-        #: One-shot startup sweep (``schedules.schedule_startup_notice``):
-        #: reaps and announces runs missed across a downtime, then exits.
-        #: Kept separately from ``_schedule_task`` so the timed loop stays
-        #: purely a firing loop.
+        #: One-shot startup sweep (``schedules.schedule_startup_sweep``):
+        #: reaps runs a previous lifetime left unfinished to failed, then
+        #: exits.  Kept separately from ``_schedule_task`` so the timed loop
+        #: stays purely a firing loop.
         self._schedule_startup_task: asyncio.Task | None = None
 
         # ── Plugin startup convergence ──────────────────────────────
@@ -2194,7 +2199,7 @@ class AgentService:
 
     def on_schedule(self, callback) -> None:
         """Register a callback for scheduler-driven output (cron fires,
-        run_schedule_now backfills, startup missed-run notices)."""
+        run_schedule_now backfills)."""
         self._on_schedule = callback
 
     def on_heartbeat(self, callback) -> None:
@@ -2221,9 +2226,9 @@ class AgentService:
     async def surface_schedule(self, text: str) -> None:
         """Deliver a scheduler-driven message to the TUI (📅 定时).
 
-        Cron fires, ``run_schedule_now`` backfills, and the startup
-        missed-run notice are scheduler output, not autonomous acts — they
-        surface here, not through :meth:`surface_autonomous`."""
+        Cron fires and ``run_schedule_now`` backfills are scheduler output,
+        not autonomous acts — they surface here, not through
+        :meth:`surface_autonomous`."""
         cb = self._on_schedule
         if cb is not None:
             try:
@@ -2308,24 +2313,23 @@ class AgentService:
 
             # Scheduled-task trigger loop — same "main agent only" rule: a
             # subagent is a worker, never the scheduler.  Fires due tasks;
-            # it never announces missed runs (see schedule_startup_notice).
+            # it never sweeps unfinished runs (see schedule_startup_sweep).
             from slife.agent.schedules import schedule_loop
 
             if self._schedule_task is None or self._schedule_task.done():
                 self._schedule_task = asyncio.create_task(schedule_loop(self))
                 logger.info("schedule_loop_started")
 
-            # One-shot startup pass for runs missed across a downtime: reaps
-            # unconfirmed runs to failed, marks new missed fires, posts one
-            # notice.  Runs once and exits.
-            from slife.agent.schedules import schedule_startup_notice
+            # One-shot startup pass for runs a previous lifetime left undone:
+            # reaps unconfirmed runs to failed.  Runs once and exits.
+            from slife.agent.schedules import schedule_startup_sweep
 
             if (self._schedule_startup_task is None
                     or self._schedule_startup_task.done()):
                 self._schedule_startup_task = asyncio.create_task(
-                    schedule_startup_notice(self)
+                    schedule_startup_sweep(self)
                 )
-                logger.info("schedule_startup_notice_started")
+                logger.info("schedule_startup_sweep_started")
 
     async def stop_inbox(self) -> None:
         """Stop the inbox background processor (and the heartbeat)."""
@@ -2671,6 +2675,20 @@ class AgentService:
         events = list(self._presence_events)[-1000:]
         self._presence_events.clear()
         return events
+
+    def set_schedule_pending(self, runs: list[dict]) -> None:
+        """Publish the open failed/missed scheduled runs (footer data).
+
+        Written by the schedule loop and the startup sweep (schedules.py)
+        on their cadence; read by the ``_sys_note`` footer each turn.
+        Each item is ``{name, due_at, status}`` — failed and missed are
+        the same question ("backfill or skip?") to the user, with
+        ``status`` kept so the footer can show which one it was.
+        """
+        self._schedule_pending = runs
+
+    def _schedule_pending_provider(self) -> list[dict]:
+        return self._schedule_pending
 
     async def _notify_a2a_activity(self, kind: str, **kwargs) -> None:
         """Fire all registered A2A activity callbacks."""

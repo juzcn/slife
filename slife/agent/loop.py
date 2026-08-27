@@ -235,6 +235,7 @@ class AgentLoop:
         model_name: str = "",
         input_modalities: str = "",
         presence_provider: Callable[[], list[tuple[float, str]]] | None = None,
+        schedule_provider: Callable[[], list[dict]] | None = None,
         advance_context_start: Callable[[int], Awaitable[bool]] | None = None,
         stream_timeout: float | None = None,
         stream_max_retries: int | None = None,
@@ -275,6 +276,10 @@ class AgentLoop:
         #: Injected by AgentService so the context footer can show what
         #: changed since the last turn.  Returns ``(epoch_seconds, text)``.
         self._presence_provider = presence_provider
+        #: Provider for open failed/missed scheduled runs (footer reminder).
+        #: Returns render-ready ``{name, due_at, status}`` items; the loop
+        #: injects them into ``_sys_note`` each turn.
+        self._schedule_provider = schedule_provider
         self._cancel_event = asyncio.Event()
         # Last API usage, tracked PER CONVERSATION (keyed by id()).  The
         # heartbeat / A2A / wechat turns run in their own small histories,
@@ -627,6 +632,9 @@ class AgentLoop:
             # expression while cancelled would lose them.
             args = dict(args)
             args["presence_events"] = self._presence_provider()
+        if name == "_sys_note" and self._schedule_provider is not None:
+            args = dict(args)
+            args["schedule_status"] = self._schedule_provider()
         tool = self.tool_registry.get(name)
         if tool is None:
             logger.warning("auto_invoke_tool_missing name=%s", name)

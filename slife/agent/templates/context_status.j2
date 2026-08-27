@@ -13,6 +13,13 @@ Current turn info you need to know:
    - Switched shell: {{ shell }}
 {%- endif %}
    - Context usage: {{ last_context_tokens }} ({{ last_usage_pct }}%)
+{%- if schedule_status %}
+▸ Scheduled runs not settled
+{%- for run in schedule_status %}
+   - {{ run.name }} @ {{ run.due_at }} ({{ run.status }})
+{%- endfor %}
+   Backfill with run_schedule_now, or mark skipped with scheduled_run_skip.
+{%- endif %}
 {%- if presence_events %}
 ▸ Recent peer online/offline
 {%- for ev in presence_events %}

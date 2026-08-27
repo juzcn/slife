@@ -1,0 +1,13 @@
+You are executing the scheduled task "{{ name }}".
+
+Task description:
+{{ description }}
+
+Carry out the task fully, using whatever tools you need. When done, you MUST finish up as follows:
+
+1. Save the report: call save_cron_report(name="{{ name }}", title=<one-line title>, content=<Markdown report>).
+   - title: one sentence summarizing the result, e.g. "{{ name }}: {{ month_day }} summary";
+   - content: complete, well-structured Markdown (sections/lists/tables).
+2. Notify the user that the task is done, then close with one or two sentences on what you did and the report title.
+
+Both finishing steps (saving the report and notifying the user) are part of the task — do not skip them. If the task partially fails, report it honestly and complete what you can.

@@ -14,7 +14,7 @@
 8. [Memory (MemDB)](#memory-memdb) — schema, search, embedding, session restore, agent isolation
 9. [A2A — Agent-to-Agent (mesh)](#a2a--agent-to-agent-mesh) — MQTT mesh, unified inbox, task store, subagent workers
 10. [Image & Memfiles](#image--memfiles) — @-syntax, image display, memfiles plugin, ngrok
-11. [Scheduled Tasks](#scheduled-tasks) — schedule loop, trigger→subagent execution, run/report record, missed runs
+11. [Scheduled Tasks](#scheduled-tasks) — schedule loop, trigger→subagent execution, run/report record, startup sweep
 12. [UI](#ui) — widgets, timestamps, progressive disclosure, i18n
 13. [Config & Credentials](#config--credentials) — two-layer architecture, credstore matrix, secret sanitization, config sections
 14. [Health Checks](#health-checks)
@@ -193,7 +193,7 @@ The system prompt splits **identity** from **world** so each role reads one cohe
 
 - **Identity** — `slife/agent/templates/agent.j2` (main agent) / `subagent.j2` (worker): who the agent is. Role framing only — heartbeat/persistence ownership for the main agent, ephemeral/send-only constraints for a worker. The only part that carries persona.
 - **World** — `slife/agent/templates/slife.j2`, `{% include 'slife.j2' %}` by both identity templates: the runtime spec — context policy (floor/ceiling/tool-result %), host platform (OS, arch, shell, python), workspace paths (data/config/logs/db/images/skills), credstore backend name, MCP tool naming prefix, and A2A broker info when configured. Byte-identical in both roles.
-- **Dynamic** — `slife/agent/templates/context_status.j2`, rendered by the `_sys_note` tool (auto-invoked once per turn): current time + UTC offset and context usage % always; context time range when set; model/CWD/shell/modalities only when changed; pending A2A peer presence events since the last turn (the same lines the TUI shows, drained once).
+- **Dynamic** — `slife/agent/templates/context_status.j2`, rendered by the `_sys_note` tool (auto-invoked once per turn): current time + UTC offset and context usage % always; context time range when set; model/CWD/shell/modalities only when changed; pending A2A peer presence events since the last turn (the same lines the TUI shows, drained once); open failed/missed scheduled runs (one deduplicated "backfill or skip?" list, refreshed by the schedule loop and the startup sweep).
 
 Identity + world are rendered once at startup and never change → maximal prompt cache hit rate.
 
@@ -217,7 +217,7 @@ The agent is otherwise purely user-driven — no input, no activity. A heartbeat
 
 The system introduces information into the context on its own initiative in three ways, distinguished by *what* is injected and *whether it persists*:
 
-1. **A new user message, marker-carrying — persistent.** The heartbeat (`[Heartbeat]`) and scheduled-task triggers (`[Schedule <name>]`, `[Schedule missed]`) are posted to the inbox as synthetic user messages. Each runs as a normal agent-loop turn and is saved to the diary like any turn. The marker lets the TUI filter the trigger (never shown) and surface only a real reply (`⚡ 自主`). See *Autonomous Heartbeat* and *Scheduled Tasks*.
+1. **A new user message, marker-carrying — persistent.** The heartbeat (`[Heartbeat]`) and scheduled-task triggers (`[Schedule <name>]`) are posted to the inbox as synthetic user messages. Each runs as a normal agent-loop turn and is saved to the diary like any turn. The marker lets the TUI filter the trigger (never shown) and surface only a real reply (`⚡ 自主`). See *Autonomous Heartbeat* and *Scheduled Tasks*.
 2. **A harness tool-pair — persistent.** A harness tool is auto-invoked once per turn and contributes an assistant `tool_call` plus its tool-result to the history — `_sys_note` (context status). The pair is part of the turn, so it persists; it exists to keep the context state visible to the model without spending an LLM iteration deciding to call it. Context trimming is not such a tool: it runs internally after each save and is announced by the trim note (form 3), not by a harness pair.
 3. **Info appended to an existing message, marker-carrying — not persistent content.** The turn footnote (`[INFO: {"turn_id": N, "begin": …, "end": …}]`) is appended to a user message after the turn saves (so the next call can reference the turn), and the trim note (`[INFO: N oldest turns have been removed from context]`) announces evicted turns. These annotate a message already present rather than injecting a standalone one; they are reconstructed as metadata, not stored as injected content.
 
@@ -375,14 +375,12 @@ every attempted plugin spawn has converged — each reached ready, degraded,
 skipped, or failed. The inbox consumer and the TUI input both await the
 single event (`_startup_settled`), so no turn runs and nothing can be typed
 while plugin startup is still settling — this is what keeps user input from
-racing ahead of core services, and what makes the startup
-`[Schedule missed]` notice the service's first processed message. The gate
-is event-driven: set by the last spawn's completion, never polled, never
-time-bounded; the only timeout is a 30 s hang-guard on a stuck spawn so
-convergence still fires. There is **no "required" plugin** any more: all
-plugins are peers — a broken memory backend fails loudly where it is used
-(the inbox freezes with a red banner on the first unsavable turn) instead
-of aborting startup.
+racing ahead of core services. The gate is event-driven: set by the last
+spawn's completion, never polled, never time-bounded; the only timeout is a
+30 s hang-guard on a stuck spawn so convergence still fires. There is **no
+"required" plugin** any more: all plugins are peers — a broken memory
+backend fails loudly where it is used (the inbox freezes with a red banner
+on the first unsavable turn) instead of aborting startup.
 
 No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. memfiles' ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal. In practice uvicorn finishes mounting the Streamable HTTP endpoint ~1 s *after* the lifespan signals, so a session established in that window can get a bad SSE transport on Windows/Proactor that hangs `tools/list`; the harness runs that call through `asyncio.timeout` (which, unlike `asyncio.wait_for`, breaks the hang reliably) and, on a timeout, reconnects a fresh session and retries once — by then the plugin is serving, so the race self-heals instead of failing the load.
 
@@ -723,15 +721,15 @@ ngrok free tier limits: **1 online agent** (one tunnel per token — only the fi
 
 Recurring tasks the agent runs on a cron schedule. The design separates three concerns: **timing** (a thin main-process loop), **execution** (a subagent worker), and **record** (the memfiles DB). The agent both starts and finishes each task visibly — it dispatches the work and later sees the completion — rather than the scheduler silently running it.
 
-**Timing — `schedule_loop` (`slife/agent/schedules.py`).** Main-agent-only (subagents are workers, never the scheduler), started alongside the heartbeat in `start_inbox`. Every 30 s it recomputes each enabled task's next fire **from the DB, not from memory**: the anchor is the newest `due_at` across *all* of a task's runs (ran *and* missed both advance the anchor, so a missed fire is never re-detected), falling back to `created_at`. Cron parsing uses `croniter` (`slife/schedules.py` is a thin wrapper: validation, next-run, timezone policy). The loop **fires only**: compared against a short grace window (120 s), a fire due within it is fired; anything older means slife was down. It carries no missed branch at all — the poll cadence runs well inside the grace window, so while the process is up a fire can never be missed; runs a previous lifetime left undone are the startup pass's concern (see *Missed & failed runs* below).
+**Timing — `schedule_loop` (`slife/agent/schedules.py`).** Main-agent-only (subagents are workers, never the scheduler), started alongside the heartbeat in `start_inbox`. Every 30 s it recomputes each enabled task's next fire **from the DB, not from memory**: the anchor is the newest `due_at` across *all* of a task's runs (any recorded run advances the anchor, so a fire is never re-detected), falling back to `created_at`. Cron parsing uses `croniter` (`slife/schedules.py` is a thin wrapper: validation, next-run, timezone policy). The loop **fires only**: compared against a short grace window (120 s), a fire due within it is fired; anything older means slife was down. It carries no missed branch at all — the poll cadence runs well inside the grace window, so while the process is up a fire can never be missed; runs a previous lifetime left undone are the startup sweep's concern (see *Failed runs* below).
 
 **Trigger → execution.** The loop injects a `[Schedule <name>]` message into the unified inbox (source `SCHEDULE`, silent handler like heartbeat — excluded from "remote" handling in `inbox.py`). The run itself is recorded when the agent dispatches, not at fire time, and a short in-memory pending-fire guard keeps the 30 s poll from re-firing while the agent is mid-turn. The agent handles the trigger by delegating, not doing: it calls `run_schedule_now` — the single dispatch tool, also used to backfill missed runs — which records a `scheduled_runs` row (`status='pending'` — success is unconfirmed until a report lands), spawns/reuses the subagent named after the task, and sends it a deterministic task text via `subagent_send_task_async` (mode=auto) that instructs the worker to call `save_cron_report` when done and to notify the user. Completion rides the existing subagent auto-push back to the main agent, which reports the task as finished (reworded to hide the subagent). Idle schedule workers are recycled by the loop once their task has no run still in flight.
 
 **Record — three memfiles tables.** `scheduled_tasks` (definition: name, description, cron, timezone, enabled — stored in the DB so tasks are runtime-mutable, added in conversation), `scheduled_runs` (per-fire state + report link), and `reports` (a fourth cabinet document kind, `reports/<slug>.md`, with FTS5 + vec0 indexes via the `_KIND_SPECS` extension). `save_cron_report` writes the report and backfills the newest un-linked run's `report_id` at the store layer, so the run→report link closes without depending on a second LLM call. Existing DBs upgrade via `scripts/migrate_memfiles_scheduled.py` (the app itself carries no migration code); fresh DBs get the tables from `schema.sql` and the runtime self-heals `reports_semantic`.
 
-**Run outcomes are optimistic-pending.** A fire is recorded `pending`; a report arriving flips it to `ran` (the *only* success writeback, at the store layer alongside the `report_id` backfill). Everything else is a failure by default: `run_schedule_now` marks the run failed immediately if the dispatch itself fails, and at startup the one-shot `schedule_startup_notice` sweeps any surviving `pending` (and legacy `ran`-without-report rows) to `failed` — a previous process lifetime can never complete them.
+**Run outcomes are optimistic-pending.** A fire is recorded `pending`; a report arriving flips it to `ran` (the *only* success writeback, at the store layer alongside the `report_id` backfill). Everything else is a failure by default: `run_schedule_now` marks the run failed immediately if the dispatch itself fails, and at startup the one-shot `schedule_startup_sweep` reaps any surviving `pending` (and legacy `ran`-without-report rows) to `failed` — a previous process lifetime can never complete them.
 
-**Missed & failed runs.** Both are announced **once, at startup**, by the one-shot `schedule_startup_notice` (a dedicated task started alongside `schedule_loop`, not part of the poll): it reaps unconfirmed runs to `failed`, detects and marks fires that were due while slife was down as `missed`, then posts a single `[Schedule missed]` notice covering both. The agent tells the user and offers to backfill (`run_schedule_now` fires a task immediately, recording a run) or skip (`scheduled_run_skip` closes the missed/failed run — a *skipped* run is the user's "don't backfill", never a success marker). The notice fires exactly once per process — it never re-posts every poll while a failed run stays unresolved. Scheduled tasks fire **only while slife is running** — a run due while closed is missed, never silently lost.
+**Failed & missed runs — settled at startup, never announced.** Runs a previous process lifetime left unfinished are settled **once, at startup**, by the one-shot `schedule_startup_sweep` (a dedicated task started alongside `schedule_loop`, not part of the poll): every surviving `pending` (and legacy `ran`-without-report) run becomes `failed`, and fires that were due while slife was down are marked `missed`. It posts no message — the agent and user are not interrupted by a startup turn. Both surface via `scheduled_run_list` and can be backfilled (`run_schedule_now` fires a task immediately, recording a run) or closed (`scheduled_run_skip` — a *skipped* run is the user's "don't backfill", never a success marker). The sweep runs exactly once per process and never re-sweeps. Scheduled tasks fire **only while slife is running** — a fire due while closed is recorded `missed`, and the next scheduled fire after startup triggers normally.
 
 Tools: `scheduled_task_set` / `scheduled_task_remove` / `scheduled_task_list`, `scheduled_run_list` / `scheduled_run_skip`, `save_cron_report` / `report_list` / `report_read` (all memfiles MCP tools, visible to main agent and worker alike), plus the native `run_schedule_now` (the single dispatch tool for both cron fires and backfills — it records the run and dispatches the worker directly, reached through the `fire_schedule_now` tool-context hook). `scheduled_task_set` validates that a task name is a safe identifier, because it doubles as the worker name.
 
@@ -943,7 +941,7 @@ slife/
     history.py    #   Message storage + history (OpenAI-format, sanitization, _ensure_turn_consistent)
     llm_client.py      #   Backend router + StreamChunk
     system_prompt.py   #   Prompt rendering (static + dynamic Jinja2)
-    templates/         #   agent.j2, subagent.j2, slife.j2, context_status.j2
+    templates/         #   agent.j2, subagent.j2, slife.j2, context_status.j2, schedule.j2, schedule_trigger.j2
     llm_backends/      #   API backends: openai.py, anthropic.py, openai_responses.py
     inbox.py           #   Unified message queue + MessageHistoryStore
     plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle)

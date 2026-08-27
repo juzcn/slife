@@ -4,6 +4,7 @@ exercised via a mocked memfiles client.
 """
 
 import asyncio
+import re
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -46,7 +47,9 @@ def test_build_worker_task_self_contained():
     assert "daily_report" in task
     assert "Write today's report" in task
     assert "save_cron_report" in task
-    assert "Current time:" in task  # date context for relative tasks
+    # the title example carries the MM-DD date context for relative tasks
+    assert 'title: one sentence summarizing the result, e.g. "daily_report: ' in task
+    assert re.search(r"\d{2}-\d{2} summary", task)
 
 
 def test_build_worker_task_handles_empty_description():
@@ -311,7 +314,7 @@ async def test_recycle_skips_non_schedule_workers(monkeypatch):
     manager.stop.assert_not_awaited()
 
 
-# ── startup one-shot: runs missed across a downtime ──────────────────
+# ── startup one-shot sweep: pending → failed, no message ─────────────
 
 def _make_service(client, posted):
     inbox = MagicMock()
@@ -332,15 +335,17 @@ def _make_service(client, posted):
 
 
 @pytest.mark.asyncio
-async def test_schedule_startup_notice_announces_stale_failed_once():
+async def test_schedule_startup_sweep_reaps_failed_and_posts_nothing():
     client = AsyncMock()
     calls: list[str] = []
 
     async def fake_call_tool(name, arguments=None):
         calls.append(name)
         if name == "__scheduled_fail_unconfirmed":
-            return ('{"failed": 1, "runs": [{"task_id": 7, "name": "daily", '
-                    '"due_at": "2026-08-25T09:00:00", "status": "failed"}]}')
+            return ('{"failed": 2, "runs": [{"task_id": 7, "name": "daily", '
+                    '"due_at": "2026-08-25T09:00:00", "status": "failed"}, '
+                    '{"task_id": 8, "name": "weekly", '
+                    '"due_at": "2026-08-24T18:00:00", "status": "failed"}]}')
         if name == "__scheduled_tasks_state":
             return "[]"
         return "{}"
@@ -350,18 +355,20 @@ async def test_schedule_startup_notice_announces_stale_failed_once():
     posted: list = []
     service = _make_service(client, posted)
 
-    await S.schedule_startup_notice(service)
+    await S.schedule_startup_sweep(service)
 
-    assert len(posted) == 1, "the missed notice must fire exactly once"
-    assert "daily @ 2026-08-25T09:00:00" in posted[0].content
-    assert "未完成（已触发但无报告，重启中断）" in posted[0].content
-    assert "run_schedule_now" in posted[0].content
-    assert "scheduled_run_skip" in posted[0].content
+    # The sweep settles state silently: no task is due-missed here (so no
+    # missed-marking fires), nothing is ever posted to the inbox, and the
+    # footer reminder is fed with the swept runs.
+    assert posted == []
     assert "__scheduled_fail_unconfirmed" in calls
+    assert "__scheduled_tasks_state" in calls
+    assert "__scheduled_mark_missed" not in calls
+    service.set_schedule_pending.assert_called_with([])
 
 
 @pytest.mark.asyncio
-async def test_schedule_startup_notice_marks_and_announces_missed(monkeypatch):
+async def test_schedule_startup_sweep_marks_missed_without_posting(monkeypatch):
     # Fix the clock so _classify deterministically sees a fire older than the
     # grace window (missed while slife was down).  Local-aware times in the
     # task mirror what the memfiles store emits, matching the other classify
@@ -400,15 +407,52 @@ async def test_schedule_startup_notice_marks_and_announces_missed(monkeypatch):
     posted: list = []
     service = _make_service(client, posted)
 
-    await S.schedule_startup_notice(service)
+    await S.schedule_startup_sweep(service)
 
     assert mark_calls == [
         {"task_id": 1, "due_at": _iso(datetime(2026, 8, 25, 9, 0).astimezone())},
     ]
-    assert len(posted) == 1
-    assert "错过（slife 未运行期间到期）" in posted[0].content
-    assert "daily @ " + _iso(datetime(2026, 8, 25, 9, 0).astimezone()) \
-        in posted[0].content
+    assert posted == []  # missed runs are recorded, never announced
+    # footer reminder fed (no open runs in the fake → empty list)
+    service.set_schedule_pending.assert_called_with([])
+
+
+@pytest.mark.asyncio
+async def test_pending_schedule_runs_merges_dedupes_and_sorts():
+    """Failed and missed are one "backfill or skip?" list for the footer:
+    merged, deduplicated, newest first, each run exactly once."""
+    client = AsyncMock()
+
+    async def fake_call_tool(name, arguments=None):
+        if name == "scheduled_task_list":
+            return ('{"total": 2, "tasks": [{"id": 1, "name": "daily"}, '
+                    '{"id": 2, "name": "weekly"}]}')
+        if name == "scheduled_run_list":
+            if arguments["status"] == "failed":
+                # The same due_at appears twice → must render once.
+                return ('{"total": 2, "runs": ['
+                        '{"task_id": 1, "due_at": "2026-08-25T09:00:00", "status": "failed"}, '
+                        '{"task_id": 1, "due_at": "2026-08-25T09:00:00", "status": "failed"}]}')
+            return ('{"total": 1, "runs": ['
+                    '{"task_id": 2, "due_at": "2026-08-24T18:00:00", "status": "missed"}]}')
+        return "{}"
+
+    client.call_tool = fake_call_tool
+
+    runs = await S._pending_schedule_runs(client)
+
+    assert runs == [
+        {"name": "daily", "due_at": "2026-08-25T09:00:00", "status": "failed"},
+        {"name": "weekly", "due_at": "2026-08-24T18:00:00", "status": "missed"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_schedule_startup_sweep_missing_client_is_noop():
+    service = MagicMock()
+    service._tool_ctx = None
+    service.wait_startup_settled = AsyncMock()
+    await S.schedule_startup_sweep(service)  # must not raise or call out
 
 
 @pytest.mark.asyncio

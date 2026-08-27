@@ -33,6 +33,17 @@ _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)))
 
 
+def render_template(template: str, **kwargs: object) -> str:
+    """Render a template from the shared ``templates/`` directory.
+
+    The single entry point for model-visible prompt fragments that live
+    alongside the identity templates (e.g. the scheduled-task worker brief
+    in ``schedule.j2``), so all prompt text is managed as templates in one
+    place rather than assembled by hand.
+    """
+    return _env.get_template(template).render(**kwargs).strip()
+
+
 def build(config: Config, is_subagent: bool = False) -> str:
     """Render the system prompt for a main agent or a subagent worker.
 
@@ -107,6 +118,7 @@ def build_context_status(
     shell: str = "",
     context_time_start: str = "",
     presence_events: list[tuple[float, str]] | None = None,
+    schedule_status: list[dict] | None = None,
 ) -> str:
     """Render the dynamic context status footer.
 
@@ -122,6 +134,12 @@ def build_context_status(
     format as *current_datetime*.  ``text`` is the TUI's own line
     (via ``format_presence_line``), so the context shows exactly what
     the user saw.
+
+    *schedule_status* is a list of open ``{name, due_at, status}`` scheduled
+    runs (failed and missed — the same "backfill or skip?" question to the
+    user; ``status`` tells them apart per line) rendered after the context
+    usage line until the user backfills with ``run_schedule_now`` or
+    closes them with ``scheduled_run_skip``.
     """
     now = datetime.now().astimezone()
     last_usage_pct = (
@@ -136,6 +154,11 @@ def build_context_status(
                 "%Y-%m-%d %H:%M:%S"
             )
             rendered_presence.append({"time": ev_time, "text": text})
+    rendered_schedule: list[dict] = [
+        {"name": r.get("name", ""), "due_at": r.get("due_at", ""),
+         "status": r.get("status", "")}
+        for r in (schedule_status or [])
+    ]
     return _env.get_template("context_status.j2").render(
         current_datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
         utc_offset=now.strftime("%z"),
@@ -148,6 +171,7 @@ def build_context_status(
         shell=shell,
         context_time_start=context_time_start,
         presence_events=rendered_presence,
+        schedule_status=rendered_schedule,
     ).strip()
 
 

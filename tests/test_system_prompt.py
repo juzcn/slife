@@ -452,6 +452,37 @@ class TestContextStatusPresence:
         assert online_idx < offline_idx < timeout_idx
 
 
+class TestContextStatusSchedule:
+    """build_context_status renders open failed/missed scheduled runs right
+    after the Context usage line — as one shared "backfill or skip?" list,
+    each run exactly once."""
+
+    def _runs(self):
+        return [
+            {"name": "daily_report", "due_at": "2026-08-25T09:00:00",
+             "status": "failed"},
+            {"name": "weekly", "due_at": "2026-08-24T18:00:00",
+             "status": "missed"},
+        ]
+
+    def test_renders_section_after_context_usage(self):
+        from slife.agent.system_prompt import build_context_status
+        result = build_context_status(schedule_status=self._runs())
+        assert result.index("Context usage") < \
+            result.index("Scheduled runs not settled")
+        assert "daily_report @ 2026-08-25T09:00:00 (failed)" in result
+        assert "weekly @ 2026-08-24T18:00:00 (missed)" in result
+        assert "run_schedule_now" in result
+        assert "scheduled_run_skip" in result
+
+    def test_no_section_when_no_runs(self):
+        from slife.agent.system_prompt import build_context_status
+        assert "Scheduled runs not settled" not in \
+            build_context_status(schedule_status=None)
+        assert "Scheduled runs not settled" not in \
+            build_context_status(schedule_status=[])
+
+
 class TestFormatPresenceLine:
     """format_presence_line renders TUI-identical text and filters noise."""
 

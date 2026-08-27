@@ -27,7 +27,7 @@
    - `[INFO: {"turn_id": N, "begin": "…", "end": "…"}]` — identifies a memory turn (its id and when it happened). On restored turns and on a just-completed turn once saved; never on the in-flight turn.
    - `[INFO: N oldest turns have been removed from context]` — notifies that the N oldest complete turns were trimmed from context.
    - `[Heartbeat]` — a synthetic autonomous trigger, not a user query.
-   - `[Schedule <name>]` — a scheduled-task trigger for the task `<name>` (delegate it to a subagent). `[Schedule missed]` reports runs missed while slife was closed.
+   - `[Schedule <name>]` — a scheduled-task trigger for the task `<name>` (delegate it to a subagent).
 
 **Capabilities**
 1. Images & multimodal
