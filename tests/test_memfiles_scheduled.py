@@ -158,26 +158,26 @@ async def test_fail_unconfirmed_runs_sweep(tmp_path):
     try:
         task = await store.upsert_scheduled_task("daily", schedule="0 0 * * *")
 
-        # pending (current) and legacy 'ran' without a report → both swept
+        # pending without a report → swept to failed
         await store.record_scheduled_run(task["task_id"], "2026-08-25T00:00:00")
         await store.record_scheduled_run(task["task_id"], "2026-08-26T00:00:00",
                                          status="ran")
 
-        # legacy 'ran' WITH a report = confirmed success → never touched
+        # 'ran' rows are always report-backed = confirmed success → untouched
         await store.record_scheduled_run(task["task_id"], "2026-08-27T00:00:00",
                                          status="ran")
         await store.upsert_report(task["task_id"], "Done", "ok")
 
         stale = await store.fail_unconfirmed_runs()
         assert {r["due_at"] for r in stale} == {
-            "2026-08-25T00:00:00", "2026-08-26T00:00:00",
+            "2026-08-25T00:00:00",
         }
         assert stale[0]["name"] == "daily"
 
         runs = await store.list_scheduled_runs(task_id=task["task_id"])
         by_due = {r["due_at"]: r for r in runs}
         assert by_due["2026-08-25T00:00:00"]["status"] == "failed"
-        assert by_due["2026-08-26T00:00:00"]["status"] == "failed"
+        assert by_due["2026-08-26T00:00:00"]["status"] == "ran"
         assert by_due["2026-08-25T00:00:00"]["error"] == \
             "slife restarted before completion"
         assert by_due["2026-08-27T00:00:00"]["status"] == "ran"

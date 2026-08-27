@@ -21,8 +21,8 @@ from slife.ui.restore import (
 
 
 class TestToolResultIsError:
-    """Persisted ``is_error`` flag wins; legacy turns fall back to the
-    live loop's heuristic so pre-flag errors don't render as done."""
+    """The loop persists ``is_error`` on every tool result; restore reads
+    the flag directly and never re-derives it from content."""
 
     def test_flag_true_wins_over_content(self):
         msg = {"role": "tool", "content": "all good", "is_error": True}
@@ -34,15 +34,12 @@ class TestToolResultIsError:
         msg = {"role": "tool", "content": "Error-looking stdout", "is_error": False}
         assert tool_result_is_error(msg) is False
 
-    def test_legacy_error_content_detected(self):
+    def test_error_content_without_flag_is_not_error(self):
+        # No is_error key → not an error; content is never inspected.
         msg = {"role": "tool", "content": "Error: Edit 1: old_string not found."}
-        assert tool_result_is_error(msg) is True
-
-    def test_legacy_ok_content_not_error(self):
-        msg = {"role": "tool", "content": "Search results here."}
         assert tool_result_is_error(msg) is False
 
-    def test_legacy_empty_content(self):
+    def test_empty_content_without_flag(self):
         msg = {"role": "tool", "content": ""}
         assert tool_result_is_error(msg) is False
 
@@ -221,7 +218,7 @@ class TestRestoreSkipsEmptyAssistantMessages:
 class TestRestoreTurnHeader:
     """Each restored user message carries a ``[INFO: {"turn_id": N, …}]``
     footnote — id + begin → end — concatenated into the message text so the
-    LLM can tell old turns apart and reference them by rowid, and the human
+    LLM can tell old turns apart and reference them by turn id, and the human
     reads it in the TUI.  Generated at restore only; heartbeat turns get
     none."""
 
@@ -332,7 +329,7 @@ class TestRestoreTurnHeader:
         am.append_text.assert_called_once_with("已派发定时任务。")
 
     @pytest.mark.asyncio
-    async def test_legacy_turn_without_identity_stays_plain(self):
+    async def test_turn_without_identity_stays_plain(self):
         app, conv, config, chat_view = self._build()
         turn = self._turn("hi")
         del turn["rowid"]
@@ -360,8 +357,8 @@ class TestRestoreTurnHeader:
         assert call_kwargs.args[0].startswith("GO")
 
     @pytest.mark.asyncio
-    async def test_a2a_legacy_turn_name_from_channel_string(self):
-        """A pre-type a2a row (channel=peer name, no payload) still renders."""
+    async def test_a2a_turn_name_from_peer_identity_string(self):
+        """An a2a row whose channel is the peer name (to_db format) renders."""
         from slife.ui.i18n import t
 
         app, conv, config, chat_view = self._build()

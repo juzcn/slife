@@ -17,7 +17,7 @@ from slife.config import ModelConfig
 from slife.agent.llm_client import (
     TokenUsage,
     StreamChunk,
-    _compat_chat_response,
+    _chat_response,
     _safe_close_stream,
 )
 
@@ -173,7 +173,7 @@ class OpenAIResponsesBackend:
                 total_tokens=response.usage.total_tokens or 0,
             )
 
-        return _compat_chat_response(text, usage)
+        return _chat_response(text, usage)
 
     # ── Streaming ─────────────────────────────────────────────────────
 

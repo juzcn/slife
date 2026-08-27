@@ -113,7 +113,7 @@ class ListModelsTool(_ConfigPathMixin, Tool):
             if not isinstance(pcfg, dict):
                 continue
             api = pcfg.get("api", "openai-completions")
-            base = pcfg.get("base_url", pcfg.get("baseUrl", ""))
+            base = pcfg.get("base_url", "")
             models = pcfg.get("models", [])
             if not isinstance(models, list):
                 continue
@@ -121,14 +121,14 @@ class ListModelsTool(_ConfigPathMixin, Tool):
             for m in models:
                 if not isinstance(m, dict):
                     continue
-                model_id = m.get("model", m.get("id", "?"))
+                model_id = m.get("model", "?")
                 name = m.get("name", model_id)
                 ref = f"{pid}/{model_id}"
                 star = "★" if ref == active else " "
-                thinking = "🧠" if m.get("reasoning", m.get("thinking_enabled")) else ""
+                thinking = "🧠" if m.get("reasoning") else ""
                 vision = "👁" if "image" in m.get("input", []) else ""
-                ctx = m.get("context_window", m.get("contextWindow", "?"))
-                max_tok = m.get("max_tokens", m.get("maxTokens", "?"))
+                ctx = m.get("context_window", "?")
+                max_tok = m.get("max_tokens", "?")
                 compat = m.get("compat")
                 compat_tag = f"  compat={compat}" if isinstance(compat, dict) and compat else ""
                 lines.append(
@@ -359,7 +359,7 @@ class RemoveModelTool(_ModelConfigTool):
 
         removed = False
         for i, m in enumerate(models):
-            if isinstance(m, dict) and (m.get("model") == model_id or m.get("id") == model_id):
+            if isinstance(m, dict) and m.get("model") == model_id:
                 del models[i]
                 removed = True
                 break
@@ -426,9 +426,7 @@ class SwitchModelTool(_ModelConfigTool):
         display = model_id
         if isinstance(pcfg, dict):
             for m in pcfg.get("models", []):
-                if isinstance(m, dict) and (
-                    m.get("model") == model_id or m.get("id") == model_id
-                ):
+                if isinstance(m, dict) and m.get("model") == model_id:
                     found = True
                     display = m.get("name", model_id)
                     break

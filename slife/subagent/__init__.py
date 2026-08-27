@@ -16,7 +16,7 @@ auto-discovered at startup and use module-level transport references.
 """
 
 from slife.subagent.process import SubagentManager, SubagentProcess
-from slife.subagent.tools import (
+from slife.tools.subagent import (
     ListSubagentsTool,
     SpawnSubagentTool,
     StopSubagentTool,

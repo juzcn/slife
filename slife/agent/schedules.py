@@ -316,9 +316,8 @@ async def schedule_startup_sweep(service) -> None:
       1. Sweep unconfirmed runs to ``failed``
          (``__scheduled_fail_unconfirmed``) — a run is recorded ``pending``
          optimistically and only becomes ``ran`` when the worker's report
-         arrives, so anything still ``pending`` (or a legacy
-         ``ran``-without-report) at startup can never complete: the process
-         that dispatched it is gone.
+         arrives, so anything still ``pending`` at startup can never
+         complete: the process that dispatched it is gone.
       2. Mark fires that were due while slife was down ``missed``
          (``__scheduled_mark_missed``), so the downtime shows in history
          and the anchor advances past the missed fire.

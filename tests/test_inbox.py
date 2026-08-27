@@ -124,14 +124,7 @@ class TestInboxConstruction:
         inbox = Inbox(mock_loop, mock_store)
         assert inbox._agent_loop is mock_loop
         assert inbox._histories is mock_store
-        assert inbox._a2a_client is None
         assert inbox._on_activity is None
-
-    def test_construction_with_a2a_client(self, mock_loop, mock_store):
-        from slife.agent.inbox import Inbox
-        mock_client = MagicMock()
-        inbox = Inbox(mock_loop, mock_store, a2a_client=mock_client)
-        assert inbox._a2a_client is mock_client
 
     @pytest.mark.asyncio
     async def test_post_enqueues_message(self, mock_loop, mock_store):
@@ -252,14 +245,6 @@ class TestInboxProcessOne:
         store.handler_for = MagicMock(return_value=None)
         return store
 
-    @pytest.fixture
-    def mock_a2a_client(self):
-        client = MagicMock()
-        client.update_status = AsyncMock()
-        client._adapter = MagicMock()
-        client._adapter.publish = AsyncMock()
-        return client
-
     def _make_msg(self, source=None, content="hi", images=None,
                   handler=None, reply_to=None, corr_id=None, on_reply=None):
         return AgentMessage(
@@ -288,10 +273,11 @@ class TestInboxProcessOne:
         mock_loop.run.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_process_remote_task_updates_status(self, mock_loop, mock_store,
-                                                       mock_a2a_client):
+    async def test_process_remote_task_replies_through_on_reply(self, mock_loop,
+                                                                mock_store):
         from slife.agent.inbox import Inbox
-        inbox = Inbox(mock_loop, mock_store, a2a_client=mock_a2a_client)
+        on_reply = AsyncMock()
+        inbox = Inbox(mock_loop, mock_store)
 
         mock_result = MagicMock()
         mock_result.text = "done"
@@ -300,14 +286,13 @@ class TestInboxProcessOne:
         mock_store.get_or_create.return_value = MagicMock()
 
         msg = self._make_msg(source=AgentName("remote-1"), content="task",
-                             reply_to="Slife/human/tasks", corr_id="corr-1")
-        # Patch _publish_reply to avoid real MQTT publish
-        inbox._publish_reply = AsyncMock()
+                             reply_to="Slife/human/tasks", corr_id="corr-1",
+                             on_reply=on_reply)
         await inbox._process_one(msg)
 
-        # Should have set busy and then idle again
-        mock_a2a_client.update_status.assert_any_call("busy")
-        mock_a2a_client.update_status.assert_any_call("idle")
+        # Replies are routed to the originating channel via on_reply.
+        on_reply.assert_awaited_once()
+        assert on_reply.call_args.args[0] == "done"
         assert inbox.busy is False  # Should be idle after processing
 
     @pytest.mark.asyncio
@@ -488,22 +473,21 @@ class TestInboxProcessOne:
         await inbox._process_one(msg)
 
     @pytest.mark.asyncio
-    async def test_process_error_publishes_reply(self, mock_loop, mock_store,
-                                                  mock_a2a_client):
+    async def test_process_error_routes_through_on_reply(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
-        mock_a2a_client.publish_message = AsyncMock()
-        inbox = Inbox(mock_loop, mock_store, a2a_client=mock_a2a_client)
+        on_reply = AsyncMock()
+        inbox = Inbox(mock_loop, mock_store)
 
         mock_loop.run = AsyncMock(side_effect=ValueError("broken"))
         mock_store.get_or_create.return_value = MagicMock()
 
         msg = self._make_msg(source=AgentName("remote"), content="do it",
-                             reply_to="Slife/human/tasks", corr_id="err-1")
+                             reply_to="Slife/human/tasks", corr_id="err-1",
+                             on_reply=on_reply)
         await inbox._process_one(msg)
 
-        mock_a2a_client.publish_message.assert_awaited_once()
-        call_args = mock_a2a_client.publish_message.call_args
-        assert "Error" in call_args[0][1]  # payload contains error
+        on_reply.assert_awaited_once()
+        assert "Error" in on_reply.call_args.args[0]  # error surfaced to the channel
 
     @pytest.mark.asyncio
     async def test_process_on_activity_error_swallowed(self, mock_loop, mock_store):
@@ -629,61 +613,6 @@ class TestInboxRun:
             await task
         except asyncio.CancelledError:
             pass
-
-
-# ── Inbox — _publish_reply ─────────────────────────────────────────────
-
-
-class TestInboxPublishReply:
-    """Tests for Inbox._publish_reply()."""
-
-    @pytest.mark.asyncio
-    async def test_publish_with_result_object(self):
-        from slife.agent.inbox import Inbox
-        mock_loop = MagicMock()
-        mock_store = MagicMock()
-        mock_a2a = MagicMock()
-        mock_a2a.publish_message = AsyncMock()
-
-        inbox = Inbox(mock_loop, mock_store, a2a_client=mock_a2a)
-
-        mock_result = MagicMock()
-        mock_result.text = "the answer"
-
-        await inbox._publish_reply("topic/reply", "corr-42", mock_result)
-        mock_a2a.publish_message.assert_awaited_once()
-        payload = mock_a2a.publish_message.call_args[0][1]
-        assert "corr-42" in payload
-        assert "the answer" in payload
-
-    @pytest.mark.asyncio
-    async def test_publish_with_string_result(self):
-        from slife.agent.inbox import Inbox
-        mock_loop = MagicMock()
-        mock_store = MagicMock()
-        mock_a2a = MagicMock()
-        mock_a2a.publish_message = AsyncMock()
-
-        inbox = Inbox(mock_loop, mock_store, a2a_client=mock_a2a)
-
-        await inbox._publish_reply("t/x", None, "just a string")
-        mock_a2a.publish_message.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_publish_with_empty_correlation_id(self):
-        from slife.agent.inbox import Inbox
-        mock_loop = MagicMock()
-        mock_store = MagicMock()
-        mock_a2a = MagicMock()
-        mock_a2a.publish_message = AsyncMock()
-
-        inbox = Inbox(mock_loop, mock_store, a2a_client=mock_a2a)
-        mock_result = MagicMock()
-        mock_result.text = "result"
-
-        await inbox._publish_reply("t/y", None, mock_result)
-        payload = mock_a2a.publish_message.call_args[0][1]
-        assert '"correlation_id": ""' in payload
 
 
 # ── MessageHistoryStore — default handler factory ───────────────────────

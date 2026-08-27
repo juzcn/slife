@@ -21,7 +21,6 @@ from slife.agent.message_history import MessageHistory
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from slife.a2a.client import A2AClient
     from slife.agent.loop import AgentLoop, AgentEventHandler
 
 logger = logging.getLogger(__name__)
@@ -30,14 +29,10 @@ logger = logging.getLogger(__name__)
 def _channel_persist(msg: AgentMessage) -> tuple[str, str]:
     """(``diary.channel`` identity, payload JSON) for the turn save.
 
-    A ``None`` channel (legacy sites that construct no typed channel) falls
-    back to the old source-string classification; otherwise the typed
-    channel yields its identity and JSON payload.
+    Every message carries a typed channel; the channel yields its identity
+    and JSON payload.
     """
-    ch = msg.channel
-    if ch is None:
-        return str(msg.source), "{}"
-    identity, data = ch.to_db()
+    identity, data = msg.channel.to_db()
     if not data:
         return identity, "{}"
     return identity, _json.dumps(data, ensure_ascii=False)
@@ -60,14 +55,12 @@ class Inbox:
         self,
         agent_loop: "AgentLoop",
         histories: "MessageHistoryStore",
-        a2a_client: "A2AClient | None" = None,
         on_activity: "Callable | None" = None,
         on_turn_complete: "Callable | None" = None,
         ready: "Callable[[], Awaitable[None]] | None" = None,
     ):
         self._agent_loop = agent_loop
         self._histories = histories
-        self._a2a_client = a2a_client
         self._on_activity = on_activity  # async cb(kind, **kwargs)
         self._on_turn_complete = on_turn_complete  # async cb(user_message, token_count, history)
         #: Startup gate — awaited once before the first message is consumed.
@@ -236,8 +229,6 @@ class Inbox:
                 pass
 
         # Mark busy while processing
-        if self._a2a_client:
-            await self._a2a_client.update_status("busy")
         self._processing = True
         self._current_corr = msg.correlation_id or None
 
@@ -299,10 +290,6 @@ class Inbox:
                     )
                 except Exception:
                     pass
-
-            # Reply via MQTT if this was a remote task
-            if msg.reply_to and self._a2a_client:
-                await self._publish_reply(msg.reply_to, msg.correlation_id, result)
 
             # Route reply to originating channel (WeChat, etc.).  Pass the
             # cancelled flag so the channel can signal cancellation to the
@@ -366,11 +353,7 @@ class Inbox:
                     )
                 except Exception:
                     pass
-            if msg.reply_to and self._a2a_client:
-                await self._publish_reply(
-                    msg.reply_to, msg.correlation_id, f"Error: {e}",
-                )
-            # Also notify channel on error
+            # Notify channel on error
             if msg.on_reply is not None:
                 try:
                     await msg.on_reply(f"Error: {e}")
@@ -392,8 +375,8 @@ class Inbox:
                     # size at turn end (per-history, from the loop's
                     # usage cache).  Persisted so restore can prime the
                     # footer / _sys_note with the real exit-time occupancy
-                    # instead of an estimate.  Absent on cancel-without-API
-                    # → 0 (legacy fallback applies on restore).
+                    # instead of an estimate.  Absent on a cancel-without-API
+                    # → 0 (restore falls back to the token estimate).
                     usage = self._agent_loop._usage_by_history.get(id(history))
                     prompt_tokens = usage.prompt_tokens if usage else 0
                     channel_identity, channel_data = _channel_persist(msg)
@@ -419,24 +402,6 @@ class Inbox:
             # Return to idle
             self._processing = False
             self._current_corr = None
-            if self._a2a_client:
-                await self._a2a_client.update_status("idle")
-
-    async def _publish_reply(
-        self, reply_to: str, corr_id: str | None, result,
-    ) -> None:
-        """Publish a task result back to the requester."""
-        import json as _json
-
-        # Callers guarantee _a2a_client is set before invoking
-        assert self._a2a_client is not None
-
-        text = result.text if hasattr(result, "text") else str(result)
-        payload = _json.dumps({
-            "correlation_id": corr_id or "",
-            "result": text,
-        })
-        await self._a2a_client.publish_message(reply_to, payload, qos=1)
 
 
 class MessageHistoryStore:

@@ -179,8 +179,8 @@ class AgentService:
         assert self.config.subagent_config is not None
         self.is_subagent = is_subagent
 
-        # Build the shared ToolContext — replaces scattered module-level
-        # singletons (get_registry, get_config, _rest_api_mcp_client, etc.)
+        # Build the shared ToolContext, which carries the config + registry
+        # that tools need at runtime.
         from slife.tools.context import ToolContext
         self._tool_ctx = ToolContext(config=config)
         self.tool_registry = create_tools_from_config(
@@ -189,13 +189,6 @@ class AgentService:
         )
         # Backfill the registry reference (created by the factory)
         self._tool_ctx.registry = self.tool_registry
-        # Also set the module-level singleton so check_mcp()
-        # and other legacy callers of get_registry() can find it.
-        # Subagents get their own filtered registry — don't overwrite
-        # the main agent's reference with a subagent's.
-        if not is_subagent:
-            from slife.tools.registry import set_registry
-            set_registry(self.tool_registry)
         self.llm_client = LLMClient(config.active_model)
         # Max tool result = tool_result_ceiling × context_window × 3 chars/token
         max_tool_result_chars = int(
@@ -304,7 +297,6 @@ class AgentService:
         self.inbox = Inbox(
             agent_loop=self.agent_loop,
             histories=histories,
-            a2a_client=None,  # (legacy, unused)
             on_activity=self._notify_a2a_activity,  # always active for WeChat etc.
             on_turn_complete=self.save_to_memory,
             # Startup gate: no turn runs until every plugin spawn converged.
@@ -1566,16 +1558,12 @@ class AgentService:
         self,
         name: str,
         module: str,
-        harness_tools: set[str] | None = None,
     ) -> None:
         """Spawn a plugin child process, connect, and register its LLM-visible tools.
 
         Delegates to ``PluginLifecycle.spawn()`` for the actual work.
-
-        *harness_tools* is **deprecated** — internal tools are now
-        identified by the ``__`` prefix naming convention.
         """
-        await self._plugins[name].spawn(module, harness_tools)
+        await self._plugins[name].spawn(module)
 
 
     async def start_memdb(self) -> bool:
@@ -2097,8 +2085,8 @@ class AgentService:
             start_rowid = await store.get_context_start()
 
             # Accumulate newest-first batches after the live-context boundary
-            # until exhausted.  The defensive cap stops only a stale-boundary
-            # (0) DB from replaying unbounded history.
+            # until exhausted.  The defensive cap stops a pre-trim boundary
+            # (0, not yet trimmed) from replaying unbounded history.
             hard_cap = int(
                 self.config.active_model.context_window
                 * self.config.context_ceiling * 2
@@ -2597,9 +2585,8 @@ class AgentService:
         # not spuriously restart the plugin on a graceful shutdown.
         await self._stop_plugin("a2a", has_poll_task=True)
 
-        # Clear inbox a2a references
+        # Decouple activity notifications tied to A2A.
         if self.inbox is not None:
-            self.inbox._a2a_client = None
             self.inbox._on_activity = None
 
         logger.info("a2a_shutdown")

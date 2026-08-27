@@ -86,7 +86,6 @@ class TestPluginLifecycleSpawn:
 
                 await lifecycle.spawn(
                     module="slife.plugins.mcp.server",
-                    harness_tools={"__mcp_call_tool"},
                 )
 
         import os
@@ -102,7 +101,7 @@ class TestPluginLifecycleSpawn:
         mock_client = MagicMock()
         mock_client.list_tools = AsyncMock(return_value=[
             {"name": "visible_tool", "description": "For LLM."},
-            {"name": "harness_only", "description": "Skip this."},
+            {"name": "__internal_tool", "description": "Internal (__ prefix)."},
         ])
         mock_client.call_tool = AsyncMock(
             return_value="Error: Tool '__ready' failed: MethodNotFoundException",
@@ -119,7 +118,6 @@ class TestPluginLifecycleSpawn:
 
                 await lifecycle.spawn(
                     module="slife.plugins.mcp.server",
-                    harness_tools={"harness_only"},
                 )
 
         assert mock_service.tool_registry.register.called
@@ -421,8 +419,8 @@ class TestWatchdogRestart:
         lifecycle._module = "slife.plugins.memdb.server"
 
         spawned = []
-        async def fake_spawn(module, harness_tools=None):
-            spawned.append((module, harness_tools))
+        async def fake_spawn(module):
+            spawned.append(module)
             lifecycle.process = new_proc
 
         with patch.object(lifecycle, "spawn", new=fake_spawn):
@@ -434,7 +432,7 @@ class TestWatchdogRestart:
                     await asyncio.sleep(0.01)
                 # The watchdog respawned via the fallback path (no restart_cb).
                 assert lifecycle.process is new_proc
-                assert spawned == [("slife.plugins.memdb.server", None)]
+                assert spawned == ["slife.plugins.memdb.server"]
                 # A successful restart resets the counters.
                 assert lifecycle._restart_count == 0
             finally:
@@ -455,7 +453,7 @@ class TestWatchdogRestart:
         lifecycle._module = "slife.plugins.memdb.server"
 
         attempts = 0
-        async def flaky_spawn(module, harness_tools=None):
+        async def flaky_spawn(module):
             nonlocal attempts
             attempts += 1
             if attempts == 1:

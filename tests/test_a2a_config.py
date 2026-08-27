@@ -53,13 +53,13 @@ class TestA2AConfigFromDict:
 
     def test_empty_data_returns_enabled_with_defaults(self):
         cfg = A2AConfig.from_dict({})
-        assert cfg.enabled is True  # user has mqtt section → probe at runtime
+        assert cfg.enabled is True  # user has a2a section → probe at runtime
         assert cfg.agent_name == "slife"  # default agent_name
 
     def test_user_becomes_agent_name(self):
         cfg = A2AConfig.from_dict({}, agent_name="bob")
         assert cfg.agent_name == "bob"
-        assert cfg.enabled is True  # user has mqtt section → probe at runtime
+        assert cfg.enabled is True  # user has a2a section → probe at runtime
 
     def test_broker_defaults_from_empty_dict(self):
         cfg = A2AConfig.from_dict({}, agent_name="agent-1")

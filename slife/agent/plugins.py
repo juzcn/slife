@@ -125,7 +125,6 @@ class PluginLifecycle:
         self._stopping: bool = False
         self._restart_cb: Callable[[], Awaitable[None]] | None = None
         self._module: str | None = None
-        self._harness_tools: set[str] | None = None
         self._max_restarts: int = _WATCHDOG_MAX_RESTARTS
         self._restart_count: int = 0
 
@@ -141,7 +140,6 @@ class PluginLifecycle:
     async def spawn(
         self,
         module: str,
-        harness_tools: set[str] | None = None,
     ) -> None:
         """Spawn a plugin child process, connect, and register its LLM-visible tools.
 
@@ -150,16 +148,13 @@ class PluginLifecycle:
         create_proxy_tools → register.
 
         Tools whose name starts with ``__`` are internal (plugin contract)
-        and are never exposed to the LLM.  The *harness_tools* parameter is
-        **deprecated** — it still works for backward compatibility but the
-        preferred mechanism is the ``__`` prefix naming convention.
+        and are never exposed to the LLM.
         """
         from slife.mcp.process import MCPWrapperProcess
         from slife.mcp.tool_adapter import create_proxy_tools
 
         # Save params for watchdog restart
         self._module = module
-        self._harness_tools = harness_tools
 
         logger.info("%s_spawn transport=streamable-http", self.name)
         process = MCPWrapperProcess(
@@ -189,12 +184,11 @@ class PluginLifecycle:
             # LLM-visible, e.g. the native `_sys_note`.)  Same
             # predicate as the generic spawn path in service.py, so a plugin's
             # internal tools are hidden identically whichever registration
-            # path ran.  The deprecated harness_tools set is also respected.
+            # path ran.
             tagged = [
                 {**t, "server": self.name}
                 for t in plugin_tools
                 if not is_internal_tool(t["name"])
-                and (harness_tools is None or t["name"] not in harness_tools)
             ]
 
             proxy_tools = create_proxy_tools(client, tagged)
@@ -277,7 +271,7 @@ class PluginLifecycle:
         The watchdog waits on the subprocess, and on exit it unregisters
         the plugin's proxy tools (by ``{name}__`` prefix), then calls
         *restart_cb* (if supplied) or falls back to :meth:`spawn` with the
-        saved *module* / *harness_tools*.
+        saved *module*.
 
         Restarts use exponential backoff (1s → 2s → … → 30s) and stop
         after *max_restarts* consecutive failures.  A successful spawn
@@ -317,8 +311,7 @@ class PluginLifecycle:
         it backs off (1s → 2s → … → 30s) and retries until
         ``_max_restarts`` consecutive failures, then gives up.  The
         fallback path (``spawn`` from the saved ``_module``) also works for
-        plugins started without a ``restart_cb``, e.g. memdb — previously
-        the ``_harness_tools is not None`` guard made it exit instead
+        plugins started without a ``restart_cb``, e.g. memdb.
 
         """
         backoff = _WATCHDOG_BACKOFF_INITIAL
@@ -442,7 +435,7 @@ class PluginLifecycle:
                     if module is None:
                         logger.error("%s_watchdog_no_module", self.name)
                         return
-                    await self.spawn(module, self._harness_tools)
+                    await self.spawn(module)
                 # Success — reset counters and backoff
                 backoff = _WATCHDOG_BACKOFF_INITIAL
                 self._restart_count = 0

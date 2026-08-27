@@ -1,4 +1,4 @@
-"""Configuration for Slife agent -- OpenClaw-compatible JSON5 format.
+"""Configuration for Slife agent -- JSON5 format.
 
 Two-level model hierarchy:
   providers:
@@ -190,20 +190,16 @@ class ModelConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "ModelConfig":
-        """Parse a model entry (OpenClaw field names ->internal).
+        """Parse a model entry.
 
         model: API model name, doubles as local id (e.g. "deepseek-v4-flash")
         name: display label (e.g. "DeepSeek V4 Flash")
         reasoning: true ->thinking_enabled
         input: ["text","image"] ->supports_vision
-
-        Accepts both slife.json5 snake_case (primary) and OpenClaw
-        camelCase (compatibility fallback).
         """
-        # Primary: slife.json5 snake_case; fallback: OpenClaw camelCase
-        api_model = data.get("model") or data.get("id")
+        api_model = data.get("model")
         if not api_model:
-            raise ValueError("Model entry missing 'model' or 'id' field")
+            raise ValueError("Model entry missing 'model' field")
 
         # model may contain provider prefix: "deepseek/deepseek-v4-flash"
         # When the model ID contains a slash, it could be either
@@ -223,19 +219,15 @@ class ModelConfig:
 
         ref = f"{provider}/{local_id}"
         display_name = data.get("name", api_model)
-        thinking = data.get("reasoning", data.get("thinking_enabled", False))
+        thinking = data.get("reasoning", False)
         model_input = data.get("input", [])
-        supports_vision = "image" in model_input if model_input else data.get(
-            "supports_vision", False
-        )
+        supports_vision = "image" in (model_input or [])
         input_modalities = tuple(model_input) if model_input else ("text",)
 
-        # Resolve api_key: snake_case first, camelCase fallback
-        api_key_raw = data.get("api_key", data.get("apiKey", ""))
-        # Resolve other fields with camelCase fallbacks
-        context_window = data.get("context_window", data.get("contextWindow", 131072))
-        max_tokens = data.get("max_tokens", data.get("maxTokens", 4096))
-        base_url = data.get("base_url", data.get("baseUrl", "https://api.deepseek.com"))
+        api_key_raw = data.get("api_key", "")
+        context_window = data.get("context_window", 131072)
+        max_tokens = data.get("max_tokens", 4096)
+        base_url = data.get("base_url", "https://api.deepseek.com")
         compat = data.get("compat") if isinstance(data.get("compat"), dict) else None
         cost = data.get("cost") if isinstance(data.get("cost"), dict) else None
 
@@ -1045,16 +1037,7 @@ class Config:
             )
 
         # A2A — always parse config; enabled at runtime after mosquitto probe.
-        # The json5 section was renamed "mqtt" → "a2a"; accept the old key as
-        # a deprecated alias so existing configs keep working.
-        a2a_raw = raw.get("a2a")
-        if a2a_raw is None and "mqtt" in raw:
-            logger.warning(
-                "config_key_deprecated key=mqtt use=a2a "
-                "(renamed: plugin is a2a, mqtt is the transport binding)",
-            )
-            a2a_raw = raw.get("mqtt")
-        a2a_config = A2AConfig.from_dict(a2a_raw, agent_name=agent_name)
+        a2a_config = A2AConfig.from_dict(raw.get("a2a"), agent_name=agent_name)
         if a2a_config.enabled:
             logger.debug(
                 "a2a_config id=%s broker=%s:%d",

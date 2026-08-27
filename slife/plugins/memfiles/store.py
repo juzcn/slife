@@ -591,15 +591,15 @@ class MemfilesStore:
         """Startup sweep: dispatch-only runs from a previous process lifetime
         can never complete, so mark them failed.
 
-        Covers the current ``pending`` state plus legacy ``ran`` rows written
-        by older code at fire time (no report).  A ``ran`` row with a report is
-        a confirmed success and is never touched.  Returns the flipped runs
-        (with task name) so the agent can surface them.
+        A run stays ``pending`` until the worker's report arrives; anything
+        still pending at startup cannot complete.  A ``ran`` row always has
+        its report and is never touched.  Returns the flipped runs (with task
+        name) so the agent can surface them.
         """
         cursor = await self._c.execute(
             "SELECT r.task_id, t.name, r.due_at, r.status FROM scheduled_runs r "
             "JOIN scheduled_tasks t ON t.id = r.task_id "
-            "WHERE r.status IN ('pending','ran') AND r.report_id IS NULL "
+            "WHERE r.status='pending' AND r.report_id IS NULL "
             "ORDER BY r.due_at DESC",
         )
         rows = [dict(row) for row in await cursor.fetchall()]
@@ -608,7 +608,7 @@ class MemfilesStore:
                 "UPDATE scheduled_runs SET status='failed', "
                 "error=COALESCE(NULLIF(error,''), "
                 "  'slife restarted before completion') "
-                "WHERE status IN ('pending','ran') AND report_id IS NULL",
+                "WHERE status='pending' AND report_id IS NULL",
             )
             await self._c.commit()
         return rows

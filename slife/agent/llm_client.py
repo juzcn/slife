@@ -117,7 +117,7 @@ async def _safe_close_stream(stream) -> None:
             pass
 
 
-def _compat_chat_response(text: str, usage) -> tuple:
+def _chat_response(text: str, usage) -> tuple:
     """Build a minimal OpenAI-completions-shaped response for batch ``chat()``.
 
     The Anthropic / Responses backends don't return SDK objects shaped like

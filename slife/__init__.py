@@ -1,7 +1,7 @@
 """Slife — Silicon-based life based on LLM.
 
 A terminal-based AI agent with extensible tool system and multi-model support.
-Config: ~/.slife/slife.json5 (JSON with comments, OpenClaw-style).
+Config: ~/.slife/slife.json5 (JSON with comments).
 
 Usage:
     uv run python -m slife                # dev: CWD, prod: ~/.slife/

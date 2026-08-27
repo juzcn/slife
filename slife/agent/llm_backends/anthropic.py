@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from anthropic import AsyncAnthropic
 
-from slife.agent.llm_client import StreamChunk, TokenUsage, _compat_chat_response
+from slife.agent.llm_client import StreamChunk, TokenUsage, _chat_response
 from slife.config import ModelConfig
 
 if TYPE_CHECKING:
@@ -241,7 +241,7 @@ class AnthropicBackend:
             completion_tokens=response.usage.output_tokens or 0,
             total_tokens=(response.usage.input_tokens or 0) + (response.usage.output_tokens or 0),
         )
-        return _compat_chat_response(text, usage)
+        return _chat_response(text, usage)
 
     # ── Streaming ─────────────────────────────────────────────────────
 

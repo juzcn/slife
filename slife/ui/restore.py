@@ -67,7 +67,7 @@ def estimate_turn_tokens(turn: dict) -> int:
 # ── Prefix mapping ────────────────────────────────────────────────────
 
 
-def restore_prefix(channel: "Channel | None", _agent_name: str = "") -> str | None:
+def restore_prefix(channel: "Channel", _agent_name: str = "") -> str | None:
     """Consistent prefix mapping for restored turns.
 
     Delegates to the channel type's display prefix, which matches the
@@ -78,10 +78,7 @@ def restore_prefix(channel: "Channel | None", _agent_name: str = "") -> str | No
         into the human history — not an A2A peer)
       - a2a       → "A2A(<peer name>)"
       - system    → None (filtered from the chat view)
-    ``None`` channel (legacy rows / empty channel) restores as human.
     """
-    if channel is None:
-        return "You> "
     if channel.kind == "subagent":
         # i18n so live and restored subagent bubbles agree in both languages.
         return t("subagent_prefix", name=channel.data.get("name") or "subagent")
@@ -102,15 +99,10 @@ def _safe_parse_args(raw: str) -> dict:
 def tool_result_is_error(msg: dict) -> bool:
     """Error state of a restored ``tool`` message.
 
-    The persisted ``is_error`` flag wins — it is the loop's recorded
-    verdict.  Legacy turns (saved before the flag existed) fall back to
-    the same heuristic the live loop uses, so old errors don't render
-    as successful.
+    The loop persists its ``is_error`` verdict on every tool result —
+    read it directly, never re-derive from content.
     """
-    if "is_error" in msg:
-        return bool(msg["is_error"])
-    content = msg.get("content", "") or ""
-    return isinstance(content, str) and content.startswith("Error")
+    return bool(msg.get("is_error", False))
 
 
 # ── Main restore orchestrator ─────────────────────────────────────────
@@ -128,10 +120,9 @@ async def restore_session(
 
     Rebuilds the **exit-time context**: ``get_recent_turns`` already
     selected the turns recorded after the persisted live-context boundary,
-    within the context-ceiling token budget.  This re-select pass only
-    guards legacy ``recovery_info`` that carries an untrimmed list; the
-    current path arrives pre-fitted.  Older turns stay in the memory DB
-    and can be retrieved via ``turn_search`` if needed.
+    within the context-ceiling token budget.  The re-select pass replays the
+    slice the exit-time path already fitted; older turns stay in the memory
+    DB and can be retrieved via ``turn_search`` if needed.
 
     This function is self-contained — it reads recovery_info, rebuilds
     the history message list, and reconstructs the chat UI.
@@ -144,8 +135,7 @@ async def restore_session(
     # get_recent_turns already returns every turn after the persisted
     # live-context boundary — the exact slice that was live at exit.  No
     # re-slicing against the ceiling: restore replays the exit state so the
-    # agent picks up exactly where it left off.  (Legacy recovery_info that
-    # predates this carries an untrimmed list — kept whole here too.)
+    # agent picks up exactly where it left off.
     turns = all_turns
 
     # ── Phase 1: Reconstruct message list from selected turns ─────────
@@ -224,7 +214,7 @@ async def restore_session(
         ]
         last_assistant_idx = assistant_indices[-1] if assistant_indices else -1
 
-        _channel_by_row: dict[int, "Channel | None"] = {}
+        _channel_by_row: dict[int, "Channel"] = {}
         for i, turn in enumerate(turns):
             _channel_by_row[i] = Channel.from_db(
                 turn.get("channel", ""), turn.get("channel_data", "{}"),
@@ -273,6 +263,10 @@ async def restore_session(
                 if is_synthetic:
                     continue
                 ch = _channel_by_row.get(turn_idx)
+                if ch is None:
+                    # No persisted channel row (shouldn't happen — every
+                    # turn carries one) — degrade to a human message.
+                    ch = Channel.human()
                 prefix = restore_prefix(ch, agent_name)
                 if prefix is None:
                     # System channel — filtered from the chat view.
@@ -442,15 +436,7 @@ async def restore_session(
     # ── Post-restore setup ────────────────────────────────────────────
     # Still under suppressed auto-scroll — the system message must not
     # scroll by itself; the single final scroll below covers it.
-    skipped = recovery_info.get("skipped", 0)  # legacy field, now always 0
-    if skipped > 0:
-        _show_system_message(
-            app,
-            t("restored_partial", n=len(turns), skipped=skipped),
-            color="#3fb950",
-        )
-    else:
-        _show_system_message(app, t("restored_ok"), color="#3fb950")
+    _show_system_message(app, t("restored_ok"), color="#3fb950")
 
     # Auto-scroll is live again; settle the view with ONE scroll.
     chat_view._autoscroll = True
@@ -464,7 +450,7 @@ async def restore_session(
     # the status bar fall back to `_last_usage`.  Use the **latest restored
     # turn's persisted prompt_tokens** — the exact context size at exit
     # (what _sys_note would have reported) — instead of an estimate.
-    # Legacy turns predate the column → fall back to the token estimate.
+    # A missing/zero value (e.g. a cancelled turn) falls back to the estimate.
     last_turn = turns[-1] if turns else {}
     prompt = last_turn.get("prompt_tokens") or 0
     if prompt <= 0:

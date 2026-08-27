@@ -209,7 +209,7 @@ async def run_headless() -> None:
     from slife.agent.message_history import MessageHistory
     from slife.agent.inbox import MessageHistoryStore
     from slife.agent.system_prompt import build as build_system_prompt
-    from slife.a2a.identity import AgentName, AgentMessage
+    from slife.a2a.identity import AgentName, AgentMessage, Channel
 
     # Subagents never save turns to memory, even when sharing the main
     # agent's memdb plugin (which would make memdb_enabled True).
@@ -322,6 +322,7 @@ async def run_headless() -> None:
                     content=task_text,
                     correlation_id=str(rpc_id) if rpc_id else "",
                     on_reply=_reply,
+                    channel=Channel.subagent(str(_source)),
                 ))
             else:
                 _write(

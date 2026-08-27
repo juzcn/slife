@@ -34,15 +34,7 @@ from starlette.responses import Response, StreamingResponse
 
 from urllib.parse import quote
 
-from slife.plugins.sharefile.tunnel import (
-    is_active,
-    share_url_for,
-    start_monitor,
-    start_tunnel,
-    status,
-    stop_monitor,
-    stop_tunnel,
-)
+from slife.plugins.sharefile.tunnel import NgrokTunnel
 from slife.server_utils import (
     bind_free_port,
     create_plugin_server,
@@ -52,6 +44,9 @@ from slife.server_utils import (
 
 # ── Own port — bound by main() so the tunnel can forward to it ────────
 _PLUGIN_PORT: int = 0
+
+# The plugin owns its tunnel instance (single consumer of NgrokTunnel).
+_tunnel = NgrokTunnel()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -77,18 +72,18 @@ async def _sharefile_lifespan(_app):
         async def _eager_tunnel() -> None:
             try:
                 from slife.threads import run_daemon
-                await run_daemon(start_tunnel, _PLUGIN_PORT, name="ngrok-tunnel")
+                await run_daemon(_tunnel.start, _PLUGIN_PORT, name="ngrok-tunnel")
             except Exception as e:
                 logger.warning("sharefile_tunnel_eager_failed err=%s", e)
 
         asyncio.create_task(_eager_tunnel())
         # Background monitor — one-shot retry if the eager start failed.
-        start_monitor(_PLUGIN_PORT)
+        _tunnel.start_monitor(_PLUGIN_PORT)
     try:
         yield
     finally:
-        stop_monitor()
-        stop_tunnel()
+        _tunnel.stop_monitor()
+        _tunnel.stop()
 
 
 mcp, _log_path, logger = create_plugin_server(
@@ -165,14 +160,14 @@ def _content_disposition(filename: str) -> str:
 
 async def _ensure_tunnel() -> bool:
     """Start the tunnel if it isn't active (lazy on-demand fallback)."""
-    if is_active():
+    if _tunnel.is_active:
         return True
     if not _PLUGIN_PORT:
         return False
     try:
         from slife.threads import run_daemon
-        await run_daemon(start_tunnel, _PLUGIN_PORT, name="ngrok-tunnel-on-demand")
-        return is_active()
+        await run_daemon(_tunnel.start, _PLUGIN_PORT, name="ngrok-tunnel-on-demand")
+        return _tunnel.is_active
     except Exception:
         return False
 
@@ -240,7 +235,7 @@ async def __tunnel_status() -> str:
     report the tunnel down), ``idle`` (no attempt made, e.g. subagent
     reusing the main agent's tunnel).
     """
-    st = status()
+    st = _tunnel.status()
     if st["state"] == "active":
         return json.dumps(
             {"active": True, "state": "active", "url": st["url"]},
@@ -273,7 +268,7 @@ async def __ready() -> str:
     (a down tunnel is surfaced separately as a warning), so tunnel latency
     or failure never gates startup.
     """
-    st = status()
+    st = _tunnel.status()
     return json.dumps(
         {"ready": True,
          "detail": f"server serving (tunnel state: {st.get('state', 'unknown')})"},
@@ -286,7 +281,7 @@ async def __register_file(path: str) -> str:
     """Register *path* and return ``{file_id, url}`` for the harness."""
     await _ensure_tunnel()
     file_id = _register_file(str(Path(path).resolve()))
-    url = share_url_for(file_id) or ""
+    url = _tunnel.share_url_for(file_id) or ""
     return json.dumps({"file_id": file_id, "url": url}, ensure_ascii=False)
 
 
@@ -321,7 +316,7 @@ async def share_file(path: str) -> str:
         )
 
     file_id = _register_file(str(p.resolve()))
-    url = share_url_for(file_id)
+    url = _tunnel.share_url_for(file_id)
     if url is None:
         return (
             "Error: file sharing service became unavailable. "

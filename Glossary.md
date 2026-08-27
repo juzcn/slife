@@ -778,8 +778,8 @@ saved. *See also* Readiness; Startup sweep.
 
 **Startup sweep**
 The one-shot startup pass that settles scheduled runs a previous process
-lifetime could not finish: runs still `pending` (and legacy
-`ran`-without-report) are swept to `failed` — the process that dispatched
+lifetime could not finish: runs still `pending` are swept to `failed` —
+the process that dispatched
 them is gone, so they can never complete — and fires that were due while
 the agent was down are marked `missed`. It runs exactly once, outside the
 schedule loop, awaiting Startup convergence (event-driven — no polling),

@@ -37,29 +37,26 @@ def _reset_state():
 
 
 def _active_tunnel(url="https://slife.ngrok-free.dev"):
-    """Patch the tunnel so it reports active with the given public URL."""
-    return patch.multiple(
-        plugin,
-        is_active=MagicMock(return_value=True),
-        share_url_for=MagicMock(side_effect=lambda fid: f"{url}/share/{fid}"),
-        status=MagicMock(return_value={"state": "active", "url": url}),
-    )
+    """Patch the plugin's tunnel instance so it reports active."""
+    tunnel = MagicMock()
+    tunnel.is_active = True
+    tunnel.share_url_for.side_effect = lambda fid: f"{url}/share/{fid}"
+    tunnel.status.return_value = {"state": "active", "url": url}
+    return patch.multiple(plugin, _tunnel=tunnel)
 
 
 def _offline_tunnel(state="failed"):
-    """Patch the tunnel so it reports inactive with a terminal ``failed`` state.
+    """Patch the plugin's tunnel instance so it reports inactive.
 
     Also clear ``_PLUGIN_PORT`` so ``_ensure_tunnel`` short-circuits without
     a real ngrok start attempt — without this the offline test spent ~9s
     trying to reach the actual ngrok service.
     """
-    return patch.multiple(
-        plugin,
-        is_active=MagicMock(return_value=False),
-        share_url_for=MagicMock(return_value=None),
-        status=MagicMock(return_value={"state": state, "url": ""}),
-        _PLUGIN_PORT=0,
-    )
+    tunnel = MagicMock()
+    tunnel.is_active = False
+    tunnel.share_url_for.return_value = None
+    tunnel.status.return_value = {"state": state, "url": ""}
+    return patch.multiple(plugin, _tunnel=tunnel, _PLUGIN_PORT=0)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -133,11 +130,10 @@ class TestShareFile:
     async def test_url_drops_after_register(self, tmp_path):
         f = tmp_path / "doc.pdf"
         f.write_bytes(b"pdf")
-        with patch.multiple(
-            plugin,
-            is_active=MagicMock(return_value=True),
-            share_url_for=MagicMock(return_value=None),
-        ):
+        tunnel = MagicMock()
+        tunnel.is_active = True
+        tunnel.share_url_for.return_value = None
+        with patch.multiple(plugin, _tunnel=tunnel):
             result = await plugin.share_file(path=str(f))
         assert result.startswith("Error:")
         assert "became unavailable" in result

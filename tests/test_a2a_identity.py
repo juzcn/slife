@@ -86,7 +86,7 @@ class TestAgentMessage:
         assert msg.metadata == {}
         assert msg.on_reply is None
         assert msg.handler is None
-        assert msg.channel is None
+        assert msg.channel == Channel.human()
 
     def test_full_creation(self):
         """All fields can be set explicitly."""
@@ -201,21 +201,21 @@ class TestChannel:
             assert restored == ch
             assert restored.data == ch.data
 
-    def test_from_db_legacy_peer_name(self):
-        """Unknown identity string → legacy A2A peer (pre-type rows)."""
+    def test_from_db_peer_name_identity_is_a2a(self):
+        """Peer-name identity (the a2a to_db format) → a2a peer."""
         ch = Channel.from_db("Jack", "{}")
         assert ch.kind == "a2a"
         assert ch.data == {"agent_name": "Jack"}
         assert ch.display_prefix() == "A2A(Jack)"
 
-    def test_from_db_legacy_schedule(self):
-        """Legacy 'schedule' channel classifies as an A2A peer."""
+    def test_from_db_unknown_identity_is_a2a_peer(self):
+        """Any unknown identity string classifies as an A2A peer."""
         ch = Channel.from_db("schedule", "{}")
         assert ch.kind == "a2a"
         assert ch.data == {"agent_name": "schedule"}
 
     def test_from_db_empty_identity_is_human(self):
-        """Empty channel string (legacy human rows) → human."""
+        """Empty channel string → human."""
         assert Channel.from_db("", "{}") == Channel.human()
 
     def test_from_db_bad_payload_json(self):
@@ -224,7 +224,7 @@ class TestChannel:
         assert ch.kind == "subagent"
         assert ch.data == {}
 
-    def test_from_db_merges_legacy_data(self):
-        """Legacy row with an explicit payload merges identity + data."""
+    def test_from_db_merges_payload_identity(self):
+        """An explicit payload merges identity + data."""
         ch = Channel.from_db("Jack", '{"agent_name": "Jack", "extra": 1}')
         assert ch.data == {"agent_name": "Jack", "extra": 1}

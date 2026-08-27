@@ -331,8 +331,7 @@ class SessionStore:
         payload for the channel's own fields (A2A peer name, subagent
         name/task, …), written to the sibling ``turn_channel`` table under
         the same lock/commit as the diary row.  An empty payload writes no
-        row (the table is absent only on legacy DBs that predate the
-        schema — see :meth:`get_recent_turns`, which tolerates missing rows).
+        row (see :meth:`get_recent_turns`, which tolerates missing rows).
         """
         now = created_at or _now()
         done = completed_at or _now()

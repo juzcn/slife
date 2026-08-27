@@ -118,9 +118,11 @@ class Channel:
         """Rebuild a channel from a persisted row.
 
         ``identity`` is the ``diary.channel`` value: a known kind string,
-        or — legacy — the raw peer name (or empty for human turns).  Any
-        unknown identity, including legacy ``"schedule"`` and old peer-name
-        rows, classifies as an A2A peer.  Bad payload JSON degrades to ``{}``.
+        or — for an A2A channel — the peer's name (the format
+        :meth:`to_db` writes, so full-text search on the peer matches the
+        row).  An empty string (old human rows) decodes as human; any other
+        unknown identity classifies as an A2A peer.  Bad payload JSON
+        degrades to ``{}``.
         """
         parsed: dict = {}
         if isinstance(data, str):
@@ -167,6 +169,7 @@ class AgentMessage:
     rather than relying on a global mutable registry.  Remote A2A
     messages leave this as None and fall back to the default factory."""
 
-    channel: "Channel | None" = None
-    """Typed source identity; ``None`` falls back to the ``source`` string
-    (legacy classification) for display and persistence."""
+    channel: "Channel" = field(default_factory=Channel.human)
+    """Typed source identity — the durable sender (human / wechat / subagent
+    / heartbeat / a2a / system) that drives display and persistence.  Always
+    set by producers; defaults to human for convenience."""

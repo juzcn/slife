@@ -11,7 +11,7 @@
 --  与 memdb 完全分开的 DB（{agent}.files/.index.db）。
 --
 --  定时任务注册表（scheduled_tasks / scheduled_runs）也在此 DB——
---  与报告同生命周期。老库升级见 scripts/migrate_memfiles_scheduled.py。
+--  与报告同生命周期。
 -- ═══════════════════════════════════════════════════════════════
 
 

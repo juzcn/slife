@@ -42,15 +42,15 @@ def _format_turn_dt(value) -> str:
 def turn_header(turn: dict) -> str:
     """Compact turn identity: ``[INFO: {"turn_id": N, "begin": …, "end": …}]``.
 
-    Only the id, begin time and end time — the history carries the content.
-    The end collapses to a time alone when it falls on the begin's day
+    Reads the turn's internal ``rowid`` (the key the store's restore rows
+    carry) and emits it as the LLM-facing ``turn_id``.  Only the id, begin
+    time and end time — the history carries the content.  The end collapses
+    to a time alone when it falls on the begin's day
     (``{"turn_id": 27, "begin": "2026-08-10 14:03", "end": "14:05"}``).
-    Returns ``""`` when neither id nor timestamps are known (legacy turns),
-    so the message stays plain.
+    Returns ``""`` when there is no id and no timestamps, so the message
+    stays plain.
     """
-    # Restored turns may carry either key: the store used to emit ``rowid``
-    # (SQLite rowid) and now emits ``turn_id`` — accept both.
-    rowid = turn.get("turn_id") if "turn_id" in turn else turn.get("rowid")
+    rowid = turn.get("rowid")
     start = _format_turn_dt(turn.get("created_at"))
     end = _format_turn_dt(turn.get("completed_at"))
     if start and end and start[:10] == end[:10]:

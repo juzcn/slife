@@ -65,9 +65,8 @@ _TUNNEL_START_TIMEOUT = 45.0  # seconds
 class NgrokTunnel:
     """Manages an ngrok HTTP tunnel with health monitoring.
 
-    All tunnel state is encapsulated — no module-level globals.
-    A singleton instance is held at module level for the
-    backward-compatible function API.
+    All tunnel state is encapsulated — no module-level globals.  The
+    sharefile plugin server owns one instance.
     """
 
     def __init__(self) -> None:
@@ -329,43 +328,3 @@ def _read_auth_token() -> str | None:
     except (ImportError, OSError, ValueError):
         logger.warning("credstore_read_failed")
     return os.environ.get("NGROK_AUTHTOKEN")
-
-
-# ── Singleton ──────────────────────────────────────────────────────────
-
-_tunnel = NgrokTunnel()
-
-
-# ── Module-level API (used by the sharefile plugin server) ─────────────
-
-
-def share_url_for(file_id: str) -> str | None:
-    return _tunnel.share_url_for(file_id)
-
-
-def public_url() -> str | None:
-    return _tunnel.public_url
-
-
-def is_active() -> bool:
-    return _tunnel.is_active
-
-
-def status() -> dict[str, str]:
-    return _tunnel.status()
-
-
-def start_tunnel(port: int) -> str:
-    return _tunnel.start(port)
-
-
-def stop_tunnel() -> None:
-    _tunnel.stop()
-
-
-def start_monitor(port: int, on_tunnel_up=None) -> None:
-    _tunnel.start_monitor(port, on_tunnel_up)
-
-
-def stop_monitor() -> None:
-    _tunnel.stop_monitor()

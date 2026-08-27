@@ -70,23 +70,13 @@ class TestModelConfigFromDict:
         assert mc.reasoning_effort == "medium"
         assert mc.ref == "deepseek/deepseek-v4-flash"
 
-    def test_thinking_enabled_fallback_key(self):
-        """thinking_enabled key also enables thinking."""
+    def test_reasoning_missing_disables_thinking(self):
+        """Absent reasoning key → thinking disabled."""
         mc = ModelConfig.from_dict({
             "model": "test",
             "api_key": "key",
-            "thinking_enabled": True,
         })
-        assert mc.thinking_enabled is True
-
-    def test_supports_vision_fallback_key(self):
-        """supports_vision key enables vision when no input list."""
-        mc = ModelConfig.from_dict({
-            "model": "test",
-            "api_key": "key",
-            "supports_vision": True,
-        })
-        assert mc.supports_vision is True
+        assert mc.thinking_enabled is False
 
     def test_supports_vision_from_input_list(self):
         """input: ['image'] sets supports_vision."""
@@ -113,7 +103,7 @@ class TestModelConfigFromDict:
             "api_key": "key",
             "input": [],
         })
-        assert mc.supports_vision is False  # falls back to supports_vision default
+        assert mc.supports_vision is False
 
     def test_defaults_applied(self):
         """Missing optional fields get sensible defaults."""
@@ -846,8 +836,8 @@ class TestConfigA2A:
         assert config.a2a_config.agent_name == "bob"
         assert config.a2a_config.enabled is True  # auto-enabled when a2a config present
 
-    def test_deprecated_mqtt_key_aliases_a2a(self, tmp_path, monkeypatch, caplog):
-        """The old ``mqtt`` section key is accepted as a deprecated alias."""
+    def test_mqtt_key_is_ignored(self, tmp_path, monkeypatch):
+        """The old ``mqtt`` section key is not read — the section is ``a2a``."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.json5"
         cfg_path.write_text(json5.dumps({
@@ -860,30 +850,10 @@ class TestConfigA2A:
                 "broker": {"host": "mqtt.example.com", "port": 1883},
             },
         }))
-        import logging
-        with caplog.at_level(logging.WARNING, logger="slife.config"):
-            config = Config.from_json5(str(cfg_path), agent_name="bob")
-        assert config.a2a_config is not None
-        assert config.a2a_config.broker_host == "mqtt.example.com"
-        assert any(
-            "config_key_deprecated" in r.message for r in caplog.records
-        )
-
-    def test_a2a_key_takes_precedence_over_mqtt(self, tmp_path, monkeypatch):
-        """When both keys exist, ``a2a`` wins (no deprecation warning)."""
-        monkeypatch.setenv("KEY", "sk-test")
-        cfg_path = tmp_path / "slife.json5"
-        cfg_path.write_text(json5.dumps({
-            "models": {
-                "providers": {
-                    "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
-                },
-            },
-            "a2a": {"broker": {"host": "new.example.com", "port": 1883}},
-            "mqtt": {"broker": {"host": "old.example.com", "port": 1883}},
-        }))
         config = Config.from_json5(str(cfg_path), agent_name="bob")
-        assert config.a2a_config.broker_host == "new.example.com"
+        assert config.a2a_config is not None
+        assert config.a2a_config.broker_host == "localhost"
+        assert config.a2a_config.broker_port == 1883
 
 
 # ── Config.from_json5 edge cases ────────────────────────────────────────
@@ -1126,50 +1096,33 @@ class TestConfigFromJSON5EdgeCases:
         assert config.models[0].ref == "p2/solo"
 
 
-# ── CamelCase alias compatibility (OpenClaw format) ──────────────────
+# ── Strict config keys (no OpenClaw aliases) ──────────────────────────
 
 
-class TestModelConfigCamelCase:
-    """Tests for OpenClaw camelCase field aliases — snake_case is primary."""
+class TestModelConfigStrictKeys:
+    """Model entries read only slife's own snake_case keys — no aliases."""
 
-    def test_id_fallback_when_model_absent(self):
-        mc = ModelConfig.from_dict({"id": "claude-3", "api_key": "sk-test"})
-        assert mc.api_model == "claude-3"
+    def test_id_key_not_read(self):
+        """The legacy ``id`` key is ignored; 'model' is the only id source."""
+        with pytest.raises(ValueError, match="missing"):
+            ModelConfig.from_dict({"id": "claude-3", "api_key": "sk-test"})
 
-    def test_model_takes_priority_over_id(self):
-        mc = ModelConfig.from_dict({"model": "gpt-4o", "id": "claude-3", "api_key": "sk-test"})
-        assert mc.api_model == "gpt-4o"
-
-    def test_context_window_camel(self):
-        mc = ModelConfig.from_dict({"model": "test", "api_key": "key", "contextWindow": 200000})
-        assert mc.context_window == 200000
-
-    def test_context_window_snake_priority(self):
-        mc = ModelConfig.from_dict({"model": "test", "api_key": "key", "context_window": 99999, "contextWindow": 200000})
-        assert mc.context_window == 99999
-
-    def test_max_tokens_camel(self):
-        mc = ModelConfig.from_dict({"model": "test", "api_key": "key", "maxTokens": 8192})
-        assert mc.max_tokens == 8192
-
-    def test_base_url_camel(self):
-        mc = ModelConfig.from_dict({"model": "test", "api_key": "key", "baseUrl": "https://custom.api/v1"})
-        assert mc.base_url == "https://custom.api/v1"
-
-    def test_api_key_camel(self):
+    def test_camel_case_keys_not_read(self):
+        """camelCase keys (apiKey, contextWindow, maxTokens, baseUrl)
+        are ignored — a camelCase-only entry falls back to defaults."""
         mc = ModelConfig.from_dict({"model": "test", "apiKey": "sk-camel-key"})
-        assert mc.api_key == "sk-camel-key"
+        assert mc.api_key == ""
+        assert mc.context_window == 131072
+        assert mc.max_tokens == 4096
+        assert mc.base_url == "https://api.deepseek.com"
 
-    def test_api_key_snake_priority(self):
-        mc = ModelConfig.from_dict({"model": "test", "api_key": "sk-snake", "apiKey": "sk-camel"})
-        assert mc.api_key == "sk-snake"
-
-    def test_snake_case_still_works(self):
+    def test_snake_case_keys_read(self):
         mc = ModelConfig.from_dict({
             "model": "test", "api_key": "sk-snake",
             "context_window": 99999, "max_tokens": 666,
             "base_url": "https://snake.api/v1",
         })
+        assert mc.api_key == "sk-snake"
         assert mc.context_window == 99999
         assert mc.max_tokens == 666
         assert mc.base_url == "https://snake.api/v1"
@@ -1197,6 +1150,6 @@ class TestModelConfigCamelCase:
         assert mc.compat is None
         assert mc.cost is None
 
-    def test_missing_model_and_id_raises(self):
+    def test_missing_model_raises(self):
         with pytest.raises(ValueError, match="missing"):
             ModelConfig.from_dict({"api_key": "key"})

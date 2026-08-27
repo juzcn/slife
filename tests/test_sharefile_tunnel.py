@@ -394,35 +394,36 @@ class TestNgrokTunnelStartMonitor:
                     pass
 
 
-# ── Module-level functions ────────────────────────────────────────────────────
+# ── NgrokTunnel state (server-owned single instance) ─────────────────────────
 
 
-class TestModuleFunctions:
-    """Tests for the backward-compatible module-level API."""
+class TestServerOwnedTunnel:
+    """The sharefile plugin server owns its own NgrokTunnel instance."""
 
-    def test_is_active_and_public_url_delegate(self, monkeypatch):
-        """is_active() and public_url() delegate to the module singleton."""
+    def test_server_holds_tunnel_instance(self):
+        """server.py owns an NgrokTunnel — the tunnel API is instance-based."""
+        from slife.plugins.sharefile import server
+        from slife.plugins.sharefile.tunnel import NgrokTunnel
+        assert isinstance(server._tunnel, NgrokTunnel)
+
+    def test_is_active_and_public_url(self, monkeypatch):
         monkeypatch.delenv("SLIFE_SHAREFILE_URL", raising=False)
-        tmod._tunnel._public_url = None
-        assert tmod.is_active() is False
-        assert tmod.public_url() is None
+        tunnel = NgrokTunnel()
+        assert tunnel.is_active is False
+        assert tunnel.public_url is None
 
-        tmod._tunnel._public_url = "https://module.ngrok.io"
-        assert tmod.is_active() is True
-        assert tmod.public_url() == "https://module.ngrok.io"
+        tunnel._public_url = "https://module.ngrok.io"
+        assert tunnel.is_active is True
+        assert tunnel.public_url == "https://module.ngrok.io"
 
-    def test_share_url_for_delegates(self, monkeypatch):
-        """share_url_for() delegates to the singleton's share_url_for()."""
+    def test_share_url_for(self, monkeypatch):
         monkeypatch.delenv("SLIFE_SHAREFILE_URL", raising=False)
-        # Reset singleton state (may be dirty from other tests).
-        tmod._tunnel._public_url = None
+        tunnel = NgrokTunnel()
+        tunnel._public_url = "https://share.ngrok.io"
+        assert tunnel.share_url_for("test-id") == "https://share.ngrok.io/share/test-id"
 
-        tmod._tunnel._public_url = "https://share.ngrok.io"
-        result = tmod.share_url_for("test-id")
-        assert result == "https://share.ngrok.io/share/test-id"
-
-        tmod._tunnel._public_url = None
-        assert tmod.share_url_for("test-id") is None
+        tunnel._public_url = None
+        assert tunnel.share_url_for("test-id") is None
 
 
 # ── _read_auth_token ─────────────────────────────────────────────────────────

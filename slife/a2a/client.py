@@ -27,7 +27,7 @@ from collections.abc import Awaitable, Callable
 
 from slife.a2a.card import AgentCard
 from slife.a2a.config import A2AConfig
-from slife.a2a.identity import AgentName, AgentMessage
+from slife.a2a.identity import AgentName, AgentMessage, Channel
 from slife.a2a.mqtt import MQTTAdapter
 from slife.a2a.transport import TransportAdapter, TransportMessage
 from slife.a2a import wire
@@ -643,6 +643,7 @@ class A2AClient:
                 content=task,
                 reply_to=reply_to,
                 correlation_id=corr_id,
+                channel=Channel.a2a(source),
             )
             await self._incoming_task_callback(agent_msg)
 
