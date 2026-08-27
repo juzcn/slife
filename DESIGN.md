@@ -13,7 +13,7 @@
 7. [Plugin Architecture](#plugin-architecture) — contract, localhost/proxy, watchdog, built-ins, MCP gateway, subagent discovery
 8. [Memory (MemDB)](#memory-memdb) — schema, search, embedding, session restore, agent isolation
 9. [A2A — Agent-to-Agent (mesh)](#a2a--agent-to-agent-mesh) — MQTT mesh, unified inbox, task store, subagent workers
-10. [Image & Memfiles](#image--memfiles) — @-syntax, image display, memfiles plugin, ngrok
+10. [Image & Memfiles](#image--memfiles) — @-syntax, image display, memfiles & sharefile plugins
 11. [Scheduled Tasks](#scheduled-tasks) — schedule loop, trigger→subagent execution, run/report record, startup sweep
 12. [UI](#ui) — widgets, timestamps, progressive disclosure, i18n
 13. [Config & Credentials](#config--credentials) — two-layer architecture, credstore matrix, secret sanitization, config sections
@@ -85,9 +85,9 @@ the human-facing TUI follows the OS locale.
 │  Native · MemDB · MCP Proxy · Skills · CLI · REST API · A2A          │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins (independent child processes, Streamable HTTP)              │
-│  slife-mcp (gateway) · slife-memdb (diary) · slife-wechat ·          │
-│  slife-a2a (A2A over MQTT) · slife-memfiles (notes/diary/files       │
-│  + /share) · slife-media (image/video/TTS/ASR generation)            │
+│  slife-mcp (gateway) · slife-memdb (turns DB) · slife-wechat ·       │
+│  slife-a2a (A2A over MQTT) · slife-memfiles (notes/diary/files) ·    │
+│  slife-sharefile (public sharing) · slife-media (generation)         │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
@@ -181,7 +181,7 @@ tiers of the same thing:
 | `__wechat_drain_incoming` / `__wechat_dispatch_reply` | wechat plugin | Internal — invisible |
 | `__a2a_drain_incoming` / `__a2a_dispatch_result` | a2a plugin | Internal — invisible |
 | `__mcp_connection_status` / `__mcp_call_tool` | mcp plugin | Internal — invisible |
-| `__tunnel_status` / `__register_file` | memfiles plugin | Internal — invisible |
+| `__tunnel_status` / `__register_file` | sharefile plugin | Internal — invisible |
 
 Both registration paths share one `__` predicate — `is_internal_tool()`
 (`slife/server_utils.py`) — so no plugin internal tool leaks into the schema,
@@ -333,7 +333,7 @@ Picker rules (hard-won):
 
 ## Plugin Architecture
 
-Six built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) for all of them — the memfiles plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`), but its control surface is pure MCP.
+Seven built-in plugins run as independent child processes. Communication is via **Streamable HTTP** (MCP protocol) for all of them — the sharefile plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`), but its control surface is pure MCP.
 
 **WSL note:** Custom env vars set via `create_subprocess_exec(env=…)` are NOT forwarded to Windows `.exe` processes through WSL interop. `WSLENV` is only read by the WSL `/init` at session start, not by child processes. Therefore, **all MCP server runtimes on WSL must be Linux-native binaries** — the install script enforces this by detecting `/mnt/*` paths and installing native versions.
 
@@ -382,7 +382,7 @@ spawn's completion, never polled, never time-bounded; the only timeout is a
 backend fails loudly where it is used (the inbox freezes with a red banner
 on the first unsavable turn) instead of aborting startup.
 
-No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. memfiles' ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal. In practice uvicorn finishes mounting the Streamable HTTP endpoint ~1 s *after* the lifespan signals, so a session established in that window can get a bad SSE transport on Windows/Proactor that hangs `tools/list`; the harness runs that call through `asyncio.timeout` (which, unlike `asyncio.wait_for`, breaks the hang reliably) and, on a timeout, reconnects a fresh session and retries once — by then the plugin is serving, so the race self-heals instead of failing the load.
+No base class, no import hook, no SDK. Plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. sharefile's ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal. In practice uvicorn finishes mounting the Streamable HTTP endpoint ~1 s *after* the lifespan signals, so a session established in that window can get a bad SSE transport on Windows/Proactor that hangs `tools/list`; the harness runs that call through `asyncio.timeout` (which, unlike `asyncio.wait_for`, breaks the hang reliably) and, on a timeout, reconnects a fresh session and retries once — by then the plugin is serving, so the race self-heals instead of failing the load.
 
 The MCP client keeps bounded retry (6 attempts, 0.5 s apart, each attempt time-boxed at 10 s including transport setup) as **defense-in-depth**: a plugin that signals early (violating the contract) still loads instead of hanging.
 
@@ -446,16 +446,17 @@ Processes communicate through environment variables:
 | `SLIFE_SESSION_ID` / `SLIFE_AGENT_NAME` | Log correlation, agent identity |
 | `SLIFE_DATA_DIR` / `SLIFE_CONFIG_DIR` | Directory overrides |
 | `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES / MQTT / MEDIA) |
-| `SLIFE_MEMFILES_URL` | Public ngrok URL (set inside the memfiles plugin process) |
+| `SLIFE_SHAREFILE_URL` | Public ngrok URL (set inside the sharefile plugin process) |
 
 ### Built-in Plugins
 
 | Plugin | Transport | Role |
 |--------|-----------|------|
 | **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config. |
-| **slife-memdb** | Streamable HTTP | Diary database. Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
+| **slife-memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
-| **slife-memfiles** | Streamable HTTP + `/share` route | Notes/diary/files cabinet + public sharing. MCP tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `search`, `read`, `share_file`, `embedding_check`), internal tools (`__tunnel_status`, `__register_file`), and `GET /share/{token}` for file bytes — same port, two protocols. Plugin owns the ngrok tunnel, the in-process token registry, and a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. |
+| **slife-memfiles** | Streamable HTTP | Private notes/diary/files cabinet — tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `cabinet_embedding_check`, plus the scheduled-task and report tools `scheduled_task_set`/`remove`/`list`, `scheduled_run_list`/`skip`, `save_cron_report`, `report_list`/`read`), internal `__cabinet_status`. Notes & diary dual-written to markdown + a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. |
+| **slife-sharefile** | Streamable HTTP + `/share` route | Public file sharing — sole LLM-visible tool `share_file`; internal tools `__tunnel_status`, `__register_file`; `GET /share/{token}` serves file bytes on the same port (one port, two protocols). Owns the ngrok tunnel (eager start, non-blocking) and the in-process token registry. |
 | **slife-a2a** | Streamable HTTP | A2A mesh over the MQTT binding (paho-mqtt v5, LWT). Only starts when the broker is reachable (TCP probe). Hosts the LLM-visible `a2a_*` tools; only the drain/dispatch internal tools (`__a2a_*`) stay `__`-prefixed. |
 | **slife-media** | Streamable HTTP | Non-chat AI generation (image, video, TTS, ASR) from any provider. Owns the `media:` config section (plugin-read, ignored by the main `Config` parser) and a provider-agnostic adapter layer (`dashscope-aigc`, `openai-images`). Tools: `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` . Long renders use the harness's universal `_async: true` + `check_async`. Artifacts are saved to the working directory (or a `folder` passed to the tool) — work products, never memfiles cabinet files. |
 
@@ -490,6 +491,12 @@ All state changes persist to `slife.json5`. Servers needing OAuth use a device-c
 Subagents inherit `SLIFE_MCP_PORT` from the parent environment, connect to the existing MCP wrapper over Streamable HTTP, and eagerly discover external MCP tools at startup via `_discover_existing_mcp_tools()` — listing tools from already-connected servers without spawning new processes or mutating config. This keeps tool naming consistent between main agent and subagents (`server__tool` in both).
 
 ## Memory (MemDB)
+
+> **Terminology.** This store is the **Turns DB** (Glossary § Part II): the memdb
+> plugin is its implementation, whose backing SQLite table is named `diary` — a
+> codebase alias. It is distinct from the File Cabinet's **Diary** records
+> (Glossary § Part II), which the memfiles plugin writes. In this document
+> "diary" always means that table unless it names a cabinet file.
 
 Every turn permanently recorded as an independent row — no session concept, a continuous time-ordered log in `~/.slife/<agent>.db`.
 
@@ -805,7 +812,7 @@ Backend selection is **deterministic by platform** — `_init_system()` dispatch
 
 Anything else raises a clear "unsupported platform" error. On a supported platform whose backend is unavailable (e.g. Linux where keyctl is blocked by policy), `_init_system()` returns `None` instead of raising — credstore keeps working in **cryptfile-only** mode (`set` stores in the AES backup with a notice; `set-password`, `status`, `get -p`, `delete` all function). `credstore set` dual-writes: cryptfile first, then the system keyring (rolled back if the keyring write fails). The CLI also provides `set-password`, `status`, `get`, `delete`, `copy`, `list`, `reset-keyring`, `reset-backup`, `inject`/`uninject` (shell-aware export: bash / powershell / cmd; Windows persistence via `HKCU\Environment`).
 
-**sLife does not support credstore's cryptfile mode, but is fully compatible with environment-variable setup.** The sLife Python API (config `_try_credstore_lookup`, `credential_check`/`credential_inject`, OAuth, memfiles tunnel) calls credstore's password-free `get_credential`/`exists_credential`/`resolve_uri`, which read the system keyring only and return `None` (never prompting) when it's absent. So on a keyring-less box (cryptfile-only), sLife's `${VAR}`/`keyring:` secret resolution is inert — it silently falls through to env vars or defaults. This is by design: the master password lives in the CLI (`credstore set-password` / `get -p`), not in sLife. Three supported usage methods:
+**sLife does not support credstore's cryptfile mode, but is fully compatible with environment-variable setup.** The sLife Python API (config `_try_credstore_lookup`, `credential_check`/`credential_inject`, OAuth, sharefile tunnel) calls credstore's password-free `get_credential`/`exists_credential`/`resolve_uri`, which read the system keyring only and return `None` (never prompting) when it's absent. So on a keyring-less box (cryptfile-only), sLife's `${VAR}`/`keyring:` secret resolution is inert — it silently falls through to env vars or defaults. This is by design: the master password lives in the CLI (`credstore set-password` / `get -p`), not in sLife. Three supported usage methods:
 
 1. **Env-var only** — export secrets in the shell; `os.environ` is checked before credstore in `_resolve_secret`, so env-based credentials are fully supported.
 2. **Cryptfile + inject** — keep managing secrets in credstore cryptfile mode, then `credstore inject KEY…` pushes them into the environment (in cryptfile-only mode `inject` prompts once for the master password and reads from the encrypted backup). sLife then resolves them from `os.environ`.
@@ -904,7 +911,7 @@ Three sinks, two audiences:
   (plugin load results, memory health, tool outcomes, OAuth notifications) is
   surfaced explicitly via `_show_system_message` / callbacks — never by leaking
   `logger.warning` to the terminal.  The plugin never talks to the TUI: the
-  harness owns surfacing.  E.g. the memfiles ngrok tunnel is eager-started on a
+  harness owns surfacing.  E.g. the sharefile ngrok tunnel is eager-started on a
   background task inside the plugin process; after the plugin loads, the main
   process probes the internal `__tunnel_status` (state `active`/`starting`/`failed`) until the
   attempt settles, and surfaces a one-time "tunnel unavailable" warning via
@@ -964,9 +971,10 @@ slife/
     meta.py            #   list_native_tools, check_async, cancel_async, clear_context, notify_user
   plugins/             # Built-in plugins (auto-discovered server.py packages)
     mcp/               #   External MCP gateway (raw JSON-RPC: stdio/SSE/streamable)
-    memdb/             #   Diary database (store, search, embeddings, schema.sql)
+    memdb/             #   Turns database (store, search, embeddings, schema.sql)
     wechat/            #   WeChat messaging (iLink ClawBot client)
-    memfiles/          #   Notes/diary/files cabinet + sharing (server.py tools, store.py + schema.sql, tunnel.py = ngrok)
+    memfiles/          #   Private notes/diary/files cabinet (server.py tools, store.py + schema.sql)
+    sharefile/         #   Public file sharing (share_file, /share route, tunnel.py = ngrok)
     a2a/               #   A2A mesh (a2a_* tools + A2AClient, MQTT binding)
     media/             #   Non-chat AI generation (server.py, config.py, adapters/ for dashscope-aigc + openai-images)
   mcp/                 # MCP client infra

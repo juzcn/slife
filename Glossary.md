@@ -163,8 +163,10 @@ included. *See also* LLM context; Presence.
 
 **Diary**
 A per-day record written in the File Cabinet, keyed by date. A diary entry
-is appended to the day's file and indexed for search. *See also* File
-Cabinet; Note.
+is appended to the day's file and indexed for search. A diary is a cabinet
+document, written by action (the `diary_write` tool); it is not the turn
+history, which lives in the Turns DB. *See also* File Cabinet; Note; Turns
+DB.
 
 ### E
 
@@ -456,7 +458,10 @@ summarize, or page through turns. *See also* Turn; Turn footnote.
 **Turns DB**
 One of the two memory stores. The database holds the complete turn history;
 every turn persists there permanently and can be recalled into the context by
-search. *See also* Memory; File Cabinet.
+search. It is implemented by the built-in *memdb* plugin, whose backing table
+is named `diary` in the codebase — a developer-facing alias, unrelated to the
+File Cabinet's Diary. *See also* Memory; File Cabinet; Diary; Built-in plugin
+(Part III).
 
 ### U
 

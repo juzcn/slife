@@ -13,7 +13,7 @@ You: "Find all TODO comments and create GitHub issues"
   → LLM: "Created 7 issues. All linked above."
 ```
 
-One TUI window around an LLM tool loop: 52 native tools across 10 categories (including a reserved harness tool, `_sys_note`), six built-in plugin services, always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
+One TUI window around an LLM tool loop: 52 native tools across 10 categories (including a reserved harness tool, `_sys_note`), seven built-in plugin services, always-on memory with hybrid search, vision image attachments (`@path`/`@url`), runtime model switching across three API backends, and an agent-to-agent mesh — everything presented to the LLM as uniform OpenAI-style function definitions.
 
 Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
@@ -84,7 +84,7 @@ User data (`~/.slife/`, `~/.credstore/`) is **not removed** — delete manually 
 
 ### Related tools
 
-The repo also ships two standalone PyPI packages — install each independently (neither pulls the others in):
+The repo also ships three standalone PyPI packages — install each independently (neither pulls the others in):
 
 | Package | One-click install | Purpose |
 |---------|-------------------|---------|
@@ -217,7 +217,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 
 The A2A mesh tools (`a2a_*`, 8 of them) and all plugin tools are hosted in plugins, not the native tool set — see below.
 
-Every tool additionally accepts three harness meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt in the chat — Y approve / N deny / Esc deny).
+Every tool additionally accepts three tool meta-parameters: `_timeout` (per-call override), `_async` (run in background, poll with `check_async`), and `_approve` (inline approval prompt in the chat — Y approve / N deny / Esc deny).
 
 **Five managed categories** (Skills / CLI / REST API / Models / MCP) support `X_list` / `X_set` / `X_remove` (+ `X_set_enabled` where a toggle applies) — all `X_set` tools are idempotent upserts. `model_set` upserts **merge** into the existing entry (a partial update preserves `reasoning` / `input` / `compat`), and accepts a `compat` dict for per-model provider overrides.
 
@@ -278,12 +278,12 @@ Vision-capable models receive local files as base64 data URIs and HTTP(S) URLs a
 
 ### Plugins
 
-Six built-in plugins as independent child processes:
+Seven built-in plugins as independent child processes:
 
 | Plugin | Role |
 |--------|------|
 | **slife-mcp** | Gateway for external MCP servers (stdio / SSE / Streamable HTTP) |
-| **slife-memdb** | Diary database with hybrid search |
+| **slife-memdb** | Turns database with hybrid search |
 | **slife-wechat** | Bidirectional WeChat messaging |
 | **slife-memfiles** | Notes / diary / files cabinet (private). Notes & diary dual-written to markdown + a SQLite hybrid index. All save tools return local paths — never auto-publish |
 | **slife-sharefile** | Public file sharing — sole tool `share_file` publishes a local file as a public HTTPS URL (`/share` route on the same port; ngrok tunnel owned by the plugin) |
@@ -323,7 +323,7 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 
 | Flag | Description |
 |------|-------------|
-| `--agent <id>` | Agent identity — separate diary database + A2A mesh name (default: `slife`) |
+| `--agent <id>` | Agent identity — separate turns database + A2A mesh name (default: `slife`) |
 | `--lang <en\|zh>` | TUI language — force English / Chinese (default: auto-detect from OS locale) |
 | `<config-path>` | Positional — use a specific config file (its parent dir becomes the data dir) |
 

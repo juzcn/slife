@@ -1,5 +1,8 @@
 # Slife
 
+> **术语。** 项目术语的权威定义（面向模型与面向开发者的术语一致）见
+> **[Glossary.md](Glossary.md)**。本 README 直接使用这些术语，不再重复定义。
+
 **终端 AI 智能体** — 基于函数调用循环的最小化框架。与 LLM 对话，它能调用工具、永久记忆每一轮对话、协调其他智能体。
 
 ```
@@ -9,7 +12,7 @@
   → LLM: "已创建 7 个 Issue，链接见上文。"
 ```
 
-一个 TUI 窗口包裹一个 LLM 工具循环：10 个类别共 52 个原生工具（含 1 个保留的 harness 工具 `_sys_note`）、六个内置插件服务、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
+一个 TUI 窗口包裹一个 LLM 工具循环：10 个类别共 52 个原生工具（含 1 个保留的 harness 工具 `_sys_note`）、七个内置插件服务、始终开启的混合搜索记忆、视觉图片附件（`@path`/`@url`）、三种 API 后端运行时切换模型、智能体间（A2A）网格——一切都以统一的 OpenAI 风格函数定义呈现给 LLM。
 
 需要 Python 3.13+。支持 Windows（原生 & WSL）、macOS 和 Linux。
 
@@ -17,7 +20,22 @@
 
 ## 安装
 
-**零前提。** 安装脚本会自动安装 uv、Node.js 和 bun（如需要）。Mosquitto（仅 A2A MQTT 网格需要）会在安装过程中交互式询问。
+**零前提。** 安装脚本会自动安装 uv、Node.js 和 bun（如需要）。在 WSL 上安装的是 Linux 原生版本（Windows 可执行文件无法经 WSL interop 接收自定义环境变量）。Mosquitto（仅 A2A MQTT 网格需要）会在安装过程中交互式询问。
+
+### 环境要求
+
+安装脚本对每个运行时使用**标准安装路径**——不会探测或适配你的系统。若你的环境不满足某运行时的要求，安装器会报告不兼容并指引手动路线；绝不会静默安装旧版或替代版本。
+
+| 运行时 | 安装位置 | 要求 |
+|---|---|---|
+| uv | `~/.local/bin` | 任意现代 Linux/macOS/Windows；Python 由 uv 管理（3.13） |
+| Node.js (LTS v22) | `~/.local/bin`（官方 tarball） | Linux 上需 **glibc ≥ 2.28 / libstdc++ ≥ 3.4.29**。老发行版（如 CentOS 7）**无法运行**官方二进制——安装器会报告缺失的 `GLIBC_2.28` / `GLIBCXX_3.4.xx` 符号。 |
+| bun | `~/.bun/bin` | 现代 Linux/macOS/Windows |
+| Mosquitto（可选） | 包管理器 | 仅 A2A MQTT 网格需要 |
+
+若你的 Linux 低于 glibc 2.28，Node 官方 tarball 无法运行。受支持的路线**不是**安装旧版 Node——而是安装为你的发行版构建的 Node（例如 HPC 集群中的 `module load nodejs`，或发行版自带包）。装好后再运行安装器——它会检测到已有的 `npx` 并跳过自己的 Node 安装。
+
+当某个运行时不可用时，安装器会**警告并继续**——slife 本身仍会安装，只是依赖该运行时的功能不可用（如基于 npx 的 MCP 服务器 `file-search`、`serper`、`tavily-mcp`、`github`、`amap-maps`、`filesystem`）。
 
 ### macOS / Linux / WSL
 
@@ -63,7 +81,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/r
 
 ### 相关工具
 
-本仓库还发布两个独立的 PyPI 包，各自可独立安装（互不依赖）：
+本仓库还发布三个独立的 PyPI 包，各自可独立安装（互不依赖）：
 
 | 包 | 一键安装 | 用途 |
 |---------|-------------------|---------|
@@ -116,7 +134,7 @@ models: {
 active_model: "deepseek/deepseek-v4-pro",
 ```
 
-支持 `${VAR:-default}` 回退语法。密钥也可用 `keyring:service/key` URI 形式引用。
+支持 `${VAR:-default}` 回退语法（解析顺序：shell 环境变量 → credstore → 字面量默认值）。密钥也可用 `keyring:service/key` URI 形式引用。
 
 **sLife 不支持 credstore 的 cryptfile 模式，但与环境变量设置完全兼容。** sLife 的凭据解析无需密码、绝不弹窗——它通过 credstore 读 OS 密钥链，再回退到 `os.environ`。当 credstore 进入 cryptfile-only（无 OS 密钥链，例如 HPC 登录节点上内核 keyring 被 seccomp/策略屏蔽）时，sLife 不读加密备份；有三种用法：
 
@@ -196,7 +214,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，不属于原生工具集——见下文。
 
-每个工具还额外接受三个框架元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（对话流内联审批行——Y 批准 / N 拒绝 / Esc 拒绝）。
+每个工具还额外接受三个工具元参数：`_timeout`（单次调用超时覆盖）、`_async`（后台执行，用 `check_async` 轮询）和 `_approve`（对话流内联审批行——Y 批准 / N 拒绝 / Esc 拒绝）。
 
 **五个托管类别**（Skills / CLI / REST API / Models / MCP）支持 `X_list` / `X_set` / `X_remove`（+ 需要开关时 `X_set_enabled`）——所有 `X_set` 工具都是幂等 upsert。`model_set` 的 upsert 会**合并**进现有条目（局部更新会保留 `reasoning` / `input` / `compat` 等字段），并接受 `compat` dict 用于每模型的供应商覆盖。
 
@@ -220,6 +238,8 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 
 每轮对话永久记录在 SQLite（`~/.slife/<agent>.db`）。四种搜索模式：
 
+**记忆是核心功能——agent 绝不在记忆失效时静默运行。** 若记忆数据库损坏（缺列、损坏或磁盘错误），agent 会响亮地失败而非假装正常：无法恢复的会话在启动时报错中止；无法保存的轮次会冻结输入流并显示红色横幅——新轮次停止处理，直到数据库修复并重启 agent。
+
 | 模式 | 适用场景 |
 |------|---------|
 | `grep` | 精确字符串 — 错误信息、文件路径、代码 |
@@ -229,17 +249,19 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 
 嵌入后端：本地 GGUF（BGE-M3，离线）、HuggingFace transformers 或 OpenAI 兼容 API。无嵌入后端时关键词搜索照常工作。语义（hybrid）结果只在**当前模型的索引完整构建后**才返回——全量重建期间（新/换模型、重启中断续跑）hybrid 退回关键词搜索，索引完成后自动恢复。
 
-每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。用户消息会带一条紧凑的 **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** 脚注（记忆 rowid 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 rowid 引用（`turn_read` / `turn_summarize`），用户在 TUI 里也能读到同一行。
+每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。用户消息会带一条紧凑的 **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** 脚注（turn id 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 turn id 引用（`turn_read` / `turn_summarize`），用户在 TUI 里也能读到同一行。
+
+每轮对话还会保留其**来源渠道（channel）**——`human`、`wechat`、subagent、心跳、A2A peer，或 `system`（Slife 自身）——因此会话恢复时每个气泡都带正确的来源前缀：`You>`、`Wechat>`、`Subagent(<name>)>`、`Heartbeat>`、`A2A(<agent>)`。A2A peer 的 agent 名随轮次一起保存并跨重启保留；`system` 轮次（如定时任务触发）会存储但不显示在聊天里。
 
 ### 自主心跳
 
-空闲时，agent 按 `agent.heartbeat_interval` 秒（默认 60）获得一次自主思考/行动的窗口。它作为一个正常 turn 运行（独立会话，存入记忆）；回复契约：有值得说的话就输出内容，否则只输出一个 `.`。单独的 `.` 回复统一表示**沉默**——无论来自心跳、A2A 异步完成通知还是任何事件，都不会在聊天或会话恢复中显示；`[Heartbeat]` 触发消息被过滤，真正的自主回复显示为 `⚡ 自主`。这是涌现自发性行为的前提。
+空闲时，agent 按 `agent.heartbeat_interval` 秒（代码默认 60，随附模板设为 600）获得一次自主思考/行动的窗口。它作为一个正常 turn 运行（独立会话，存入记忆）；回复契约：有值得说的话就输出内容，否则只输出一个 `.`。单独的 `.` 回复统一表示**沉默**——无论来自心跳、A2A 异步完成通知还是任何事件，都不会在聊天或会话恢复中显示；`[Heartbeat]` 触发消息被过滤，真正的自主回复显示为 `⚡ 自主`。这是涌现自发性行为的前提。
 
 ### 定时任务
 
 让 agent 按计划做事——"每晚 12 点写日记"、"每周五总结本周"——它会注册一个 cron 定时任务（`scheduled_task_set`）。任务名同时也是执行它的 worker 名，所以用简短 ASCII 标识符。任务触发时，agent 把工作派发给一个以任务名命名的 subagent worker（`run_schedule_now`）而非亲自执行，worker 完成后把结果作为**报告**存入文件柜（`save_cron_report`）并通知你。每次触发都有记录（`scheduled_run_list`），你可以查看跑了什么、产出了什么（`report_list` / `report_read`）。
 
-定时任务**只在 Slife 运行时触发**。下次启动时，一次性扫描会结算上一会话留在 `scheduled_run_list` 里的记录：没跑完的记为**未完成（failed）**，Slife 关闭期间到点没做的记为**错过（missed）**。启动不做任何提示、不打扰你——需要的话仍可用 `run_schedule_now` 补做，或用 `scheduled_run_skip` 关闭。启动后下一次到点会正常触发。
+定时任务**只在 Slife 运行时触发**。下次启动时，一次性扫描会结算上一会话留在 `scheduled_run_list` 里的记录：没跑完的记为**未完成（failed）**，Slife 关闭期间到点没做的记为**错过（missed）**。启动不做任何提示、不打扰你——需要的话仍可用 `run_schedule_now` 补做（立即触发），或用 `scheduled_run_skip` 关闭。启动后下一次到点会正常触发。
 
 ### 图片与视觉
 
@@ -253,20 +275,23 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 
 ### 插件
 
-六个内置插件，独立进程运行：
+七个内置插件，独立进程运行：
 
 | 插件 | 角色 |
 |------|------|
 | **slife-mcp** | 外部 MCP 服务器网关（stdio / SSE / Streamable HTTP） |
-| **slife-memdb** | 日记数据库 + 混合搜索 |
+| **slife-memdb** | 对话记录数据库 + 混合搜索 |
 | **slife-wechat** | 双向微信消息 |
-| **slife-memfiles** | 笔记 / 日记 / 文件柜 + 公开分享（Streamable HTTP 插件，`/share` 路由在同一端口；ngrok 隧道由插件自持）。笔记与日记双写为 markdown + SQLite 混合索引 |
+| **slife-memfiles** | 笔记 / 日记 / 文件柜（私有）。所有保存工具返回本地路径——绝不自动发布。笔记与日记双写为 markdown + SQLite 混合索引 |
+| **slife-sharefile** | 公开文件分享——唯一工具 `share_file` 把本地文件发布为公开 HTTPS URL（同端口的 `/share` 路由；ngrok 隧道由插件自持） |
 | **slife-a2a** | A2A 网格通道（MQTT binding；仅在 broker 可达时启动） |
 | **slife-media** | 非聊天类 AI 生成（图片 / 视频 / TTS / ASR），对接任意提供商——自持 `media:` 配置段与提供商无关的适配层（`dashscope-aigc`、`openai-images`）。工具：`generate_image`、`generate_video`、`text_to_speech`、`transcribe_audio` |
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。
 
 所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_sharefile`、`check_mcp`、`check_a2a`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
+
+每个插件都会声明一个**就绪握手（`__ready` 内部工具）**，告知框架它自身的服务能力是否可用。外部/从属依赖——外部 MCP 服务器、ngrok 隧道、微信登录、媒体供应商、A2A broker、嵌入后端——从不阻塞就绪：它们不可控、运行时会自愈，且单独报告。只有在每个插件进程都收敛（ready / degraded / skipped / failed）后，服务才对用户输入开放，因此输入绝不会跑在插件启动之前。
 
 ### A2A — 智能体间通信（网格）
 
@@ -295,7 +320,7 @@ A2A 唯一已实现的传输 binding 是 MQTT——把 `transport` 设为任何�
 
 | 参数 | 说明 |
 |------|------|
-| `--agent <id>` | 智能体标识 — 独立日记数据库 + A2A 网格名称（默认：`slife`） |
+| `--agent <id>` | 智能体标识 — 独立对话记录数据库 + A2A 网格名称（默认：`slife`） |
 | `--lang <en\|zh>` | 界面语言 — 强制英文 / 中文（默认：按系统区域自动检测） |
 | `<配置路径>` | 位置参数 — 使用指定的配置文件（其父目录成为数据目录） |
 
@@ -316,6 +341,8 @@ uv tool install "slife[gguf]" --reinstall
 **Windows** — 预编译 wheel（无需 C++ 编译器）；uv 已配置使用 llama-cpp-python 的 CPU wheel 索引。详见[安装文档](https://github.com/juzcn/slife#optional-extras)。
 
 ## 开发
+
+权威术语见 [Glossary.md](Glossary.md)；设计与架构见 [DESIGN.md](DESIGN.md)。
 
 ```bash
 git clone https://github.com/juzcn/slife.git
