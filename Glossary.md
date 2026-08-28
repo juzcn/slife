@@ -718,7 +718,12 @@ transport, exposing tools through the model-context protocol. Tools whose
 names begin with a double underscore are treated as internal. A plugin is
 ready when its MCP ``initialize`` handshake completes — its lifespan has
 established its own serving capacity, so no ``__ready`` probe tool exists.
-*See also* Built-in plugin; Internal tool; Readiness (Part III).
+The lifespan must therefore be **handshake-fast**: it establishes only the
+minimum needed to serve; heavyweight startup (e.g. a GIL-holding
+embedding-model load) is deferred until after the first ``tools/list`` by
+the ``warm_after_handshake`` helper, never run inside the lifespan.
+*See also* Built-in plugin; Internal tool; Readiness; Required plugin
+(Part III).
 
 **Process watchdog**
 The supervisor that monitors a plugin's child process and restarts it on
@@ -745,9 +750,23 @@ media's providers, a2a's broker, a store's embedding backend) are NOT
 readiness conditions: they are uncontrollable, self-heal at runtime, and
 are surfaced separately via status tools. A lifespan that fails its
 requirement traps it — the plugin is reported FAILED and its watchdog
-retries. Startup holds the service open until every plugin spawn has
-converged (Startup convergence). *See also* Plugin contract (Part II);
+retries. Because the lifecycle must stay **handshake-fast**, anything that
+could stall or freeze the loop while the wrapper connects (a model load, slow
+I/O, long connects) is deferred to the post-handshake ``warm_after_handshake``
+helper — never the lifespan. Startup holds the service open until every
+plugin spawn has converged (Startup convergence). Plugins named in
+``plugins.required`` are core: failing to become ready aborts startup
+(Required plugin). *See also* Plugin contract (Part II); Required plugin;
 Startup convergence.
+
+**Required plugin**
+A core component declared in the ``plugins.required`` list of ``slife.json5``
+(default: empty — every plugin optional). A required plugin that fails to
+become ready — a FAILED spawn, a raised spawn, or the 30 s spawn hang-guard —
+**aborts startup**: red message, all plugins stopped, non-zero exit; never a
+silent session missing a core component. ``memdb`` and ``memfiles`` are
+required in the standard configuration because memory is core. *See also*
+Plugin contract; Readiness; Startup convergence.
 
 ### S
 
@@ -789,10 +808,11 @@ core services (this is what visibly fixes the startup-timing problems of
 the processing indicator). Event-driven — set by the last spawn's
 completion, never polled and never time-bounded; the only timeout is a
 hang-guard on a stuck spawn so convergence still fires.
-There is no "required" plugin list any more: all plugins are peers, and a
-breakdown (e.g. a broken memory backend) fails loudly where it is used —
-the inbox freezes with a red banner on the first turn that cannot be
-saved. *See also* Readiness; Startup sweep.
+Plugins named in ``plugins.required`` are core and not optional (Required
+plugin); for every other plugin a breakdown (e.g. a broken memory backend)
+fails loudly where it is used — the inbox freezes with a red banner on the
+first turn that cannot be saved. *See also* Readiness; Required plugin;
+Startup sweep.
 
 **Startup sweep**
 The one-shot startup pass that settles scheduled runs a previous process

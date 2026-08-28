@@ -342,7 +342,7 @@ protocol) for all of them — the sharefile plugin additionally serves plain-HTT
 ### The Plugin Contract
 
 1. Bind a free port: `bind_free_port()` pre-binds `127.0.0.1:0` and keeps the socket — no race between port discovery and server start
-2. Signal the parent **once ready**: `run_plugin_server` wraps the server's lifespan and emits `signal_port(port)` (`{"port": N}` on stdout, then closes stdout) only **after** the app is ready to serve MCP — i.e. after the plugin's lifespan (if any) completes. The signal means *"ready to serve MCP on this port"*, aligning with the MCP startup handshake: the parent's first `initialize` always lands on a ready server. Plugins must **not** signal early themselves
+2. Signal the parent **once ready**: `run_plugin_server` wraps the server's lifespan and emits `signal_port(port)` (`{"port": N}` on stdout, then closes stdout) only **after** the app is ready to serve MCP — i.e. after the plugin's lifespan (if any) completes. The signal means *"ready to serve MCP on this port"*, aligning with the MCP startup handshake: the parent's first `initialize` always lands on a ready server. The lifespan stays handshake-fast (see Readiness), so the signal is never held up by heavyweight startup — which is deferred to `warm_after_handshake`. Plugins must **not** signal early themselves
 3. Start FastMCP on Streamable HTTP with the pre-bound socket
 4. Define `@mcp.tool` functions; optionally serve plain-HTTP endpoints on the same port via `@mcp.custom_route(path, methods=[...])` (e.g. memfiles `GET /share/{token}`)
 5. Be importable: `python -m <module>.server`
@@ -376,7 +376,16 @@ login, media's providers, a2a's broker, a store's embedding backend) are
 NOT readiness conditions: they are uncontrollable and self-heal at runtime,
 and are surfaced separately via their own status tools (`__mcp_connection_status`,
 `__tunnel_status`, `__a2a_status`, `system_health`, …) — they never gate
-readiness.
+readiness. The lifespan is therefore **handshake-fast by contract**: it
+establishes only the minimum needed to serve and never holds the event loop
+while the wrapper is connecting. Work that can stall or temporarily freeze
+the loop — a GIL-holding embedding-model load, slow I/O, long connects — is
+deferred until after the first `tools/list` by
+`warm_after_handshake(factory)` (`slife/server_utils.py`), which runs it in
+the background once the handshake completes (a failure logs and shows on the
+status surfaces, never blocks readiness). A plugin with no startup work
+still declares a lifespan (media) so every built-in shares the same
+complete-MCP-lifecycle shape.
 
 **Startup convergence gate.** The service opens for user input only after
 every attempted plugin spawn has converged — each reached ready, skipped, or
@@ -388,10 +397,19 @@ turn runs and nothing can be typed while plugin startup is still settling —
 this is what keeps user input from racing ahead of core services. The gate
 is event-driven: set by the last spawn's completion, never polled, never
 time-bounded; the only timeout is a 30 s hang-guard on a stuck spawn so
-convergence still fires. There is **no "required" plugin** any more: all
-plugins are peers — a broken memory backend fails loudly where it is used
-(the inbox freezes with a red banner on the first unsavable turn) instead
-of aborting startup.
+convergence still fires.
+
+**Required plugins (`plugins.required`).** A plugin named in the
+`plugins.required` list of `slife.json5` is a **core component**: failing to
+become ready — a FAILED spawn, a raised spawn, or the 30 s hang-guard —
+**aborts startup** with a red message, stops all plugins, and exits non-zero
+(never limps on without a core component). `memdb` and `memfiles` are
+required in the standard configuration because memory is core. Every other
+plugin defaults to non-required: a broken memory backend that is *not*
+required fails loudly where it is used (the inbox freezes with a red banner
+on the first unsavable turn) instead of aborting startup. Required plugins
+are declared per instance in the config, so which components are
+non-negotiable is a deployment decision, not a hardcoded set.
 
 No base class, no import hook, no SDK. Built-in plugins are auto-discovered by scanning `slife.plugins.*` for packages with a `server.py`; standalone distributions (e.g. `mcp-plugin`, the external MCP gateway) register instead via `plugins.external` in `slife.json5` and are spawned through the same generic lifecycle. Each `server.py` uses `create_plugin_server(...)` for logging + FastMCP setup and `run_plugin_server(mcp)` (or `run_plugin_server(mcp, sockets=[sock])`) for the single entry call. The parent reads the port line with a 30 s readiness budget, then connects once. Because the signal is deferred until the app is ready, slow lifespan startup (e.g. sharefile's ngrok tunnel, a2a's MQTT connect) cannot race the handshake — the parent simply waits for the signal. In practice uvicorn finishes mounting the Streamable HTTP endpoint ~1 s *after* the lifespan signals, so a session established in that window can get a bad SSE transport on Windows/Proactor that hangs `tools/list`; the harness runs that call through `asyncio.timeout` (which, unlike `asyncio.wait_for`, breaks the hang reliably) and, on a timeout, reconnects a fresh session and retries once — by then the plugin is serving, so the race self-heals instead of failing the load.
 
@@ -587,7 +605,7 @@ Restore rebuilds the **exit-time context verbatim**. The `diary_meta.context_sta
 
 The restored context footer is primed with the **latest restored turn's persisted `prompt_tokens`** — the exact context size at exit (what `_sys_note` would have reported) — so the first `_sys_note` / status bar shows the real occupancy instead of an estimate. A missing/zero value (e.g. a cancelled turn that never made an API call) falls back to the token estimate. The `prompt_tokens` column ships in `schema.sql`; no migration for older databases.
 
-**Restore failure is fatal, never silent.** A present-but-broken memory DB (missing column, corruption, disk error) makes `get_recent_turns` raise `MemoryDatabaseError` instead of returning `[]` — the TUI shows the error and **aborts startup**. The agent must not begin a memory-less session as if nothing happened. memdb is also a **required plugin**: a memdb that fails to *load* (its plugin process never becomes ready — including a bounded 30 s timeout on a hung spawn) likewise aborts startup with a red message, stops all plugins, and exits — never silently limping on without memory.
+**Restore failure is fatal, never silent.** A present-but-broken memory DB (missing column, corruption, disk error) makes `get_recent_turns` raise `MemoryDatabaseError` instead of returning `[]` — the TUI shows the error and **aborts startup**. The agent must not begin a memory-less session as if nothing happened. memdb and memfiles are likewise **required plugins** (declared via `plugins.required` in `slife.json5`, an empty list by default): a required plugin that fails to *load* (its process never becomes ready — including a bounded 30 s timeout on a hung spawn, or an embedding-model load that stalls the lifespan) likewise aborts startup with a red message, stops all plugins, and exits — never silently limping on without a core component.
 
 ### Agent Isolation
 
