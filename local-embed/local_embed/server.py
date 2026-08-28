@@ -25,13 +25,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from local_embed.engine import Engine, _guess_max_tokens
+from local_embed.engine import Engine
 from local_embed.logging import silence_noisy_loggers, setup_logging
 
 logger = logging.getLogger(__name__)

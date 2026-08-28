@@ -369,8 +369,9 @@ class Engine:
             gguf_path = spec.gguf_path
             assert gguf_path is not None  # guaranteed by backend == "gguf"
             logger.info("loading_gguf name=%s path=%s dim=%d", spec.name, gguf_path, spec.dim)
+            Llama = _Llama  # narrow: non-None after the guard above
             client = await run_daemon(
-                lambda: _Llama(
+                lambda: Llama(
                     model_path=gguf_path,
                     embedding=True,
                     n_ctx=8192,
@@ -405,8 +406,9 @@ class Engine:
                 spec.name, spec.model, spec.device or "auto",
             )
             device = spec.device or None  # None = auto-detect
+            SentenceTransformer = _SentenceTransformer  # narrow: non-None
             client = await run_daemon(
-                lambda: _SentenceTransformer(spec.model, device=device),
+                lambda: SentenceTransformer(spec.model, device=device),
                 name=f"transformer-load-{spec.name}",
             )
             actual_dim = client.get_sentence_embedding_dimension()

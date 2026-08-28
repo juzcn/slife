@@ -14,11 +14,23 @@ Config shape::
     {
       active_model: "bge-m3",
       models: {
-        bge-m3: { backend: "gguf", gguf_path: "…", device: "" },
-        "nomic-embed-text": { backend: "transformer", model: "nomic-ai/nomic-embed-text-v1.5" },
+        "bge-m3": { backend: "gguf", gguf_path: "…", device: "" },
+        "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3" },
       },
       host: "127.0.0.1",    // standalone only
       port: 8000,           // standalone only
+    }
+
+``env`` (optional, top level) is injected into this process's environment
+by :func:`apply_env` before any backend loads — a ``transformer`` ``model``
+given as a HF *repo name* (e.g. ``BAAI/bge-m3``) resolves against the local
+hub cache via ``HF_HUB_CACHE`` / ``HF_HUB_OFFLINE`` without the host
+exporting anything::
+
+    {
+      active_model: "bge-m3-transformer",
+      env: { HF_HUB_CACHE: "C:\\…\\HuggingFace\\hub", HF_HUB_OFFLINE: "1" },
+      models: { "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3" } },
     }
 
 Single-model convenience (still supported) — ``backend`` / ``model`` /
@@ -94,6 +106,32 @@ def load_config(path: "Path | None" = None) -> dict:
         raise ValueError(f"Cannot parse config {path}: {e}") from e
 
 
+def apply_env() -> dict:
+    """Inject local-embed's ``env:`` config section into os.environ.
+
+    A transformer backend loads its model by HF *repo name* (e.g.
+    ``BAAI/bge-m3``); huggingface_hub resolves that name against the local
+    hub cache, which defaults to ``~/.cache/huggingface``.  ``env:`` in the
+    config makes the server self-contained — it exports ``HF_HUB_CACHE`` /
+    ``HF_HUB_OFFLINE`` (or anything else) into its *own* process before any
+    backend loads, and no external ``HF_*`` export is needed from the host.
+
+    Precedence mirrors slife.json5's ``env:`` injection: an existing
+    ``os.environ`` value wins, so a host can always override the config
+    file.  Returns the effective env vars (for tests).
+    """
+    cfg = load_config()
+    effective: dict = {}
+    for key, value in (cfg.get("env") or {}).items():
+        if os.environ.get(key):
+            logger.info("env_from_shell key=%s", key)
+            continue
+        os.environ[key] = str(value)
+        effective[key] = str(value)
+        logger.info("env_injected key=%s", key)
+    return effective
+
+
 def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
     """Merge config file + env overrides into engine settings.
 
@@ -105,6 +143,7 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
     """
     from local_embed.engine import ModelSpec
 
+    apply_env()  # config env: → own process env, before any model loads
     cfg = load_config()
     overrides = overrides or {}
 

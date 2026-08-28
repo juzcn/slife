@@ -51,6 +51,30 @@ local-embed --backend transformer --model BAAI/bge-m3 --port 8000
 By default it binds `127.0.0.1:8000` (local only — never exposed to the
 network).
 
+### Transformer models & the `env:` section
+
+A `transformer` model is referenced by its HF *repo name* (`BAAI/bge-m3`).
+The HuggingFace hub resolves that name against its cache (default
+`~/.cache/huggingface`), downloading on first load if missing.  To keep the
+server self-contained — point it at an existing local cache, or force
+offline — put the env vars in `local_embed.json5`'s `env:` section (injected
+into this process before any model loads; an existing shell env var wins):
+
+```json5
+{
+  env: {
+    HF_HUB_CACHE: "C:\\Users\\me\\HuggingFace\\hub",  // existing cache
+    HF_HUB_OFFLINE: "1"                                // never hit the network
+  },
+  models: {
+    "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3", device: "" }
+  }
+}
+```
+
+Without `HF_HUB_CACHE` the model resolves against the default cache — a
+model already downloaded elsewhere would be silently re-fetched.
+
 ## Use
 
 ```bash
