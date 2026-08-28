@@ -102,6 +102,16 @@ class TestSetupServerLogging:
             _, _ = _run_with_mocks(tmp_path / "logs", session_id="")
         mock_set.assert_not_called()
 
+    def test_log_dir_from_env_when_not_passed(self, tmp_path):
+        """Without an explicit log_dir, SLIFE_LOG_DIR is used — the env
+        contract the main process exports for plugin children."""
+        mock_handler = MagicMock()
+        mock_fh_cls = MagicMock(return_value=mock_handler)
+        with patch.dict(os.environ, {"SLIFE_LOG_DIR": str(tmp_path / "env_logs")}, clear=True):
+            with patch("slife.server_utils.logging.FileHandler", mock_fh_cls):
+                log_path = setup_server_logging("svc")
+        assert log_path.parent == tmp_path / "env_logs"
+
     def test_file_handler_uses_session_formatter(self, tmp_path):
         """The file handler is configured with SessionFormatter."""
         from slife.logfmt import SessionFormatter

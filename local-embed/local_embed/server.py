@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 
 from fastmcp import FastMCP
 from starlette.requests import Request
@@ -35,7 +36,9 @@ from local_embed.logging import silence_noisy_loggers, setup_logging
 
 logger = logging.getLogger(__name__)
 
-setup_logging()
+setup_logging(
+    service_name=os.environ.get("SLIFE_PLUGIN_NAME", "local-embed"),
+)
 silence_noisy_loggers()
 
 

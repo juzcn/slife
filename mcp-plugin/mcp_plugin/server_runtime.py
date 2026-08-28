@@ -176,7 +176,12 @@ def create_plugin_server(
     """
     from fastmcp import FastMCP
 
-    service_suffix = name.split("-", 1)[-1] if "-" in name else name
+    # When a host (slife) spawned us, it exports SLIFE_PLUGIN_NAME so the
+    # per-session log file is named after the plugin (e.g. "_mcp.log"), not the
+    # generic "-plugin" suffix.  Standalone keeps the name-derived suffix.
+    service_suffix = os.environ.get("SLIFE_PLUGIN_NAME") or (
+        name.split("-", 1)[-1] if "-" in name else name
+    )
     logger_name = name.replace("-", "_")
 
     log_path = setup_server_logging(service_suffix)

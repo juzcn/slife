@@ -133,7 +133,17 @@ class TestGetLogsDir:
 
     def test_returns_logs_subdir_in_data_dir(self, monkeypatch):
         monkeypatch.setenv("SLIFE_DATA_DIR", "/data")
+        # test_main.py's slife.main() exports SLIFE_LOG_DIR into the process
+        # env; delenv so this test exercises the data-dir fallback.
+        monkeypatch.delenv("SLIFE_LOG_DIR", raising=False)
         assert paths.get_logs_dir() == Path("/data/logs")
+
+    def test_slife_log_dir_env_wins(self, monkeypatch):
+        """SLIFE_LOG_DIR overrides the data-dir-derived path (the main
+        process exports it so plugin children resolve the same directory)."""
+        monkeypatch.setenv("SLIFE_DATA_DIR", "/data")
+        monkeypatch.setenv("SLIFE_LOG_DIR", "/custom/logs")
+        assert paths.get_logs_dir() == Path("/custom/logs")
 
 
 # ── get_db_path ──────────────────────────────────────────────────────────

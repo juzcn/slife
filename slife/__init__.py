@@ -53,6 +53,11 @@ def main(config_path: str | None = None):
         _cp = get_config_path()  # resolve to ~/.slife/slife.json5 or CWD/slife.json5
     os.environ["SLIFE_DATA_DIR"] = data_dir
     os.environ["SLIFE_CONFIG_DIR"] = data_dir
+    # Log directory — inherited by plugin children (internal AND external) so
+    # their per-session logs land next to the main session log, regardless of
+    # whether the plugin can import slife.  External plugins (local-embed,
+    # mcp_plugin) read this instead of their standalone default.
+    os.environ["SLIFE_LOG_DIR"] = str(Path(data_dir) / "logs")
 
     # Seed skills from the installed package to the data directory on
     # first run, so users can edit and add their own skills.

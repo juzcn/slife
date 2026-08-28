@@ -69,7 +69,16 @@ def get_config_path() -> Path:
 
 
 def get_logs_dir() -> Path:
-    """Directory for per-session log files."""
+    """Directory for per-session log files.
+
+    Uses ``SLIFE_LOG_DIR`` from the environment when available (the main
+    process exports it so plugin children — internal AND external — resolve
+    the same directory without importing slife), falling back to
+    ``<data_dir>/logs``.
+    """
+    env = os.environ.get("SLIFE_LOG_DIR")
+    if env:
+        return Path(env)
     return get_data_dir() / "logs"
 
 

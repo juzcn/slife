@@ -240,6 +240,8 @@ def setup_server_logging(
     from slife.logfmt import configure_root_logging
 
     if log_dir is None:
+        # resolve_log_dir() → get_logs_dir() prefers SLIFE_LOG_DIR (exported
+        # by the main process for plugin children), else <data_dir>/logs.
         log_dir = resolve_log_dir()
 
     _sid = os.environ.get("SLIFE_SESSION_ID", "")

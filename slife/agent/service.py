@@ -663,6 +663,13 @@ class AgentService:
             from slife.agent.plugins import PluginLifecycle
             self._plugins[name] = PluginLifecycle(name, self)
 
+        # The external-plugin log contract: the child inherits this env var
+        # (alongside SLIFE_LOG_DIR / SLIFE_SESSION_ID / SLIFE_AGENT_NAME) and
+        # names its per-session log file with it — so logs follow slife's
+        # convention even for plugins that cannot import slife.  Spawns are
+        # sequential, so the shared env var is safe.
+        os.environ["SLIFE_PLUGIN_NAME"] = name
+
         process = MCPWrapperProcess(
             command=sys.executable,
             args=["-m", module],

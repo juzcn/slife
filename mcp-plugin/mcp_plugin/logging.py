@@ -229,13 +229,17 @@ async def read_stderr_lines(process, running_check=None):
 def resolve_log_dir() -> Path:
     """Return the log directory for mcp_plugin.
 
-    ``MCP_PLUGIN_LOG_DIR`` env override, else ``~/.mcp-plugin/logs``.
+    ``SLIFE_LOG_DIR`` when the host (slife) exported it — the plugin's
+    per-session log then lands next to the main session log.  Otherwise
+    ``MCP_PLUGIN_LOG_DIR`` env override, else ``~/.mcp-plugin/logs``
+    (standalone default).
     """
-    override = os.getenv("MCP_PLUGIN_LOG_DIR")
-    if override:
-        candidate = Path(override)
-        if candidate.is_absolute():
-            return candidate
+    for key in ("SLIFE_LOG_DIR", "MCP_PLUGIN_LOG_DIR"):
+        override = os.getenv(key)
+        if override:
+            candidate = Path(override)
+            if candidate.is_absolute():
+                return candidate
     return Path.home() / ".mcp-plugin" / "logs"
 
 

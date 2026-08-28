@@ -334,7 +334,8 @@ async def drain_stderr(
 def resolve_log_dir() -> Path:
     """Return the log directory.
 
-    Dev mode: ``./logs/``.  Production: ``~/.slife/logs/``.
+    ``SLIFE_LOG_DIR`` when set (the main process exports it for plugin
+    children); else dev mode ``./logs/``, production ``~/.slife/logs/``.
     """
     from slife.paths import get_logs_dir
     return get_logs_dir()
