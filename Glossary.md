@@ -219,8 +219,8 @@ Internal tool.
 A structured report on the state of a component — its component name, a
 level (ok, warning, error, or informational), a key, a value, and a
 human-readable hint with remediation. Health checks cover the turns
-database, messaging, sharing, the mesh, external servers, and the process
-watchdogs. *See also* Watchdog.
+database, the file cabinet, messaging, sharing, the local embedding service,
+the mesh, external servers, and the process watchdogs. *See also* Watchdog.
 
 **Heartbeat**
 A periodic autonomous trigger delivered to an idle agent. A heartbeat is a
@@ -444,10 +444,11 @@ catalog survives restarts, so a search works before any server reconnects.
 
 **Tool search**
 The tool the model uses to find external MCP tools. It accepts a query and
-returns matching *server__tool* entries from the tool catalog; *hybrid* mode
-combines semantic and keyword retrieval and degrades to keyword-only when no
-embedding endpoint is configured. *See also* Tool catalog; External server
-tool; Semantic index; Full-text search modes.
+returns matching *server__tool* entries from the tool catalog, in three modes:
+*grep* (exact substring), *fts5* (keyword), and *hybrid* (semantic + keyword,
+the default), which degrades to keyword-only when no embedding endpoint is
+configured. *See also* Tool catalog; External server tool; Semantic index;
+Full-text search modes.
 
 **Trim**
 The removal of the oldest complete turns from the live context, performed
@@ -541,11 +542,15 @@ bare names or prefixes:
   tracking tasks.
 - **Execution** — shell commands, Python scripts, package installation.
 - **Skills** — listing, loading, installing, removing, and toggling skills.
-- **Models** — listing, adding, removing, and switching models.
+- **Models** — listing, adding, removing, and switching models; attaching
+  images to a vision model.
+- **Embeddings** — listing, probing, setting, switching, removing, and
+  enabling the first-class embeddings config (`embeddings_model_*`).
 - **Configuration & credentials** — environment variables, native-tool
   toggles, and the credential store.
-- **External servers** — registering, listing, and managing third-party
-  servers and their tools.
+- **External servers** — registering, listing, searching for, loading, and
+  managing third-party servers and their tools (`mcp_*`, `mcp_tool_search`,
+  `mcp_tool_load`).
 - **Meta & system** — the tool inventory, background-task management,
   context reset, health reports.
 
@@ -627,9 +632,14 @@ Context injection (Part II).
 
 **Config sections**
 The named sections of the configuration file that control subsystems:
-environment variables, the active model and model registry, tool overrides,
-skills, external servers, the turns database, messaging, the mesh, and the
-media providers. *See also* Configuration (Part II).
+environment variables (``env``), the agent loop (``agent``), tool overrides
+(``tools``), the active model and model registry (``active_model`` +
+``models``), media providers (``media``), plugins (``plugins.external`` /
+``plugins.required``), the A2A mesh (``a2a``), subagents (``subagent``),
+CLI-tool registry (``cli_tools``), and the first-class embeddings config
+(``embeddings``). External MCP servers and the gateway's own embeddings config
+live in ``mcp-plugin.json5``, not in ``slife.json5``. *See also* Configuration
+(Part II).
 
 **Context engineering**
 The design discipline of *setting and dynamically changing the content of
@@ -661,11 +671,14 @@ start). *See also* Shutdown.
 
 **Embeddings section**
 The first-class top-level ``embeddings`` configuration of ``slife.json5``,
-shared by the memory plugins (memdb, memfiles) and the MCP gateway's tool
-catalog: a set of OpenAI-compatible endpoints (``base_url`` + ``api_key``) and
-an ``active_model`` ref that is configuration-authoritative over the
-endpoint's own active-model flag. The local-embed plugin serves a local model
-behind it. *See also* local-embed; Semantic index (Part II).
+shared by the memory plugins (memdb, memfiles): a set of OpenAI-compatible
+endpoints (``base_url`` + ``api_key``) and an ``active_model`` ref that is
+configuration-authoritative over the endpoint's own active-model flag. The
+local-embed plugin serves a local model behind it. The MCP gateway keeps its
+*own* ``embeddings`` section in ``mcp-plugin.json5`` — a single flat config
+(base_url + optional model/api_key) managed by ``mcp_embeddings_set`` /
+``mcp_embeddings_remove``. *See also* local-embed; Semantic index (Part II);
+mcp-plugin.
 
 **External plugin**
 A plugin package that is not part of the Slife source tree: registered via
@@ -721,7 +734,7 @@ Model-visible (Part II).
 
 **local-embed**
 The external plugin that serves an OpenAI-compatible embedding endpoint —
-``POST /v1/embeddings`` and ``GET /v1/models`` — from a local GGUF
+``POST /v1/embeddings``, ``GET /v1/models``, and ``GET /v1/models/{id}`` — from a local GGUF
 (llama-cpp) or HF transformer model, loaded once and shared by memdb, memfiles,
 and the MCP gateway's tool catalog. Registered via ``plugins.external``; binds
 the configured port (default 8000) and reads its model configuration from
@@ -758,8 +771,11 @@ enabled state — indexed for keyword and semantic search. External tools are
 discovers one with `mcp_tool_search` and loads it with `mcp_tool_load`.
 Enable/disable is server-granular (`mcp_set_enabled`), and `mcp-plugin build`
 rebuilds the catalog and its index from live connections, marking a disabled
-server's tools disabled. *See also* Plugin (Part II); Built-in plugin; Plugin
-contract; Tool catalog; Tool loading; local-embed.
+server's tools disabled. It self-hosts an ``embeddings`` section in
+``mcp-plugin.json5`` (managed by ``mcp_embeddings_set`` /
+``mcp_embeddings_remove``) that feeds the catalog's semantic index. *See also*
+Plugin (Part II); Built-in plugin; Plugin contract; Tool catalog; Tool
+loading; local-embed.
 
 **Meta-parameter**
 The developer sense of tool meta-parameters (Part II): the universal

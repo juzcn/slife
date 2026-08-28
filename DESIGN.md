@@ -85,9 +85,9 @@ the human-facing TUI follows the OS locale.
 │  Native · MemDB · MCP Proxy · Skills · CLI · REST API · A2A          │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Plugins (independent child processes, Streamable HTTP)              │
-│  slife-mcp (gateway) · slife-memdb (turns DB) · slife-wechat ·       │
-│  slife-a2a (A2A over MQTT) · slife-memfiles (notes/diary/files) ·    │
-│  slife-sharefile (public sharing) · slife-media (generation)         │
+│  slife-mcp (gateway) · slife-memdb (turns DB) · slife-wechat         │
+│  slife-a2a (MQTT) · slife-memfiles (files) · slife-sharefile         │
+│  slife-media (generation) · local-embed (embeddings)                 │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform (slife/platform.py)  │  Config (JSON5)  │  Health checks   │
 ├──────────────────────────────────────────────────────────────────────┤
@@ -300,7 +300,7 @@ All tools are unified under `Tool` and registered in a single `ToolRegistry`; th
 
 ### Registry
 
-`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. Dynamic tools — built-in plugin tools and the MCP wrapper's own tools — are registered at runtime as `MCPProxyTool` instances under their **bare names**; external MCP server tools are named `"{server}__{tool}"`. Internal plugin tools (prefixed `__`) are filtered out before registration.
+`ToolRegistry` is a name-keyed dict with `register` / `unregister` / `unregister_by_prefix` / `get` / `list_tools` / `to_openai_functions` / `execute`. Dynamic tools — built-in plugin tools and the MCP wrapper's own tools — are registered at runtime as `MCPProxyTool` instances under their **bare names**; external MCP server tools are named `"{server}__{tool}"`. Internal plugin tools (prefixed `__`) are filtered out before registration. External MCP tools are **on-demand**: they are registered only for an `auto_load` server, or individually when the model loads one with `mcp_tool_load`; a `tools/list_changed` reconcile (`_sync_mcp_proxies`) unregisters any loaded proxy whose tool vanished, server disconnected, or was disabled.
 
 ### Timeout Architecture
 
@@ -333,9 +333,13 @@ Picker rules (hard-won):
 
 ## Plugin Architecture
 
-Six built-in plugins run as independent child processes, plus the standalone
-`mcp-plugin` MCP gateway. Communication is via **Streamable HTTP** (MCP
-protocol) for all of them — the sharefile plugin additionally serves plain-HTTP file bytes on the same port via a custom route (`GET /share/{token}`), but its control surface is pure MCP.
+Six built-in plugins run as independent child processes, plus two standalone
+external plugins registered via `plugins.external`: the `mcp-plugin` MCP
+gateway and the `local-embed` embedding service. Communication is via
+**Streamable HTTP** (MCP protocol) for all of them — the sharefile plugin
+additionally serves plain-HTTP file bytes on the same port via a custom route
+(`GET /share/{token}`), and local-embed serves OpenAI-compatible `/v1/embeddings`
+on the same port; their control surfaces are pure MCP.
 
 **WSL note:** Custom env vars set via `create_subprocess_exec(env=…)` are NOT forwarded to Windows `.exe` processes through WSL interop. `WSLENV` is only read by the WSL `/init` at session start, not by child processes. Therefore, **all MCP server runtimes on WSL must be Linux-native binaries** — the install script enforces this by detecting `/mnt/*` paths and installing native versions.
 
@@ -463,7 +467,7 @@ Each plugin runs with a **watchdog** background task that monitors the child pro
 | Backoff | Exponential: 1 s → 2 s → 4 s → … → 30 s max |
 | Max restarts | 5 consecutive failures → watchdog gives up and logs an error |
 | Success reset | A successful restart resets the backoff and retry counter |
-| Scope | **mcp** (respawns wrapper + reconnects external servers), **memdb**, **wechat** (restores poll loop), **memfiles**, **a2a**, **media** |
+| Scope | **mcp** (respawns wrapper + reconnects external servers), **local-embed**, **memdb**, **wechat** (restores poll loop), **memfiles**, **a2a**, **media** |
 
 Auto-discovered third-party plugins get the same watchdog: `_spawn_plugin_generic` creates a `PluginLifecycle` for any plugin not in the built-in set, so a crash restarts it with the same backoff as the built-ins.
 
@@ -478,7 +482,7 @@ Processes communicate through environment variables:
 | `SLIFE_{NAME}_PORT` | Published port of each plugin (MCP / MEMDB / WECHAT / MEMFILES / MQTT / MEDIA). Key is the uppercased plugin name with dashes normalised to underscores (`local-embed` → `SLIFE_LOCAL_EMBED_PORT`) — via `slife.agent.plugins.plugin_port_env`. |
 | `SLIFE_SHAREFILE_URL` | Public ngrok URL (set inside the sharefile plugin process) |
 
-### Built-in Plugins
+### Plugins (built-in + external)
 
 | Plugin | Transport | Role |
 |--------|-----------|------|
@@ -503,9 +507,9 @@ Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` 
 
 For `url`-configured servers the gateway probes with `GET + Accept: text/event-stream`: a `text/event-stream` reply switches to **SSE** mode (the `endpoint` event yields the POST message URL); otherwise the same client falls through to **Streamable HTTP**. A Streamable response may be a single JSON body or an SSE stream — both are parsed (the first matching JSON-RPC message; later events are server-initiated notifications and are dropped).
 
-Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`). Live status is reported by `check_mcp` via the internal `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is an internal tool — LLM-invisible, invoked only by the `server__tool` proxies.
+Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`), plus the tool-catalog and embeddings tools described below (`mcp_tool_search`, `mcp_embeddings_set` / `mcp_embeddings_remove`, `mcp_semantic_status`). Live status is reported by `check_mcp` via the internal `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is an internal tool — LLM-invisible, invoked only by the `server__tool` proxies.
 
-`mcp_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp` (a standalone tool, also run by `system_health`) calls the internal `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
+`mcp_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, `auto_load`, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp` (a standalone tool, also run by `system_health`) calls the internal `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
 
 **Tool catalog & on-demand loading.** The gateway persists every loaded
 external tool into a tool catalog (`mcp-plugin.db`, next to its config): one
@@ -609,7 +613,8 @@ Search hardening: `search_grep` escapes `%`/`_` with `ESCAPE '\'`; `turn_count` 
 ### Embedding
 
 Embeddings are a **first-class top-level `embeddings` section** in `slife.json5`,
-shared by memdb + memfiles and managed by the native tools
+shared by memdb + memfiles (the mcp gateway's tool catalog reads its *own*
+`embeddings` section of `mcp-plugin.json5`) and managed by the native tools
 `embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` /
 `embeddings_model_remove` / `embeddings_probe` /
 `embeddings_enable` (category `embeddings`).  The shape mirrors the LLM
@@ -842,7 +847,7 @@ Not all tools are in every request. Several categories use lightweight summaries
 |----------|--------|------|
 | MemDB | `turn_search` | `turn_read` |
 | Skills | `skill_list` | `skill_use` |
-| MCP | `mcp_list` / `mcp_list_tools` | `mcp_set_enabled(name, enabled=True)` |
+| MCP | `mcp_tool_search` | `mcp_tool_load(full_name)` |
 
 ### i18n
 
@@ -921,7 +926,7 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 | `agent` | `max_iterations`, `tool_timeout`, `context_floor`, `context_ceiling`, `tool_result_ceiling`, `heartbeat_interval` |
 | `tools` | Per-tool overrides (timeout, enabled) |
 | `mcp-plugin.json5: servers` | External MCP server configs (self-hosted by the gateway) |
-| `embeddings` | First-class embeddings config: `providers` (OpenAI-compatible endpoints), `active_model`, `enabled` — shared by memdb + memfiles |
+| `embeddings` | First-class embeddings config: `providers` (OpenAI-compatible endpoints), `active_model`, `enabled` — shared by memdb + memfiles (the mcp gateway's tool catalog reads its own `embeddings` section of `mcp-plugin.json5`) |
 | `wechat` | `enabled` toggle |
 | `media` | Non-chat generation config (defaults, providers → api adapter + models) — plugin-read, ignored by the main `Config` parser |
 | `a2a` | A2A config (transport binding, broker host/port, heartbeat, task_timeout) |
@@ -1029,12 +1034,14 @@ slife/
     plugins.py         #   Plugin spawn/stop + watchdog (PluginLifecycle)
     multimodal.py      #   Image encoding for vision models
     heartbeat.py       #   Autonomous heartbeat scheduling
-  tools/               # Native tools (auto-discovered, 52: 51 LLM-visible + _sys_note)
+  tools/               # Native tools (auto-discovered, 60: 59 LLM-visible + _sys_note)
     base.py            #   Tool ABC + make_params/NO_PARAMS/require_params
     registry.py        #   ToolRegistry
     factory.py         #   Auto-discovery (pkgutil.iter_modules)
+    context.py         #   ToolContext — runtime refs (registry, mcp_client, config, history)
     _config_io.py      #   JSON5 read/write helpers
     system.py          #   system_health + per-plugin checks
+    mcp.py             #   mcp_tool_load — on-demand external tool loading
     exec.py            #   Shell, Python, package install, run_schedule_now (+ _kill_process_tree)
     skill.py           #   Skill management (SKILL.md)
     cli.py             #   External CLI tool management
@@ -1043,6 +1050,7 @@ slife/
     models.py          #   Model management + attach_image (vision) + _sys_note (harness)
     config.py          #   Config env var + native tool toggles
     credentials.py     #   Credential check/inject/uninject
+    embeddings.py      #   embeddings_model_* — first-class embeddings section config
     meta.py            #   list_native_tools, check_async, cancel_async, clear_context, notify_user
   plugins/             # Built-in plugins (auto-discovered server.py packages)
     memdb/             #   Turns database (store, search, embeddings, schema.sql)
@@ -1110,9 +1118,15 @@ credstore/
 mcp-plugin/             # Standalone workspace member — the external MCP gateway
   mcp_plugin/           #   (raw JSON-RPC: stdio/SSE/streamable), registered via plugins.external
     cli.py              #   mcp-plugin CLI (set / remove / build)
-    server.py           #   FastMCP gateway server; main() accepts --port
+    server.py           #   FastMCP gateway server + tool-catalog/search/embeddings tools
     connection.py       #   ConnectionPool / MCPServerConnection
     client.py           #   Streamable HTTP client (used by the harness & CLI)
+    config.py           #   mcp-plugin.json5 (servers, embeddings), auto_load
+    store.py            #   ToolStore — tool catalog (mcp-plugin.db: FTS5 + BLOB vectors)
+    embeddings.py       #   EmbeddingClient (httpx, OpenAI-compatible)
+    semantic.py         #   SemanticManager — gate + background embed drainer
+    search.py           #   merge_hybrid (RRF)
+    schema.sql          #   catalog DDL
 
 skills/                # On-demand SKILL.md skills (seeded to ~/.slife/skills/)
 ```
