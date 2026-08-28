@@ -33,6 +33,7 @@ from starlette.responses import JSONResponse, Response
 
 from local_embed.engine import Engine
 from local_embed.logging import silence_noisy_loggers, setup_logging
+from local_embed.server_utils import create_plugin_server, warm_after_handshake
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,14 @@ def get_engine() -> Engine:
     return _engine
 
 
-mcp = FastMCP(
+# The server is built through ``create_plugin_server`` so the port signal
+# (``{"port": N}`` on stdout) actually fires: that helper wraps the FastMCP
+# lifespan so the ready callback runs once the app is serving, and the host
+# (``MCPWrapperProcess``) reads stdout to discover the port.  A plain
+# ``FastMCP(...)`` here never fires ``signal_port`` — the host would time out
+# on the port signal and kill the child ("plugin failed to start") even
+# though the server is healthy.
+mcp, _ = create_plugin_server(
     "local-embed",
     instructions=(
         "local-embed — local embedding service.  Exposes embed_status "
@@ -278,8 +286,25 @@ async def health(request: Request) -> Response:
 
 
 def build_server(engine: Engine) -> FastMCP:
-    """Return the FastMCP server wired to *engine* (module singleton shared)."""
+    """Return the FastMCP server wired to *engine* (module singleton shared).
+
+    The active model is loaded in the BACKGROUND after the MCP handshake
+    (``warm_after_handshake``), never in the lifespan — so startup is
+    handshake-fast even when the active model's backend is heavy (a
+    transformer model imports torch/transformers and can take seconds).
+    The first embed blocks on the load if it hasn't finished yet; readiness
+    is never gated on it.
+    """
     set_engine(engine)
+
+    async def _warmup() -> None:
+        try:
+            dim = await engine.ensure_loaded()
+            logger.info("active_model_warmed name=%s dim=%d", engine.active_model, dim)
+        except Exception as e:
+            logger.warning("active_model_warm_failed err=%s", e)
+
+    warm_after_handshake(mcp, _warmup, delay=0.1, name="local-embed-warmup")
     return mcp
 
 

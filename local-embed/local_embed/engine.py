@@ -30,7 +30,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sys
 import threading
+from contextlib import contextmanager
 from typing import Any
 
 from local_embed.threads import run_daemon
@@ -73,23 +76,93 @@ def _guess_max_tokens(model: str) -> int:
     return pair[1] if pair else _DEFAULT_MAX_TOKENS
 
 
-#: Optional backend classes, imported lazily at module load (patched by
-#: tests).  ``None`` when the optional dependency is absent.
-try:
-    from llama_cpp import Llama as _Llama  # type: ignore[import-not-found]
-except ImportError:
-    _Llama = None
-try:
-    from sentence_transformers import SentenceTransformer as _SentenceTransformer  # type: ignore[import-not-found]
-except ImportError:
-    _SentenceTransformer = None
+# Optional backend classes — resolved LAZILY, once, on the first backend
+# availability check (never at module import).  `sentence_transformers`
+# drags in torch/transformers (~5s of imports) and `llama_cpp` is heavy
+# too; importing either at module load delays the plugin's port signal past
+# the host's spawn window even when the backend is never used.  So module
+# import stays fast: these names start ``None`` and are filled in by
+# :func:`_resolve_backend` on demand.
+#
+# Tests patch ``local_embed.engine._Llama`` / ``_SentenceTransformer``
+# directly — those module attributes MUST keep existing as plain names so
+# ``patch()`` replaces them.  A test patch (a non-None value) also counts
+# as "resolved" and is never overwritten by a real import.
+_Llama: "Any | None" = None
+_SentenceTransformer: "Any | None" = None
+
+#: Backend -> (module attribute to fill, lazy import callable).
+_BACKEND_IMPORTS: dict[str, tuple[str, "Any"]] = {}
+
+
+def _resolve_backend(backend: str) -> None:
+    """Import one optional backend into its module attribute, once.
+
+    Runs the first time a backend's availability is queried (and again if
+    the module attribute was patched back to None between calls).  A
+    patched, non-None attribute is left untouched — tests use that to
+    substitute a fake backend without triggering any real import.
+    """
+    import importlib
+
+    spec = _BACKEND_IMPORTS.get(backend)
+    if spec is None:
+        return
+    attr_name, _ = spec
+    current = globals().get(attr_name)
+    if current is not None:
+        return  # already resolved (or test-patched)
+    try:
+        module = importlib.import_module(spec[1])
+        globals()[attr_name] = getattr(module, "Llama" if backend == "gguf" else "SentenceTransformer")
+    except Exception:
+        globals()[attr_name] = None  # dependency missing — backend unavailable
+
+
+def _init_backend_imports() -> None:
+    """Register the (lazy) backend imports.  Called once at module bottom."""
+    _BACKEND_IMPORTS.clear()
+    _BACKEND_IMPORTS["gguf"] = ("_Llama", "llama_cpp")
+    _BACKEND_IMPORTS["transformer"] = ("_SentenceTransformer", "sentence_transformers")
+
+
+@contextmanager
+def _guarded_stdout():
+    """Redirect a closed stdout to devnull for the duration.
+
+    The plugin contract closes stdout after the port signal, but a
+    transformer model load (sentence-transformers/tqdm/torch) writes
+    progress bars to ``sys.stdout`` — a write to the closed file raises
+    ``ValueError: I/O operation on closed file`` and fails the load.
+    Wrapping the constructor with this keeps the load working when the
+    host has already read the port signal and closed our stdout.
+    """
+    try:
+        if sys.stdout is None or sys.stdout.closed:
+            real_stdout = sys.stdout
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+            try:
+                yield
+            finally:
+                sys.stdout = real_stdout
+        else:
+            yield
+    except Exception:
+        raise
+
 
 def check_backend_runtime(backend: str) -> bool:
-    """Smoke-test that the Python packages a backend needs are importable.
+    """Whether the Python package a backend needs is already importable.
 
     ``available`` must reflect *runtime* usability — not just whether a
     GGUF file exists on disk.  Without this, a missing dependency is
     silently treated as "backend ready" until the first embed fails.
+
+    Deliberately does NOT trigger a lazy import: it is called for EVERY
+    configured model at ``Engine.__init__`` (the ``model_configured`` log),
+    and resolving an inactive backend there would pay its import cost even
+    when only the active model is ever used.  The import happens in
+    :meth:`Engine._load_spec`, i.e. only when a model is actually loaded.
     """
     if backend == "gguf":
         return _Llama is not None
@@ -175,6 +248,12 @@ class Engine:
         # Serialises model inference across ALL models — see the module doc.
         self._encode_lock = threading.Lock()
 
+        # No backend is resolved here — construction must be handshake-fast
+        # (a transformer active model would otherwise import torch and delay
+        # the port signal past the host's spawn window).  The active model's
+        # backend is resolved asynchronously by the server's post-handshake
+        # warm-up (``warm_after_handshake``) or on the first embed; inactive
+        # models stay unresolved until they are loaded.
         for spec in self._specs.values():
             logger.info(
                 "model_configured name=%s backend=%s model=%s dim=%d dim_known=%s "
@@ -295,6 +374,10 @@ class Engine:
         """
         name = model if (model and model in self._specs) else self._active
         spec = self.model_spec(name)
+        # Resolving here (not in runtime_available) means the backend's
+        # heavy import happens exactly once, only when that model is about
+        # to be used — never at engine construction for inactive models.
+        _resolve_backend(spec.backend)
         if not spec.runtime_available() or name in self._failed:
             raise RuntimeError(
                 f"embedding backend unavailable: {spec.backend} "
@@ -356,6 +439,7 @@ class Engine:
         after load and corrects the guessed dimension.
         """
         if spec.backend == "gguf":
+            _resolve_backend("gguf")
             if _Llama is None:
                 logger.warning(
                     "backend_unavailable name=%s backend=gguf "
@@ -370,13 +454,18 @@ class Engine:
             assert gguf_path is not None  # guaranteed by backend == "gguf"
             logger.info("loading_gguf name=%s path=%s dim=%d", spec.name, gguf_path, spec.dim)
             Llama = _Llama  # narrow: non-None after the guard above
+
+            def _load_gguf():
+                with _guarded_stdout():
+                    return Llama(
+                        model_path=gguf_path,
+                        embedding=True,
+                        n_ctx=8192,
+                        verbose=False,
+                    )
+
             client = await run_daemon(
-                lambda: Llama(
-                    model_path=gguf_path,
-                    embedding=True,
-                    n_ctx=8192,
-                    verbose=False,
-                ),
+                _load_gguf,
                 name=f"gguf-load-{spec.name}",
             )
             actual_dim = self._read_model_dim(client)
@@ -391,6 +480,7 @@ class Engine:
             self._dims[spec.name] = actual_dim or spec.dim
             logger.info("gguf_loaded name=%s model=%s dim=%d", spec.name, spec.model, spec.dim)
         else:
+            _resolve_backend("transformer")
             if _SentenceTransformer is None:
                 logger.warning(
                     "backend_unavailable name=%s backend=transformer "
@@ -407,8 +497,13 @@ class Engine:
             )
             device = spec.device or None  # None = auto-detect
             SentenceTransformer = _SentenceTransformer  # narrow: non-None
+
+            def _load_transformer():
+                with _guarded_stdout():
+                    return SentenceTransformer(spec.model, device=device)
+
             client = await run_daemon(
-                lambda: SentenceTransformer(spec.model, device=device),
+                _load_transformer,
                 name=f"transformer-load-{spec.name}",
             )
             actual_dim = client.get_sentence_embedding_dimension()
@@ -452,3 +547,9 @@ class Engine:
 
         embeddings = await run_daemon(_encode, name="transformer-encode")
         return [emb.tolist() for emb in embeddings]
+
+
+#: Register the lazy backend imports once module load completes.  Module
+#: import stays fast (no torch/llama_cpp), and the import of an optional
+#: backend is deferred until that backend's model is actually loaded.
+_init_backend_imports()

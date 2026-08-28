@@ -21,6 +21,8 @@ import socket
 import sys
 from typing import Any
 
+from fastmcp.server.middleware import Middleware
+
 
 def bind_free_port(host: str = "127.0.0.1") -> "tuple[socket.socket, int]":
     """Bind a socket to *host*:0 and return ``(socket, port)``.
@@ -145,3 +147,51 @@ def create_plugin_server(name: str, instructions: str, *, lifespan=None) -> "tup
 
     server = FastMCP(name, instructions=instructions, lifespan=_ready_wrapped)
     return server, None
+
+
+class _WarmAfterHandshake(Middleware):
+    """Middleware that runs a background warm-up after the first tools/list.
+
+    A copy of slife's ``warm_after_handshake`` (local-embed must not import
+    slife).  The plugin contract declares readiness as the MCP ``initialize``
+    handshake completing — a plugin must be handshake-fast, so anything that
+    could stall the loop while the wrapper is connecting (a GIL-holding model
+    load — loading a transformer model imports torch/transformers and takes
+    seconds) must NOT run in the lifespan.  This runs such a load in the
+    background right after the wrapper's first ``tools/list``, so the plugin
+    is already declared ready before the warm-up starts.
+    """
+
+    def __init__(self, factory, delay: float = 0.25, name: str = "warmup"):
+        import asyncio
+
+        self._factory = factory
+        self._delay = delay
+        self._name = name
+        self._started = False
+        self._asyncio = asyncio
+
+    async def on_list_tools(self, context, call_next):
+        result = await call_next(context)
+        if not self._started:
+            self._started = True
+            self._asyncio.get_running_loop().create_task(self._go())
+        return result
+
+    async def _go(self) -> None:
+        import asyncio
+
+        await asyncio.sleep(self._delay)
+        try:
+            await self._factory()
+        except Exception:
+            pass  # warm-up failure is logged by the caller, never fatal
+
+
+def warm_after_handshake(mcp_server, factory, *, delay: float = 0.25, name: str = "warmup") -> None:
+    """Run a heavyweight coroutine AFTER the first MCP ``tools/list``.
+
+    See ``_WarmAfterHandshake`` — a plugin must be handshake-fast, so a
+    slow model load belongs here, not in the lifespan.
+    """
+    mcp_server.add_middleware(_WarmAfterHandshake(factory, delay, name))

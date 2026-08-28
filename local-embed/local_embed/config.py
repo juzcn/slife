@@ -174,7 +174,8 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
                     max_tokens=int(m.get("max_tokens", 0) or 0),
                 )
             )
-        active = cfg.get("active_model") or _pick("active_model", specs[0].name)
+        # Precedence: env override > config file > default (mirrors _pick).
+        active = _pick("active_model", specs[0].name)
         if active not in {s.name for s in specs}:
             active = specs[0].name
     else:
