@@ -67,25 +67,28 @@ def _scan_builtins() -> list[tuple[str, str]]:
     return plugins
 
 
-def discover_plugins(external: list[dict] | None = None) -> list[tuple[str, str]]:
+def discover_plugins(
+    external: list[dict] | None = None,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """Merge built-in source-scan plugins with config-declared external ones.
 
     Args:
         external: The ``plugins.external`` list parsed from slife.json5 —
             ``[{"name": ..., "module": ...}, ...]``.  An entry whose module
-            cannot be imported is skipped (logged); on a name collision with a
-            built-in the external entry wins (a standalone distribution that
-            replaces a built-in, e.g. ``mcp``).
+            cannot be imported is skipped (logged and returned as missing so
+            the caller can surface it); on a name collision with a built-in
+            the external entry wins (a standalone distribution that replaces
+            a built-in, e.g. ``mcp``).
 
-    Returns a list of ``(name, module_path)`` tuples, e.g.::
-
-        [("memdb", "slife.plugins.memdb.server"),
-         ("mcp",   "mcp_plugin.server"),
-         ("wechat", "slife.plugins.wechat.server"),
-         …]
+    Returns a ``(plugins, missing)`` pair of ``(name, module_path)`` tuples:
+    the discovered plugins (e.g. ``[("memdb", "slife.plugins.memdb.server"),
+    …]``) plus the external entries declared in config whose module could not
+    be imported — typically an uninstalled package.  The missing set is the
+    caller's cue to report a plugin load failure in the UI.
     """
     plugins = _scan_builtins()
     seen = {name for name, _ in plugins}
+    missing: list[tuple[str, str]] = []
 
     for entry in external or []:
         if not isinstance(entry, dict):
@@ -101,11 +104,13 @@ def discover_plugins(external: list[dict] | None = None) -> list[tuple[str, str]
                 logger.warning(
                     "plugins_external_missing name=%s module=%s", name, module,
                 )
+                missing.append((name, str(module)))
                 continue
         except Exception:
             logger.warning(
                 "plugins_external_missing name=%s module=%s", name, module,
             )
+            missing.append((name, str(module)))
             continue
         if name in seen:
             plugins = [(n, m) for n, m in plugins if n != name]
@@ -114,4 +119,4 @@ def discover_plugins(external: list[dict] | None = None) -> list[tuple[str, str]
 
     logger.debug("plugins_discovered count=%d names=%s",
                  len(plugins), [n for n, _ in plugins])
-    return plugins
+    return plugins, missing

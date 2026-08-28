@@ -383,7 +383,9 @@ class SlifeApp(App):
         # starting…") until _open_service_when_ready() fires.
         self.query_one("#user-input").disabled = True
 
-        plugins = discover_plugins(external=self.service.config.plugins_external)
+        plugins, missing_external = discover_plugins(
+            external=self.service.config.plugins_external,
+        )
 
         # A plugin declared required but not discovered (typo, uninstalled
         # external) still violates the contract — abort before spawning
@@ -394,6 +396,16 @@ class SlifeApp(App):
                 next(iter(missing)), "plugin not discovered",
             )
             return
+
+        # Optional external plugins that failed to load (module not
+        # importable — typically an uninstalled package) surface as a chat
+        # warning rather than failing silently.  Startup continues; a
+        # *required* plugin that failed to load already aborted above.
+        for name, module in missing_external:
+            self._show_system_message(
+                t("plugin_load_failed", name=name, module=module),
+                color="#d29922",
+            )
 
         # ── Step 1: Restore session from SQLite (pure read, no services needed) ─
         # get_recent_turns reads the DB directly via aiosqlite —

@@ -106,6 +106,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "⚠ Plugin ready failed: {name}",
         "zh": "⚠ 插件就绪失败: {name}",
     },
+    "plugin_load_failed": {
+        "en": "⚠ Plugin not loaded: {name} (module {module} not importable)",
+        "zh": "⚠ 插件加载失败: {name}（模块 {module} 不可导入）",
+    },
     "required_failed": {
         "en": "✗ Required component failed: {name} ({reason})\n"
               "{name} is a core system component — cannot run without it. "
