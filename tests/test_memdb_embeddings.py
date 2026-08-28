@@ -1,5 +1,7 @@
 """Tests for slife.plugins.memdb.embeddings — EmbeddingClient and helpers."""
 
+import asyncio
+
 import pytest; pytestmark = pytest.mark.unit
 
 
@@ -164,6 +166,62 @@ class TestEmbeddingClientFromConfig:
             client = EmbeddingClient.from_config("/fake/config.json5")
             assert client.backend == "api"
             assert client.available is True
+
+    @patch("pathlib.Path.read_text")
+    @patch("pathlib.Path.exists")
+    def test_local_embed_from_config(self, mock_exists, mock_read_text):
+        """Unified OpenAI format: base_url + api_key in the embedding section."""
+        mock_exists.return_value = True
+        mock_read_text.return_value = '{}'
+
+        mock_config = {
+            "memdb": {
+                "embedding": {
+                    "model": "bge-m3",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "api_key": "local",
+                    "enabled": True,
+                },
+            },
+        }
+
+        with patch("json5.loads", return_value=mock_config):
+            client = EmbeddingClient.from_config("/fake/config.json5")
+            assert client.backend == "api"
+            assert client.available is True
+            assert client._base_url == "http://127.0.0.1:8000/v1"
+            assert client._api_key == "local"
+
+    @patch("pathlib.Path.read_text")
+    @patch("pathlib.Path.exists")
+    def test_api_from_embedding_section_beats_provider(self, mock_exists, mock_read_text):
+        """A base_url/api_key in the embedding section wins over providers."""
+        mock_exists.return_value = True
+        mock_read_text.return_value = '{}'
+
+        mock_config = {
+            "memdb": {
+                "embedding": {
+                    "model": "bge-m3",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "api_key": "local",
+                    "enabled": True,
+                },
+            },
+            "models": {
+                "providers": {
+                    "openai": {
+                        "api_key": "sk-provider",
+                        "base_url": "https://api.openai.com/v1",
+                    },
+                },
+            },
+        }
+
+        with patch("json5.loads", return_value=mock_config):
+            client = EmbeddingClient.from_config("/fake/config.json5")
+            assert client._base_url == "http://127.0.0.1:8000/v1"
+            assert client._api_key == "local"
 
     @patch("slife.plugins.memdb.embeddings.Path.exists")
     def test_missing_config_returns_disabled(self, mock_exists):
@@ -500,3 +558,41 @@ class TestDimProbe:
 
         assert ok is True
         probe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_load_api_discovers_active_model(self):
+        """The model is determined by the endpoint's /v1/models active model."""
+        client = EmbeddingClient.__new__(EmbeddingClient)
+        client._backend = "api"
+        client._available = True
+        client._model = ""            # not configured — discovered from server
+        client._dim = 1024
+        client._dim_known = False
+        client._client = None
+        client._base_url = "http://127.0.0.1:8000/v1"
+        client._api_key = "local"
+        client._client_init_lock = asyncio.Lock()
+
+        class _Model:
+            def __init__(self, id, active=False, dimension=0):
+                self.id = id
+                self.active = active
+                self.dimension = dimension
+
+        class _ModelsResponse:
+            data = [
+                _Model("bge-m3", active=True, dimension=1024),
+                _Model("other", active=False, dimension=768),
+            ]
+
+        fake_client = MagicMock()
+        fake_client.models.list = AsyncMock(return_value=_ModelsResponse())
+        with patch.object(
+            client, "_client", new=fake_client, create=True
+        ):
+            ok = await client.load()
+
+        assert ok is True
+        assert client._model == "bge-m3"      # server's active model
+        assert client.dimension == 1024
+        assert client.dimension_known is True

@@ -257,7 +257,7 @@ Every turn is permanently recorded in SQLite (`~/.slife/<agent>.db`). Hybrid sea
 | `hybrid` | Semantic recall (FTS5 + vector → RRF merge) |
 | `time` | Browse by date |
 
-Embedding backends: local GGUF (BGE-M3, offline), HuggingFace transformers, or OpenAI-compatible API. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
+Embedding backends: **every embedding model is a remote OpenAI-compatible endpoint** (unified format — `memdb.embedding.base_url` + `api_key`). The **`local-embed` external plugin** (or a standalone local-embed server) serves a local GGUF/transformer model at `http://127.0.0.1:8000/v1`, loaded **once** and shared by `memdb` and `memfiles` — no double load. The model itself is **determined by the endpoint**: slife discovers the plugin's active model from `GET /v1/models`. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
 Each turn records two timestamps — the user's input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers in the chat. User messages carry a compact **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** footnote (the turn id plus when the turn happened) so the LLM can reference turns by id (`turn_read` / `turn_summarize`) — and the human reads the same line in the TUI.
 
@@ -339,9 +339,11 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 
 | Extra | Enables |
 |-------|---------|
-| `slife[gguf]` | Local GGUF embeddings via llama-cpp-python (offline, ~300 MB) |
-| `slife[transformer]` | HuggingFace transformer embeddings via sentence-transformers (~2 GB) |
-| `slife[embeddings]` | Both of the above |
+| `local-embed[gguf]` | Local GGUF embeddings via llama-cpp-python (offline, ~300 MB) |
+| `local-embed[transformer]` | HuggingFace transformer embeddings via sentence-transformers (~2 GB) |
+| `slife[gguf]` | Legacy in-process GGUF embeddings (llama-cpp-python) |
+| `slife[transformer]` | Legacy in-process transformer embeddings (sentence-transformers) |
+| `slife[embeddings]` | Both of the above (legacy) |
 
 **Linux / macOS** — builds from source:
 

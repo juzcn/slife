@@ -1,0 +1,160 @@
+"""local-embed config — load ``local_embed.json5``, path resolution.
+
+Path precedence (mirrors mcp-plugin / credstore):
+  1. ``$LOCAL_EMBED_FILE`` — a host (slife) exports this =
+     ``<dir of slife.json5>/local_embed.json5`` before it launches the
+     plugin child, so the config sits next to the host's config
+  2. slife project root (dev): CWD is the slife source root
+     (``pyproject.toml`` ``project.name == "slife"``) — ``./local_embed.json5``
+     (credstore's ``is_slife_dev`` pattern)
+  3. ``~/.local-embed/local_embed.json5`` (standalone default, credstore-style)
+
+Config shape::
+
+    {
+      active_model: "bge-m3",
+      models: {
+        bge-m3: { backend: "gguf", gguf_path: "…", device: "" },
+        "nomic-embed-text": { backend: "transformer", model: "nomic-ai/nomic-embed-text-v1.5" },
+      },
+      host: "127.0.0.1",    // standalone only
+      port: 8000,           // standalone only
+    }
+
+Single-model convenience (still supported) — ``backend`` / ``model`` /
+``gguf_path`` / ``device`` at the top level, exactly one model::
+
+    { backend: "gguf", model: "bge-m3", gguf_path: "…", device: "" }
+
+Reads are read-only at runtime — local-embed has no config-mutating tools
+(mirrors mcp-plugin's self-hosted config, minus the persistence).
+"""
+
+from __future__ import annotations
+
+import json5
+import logging
+import os
+import tomllib
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8000
+
+
+def default_config_path() -> Path:
+    """Standalone default: ``~/.local-embed/local_embed.json5``."""
+    return Path.home() / ".local-embed" / "local_embed.json5"
+
+
+def resolve_config_path() -> Path:
+    """Return the local_embed.json5 path for this process.
+
+    Precedence (mirrors mcp-plugin's ``resolve_config_path``):
+    ``$LOCAL_EMBED_FILE`` > slife project root (dev) > standalone default.
+    """
+    env = os.environ.get("LOCAL_EMBED_FILE")
+    if env:
+        return Path(env).expanduser()
+    if is_slife_dev():
+        return Path("local_embed.json5")
+    return default_config_path()
+
+
+def is_slife_dev() -> bool:
+    """Whether we're running from the slife source root (credstore-style).
+
+    Returns True when the CWD contains a ``pyproject.toml`` with
+    ``project.name == "slife"``.
+    """
+    try:
+        data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return data.get("project", {}).get("name") == "slife"
+
+
+def load_config(path: "Path | None" = None) -> dict:
+    """Load the local-embed config dict, ``{}`` when the file is absent.
+
+    A file that exists but cannot be parsed raises (a broken config must
+    not be silently replaced by defaults).
+    """
+    if path is None:
+        path = resolve_config_path()
+    try:
+        return json5.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.info("config_not_found path=%s", path)
+        return {}
+    except (ValueError, OSError) as e:
+        logger.error("config_parse_error path=%s err=%s", path, e)
+        raise ValueError(f"Cannot parse config {path}: {e}") from e
+
+
+def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
+    """Merge config file + env overrides into engine settings.
+
+    Precedence: env vars (plugin spawn) > config file > defaults.  Returns
+    ``{"specs": [ModelSpec, ...], "active": str, "host", "port"}``.
+
+    A ``models`` map (multi-model) takes precedence; otherwise the
+    single-model top-level keys build one spec.
+    """
+    from local_embed.engine import ModelSpec
+
+    cfg = load_config()
+    overrides = overrides or {}
+
+    def _pick(key: str, default):
+        env_val = os.environ.get(f"LOCAL_EMBED_{key.upper()}")
+        if env_val not in (None, ""):
+            return env_val
+        if key in overrides and overrides[key] not in (None, ""):
+            return overrides[key]
+        if key in cfg and cfg[key] not in (None, ""):
+            return cfg[key]
+        return default
+
+    specs: list = []
+    models_cfg = cfg.get("models")
+    if isinstance(models_cfg, dict) and models_cfg:
+        for name, m in models_cfg.items():
+            if not isinstance(m, dict):
+                continue
+            # env override may point at the single model keyed by its name
+            specs.append(
+                ModelSpec(
+                    name,
+                    backend=m.get("backend", "gguf"),
+                    model=m.get("model") or name,
+                    gguf_path=m.get("gguf_path") or None,
+                    device=m.get("device", ""),
+                    max_tokens=int(m.get("max_tokens", 0) or 0),
+                )
+            )
+        active = cfg.get("active_model") or _pick("active_model", specs[0].name)
+        if active not in {s.name for s in specs}:
+            active = specs[0].name
+    else:
+        backend = _pick("backend", "gguf")
+        model = _pick("model", "bge-m3")
+        specs = [
+            ModelSpec(
+                model,
+                backend=backend,
+                model=model,
+                gguf_path=_pick("gguf_path", "") or None,
+                device=_pick("device", ""),
+            )
+        ]
+        active = model
+
+    return {
+        "specs": specs,
+        "active": active,
+        "host": cfg.get("host", overrides.get("host", DEFAULT_HOST)),
+        "port": int(cfg.get("port", overrides.get("port", DEFAULT_PORT))),
+    }

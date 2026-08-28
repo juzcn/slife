@@ -12,6 +12,7 @@ resolution-markers = [
 members = [
     "cc-switch",
     "credstore",
+    "local-embed",
     "mcp-plugin",
     "slife",
 ]
@@ -1358,6 +1359,46 @@ wheels = [
     { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-musllinux_1_2_x86_64.whl" },
     { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-pyemscripten_2026_0_wasm32.whl" },
     { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-win_amd64.whl" },
+]
+
+[[package]]
+name = "local-embed"
+version = "0.1.0"
+source = { editable = "local-embed" }
+dependencies = [
+    { name = "fastmcp" },
+    { name = "starlette" },
+]
+
+[package.optional-dependencies]
+gguf = [
+    { name = "llama-cpp-python" },
+]
+transformer = [
+    { name = "sentence-transformers" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastmcp", specifier = ">=2.0.0" },
+    { name = "llama-cpp-python", marker = "extra == 'gguf'" },
+    { name = "sentence-transformers", marker = "extra == 'transformer'" },
+    { name = "starlette", specifier = ">=0.37.0" },
+]
+provides-extras = ["gguf", "transformer"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
 ]
 
 [[package]]
@@ -2797,6 +2838,7 @@ dependencies = [
     { name = "json5" },
     { name = "keyring" },
     { name = "keyrings-cryptfile" },
+    { name = "local-embed" },
     { name = "mcp-plugin" },
     { name = "ngrok" },
     { name = "openai" },
@@ -2844,6 +2886,7 @@ requires-dist = [
     { name = "keyring", specifier = ">=25.0.0" },
     { name = "keyrings-cryptfile", specifier = ">=1.3.0" },
     { name = "llama-cpp-python", marker = "extra == 'gguf'" },
+    { name = "local-embed", editable = "local-embed" },
     { name = "mcp-plugin", editable = "mcp-plugin" },
     { name = "ngrok" },
     { name = "openai", specifier = ">=1.0.0" },

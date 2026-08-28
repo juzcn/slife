@@ -254,7 +254,11 @@ class EmbeddingClient:
         if not isinstance(emb_cfg, dict):
             emb_cfg = {}
 
-        model = emb_cfg.get("model", "bge-m3")
+        # For an OpenAI-compatible endpoint (unified format) the model is
+        # DETERMINED BY THE SERVER (e.g. the local-embed plugin's active
+        # model) — the config may omit ``model`` and it is discovered from
+        # /v1/models on load().  gguf/transformer need a concrete model.
+        model = emb_cfg.get("model", "")
         cfg_backend = emb_cfg.get("backend", "")
         gguf_path = emb_cfg.get("gguf_path")
         device = emb_cfg.get("device", "")
@@ -279,27 +283,32 @@ class EmbeddingClient:
             return cls(model=model, backend="transformer", dim=dim, dim_known=_dim_known,
                        device=device, quiet=quiet, enabled=enabled)
 
-        # Otherwise, try API backend
-        api_key = ""
-        base_url = ""
-
-        models_cfg = raw.get("models", {})
-        providers = models_cfg.get("providers", {}) if isinstance(models_cfg, dict) else {}
-        for _pid, pcfg in providers.items():
-            if isinstance(pcfg, dict):
-                api_key = pcfg.get("api_key", "")
-                base_url = pcfg.get("base_url", "")
-                # Skip unresolved ${VAR} placeholders — they are NOT real API keys.
-                # The install template ships with api_key: "${DEEPSEEK_API_KEY}"
-                # and real resolution happens at the Config level, not here.
-                if api_key and _looks_like_placeholder(api_key):
-                    api_key = ""
-                if api_key:
-                    break
+        # Otherwise, an OpenAI-compatible embeddings endpoint (remote, or
+        # local-embed serving on a port).  Unified format:
+        #   memdb.embedding: { model, base_url, api_key, dim }
+        # ``base_url`` follows the OpenAI URL convention — the client POSTs
+        # to ``{base_url}/embeddings``.  A ``base_url`` in the embedding
+        # section takes priority; otherwise fall back to the first provider.
+        api_key = emb_cfg.get("api_key", "")
+        base_url = emb_cfg.get("base_url", "")
+        if not base_url:
+            models_cfg = raw.get("models", {})
+            providers = models_cfg.get("providers", {}) if isinstance(models_cfg, dict) else {}
+            for _pid, pcfg in providers.items():
+                if isinstance(pcfg, dict):
+                    api_key = pcfg.get("api_key", "")
+                    base_url = pcfg.get("base_url", "")
+                    # Skip unresolved ${VAR} placeholders — they are NOT real API keys.
+                    # The install template ships with api_key: "${DEEPSEEK_API_KEY}"
+                    # and real resolution happens at the Config level, not here.
+                    if api_key and _looks_like_placeholder(api_key):
+                        api_key = ""
+                    if api_key:
+                        break
 
         if not api_key:
             _log_warn(
-                "embeddings_unavailable backend=none reason=no_api_key_and_no_gguf_path"
+                "embeddings_unavailable backend=none reason=no_api_key_and_no_base_url"
             )
 
         dim = emb_cfg.get("dim", _guess_dim(model))
@@ -516,6 +525,67 @@ class EmbeddingClient:
             self._dim = actual
         self._dim_known = True
 
+    async def _discover_model(self) -> bool:
+        """Query ``GET {base_url}/models`` for the endpoint's active model.
+
+        The model is determined by the server (e.g. the local-embed
+        plugin's active model), not hardcoded in slife's config.  On
+        success this pins ``self._model`` to the server's active model and
+        ``self._dim`` to its reported dimension.  Returns True on success.
+
+        Defensive about attributes — tests construct clients via
+        ``__new__`` without running ``__init__``.
+        """
+        base_url = getattr(self, "_base_url", "")
+        if not base_url:
+            return False
+        try:
+            from openai import AsyncOpenAI
+
+            client = self._client
+            if client is None:
+                async with self._client_init_lock:
+                    if self._client is None:
+                        kwargs: dict = {"api_key": getattr(self, "_api_key", "")}
+                        if base_url:
+                            kwargs["base_url"] = base_url
+                        self._client = AsyncOpenAI(**kwargs)
+                    client = self._client
+            models = await client.models.list()
+        except Exception as e:
+            logger.warning(
+                "embedding_model_discover_failed base_url=%s err=%s",
+                base_url, e,
+            )
+            return False
+
+        entries = [m for m in (models.data or []) if getattr(m, "id", None)]
+        if not entries:
+            return False
+
+        # Prefer the server's active model when reported (local-embed sets
+        # ``active: true`` on /v1/models); otherwise the first entry.
+        active = next(
+            (m for m in entries if getattr(m, "active", False)),
+            entries[0],
+        )
+        new_model = active.id
+        new_dim = int(getattr(active, "dimension", 0) or 0)
+        if new_model and new_model != self._model:
+            logger.info(
+                "embedding_model_active model=%s (was %s)", new_model, self._model,
+            )
+            self._model = new_model
+        if new_dim:
+            if new_dim != self._dim:
+                logger.info(
+                    "api_dim_override model=%s guessed=%d actual=%d",
+                    self._model, self._dim, new_dim,
+                )
+                self._dim = new_dim
+            self._dim_known = True
+        return True
+
     async def load(self) -> bool:
         """Force the local backend model into memory; return True when loaded.
 
@@ -527,11 +597,14 @@ class EmbeddingClient:
         when the configured model is not recognised).
         """
         if self._client is not None or self._backend == "api":
-            # The API backend has no local model to load — but an unknown
-            # model name still carries a guessed dimension that must be
-            # confirmed before the vec0 table uses it.
-            if self._backend == "api" and not self._dim_known:
-                await self._probe_api_dim()
+            # The API backend has no local model to load — but the model
+            # itself is determined by the endpoint (e.g. the local-embed
+            # plugin's active model), so discover it from /v1/models and pin
+            # the real dimension before the vec0 table uses it.
+            if self._backend == "api":
+                if not await self._discover_model():
+                    if not self._dim_known:
+                        await self._probe_api_dim()
             return True
         if self._loading is not None:
             return await self._loading  # share the in-flight load

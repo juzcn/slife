@@ -355,10 +355,14 @@
   },
   memdb: {
     embedding: {
-      model: "bge-m3",
-      backend: "gguf",
-      enabled: true,
-      gguf_path: "C:\\OneDrive\\AI\\hf_KimChen_bge-m3-q4_k_m.gguf"
+      // Unified OpenAI-embeddings-API format — every embedding model is a
+      // remote OpenAI-compatible endpoint.  The local-embed plugin (or a
+      // standalone local-embed server) serves a local GGUF model here.
+      // The MODEL is determined by the endpoint: slife discovers the
+      // plugin's active model from /v1/models on load.
+      base_url: "http://127.0.0.1:8000/v1",
+      api_key: "local",
+      enabled: true
     }
   }
 }

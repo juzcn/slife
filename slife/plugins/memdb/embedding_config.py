@@ -236,9 +236,11 @@ def make_check_report() -> dict:
                 )
             else:
                 result["hint"] = (
-                    "API backend is missing an api_key. Confirm api_key is set in "
-                    "models.providers, or switch to a local model: "
-                    "semantic_index_config backend=gguf or backend=transformer"
+                    "API backend is missing an api_key / base_url. Set "
+                    "memdb.embedding.base_url + api_key (unified OpenAI "
+                    "embeddings format — e.g. point at the local-embed plugin: "
+                    "base_url=http://127.0.0.1:8000/v1, api_key=local), or use "
+                    "semantic_index_config backend=api base_url=... api_key=..."
                 )
 
     return result

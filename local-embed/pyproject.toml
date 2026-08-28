@@ -1,0 +1,62 @@
+[project]
+name = "local-embed"
+version = "0.1.0"
+description = "Standalone local embedding server — GGUF / transformer models as an OpenAI-compatible /v1/embeddings service"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "juzcn", email = "zhangjun@cueb.edu.cn" },
+]
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "starlette>=0.37.0",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Terminals",
+]
+
+[project.optional-dependencies]
+gguf = ["llama-cpp-python"]
+transformer = ["sentence-transformers"]
+
+[project.urls]
+Homepage = "https://github.com/juzcn/slife"
+Repository = "https://github.com/juzcn/slife"
+Documentation = "https://github.com/juzcn/slife/blob/main/local-embed/README.md"
+
+[project.scripts]
+local-embed = "local_embed.cli:main"
+
+[build-system]
+# See root pyproject.toml: pin below hatchling 1.27 so the wheel stays at
+# Metadata-Version 2.3 (twine/pkginfo caps there; 2.4/2.5 fail to upload).
+requires = ["hatchling>=1.24,<1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["local_embed"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+]
+
+[tool.pytest.ini_options]
+minversion = "9.1"
+testpaths = ["tests"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "module"
+addopts = "-q --tb=short --strict-markers --strict-config --no-header --color=yes --durations=10"
+markers = [
+    "unit: fast, isolated unit test (no I/O, no subprocess)",
+    "integration: test requiring I/O, network, or subprocess",
+]

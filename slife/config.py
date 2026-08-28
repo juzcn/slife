@@ -858,4 +858,7 @@ class Config:
         # next to slife.json5 — the plugin resolves it via $MCP_PLUGIN_FILE.
         if path is not None:
             os.environ["MCP_PLUGIN_FILE"] = str(path.parent / "mcp-plugin.json5")
+        # Same for the local-embed external plugin: $LOCAL_EMBED_FILE.
+        if path is not None:
+            os.environ["LOCAL_EMBED_FILE"] = str(path.parent / "local_embed.json5")
         return config

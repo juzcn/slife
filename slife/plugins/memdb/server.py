@@ -663,17 +663,28 @@ async def semantic_index_config(
     gguf_path: str | None = None,
     dim: int = 0,
     device: str = "",
+    base_url: str = "",
+    api_key: str = "",
 ) -> str:
     """Configure the embedding backend.
 
+    All embedding models are remote OpenAI-compatible endpoints (a local
+    ``local-embed`` server is just one such endpoint).
+
     Args:
-        backend: ``"gguf"``, ``"transformer"``, or ``"api"``.
+        backend: ``"api"``, ``"gguf"``, or ``"transformer"``.
         model: Model name. Default ``"bge-m3"``; for ``api`` this is the
-            OpenAI model ID (e.g. ``"text-embedding-3-small"``).
+            OpenAI model ID (e.g. ``"text-embedding-3-small"``, or the model
+            served by a local local-embed server).
         gguf_path: Path to .gguf file. Required when ``backend="gguf"``.
         dim: Embedding dimension; auto-detected when 0 (default).
         device: Device override for transformer backend
             (``"cpu"`` / ``"cuda"``); auto-detect when empty.
+        base_url: OpenAI-compatible endpoint base URL (``api`` only), e.g.
+            ``"http://127.0.0.1:8000/v1"`` for local-embed.  The client
+            POSTs to ``{base_url}/embeddings`` per the OpenAI convention.
+        api_key: API key for the endpoint (``api`` only).  Defaults to
+            the first configured provider's key when empty.
     """
     from slife.plugins.memdb.embedding_config import (
         write_embedding_config, validate_gguf_path, get_first_provider_api_key,
@@ -681,7 +692,7 @@ async def semantic_index_config(
     backend = backend.lower().strip()
     if backend not in ("gguf", "transformer", "api"):
         return json.dumps(
-            {"error": f"unsupported backend '{backend}'. Options: 'gguf', 'transformer', or 'api'"},
+            {"error": f"unsupported backend '{backend}'. Options: 'api', 'gguf', or 'transformer'"},
             ensure_ascii=False, indent=2,
         )
     cfg: dict = {"model": model, "backend": backend, "enabled": True}
@@ -701,8 +712,18 @@ async def semantic_index_config(
         if device:
             cfg["device"] = device
     elif backend == "api":
-        if not get_first_provider_api_key():
-            return json.dumps({"error": "API backend requires an api_key"}, ensure_ascii=False, indent=2)
+        # Unified OpenAI-compatible endpoint (local-embed or any remote).
+        # ``base_url`` is optional — without it, the first provider's
+        # base_url/api_key are used (backward compatible).
+        if base_url:
+            cfg["base_url"] = base_url
+        if api_key:
+            cfg["api_key"] = api_key
+        if not api_key and not get_first_provider_api_key():
+            return json.dumps(
+                {"error": "API backend requires an api_key or a base_url to a local endpoint"},
+                ensure_ascii=False, indent=2,
+            )
         if dim > 0:
             cfg["dim"] = dim
     try:
