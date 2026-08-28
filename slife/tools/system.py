@@ -4,6 +4,7 @@ Tools:
     check_memdb              — MemDB plugin: database + embedding backend
     check_wechat             — WeChat plugin status
     check_memfiles           — file cabinet (notes / diary / files) status
+    check_local_embed        — local embedding service (local-embed) status
     check_sharefile          — file-sharing tunnel (ngrok) status
     check_watchdog           — plugin watchdog (auto-restart) status
     check_mcp                — external MCP server connection status
@@ -313,6 +314,63 @@ class CheckMemfilesTool(Tool):
         return json.dumps(await check_memfiles(client=client), ensure_ascii=False, indent=2)
 
 
+# check_local_embed
+# ═══════════════════════════════════════════════════════════════════════
+
+async def check_local_embed(client=None) -> list[dict]:
+    """Return local-embed (local embedding service) status as health entries.
+
+    The service runs in its own plugin process (``local-embed``, an external
+    plugin serving OpenAI-compatible ``/v1/embeddings`` + MCP tools), so this
+    check asks its ``embed_status`` tool through its MCP client (from
+    ``ToolContext.local_embed_client``).  When the plugin is not connected, a
+    warning is reported.
+    """
+    try:
+        if client is None:
+            return [{"component": "local_embed", "level": "warning", "key": "plugin",
+                     "value": "offline",
+                     "hint": "local-embed plugin not connected — local embedding unavailable."}]
+        raw = await client.call_tool("embed_status")
+        data = json.loads(raw)
+        active = data.get("active_model") or "?"
+        models = data.get("models") or []
+        active_loaded = next(
+            (m.get("loaded") for m in models if m.get("name") == active),
+            None,
+        )
+        loaded_count = sum(1 for m in models if m.get("loaded"))
+        if active_loaded:
+            return [{"component": "local_embed", "level": "ok", "key": "status",
+                     "value": active,
+                     "hint": f"local-embed online: active model {active} loaded, "
+                             f"{loaded_count}/{len(models)} model(s) loaded."}]
+        return [{"component": "local_embed", "level": "warning", "key": "status",
+                 "value": active,
+                 "hint": (f"local-embed online but active model {active} NOT loaded — "
+                          "first embed will block on the model load.")}]
+    except Exception as e:
+        logger.warning("local_embed_check_failed err=%s", e)
+        return [{"component": "local_embed", "level": "warning", "key": "status",
+                 "value": "unavailable",
+                 "hint": f"local-embed status unavailable: {e}"}]
+
+
+class CheckLocalEmbedTool(Tool):
+    """Check the local-embed (local embedding service) status."""
+
+    name = "check_local_embed"
+    category: ClassVar[str] = "System"
+    description = ("Local embedding service (local-embed) status: online/offline, "
+                   "active model, loaded models. One subsystem of system_health.")
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs) -> str:
+        ctx = getattr(self, "_ctx", None)
+        client = getattr(ctx, "local_embed_client", None) if ctx is not None else None
+        return json.dumps(await check_local_embed(client=client), ensure_ascii=False, indent=2)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # check_watchdog
 # ═══════════════════════════════════════════════════════════════════════
@@ -592,6 +650,7 @@ _CHECK_FUNCTIONS: list[str] = [
     "check_memdb",
     "check_wechat",
     "check_memfiles",
+    "check_local_embed",
     "check_sharefile",
     "check_mcp",
     "check_a2a",
@@ -600,10 +659,12 @@ _CHECK_FUNCTIONS: list[str] = [
 
 #: check_* functions that reach live plugin state via a ToolContext client.
 #: ``check_mcp`` uses the slife-mcp wrapper client; ``check_memfiles``,
-#: ``check_sharefile`` and ``check_a2a`` use their respective plugin clients.
+#: ``check_local_embed``, ``check_sharefile`` and ``check_a2a`` use their
+#: respective plugin clients.
 _CLIENT_FIELD: dict[str, str] = {
     "check_mcp": "mcp_client",
     "check_memfiles": "memfiles_client",
+    "check_local_embed": "local_embed_client",
     "check_sharefile": "sharefile_client",
     "check_a2a": "a2a_mcp_client",
 }
@@ -728,10 +789,11 @@ class SystemHealthTool(Tool):
     name = "system_health"
     category: ClassVar[str] = "System"
     description = ("Complete health report in one call: runs every check_* tool "
-                   "(check_memdb, check_wechat, check_memfiles, check_sharefile, "
-                   "check_mcp, check_a2a, check_watchdog) plus startup records, "
-                   "grouped per component with an overall healthy flag and summary. "
-                   "All individual check_* results are already included in this report.")
+                   "(check_memdb, check_wechat, check_memfiles, check_local_embed, "
+                   "check_sharefile, check_mcp, check_a2a, check_watchdog) plus "
+                   "startup records, grouped per component with an overall healthy "
+                   "flag and summary. All individual check_* results are already "
+                   "included in this report.")
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:

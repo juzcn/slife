@@ -12,9 +12,11 @@ from slife.tools.system import (
     check_memdb,
     check_wechat,
     check_memfiles,
+    check_local_embed,
     check_mcp,
     check_a2a,
     CheckMemfilesTool,
+    CheckLocalEmbedTool,
     _group_by_component,
     _component_status,
     _build_summary,
@@ -496,6 +498,7 @@ class TestSystemHealthToolExecute:
              patch("slife.tools.system.check_memdb", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
              patch("slife.tools.system.check_memfiles", return_value=[]), \
+             patch("slife.tools.system.check_local_embed", return_value=[]), \
              patch("slife.tools.system.check_sharefile", return_value=[]), \
              patch("slife.tools.system.check_mcp", return_value=[]), \
              patch("slife.tools.system.check_a2a", return_value=[]):
@@ -515,6 +518,9 @@ class TestSystemHealthToolExecute:
         with patch("slife.tools.system.get_startup_records", return_value=startup_entries), \
              patch("slife.tools.system.check_memdb", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
+             patch("slife.tools.system.check_memfiles", return_value=[]), \
+             patch("slife.tools.system.check_local_embed", return_value=[]), \
+             patch("slife.tools.system.check_sharefile", return_value=[]), \
              patch("slife.tools.system.check_mcp", return_value=[]), \
              patch("slife.tools.system.check_a2a", return_value=[]):
             result = await tool.execute()
@@ -531,6 +537,9 @@ class TestSystemHealthToolExecute:
         with patch("slife.tools.system.get_startup_records", return_value=startup_entries), \
              patch("slife.tools.system.check_memdb", return_value=[]), \
              patch("slife.tools.system.check_wechat", return_value=[]), \
+             patch("slife.tools.system.check_memfiles", return_value=[]), \
+             patch("slife.tools.system.check_local_embed", return_value=[]), \
+             patch("slife.tools.system.check_sharefile", return_value=[]), \
              patch("slife.tools.system.check_mcp", return_value=[]), \
              patch("slife.tools.system.check_a2a", return_value=[]):
             result = await tool.execute()
@@ -554,6 +563,8 @@ class TestSystemHealthToolExecute:
             "slife.tools.system.check_wechat", return_value=[],
         ), patch(
             "slife.tools.system.check_memfiles", return_value=[],
+        ), patch(
+            "slife.tools.system.check_local_embed", return_value=[],
         ), patch(
             "slife.tools.system.check_sharefile", return_value=[],
         ), patch(
@@ -591,6 +602,8 @@ class TestSystemHealthToolExecute:
             "slife.tools.system.check_wechat", return_value=[],
         ), patch(
             "slife.tools.system.check_memfiles", return_value=[],
+        ), patch(
+            "slife.tools.system.check_local_embed", return_value=[],
         ), patch(
             "slife.tools.system.check_sharefile", return_value=[],
         ), patch(
@@ -947,3 +960,120 @@ class TestCheckA2aTool:
             parsed = json.loads(result)
             assert parsed[0]["component"] == "a2a"
             assert parsed[0]["value"] == "connected"
+
+
+class _FakeLocalEmbedClient:
+    """Minimal stand-in for the local-embed plugin MCP client."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def call_tool(self, name, arguments=None):
+        assert name == "embed_status"
+        return json.dumps(self._payload)
+
+
+class TestCheckLocalEmbedFunction:
+    """Tests for check_local_embed()."""
+
+    @staticmethod
+    def _status(**overrides):
+        data = {
+            "active_model": "bge-m3",
+            "models": [
+                {"name": "bge-m3", "backend": "gguf", "model": "bge-m3",
+                 "dimension": 1024, "dimension_known": True, "loaded": True,
+                 "available": True, "max_tokens": 8192},
+            ],
+        }
+        data.update(overrides)
+        return data
+
+    @pytest.mark.asyncio
+    async def test_client_unavailable(self):
+        entries = await check_local_embed()
+        assert entries[0]["component"] == "local_embed"
+        assert entries[0]["level"] == "warning"
+        assert entries[0]["value"] == "offline"
+        assert "not connected" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_active_model_loaded(self):
+        client = _FakeLocalEmbedClient(self._status())
+        entries = await check_local_embed(client=client)
+        assert len(entries) == 1
+        assert entries[0]["level"] == "ok"
+        assert entries[0]["value"] == "bge-m3"
+        assert "bge-m3 loaded" in entries[0]["hint"]
+        assert "1/1 model(s) loaded" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_active_model_not_loaded(self):
+        client = _FakeLocalEmbedClient(self._status(
+            models=[
+                {"name": "bge-m3", "backend": "gguf", "model": "bge-m3",
+                 "dimension": 1024, "dimension_known": True, "loaded": False,
+                 "available": True, "max_tokens": 8192},
+            ],
+        ))
+        entries = await check_local_embed(client=client)
+        assert len(entries) == 1
+        assert entries[0]["level"] == "warning"
+        assert "NOT loaded" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_no_models_reports_warning(self):
+        client = _FakeLocalEmbedClient(self._status(models=[]))
+        entries = await check_local_embed(client=client)
+        assert entries[0]["level"] == "warning"
+        assert "NOT loaded" in entries[0]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_check_failure_reports_warning(self):
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
+        entries = await check_local_embed(client=client)
+        assert entries[0]["level"] == "warning"
+        assert "boom" in entries[0]["hint"]
+
+
+class TestCheckLocalEmbedTool:
+    """Tests for CheckLocalEmbedTool metadata and execute."""
+
+    def test_metadata(self):
+        tool = CheckLocalEmbedTool()
+        assert tool.name == "check_local_embed"
+        assert "local-embed" in tool.description.lower()
+        assert tool.parameters["type"] == "object"
+        assert tool.parameters["required"] == []
+
+    @pytest.mark.asyncio
+    async def test_execute_returns_json(self):
+        tool = CheckLocalEmbedTool()
+        with patch("slife.tools.system.check_local_embed",
+                   new=AsyncMock(return_value=[
+                       {"component": "local_embed", "level": "ok", "key": "status",
+                        "value": "bge-m3", "hint": "all good"},
+                   ])):
+            result = await tool.execute()
+            parsed = json.loads(result)
+            assert parsed[0]["component"] == "local_embed"
+            assert parsed[0]["value"] == "bge-m3"
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_ctx_local_embed_client(self):
+        """execute() reaches the plugin through ToolContext.local_embed_client."""
+        tool = CheckLocalEmbedTool()
+        fake_client = _FakeLocalEmbedClient({
+            "active_model": "bge-m3",
+            "models": [
+                {"name": "bge-m3", "backend": "gguf", "model": "bge-m3",
+                 "dimension": 1024, "dimension_known": True, "loaded": True,
+                 "available": True, "max_tokens": 8192},
+            ],
+        })
+        tool._ctx = MagicMock(local_embed_client=fake_client)
+        result = await tool.execute()
+        parsed = json.loads(result)
+        assert parsed[0]["component"] == "local_embed"
+        assert parsed[0]["value"] == "bge-m3"

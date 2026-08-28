@@ -56,6 +56,19 @@ _WATCHDOG_MAX_RESTARTS: int = 5
 PLUGIN_SPAWN_TIMEOUT: float = 30.0
 
 
+def plugin_port_env(name: str) -> str:
+    """Return the canonical ``SLIFE_{NAME}_PORT`` env key for a plugin.
+
+    The key is the plugin name uppercased with dashes normalised to
+    underscores (``local-embed`` → ``SLIFE_LOCAL_EMBED_PORT``), so it stays a
+    valid, conventional env-var name and matches how subagents read plugin
+    ports (``headless.py`` uses the underscore form for every plugin).  Every
+    writer (spawn, generic spawn) and any future reader must go through this
+    helper — one definition of the contract.
+    """
+    return f"SLIFE_{name.upper().replace('-', '_')}_PORT"
+
+
 class PluginStartStatus(enum.Enum):
     """Outcome of a plugin startup attempt.
 
@@ -147,7 +160,7 @@ class PluginLifecycle:
         self.process = process
         self.port = process.port
 
-        env_key = f"SLIFE_{self.name.upper()}_PORT"
+        env_key = plugin_port_env(self.name)
         os.environ[env_key] = str(self.port)
 
         try:

@@ -14,5 +14,5 @@ auto-publish.
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``,
 ``url_save``, ``note_list``, ``diary_list``, ``note_read``, ``diary_read``,
 ``list_files``, ``cabinet_search``, ``cabinet_read``,
-``cabinet_embedding_check``.
+``memfiles_semantic_status``.
 """

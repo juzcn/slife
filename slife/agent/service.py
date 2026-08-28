@@ -28,7 +28,11 @@ from slife.agent.llm_client import LLMClient, TokenUsage
 from slife.agent.message_history import MessageHistory, turn_header
 from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
 from slife.agent.inbox import Inbox, MessageHistoryStore
-from slife.agent.plugins import PluginLifecycle, PluginStartStatus
+from slife.agent.plugins import (
+    PluginLifecycle,
+    PluginStartStatus,
+    plugin_port_env,
+)
 from slife.a2a.identity import HUMAN
 from slife.tools.factory import create_tools_from_config
 from slife.mcp.tool_adapter import create_proxy_tools
@@ -549,6 +553,17 @@ class AgentService:
         if name == "a2a":
             return await self.start_a2a()
 
+        # ── Local-embed: fully generic spawn; expose the client for
+        # check_local_embed (active model / loaded state health probe).
+        if name == "local-embed":
+            started = await self._spawn_plugin_generic(name, module)
+            if started:
+                self._tool_ctx.local_embed_client = self._plugins["local-embed"].client
+                self._start_generic_watchdog(name, module)
+            return (
+                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
+            )
+
         # ── Generic: spawn python -m <module>, connect, register tools ──
         started = await self._spawn_plugin_generic(name, module)
         if started:
@@ -577,6 +592,10 @@ class AgentService:
                 # but the harness's ToolContext still points at the dead client —
                 # re-point it or check_memfiles reports the restarted plugin offline.
                 self._tool_ctx.memfiles_client = self._plugins[name].client
+            if name == "local-embed":
+                # Same re-point for the local embedding service — otherwise
+                # check_local_embed reports the restarted plugin offline.
+                self._tool_ctx.local_embed_client = self._plugins[name].client
             if name == "sharefile":
                 # _spawn_plugin_generic replaced self._plugins["sharefile"].client,
                 # but the harness's ToolContext still points at the dead client —
@@ -727,7 +746,7 @@ class AgentService:
             self._plugins[name].client = client
             self._plugins[name].process = process
             self._plugins[name].port = process.port
-            os.environ[f"SLIFE_{name.upper()}_PORT"] = str(process.port)
+            os.environ[plugin_port_env(name)] = str(process.port)
 
             # Readiness (MCP plugin contract): create_client() ran the
             # initialize handshake — completing it is the plugin's ready

@@ -414,11 +414,10 @@ class TestNoteDiaryBrowse:
         )
 
 
-class TestCabinetEmbeddingCheck:
-    """cabinet_embedding_check reports the memfiles index's OWN gate —
-    independent from memdb's semantic_index_status (each plugin reindexes its
-    own DB, so one can be semantically ready while the other is still
-    building)."""
+class TestMemfilesSemanticStatus:
+    """memfiles_semantic_status reports the memfiles index's OWN gate —
+    independent from memdb_semantic_status (each plugin reindexes its own DB,
+    so one can be semantically ready while the other is still building)."""
 
     @pytest.mark.asyncio
     async def test_reports_memfiles_manager_state(self, tmp_path):
@@ -437,7 +436,7 @@ class TestCabinetEmbeddingCheck:
         manager.embedder = embedder
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
              patch.object(plugin, "_manager", manager):
-            out = await plugin.cabinet_embedding_check()
+            out = await plugin.memfiles_semantic_status()
         data = json.loads(out)
         assert data["semantic_ready"] is False
         assert data["state"] == "indexing"
@@ -449,7 +448,7 @@ class TestCabinetEmbeddingCheck:
     async def test_without_manager_reports_config_probe(self, tmp_path):
         store = _fake_store(tmp_path / "files")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            out = await plugin.cabinet_embedding_check()
+            out = await plugin.memfiles_semantic_status()
         data = json.loads(out)
         assert "configured" in data
         assert "hint" in data

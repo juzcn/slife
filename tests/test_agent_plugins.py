@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 
-from slife.agent.plugins import PluginLifecycle
+from slife.agent.plugins import PluginLifecycle, plugin_port_env
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -54,6 +54,25 @@ class TestPluginLifecycleInit:
         assert mcp is not memdb
 
 
+# ── plugin_port_env ───────────────────────────────────────────────────────
+
+
+class TestPluginPortEnv:
+    """The canonical SLIFE_{NAME}_PORT env key — dashes normalised to
+    underscores so dash-named plugins (local-embed) match how subagents
+    read plugin ports."""
+
+    def test_underscore_name_unchanged(self):
+        assert plugin_port_env("memfiles") == "SLIFE_MEMFILES_PORT"
+        assert plugin_port_env("memdb") == "SLIFE_MEMDB_PORT"
+
+    def test_dash_name_normalised(self):
+        assert plugin_port_env("local-embed") == "SLIFE_LOCAL_EMBED_PORT"
+
+    def test_case_normalised(self):
+        assert plugin_port_env("Local-Embed") == "SLIFE_LOCAL_EMBED_PORT"
+
+
 # ── spawn ─────────────────────────────────────────────────────────────────
 
 
@@ -92,6 +111,35 @@ class TestPluginLifecycleSpawn:
         # which IS the ready declaration (no __ready probe).
         assert lifecycle.ready is True
         assert lifecycle.ready_state == "ready"
+
+    @pytest.mark.asyncio
+    async def test_spawn_dash_name_writes_normalised_env_key(self, mock_service):
+        """A dash-named plugin (local-embed) publishes its port under the
+        canonical underscore key — no ``SLIFE_LOCAL-EMBED_PORT``."""
+        lc = PluginLifecycle("local-embed", mock_service)
+        mock_process = MagicMock()
+        mock_process.port = 8000
+        mock_client = MagicMock()
+        mock_client.list_tools = AsyncMock(return_value=[
+            {"name": "embed_status", "description": "Status."},
+        ])
+
+        with patch("mcp_plugin.process.MCPWrapperProcess") as MockProc:
+            MockProc.return_value = mock_process
+            mock_process.start = AsyncMock()
+            mock_process.create_client = AsyncMock(return_value=mock_client)
+
+            with patch("slife.mcp.tool_adapter.create_proxy_tools") as mock_create:
+                mock_tool = MagicMock()
+                mock_create.return_value = [mock_tool]
+
+                await lc.spawn(module="local_embed.server")
+
+        import os
+        assert os.environ.get("SLIFE_LOCAL_EMBED_PORT") == "8000"
+        assert os.environ.get("SLIFE_LOCAL-EMBED_PORT") is None
+        # Clean up
+        os.environ.pop("SLIFE_LOCAL_EMBED_PORT", None)
 
     @pytest.mark.asyncio
     async def test_spawn_registers_tools(self, lifecycle, mock_service):

@@ -19,7 +19,7 @@ memdb's SemanticManager and RRF merge); ``cabinet_read`` re-opens a saved file.
 
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
 ``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``list_files``,
-``cabinet_search``, ``cabinet_read``, ``cabinet_embedding_check``.
+``cabinet_search``, ``cabinet_read``, ``memfiles_semantic_status``.
 Internal tools (``__`` prefix, never LLM-visible): ``__cabinet_status``.
 
 Usage::
@@ -525,16 +525,16 @@ async def cabinet_search(
 
 
 @mcp.tool(
-    name="cabinet_embedding_check",
+    name="memfiles_semantic_status",
     description=(
         "File-cabinet semantic-search status: shared embedding config plus "
         "the memfiles index's own gate (semantic_ready, state, unembedded). "
-        "Independent from memdb's semantic_index_status — the two plugins "
-        "reindex their own DBs, so one can be semantically ready while the "
-        "other is still building."
+        "Independent from memdb_semantic_status — the two plugins reindex "
+        "their own DBs, so one can be semantically ready while the other is "
+        "still building."
     ),
 )
-async def cabinet_embedding_check() -> str:
+async def memfiles_semantic_status() -> str:
     from slife.plugins.memdb.embedding_config import make_check_report
 
     await _ensure_store()

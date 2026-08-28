@@ -25,7 +25,7 @@
 ### memdb — 语义索引管理(B 类, `semantic_*` 前缀)
 | 现名 | 新名 | 语义 |
 |---|---|---|
-| `memory_check_embedding` | `semantic_index_status` | 查语义索引状态 |
+| `memory_check_embedding` | `semantic_index_status` (later `memdb_semantic_status`) | 查语义索引状态 |
 | `memory_set_embedding` | `semantic_index_config` | 配置嵌入后端 |
 | `memory_set_enabled` | `semantic_search_enable` | 开关语义搜索 |
 
@@ -34,7 +34,7 @@
 |---|---|---|
 | `search` | `cabinet_search` | 搜笔记/日记/文件柜 |
 | `read` | `cabinet_read` | 按相对路径读文件柜文件 |
-| `embedding_check` | `cabinet_embedding_check` | 文件柜索引嵌入状态 |
+| `embedding_check` | `cabinet_embedding_check` (later `memfiles_semantic_status`) | 文件柜索引嵌入状态 |
 | `note_save` `diary_write` `file_save` `url_save` | 保持 | |
 | `note_list` `diary_list` `note_read` `diary_read` `list_files` | 保持 | |
 
@@ -67,7 +67,7 @@
 - `slife/plugins/memdb/server.py`:9 个 `@mcp.tool(name=...)` + 函数名 + 内部 docstring
   引用 + 顶部模块 docstring(工具列表)+ `instructions` 里的工具名
 - `slife/plugins/memfiles/server.py`:`search`→`cabinet_search`,
-  `read`→`cabinet_read`, `embedding_check`→`cabinet_embedding_check`
+  `read`→`cabinet_read`, `embedding_check`→`cabinet_embedding_check` (later `memfiles_semantic_status`)
   (函数名、docstring、`instructions` 同步)
 - 函数名也一并改(`async def memory_search` → `async def turn_search`),保持 py 内一致。
 

@@ -52,6 +52,11 @@ class ToolContext:
     query the cabinet status (store, index, semantic search) via the
     plugin's internal ``__cabinet_status`` tool."""
 
+    local_embed_client: object | None = None
+    """The local-embed plugin's MCP client — used by ``check_local_embed``
+    to query the local embedding service (active model, models, loaded)
+    via its ``embed_status`` tool."""
+
     message_history: MessageHistory | None = None
     """The active :class:`MessageHistory` (needed by ``clear_context``,
     ``attach_image`` and subagent context cloning)."""

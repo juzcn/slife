@@ -208,7 +208,7 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 | 类别 | 工具 |
 |------|------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
@@ -230,9 +230,9 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 | 服务器 | LLM 可见工具 |
 |--------|-------------|
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
-| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage`, `semantic_index_status`, `semantic_index_config`, `semantic_search_enable` |
+| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage`, `memdb_semantic_status`, `semantic_index_config`, `semantic_search_enable` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `cabinet_embedding_check` |
+| `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `memfiles_semantic_status` |
 | `sharefile` | `share_file` |
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
@@ -296,7 +296,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 
 外部 MCP 服务器在 `slife.json5` → `mcp.servers` 中配置——任何 stdio、SSE 或 Streamable HTTP MCP 服务器均可接入，无需 Slife SDK。带 `url` 的服务器自动探测 SSE，探测失败回退到 Streamable HTTP；Streamable 响应可能是单个 JSON body 或 SSE 流（两者都支持）。
 
-所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_sharefile`、`check_mcp`、`check_a2a`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
+所有插件均运行 **看门狗（watchdog）** 进程，崩溃时自动重启（指数退避 1s→30s，最多 5 次）。MCP 网关的看门狗重启后还会重新连接所有外部服务器。运行时健康检查——`check_memdb`、`check_wechat`、`check_memfiles`、`check_local_embed`、`check_sharefile`、`check_mcp`、`check_a2a`、`check_watchdog`——监控应用级状态并经 `system_health` 汇总；看门狗纯属进程级。
 
 就绪遵循 MCP 标准：插件在其 `initialize` 握手完成时即视为就绪——服务器只有在自己初始化（FastMCP lifespan）成功后才会应答握手，而插件会在初始化期间建立自身的服务能力（memdb 与 memfiles 要求 store 可用；其余插件无本地要求，能应答即就绪）。不再有 `__ready` 探测工具。外部/从属依赖——外部 MCP 服务器、ngrok 隧道、微信登录、媒体供应商、A2A broker、嵌入后端——从不阻塞就绪：它们不可控、运行时会自愈，并通过各自的状态工具单独上报。只有在每个插件进程都收敛（ready / skipped / failed——lifespan 无法满足要求会以启动失败上报并由看门狗重试）后，服务才对用户输入开放，因此输入绝不会跑在插件启动之前。
 

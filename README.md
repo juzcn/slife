@@ -211,7 +211,7 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 
 | Category | Tools |
 |----------|-------|
-| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
+| System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
 | Execution | `execute_shell`, `run_python_script`, `install_python_package`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
@@ -233,9 +233,9 @@ Every tool additionally accepts three tool meta-parameters: `_timeout` (per-call
 | Server | LLM-visible tools |
 |--------|-------------------|
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
-| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage`, `semantic_index_status`, `semantic_index_config`, `semantic_search_enable` |
+| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage`, `memdb_semantic_status`, `semantic_index_config`, `semantic_search_enable` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
-| `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `cabinet_embedding_check` |
+| `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `memfiles_semantic_status` |
 | `sharefile` | `share_file` |
 | `a2a` | `a2a_send_task`, `a2a_send_task_async`, `a2a_get_task_result`, `a2a_cancel_task`, `a2a_list_agents`, `a2a_list_tasks`, `a2a_agent_card`, `a2a_broadcast` |
 | `media` | `generate_image`, `generate_video`, `text_to_speech`, `transcribe_audio` |
@@ -300,7 +300,7 @@ Six built-in plugins as independent child processes, plus the standalone
 
 External MCP servers configured in `slife.json5` → `mcp.servers` — any stdio, SSE, or Streamable HTTP MCP server works, no Slife SDK required. For `url`-configured servers, SSE is auto-detected and Streamable HTTP is the fallback; a Streamable response may arrive as a single JSON body or an SSE stream (both handled).
 
-All plugins — built-in and auto-discovered third-party alike — run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
+All plugins — built-in and auto-discovered third-party alike — run with a **watchdog** that auto-restarts them on crash (exponential backoff 1s→30s, max 5 restarts). The MCP wrapper watchdog also reconnects external servers after restart. Runtime health checks — `check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` — monitor application-level state and are surfaced via `system_health`; the watchdog is purely process-level.
 
 Readiness follows the MCP standard: a plugin is ready when its `initialize` handshake completes — the server only answers it after its own initialization (FastMCP lifespan) succeeded, during which the plugin establishes its own serving capacity (memdb and memfiles require their store; the other plugins have no local requirement, so serving is readiness). There is no `__ready` probe tool. The lifespan stays **handshake-fast**: heavyweight startup (e.g. the embedding-model load) is deferred until after the first `tools/list` via `warm_after_handshake`, never run inside it. External/subordinate dependencies — external MCP servers, the ngrok tunnel, WeChat login, media providers, the A2A broker, embedding backends — never gate readiness: they are uncontrollable, self-heal at runtime, and are surfaced separately via status tools. Plugins named in `plugins.required` (`memdb`, `memfiles` by default) are core: failing to become ready **aborts startup** with an error instead of limping on. The service opens for user input only once every plugin spawn has converged (ready / skipped / failed — a lifespan that fails its requirement is reported as a failed start and retried by the watchdog), so input can never race ahead of plugin startup.
 

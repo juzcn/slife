@@ -1,6 +1,6 @@
 """Embedding configuration helpers — read, write, validate, report.
 
-Used by the semantic_index_config / semantic_index_status /
+Used by the semantic_index_config / memdb_semantic_status /
 semantic_search_enable MCP tools to manage the ``memdb.embedding``
 section of ``slife.json5`` at runtime.  The embedder itself is owned by
 ``SemanticManager`` (semantic.py); this module never mutates it.
@@ -128,7 +128,7 @@ def validate_gguf_path(path: str) -> tuple[bool, str]:
 
 
 def make_check_report() -> dict:
-    """Build a status report dict for semantic_index_status."""
+    """Build a status report dict for memdb_semantic_status."""
     cfg = read_embedding_config()
 
     if cfg is None:

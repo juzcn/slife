@@ -79,7 +79,7 @@ mcp, _log_path, logger = create_plugin_server(
         "its turn id. "
         "LLM-visible tools: turn_list, turn_search (grep/fts5/hybrid/time), "
         "turn_read, turn_token_usage, turn_count, turn_summarize, "
-        "semantic_index_status / semantic_index_config / semantic_search_enable. "
+        "memdb_semantic_status / semantic_index_config / semantic_search_enable. "
         "All data is automatically scoped to the current agent."
     ),
     lifespan=_memdb_lifespan,
@@ -598,13 +598,16 @@ async def turn_summarize(
 
 
 @mcp.tool(
-    name="semantic_index_status",
+    name="memdb_semantic_status",
     description=(
-        "Semantic index status: backend, model, dimension, available, "
-        "semantic_ready (the search gate), state, unembedded, hint."
+        "Semantic index status for the Turns DB (memdb): backend, model, "
+        "dimension, available, semantic_ready (the search gate), state, "
+        "unembedded, hint. Independent from memfiles_semantic_status — each "
+        "plugin reindexes its own DB, so one can be semantically ready while "
+        "the other is still building."
     ),
 )
-async def semantic_index_status() -> str:
+async def memdb_semantic_status() -> str:
     from slife.plugins.memdb.embedding_config import make_check_report
     await _ensure_store()
     manager = _manager
