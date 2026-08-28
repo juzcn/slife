@@ -2,9 +2,9 @@
 
 One process, one port, two protocols (the ``sharefile`` precedent):
 
-- **MCP** on ``/mcp`` — the plugin contract.  Tools exposed to a host
-  (slife) as ``local_embed__*``: ``embed_status`` (backend/model/dim/
-  loaded) and ``embed`` (ad-hoc single/batch embedding).
+- **MCP** on ``/mcp`` — the plugin contract.  Tools are bare-named and
+  internal (``__embed_status`` status, plus ``set_active_model`` /
+  ``embed``); the host reaches them programmatically via ``client.call_tool``.
 - **OpenAI-compatible HTTP** on the SAME port via ``@mcp.custom_route``:
   ``POST /v1/embeddings`` (the standard shape: ``{input, model}`` →
   ``{data: [{embedding, index, object}], model, usage}``), ``GET /v1/models``
@@ -72,10 +72,10 @@ def get_engine() -> Engine:
 mcp, _ = create_plugin_server(
     "local-embed",
     instructions=(
-        "local-embed — local embedding service.  Exposes embed_status "
-        "(backend/model/dim/loaded) and embed (embed a list of texts to "
-        "vectors).  The same model is also served on /v1/embeddings for "
-        "OpenAI-compatible clients."
+        "local-embed — local embedding service.  Serves OpenAI-compatible "
+        "/v1/embeddings for slife's embeddings config (shared by memdb + "
+        "memfiles).  Internal __embed_status / set_active_model / embed are "
+        "called programmatically by the host."
     ),
 )
 
@@ -100,9 +100,15 @@ def _model_status(engine: Engine, name: str) -> dict:
     }
 
 
-@mcp.tool(name="embed_status", description="Embedding service status: active model, model list, dimensions, loaded.")
-async def embed_status() -> str:
-    """Return the current engine status as a JSON string."""
+@mcp.tool(name="__embed_status", description="Embedding service status: active model, model list, dimensions, loaded. Internal — called by the host's check_local_embed.")
+async def __embed_status() -> str:
+    """Return the current engine status as a JSON string.
+
+    Internal (``__`` prefix): status probing is the harness's job via
+    ``check_local_embed`` — never exposed to the LLM, which has the
+    ``embeddings_*`` native tools for config and the health checks for
+    status.
+    """
     engine = get_engine()
     return json.dumps(
         {

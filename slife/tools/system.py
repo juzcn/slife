@@ -309,16 +309,16 @@ async def check_local_embed(client=None) -> list[dict]:
 
     The service runs in its own plugin process (``local-embed``, an external
     plugin serving OpenAI-compatible ``/v1/embeddings`` + MCP tools), so this
-    check asks its ``embed_status`` tool through its MCP client (from
-    ``ToolContext.local_embed_client``).  When the plugin is not connected, a
-    warning is reported.
+    check asks its internal ``__embed_status`` tool through its MCP client
+    (from ``ToolContext.local_embed_client``).  When the plugin is not
+    connected, a warning is reported.
     """
     try:
         if client is None:
             return [{"component": "local_embed", "level": "warning", "key": "plugin",
                      "value": "offline",
                      "hint": "local-embed plugin not connected — local embedding unavailable."}]
-        raw = await client.call_tool("embed_status")
+        raw = await client.call_tool("__embed_status")
         data = json.loads(raw)
         active = data.get("active_model") or "?"
         models = data.get("models") or []

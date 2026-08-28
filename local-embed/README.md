@@ -112,8 +112,8 @@ Other endpoints:
 
 - `GET /v1/models` — the loaded model + its real embedding dimension.
 - `GET /health` — `{status, backend, model, dimension, loaded}`.
-- `POST /mcp` — FastMCP streamable-HTTP endpoint (tools `embed_status` and
-  `embed`).
+- `POST /mcp` — FastMCP streamable-HTTP endpoint (internal tools
+  `__embed_status`, `set_active_model`, and `embed`).
 
 ## Dimension
 

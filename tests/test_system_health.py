@@ -934,7 +934,7 @@ class _FakeLocalEmbedClient:
         self._payload = payload
 
     async def call_tool(self, name, arguments=None):
-        assert name == "embed_status"
+        assert name == "__embed_status"
         return json.dumps(self._payload)
 
 

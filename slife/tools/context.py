@@ -55,7 +55,7 @@ class ToolContext:
     local_embed_client: object | None = None
     """The local-embed plugin's MCP client — used by ``check_local_embed``
     to query the local embedding service (active model, models, loaded)
-    via its ``embed_status`` tool."""
+    via its internal ``__embed_status`` tool."""
 
     memdb_client: object | None = None
     """The memdb plugin's MCP client — used by the ``embeddings_*`` native

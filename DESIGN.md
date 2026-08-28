@@ -918,7 +918,7 @@ Because the standalone checks are subsets of `system_health`, their tool schemas
 | `check_memdb` | Database file + embedding backend (model, dimension, availability) | Application state (memdb plugin) |
 | `check_wechat` | Login status, session age, QR expiry | Application state (wechat plugin) |
 | `check_memfiles` | File cabinet (notes / diary / files) connected? semantic index ready? (via the memfiles plugin's `__cabinet_status` internal tool) | Application state (memfiles plugin) |
-| `check_local_embed` | Local embedding service online? active model, loaded models? (via the local-embed plugin's `embed_status` tool) | Application state (local-embed plugin) |
+| `check_local_embed` | Local embedding service online? active model, loaded models? (via the local-embed plugin's internal `__embed_status` tool) | Application state (local-embed plugin) |
 | `check_sharefile` | File-sharing tunnel online? ngrok URL? | Application state (sharefile plugin) |
 | `check_mcp` | Wrapper health + per-server diagnosis (connected/disconnected/disabled, hints) | Application state (MCP wrapper + external servers) |
 | `check_a2a` | A2A mesh connection + peer status (via the a2a plugin's `__a2a_status` internal tool) | Application state (a2a plugin) |
