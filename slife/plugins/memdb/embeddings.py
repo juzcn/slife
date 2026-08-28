@@ -421,6 +421,27 @@ class EmbeddingClient:
             )
             return None
 
+    @staticmethod
+    def _read_model_dim(client) -> int:
+        """Read a loaded llama-cpp model's embedding width defensively.
+
+        ``n_embd`` is a bound *method* on llama_cpp 0.3.34 — ``int(n_embd)``
+        raises ``TypeError`` and would fail every GGUF load.  Accept the
+        property value or invoke the method, then convert; anything else
+        (0, None, a type that won't coerce) degrades to 0 so the caller
+        keeps its guessed dimension instead of crashing the load.
+        """
+        raw = getattr(client, "n_embd", 0)
+        if callable(raw):
+            try:
+                raw = raw()
+            except Exception:
+                raw = 0
+        try:
+            return int(raw or 0)  # type: ignore
+        except (TypeError, ValueError):
+            return 0
+
     async def _load_gguf(self) -> None:
         """Materialise the llama-cpp Llama client for the gguf backend.
 
@@ -455,7 +476,7 @@ class EmbeddingClient:
         # llama-cpp exposes the model's real width after load — correct a
         # guessed dimension now, before the vec0 table is created (a wrong
         # width silently drops every mis-sized embedding).
-        actual_dim = int(getattr(self._client, "n_embd", 0) or 0)
+        actual_dim = self._read_model_dim(self._client)
         if actual_dim and actual_dim != self._dim:
             logger.info(
                 "gguf_dim_override model=%s configured=%d actual=%d",

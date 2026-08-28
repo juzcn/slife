@@ -36,14 +36,31 @@ Readiness (MCP initialize handshake)
   Readiness is defined by MCP itself: the harness's ``initialize``
   handshake completes only when the server is up and can respond, so a
   completed handshake IS the plugin's ready declaration — no ``__ready``
-  tool.  A plugin that needs a local resource to serve (memdb/memfiles
-  require their store) must establish it in its FastMCP lifespan; a failure
-  there fails the lifespan, the port signal never fires, and the harness
-  reports the plugin FAILED (its watchdog backs off and retries).  Dependencies
-  that are NOT required to serve (external MCP servers, ngrok tunnel, MQTT
-  broker, login state, media providers) are deliberately left out of the
-  lifespan and surfaced separately via status tools — they never gate
-  readiness.
+  tool.  The lifespan must therefore stay **handshake-fast**: establish
+  only the minimum needed to serve (memdb/memfiles open their store) and
+  nothing that could stall the loop while the wrapper is connecting — a
+  GIL-holding model load, slow I/O, or long connect belongs in
+  :func:`warm_after_handshake`, never in the lifespan.  A failing lifespan
+  before the handshake reports the plugin FAILED (its watchdog backs off
+  and retries); the port signal fires only when the app is ready, so the
+  wrapper's first ``initialize`` always lands on a serving server.
+  Every built-in plugin shares this complete lifecycle shape (all declare a
+  lifespan).  Dependencies that are NOT required to serve (external MCP
+  servers, ngrok tunnel, MQTT broker, login state, media providers) are
+  deliberately left out of the lifespan and surfaced separately via status
+  tools — they never gate readiness.
+
+Required plugins (core components)
+  Whether a plugin is *required* is a **host-side contract decision,
+  configured per instance** — named in the ``plugins.required`` list of
+  ``slife.json5`` (default: empty = every plugin optional).  A required
+  plugin that fails to become ready — lifespan failure (FAILED), a raised
+  spawn, or the harness's bounded 30 s spawn hang-guard — **aborts
+  startup**: red message, all plugins stopped, non-zero exit.  The app
+  must never run without a core component.  ``memdb`` and ``memfiles``
+  are required in the standard configuration because memory is core;
+  everything else defaults to non-required (load failure warns, the
+  session continues, and the watchdog backs off and retries).
 
 Tool registration
   The harness connects to the plugin via Streamable HTTP, calls
@@ -103,6 +120,7 @@ Shared utilities
 ═══════════════════════════════════════════════════════════════════════
 """
 
+import asyncio
 import atexit
 import json
 import logging
@@ -112,7 +130,9 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
+
+from fastmcp.server.middleware import Middleware
 
 from slife.logfmt import (
     SessionFormatter,
@@ -142,6 +162,57 @@ def is_internal_tool(name: str) -> bool:
     (single ``_``) — see the module docstring.
     """
     return name.startswith(INTERNAL_TOOL_PREFIX)
+
+
+class _WarmAfterHandshake(Middleware):
+    """Middleware that runs a background warm-up after the first tools/list."""
+
+    def __init__(self, factory: "Callable[[], Awaitable[None]]", delay: float, name: str):
+        self._factory = factory
+        self._delay = delay
+        self._name = name
+        self._started = False
+
+    async def on_list_tools(self, context, call_next):
+        result = await call_next(context)
+        if not self._started:
+            self._started = True
+            asyncio.get_running_loop().create_task(self._go())
+        return result
+
+    async def _go(self) -> None:
+        await asyncio.sleep(self._delay)
+        try:
+            await self._factory()
+        except Exception:
+            logger.debug("%s_warm_failed", self._name, exc_info=True)
+
+
+def warm_after_handshake(
+    mcp,
+    factory: "Callable[[], Awaitable[None]]",
+    *,
+    delay: float = 0.25,
+    name: str = "warmup",
+) -> None:
+    """Run a heavyweight coroutine AFTER the first MCP ``tools/list``.
+
+    The plugin contract declares readiness as the MCP ``initialize``
+    handshake completing (see the module docstring) — a plugin must be
+    handshake-fast, so anything that could stall the loop while the
+    wrapper is still connecting (a GIL-holding model load, slow I/O, long
+    connects) must NOT run in the lifespan.  Use this to warm up such
+    resources in the background: it triggers right after the wrapper's
+    first ``tools/list`` is handled, so the plugin is already declared
+    ready before the warm-up starts.
+
+    ``factory`` is awaited once (plus *delay* seconds' grace so the wrapper
+    finishes its remaining handshake round-trips), on an event-loop task;
+    an exception is logged, never fatal.  Reuse for any plugin with
+    post-handshake startup work; memdb/memfiles warm their embedding model
+    this way.
+    """
+    mcp.add_middleware(_WarmAfterHandshake(factory, delay, name))
 
 
 # FastMCP-specific loggers that should also be silenced.

@@ -21,6 +21,7 @@ Usage::
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from slife.plugins.media.adapters import (
@@ -35,6 +36,20 @@ from slife.plugins.media.config import (
 )
 from slife.server_utils import create_plugin_server, run_plugin_server
 
+@asynccontextmanager
+async def _media_lifespan(_app):
+    """Complete-MCP-lifecycle declaration for the media plugin.
+
+    Config and adapters load lazily on the first tool call (media has no
+    startup resource to establish), so the lifespan only yields — but
+    declaring it keeps every built-in plugin on the same protocol shape:
+    readiness is the MCP ``initialize`` handshake completing, and nothing
+    here can stall it.  Any future startup init must stay handshake-fast
+    (or go through ``warm_after_handshake``), never block in the lifespan.
+    """
+    yield
+
+
 mcp, _log_path, logger = create_plugin_server(
     "slife-media",
     instructions=(
@@ -45,6 +60,7 @@ mcp, _log_path, logger = create_plugin_server(
         "returns text). Long video renders: pass _async: true and poll "
         "with check_async."
     ),
+    lifespan=_media_lifespan,
 )
 
 _config: MediaConfig | None = None

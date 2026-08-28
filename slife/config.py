@@ -145,6 +145,18 @@ def _parse_section(raw: dict, key: str, expected_type, default):
     return value if isinstance(value, expected_type) else default
 
 
+def _as_name_set(value) -> frozenset[str]:
+    """Normalize a possibly-missing plugin-name list into a frozenset.
+
+    Accepts a list of strings; anything else (None, a dict, a single
+    string) yields an empty set — the "required" contract defaults to
+    false.  Non-string entries are dropped, never a crash.
+    """
+    if not isinstance(value, list):
+        return frozenset()
+    return frozenset(v for v in value if isinstance(v, str))
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a single LLM model."""
@@ -305,6 +317,11 @@ class Config:
     a2a_config: A2AConfig | None = None
     subagent_config: dict | None = None
     plugins_external: list[dict] = field(default_factory=list)
+    # Plugins declared REQUIRED (core) via ``plugins.required`` in
+    # slife.json5 — a required plugin that fails to become ready aborts
+    # startup instead of limping on.  Defaults to empty = every plugin is
+    # optional (failure warns and the session continues).
+    plugins_required: frozenset[str] = field(default_factory=frozenset)
     cli_tools: dict = field(default_factory=dict)
     _path: Path | None = None
 
@@ -346,6 +363,7 @@ class Config:
             "a2a_config": asdict(self.a2a_config) if self.a2a_config else None,
             "subagent_config": self.subagent_config,
             "plugins_external": self.plugins_external,
+            "plugins_required": sorted(self.plugins_required),
             "cli_tools": self.cli_tools,
         }
 
@@ -386,6 +404,7 @@ class Config:
             a2a_config=a2a_cfg,
             subagent_config=data.get("subagent_config"),
             plugins_external=data.get("plugins_external", []),
+            plugins_required=_as_name_set(data.get("plugins_required")),
             cli_tools=data.get("cli_tools", {}),
         )
 
@@ -797,6 +816,10 @@ class Config:
         plugins_external = plugins_section.get("external")
         if not isinstance(plugins_external, list):
             plugins_external = []
+        # Required (core) plugins — named in ``plugins.required``.  A
+        # required plugin that fails to become ready aborts startup; the
+        # contract marker defaults to false (absent = all optional).
+        plugins_required = _as_name_set(plugins_section.get("required", []))
 
         # Active model — a stale ref (provider renamed/removed) must not
         # crash startup; fall back to the first model.  Switching models in
@@ -827,6 +850,7 @@ class Config:
             a2a_config=a2a_config,
             subagent_config=subagent_config,
             plugins_external=plugins_external,
+            plugins_required=plugins_required,
             cli_tools=cli_tools,
         )
         config._path = path

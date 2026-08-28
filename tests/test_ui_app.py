@@ -3,6 +3,7 @@
 import pytest; pytestmark = pytest.mark.unit
 
 
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -579,6 +580,145 @@ class TestFatalExit:
 
         assert app._fatal_message is not None
         assert "memdb" in app._fatal_message
+        assert app._return_code == 1
+
+
+    @pytest.mark.asyncio
+    async def test_required_plugin_failed_aborts(self, sample_config):
+        """A REQUIRED plugin returning FAILED aborts startup, no warning."""
+        from slife.agent.plugins import PluginStartStatus
+
+        app = self._app(sample_config)
+        app.service.config.plugins_required = frozenset({"memdb"})
+        app.query_one = MagicMock()
+        app._stop_plugins = AsyncMock()
+        app._show_system_message = MagicMock()
+
+        async def _never_ready():
+            return PluginStartStatus.FAILED
+
+        await app._start_plugin_safe("memdb", _never_ready())
+
+        assert app._fatal_message is not None
+        assert "memdb" in app._fatal_message
+        assert "plugin never became ready" in app._fatal_message
+        assert app._return_code == 1
+        app._show_system_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_required_plugin_raising_aborts(self, sample_config):
+        """A REQUIRED plugin whose spawn raises surfaces the reason and aborts."""
+        app = self._app(sample_config)
+        app.service.config.plugins_required = frozenset({"memdb"})
+        app.query_one = MagicMock()
+        app._stop_plugins = AsyncMock()
+        app._show_system_message = MagicMock()
+
+        async def _boom():
+            raise RuntimeError("store unreadable on startup")
+
+        await app._start_plugin_safe("memdb", _boom())
+
+        assert "store unreadable on startup" in app._fatal_message
+        assert app._return_code == 1
+        app._show_system_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_required_timeout_falls_back_reason(self, sample_config):
+        """A bare asyncio.TimeoutError (30s hang-guard) reads 'timed out',
+        not an empty parenthesized reason."""
+        app = self._app(sample_config)
+        app.service.config.plugins_required = frozenset({"memdb"})
+        app.query_one = MagicMock()
+        app._stop_plugins = AsyncMock()
+        app._show_system_message = MagicMock()
+
+        async def _hung():
+            raise asyncio.TimeoutError()
+
+        await app._start_plugin_safe("memdb", _hung())
+
+        assert "timed out" in app._fatal_message
+
+    @pytest.mark.asyncio
+    async def test_non_required_failed_still_warns(self, sample_config):
+        """A non-required plugin FAILED keeps the warning-and-continue path."""
+        from slife.agent.plugins import PluginStartStatus
+
+        app = self._app(sample_config)
+        app.query_one = MagicMock()
+        app._stop_plugins = AsyncMock()
+        app._show_system_message = MagicMock()
+
+        async def _failed():
+            return PluginStartStatus.FAILED
+
+        await app._start_plugin_safe("wechat", _failed())
+
+        assert app._fatal_message is None
+        assert app._return_code is None
+        app._show_system_message.assert_called_once()
+        app._stop_plugins.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_none_required_skipped_stays_neutral(self, sample_config):
+        """SKIPPED (a2a without MQTT) is neutral even under a required set."""
+        from slife.agent.plugins import PluginStartStatus
+
+        app = self._app(sample_config)
+        app.service.config.plugins_required = frozenset({"memdb"})
+        app.query_one = MagicMock()
+        app._stop_plugins = AsyncMock()
+        app._show_system_message = MagicMock()
+
+        async def _skipped():
+            return PluginStartStatus.SKIPPED
+
+        await app._start_plugin_safe("a2a", _skipped())
+
+        assert app._fatal_message is None
+        app._show_system_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_required_failures_fatal_once(self, sample_config):
+        """Two REQUIRED plugins failing in the same batch abort once —
+        the _fatal_exit guard owns shutdown with the first message."""
+        from slife.agent.plugins import PluginStartStatus
+
+        app = self._app(sample_config)
+        app.service.config.plugins_required = frozenset({"memdb", "memfiles"})
+        app.query_one = MagicMock()
+        app._stop_plugins = AsyncMock()
+        app._show_system_message = MagicMock()
+
+        async def _fail_plugin(name):
+            async def _never_ready():
+                return PluginStartStatus.FAILED
+
+            await app._start_plugin_safe(name, _never_ready())
+
+        await asyncio.gather(
+            _fail_plugin("memdb"), _fail_plugin("memfiles"),
+        )
+
+        assert app._fatal_message is not None
+        app._stop_plugins.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_required_not_discovered_aborts(self, sample_config):
+        """A plugin named required but missing from discovery violates the
+        contract — aborts with 'plugin not discovered'."""
+        app = self._app(sample_config)
+        app.query_one = MagicMock()
+        app._stop_plugins = AsyncMock()
+
+        discovered = {"memdb": "m", "mcp": "m"}  # no 'ghost'
+        configured_required = frozenset({"ghost"})
+        missing = configured_required - set(discovered)
+        await app._abort_required_plugin(next(iter(missing)), "plugin not discovered")
+
+        assert "ghost" in app._fatal_message
+        assert "plugin not discovered" in app._fatal_message
         assert app._return_code == 1
 
 

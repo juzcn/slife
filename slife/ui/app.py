@@ -385,6 +385,16 @@ class SlifeApp(App):
 
         plugins = discover_plugins(external=self.service.config.plugins_external)
 
+        # A plugin declared required but not discovered (typo, uninstalled
+        # external) still violates the contract — abort before spawning
+        # anything rather than running without a core component.
+        missing = self.service.config.plugins_required - {n for n, _ in plugins}
+        if missing:
+            await self._abort_required_plugin(
+                next(iter(missing)), "plugin not discovered",
+            )
+            return
+
         # ── Step 1: Restore session from SQLite (pure read, no services needed) ─
         # get_recent_turns reads the DB directly via aiosqlite —
         # completely independent of the memory plugin process.
@@ -489,7 +499,13 @@ class SlifeApp(App):
         by Textual's alternate-screen restore), and exits with a non-zero
         return code so the shell sees the failure.  Also stops plugins so
         no child process is orphaned.
+
+        Idempotent: plugin-start workers run in parallel, so two required
+        plugins (e.g. memdb + memfiles) can fail in the same batch — the
+        first caller wins and owns shutdown; later calls are no-ops.
         """
+        if self._fatal_message is not None:
+            return  # a fatal path already owns shutdown — first message wins
         self._fatal_message = message
         logger.error("fatal_exit msg=%s", message)
         chat_view = self.query_one("#chat-view", ChatView)
@@ -712,21 +728,29 @@ class SlifeApp(App):
     async def _start_plugin_safe(self, name: str, coro) -> None:
         """Start a plugin and show its readiness outcome in chat.
 
-        All plugins are equal peers under the readiness contract — there is no
-        required set.  A plugin that returns ``STARTED`` completed its MCP
-        ``initialize`` handshake, which is its ready declaration (the
-        per-plugin serving requirement was encoded server-side in the
-        lifespan).  ``SKIPPED`` is an expected no-op (e.g. a2a without a
-        running MQTT broker) and stays neutral; ``FAILED`` is a warning —
-        the missing service is surfaced where it is used, and a broken
-        memory backend freezes the inbox with a red banner the first time a
-        turn cannot be saved.  The spawn hang-guard lives in
-        ``AgentService.start_plugin_server``, so a stuck child still lets
-        startup convergence fire.
+        A plugin that returns ``STARTED`` completed its MCP ``initialize``
+        handshake, which is its ready declaration (the per-plugin serving
+        requirement was encoded server-side in the lifespan).  ``SKIPPED``
+        is an expected no-op (e.g. a2a without a running MQTT broker) and
+        stays neutral.
+
+        A non-STARTED outcome is split on the plugin contract's ``required``
+        marker (``plugins.required`` in slife.json5): a required (core)
+        plugin that fails — ``FAILED``, a raised spawn, or the 30 s spawn
+        hang-guard in ``AgentService.start_plugin_server`` — aborts startup
+        via :meth:`_abort_required_plugin` (red message, stop all plugins,
+        exit).  All other failures stay a warning: the missing service is
+        surfaced where it is used, and a broken memory backend freezes the
+        inbox with a red banner the first time a turn cannot be saved.
         """
         try:
             status = await coro
         except Exception as e:
+            if name in self.service.config.plugins_required:
+                # The 30 s hang-guard surfaces as a bare TimeoutError whose
+                # str() is empty — fall back so the reason line reads clean.
+                await self._abort_required_plugin(name, str(e) or "timed out")
+                return
             self._show_system_message(
                 t("plugin_start_failed", name=name, err=e), color="#d29922",
             )
@@ -744,6 +768,9 @@ class SlifeApp(App):
                 t("plugin_skipped", name=name), color="#8b949e",
             )
         else:
+            if name in self.service.config.plugins_required:
+                await self._abort_required_plugin(name, "plugin never became ready")
+                return
             self._show_system_message(
                 t("plugin_ready_failed", name=name), color="#d29922",
             )
@@ -755,6 +782,10 @@ class SlifeApp(App):
         stderr line (the TUI message never renders before exit tears the
         app down), a bounded plugin shutdown (no orphaned children), then
         exit — a required component missing is never silent.
+
+        Routed here from :meth:`_start_plugin_safe` whenever a plugin named
+        in ``plugins.required`` fails to become ready (FAILED, raised spawn,
+        or the 30 s hang-guard) — see the plugin contract in server_utils.
         """
         msg = t("required_failed", name=name, reason=reason)
         await self._fatal_exit(msg)

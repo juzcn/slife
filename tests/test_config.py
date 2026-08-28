@@ -188,6 +188,60 @@ class TestConfigFromJSON5:
         assert config.models[0].ref == "openai/gpt-4o"
         assert config.models[1].ref == "anthropic/claude-3"
 
+    def test_plugins_required_parsed(self, tmp_path, monkeypatch):
+        """plugins.required names become the required-plugin contract set."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
+            "plugins": {
+                "required": ["memdb", "memfiles"],
+                "external": [{"name": "mcp", "module": "mcp_plugin.server"}],
+            },
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.plugins_required == frozenset({"memdb", "memfiles"})
+        assert config.plugins_external == [{"name": "mcp", "module": "mcp_plugin.server"}]
+
+    def test_plugins_required_default_empty(self, tmp_path, monkeypatch):
+        """Absent plugins.required means every plugin is optional (default false)."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.plugins_required == frozenset()
+
+    def test_plugins_required_sanitized(self, tmp_path, monkeypatch):
+        """Non-list value and non-string entries degrade to an empty/safe set."""
+        monkeypatch.setenv("KEY", "sk-test")
+        cfg_path = tmp_path / "slife.json5"
+        cfg_path.write_text(json5.dumps({
+            "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
+            "plugins": {"required": "memdb"},
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.plugins_required == frozenset()
+
+        cfg_path.write_text(json5.dumps({
+            "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
+            "plugins": {"required": ["memdb", 42, None]},
+        }))
+        config = Config.from_json5(str(cfg_path))
+        assert config.plugins_required == frozenset({"memdb"})
+
+    def test_plugins_required_roundtrip(self, tmp_path, monkeypatch):
+        """to_dict/from_dict preserve the required set (subagent inheritance)."""
+        config = Config.from_dict({"plugins_required": ["memdb", "memfiles"]})
+        restored = Config.from_dict(config.to_dict())
+        assert restored.plugins_required == frozenset({"memdb", "memfiles"})
+        assert "plugins_required" in config.to_dict()
+
+        default = Config.from_dict({})
+        assert default.plugins_required == frozenset()
+        assert Config.from_dict(default.to_dict()).plugins_required == frozenset()
+
     def test_active_model_selection(self, tmp_path):
         """active_model field selects which model is active."""
         cfg_path = tmp_path / "slife.json5"

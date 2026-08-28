@@ -25,7 +25,7 @@ from slife.plugins.memdb.store import SessionStore, _clamp_limit
 from slife.plugins.memdb.embeddings import EmbeddingClient
 from slife.plugins.memdb.search import merge_hybrid
 from slife.plugins.memdb.semantic import SemanticManager
-from slife.server_utils import create_plugin_server
+from slife.server_utils import create_plugin_server, warm_after_handshake
 
 
 @asynccontextmanager
@@ -176,8 +176,22 @@ async def _ensure_store_locked() -> SessionStore:
                 probe.available, probe.backend, probe._model)
 
     _manager = SemanticManager(_store)
-    asyncio.create_task(_manager.start())
     return _store
+
+
+# Warm the semantic manager only AFTER the first tools/list completed the
+# MCP handshake: the llama_cpp model load holds the GIL and would freeze
+# the startup path (port signal / initialize) if it ran from the lifespan.
+# Handshake-first keeps readiness intact; a slow or failed load stays a
+# warning (keyword search still works) — never a startup gate.
+async def _warm_semantic() -> None:
+    manager = _manager
+    if manager is None:
+        return
+    await manager.start()
+
+
+warm_after_handshake(mcp, _warm_semantic, name="semantic")
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -43,7 +43,11 @@ from slife.paths import get_memfiles_dir
 from slife.plugins.memdb.embeddings import EmbeddingClient
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.plugins.memfiles.store import MemfilesStore, _slugify, _unique_path
-from slife.server_utils import create_plugin_server, run_plugin_server
+from slife.server_utils import (
+    create_plugin_server,
+    run_plugin_server,
+    warm_after_handshake,
+)
 
 # Hard cap on url_save downloads — a multi-GB public URL must not OOM the
 # plugin process by buffering the whole body.
@@ -163,8 +167,22 @@ async def _ensure_store_locked() -> MemfilesStore:
     await _store.setup(embedding_dim=dim, embedding_model=model_id)
 
     _manager = SemanticManager(_store)
-    asyncio.create_task(_manager.start())
     return _store
+
+
+# Mirror memdb: warm the semantic manager only AFTER the first tools/list
+# completed the wrapper handshake — the llama_cpp model load holds the GIL
+# and would otherwise freeze the lifespan startup path (port signal never
+# fires).  Handshake-first keeps startup readiness intact; a slow or failed
+# load stays a warning, never a startup gate.
+async def _warm_semantic() -> None:
+    manager = _manager
+    if manager is None:
+        return
+    await manager.start()
+
+
+warm_after_handshake(mcp, _warm_semantic, name="semantic")
 
 
 # ═══════════════════════════════════════════════════════════════════════
