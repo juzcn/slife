@@ -30,10 +30,11 @@ jobs:
           uv build --out-dir dist --package credstore
           uv build --out-dir dist --package cc-switch
           uv build --out-dir dist --package mcp-plugin
+          uv build --out-dir dist --package local-embed
 
       - name: Install
         run: |
-          uv pip install dist/slife-*.whl dist/credstore-*.whl dist/cc_switch-*.whl dist/mcp_plugin-*.whl
+          uv pip install dist/slife-*.whl dist/credstore-*.whl dist/cc_switch-*.whl dist/mcp_plugin-*.whl dist/local_embed-*.whl
           uv pip install pytest pytest-asyncio
 
       - name: Run tests
