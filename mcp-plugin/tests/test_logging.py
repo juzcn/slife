@@ -18,17 +18,17 @@ from mcp_plugin.logging import resolve_log_dir
 
 
 class TestResolveLogDir:
-    def test_slife_log_dir_env_wins(self, monkeypatch):
+    def test_slife_log_dir_env_wins(self, monkeypatch, tmp_path):
         """When slife spawns us, SLIFE_LOG_DIR takes top priority."""
-        monkeypatch.setenv("SLIFE_LOG_DIR", "C:\\slife\\logs")
-        monkeypatch.setenv("MCP_PLUGIN_LOG_DIR", "C:\\old\\logs")
-        assert resolve_log_dir() == Path("C:\\slife\\logs")
+        monkeypatch.setenv("SLIFE_LOG_DIR", str(tmp_path / "slife" / "logs"))
+        monkeypatch.setenv("MCP_PLUGIN_LOG_DIR", str(tmp_path / "old" / "logs"))
+        assert resolve_log_dir() == tmp_path / "slife" / "logs"
 
-    def test_standalone_override_after_slife(self, monkeypatch):
+    def test_standalone_override_after_slife(self, monkeypatch, tmp_path):
         """No SLIFE_LOG_DIR → MCP_PLUGIN_LOG_DIR is used."""
         monkeypatch.delenv("SLIFE_LOG_DIR", raising=False)
-        monkeypatch.setenv("MCP_PLUGIN_LOG_DIR", "C:\\custom\\logs")
-        assert resolve_log_dir() == Path("C:\\custom\\logs")
+        monkeypatch.setenv("MCP_PLUGIN_LOG_DIR", str(tmp_path / "custom" / "logs"))
+        assert resolve_log_dir() == tmp_path / "custom" / "logs"
 
     def test_standalone_default_under_home(self, monkeypatch):
         """Neither env var set → ~/.mcp-plugin/logs."""
