@@ -197,30 +197,54 @@ async def v1_embeddings(request: Request) -> Response:
     )
 
 
+def _model_entry(engine: Engine, name: str) -> dict:
+    """One OpenAI-shaped model entry (shared by the list + retrieve routes)."""
+    spec = engine.model_spec(name)
+    return {
+        "id": name,
+        "object": "model",
+        "created": 0,
+        "owned_by": "local-embed",
+        "active": name == engine.active_model,
+        "backend": spec.backend,
+        "dimension": spec.dim,
+        "dimension_known": spec.dim_known,
+        "loaded": engine.is_loaded(name),
+        "max_tokens": spec.max_tokens,
+    }
+
+
 @mcp.custom_route("/v1/models", methods=["GET"])
 async def v1_models(request: Request) -> Response:
     """OpenAI-compatible model listing — one entry per configured model."""
     engine = get_engine()
     return JSONResponse(
-        {
-            "object": "list",
-            "data": [
-                {
-                    "id": name,
-                    "object": "model",
-                    "created": 0,
-                    "owned_by": "local-embed",
-                    "active": name == engine.active_model,
-                    "backend": spec.backend,
-                    "dimension": spec.dim,
-                    "dimension_known": spec.dim_known,
-                    "loaded": engine.is_loaded(name),
-                    "max_tokens": spec.max_tokens,
-                }
-                for name, spec in ((n, engine.model_spec(n)) for n in engine.models)
-            ],
-        }
+        {"object": "list", "data": [_model_entry(engine, n) for n in engine.models]}
     )
+
+
+@mcp.custom_route("/v1/models/{name}", methods=["GET"])
+async def v1_models_retrieve(request: Request) -> Response:
+    """OpenAI-compatible single-model detail — ``GET /v1/models/{id}``.
+
+    Mirrors the OpenAI Models API ``retrieve`` endpoint; an unknown id
+    returns 404 with the standard error envelope.
+    """
+    engine = get_engine()
+    name = request.path_params["name"]
+    if name not in engine.models:
+        return JSONResponse(
+            {
+                "error": {
+                    "message": f"The model '{name}' does not exist.",
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": "model_not_found",
+                }
+            },
+            status_code=404,
+        )
+    return JSONResponse(_model_entry(engine, name))
 
 
 @mcp.custom_route("/v1/models/{name}/activate", methods=["POST"])

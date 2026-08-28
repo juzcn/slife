@@ -3,7 +3,9 @@
 **Standalone local embedding server** — loads one GGUF (llama-cpp) or HF
 transformer embedding model **once** and exposes it as an
 [OpenAI-compatible](https://platform.openai.com/docs/api-reference/embeddings)
-`/v1/embeddings` HTTP endpoint **plus** FastMCP tools, on a single port.
+HTTP service — `POST /v1/embeddings` plus the Models API
+(`GET /v1/models`, `GET /v1/models/{id}`) — **plus** FastMCP tools, on a
+single port.
 
 Built for **slife** (its `memdb` and `memfiles` plugins both call this
 service over HTTP, so the model is never loaded twice in one process
@@ -20,6 +22,7 @@ client can use it.
                             │  local-embed               │
                             │  /v1/embeddings  (HTTP)    │
                             │  /v1/models      (HTTP)    │
+                            │  /v1/models/{id} (HTTP)    │
                             │  /health         (HTTP)    │
                             │  /mcp  (FastMCP tools)     │
                             │  ONE loaded model          │
@@ -108,9 +111,13 @@ client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="local")
 vecs = client.embeddings.create(model="bge-m3", input=["hello"])
 ```
 
-Other endpoints:
+Other endpoints (OpenAI Models API):
 
-- `GET /v1/models` — the loaded model + its real embedding dimension.
+- `GET /v1/models` — every configured model, each with its real embedding
+  dimension (`dimension` / `dimension_known`), backend, load state, and the
+  `active` flag the host uses to pick the active model.
+- `GET /v1/models/{id}` — one model's detail (the OpenAI `retrieve`
+  endpoint); 404 with a standard error envelope when the id is unknown.
 - `GET /health` — `{status, backend, model, dimension, loaded}`.
 - `POST /mcp` — FastMCP streamable-HTTP endpoint (internal tool
   `__embed_status`, probed by the host's `check_local_embed`).  Like the
@@ -120,9 +127,9 @@ Other endpoints:
 ## Dimension
 
 The real output width is only known once the model is loaded (`n_embd` /
-`get_sentence_embedding_dimension`).  `GET /v1/models` reports the real
-dimension, so a client can size its vector table correctly — a wrong width
-silently drops every mis-sized embedding.
+`get_sentence_embedding_dimension`).  `GET /v1/models` (or `/v1/models/{id}`)
+reports the real dimension, so a client can size its vector table correctly
+— a wrong width silently drops every mis-sized embedding.
 
 ## As a slife external plugin
 

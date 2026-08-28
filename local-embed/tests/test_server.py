@@ -114,6 +114,23 @@ class TestV1Models:
         assert body["data"][0]["dimension"] == 1024
         assert body["data"][0]["dimension_known"] is True
 
+    def test_model_retrieve(self, client):
+        resp = client.get("/v1/models/bge-m3")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == "bge-m3"
+        assert body["object"] == "model"
+        assert body["owned_by"] == "local-embed"
+        assert body["dimension"] == 1024
+        assert body["dimension_known"] is True
+
+    def test_model_retrieve_unknown(self, client):
+        resp = client.get("/v1/models/nope")
+        assert resp.status_code == 404
+        body = resp.json()
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "nope" in body["error"]["message"]
+
 
 # ── /health ──────────────────────────────────────────────────────────────
 
