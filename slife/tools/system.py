@@ -63,52 +63,39 @@ def check_memdb() -> list[dict]:
 
     # ── Embedding backend ─────────────────────────────────────────
     from slife.plugins.memdb.embeddings import EmbeddingClient
-    from slife.plugins.memdb.embedding_config import read_embedding_config
+    from slife.plugins.memdb.embedding_config import read_embedding_config, get_active_endpoint
 
     client = EmbeddingClient.from_config(quiet=True)
     cfg = read_embedding_config()
+    ep = get_active_endpoint()
 
     if cfg is None:
         results.append({
             "component": "memdb", "level": "warning", "key": "embedding",
             "value": "none",
-            "hint": ("No embedding backend configured. Semantic search (hybrid mode) will NOT work. "
+            "hint": ("No embeddings configured. Semantic search (hybrid mode) will NOT work. "
                      "Keyword search (grep/fts5/time) still works normally. "
-                     "Use semantic_index_config to configure: GGUF local model, "
-                     "transformer (sentence-transformers), or OpenAI-compatible API."),
+                     "Add an OpenAI-compatible endpoint with embeddings_model_set."),
         })
         return results
 
-    backend = client.backend
     available = client.available
+    base_url = ep.get("base_url", "")
+    model = ep.get("model", "") or client._model
 
     if available:
-        hints = {
-            "gguf": f"GGUF model ready: {cfg.get('model', '?')} (dim={client.dimension}, path={cfg.get('gguf_path', 'unknown')})",
-            "transformer": f"Transformer model ready: {cfg.get('model', '?')} (dim={client.dimension})",
-        }
         results.append({
             "component": "memdb", "level": "ok", "key": "embedding",
-            "value": backend,
-            "hint": hints.get(backend, f"API embeddings ready: {cfg.get('model', '?')} (dim={client.dimension})"),
+            "value": "api",
+            "hint": f"API embeddings ready: {base_url} model={model} (dim={client.dimension})",
         })
     else:
-        warnings = {
-            "gguf": (f"GGUF file exists ({cfg.get('gguf_path', 'unknown')}) but "
-                     "llama-cpp-python is NOT installed. Semantic search (hybrid mode) will NOT work. "
-                     "Install with: uv pip install llama-cpp-python."),
-            "transformer": (f"Transformer model configured ({cfg.get('model', '?')}) but "
-                            "sentence-transformers is NOT installed. Semantic search (hybrid mode) will NOT work. "
-                            "Install with: uv pip install sentence-transformers."),
-            "api": ("API key configured but openai package is NOT installed. "
-                    "Semantic search (hybrid mode) will NOT work. "
-                    "Install with: uv pip install openai."),
-        }
         results.append({
             "component": "memdb", "level": "warning", "key": "embedding",
-            "value": backend,
-            "hint": warnings.get(backend, "Embedding backend is unavailable. "
-                                         "Semantic search (hybrid mode) will NOT work."),
+            "value": "api",
+            "hint": (f"API embedding unavailable ({base_url}). "
+                     "Check the endpoint is reachable and the openai package is "
+                     "installed. Semantic search (hybrid mode) will NOT work."),
         })
     return results
 

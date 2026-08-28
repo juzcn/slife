@@ -300,13 +300,26 @@ class TestAgentServiceMemory:
         assert service.memdb_enabled is False
 
     @pytest.mark.asyncio
-    async def test_start_memdb_always_runs(self, sample_config):
+    async def test_start_memdb_branch_wires_client(self, sample_config):
+        """The memdb branch of _start_plugin_server_impl spawns via the generic
+        path and exposes the client for the embeddings_* hot-reload tools."""
         config = sample_config
         service = AgentService(config)
-        with patch.object(service, "_spawn_and_register_plugin", AsyncMock()) as mock_spawn:
-            result = await service.start_memdb()
-            mock_spawn.assert_called_once()
-            assert result is True
+        service.config.memdb_config = MagicMock()
+        mock_client = MagicMock()
+
+        with patch.object(
+            service, "_spawn_plugin_generic", AsyncMock(return_value=True)
+        ) as mock_spawn, \
+             patch.object(service, "_start_generic_watchdog", MagicMock()):
+            service._plugins["memdb"].client = mock_client
+            result = await service._start_plugin_server_impl(
+                "memdb", "slife.plugins.memdb.server",
+            )
+
+        mock_spawn.assert_called_once_with("memdb", "slife.plugins.memdb.server")
+        assert result == PluginStartStatus.STARTED
+        assert service._tool_ctx.memdb_client is mock_client
 
     @pytest.mark.asyncio
     async def test_save_to_memory_disabled_noop(self, sample_config):
@@ -1188,7 +1201,7 @@ class TestAgentServiceWeChat:
 
     @pytest.mark.asyncio
     async def test_start_wechat_with_mocked_internals(self, sample_config):
-        """start_wechat spawns the server, registers tools, and starts polling."""
+        """start_wechat spawns via the generic path, registers tools, and polls."""
         service = AgentService(sample_config)
 
         # WeChat must be enabled in config for start_wechat to proceed
@@ -1196,17 +1209,25 @@ class TestAgentServiceWeChat:
         mock_wechat_cfg.enabled = True
         service.config.wechat_config = mock_wechat_cfg
 
-        # _spawn_and_register_plugin is mocked so _wechat_client is never
-        # set — wire up a mock client for the check_status call and poll loop.
+        # _spawn_plugin_generic is mocked — wire up a mock client for the
+        # check_status call and poll loop.
         mock_wechat_client = MagicMock()
         mock_wechat_client.call_tool = AsyncMock(return_value="{}")
         service._plugins["wechat"].client = mock_wechat_client  # pyright: ignore[reportAttributeAccessIssue]
 
-        with patch.object(service, "_spawn_and_register_plugin", AsyncMock()) as mock_spawn:
+        with patch.object(
+            service, "_spawn_plugin_generic", AsyncMock(return_value=True)
+        ) as mock_spawn, \
+             patch.object(service, "_wechat_poll_loop", AsyncMock()):
             result = await service.start_wechat()
 
-            mock_spawn.assert_called_once()
+            mock_spawn.assert_called_once_with(
+                "wechat", "slife.plugins.wechat.server",
+            )
             assert result is PluginStartStatus.STARTED
+            # Poll loop scheduled as a background task
+            poll_task = service._plugins["wechat"].poll_task
+            assert poll_task is not None and not poll_task.done()
 
     @pytest.mark.asyncio
     async def test_stop_wechat_cancels_poll_and_disconnects(self, sample_config):

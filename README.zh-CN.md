@@ -230,7 +230,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 | 服务器 | LLM 可见工具 |
 |--------|-------------|
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
-| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage`, `memdb_semantic_status`, `semantic_index_config`, `semantic_search_enable` |
+| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage`, `memdb_semantic_status` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `memfiles_semantic_status` |
 | `sharefile` | `share_file` |
@@ -254,7 +254,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 | `hybrid` | 语义召回（FTS5 + 向量 → RRF 融合） |
 | `time` | 按日期浏览 |
 
-嵌入后端：本地 GGUF（BGE-M3，离线）、HuggingFace transformers 或 OpenAI 兼容 API。无嵌入后端时关键词搜索照常工作。语义（hybrid）结果只在**当前模型的索引完整构建后**才返回——全量重建期间（新/换模型、重启中断续跑）hybrid 退回关键词搜索，索引完成后自动恢复。
+Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + memfiles 共享），由 native tools 管理：`embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` / `embeddings_model_remove` / `embeddings_provider_models_list` / `embeddings_enable`（分类 `embeddings`）。每个 provider 是一个 **OpenAI 兼容端点**（`base_url` + `api_key`），`active_model`（`"provider/model"` 或裸 `"provider"`）以配置为准；本地 GGUF/transformer 模型经 **local-embed** 插件在 `http://127.0.0.1:8000/v1` 提供，加载一次、memdb 与 memfiles 共享。无嵌入端点时关键词搜索照常工作。语义（hybrid）结果只在**当前模型的索引完整构建后**才返回——全量重建期间（新/换模型、重启中断续跑）hybrid 退回关键词搜索，索引完成后自动恢复。
 
 每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。用户消息会带一条紧凑的 **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** 脚注（turn id 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 turn id 引用（`turn_read` / `turn_summarize`），用户在 TUI 里也能读到同一行。
 

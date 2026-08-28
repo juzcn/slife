@@ -248,23 +248,53 @@ class ModelConfig:
 class MemdbConfig:
     """Configuration for the slife-memdb service.
 
-    Always enabled -- slife-memdb is a built-in plugin.
+    Always enabled -- slife-memdb is a built-in plugin.  Embedding config
+    is a first-class top-level ``embeddings`` section (shared with memfiles),
+    not part of the memdb section.  An empty marker dataclass kept for the
+    ``config.memdb_config`` presence check (memory is always on).
     """
 
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dim: int = 1536
+
+@dataclass
+class EmbeddingsConfig:
+    """First-class embeddings config — top-level ``embeddings`` section.
+
+    Two levels mirroring the LLM ``models.providers`` shape:
+
+    - ``providers``: each provider is an OpenAI-compatible endpoint
+      (``base_url`` + ``api_key``) with an optional ``models`` list
+      (each ``{model, dim?}``).
+    - ``active_model``: ``"provider/model"`` ref (or bare ``"provider"``) —
+      CONFIGURATION-AUTHORITATIVE.  slife embeds against that provider and
+      POSTs the configured model id; the endpoint's /v1/models ``active``
+      flag is only a fallback when no model is configured (many endpoints,
+      e.g. OpenAI official, have no active flag).
+
+    memdb and memfiles share this one section.
+    """
+
+    providers: dict[str, dict] = field(default_factory=dict)
+    active_model: str = ""
+    enabled: bool = True
 
     @classmethod
-    def from_dict(cls, data: Any) -> "MemdbConfig":
-        """Parse memdb config section from JSON5 config."""
+    def from_dict(cls, data: Any) -> "EmbeddingsConfig":
+        """Parse the top-level ``embeddings`` section from JSON5 config."""
         if not isinstance(data, dict):
             return cls()
-        emb = data.get("embedding", {})
-        if not isinstance(emb, dict):
-            emb = {}
+        providers = data.get("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+        active = data.get("active_model", "")
+        if active and active.split("/", 1)[0] not in providers:
+            # Active provider doesn't exist — fall back to the first provider.
+            active = next((f"{k}" for k in providers), "")
+        elif not active and providers:
+            active = next(iter(providers))
         return cls(
-            embedding_model=emb.get("model", "text-embedding-3-small"),
-            embedding_dim=emb.get("dim", 1536),
+            providers=providers,
+            active_model=active,
+            enabled=bool(data.get("enabled", True)),
         )
 
 
@@ -313,6 +343,7 @@ class Config:
     tool_timeout: float = 60.0  # seconds, 0 to disable — applies to ALL tools
     heartbeat_interval: int = 60  # seconds — autonomous idle heartbeat period
     memdb_config: MemdbConfig | None = None
+    embeddings_config: EmbeddingsConfig | None = None
     wechat_config: WechatConfig | None = None
     a2a_config: A2AConfig | None = None
     subagent_config: dict | None = None
@@ -328,6 +359,8 @@ class Config:
     def __post_init__(self):
         if self.memdb_config is None:
             self.memdb_config = MemdbConfig()
+        if self.embeddings_config is None:
+            self.embeddings_config = EmbeddingsConfig()
         if self.wechat_config is None:
             self.wechat_config = WechatConfig()
         if self.a2a_config is None:
@@ -359,6 +392,7 @@ class Config:
             "memory_tool_result_chars": self.memory_tool_result_chars,
             "agent_name": self.agent_name,
             "memdb_config": asdict(self.memdb_config) if self.memdb_config else None,
+            "embeddings_config": asdict(self.embeddings_config) if self.embeddings_config else None,
             "wechat_config": asdict(self.wechat_config) if self.wechat_config else None,
             "a2a_config": asdict(self.a2a_config) if self.a2a_config else None,
             "subagent_config": self.subagent_config,
@@ -774,10 +808,17 @@ class Config:
 
         # Memory -- built-in plugin, always enabled.  DB files live in
         # ~/.slife/<agent_name>.db — no configuration needed.
-        memdb_config = MemdbConfig.from_dict(raw.get("memdb", {}))
+        memdb_config = MemdbConfig()
+
+        # Embeddings -- first-class top-level section shared by memdb +
+        # memfiles.  Each entry is an OpenAI-compatible endpoint; the model
+        # is determined by the endpoint's /v1/models active model.
+        embeddings_config = EmbeddingsConfig.from_dict(raw.get("embeddings", {}))
         logger.debug(
-            "memdb_config embed=%s",
-            memdb_config.embedding_model,
+            "embeddings_config active=%s providers=%d enabled=%s",
+            embeddings_config.active_model,
+            len(embeddings_config.providers),
+            embeddings_config.enabled,
         )
 
         # WeChat -- optional plugin, enabled via wechat.enabled
@@ -846,6 +887,7 @@ class Config:
             memory_tool_result_chars=memory_tool_result_chars,
             agent_name=agent_name,
             memdb_config=memdb_config,
+            embeddings_config=embeddings_config,
             wechat_config=wechat_config,
             a2a_config=a2a_config,
             subagent_config=subagent_config,

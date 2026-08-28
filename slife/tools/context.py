@@ -57,6 +57,11 @@ class ToolContext:
     to query the local embedding service (active model, models, loaded)
     via its ``embed_status`` tool."""
 
+    memdb_client: object | None = None
+    """The memdb plugin's MCP client — used by the ``embeddings_*`` native
+    tools to hot-reload the semantic index (``__memory_reload_semantic``)
+    after a config change."""
+
     message_history: MessageHistory | None = None
     """The active :class:`MessageHistory` (needed by ``clear_context``,
     ``attach_image`` and subagent context cloning)."""

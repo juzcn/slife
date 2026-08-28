@@ -115,73 +115,25 @@ class TestEmbeddingClientInit:
 
 
 class TestEmbeddingClientFromConfig:
-    """Tests for EmbeddingClient.from_config."""
-
-    @patch("pathlib.Path.read_text")
-    @patch("pathlib.Path.exists")
-    def test_gguf_from_config(self, mock_exists, mock_read_text):
-        mock_exists.return_value = True
-        mock_read_text.return_value = '{}'
-
-        mock_config = {
-            "memdb": {
-                "embedding": {
-                    "model": "bge-m3",
-                    "gguf_path": "/tmp/model.gguf",
-                },
-            },
-        }
-
-        with (
-            patch("json5.loads", return_value=mock_config),
-            patch("slife.plugins.memdb.embeddings._check_runtime", return_value=True),
-        ):
-            client = EmbeddingClient.from_config("/fake/config.json5")
-            assert client.backend == "gguf"
-            assert client.available is True
-
-    @patch("pathlib.Path.read_text")
-    @patch("pathlib.Path.exists")
-    def test_api_from_config(self, mock_exists, mock_read_text):
-        mock_exists.return_value = True
-        mock_read_text.return_value = '{}'
-
-        mock_config = {
-            "memdb": {
-                "embedding": {
-                    "model": "text-embedding-3-small",
-                },
-            },
-            "models": {
-                "providers": {
-                    "openai": {
-                        "api_key": "sk-key",
-                        "base_url": "https://api.openai.com/v1",
-                    },
-                },
-            },
-        }
-
-        with patch("json5.loads", return_value=mock_config):
-            client = EmbeddingClient.from_config("/fake/config.json5")
-            assert client.backend == "api"
-            assert client.available is True
+    """Tests for EmbeddingClient.from_config (top-level ``embeddings`` section)."""
 
     @patch("pathlib.Path.read_text")
     @patch("pathlib.Path.exists")
     def test_local_embed_from_config(self, mock_exists, mock_read_text):
-        """Unified OpenAI format: base_url + api_key in the embedding section."""
+        """Top-level embeddings: bare provider (local-embed) → api backend."""
         mock_exists.return_value = True
         mock_read_text.return_value = '{}'
 
         mock_config = {
-            "memdb": {
-                "embedding": {
-                    "model": "bge-m3",
-                    "base_url": "http://127.0.0.1:8000/v1",
-                    "api_key": "local",
-                    "enabled": True,
+            "embeddings": {
+                "providers": {
+                    "local-embed": {
+                        "base_url": "http://127.0.0.1:8000/v1",
+                        "api_key": "local",
+                    },
                 },
+                "active_model": "local-embed",
+                "enabled": True,
             },
         }
 
@@ -194,34 +146,49 @@ class TestEmbeddingClientFromConfig:
 
     @patch("pathlib.Path.read_text")
     @patch("pathlib.Path.exists")
-    def test_api_from_embedding_section_beats_provider(self, mock_exists, mock_read_text):
-        """A base_url/api_key in the embedding section wins over providers."""
+    def test_config_model_picked_up(self, mock_exists, mock_read_text):
+        """A configured active model is picked up verbatim."""
         mock_exists.return_value = True
         mock_read_text.return_value = '{}'
 
         mock_config = {
-            "memdb": {
-                "embedding": {
-                    "model": "bge-m3",
-                    "base_url": "http://127.0.0.1:8000/v1",
-                    "api_key": "local",
-                    "enabled": True,
-                },
-            },
-            "models": {
+            "embeddings": {
                 "providers": {
-                    "openai": {
-                        "api_key": "sk-provider",
-                        "base_url": "https://api.openai.com/v1",
+                    "p1": {
+                        "base_url": "http://127.0.0.1:8000/v1",
+                        "api_key": "local",
+                        "models": [{"model": "bge-m3", "dim": 1024}],
                     },
                 },
+                "active_model": "p1/bge-m3",
+                "enabled": True,
             },
         }
 
         with patch("json5.loads", return_value=mock_config):
             client = EmbeddingClient.from_config("/fake/config.json5")
-            assert client._base_url == "http://127.0.0.1:8000/v1"
-            assert client._api_key == "local"
+            assert client.backend == "api"
+            assert client._model == "bge-m3"
+            assert client.dimension == 1024
+            assert client.dimension_known is True
+
+    @patch("pathlib.Path.read_text")
+    @patch("pathlib.Path.exists")
+    def test_enabled_false_disables(self, mock_exists, mock_read_text):
+        mock_exists.return_value = True
+        mock_read_text.return_value = '{}'
+
+        mock_config = {
+            "embeddings": {
+                "providers": {"p1": {"base_url": "http://x/v1", "api_key": "k"}},
+                "active_model": "p1",
+                "enabled": False,
+            },
+        }
+
+        with patch("json5.loads", return_value=mock_config):
+            client = EmbeddingClient.from_config("/fake/config.json5")
+            assert client.available is False
 
     @patch("slife.plugins.memdb.embeddings.Path.exists")
     def test_missing_config_returns_disabled(self, mock_exists):
@@ -232,15 +199,24 @@ class TestEmbeddingClientFromConfig:
 
     @patch("pathlib.Path.read_text")
     @patch("pathlib.Path.exists")
-    def test_api_unknown_model_dim_is_provisional(self, mock_exists, mock_read_text):
-        """An unrecognised API model carries a provisional dim (1024) until
-        the backend reports the real width."""
+    def test_unknown_model_dim_is_provisional(self, mock_exists, mock_read_text):
+        """An unrecognised model carries a provisional dim (1024) until the
+        backend reports the real width."""
         mock_exists.return_value = True
         mock_read_text.return_value = '{}'
 
         mock_config = {
-            "memdb": {"embedding": {"model": "my-custom-embedder"}},
-            "models": {"providers": {"openai": {"api_key": "sk-key"}}},
+            "embeddings": {
+                "providers": {
+                    "p1": {
+                        "base_url": "http://127.0.0.1:8000/v1",
+                        "api_key": "k",
+                        "models": [{"model": "my-custom-embedder"}],
+                    },
+                },
+                "active_model": "p1/my-custom-embedder",
+                "enabled": True,
+            },
         }
 
         with patch("json5.loads", return_value=mock_config):
@@ -252,14 +228,23 @@ class TestEmbeddingClientFromConfig:
 
     @patch("pathlib.Path.read_text")
     @patch("pathlib.Path.exists")
-    def test_api_known_model_dim_is_authoritative(self, mock_exists, mock_read_text):
+    def test_known_model_dim_is_authoritative(self, mock_exists, mock_read_text):
         """A recognised model needs no probe — its width is authoritative."""
         mock_exists.return_value = True
         mock_read_text.return_value = '{}'
 
         mock_config = {
-            "memdb": {"embedding": {"model": "text-embedding-3-small"}},
-            "models": {"providers": {"openai": {"api_key": "sk-key"}}},
+            "embeddings": {
+                "providers": {
+                    "p1": {
+                        "base_url": "http://127.0.0.1:8000/v1",
+                        "api_key": "k",
+                        "models": [{"model": "text-embedding-3-small"}],
+                    },
+                },
+                "active_model": "p1/text-embedding-3-small",
+                "enabled": True,
+            },
         }
 
         with patch("json5.loads", return_value=mock_config):
@@ -596,3 +581,72 @@ class TestDimProbe:
         assert client._model == "bge-m3"      # server's active model
         assert client.dimension == 1024
         assert client.dimension_known is True
+
+    @pytest.mark.asyncio
+    async def test_load_api_configured_model_is_authoritative(self):
+        """A configured model id wins — even when the endpoint's active differs."""
+        client = EmbeddingClient.__new__(EmbeddingClient)
+        client._backend = "api"
+        client._available = True
+        client._model = "text-embedding-3-small"   # configured
+        client._dim = 1536
+        client._dim_known = True
+        client._client = None
+        client._base_url = "http://127.0.0.1:8000/v1"
+        client._api_key = "local"
+        client._client_init_lock = asyncio.Lock()
+
+        class _Model:
+            def __init__(self, id, active=False, dimension=0):
+                self.id = id
+                self.active = active
+                self.dimension = dimension
+
+        class _ModelsResponse:
+            data = [
+                _Model("bge-m3", active=True, dimension=1024),
+                _Model("text-embedding-3-small", active=False, dimension=1536),
+            ]
+
+        fake_client = MagicMock()
+        fake_client.models.list = AsyncMock(return_value=_ModelsResponse())
+        with patch.object(client, "_client", new=fake_client, create=True):
+            ok = await client.load()
+
+        assert ok is True
+        assert client._model == "text-embedding-3-small"  # config wins
+        assert client.dimension == 1536
+        assert client.dimension_known is True
+
+    @pytest.mark.asyncio
+    async def test_load_api_configured_model_not_listed_keeps_id(self):
+        """A configured model the endpoint doesn't list keeps its id (probe dim)."""
+        client = EmbeddingClient.__new__(EmbeddingClient)
+        client._backend = "api"
+        client._available = True
+        client._model = "some-model"          # configured but not listed
+        client._dim = 1024
+        client._dim_known = False
+        client._client = None
+        client._base_url = "http://127.0.0.1:8000/v1"
+        client._api_key = "local"
+        client._client_init_lock = asyncio.Lock()
+
+        class _Model:
+            def __init__(self, id, active=False, dimension=0):
+                self.id = id
+                self.active = active
+                self.dimension = dimension
+
+        class _ModelsResponse:
+            data = [_Model("bge-m3", active=True, dimension=1024)]
+
+        fake_client = MagicMock()
+        fake_client.models.list = AsyncMock(return_value=_ModelsResponse())
+        with patch.object(client, "_client", new=fake_client, create=True):
+            ok = await client.load()
+
+        assert ok is True
+        assert client._model == "some-model"  # configured id preserved
+        # dim stays provisional — no listing to pin it
+        assert client.dimension_known is False

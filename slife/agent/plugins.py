@@ -96,9 +96,9 @@ class PluginLifecycle:
     """Generic plugin child-process lifecycle manager.
 
     Each instance owns the client connection, subprocess wrapper, and port
-    for one plugin backend.  Methods here correspond to the former
-    ``_stop_plugin`` / ``_spawn_and_register_plugin`` patterns in
-    ``AgentService``.
+    for one plugin backend.  Spawns go through ``AgentService._spawn_plugin_generic``
+    (the single unified path for every plugin); ``spawn`` here remains the
+    watchdog's internal restart fallback.
     """
 
     def __init__(self, name: str, service: AgentService) -> None:

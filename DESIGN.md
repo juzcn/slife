@@ -575,15 +575,26 @@ Search hardening: `search_grep` escapes `%`/`_` with `ESCAPE '\'`; `turn_count` 
 
 ### Embedding
 
-Three backends, configurable at runtime via `semantic_index_config`:
+Embeddings are a **first-class top-level `embeddings` section** in `slife.json5`,
+shared by memdb + memfiles and managed by the native tools
+`embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` /
+`embeddings_model_remove` / `embeddings_provider_models_list` /
+`embeddings_enable` (category `embeddings`).  The shape mirrors the LLM
+`models.providers` two-level hierarchy:
 
-| Backend | Dep | Default model | Dim |
-|---------|-----|---------------|-----|
-| GGUF (local) | `llama-cpp-python` | bge-m3 | 1024 |
-| Transformer (local) | `sentence-transformers` | BAAI/bge-m3 | 1024 |
-| API (OpenAI-compatible) | Provider key | text-embedding-3-small | 1536 |
-
-Backend selection priority: GGUF file present → transformer requested → API key present → disabled. Configuration lives in `slife.json5` under `memdb.embedding`; a runtime switch via `semantic_index_config` re-reads it. The embedder (`EmbeddingClient`, `embeddings.py`) exposes `available` / `loaded` / `dimension` / `max_tokens`; all CPU-bound work — GGUF `create_embedding`, transformer `encode`, model load — runs on daemon threads (`slife.threads.run_daemon`) so it never blocks the asyncio event loop or hangs plugin shutdown. Every embed is serialised on a per-client `threading.Lock` (`_embed_lock`): llama-cpp's `create_embedding` / sentence-transformers' `encode` are not safe for concurrent calls, and concurrent searches (main agent + subagents share one memdb server) used to crash llama.cpp natively. GGUF/API dimensions are known up front; the transformer backend's real width is only known after load (`ensure_loaded()` corrects `_dim` before the vec0 table is built — a guessed width silently drops every embedding of a different width, REVIEW §1-10).
+- **provider** = one OpenAI-compatible endpoint (`base_url` + `api_key`), with
+  an optional `models` list (`{model, dim?}`).
+- **`active_model`** (`"provider/model"` or bare `"provider"`) is
+  configuration-authoritative: slife embeds against that provider and POSTs
+  the configured model id.  Many endpoints (e.g. OpenAI official) have no
+  `active` flag on `/v1/models`, so the endpoint's active model is only a
+  fallback when no model is configured.
+- **dimension**: configured `dim` → matched from the endpoint's `/v1/models`
+  → probe embed (`_probe_api_dim`).  The embedder (`EmbeddingClient`,
+  `embeddings.py`) exposes `available` / `loaded` / `dimension` /
+  `max_tokens`; every embed is serialised on a per-client `threading.Lock`
+  (`_embed_lock`), and local-model backends (gguf/transformer, served via
+  the local-embed plugin) run on daemon threads (`slife.threads.run_daemon`).
 
 **Vector store.** `diary_semantic` is a sqlite-vec `vec0` table (`turn_embedding float[dim]`, `+diary_rowid`, `+chunk_index`, `+summary`, `+tags`, `+created_at`). One turn → multiple chunks: text is split at paragraph boundaries (~2000 chars ≈ 500 tokens, 1-paragraph overlap), and the embedded text is the user message plus all assistant/tool contents. Semantic search dedupes by `diary_rowid`, keeping only the best (lowest-distance) chunk per turn.
 
@@ -593,7 +604,7 @@ Backend selection priority: GGUF file present → transformer requested → API 
 
 **Search.** `turn_search` has four modes (`grep` / `fts5` / `hybrid` / `time`). `hybrid` runs the FTS5 keyword query and a vec0 KNN side by side, then merges via Reciprocal Rank Fusion (k=60, `search.py`). sqlite-vec forbids any auxiliary-column constraint or JOIN inside a KNN query, so the KNN runs alone, time-window filtering happens in Python (with a wider fetch pool), and `user_message` is fetched in a second query.
 
-**Model / dimension change.** `semantic_index_config` / `semantic_search_enable(True)` are blocking: they persist the config and `await manager.enable()`, which stops the drainer, migrates the vec0 table in place (`reconfigure_for_embedding` — a width/model change drops and recreates the table since old vectors live in a different vector space), and restarts the drainer to rebuild. The same path catches a model/dimension change made by a manual `slife.json5` edit before the gate re-enables.
+**Model / dimension change.** The `embeddings_*` native tools persist the top-level `embeddings` section and then hot-reload: they call the internal `__memory_reload_semantic` / `__memfiles_reload_semantic` tools, which `await manager.enable()` — stopping the drainer, migrating the vec0 table in place (`reconfigure_for_embedding` — a width/model change drops and recreates the table since old vectors live in a different vector space), and restarting the drainer to rebuild. `embeddings_enable(false)` calls `manager.disable()` instead. A failed reload degrades to "takes effect on restart" (never blocks the persist). The same path catches a model/dimension change made by a manual `slife.json5` edit before the gate re-enables.
 
 ### Session Restore
 
@@ -731,7 +742,7 @@ Three typed knowledge stores, each **dual-written** to a human-browsable markdow
 - `diary_write(date, …)` — a day's entry keyed by **date**, appended to `diary/<YYYY-MM-DD>.md`;
 - `file_save` / `url_save` — saved attachments under `files/<category>/` (bytes stay on the filesystem), auto-filed by extension (images / documents / archives / code / audio / video / data / other) with an optional `category` override; an LLM `summary` given at save time makes them semantically searchable (one pass — no separate summarize tool).
 
-Each kind owns its FTS5 + vec0 tables (`notes_*` / `diary_*` / `files_*`). `cabinet_search(query, kind, mode)` runs hybrid (FTS5 + vec0 KNN, RRF via the shared `merge_hybrid`) or keyword search across them; `cabinet_read(path)` re-opens a file with a path-traversal guard. Browsing by key: `note_list` / `diary_list` list entries (newest first, diary optionally by date range) and `note_read(subject)` / `diary_read(date)` return full content. The index mirrors memdb's design and **reuses its code**: the shared `SemanticManager` (document-source contract) drives the drainer over all three kinds, and `memfiles_semantic_status` reports this index's own gate — independent from `memdb_semantic_status`, because each plugin reindexes its own DB (one shared `memdb.embedding` config, independent availability).
+Each kind owns its FTS5 + vec0 tables (`notes_*` / `diary_*` / `files_*`). `cabinet_search(query, kind, mode)` runs hybrid (FTS5 + vec0 KNN, RRF via the shared `merge_hybrid`) or keyword search across them; `cabinet_read(path)` re-opens a file with a path-traversal guard. Browsing by key: `note_list` / `diary_list` list entries (newest first, diary optionally by date range) and `note_read(subject)` / `diary_read(date)` return full content. The index mirrors memdb's design and **reuses its code**: the shared `SemanticManager` (document-source contract) drives the drainer over all three kinds, and `memfiles_semantic_status` reports this index's own gate — independent from `memdb_semantic_status`, because each plugin reindexes its own DB (one shared top-level `embeddings` config, independent availability).
 
 All save tools return the saved **local path** (clickable) — they never auto-publish, so nothing is registered in any token registry as a side effect of saving.  Publishing is always the LLM's explicit choice, via the separate sharefile plugin's `share_file`.
 
@@ -877,7 +888,7 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 | `agent` | `max_iterations`, `tool_timeout`, `context_floor`, `context_ceiling`, `tool_result_ceiling`, `heartbeat_interval` |
 | `tools` | Per-tool overrides (timeout, enabled) |
 | `mcp.servers` | External MCP server configs |
-| `memdb.embedding` | Embedding backend config (backend, model, dim, gguf_path) |
+| `embeddings` | First-class embeddings config: `providers` (OpenAI-compatible endpoints), `active_model`, `enabled` — shared by memdb + memfiles |
 | `wechat` | `enabled` toggle |
 | `media` | Non-chat generation config (defaults, providers → api adapter + models) — plugin-read, ignored by the main `Config` parser |
 | `a2a` | A2A config (transport binding, broker host/port, heartbeat, task_timeout) |

@@ -266,6 +266,9 @@ class TestCheckMemdb:
         with self._db_patch(exists=False), \
              patch("slife.plugins.memdb.embedding_config.read_embedding_config",
                    return_value=None), \
+             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value={"provider": "", "base_url": "", "api_key": "",
+                                 "model": "", "dim": 0}), \
              patch("slife.plugins.memdb.embeddings.EmbeddingClient"):
             result = check_memdb()
             assert len(result) == 2
@@ -278,97 +281,59 @@ class TestCheckMemdb:
             assert result[1]["key"] == "embedding"
             assert result[1]["value"] == "none"
 
-    def test_gguf_available(self):
-        mock_client = MagicMock()
-        mock_client.backend = "gguf"
-        mock_client.available = True
-        mock_client.dimension = 384
-        cfg = {"gguf_path": "/tmp/model.gguf", "model": "bge-small"}
-
-        with self._db_patch(), \
-             patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
-             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value=cfg):
-            MockClient.from_config.return_value = mock_client
-            result = check_memdb()
-            e = self._find(result, "embedding")
-            assert e["level"] == "ok"
-            assert e["value"] == "gguf"
-            assert "dim=384" in e["hint"]
-
     def test_api_available(self):
         mock_client = MagicMock()
-        mock_client.backend = "api"
         mock_client.available = True
         mock_client.dimension = 1536
-        cfg = {"model": "text-embedding-3-small"}
+        mock_client._model = "text-embedding-3-small"
+        cfg = {"providers": {"p1": {"base_url": "http://x/v1"}}, "active_model": "p1"}
+        ep = {"provider": "p1", "base_url": "http://x/v1", "api_key": "k",
+              "model": "", "dim": 0}
 
         with self._db_patch(), \
              patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
              patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value=cfg):
+                   return_value=cfg), \
+             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value=ep):
             MockClient.from_config.return_value = mock_client
             result = check_memdb()
             e = self._find(result, "embedding")
             assert e["level"] == "ok"
             assert e["value"] == "api"
             assert "API embeddings ready" in e["hint"]
-
-    def test_gguf_unavailable(self):
-        mock_client = MagicMock()
-        mock_client.backend = "gguf"
-        mock_client.available = False
-        cfg = {"gguf_path": "/tmp/model.gguf", "model": "bge-small"}
-
-        with self._db_patch(), \
-             patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
-             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value=cfg):
-            MockClient.from_config.return_value = mock_client
-            result = check_memdb()
-            e = self._find(result, "embedding")
-            assert e["level"] == "warning"
-            assert e["value"] == "gguf"
-            assert "NOT installed" in e["hint"]
+            assert "http://x/v1" in e["hint"]
 
     def test_api_unavailable(self):
         mock_client = MagicMock()
-        mock_client.backend = "api"
         mock_client.available = False
-        cfg = {"model": "text-embedding-3-small"}
+        mock_client._model = "text-embedding-3-small"
+        cfg = {"providers": {"p1": {"base_url": "http://x/v1"}}, "active_model": "p1"}
+        ep = {"provider": "p1", "base_url": "http://x/v1", "api_key": "k",
+              "model": "", "dim": 0}
 
         with self._db_patch(), \
              patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
              patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value=cfg):
+                   return_value=cfg), \
+             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value=ep):
             MockClient.from_config.return_value = mock_client
             result = check_memdb()
             e = self._find(result, "embedding")
             assert e["level"] == "warning"
             assert e["value"] == "api"
-            assert "NOT installed" in e["hint"]
-
-    def test_unknown_backend_unavailable(self):
-        mock_client = MagicMock()
-        mock_client.backend = "unknown_backend"
-        mock_client.available = False
-
-        with self._db_patch(), \
-             patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient, \
-             patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value={"model": "x"}):
-            MockClient.from_config.return_value = mock_client
-            result = check_memdb()
-            e = self._find(result, "embedding")
-            assert e["level"] == "warning"
-            assert e["value"] == "unknown_backend"
+            assert "unavailable" in e["hint"]
 
     def test_db_exists(self):
         """When the db file exists, report size and ok."""
         with self._db_patch(exists=True, size=3145728), \
              patch("slife.plugins.memdb.embeddings.EmbeddingClient"), \
              patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value=None):
+                   return_value=None), \
+             patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
+                   return_value={"provider": "", "base_url": "", "api_key": "",
+                                 "model": "", "dim": 0}):
             result = check_memdb()
             e = self._find(result, "db")
             assert e["level"] == "ok"

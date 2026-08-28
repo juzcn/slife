@@ -103,7 +103,7 @@ def main(config_path: str | None = None):
         key="path", value=str(_cp),
         hint=f"Config loaded: {len(config.models)} models, "
              f"{_mcp_servers} MCP servers, "
-             f"memory={'enabled' if config.memdb_config else 'disabled'}.",
+             f"embeddings={'enabled' if (config.embeddings_config and config.embeddings_config.enabled and config.embeddings_config.active_model) else 'disabled'}.",
     )
 
     # Check external tooling availability (best-effort, reports via health system)

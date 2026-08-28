@@ -570,8 +570,8 @@ async def memfiles_semantic_status() -> str:
                 report["hint"] = report.get("reason", "Memfiles semantic index stalled.")
             elif state == "disabled" and report.get("configured"):
                 report["hint"] = (
-                    "Memfiles semantic search disabled. Re-enable via memdb's "
-                    "semantic_search_enable true (shared embedding config)."
+                    "Memfiles semantic search disabled. Re-enable with "
+                    "embeddings_enable true (shared embedding config)."
                 )
         return json.dumps(report, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -620,6 +620,33 @@ async def __cabinet_status() -> str:
     else:
         result["hint"] = "Cabinet connected; semantic index ready."
     return json.dumps(result, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__memfiles_reload_semantic",
+    description="Reload the semantic index after an embeddings config change. Internal — called by the harness.",
+)
+async def __memfiles_reload_semantic(enabled: bool = True) -> str:
+    """Re-read the shared embeddings config and rebuild (or tear down) the
+    file-cabinet semantic index.  ``enabled=True`` → ``SemanticManager.enable()``
+    (stops the drainer, migrates vec0 in place, restarts the drainer);
+    ``False`` → ``disable()``.  Called by the harness's ``embeddings_*``
+    native tools after a config change."""
+    try:
+        await _ensure_store()
+        manager = _manager
+        assert manager is not None
+        if enabled:
+            status = await manager.enable()
+            status["status"] = "reloaded"
+            status["message"] = "Cabinet semantic index reloaded (reindexing in background)."
+        else:
+            status = await manager.disable()
+            status["status"] = "disabled"
+        return json.dumps(status, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.exception("memfiles_reload_semantic_failed enabled=%s", enabled)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 @mcp.tool(

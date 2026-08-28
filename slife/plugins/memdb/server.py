@@ -79,7 +79,7 @@ mcp, _log_path, logger = create_plugin_server(
         "its turn id. "
         "LLM-visible tools: turn_list, turn_search (grep/fts5/hybrid/time), "
         "turn_read, turn_token_usage, turn_count, turn_summarize, "
-        "memdb_semantic_status / semantic_index_config / semantic_search_enable. "
+        "memdb_semantic_status. "
         "All data is automatically scoped to the current agent."
     ),
     lifespan=_memdb_lifespan,
@@ -253,6 +253,43 @@ async def __memory_get_recent_turns(limit: int = 50, after_rowid: int = 0) -> st
     except Exception as e:
         logger.exception("get_recent_turns_failed limit=%d", limit)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="__memory_reload_semantic",
+    description="Reload the semantic index after an embeddings config change. Internal — called by the harness.",
+)
+async def __memory_reload_semantic(enabled: bool = True) -> str:
+    """Re-read the shared embeddings config and rebuild (or tear down) the
+    semantic index.  ``enabled=True`` → ``SemanticManager.enable()`` (stops
+    the drainer, migrates vec0 in place, restarts the drainer); ``False`` →
+    ``disable()`` (stops the drainer, keeps embeddings on disk).  Called by
+    the harness's ``embeddings_*`` native tools after a config change."""
+    try:
+        manager = await _ensure_manager_for_reload()
+        if enabled:
+            status = await manager.enable()
+            status["status"] = "reloaded"
+            status["message"] = "Semantic index reloaded (reindexing in background)."
+        else:
+            status = await manager.disable()
+            status["status"] = "disabled"
+        return json.dumps(status, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.exception("memory_reload_semantic_failed enabled=%s", enabled)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def _ensure_manager_for_reload() -> SemanticManager:
+    """Return a live SemanticManager for the reload tool.
+
+    The store + manager are built lazily on first tool call; a reload after
+    startup must ensure they exist so the manager can re-read the config.
+    """
+    async with _get_init_lock():
+        await _ensure_store_locked()
+    assert _manager is not None
+    return _manager
 
 
 @mcp.tool(
@@ -642,156 +679,13 @@ async def memdb_semantic_status() -> str:
                 report["hint"] = report.get("reason", "Semantic index stalled.")
             elif state == "disabled" and report.get("configured"):
                 report["hint"] = (
-                    "Semantic search disabled. Re-enable with "
-                    "semantic_search_enable true, or reconfigure with "
-                    "semantic_index_config."
+                    "Semantic search disabled — enable with "
+                    "embeddings_enable true, or edit the top-level "
+                    "embeddings section in slife.json5."
                 )
         return json.dumps(report, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.exception("check_embedding_failed")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-@mcp.tool(
-    name="semantic_index_config",
-    description=(
-        "Configure the semantic index embedding backend (gguf/transformer/api) "
-        "for hybrid search. Existing turns auto-reindex in the background; "
-        "keyword search stays available meanwhile. BLOCKS until the model is loaded."
-    ),
-)
-async def semantic_index_config(
-    backend: str = "",
-    model: str = "bge-m3",
-    gguf_path: str | None = None,
-    dim: int = 0,
-    device: str = "",
-    base_url: str = "",
-    api_key: str = "",
-) -> str:
-    """Configure the embedding backend.
-
-    All embedding models are remote OpenAI-compatible endpoints (a local
-    ``local-embed`` server is just one such endpoint).
-
-    Args:
-        backend: ``"api"``, ``"gguf"``, or ``"transformer"``.
-        model: Model name. Default ``"bge-m3"``; for ``api`` this is the
-            OpenAI model ID (e.g. ``"text-embedding-3-small"``, or the model
-            served by a local local-embed server).
-        gguf_path: Path to .gguf file. Required when ``backend="gguf"``.
-        dim: Embedding dimension; auto-detected when 0 (default).
-        device: Device override for transformer backend
-            (``"cpu"`` / ``"cuda"``); auto-detect when empty.
-        base_url: OpenAI-compatible endpoint base URL (``api`` only), e.g.
-            ``"http://127.0.0.1:8000/v1"`` for local-embed.  The client
-            POSTs to ``{base_url}/embeddings`` per the OpenAI convention.
-        api_key: API key for the endpoint (``api`` only).  Defaults to
-            the first configured provider's key when empty.
-    """
-    from slife.plugins.memdb.embedding_config import (
-        write_embedding_config, validate_gguf_path, get_first_provider_api_key,
-    )
-    backend = backend.lower().strip()
-    if backend not in ("gguf", "transformer", "api"):
-        return json.dumps(
-            {"error": f"unsupported backend '{backend}'. Options: 'api', 'gguf', or 'transformer'"},
-            ensure_ascii=False, indent=2,
-        )
-    cfg: dict = {"model": model, "backend": backend, "enabled": True}
-    if backend == "gguf":
-        if not gguf_path:
-            return json.dumps({"error": "GGUF backend requires a gguf_path parameter"}, ensure_ascii=False, indent=2)
-        ok, msg = validate_gguf_path(gguf_path)
-        if not ok:
-            return json.dumps({"error": f"GGUF file validation failed: {msg}"}, ensure_ascii=False, indent=2)
-        cfg["gguf_path"] = msg
-        if dim > 0:
-            cfg["dim"] = dim
-    elif backend == "transformer":
-        # Model name is the HuggingFace model ID (e.g. "BAAI/bge-m3")
-        if dim > 0:
-            cfg["dim"] = dim
-        if device:
-            cfg["device"] = device
-    elif backend == "api":
-        # Unified OpenAI-compatible endpoint (local-embed or any remote).
-        # ``base_url`` is optional — without it, the first provider's
-        # base_url/api_key are used (backward compatible).
-        if base_url:
-            cfg["base_url"] = base_url
-        if api_key:
-            cfg["api_key"] = api_key
-        if not api_key and not get_first_provider_api_key():
-            return json.dumps(
-                {"error": "API backend requires an api_key or a base_url to a local endpoint"},
-                ensure_ascii=False, indent=2,
-            )
-        if dim > 0:
-            cfg["dim"] = dim
-    try:
-        write_embedding_config(cfg)
-        await _ensure_store()  # builds the store + manager if needed
-        manager = _manager
-        assert manager is not None
-        status = await manager.enable()  # BLOCKING: model load + migration
-        status["backend"] = backend
-        status["model"] = model
-        if gguf_path:
-            status["gguf_path"] = gguf_path
-        status["hint"] = (
-            "Semantic search resumes automatically when indexing finishes; "
-            "keyword search remains available."
-        )
-        return json.dumps(status, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.exception("set_embedding_failed backend=%s model=%s", backend, model)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-@mcp.tool(
-    name="semantic_search_enable",
-    description=(
-        "Enable/disable semantic (hybrid) search. Disabling preserves embeddings; "
-        "re-enabling re-indexes turns saved meanwhile. Enable blocks until the "
-        "model is loaded."
-    ),
-)
-async def semantic_search_enable(enabled: bool) -> str:
-    """Enable or disable semantic (hybrid) search.
-
-    Args:
-        enabled: true to enable semantic search, false to disable (embeddings preserved).
-    """
-    from slife.plugins.memdb.embedding_config import set_embedding_enabled
-    try:
-        ok = set_embedding_enabled(enabled)
-        if not ok:
-            return json.dumps(
-                {"error": "No embedding configured. Run semantic_index_config first."},
-                ensure_ascii=False,
-            )
-        store = await _ensure_store()
-        manager = _manager
-        assert manager is not None
-
-        if enabled:
-            status = await manager.enable()
-            status["message"] = "Semantic search enabled."
-            status["hint"] = (
-                "Verifying the index for the current model (detects manual "
-                "json5 config changes). Semantic search resumes when indexing "
-                "finishes."
-            )
-        else:
-            status = await manager.disable()
-            status["message"] = "Semantic search disabled. Keyword search still available."
-            embedded = await store.count_embedded()
-            if embedded > 0:
-                status["preserved"] = f"{embedded} existing embeddings preserved."
-        return json.dumps(status, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.exception("set_enabled_failed enabled=%s", enabled)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

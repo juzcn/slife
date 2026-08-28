@@ -1,13 +1,15 @@
-"""Embedding configuration helpers — read, write, validate, report.
+"""Embedding configuration helpers — read, write, report.
 
-Used by the semantic_index_config / memdb_semantic_status /
-semantic_search_enable MCP tools to manage the ``memdb.embedding``
-section of ``slife.json5`` at runtime.  The embedder itself is owned by
+Manages the top-level ``embeddings`` section of ``slife.json5`` — the
+first-class, shared config for memdb + memfiles semantic search.  Two
+levels mirror the LLM ``models.providers`` shape: each provider is an
+OpenAI-compatible endpoint (``base_url`` + ``api_key``) with an optional
+``models`` list; ``active_model`` (``"provider/model"`` or ``"provider"``)
+is configuration-authoritative.  The embedder itself is owned by
 ``SemanticManager`` (semantic.py); this module never mutates it.
 """
 
 import logging
-from pathlib import Path
 
 from slife.paths import get_config_path
 from slife.tools._config_io import ConfigParseError, read_config, write_config
@@ -20,7 +22,7 @@ _CONFIG_PATH = get_config_path()
 def _read_raw() -> dict:
     """Read the full slife.json5 dict, returning {} on failure.
 
-    This is a read-only helper for the embedding section; an unparseable
+    This is a read-only helper for the embeddings section; an unparseable
     config must not crash the caller, it just means "no usable section".
     (Mutating paths deliberately do *not* swallow the error — see
     :func:`slife.tools._config_io.read_config`.)
@@ -28,7 +30,7 @@ def _read_raw() -> dict:
     try:
         return read_config(_CONFIG_PATH)
     except ConfigParseError:
-        logger.error("embedding_config_unparseable path=%s", _CONFIG_PATH)
+        logger.error("embeddings_config_unparseable path=%s", _CONFIG_PATH)
         return {}
 
 
@@ -41,206 +43,140 @@ def _write_raw(raw: dict) -> None:
 
 
 def read_embedding_config() -> dict | None:
-    """Return the current *memdb.embedding* section, or None if absent."""
+    """Return the current top-level *embeddings* section, or None if absent."""
     raw = _read_raw()
-    mem = raw.get("memdb", {})
-    if not isinstance(mem, dict):
-        return None
-    emb = mem.get("embedding")
+    emb = raw.get("embeddings")
     if not isinstance(emb, dict):
         return None
     return dict(emb)
 
 
 def write_embedding_config(cfg: dict) -> None:
-    """Write (overwrite) the *memdb.embedding* section with *cfg*."""
+    """Write (overwrite) the top-level *embeddings* section with *cfg*."""
     raw = _read_raw()
-    if not isinstance(raw.get("memdb"), dict):
-        raw["memdb"] = {}
-    raw["memdb"]["embedding"] = cfg
+    raw["embeddings"] = cfg
     _write_raw(raw)
-    logger.info("embedding_config_written keys=%s", list(cfg.keys()))
+    logger.info("embeddings_config_written keys=%s", list(cfg.keys()))
 
 
-def remove_embedding_config() -> None:
-    """Remove the *memdb.embedding* section entirely."""
-    raw = _read_raw()
-    mem = raw.get("memdb", {})
-    if isinstance(mem, dict):
-        mem.pop("embedding", None)
-    _write_raw(raw)
-    logger.info("embedding_config_removed")
+def _active_endpoint(cfg: dict) -> dict:
+    """Resolve the active provider + model ref from an embeddings section.
+
+    Returns ``{"provider": str, "base_url": str, "api_key": str,
+    "model": str, "dim": int}`` — ``model``/``dim`` empty when not
+    configured.  ``active_model`` is ``"provider/model"`` or bare
+    ``"provider"``; a bare provider defers the model to the endpoint's
+    /v1/models active model (or first entry).
+    """
+    providers = cfg.get("providers", {})
+    if not isinstance(providers, dict) or not providers:
+        return {"provider": "", "base_url": "", "api_key": "",
+                "model": "", "dim": 0}
+    active_ref = cfg.get("active_model", "")
+    pid = active_ref.split("/", 1)[0] if active_ref else next(iter(providers))
+    pcfg = providers.get(pid)
+    if not isinstance(pcfg, dict):
+        pcfg = {}
+        pid = next(iter(providers))
+        pcfg = providers.get(pid)
+    if not isinstance(pcfg, dict):
+        return {"provider": "", "base_url": "", "api_key": "",
+                "model": "", "dim": 0}
+    mid = active_ref.split("/", 1)[1] if "/" in active_ref else ""
+    dim = 0
+    if mid:
+        for m in (pcfg.get("models") or []):
+            if isinstance(m, dict) and m.get("model") == mid:
+                dim = int(m.get("dim", 0) or 0)
+                break
+    elif pcfg.get("models"):
+        # No explicit model — the endpoint's active model wins, but a
+        # configured first-entry dim is a useful provisional width.
+        first = next((m for m in pcfg["models"] if isinstance(m, dict)), None)
+        if first:
+            dim = int(first.get("dim", 0) or 0)
+    return {
+        "provider": pid,
+        "base_url": pcfg.get("base_url", ""),
+        "api_key": pcfg.get("api_key", ""),
+        "model": mid,
+        "dim": dim,
+    }
 
 
-def set_embedding_enabled(enabled: bool) -> bool:
-    """Set *enabled* flag on the current embedding config.
+def get_active_endpoint() -> dict:
+    """Return the resolved active endpoint dict (see ``_active_endpoint``).
 
-    Returns True if the config exists and was updated, False if there
-    is no config to enable/disable.
+    The single source of truth for what memdb/memfiles embed against.
     """
     cfg = read_embedding_config()
     if cfg is None:
-        logger.info("embedding_enable_skipped reason=no_config")
-        return False
-    cfg["enabled"] = enabled
-    write_embedding_config(cfg)
-    logger.info("embedding_enabled=%s", enabled)
-    return True
-
-
-def get_first_provider_api_key() -> str:
-    """Return the api_key from the first configured provider, or ''.
-
-    An unresolved ``${VAR}`` placeholder is NOT a usable key — skip it so
-    ``semantic_index_config(backend=api)`` reports "set a real API key" instead
-    of a confusing "backend unavailable" degrade.
-    """
-    from slife.config import _resolve_secret
-
-    raw = _read_raw()
-    models = raw.get("models", {})
-    providers = models.get("providers", {}) if isinstance(models, dict) else {}
-    for _pid, pcfg in providers.items():
-        if isinstance(pcfg, dict):
-            key = pcfg.get("api_key", "")
-            if not key:
-                continue
-            resolved = _resolve_secret(key)
-            if resolved == key and key.startswith("${"):
-                continue  # unresolved placeholder
-            return resolved
-    return ""
-
-
-def validate_gguf_path(path: str) -> tuple[bool, str]:
-    """Check that a GGUF file path exists and is readable.
-
-    Returns (ok, message).
-    """
-    p = Path(path).expanduser()
-    if not p.exists():
-        return False, f"file does not exist: {p}"
-    if not p.is_file():
-        return False, f"not a file: {p}"
-    if p.suffix.lower() not in (".gguf", ".bin", ".ggml"):
-        return False, f"file suffix is not .gguf / .bin / .ggml: {p}"
-    return True, str(p)
+        return {"provider": "", "base_url": "", "api_key": "",
+                "model": "", "dim": 0}
+    return _active_endpoint(cfg)
 
 
 def make_check_report() -> dict:
-    """Build a status report dict for memdb_semantic_status."""
+    """Build a status report dict for memdb_semantic_status / memfiles_semantic_status."""
     cfg = read_embedding_config()
 
     if cfg is None:
         return {
             "configured": False,
-            "backend": "none",
+            "backend": "api",
+            "provider": "",
             "model": "",
-            "dimension": 1024,
+            "dimension": 0,
             "available": False,
             "hint": (
-                "No embedding configured. Semantic search (hybrid mode) is "
+                "No embeddings configured. Semantic search (hybrid mode) is "
                 "unavailable. Keyword search (grep / fts5 / time) still works. "
-                "Configure with semantic_index_config: "
-                "GGUF local model: backend=gguf model=bge-m3 gguf_path=... "
-                "or Transformer local model: backend=transformer model=BAAI/bge-m3 "
-                "or OpenAI API: backend=api model=text-embedding-3-small"
+                "Add an OpenAI-compatible endpoint with embeddings_model_set "
+                "(provider + base_url + api_key)."
             ),
         }
 
-    backend = (
-        "gguf" if cfg.get("gguf_path") else
-        "transformer" if cfg.get("backend") == "transformer" else
-        "api"
-    )
-    model = cfg.get("model", "")
-    dim = cfg.get("dim", 1024)
-    gguf_path = cfg.get("gguf_path")
+    ep = _active_endpoint(cfg)
+    if not ep["base_url"]:
+        return {
+            "configured": True,
+            "backend": "api",
+            "provider": ep["provider"],
+            "model": ep["model"],
+            "dimension": ep["dim"],
+            "available": False,
+            "hint": (
+                f"Provider '{ep['provider']}' has no base_url configured. "
+                "Fix it with embeddings_model_set."
+            ),
+        }
 
-    # Check actual availability — read the SAME config path the rest of this
-    # module uses (embedding_config._CONFIG_PATH), not get_config_path(), so
-    # the availability probe and the section read can't disagree and tests can
-    # isolate it.
-    from slife.plugins.memdb.embeddings import EmbeddingClient, _check_runtime
+    # Probe the actual endpoint — same config path the rest of this module
+    # uses so the availability probe and the section read can't disagree.
+    from slife.plugins.memdb.embeddings import EmbeddingClient
     client = EmbeddingClient.from_config(config_path=str(_CONFIG_PATH), quiet=True)
 
     result: dict = {
         "configured": True,
-        "backend": backend,
-        "model": model,
-        "dimension": dim,
+        "backend": "api",
+        "provider": ep["provider"],
+        "model": ep["model"],
+        "dimension": client.dimension if client.available else ep["dim"],
         "available": client.available,
+        "base_url": ep["base_url"],
+        "enabled": bool(cfg.get("enabled", True)),
     }
 
-    if gguf_path:
-        result["gguf_path"] = gguf_path
-    if cfg.get("backend"):
-        result["cfg_backend"] = cfg["backend"]
-
     if client.available:
-        # All good — add a confirmation hint.
-        if backend == "gguf":
-            result["hint"] = (
-                f"GGUF embedding model ready: {model} (dim={dim}, path={gguf_path})"
-            )
-        elif backend == "transformer":
-            result["hint"] = (
-                f"Transformer embedding model ready: {model} (dim={dim})"
-            )
-        else:
-            result["hint"] = (
-                f"API embedding ready: {model} (dim={dim})"
-            )
+        result["hint"] = (
+            f"API embedding ready: provider={ep['provider']} "
+            f"model={client._model or ep['model']} (dim={client.dimension})"
+        )
     else:
-        # Diagnose WHY it's unavailable — file missing vs package missing
-        if backend == "gguf":
-            file_ok, file_msg = validate_gguf_path(gguf_path) if gguf_path else (False, "no path configured")
-            if not file_ok:
-                result["gguf_error"] = file_msg
-                result["hint"] = (
-                    f"GGUF file unavailable: {file_msg}. Download the model file "
-                    "or switch to the transformer / API backend with "
-                    "semantic_index_config."
-                )
-            elif not _check_runtime("gguf"):
-                result["hint"] = (
-                    f"GGUF file exists ({gguf_path}) but llama-cpp-python is not "
-                    "installed. Run: uv pip install llama-cpp-python. "
-                    "Until then semantic search (hybrid mode) is unavailable; "
-                    "keyword search (grep/fts5/time) still works."
-                )
-            else:
-                result["hint"] = (
-                    f"GGUF backend unavailable for an unknown reason. File: {gguf_path}"
-                )
-        elif backend == "transformer":
-            if not _check_runtime("transformer"):
-                result["hint"] = (
-                    f"Transformer model configured ({model}) but "
-                    "sentence-transformers is not installed. Run: "
-                    "uv pip install sentence-transformers. Until then semantic "
-                    "search (hybrid mode) is unavailable; keyword search "
-                    "(grep/fts5/time) still works."
-                )
-            else:
-                result["hint"] = (
-                    f"Transformer backend unavailable for an unknown reason. Model: {model}"
-                )
-        else:  # api
-            if not _check_runtime("api"):
-                result["hint"] = (
-                    "API key configured but the openai package is not installed. "
-                    "Run: uv pip install openai. Until then semantic search "
-                    "(hybrid mode) is unavailable; keyword search "
-                    "(grep/fts5/time) still works."
-                )
-            else:
-                result["hint"] = (
-                    "API backend is missing an api_key / base_url. Set "
-                    "memdb.embedding.base_url + api_key (unified OpenAI "
-                    "embeddings format — e.g. point at the local-embed plugin: "
-                    "base_url=http://127.0.0.1:8000/v1, api_key=local), or use "
-                    "semantic_index_config backend=api base_url=... api_key=..."
-                )
+        result["hint"] = (
+            f"API embedding unavailable (base_url={ep['base_url']}). "
+            "Check the endpoint is reachable and the openai package is "
+            "installed. Keyword search (grep/fts5/time) still works."
+        )
 
     return result

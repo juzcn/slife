@@ -5,7 +5,8 @@ Supports three backends:
   2. Local transformer model (sentence-transformers) — offline, HF hub
   3. OpenAI-compatible API — remote, requires API key
 
-Configured via slife.json5 → memory.embedding.
+Configured via slife.json5 → top-level ``embeddings`` section (shared by
+memdb + memfiles; OpenAI-compatible endpoints).
 
 Falls back gracefully when embeddings are unavailable — keyword
 search (FTS5) still works fine without vectors.
@@ -215,11 +216,16 @@ class EmbeddingClient:
     def from_config(cls, config_path: str | None = None, quiet: bool = False) -> "EmbeddingClient":
         """Create an EmbeddingClient from slife.json5 config.
 
-        Looks for:
-          - memory.embedding.gguf_path → local GGUF model (takes priority)
-          - memory.embedding.model → model name (for metadata and dim guessing)
-          - models.providers.<first>.api_key → for API backend
-          - models.providers.<first>.base_url → for API backend
+        Reads the first-class top-level ``embeddings`` section — the shared
+        memdb + memfiles config.  Two levels mirror the LLM
+        ``models.providers`` shape:
+
+          - ``embeddings.providers.<pid>.base_url/api_key`` — OpenAI-compatible
+            endpoint (local-embed is one such endpoint)
+          - ``embeddings.active_model`` = ``"provider/model"`` or bare
+            ``"provider"`` — configuration-authoritative.  A bare provider
+            (or a configured model the endpoint doesn't list) defers the
+            model to the endpoint's /v1/models active model on ``load()``.
 
         When *quiet* is True, unavailability messages are logged at DEBUG
         instead of WARNING — useful for health checks that probe status
@@ -248,70 +254,38 @@ class EmbeddingClient:
             _log_warn("config_parse_error err=%s", e)
             return cls(api_key="", quiet=quiet)
 
-        # Parse embedding config
-        memdb_cfg = raw.get("memdb", {})
-        emb_cfg = memdb_cfg.get("embedding", {}) if isinstance(memdb_cfg, dict) else {}
+        emb_cfg = raw.get("embeddings", {})
         if not isinstance(emb_cfg, dict):
             emb_cfg = {}
 
-        # For an OpenAI-compatible endpoint (unified format) the model is
-        # DETERMINED BY THE SERVER (e.g. the local-embed plugin's active
-        # model) — the config may omit ``model`` and it is discovered from
-        # /v1/models on load().  gguf/transformer need a concrete model.
-        model = emb_cfg.get("model", "")
-        cfg_backend = emb_cfg.get("backend", "")
-        gguf_path = emb_cfg.get("gguf_path")
-        device = emb_cfg.get("device", "")
-        enabled = emb_cfg.get("enabled", True)
+        enabled = bool(emb_cfg.get("enabled", True))
+        if not enabled:
+            return cls(enabled=False, quiet=quiet)
 
-        # A configured ``dim`` or a recognised model family makes the width
-        # authoritative; otherwise it is a provisional guess (1024) that must
-        # be confirmed by the backend before the vec0 table uses it — the
-        # server defers vec0 creation until ``dimension_known``.
-        _dim_known = bool(emb_cfg.get("dim")) or _known_model(model) is not None
+        from slife.plugins.memdb.embedding_config import _active_endpoint
+        ep = _active_endpoint(emb_cfg)
+        api_key = ep["api_key"]
+        base_url = ep["base_url"]
+        model = ep["model"]
+        dim = ep["dim"]
 
-        # If a GGUF path is configured, use it (takes priority over API)
-        if gguf_path:
-            gguf_path = str(Path(gguf_path).expanduser())
-            dim = emb_cfg.get("dim", _guess_dim(model, gguf_path))
-            return cls(model=model, gguf_path=gguf_path, dim=dim, dim_known=_dim_known,
-                       quiet=quiet, enabled=enabled)
+        # Skip unresolved ${VAR} placeholders — they are NOT real API keys.
+        # The install template ships with api_key: "${DEEPSEEK_API_KEY}" and
+        # real resolution happens at the Config level, not here.
+        if api_key and _looks_like_placeholder(api_key):
+            api_key = ""
 
-        # If backend is explicitly "transformer", use local HF model
-        if cfg_backend == "transformer":
-            dim = emb_cfg.get("dim", _guess_dim(model))
-            return cls(model=model, backend="transformer", dim=dim, dim_known=_dim_known,
-                       device=device, quiet=quiet, enabled=enabled)
-
-        # Otherwise, an OpenAI-compatible embeddings endpoint (remote, or
-        # local-embed serving on a port).  Unified format:
-        #   memdb.embedding: { model, base_url, api_key, dim }
-        # ``base_url`` follows the OpenAI URL convention — the client POSTs
-        # to ``{base_url}/embeddings``.  A ``base_url`` in the embedding
-        # section takes priority; otherwise fall back to the first provider.
-        api_key = emb_cfg.get("api_key", "")
-        base_url = emb_cfg.get("base_url", "")
         if not base_url:
-            models_cfg = raw.get("models", {})
-            providers = models_cfg.get("providers", {}) if isinstance(models_cfg, dict) else {}
-            for _pid, pcfg in providers.items():
-                if isinstance(pcfg, dict):
-                    api_key = pcfg.get("api_key", "")
-                    base_url = pcfg.get("base_url", "")
-                    # Skip unresolved ${VAR} placeholders — they are NOT real API keys.
-                    # The install template ships with api_key: "${DEEPSEEK_API_KEY}"
-                    # and real resolution happens at the Config level, not here.
-                    if api_key and _looks_like_placeholder(api_key):
-                        api_key = ""
-                    if api_key:
-                        break
-
-        if not api_key:
             _log_warn(
-                "embeddings_unavailable backend=none reason=no_api_key_and_no_base_url"
+                "embeddings_unavailable backend=none reason=no_base_url"
             )
 
-        dim = emb_cfg.get("dim", _guess_dim(model))
+        # A configured ``dim`` is authoritative; a recognised model family
+        # is a good guess.  Otherwise the width is provisional (1024) until
+        # the backend reports it (probe / /v1/models) before vec0 is built.
+        _dim_known = bool(dim) or _known_model(model) is not None
+        if not dim:
+            dim = _guess_dim(model)
         return cls(model=model, api_key=api_key, base_url=base_url, dim=dim,
                    dim_known=_dim_known, quiet=quiet, enabled=enabled)
 
@@ -526,12 +500,15 @@ class EmbeddingClient:
         self._dim_known = True
 
     async def _discover_model(self) -> bool:
-        """Query ``GET {base_url}/models`` for the endpoint's active model.
+        """Query ``GET {base_url}/models`` to pin the model + dimension.
 
-        The model is determined by the server (e.g. the local-embed
-        plugin's active model), not hardcoded in slife's config.  On
-        success this pins ``self._model`` to the server's active model and
-        ``self._dim`` to its reported dimension.  Returns True on success.
+        Model selection is CONFIGURATION-AUTHORITATIVE: when the config
+        names a model (``active_model = "provider/model"``), that id is
+        used verbatim and only its ``dimension`` (if reported) is picked
+        up.  When the config names no model (bare ``"provider"``), the
+        endpoint's ``active`` model wins (local-embed sets ``active:
+        true`` on /v1/models); otherwise the first entry.  On success this
+        pins ``self._model`` / ``self._dim``.  Returns True on success.
 
         Defensive about attributes — tests construct clients via
         ``__new__`` without running ``__init__``.
@@ -563,8 +540,30 @@ class EmbeddingClient:
         if not entries:
             return False
 
-        # Prefer the server's active model when reported (local-embed sets
-        # ``active: true`` on /v1/models); otherwise the first entry.
+        configured = getattr(self, "_model", "")
+        if configured:
+            # Configuration-authoritative: the configured id wins.  Just
+            # pick up its dimension when the endpoint reports one.
+            match = next(
+                (m for m in entries if getattr(m, "id", "") == configured),
+                None,
+            )
+            if match is not None:
+                new_dim = int(getattr(match, "dimension", 0) or 0)
+                if new_dim:
+                    if new_dim != self._dim:
+                        logger.info(
+                            "api_dim_override model=%s configured=%d actual=%d",
+                            self._model, self._dim, new_dim,
+                        )
+                        self._dim = new_dim
+                    self._dim_known = True
+                return True
+            # Configured model not listed by the endpoint — keep it anyway
+            # (the endpoint may serve it without listing), and probe its dim.
+            return True
+
+        # No configured model — endpoint's active (local-embed) or first entry.
         active = next(
             (m for m in entries if getattr(m, "active", False)),
             entries[0],

@@ -353,16 +353,19 @@
       }
     }
   },
-  memdb: {
-    embedding: {
-      // Unified OpenAI-embeddings-API format — every embedding model is a
-      // remote OpenAI-compatible endpoint.  The local-embed plugin (or a
-      // standalone local-embed server) serves a local GGUF model here.
-      // The MODEL is determined by the endpoint: slife discovers the
-      // plugin's active model from /v1/models on load.
-      base_url: "http://127.0.0.1:8000/v1",
-      api_key: "local",
-      enabled: true
-    }
+  // First-class embeddings — shared by memdb + memfiles.  Each provider is
+  // an OpenAI-compatible endpoint (base_url + api_key); the local-embed
+  // plugin (or a standalone local-embed server) serves local models here.
+  // active_model is "provider/model" (or bare "provider") — configuration-
+  // authoritative; the endpoint's /v1/models active flag is only a fallback.
+  embeddings: {
+    providers: {
+      "local-embed": {
+        base_url: "http://127.0.0.1:8000/v1",
+        api_key: "local"
+      }
+    },
+    active_model: "local-embed",
+    enabled: true
   }
 }

@@ -520,6 +520,18 @@ class AgentService:
         if name == "wechat":
             return await self.start_wechat()
 
+        # ── Memdb: fully generic turns DB — spawn, connect, register.
+        # The client is exposed on ToolContext so the embeddings_* native
+        # tools can hot-reload the semantic index after a config change.
+        if name == "memdb":
+            started = await self._spawn_plugin_generic(name, module)
+            if started:
+                self._tool_ctx.memdb_client = self._plugins["memdb"].client
+                self._start_generic_watchdog(name, module)
+            return (
+                PluginStartStatus.STARTED if started else PluginStartStatus.FAILED
+            )
+
         # ── Memfiles: fully generic private cabinet — spawn, connect, register.
         if name == "memfiles":
             started = await self._spawn_plugin_generic(name, module)
@@ -587,6 +599,10 @@ class AgentService:
 
         async def _restart() -> None:
             await self._spawn_plugin_generic(name, module)
+            if name == "memdb":
+                # Same re-point for the turns DB — otherwise the embeddings_*
+                # native tools hot-reload the semantic index against a dead client.
+                self._tool_ctx.memdb_client = self._plugins[name].client
             if name == "memfiles":
                 # _spawn_plugin_generic replaced self._plugins["memfiles"].client,
                 # but the harness's ToolContext still points at the dead client —
@@ -746,6 +762,9 @@ class AgentService:
             self._plugins[name].client = client
             self._plugins[name].process = process
             self._plugins[name].port = process.port
+            # Save the module for the watchdog's fallback restart path (no
+            # restart_cb — same contract as PluginLifecycle.spawn).
+            self._plugins[name]._module = module
             os.environ[plugin_port_env(name)] = str(process.port)
 
             # Readiness (MCP plugin contract): create_client() ran the
@@ -1142,51 +1161,6 @@ class AgentService:
         """Whether the WeChat plugin is connected."""
         return self._plugins["wechat"].client is not None and self._plugins["wechat"].client.is_connected
 
-    # ── Plugin spawn + register helper ────────────────────────────────
-
-    async def _spawn_and_register_plugin(
-        self,
-        name: str,
-        module: str,
-    ) -> None:
-        """Spawn a plugin child process, connect, and register its LLM-visible tools.
-
-        Delegates to ``PluginLifecycle.spawn()`` for the actual work.
-        """
-        await self._plugins[name].spawn(module)
-
-
-    async def start_memdb(self) -> bool:
-        """Connect to slife-memdb and register tools. Returns True on success."""
-        mem_cfg = self.config.memdb_config
-        assert mem_cfg is not None  # guaranteed by Config.__post_init__
-
-        logger.info("memdb_init_start")
-        try:
-            await self._spawn_and_register_plugin(
-                "memdb",
-                "slife.plugins.memdb.server",
-            )
-            self._plugins["memdb"].start_watchdog()
-            logger.info("memdb_init_done tools=%d", len(self.tool_registry.list_tools()))
-            from slife.health import record
-            record(
-                "memdb_service", "ok",
-                key="status", value="connected",
-                hint="memdb service started and tools registered.",
-            )
-            return True
-        except Exception as e:
-            logger.warning("memdb_init_failed err=%s fallback=continue_without_memdb", e)
-            from slife.health import record
-            record(
-                "memdb_service", "error",
-                key="status", value="failed",
-                hint=f"memdb service failed to start: {e}. "
-                     "Turn storage and search are unavailable.",
-            )
-            return False
-
     # ── WeChat lifecycle ───────────────────────────────────────────────
 
     async def start_wechat(self) -> PluginStartStatus:
@@ -1202,10 +1176,11 @@ class AgentService:
 
         logger.info("wechat_init_start")
         try:
-            await self._spawn_and_register_plugin(
-                "wechat",
-                "slife.plugins.wechat.server",
+            started = await self._spawn_plugin_generic(
+                "wechat", "slife.plugins.wechat.server",
             )
+            if not started:
+                raise RuntimeError("wechat plugin spawn failed")
 
             # Auto-restore session at startup (triggers server-side poll loop)
             wechat_client = self._plugins["wechat"].client
@@ -1222,10 +1197,9 @@ class AgentService:
             # Watchdog: on crash, respawn + restore poll loop
             async def _restart_wechat():
                 self._cancel_plugin_task("wechat")
-                await self._spawn_and_register_plugin(
-                    "wechat",
-                    "slife.plugins.wechat.server",
-                    )
+                await self._spawn_plugin_generic(
+                    "wechat", "slife.plugins.wechat.server",
+                )
                 wc = self._plugins["wechat"].client
                 if wc is not None:
                     try:

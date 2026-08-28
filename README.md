@@ -233,7 +233,7 @@ Every tool additionally accepts three tool meta-parameters: `_timeout` (per-call
 | Server | LLM-visible tools |
 |--------|-------------------|
 | `mcp` | `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools` |
-| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage`, `memdb_semantic_status`, `semantic_index_config`, `semantic_search_enable` |
+| `memdb` | `turn_list`, `turn_search`, `turn_read`, `turn_summarize`, `turn_count`, `turn_token_usage`, `memdb_semantic_status` |
 | `wechat` | `wechat_login`, `wechat_send_message`, `wechat_send_typing`, `wechat_check_messages`, `wechat_check_status`, `wechat_logout` |
 | `memfiles` | `note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `memfiles_semantic_status` |
 | `sharefile` | `share_file` |
@@ -257,7 +257,7 @@ Every turn is permanently recorded in SQLite (`~/.slife/<agent>.db`). Hybrid sea
 | `hybrid` | Semantic recall (FTS5 + vector → RRF merge) |
 | `time` | Browse by date |
 
-Embedding backends: **every embedding model is a remote OpenAI-compatible endpoint** (unified format — `memdb.embedding.base_url` + `api_key`). The **`local-embed` external plugin** (or a standalone local-embed server) serves a local GGUF/transformer model at `http://127.0.0.1:8000/v1`, loaded **once** and shared by `memdb` and `memfiles` — no double load. The model itself is **determined by the endpoint**: slife discovers the plugin's active model from `GET /v1/models`. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
+Embeddings are a **first-class top-level `embeddings` section** in `slife.json5` (shared by `memdb` + `memfiles`), managed by the native tools `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_provider_models_list`, and `embeddings_enable` (category `embeddings`). Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); `active_model` (`"provider/model"` or bare `"provider"`) is configuration-authoritative. The **`local-embed` external plugin** (or a standalone local-embed server) serves a local GGUF/transformer model at `http://127.0.0.1:8000/v1`, loaded **once** and shared by `memdb` and `memfiles` — no double load. The actual model is pinned from the endpoint's `GET /v1/models` when the config names no model. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
 Each turn records two timestamps — the user's input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers in the chat. User messages carry a compact **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** footnote (the turn id plus when the turn happened) so the LLM can reference turns by id (`turn_read` / `turn_summarize`) — and the human reads the same line in the TUI.
 

@@ -403,30 +403,47 @@ class TestActiveModel:
         assert "Available" in str(exc_info.value)
 
 
-# ── MemdbConfig ──────────────────────────────────────────────────────
+# ── EmbeddingsConfig ──────────────────────────────────────────────────
 
 
-class TestMemdbConfigFromDict:
-    """Tests for MemdbConfig.from_dict."""
+class TestEmbeddingsConfigFromDict:
+    """Tests for EmbeddingsConfig.from_dict (top-level ``embeddings``)."""
 
     def test_non_dict_returns_default(self):
-        from slife.config import MemdbConfig
-        result = MemdbConfig.from_dict("not a dict")
-        assert result.embedding_model == "text-embedding-3-small"
+        from slife.config import EmbeddingsConfig
+        result = EmbeddingsConfig.from_dict("not a dict")
+        assert result.providers == {}
+        assert result.active_model == ""
+        assert result.enabled is True
 
-    def test_non_dict_embedding(self):
-        from slife.config import MemdbConfig
-        result = MemdbConfig.from_dict({"embedding": "not a dict"})
-        assert result.embedding_model == "text-embedding-3-small"
-        assert result.embedding_dim == 1536
-
-    def test_custom_values(self):
-        from slife.config import MemdbConfig
-        result = MemdbConfig.from_dict({
-            "embedding": {"model": "custom-model", "dim": 768},
+    def test_parses_providers_and_active(self):
+        from slife.config import EmbeddingsConfig
+        result = EmbeddingsConfig.from_dict({
+            "providers": {
+                "local-embed": {"base_url": "http://127.0.0.1:8000/v1"},
+                "openai": {"base_url": "https://api.openai.com/v1"},
+            },
+            "active_model": "local-embed",
+            "enabled": False,
         })
-        assert result.embedding_model == "custom-model"
-        assert result.embedding_dim == 768
+        assert result.active_model == "local-embed"
+        assert set(result.providers) == {"local-embed", "openai"}
+        assert result.enabled is False
+
+    def test_active_falls_back_to_first_provider(self):
+        from slife.config import EmbeddingsConfig
+        result = EmbeddingsConfig.from_dict({
+            "providers": {"p1": {}, "p2": {}},
+            "active_model": "nonexistent",
+        })
+        assert result.active_model == "p1"
+
+    def test_no_active_uses_first_provider(self):
+        from slife.config import EmbeddingsConfig
+        result = EmbeddingsConfig.from_dict({
+            "providers": {"p1": {}, "p2": {}},
+        })
+        assert result.active_model == "p1"
 
 
 # ── parse_cli_agent ────────────────────────────────────────────────────
