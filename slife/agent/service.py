@@ -332,6 +332,9 @@ class AgentService:
         # MCP enrichment guard: coalesces per-server tool discovery between
         # startup glue and mcp_set callbacks.
         self._mcp_syncing: set[str] = set()
+        # On-demand reconcile guard: prevents concurrent mcp_tool_load /
+        # tools/list_changed reconciliation from racing.
+        self._mcp_reconciling: bool = False
 
         # A2A integration state
         self._subagent_manager = None
@@ -808,7 +811,7 @@ class AgentService:
         self._tool_ctx.mcp_client = client
         if client is not None:
             client.on_notification = self._on_mcp_tools_changed
-        await self._discover_mcp_external_tools()
+        await self._sync_mcp_proxies()
 
     async def _on_mcp_tools_changed(self, method: str = "", _params=None) -> None:
         """A ``notifications/tools/list_changed`` from the wrapper: re-sync.
@@ -820,45 +823,83 @@ class AgentService:
         if method and not method.endswith("tools/list_changed"):
             return
         try:
-            await self._discover_mcp_external_tools()
+            await self._sync_mcp_proxies()
         except Exception:
             logger.debug("mcp_tools_changed_sync_failed", exc_info=True)
 
-    async def _discover_mcp_external_tools(self) -> None:
-        """Register ``{server}__{tool}`` native proxies for connected servers.
+    async def _sync_mcp_proxies(self) -> None:
+        """Reconcile external MCP tool proxies (on-demand model).
 
         Reads the configured server list LIVE from the wrapper (``mcp_list``),
-        so neither slife nor subagents need mcp-plugin.json5.
+        so neither slife nor subagents need mcp-plugin.json5.  Two jobs:
+
+        1. Servers with ``auto_load: true`` get their tools bulk-registered
+           (full-diff, unchanged — ``_discover_and_register_external_tools``).
+        2. Every OTHER loaded EXTERNAL proxy (an on-demand ``mcp_tool_load``)
+           is validated via ``__mcp_get_tool`` — if the tool vanished, its
+           server disconnected, or it was disabled, the proxy is unregistered.
+
+        This is the ONLY tool-maintenance path for non-auto_load servers:
+        external tools are on-demand by default and there is no bulk
+        registration for them.
         """
+        from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
+
         client = self._plugins["mcp"].client
         if client is None or not client.is_connected:
             return
+        if self._mcp_reconciling:
+            return
+        self._mcp_reconciling = True
         try:
-            raw = await client.call_tool("mcp_list")
-            servers = json.loads(raw)
-        except Exception as e:
-            logger.debug("mcp_external_discover_failed err=%s", e)
-            return
-        if not isinstance(servers, list):
-            return
-        for server in servers:
-            if not isinstance(server, dict) or server.get("enabled") is False:
-                continue
-            name = server.get("name")
-            if not name:
-                continue
             try:
-                await self._discover_and_register_external_tools(server_name=name)
-            except Exception:
-                logger.debug("mcp_external_tools_failed server=%s", name, exc_info=True)
+                raw = await client.call_tool("mcp_list")
+                servers = json.loads(raw)
+            except Exception as e:
+                logger.debug("mcp_reconcile_list_failed err=%s", e)
+                servers = []
+            auto_servers: set[str] = set()
+            if isinstance(servers, list):
+                for s in servers:
+                    if (
+                        isinstance(s, dict)
+                        and s.get("enabled") is not False
+                        and s.get("auto_load") is True
+                        and s.get("name")
+                    ):
+                        auto_servers.add(s["name"])
+
+            for name in auto_servers:
+                try:
+                    await self._discover_and_register_external_tools(server_name=name)
+                except Exception:
+                    logger.debug("mcp_auto_load_sync_failed server=%s", name, exc_info=True)
+
+            # Validate on-demand proxies (those not owned by an auto_load
+            # server — the full-diff path owns auto_load tools).
+            for tool in list(self.tool_registry.list_tools()):
+                if not (isinstance(tool, MCPProxyTool) and tool._route == ProxyRoute.EXTERNAL):
+                    continue
+                if getattr(tool, "_server", "") in auto_servers:
+                    continue
+                try:
+                    raw = await client.call_tool("__mcp_get_tool", {"full_name": tool.name})
+                    data = json.loads(raw)
+                except Exception:
+                    data = {"status": "error"}
+                if data.get("status") != "ok" or data.get("enabled") is not True:
+                    if self.tool_registry.unregister(tool.name):
+                        logger.debug("mcp_proxy_reconciled_unload full_name=%s", tool.name)
+        finally:
+            self._mcp_reconciling = False
 
     async def _register_external_server_tools(self, name: str = "", **kwargs) -> None:
-        """mcp_set / mcp_set_enabled connected a server — register its tools.
+        """mcp_set / mcp_set_enabled connected a server — reconcile proxies.
 
         (Persistence happens inside mcp-plugin; this only touches the registry.)
         """
         if name:
-            await self._discover_and_register_external_tools(server_name=name)
+            await self._sync_mcp_proxies()
 
     async def _unregister_external_server_tools(self, name: str = "", **kwargs) -> None:
         """mcp_remove / mcp_set_enabled disabled a server — drop its tools."""
@@ -908,7 +949,7 @@ class AgentService:
         """
         await self._connect_plugin_http("mcp", port)
         await self._register_plugin_tools("mcp")
-        await self._discover_mcp_external_tools()
+        await self._sync_mcp_proxies()
         logger.info("mcp_http_connect_done tools=%d", len(self.tool_registry.list_tools()))
 
     async def connect_memdb_http(self, port: int) -> None:

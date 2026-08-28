@@ -1,11 +1,12 @@
-"""mcp-plugin CLI — configure and test external MCP servers.
+"""mcp-plugin CLI — configure and maintain external MCP servers.
 
 Commands:
   ``mcp-plugin``               overview of configured servers
   ``mcp-plugin set <s>``       interactively add/configure a server
   ``mcp-plugin remove <s>``    remove a server (takes effect next server start)
-  ``mcp-plugin test [--port N]``  start the plugin server and verify it serves MCP
-  ``mcp-plugin test mcp <s>``     bare-connect to one server (no framework) and list its tools
+  ``mcp-plugin build``         rebuild the tool catalog DB + index from live
+                               connections (manual config edits, external MCP
+                               updates, embeddings model changes)
 
 The CLI is a thin front-end over the same library the server uses: reads and
 writes mcp-plugin.json5 through :mod:`mcp_plugin.config` and connects through
@@ -21,10 +22,9 @@ import os
 import sys
 
 from mcp_plugin import config as plugin_config
-from mcp_plugin.client import MCPClient
 from mcp_plugin.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
 from mcp_plugin.connection import ServerConfig
-from mcp_plugin.platform import kill_process_tree, resolve_command
+from mcp_plugin.platform import resolve_command
 
 # Snakeable for tests.
 _input_fn = input
@@ -46,18 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_remove = sub.add_parser("remove", help="Remove a server from config.")
     p_remove.add_argument("server", help="Server name.")
 
-    p_test = sub.add_parser(
-        "test", help="Start the plugin server and verify it, or bare-check one MCP server."
+    sub.add_parser(
+        "build", help="Rebuild the tool catalog DB + index from live connections.",
     )
-    p_test.add_argument(
-        "--port", type=int, default=0,
-        help="Port for the plugin server (default: auto-assign a free port).",
-    )
-    test_sub = p_test.add_subparsers(dest="test_command")
-    p_test_mcp = test_sub.add_parser(
-        "mcp", help="Bare-connect to a server (no framework) and list its tools."
-    )
-    p_test_mcp.add_argument("server", help="MCP server name.")
 
     return parser
 
@@ -72,8 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         return _set_cmd(args.server)
     if command == "remove":
         return _remove_cmd(args.server)
-    if command == "test":
-        return asyncio.run(_test_cmd(args))
+    if command == "build":
+        return asyncio.run(_build_cmd())
     print(f"Unknown command: {command}")
     return 2
 
@@ -101,118 +92,118 @@ def _overview() -> int:
     return 0
 
 
-# ── test ────────────────────────────────────────────────────────────────
+# ── build ───────────────────────────────────────────────────────────────
 
 
-async def _test_cmd(args: argparse.Namespace) -> int:
-    if args.test_command == "mcp":
-        return await _test_mcp_cmd(args.server)
-    return await _test_plugin_cmd(port=args.port)
+async def _build_cmd() -> int:
+    """Rebuild the tool catalog DB + index from live connections.
 
-
-async def _test_plugin_cmd(*, port: int = 0) -> int:
-    """Start the REAL plugin server and verify it serves MCP end-to-end.
-
-    Spawns ``python -m mcp_plugin.server`` (the same entry Slife launches),
-    reads its ``{"port": N}`` ready signal, connects over Streamable HTTP,
-    and reports the external servers the plugin auto-connected.  This drives
-    the plugin's actual startup path — not a re-implementation of it.
+    Handles manual config edits, external MCP tool updates, and embeddings
+    model changes.  Connects every enabled server IN PARALLEL, re-syncs its
+    tools, rebuilds the FTS index, and (when an embeddings endpoint is
+    configured) re-embeds the whole catalog.  Unreachable servers are
+    reported, not fatal.
     """
-    import json
+    import asyncio
 
-    cmd = [sys.executable, "-m", "mcp_plugin.server"]
-    if port:
-        cmd += ["--port", str(port)]
-    print(f"plugin startup: spawning {' '.join(cmd)} ...")
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    client: MCPClient | None = None
+    from mcp_plugin.connection import ConnectionPool, ServerStatus
+    from mcp_plugin.embeddings import EmbeddingClient
+    from mcp_plugin.store import ToolStore
+
+    #: Per-server connect cap — a hung npx/uvx spawn must not stall the build.
+    _CONNECT_TIMEOUT = 60.0
+
+    raw = plugin_config.load_config()
+    servers = plugin_config._servers_dict(raw)
+    # Full rebuild — EVERY configured server, including disabled ones (a
+    # disabled server's tools are cataloged but marked disabled).
+    all_servers = [
+        (n, e, e.get("enabled") is not False)
+        for n, e in servers.items() if isinstance(e, dict)
+    ]
+    if not all_servers:
+        print("No servers configured. Nothing to build.")
+        return 0
+
+    store = ToolStore(plugin_config.db_path())
+    await store.open()
+    pool = ConnectionPool()
+    connected: list[str] = []
+    failed: list[str] = []
     try:
-        stdout = proc.stdout
-        if stdout is None:
-            print("[FAIL] plugin server produced no stdout stream")
-            return 1
-        try:
-            line = await asyncio.wait_for(stdout.readline(), timeout=30.0)
-            serving_port = int(json.loads(line.decode("utf-8").strip())["port"])
-        except Exception as e:  # noqa: BLE001 - any failure to read the port
-            print(f"[FAIL] plugin server did not signal a port: {e}")
-            return 1
+        n_disabled = sum(1 for _, _, en in all_servers if not en)
+        header = f"[build] connecting to {len(all_servers)} servers"
+        if n_disabled:
+            header += f" ({n_disabled} disabled — their tools will be marked disabled)"
+        print(header, flush=True)
 
-        url = f"http://127.0.0.1:{serving_port}/mcp"
-        print(f"plugin server: ready on port {serving_port}")
-        client = MCPClient()
-        try:
-            await client.connect(url)
-        except Exception as e:  # noqa: BLE001 - report connect failure
-            print(f"[FAIL] plugin MCP connect failed: {type(e).__name__}: {e}")
-            return 1
+        async def _connect_one(name: str, entry: dict):
+            try:
+                cfg = plugin_config.resolve_server_config(name, entry)
+                cfg.enabled = True  # build catalogs disabled servers too (then marks them)
+                conn = await asyncio.wait_for(
+                    pool.add_server(cfg), timeout=_CONNECT_TIMEOUT,
+                )
+            except Exception as e:  # noqa: BLE001 - report any connect failure
+                return name, None, f"{type(e).__name__}: {e}"
+            if conn.status == ServerStatus.CONNECTED:
+                return name, conn, None
+            return name, None, conn.error or conn.status.value
 
-        tools = await client.list_tools()
-        mgmt = sorted({t.get("name", "") for t in tools} & _MANAGEMENT_TOOLS)
-        print(f"[OK] plugin connected: {len(tools)} tools, "
-              f"{len(mgmt)} management tools ({', '.join(mgmt)})")
-
-        servers = await _plugin_servers_report(client)
-        if not servers:
-            print("  (no external servers reported)")
-        for name, info in servers.items():
-            if info.get("state") == "running":
-                print(f"  [OK] {name}: running, {info.get('tool_count', 0)} tools")
+        enabled_by_name = {n: en for n, _, en in all_servers}
+        tasks = [asyncio.create_task(_connect_one(n, e)) for n, e, _ in all_servers]
+        for fut in asyncio.as_completed(tasks):
+            name, conn, err = await fut
+            if err:
+                failed.append(f"{name}: {err}")
+                print(f"  [--] {name}: {err}", flush=True)
             else:
-                err = f" — {info.get('error')}" if info.get("error") else ""
-                print(f"  [--] {name}: {info.get('status', 'stopped')}{err}")
+                assert conn is not None  # err is None ⇒ a connected connection
+                result = await store.sync_server(name, conn.list_tools())
+                connected.append(name)
+                if not enabled_by_name[name]:
+                    await store.disable_server_tools(name)
+                    print(
+                        f"  [--] {name} (disabled): {result['upserted']} tools "
+                        "marked disabled",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"  [OK] {name}: {result['upserted']} tools", flush=True,
+                    )
+
+        await store.rebuild_fts()
+        total = await store.count_tools()
+        print(f"[build] catalog: {total} tools from {len(connected)}/{len(all_servers)} servers")
+
+        semantic = "disabled (no embeddings section in mcp-plugin.json5)"
+        emb = EmbeddingClient.from_plugin_config()
+        if emb.available:
+            if await emb.load():
+                await store.drop_embeddings()
+                model_id = f"api:{emb.model}"
+                while True:
+                    docs = await store.get_unembedded_docs(limit=20)
+                    if not docs:
+                        break
+                    for doc in docs:
+                        vec = await emb.embed_one(doc["text"])
+                        if vec:
+                            await store.replace_embedding(doc["doc_id"], vec, model_id)
+                await store.set_meta("embedding_model", model_id)
+                semantic = f"{emb.model} (dim={emb.dimension}, {total} embedded)"
+            else:
+                semantic = "configured but failed to load"
+        print(f"[build] embeddings: {semantic}")
+
         return 0
     finally:
-        if client is not None:
-            try:
-                await client.disconnect()
-            except Exception:  # noqa: BLE001, S110 - best-effort cleanup
-                pass
-        # Kill the plugin AND its spawned external servers (orphan-free).
-        await kill_process_tree(proc)
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except TimeoutError:
-            proc.kill()
+        await pool.shutdown()
+        await store.close()
 
 
-_MANAGEMENT_TOOLS = frozenset({
-    "mcp_list", "mcp_set", "mcp_remove", "mcp_set_enabled",
-    "mcp_list_tools", "__mcp_call_tool", "__mcp_connection_status",
-})
-
-
-async def _plugin_servers_report(client: MCPClient, timeout: float = 25.0) -> dict:
-    """Poll the plugin's live connection status until servers settle (≤*timeout*).
-
-    The plugin's lifespan auto-connects enabled servers concurrently and
-    fire-and-forget (so the ready signal is never blocked), so the test waits
-    up to *timeout* for them to reach a terminal state, mirroring how the
-    agent discovers the plugin's connections.
-    """
-    import json
-
-    deadline = asyncio.get_running_loop().time() + timeout
-    report: dict = {}
-    while True:
-        raw = await client.call_tool("__mcp_connection_status", {})
-        try:
-            report = {s["name"]: s for s in json.loads(raw)}
-        except json.JSONDecodeError:  # status not ready yet — tool returned "Error: …"
-            pass
-        pending = [
-            s for s in report.values()
-            if s.get("status") in ("connecting", "disconnected")
-        ]
-        if not pending or asyncio.get_running_loop().time() >= deadline:
-            break
-        await asyncio.sleep(0.5)
-    return report
+# ── single-server check (used by `set`'s "Test connection now?") ────────
 
 
 async def _test_mcp_cmd(server: str) -> int:

@@ -445,7 +445,7 @@ legitimately exclude for loopback-only traffic, and it removes the dependency
 on the user's proxy config being correct.
 
 **Scope — external MCP servers are unaffected.** Outbound traffic to the
-configured external MCP servers (`mcp.servers`) goes through the *mcp-plugin*
+configured external MCP servers (`mcp-plugin.json5` → `servers`) goes through the *mcp-plugin*
 gateway's own client (`mcp-plugin/mcp_plugin/connection.py`), which keeps
 `trust_env=True` — a remote server that genuinely needs the proxy still gets
 it. Only the local
@@ -482,7 +482,8 @@ Processes communicate through environment variables:
 
 | Plugin | Transport | Role |
 |--------|-----------|------|
-| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config. |
+| **slife-mcp** | Streamable HTTP | Gateway for external MCP servers (stdio / SSE / Streamable HTTP). Manages connection lifecycle — spawn/connect, route tool calls, persist config — and keeps a persistent **tool catalog** (`mcp-plugin.db`) of every loaded tool (name, description, enabled), searched via `mcp_tool_search` and loaded on demand via `mcp_tool_load` (per-server `auto_load` restores wholesale registration). |
+| **local-embed** | Streamable HTTP + `/v1/embeddings` | External embedding service provider — OpenAI-compatible `POST /v1/embeddings` + `GET /v1/models` (+ `/v1/models/{id}`) on the same port, from one local GGUF/transformer model loaded once and shared by memdb, memfiles, and the mcp tool catalog. Sole MCP tool is the internal `__embed_status`. |
 | **slife-memdb** | Streamable HTTP | Turns database (backing table `diary`). Hybrid search (FTS5 + vec0 vector). Turn persistence, session restore, embedding configuration. |
 | **slife-wechat** | Streamable HTTP | Bidirectional WeChat messaging via iLink ClawBot. Long-poll loop for incoming messages, typing indicators, dispatch for replies. |
 | **slife-memfiles** | Streamable HTTP | Private notes/diary/files cabinet — tools (`note_save`, `diary_write`, `file_save`, `url_save`, `note_list`, `diary_list`, `note_read`, `diary_read`, `list_files`, `cabinet_search`, `cabinet_read`, `memfiles_semantic_status`, plus the scheduled-task and report tools `scheduled_task_set`/`remove`/`list`, `scheduled_run_list`/`skip`, `save_cron_report`, `report_list`/`read`), internal `__cabinet_status`. Notes & diary dual-written to markdown + a SQLite index (`{agent}.files/.index.db`, FTS5 + vec0) that reuses memdb's `SemanticManager` and RRF `merge_hybrid`. |
@@ -506,19 +507,51 @@ Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remo
 
 `mcp_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp` (a standalone tool, also run by `system_health`) calls the internal `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
 
+**Tool catalog & on-demand loading.** The gateway persists every loaded
+external tool into a tool catalog (`mcp-plugin.db`, next to its config): one
+row per `{server}__{tool}` with name, description, and a per-tool `enabled`
+flag derived from its server's state. The catalog survives restarts and is
+indexed twice — FTS5 (keyword) and f32-BLOB vectors (semantic) produced
+against the gateway's own `embeddings` section of `mcp-plugin.json5`
+(`mcp_embeddings_set` / `mcp_embeddings_remove` manage it; `mcp_semantic_status`
+reports readiness). `mcp_tool_search` runs hybrid/keyword/grep retrieval over
+the catalog, degrading to keyword-only when no embedding endpoint is
+configured or the semantic index is still building.
+
+External tools are **loaded on demand**: the host registers none of them by
+default. The model discovers a tool with `mcp_tool_search` and loads it into
+its toolset with the native `mcp_tool_load(full_name)`, which fetches the live
+schema + enabled state via the internal `__mcp_get_tool` and refuses a
+disabled tool. A server with `auto_load: true` keeps the older wholesale
+registration — its tools are registered whenever it connects. Enable/disable
+is always **server-granular** (`mcp_set_enabled`): disabling a server
+disconnects it, marks its catalog tools disabled (refused at call time), and
+drops its loaded proxies; there is no per-tool toggle. Every
+`tools/list_changed` notification runs a host-side reconcile
+(`_sync_mcp_proxies`) that validates each loaded on-demand proxy via
+`__mcp_get_tool` and unregisters any whose tool vanished, server disconnected,
+or was disabled.
+
+`mcp-plugin build` rebuilds the catalog and both indexes from live
+connections — connecting every configured server (disabled ones included,
+their tools then marked disabled), re-syncing the tool rows, rebuilding FTS,
+and re-embedding the whole catalog against the configured endpoint.
+
 Server lifecycle:
 
 ```
-disabled ──[mcp_set_enabled(name, enabled=true)]──→ enabled (connected, tools registered)
-enabled  ──[mcp_set_enabled(name, enabled=false)]─→ disabled (disconnected, tools unregistered)
+disabled ──[mcp_set_enabled(name, enabled=true)]──→ enabled (connected, catalog tools enabled)
+enabled  ──[mcp_set_enabled(name, enabled=false)]─→ disabled (disconnected, catalog tools disabled)
 enabled  ──[mcp_set(changed config)]───────────────→ restarted with new settings
 ```
 
-All state changes persist to `slife.json5`. Servers needing OAuth use a device-code flow (see below); tokens are stored in the credential store via credstore (`mcp_oauth_*`).
+All state changes persist to `mcp-plugin.json5` (self-hosted by the gateway).
+Servers needing OAuth use a device-code flow (see below); tokens are stored in
+the credential store via credstore (`mcp_oauth_*`).
 
 ### Subagent MCP Tool Discovery
 
-Subagents inherit `SLIFE_MCP_PORT` from the parent environment, connect to the existing MCP wrapper over Streamable HTTP, and eagerly discover external MCP tools at startup via `_discover_existing_mcp_tools()` — listing tools from already-connected servers without spawning new processes or mutating config. This keeps tool naming consistent between main agent and subagents (`server__tool` in both).
+Subagents inherit `SLIFE_MCP_PORT` from the parent environment, connect to the existing MCP wrapper over Streamable HTTP, and share the same on-demand model: they register the wrapper's management + tool-catalog tools, and load an external tool with `mcp_tool_load` exactly like the main agent. A `tools/list_changed` notification runs the same reconcile (`_sync_mcp_proxies`) that validates loaded proxies. This keeps tool naming consistent between main agent and subagents (`server__tool` in both).
 
 ## Memory (MemDB)
 
@@ -600,7 +633,7 @@ shared by memdb + memfiles and managed by the native tools
 
 **Write path is insert-only.** `save_turn` persists the row and never embeds on the save path (a slow GGUF embed of a large turn previously tripped the harness's 10s save timeout — a false alarm; the row was saved anyway). Embedding is an internal plugin concern: after each insert `__memory_save_turn` calls `manager.on_saved()` — a non-blocking `event.set()` that wakes the idle drainer, so the turn becomes semantically searchable shortly after save once the gate re-opens. `turn_summarize` writes only the `summary`/`tags` columns — a recall clue for keyword (FTS5) search — and never touches the semantic index, which keeps the turn's full-text vectors intact. A passed `rowid` annotates that specific turn; **omitting it captures the current (in-flight) turn** — the tool returns "captured" without writing, and `save_to_memory` extracts the call and rides the summary/tags onto the new row at save (`_extract_turn_annotation`), so the model can annotate the turn it is completing mid-loop with no `latest_rowid()` race.
 
-**SemanticManager — the lifecycle actor.** `SemanticManager` (`semantic.py`) owns the binary gate, the embedder instance, and an event-driven index drainer as one object — the only place the gate is written. It is document-generic (a store contract: `count_unembedded` / `get_unembedded_docs` / `replace_embedding_chunks` / `reconfigure_for_embedding`), so memdb's `SessionStore` and memfiles' `MemfilesStore` both drive their own instance — the two plugins' gates are independent. The gate (`semantic_ready`) opens exactly when `embedder_ready ∧ count_unembedded() == 0`; there are no intermediate states. `enable(cfg)` / `disable()` are blocking config transitions (load model, migrate vec0 in place, start/stop the drainer); `on_saved()` is a non-blocking `event.set()` wake. The drainer loops: `count_unembedded() == 0` → gate ON, wait on the `asyncio.Event` (no polling); else → gate OFF, embed one batch (atomic `replace_embedding_chunks`). A persistently failing embedder is bounded by a no-progress limit → state `stalled`, and only `enable()` (a config change) resets it. The state machine (`disabled | loading | indexing | ready | stalled`) and a human `reason` are reported separately from the binary gate — `memdb_semantic_status` surfaces both. While the gate is OFF, hybrid degrades to FTS5-only with a hint naming the reason — partial semantic results are never served. The embedder is owned in-process (no cross-module `reload_embedder` global mutation), so the `python -m` double-module hazard that once left the gate stuck is structurally impossible.
+**SemanticManager — the lifecycle actor.** `SemanticManager` (`semantic.py`) owns the binary gate, the embedder instance, and an event-driven index drainer as one object — the only place the gate is written. It is document-generic (a store contract: `count_unembedded` / `get_unembedded_docs` / `replace_embedding_chunks` / `reconfigure_for_embedding`), so memdb's `SessionStore`, memfiles' `MemfilesStore`, and mcp-plugin's `ToolStore` each drive their own instance — the three gates are independent. mcp-plugin's tool catalog is a lighter variant of the same pattern: one tool = one embedding of its name + description (no chunking), vectors stored as f32 BLOBs and matched by brute-force cosine in Python (the corpus is small, so no sqlite-vec dependency), and a model change drops the stored vectors before re-embedding. The gate (`semantic_ready`) opens exactly when `embedder_ready ∧ count_unembedded() == 0`; there are no intermediate states. `enable(cfg)` / `disable()` are blocking config transitions (load model, migrate vec0 in place, start/stop the drainer); `on_saved()` is a non-blocking `event.set()` wake. The drainer loops: `count_unembedded() == 0` → gate ON, wait on the `asyncio.Event` (no polling); else → gate OFF, embed one batch (atomic `replace_embedding_chunks`). A persistently failing embedder is bounded by a no-progress limit → state `stalled`, and only `enable()` (a config change) resets it. The state machine (`disabled | loading | indexing | ready | stalled`) and a human `reason` are reported separately from the binary gate — `memdb_semantic_status` surfaces both. While the gate is OFF, hybrid degrades to FTS5-only with a hint naming the reason — partial semantic results are never served. The embedder is owned in-process (no cross-module `reload_embedder` global mutation), so the `python -m` double-module hazard that once left the gate stuck is structurally impossible.
 
 **Search.** `turn_search` has four modes (`grep` / `fts5` / `hybrid` / `time`). `hybrid` runs the FTS5 keyword query and a vec0 KNN side by side, then merges via Reciprocal Rank Fusion (k=60, `search.py`). sqlite-vec forbids any auxiliary-column constraint or JOIN inside a KNN query, so the KNN runs alone, time-window filtering happens in Python (with a wider fetch pool), and `user_message` is fetched in a second query.
 
@@ -887,7 +920,7 @@ Known API key shapes (`sk-*`, `ghp_*`, `ya29.*`, `pypi-*`), `Authorization: Bear
 | `active_model` | Currently active model ref (`provider/model`) |
 | `agent` | `max_iterations`, `tool_timeout`, `context_floor`, `context_ceiling`, `tool_result_ceiling`, `heartbeat_interval` |
 | `tools` | Per-tool overrides (timeout, enabled) |
-| `mcp.servers` | External MCP server configs |
+| `mcp-plugin.json5: servers` | External MCP server configs (self-hosted by the gateway) |
 | `embeddings` | First-class embeddings config: `providers` (OpenAI-compatible endpoints), `active_model`, `enabled` — shared by memdb + memfiles |
 | `wechat` | `enabled` toggle |
 | `media` | Non-chat generation config (defaults, providers → api adapter + models) — plugin-read, ignored by the main `Config` parser |
@@ -1076,7 +1109,7 @@ credstore/
 
 mcp-plugin/             # Standalone workspace member — the external MCP gateway
   mcp_plugin/           #   (raw JSON-RPC: stdio/SSE/streamable), registered via plugins.external
-    cli.py              #   mcp-plugin CLI (set / remove / test [--port N] / test mcp <server>)
+    cli.py              #   mcp-plugin CLI (set / remove / build)
     server.py           #   FastMCP gateway server; main() accepts --port
     connection.py       #   ConnectionPool / MCPServerConnection
     client.py           #   Streamable HTTP client (used by the harness & CLI)

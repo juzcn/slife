@@ -60,6 +60,7 @@ class ServerConfig:
     auth: dict | None = None  # OAuth config for device code flow
     source: dict | None = None  # provenance metadata (e.g. {"type": "rest_api"})
     os_paths: bool = False  # inject --allow-path from the OS-accessible path set
+    auto_load: bool = False  # True = host bulk-registers this server's tools on connect
 
     @property
     def transport(self) -> str:
@@ -80,7 +81,7 @@ class MCPServerConnection:
     def __init__(
         self,
         config: ServerConfig,
-        on_connected: Callable[[], Awaitable[None]] | None = None,
+        on_connected: Callable[[str], Awaitable[None]] | None = None,
     ):
         self.config = config
         self._status = ServerStatus.DISCONNECTED
@@ -315,7 +316,7 @@ class MCPServerConnection:
         logger.info("mcp_connected server=%s", self.config.name)
         if self._on_connected is not None:
             try:
-                await self._on_connected()
+                await self._on_connected(self.config.name)
             except Exception:
                 logger.exception(
                     "mcp_on_connected_failed server=%s",
@@ -1084,7 +1085,7 @@ class MCPServerConnection:
 class ConnectionPool:
     """Manages a collection of MCP server connections."""
 
-    def __init__(self, on_connected: Callable[[], Awaitable[None]] | None = None):
+    def __init__(self, on_connected: Callable[[str], Awaitable[None]] | None = None):
         self._connections: dict[str, MCPServerConnection] = {}
         # Fired on every successful RECONNECT of any server (never on the
         # first connect — see MCPServerConnection.connect).  The wrapper wires
@@ -1141,6 +1142,7 @@ class ConnectionPool:
                 "args": list(conn.config.args),
                 "url": conn.config.url,
                 "enabled": conn.config.enabled,
+                "auto_load": conn.config.auto_load,
                 "description": conn.config.description,
             }
             for name, conn in self._connections.items()

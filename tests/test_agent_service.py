@@ -107,13 +107,13 @@ class TestAgentServiceMCPEnrichment:
     @pytest.mark.asyncio
     async def test_wire_mcp_glue_wires_handler_and_harvests(self, sample_config):
         """_wire_mcp_glue re-points the tool context, wires the
-        tools/list_changed handler, and re-runs external-tool discovery."""
+        tools/list_changed handler, and re-runs the proxy reconcile."""
         service = AgentService(sample_config)
         client = AsyncMock()
         client.is_connected = True
         service._plugins["mcp"].client = client
 
-        with patch.object(service, "_discover_mcp_external_tools", AsyncMock()) as mock_disc:
+        with patch.object(service, "_sync_mcp_proxies", AsyncMock()) as mock_sync:
             await service._wire_mcp_glue()
 
         assert service._tool_ctx.mcp_client is client
@@ -121,57 +121,115 @@ class TestAgentServiceMCPEnrichment:
         assert client.on_notification is not None
         assert client.on_notification.__self__ is service
         assert client.on_notification.__func__ is AgentService._on_mcp_tools_changed
-        mock_disc.assert_awaited_once()
+        mock_sync.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_on_tools_changed_triggers_reharvest(self, sample_config):
-        """A tools/list_changed notification from the wrapper re-syncs tools."""
+        """A tools/list_changed notification from the wrapper re-syncs proxies."""
         service = AgentService(sample_config)
         service._plugins["mcp"].client = AsyncMock()
-        with patch.object(service, "_discover_mcp_external_tools", AsyncMock()) as mock_disc:
+        with patch.object(service, "_sync_mcp_proxies", AsyncMock()) as mock_sync:
             await service._on_mcp_tools_changed("notifications/tools/list_changed", {})
-        mock_disc.assert_awaited_once()
+        mock_sync.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_on_tools_changed_ignores_other_methods(self, sample_config):
-        """Only tools/list_changed triggers a re-harvest."""
+        """Only tools/list_changed triggers a reconcile."""
         service = AgentService(sample_config)
         service._plugins["mcp"].client = AsyncMock()
-        with patch.object(service, "_discover_mcp_external_tools", AsyncMock()) as mock_disc:
+        with patch.object(service, "_sync_mcp_proxies", AsyncMock()) as mock_sync:
             await service._on_mcp_tools_changed("notifications/initialized", {})
-        mock_disc.assert_not_awaited()
+        mock_sync.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_harvest_reads_mcp_list_and_skips_disabled(self, sample_config):
-        """_discover_mcp_external_tools lists via mcp_list and registers every
-        enabled, named server (disabled / nameless entries skipped)."""
+    async def test_sync_proxies_bulk_registers_auto_load_only(self, sample_config):
+        """_sync_mcp_proxies bulk-registers ONLY servers with auto_load: true
+        (external tools are on-demand by default)."""
         service = AgentService(sample_config)
         client = AsyncMock()
         client.is_connected = True
         client.call_tool = AsyncMock(return_value=_json.dumps([
-            {"name": "foo", "enabled": True},
-            {"name": "bar", "enabled": False},
-            {"name": "", "enabled": True},
-            {"enabled": True},  # no name at all
+            {"name": "autol", "enabled": True, "auto_load": True},
+            {"name": "ondemand", "enabled": True, "auto_load": False},
+            {"auto_load": True, "enabled": True},          # no name at all
+            {"name": "disabled", "enabled": False, "auto_load": True},
         ]))
         service._plugins["mcp"].client = client
 
         with patch.object(service, "_discover_and_register_external_tools", AsyncMock()) as mock_reg:
-            await service._discover_mcp_external_tools()
+            await service._sync_mcp_proxies()
 
         client.call_tool.assert_awaited_once_with("mcp_list")
-        mock_reg.assert_awaited_once_with(server_name="foo")
+        mock_reg.assert_awaited_once_with(server_name="autol")
 
     @pytest.mark.asyncio
-    async def test_harvest_noop_when_disconnected(self, sample_config):
-        """A disconnected / absent client means nothing to discover."""
+    async def test_sync_proxies_noop_when_disconnected(self, sample_config):
+        """A disconnected / absent client means nothing to reconcile."""
         service = AgentService(sample_config)
         client = AsyncMock()
         client.is_connected = False
         service._plugins["mcp"].client = client
         with patch.object(service, "_discover_and_register_external_tools", AsyncMock()) as mock_reg:
-            await service._discover_mcp_external_tools()
+            await service._sync_mcp_proxies()
         mock_reg.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_proxies_reconcile_drops_disabled_loaded_proxy(self, sample_config):
+        """An on-demand-loaded proxy whose tool is disabled is unregistered."""
+        from slife.mcp.tool_adapter import create_proxy_tools
+
+        service = AgentService(sample_config)
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def fake_call_tool(name, arguments=None):
+            if name == "mcp_list":
+                return _json.dumps([{"name": "foo", "enabled": True, "auto_load": False}])
+            if name == "__mcp_get_tool":
+                return _json.dumps({"status": "ok", "enabled": False})
+            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+        client.call_tool = fake_call_tool
+        service._plugins["mcp"].client = client
+        proxy = create_proxy_tools(client, [
+            {"server": "foo", "name": "t1", "description": "",
+             "inputSchema": {"type": "object", "properties": {}}},
+        ])[0]
+        service.tool_registry.register(proxy)
+
+        await service._sync_mcp_proxies()
+
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "foo__t1" not in names
+
+    @pytest.mark.asyncio
+    async def test_sync_proxies_reconcile_keeps_enabled_loaded_proxy(self, sample_config):
+        """An enabled on-demand-loaded proxy survives the reconcile."""
+        from slife.mcp.tool_adapter import create_proxy_tools
+
+        service = AgentService(sample_config)
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def fake_call_tool(name, arguments=None):
+            if name == "mcp_list":
+                return _json.dumps([{"name": "foo", "enabled": True, "auto_load": False}])
+            if name == "__mcp_get_tool":
+                return _json.dumps({"status": "ok", "enabled": True})
+            raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+        client.call_tool = fake_call_tool
+        service._plugins["mcp"].client = client
+        proxy = create_proxy_tools(client, [
+            {"server": "foo", "name": "t1", "description": "",
+             "inputSchema": {"type": "object", "properties": {}}},
+        ])[0]
+        service.tool_registry.register(proxy)
+
+        await service._sync_mcp_proxies()
+
+        names = {t.name for t in service.tool_registry.list_tools()}
+        assert "foo__t1" in names
 
 
 class TestAgentServiceMCPDiscovery:

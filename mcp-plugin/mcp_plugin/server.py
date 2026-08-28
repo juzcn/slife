@@ -16,30 +16,49 @@ import json
 import os
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlparse
 
 from fastmcp.server.context import Context
 
 from mcp_plugin import config as plugin_config
 from mcp_plugin.connection import ConnectionPool, ServerConfig, ServerStatus
 from mcp_plugin.logging import error_json, ok_json
+from mcp_plugin.search import merge_hybrid
+from mcp_plugin.semantic import SemanticManager
 from mcp_plugin.server_runtime import create_plugin_server
+from mcp_plugin.store import ToolStore
 
 
 @asynccontextmanager
 async def _mcp_lifespan(_app):
     """Self-host config; release all external MCP connections on shutdown.
 
-    The lifespan schedules auto-connect and returns immediately, so the
-    ready port signal (fired by the server runtime once the lifespan
-    completes) is never blocked by a slow external server.  Runs on the
-    server's event loop (uvicorn lifespan), so the pool's async HTTP/SSE
-    clients, stdio processes and health-monitor tasks are closed on the
-    same loop that created them — otherwise connections leak on exit.
+    The lifespan schedules auto-connect + semantic warm-up and returns
+    immediately, so the ready port signal (fired by the server runtime once
+    the lifespan completes) is never blocked by a slow external server.
+    Runs on the server's event loop (uvicorn lifespan), so the pool's async
+    HTTP/SSE clients, stdio processes and health-monitor tasks are closed on
+    the same loop that created them — otherwise connections leak on exit.
     """
+    await _ensure_store()
     asyncio.ensure_future(_auto_connect_configured())
+    asyncio.ensure_future(_warm_semantic())
     try:
         yield
     finally:
+        global _manager, _store
+        if _manager is not None:
+            try:
+                await _manager.close()
+            except Exception as e:
+                logger.debug("mcp_semantic_close_error err=%s", e)
+            _manager = None
+        if _store is not None:
+            try:
+                await _store.close()
+            except Exception as e:
+                logger.debug("mcp_store_close_error err=%s", e)
+            _store = None
         try:
             await _pool.shutdown()
         except Exception as e:
@@ -118,7 +137,85 @@ async def _notify_tools_changed() -> None:
             _active_sessions.discard(sess)
 
 
-_pool = ConnectionPool(on_connected=_notify_tools_changed)
+# ── Tool catalog (mcp-plugin.db) ────────────────────────────────────────
+# Persists every loaded external MCP tool (name/description/enabled) so the
+# catalog survives restarts and supports keyword/semantic search.  Failure
+# to open the DB only degrades these features — the gateway itself keeps
+# working (management tools + calls still serve).
+
+_store: ToolStore | None = None
+_manager: SemanticManager | None = None
+_init_lock = asyncio.Lock()
+
+
+def _split_full_name(full_name: str) -> tuple[str, str]:
+    """Split ``{server}__{tool}`` into (server, tool).
+
+    Longest known-server prefix match disambiguates a server/tool name that
+    itself contains ``__``; unknown names fall back to ``rsplit("__", 1)``.
+    """
+    best: str | None = None
+    for server in _pool._connections.keys():
+        if full_name.startswith(server + "__") and (
+            best is None or len(server) > len(best)
+        ):
+            best = server
+    if best is not None:
+        return best, full_name[len(best) + 2:]
+    server, sep, tool = full_name.rpartition("__")
+    if not sep:
+        return full_name, ""
+    return server, tool
+
+
+async def _ensure_store() -> ToolStore | None:
+    """Open the tool catalog lazily (best-effort; None on failure)."""
+    global _store
+    if _store is not None:
+        return _store
+    async with _init_lock:
+        if _store is not None:
+            return _store
+        try:
+            store = ToolStore(plugin_config.db_path())
+            await store.open()
+            _store = store
+            logger.info("tool_store_opened path=%s", plugin_config.db_path())
+        except Exception as e:
+            logger.warning("tool_store_open_failed path=%s err=%s", plugin_config.db_path(), e)
+            _store = None
+    return _store
+
+
+async def _warm_semantic() -> None:
+    """Build the semantic manager and enable it when embeddings are configured."""
+    global _manager
+    store = await _ensure_store()
+    if store is None:
+        return
+    try:
+        _manager = SemanticManager(store)
+        await _manager.start()
+    except Exception as e:
+        logger.warning("semantic_warm_failed err=%s", e)
+        _manager = None
+
+
+async def _on_connected(server_name: str) -> None:
+    """Sync a connected server's tools into the catalog, then notify the host."""
+    conn = _pool.get_server(server_name)
+    store = await _ensure_store()
+    if conn is not None and store is not None:
+        try:
+            await store.sync_server(server_name, conn.list_tools())
+            if _manager is not None:
+                _manager.on_saved()
+        except Exception as e:
+            logger.warning("tool_sync_connected_failed server=%s err=%s", server_name, e)
+    await _notify_tools_changed()
+
+
+_pool = ConnectionPool(on_connected=_on_connected)
 
 # Built-in Slife plugin server names — reserved: an external MCP server must
 # not take one of these, or its tools would collide / misroute in the host's
@@ -321,9 +418,14 @@ async def mcp_set_enabled(name: str, enabled: bool) -> str:
     existing.config.enabled = enabled
     if enabled:
         if existing.status != ServerStatus.CONNECTED:
-            await existing.connect()
+            await existing.connect()  # fires _on_connected → sync_server
         if existing.status == ServerStatus.CONNECTED:
             tools = existing.list_tools()
+            # Server-level toggle → all its catalog tools enabled (no reindex —
+            # the semantic vectors only depend on name+description).
+            store = await _ensure_store()
+            if store is not None:
+                await store.enable_server_tools(name)
             return ok_json(
                 status="connected",
                 server=name,
@@ -339,6 +441,12 @@ async def mcp_set_enabled(name: str, enabled: bool) -> str:
         )
     await _pool.disconnect_server(name)
     plugin_config.set_server_enabled(name, False)
+    # Server-level toggle → its catalog tools marked disabled (no reindex).
+    store = await _ensure_store()
+    if store is not None:
+        await store.disable_server_tools(name)
+    # Notify so the host reconcile drops this server's loaded proxies.
+    await _notify_tools_changed()
     return ok_json(
         status="disabled",
         server=name,
@@ -361,6 +469,10 @@ async def mcp_remove(name: str) -> str:
     try:
         await _pool.remove_server(name)
         plugin_config.remove_server_entry(name)
+        store = await _ensure_store()
+        if store is not None:
+            await store.remove_server(name)
+        await _notify_tools_changed()
         return ok_json(status="removed", server=name)
     except Exception as e:
         logger.exception("mcp_remove_failed server=%s", name)
@@ -450,8 +562,221 @@ async def __mcp_call_tool(
     except json.JSONDecodeError:
         return f"Error: arguments must be valid JSON. Got: {arguments}"
 
+    # Call-time enforcement: a per-tool disabled flag refuses the call.
+    store = await _ensure_store()
+    if store is not None:
+        row = await store.get_tool(f"{server}__{tool_name}")
+        if row is not None and not row["enabled"]:
+            return error_json(
+                f"Tool '{server}__{tool_name}' is disabled (its server is "
+                f"disabled). Enable it with mcp_set_enabled.",
+                server=server, tool=tool_name,
+            )
+
     result = await _pool.call_tool(server, tool_name, args_dict)
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Tool catalog + search + embeddings tools
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@mcp.tool(
+    name="__mcp_get_tool",
+    description=(
+        "Fetch a tool's live schema + enabled status by full_name "
+        "'{server}__{tool}'. Internal — invoked by the host's mcp_tool_load."
+    ),
+)
+async def __mcp_get_tool(full_name: str) -> str:
+    """Return a tool's schema + enabled status for host-side loading."""
+    server, tool = _split_full_name(full_name)
+    conn = _pool.get_server(server)
+    if conn is None or conn.status != ServerStatus.CONNECTED:
+        return error_json(f"Server '{server}' is not connected.", full_name=full_name)
+    info = next((t for t in conn.list_tools() if t["name"] == tool), None)
+    if info is None:
+        return error_json(
+            f"Tool '{full_name}' not found on server '{server}'.", full_name=full_name,
+        )
+    store = await _ensure_store()
+    row = await store.get_tool(full_name) if store else None
+    return ok_json(
+        full_name=full_name,
+        server=server,
+        name=tool,
+        description=info.get("description", ""),
+        inputSchema=info.get("inputSchema", {"type": "object", "properties": {}}),
+        enabled=bool(row["enabled"]) if row else True,
+    )
+
+
+@mcp.tool(
+    name="mcp_tool_search",
+    description=(
+        "Search the MCP tool catalog across all loaded servers. Modes: "
+        "'grep' exact substring, 'fts5' BM25 keyword, 'hybrid' fts5 + semantic "
+        "(default). Hybrid degrades to fts5 automatically when no embeddings "
+        "endpoint is configured. Returns full_name '{server}__{tool}', "
+        "description, and enabled status — use mcp_tool_load with a full_name "
+        "to make a tool callable."
+    ),
+)
+async def mcp_tool_search(
+    query: str = "",
+    mode: str = "hybrid",
+    limit: int = 10,
+    server: str | None = None,
+    include_disabled: bool = True,
+) -> str:
+    """Search the tool catalog: grep / fts5 / hybrid (semantic + keyword)."""
+    store = await _ensure_store()
+    if store is None:
+        return ok_json(
+            mode="fts5", semantic_available=False, query=query, results=[],
+            hint="Tool catalog unavailable (DB failed to open).",
+        )
+    mode = (mode or "hybrid").lower()
+    if mode not in ("hybrid", "fts5", "grep"):
+        mode = "hybrid"
+    hint = ""
+    semantic_available = False
+    results: list[dict] = []
+
+    if mode == "grep":
+        results = await store.search_grep(
+            query, limit=limit, server=server, include_disabled=include_disabled,
+        )
+    else:
+        keyword_hits = await store.search_keyword(
+            query, limit=limit * 2, server=server, include_disabled=include_disabled,
+        )
+        if mode == "hybrid" and (
+            _manager is not None and _manager.semantic_ready
+            and _manager.embedder is not None and _manager.embedder.available
+        ):
+            emb = await _manager.embedder.embed_one(query)
+            if emb:
+                semantic_hits = await store.search_semantic(
+                    emb, limit=limit * 2, server=server,
+                    include_disabled=include_disabled,
+                )
+                semantic_available = True
+                results = merge_hybrid(keyword_hits, semantic_hits, key_field="full_name")
+        if not semantic_available:
+            results = keyword_hits
+            if _manager is not None and _manager.reason:
+                hint = _manager.reason
+            elif _manager is not None and _manager.semantic_ready:
+                # Gate is ready but this query's embed request failed —
+                # the endpoint was reachable at startup but is not now.
+                hint = (
+                    "semantic search unavailable — embedding request to the "
+                    "embeddings endpoint failed (is it still running?)"
+                )
+            else:
+                hint = (
+                    "semantic search unavailable — no embeddings endpoint "
+                    "configured. Add one with mcp_embeddings_set or mcp-plugin build."
+                )
+    reported_mode = mode if mode == "grep" else ("hybrid" if semantic_available else "fts5")
+    return ok_json(
+        mode=reported_mode,
+        semantic_available=semantic_available,
+        query=query,
+        results=results[:limit],
+        hint=hint,
+    )
+
+
+@mcp.tool(
+    name="mcp_embeddings_set",
+    description=(
+        "Configure the embeddings endpoint for semantic tool search. base_url "
+        "is an OpenAI-compatible /v1 endpoint, e.g. the local-embed service "
+        "'http://127.0.0.1:8000/v1'. model is optional (the endpoint's active "
+        "model is used otherwise). Present config ⇒ semantic search active; "
+        "remove with mcp_embeddings_remove to fall back to keyword search."
+    ),
+)
+async def mcp_embeddings_set(base_url: str, model: str = "", api_key: str = "") -> str:
+    """Persist the embeddings section and (re)enable semantic indexing."""
+    parsed = urlparse(base_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return error_json(
+            f"base_url must be an http(s) URL with a host, got {base_url!r}",
+        )
+    plugin_config.set_embeddings_config({
+        "base_url": base_url,
+        "model": model,
+        "api_key": api_key,
+    })
+    manager = _manager
+    if manager is None:
+        await _warm_semantic()
+        manager = _manager
+    if manager is not None:
+        status = await manager.enable()
+    else:
+        status = {"status": "error", "message": "semantic manager unavailable (DB failed to open)"}
+    return ok_json(
+        embeddings=plugin_config.get_embeddings_config(),
+        semantic=status,
+    )
+
+
+@mcp.tool(
+    name="mcp_embeddings_remove",
+    description=(
+        "Remove the embeddings config — semantic search off, keyword/grep "
+        "search remains."
+    ),
+)
+async def mcp_embeddings_remove() -> str:
+    """Drop the embeddings section and disable semantic indexing."""
+    removed = plugin_config.remove_embeddings_config()
+    if _manager is not None:
+        await _manager.disable()
+    if removed:
+        return ok_json(status="removed", message="Semantic search disabled. Keyword search still works.")
+    return ok_json(status="not_present", message="No embeddings config was present.")
+
+
+@mcp.tool(
+    name="mcp_semantic_status",
+    description=(
+        "Semantic search status: configured / backend / model / dimension / "
+        "available / semantic_ready / state / reason / unembedded backlog."
+    ),
+)
+async def mcp_semantic_status() -> str:
+    """Report the semantic-search state (mirrors memdb_semantic_status)."""
+    store = await _ensure_store()
+    cfg = plugin_config.get_embeddings_config()
+    embedder = _manager.embedder if (_manager is not None) else None
+    unembedded = 0
+    if _manager is not None:
+        unembedded = await _manager.unembedded()
+    elif store is not None:
+        unembedded = await store.count_unembedded()
+    payload = {
+        "configured": cfg is not None,
+        "backend": embedder.backend if embedder else "",
+        "model": embedder.model if embedder else (cfg.get("model", "") if cfg else ""),
+        "dimension": embedder.dimension if embedder else 0,
+        "available": bool(embedder and embedder.available),
+        "loaded": bool(embedder and embedder.loaded),
+        "semantic_ready": bool(_manager and _manager.semantic_ready),
+        "state": _manager.state if _manager else "disabled",
+        "reason": _manager.reason if _manager else "",
+        "unembedded": unembedded,
+        "hint": (
+            f"embeddings config: {cfg}"
+            if cfg else "add via mcp_embeddings_set(base_url=...) or mcp-plugin build"
+        ),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 # ── Entry point ──────────────────────────────────────────────────────

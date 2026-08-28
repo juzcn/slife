@@ -43,16 +43,18 @@ heavy model backends are optional extras.
 
 ## Run
 
-```bash
-# GGUF model (recommended — offline, no HF download)
-local-embed --backend gguf --model bge-m3 --gguf-path /path/to/bge-m3-q4_k_m.gguf --port 8000
+Everything — host, port, model, backend, `gguf_path`, `device` — comes from
+`local_embed.json5`: a top-level `models` map (each entry `{backend,
+model, gguf_path, device, max_tokens}`), `active_model`, and standalone
+`host` / `port` keys (single-model top-level `backend`/`model`/`gguf_path`/
+`device` still work).  The CLI takes no model/endpoint flags:
 
-# HF transformer model (downloads from HF hub on first load)
-local-embed --backend transformer --model BAAI/bge-m3 --port 8000
+```bash
+local-embed
 ```
 
 By default it binds `127.0.0.1:8000` (local only — never exposed to the
-network).
+network), configurable via the top-level `host` / `port` keys.
 
 ### Transformer models & the `env:` section
 
@@ -167,12 +169,11 @@ gracefully to keyword search.
 local-embed --help
 ```
 
-- `--host` / `--port` — bind address (default `127.0.0.1:8000`)
-- `--backend gguf|transformer` — model backend (default `gguf`)
-- `--model` — model name/id (for metadata and dim guessing)
-- `--gguf-path` — path to the GGUF file (required for `backend=gguf`)
-- `--device cpu|cuda` — transformer device (default auto)
 - `--log-level` — logging level (default `INFO`)
+
+Host, port and model config are read from `local_embed.json5` — the CLI has no
+model/endpoint flags (`--host`, `--port`, `--backend`, `--model`,
+`--gguf-path`, `--device` were removed).
 
 ## License
 

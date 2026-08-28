@@ -3,7 +3,8 @@
 Two entry paths share this module:
 
 - ``local-embed …`` (console script / ``python -m local_embed``): run the
-  server on an explicit host:port as a standalone service.
+  server as a standalone service — host, port and model config are read from
+  ``local_embed.json5`` (the CLI takes no model/endpoint flags).
 
 - ``python -m local_embed.server``: the **plugin spawn target** used by a
   host (slife) — binds a free port, serves MCP on ``/mcp`` and embeddings
@@ -18,7 +19,7 @@ import logging
 import sys
 
 from local_embed.config import resolve_engine_settings
-from local_embed.engine import Engine, check_backend_runtime
+from local_embed.engine import Engine, resolve_backend_runtime
 from local_embed.logging import setup_logging
 
 
@@ -27,20 +28,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="local-embed",
         description=(
             "Standalone local embedding server — expose a GGUF (llama-cpp) or "
-            "HF transformer model as an OpenAI-compatible /v1/embeddings service."
+            "HF transformer model as an OpenAI-compatible /v1/embeddings service. "
+            "Host, port and model config come from local_embed.json5."
         ),
     )
-    p.add_argument("--host", default="127.0.0.1", help="bind host (default 127.0.0.1)")
-    p.add_argument("--port", type=int, default=8000, help="bind port (default 8000)")
-    p.add_argument(
-        "--backend",
-        choices=("gguf", "transformer"),
-        default="gguf",
-        help="model backend (default gguf)",
-    )
-    p.add_argument("--model", default="bge-m3", help="model name/id (for metadata and dim guessing)")
-    p.add_argument("--gguf-path", default="", help="path to a GGUF file (backend=gguf)")
-    p.add_argument("--device", default="", help="device for transformer backend: cpu | cuda | '' (auto)")
     p.add_argument("--log-level", default="INFO", help="logging level (default INFO)")
     return p
 
@@ -49,39 +40,42 @@ def main(argv: "list[str] | None" = None) -> int:
     args = build_parser().parse_args(argv)
     setup_logging(getattr(logging, args.log_level.upper(), logging.INFO))
 
-    # CLI flags are one-model overrides on top of local_embed.json5.  A
-    # config file with a ``models`` map wins; explicit flags on a
-    # single-model config override its keys.
-    settings = resolve_engine_settings(
-        overrides={
-            "backend": args.backend,
-            "model": args.model,
-            "gguf_path": args.gguf_path,
-            "device": args.device,
-        }
-    )
+    # Everything (host/port/backend/model/gguf_path/device) comes from
+    # local_embed.json5 — the CLI deliberately takes no model/endpoint flags.
+    settings = resolve_engine_settings()
     engine = Engine(specs=settings["specs"], active=settings["active"])
 
-    # Validate the gguf backend actually has a model to load.
+    # Validate the models can actually run.  `resolve_backend_runtime` (not
+    # `check_backend_runtime`, which never imports) so the answer reflects
+    # reality.  Only the ACTIVE model blocks startup — the server can serve
+    # it without the others; a non-active model with a missing backend or
+    # gguf_path is a warning (it fails at load time if requested).
+    active_name = engine.active_model
     for spec in settings["specs"]:
+        problems: list[str] = []
         if spec.backend == "gguf" and not spec.gguf_path:
+            problems.append("no gguf_path (set gguf_path in local_embed.json5)")
+        if not resolve_backend_runtime(spec.backend):
+            problems.append(
+                f"{spec.backend} backend not installed "
+                f"(uv pip install 'local-embed[{spec.backend}]')"
+            )
+        if spec.name == active_name and problems:
             print(
-                f"Error: no gguf_path for model '{spec.name}'. "
-                "Set gguf_path in local_embed.json5 or pass --gguf-path.",
+                f"Error: active model '{spec.name}' cannot start: {'; '.join(problems)}",
                 file=sys.stderr,
             )
             return 2
-        if not check_backend_runtime(spec.backend):
+        if problems:
             print(
-                f"Error: {spec.backend} backend for model '{spec.name}' is not installed. "
-                f"Install with: uv pip install 'local-embed[{spec.backend}]'",
+                f"Warning: model '{spec.name}': {'; '.join(problems)} "
+                "— it will fail if requested.",
                 file=sys.stderr,
             )
-            return 2
 
     from local_embed.server import serve_standalone
 
-    return serve_standalone(engine, host=args.host, port=args.port)
+    return serve_standalone(engine, host=settings["host"], port=settings["port"])
 
 
 if __name__ == "__main__":

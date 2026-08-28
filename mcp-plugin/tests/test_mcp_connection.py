@@ -1020,7 +1020,7 @@ class TestMCPServerConnectionReconnectNotify:
 
     @pytest.mark.asyncio
     async def test_listener_error_is_swallowed(self):
-        async def boom():
+        async def boom(server_name):
             raise RuntimeError("listener failed")
 
         conn = MCPServerConnection(

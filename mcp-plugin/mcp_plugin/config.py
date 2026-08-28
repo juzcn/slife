@@ -238,6 +238,14 @@ def current_path() -> Path:
     return _CURRENT_PATH or resolve_config_path()
 
 
+def db_path() -> Path:
+    """The tool catalog DB file: ``$MCP_PLUGIN_DB`` else next to the config."""
+    env = os.environ.get("MCP_PLUGIN_DB")
+    if env:
+        return Path(env).expanduser()
+    return current_path().parent / "mcp-plugin.db"
+
+
 def _servers_dict(raw: dict) -> dict:
     servers = raw.get("servers", {})
     return servers if isinstance(servers, dict) else {}
@@ -318,6 +326,39 @@ def _load_raw() -> dict:
     return read_config(current_path())
 
 
+# ── Embeddings section (single config: present + base_url = active) ──────
+
+
+def get_embeddings_config() -> dict | None:
+    """Return the top-level ``embeddings`` section, or None when absent.
+
+    Present + ``base_url`` ⇒ semantic search active; absent ⇒ keyword/grep
+    only (``EmbeddingClient.from_plugin_config``).
+    """
+    raw = _load_raw()
+    emb = raw.get("embeddings")
+    return emb if isinstance(emb, dict) else None
+
+
+def set_embeddings_config(cfg: dict) -> None:
+    """Persist the ``embeddings`` section (single config, no provider system)."""
+    raw = _load_raw()
+    raw["embeddings"] = cfg
+    write_config(current_path(), raw)
+    logger.info("mcp_config_set_embeddings cfg=%s", cfg)
+
+
+def remove_embeddings_config() -> bool:
+    """Remove the ``embeddings`` section. True if it existed."""
+    raw = _load_raw()
+    if "embeddings" not in raw:
+        return False
+    del raw["embeddings"]
+    write_config(current_path(), raw)
+    logger.info("mcp_config_remove_embeddings")
+    return True
+
+
 # ── Raw json5 entry → ServerConfig ─────────────────────────────────────
 
 
@@ -351,6 +392,7 @@ def resolve_server_config(name: str, raw_entry: dict):
         auth=auth,
         source=_dict_copy(raw_entry.get("source")),
         os_paths=bool(raw_entry.get("os_paths", False)),
+        auto_load=raw_entry.get("auto_load") is True,
     )
 
 

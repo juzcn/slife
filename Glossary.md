@@ -175,6 +175,14 @@ The agent's operating conditions as reported to the model: platform type,
 operating system, interpreter, package manager, and the locations of its data
 root, configuration, logs, turns database, skills, and file cabinet.
 
+**External server tool**
+A tool exposed by an external MCP server and reached through the MCP gateway.
+It is namespaced *server__tool* and, unlike a native or built-in tool, is not
+exposed to the model wholesale: it is discovered in the tool catalog and made
+callable by an explicit loading step. A tool whose server is disabled is
+cataloged but not usable. *See also* Tool naming; Native tool; Tool catalog;
+Tool search.
+
 ### F
 
 **File Cabinet**
@@ -360,10 +368,10 @@ loop.
 
 **Semantic index**
 The auxiliary structure that enables meaning-based (vector) search over the
-turns database and the file cabinet, complementing keyword search. It has its
-own readiness state and can be enabled, disabled, or reconfigured
-independently; keyword search remains available while it is unavailable.
-*See also* Full-text search modes.
+turns database, the file cabinet, and the MCP tool catalog, complementing
+keyword search. It has its own readiness state and can be enabled, disabled,
+or reconfigured independently; keyword search remains available while it is
+unavailable. *See also* Full-text search modes; Tool catalog.
 
 **Silence output**
 The minimal reply (a single period) by which the agent expresses that it has
@@ -424,7 +432,22 @@ request for an approval prompt. They are stripped before the tool runs.
 The rule by which tools are named: the agent's own tools (native and built-in
 plugin tools) carry bare, self-describing names; tools exposed by an external
 server are namespaced with the server name and a double underscore
-(*server__tool*). *See also* Native tool; External server tool.
+(*server__tool*) and are loaded on demand rather than exposed wholesale.
+*See also* Native tool; External server tool; Tool search.
+
+**Tool catalog**
+The persistent index of external MCP tools, maintained by the MCP gateway and
+queried by the model through *tool search*: each entry carries the server
+name, the tool's bare name, its description, and whether it is enabled. The
+catalog survives restarts, so a search works before any server reconnects.
+*See also* External server tool; Tool search; Semantic index.
+
+**Tool search**
+The tool the model uses to find external MCP tools. It accepts a query and
+returns matching *server__tool* entries from the tool catalog; *hybrid* mode
+combines semantic and keyword retrieval and degrades to keyword-only when no
+embedding endpoint is configured. *See also* Tool catalog; External server
+tool; Semantic index; Full-text search modes.
 
 **Trim**
 The removal of the oldest complete turns from the live context, performed
@@ -564,6 +587,13 @@ The mechanism by which tools and plugins are found at startup without a
 registry entry: tool modules under the tools package and plugin packages
 containing a server are collected automatically. *See also* Tool module.
 
+**auto_load**
+A per-server flag in the MCP gateway's configuration that restores wholesale
+tool registration: when true, the server's tools are registered into the
+agent's toolset whenever the server connects; when absent or false (the
+default), the server's tools are loaded on demand. *See also* mcp-plugin; Tool
+loading.
+
 ### B
 
 **Built-in plugin**
@@ -627,6 +657,23 @@ A background thread that cannot block shutdown; used for calls that must
 never hang the process (for example, a desktop notification or a tunnel
 start). *See also* Shutdown.
 
+### E
+
+**Embeddings section**
+The first-class top-level ``embeddings`` configuration of ``slife.json5``,
+shared by the memory plugins (memdb, memfiles) and the MCP gateway's tool
+catalog: a set of OpenAI-compatible endpoints (``base_url`` + ``api_key``) and
+an ``active_model`` ref that is configuration-authoritative over the
+endpoint's own active-model flag. The local-embed plugin serves a local model
+behind it. *See also* local-embed; Semantic index (Part II).
+
+**External plugin**
+A plugin package that is not part of the Slife source tree: registered via
+``plugins.external`` in ``slife.json5`` and spawned through the same generic
+lifecycle as the built-ins. The MCP gateway (mcp-plugin) and local-embed are
+external plugins. *See also* Plugin contract; Built-in plugin; mcp-plugin;
+local-embed.
+
 ### H
 
 **Harness**
@@ -672,6 +719,14 @@ skills, servers) keeps its own language. Scheduled-task messages (the
 operator-facing and written in the operator's own language. *See also*
 Model-visible (Part II).
 
+**local-embed**
+The external plugin that serves an OpenAI-compatible embedding endpoint —
+``POST /v1/embeddings`` and ``GET /v1/models`` — from a local GGUF
+(llama-cpp) or HF transformer model, loaded once and shared by memdb, memfiles,
+and the MCP gateway's tool catalog. Registered via ``plugins.external``; binds
+the configured port (default 8000) and reads its model configuration from
+``local_embed.json5``. *See also* Embeddings section; mcp-plugin.
+
 ### M
 
 **Marker**
@@ -694,9 +749,17 @@ The standalone PyPI package that implements the MCP gateway — the plugin that
 connects Slife to external MCP servers (stdio / SSE / Streamable HTTP). It
 lives in the `mcp-plugin/` workspace member (module `mcp_plugin.server`), is
 registered via `plugins.external` in `slife.json5`, and exposes the `mcp_set` /
-`mcp_list` / … management tools plus its own `mcp-plugin` CLI (`set`, `remove`,
-`test [--port N]`, `test mcp <server>`). *See also* Plugin (Part II); Built-in
-plugin; Plugin contract.
+`mcp_list` / … management tools, the tool-catalog tools (`mcp_tool_search`,
+`mcp_embeddings_set`, `mcp_semantic_status`, …), and its own `mcp-plugin` CLI
+(`set`, `remove`, `build`). It keeps a persistent **tool catalog**
+(`mcp-plugin.db`) of every loaded external tool — name, description, and
+enabled state — indexed for keyword and semantic search. External tools are
+**loaded on demand**: the host registers none of them by default; the model
+discovers one with `mcp_tool_search` and loads it with `mcp_tool_load`.
+Enable/disable is server-granular (`mcp_set_enabled`), and `mcp-plugin build`
+rebuilds the catalog and its index from live connections, marking a disabled
+server's tools disabled. *See also* Plugin (Part II); Built-in plugin; Plugin
+contract; Tool catalog; Tool loading; local-embed.
 
 **Meta-parameter**
 The developer sense of tool meta-parameters (Part II): the universal
@@ -837,6 +900,21 @@ also* Plugin contract.
 A file under the tools package that defines one or more tool classes; tool
 modules are collected by auto-discovery. *See also* Auto-discovery; Tool
 (Part II).
+
+**Tool catalog**
+The MCP gateway's SQLite store (`mcp-plugin.db`) holding one row per loaded
+external MCP tool — *server__tool*, name, description, and a per-tool enabled
+flag derived from the server's state. Backed by an FTS5 keyword index and a
+BLOB-vector semantic index produced against the configured embeddings
+endpoint. *See also* mcp-plugin; auto_load; Semantic index (Part II).
+
+**Tool loading (on-demand)**
+The mechanism by which external MCP tools reach the agent's toolset: rather
+than registering every tool of every connected server, the host registers none
+by default, and the model discovers a tool with ``mcp_tool_search`` and loads a
+chosen one with ``mcp_tool_load``. A server with ``auto_load`` set keeps the
+older wholesale-registration behavior. *See also* mcp-plugin; auto_load;
+External server tool (Part II).
 
 **Trim (developer sense)**
 The internal operation, performed after a turn is saved, that removes the

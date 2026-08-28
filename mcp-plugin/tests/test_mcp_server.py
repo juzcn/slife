@@ -81,8 +81,13 @@ class TestAddServerToolRegistration:
             "mcp_remove",
             "mcp_list",
             "mcp_list_tools",
+            "mcp_tool_search",
+            "mcp_embeddings_set",
+            "mcp_embeddings_remove",
+            "mcp_semantic_status",
             "__mcp_call_tool",
             "__mcp_connection_status",
+            "__mcp_get_tool",
         }
 
     @pytest.mark.asyncio
@@ -116,7 +121,8 @@ class TestWrapperNotifyToolsChanged:
     @pytest.mark.asyncio
     async def test_pool_is_wired_to_notify(self, restore_root_logger):
         srv = _import_mcp_server()
-        assert srv._pool._on_connected is srv._notify_tools_changed
+        # The pool fires on_connected(server_name) → catalog sync + notify.
+        assert srv._pool._on_connected is srv._on_connected
 
     def test_capture_session_accumulates(self, restore_root_logger):
         srv = _import_mcp_server()

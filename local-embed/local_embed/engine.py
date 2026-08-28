@@ -171,6 +171,19 @@ def check_backend_runtime(backend: str) -> bool:
     return False
 
 
+def resolve_backend_runtime(backend: str) -> bool:
+    """Resolve the backend's lazy import (once) and report real availability.
+
+    :func:`check_backend_runtime` deliberately does NOT import — it is called
+    for every configured model at ``Engine.__init__``, which must stay
+    handshake-fast.  A standalone entry point (the CLI) that wants a truthful
+    answer *before* serving should call this instead: it triggers the one-time
+    import and then reports whether the package is really usable.
+    """
+    _resolve_backend(backend)
+    return check_backend_runtime(backend)
+
+
 class ModelSpec:
     """One configured embedding model — name key + backend/weights."""
 

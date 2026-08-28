@@ -484,9 +484,11 @@ async def check_mcp(server: str = "", client=None) -> list[dict]:
     produce health-check records with an appropriate level and remediation hint.
 
     The status report is authoritative: an enabled server whose state is
-    ``running`` reports ok (its tools are guaranteed registered — the wrapper's
-    reconnect notification plus the agent's periodic poll keep the registry in
-    sync, so tools can only be missing transiently).
+    ``running`` reports ok.  Note: external tools are on-demand by default
+    (loaded via ``mcp_tool_load``) — ``running`` means the server is reachable
+    and its tools are discoverable via ``mcp_tool_search``, not that they are
+    all registered; loaded proxies are validated on every ``tools/list_changed``
+    (see :meth:`slife.agent.service.AgentService._sync_mcp_proxies`).
 
     Args:
         server: Optional server name to check alone.  Empty (default)
