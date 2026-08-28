@@ -112,8 +112,10 @@ Other endpoints:
 
 - `GET /v1/models` — the loaded model + its real embedding dimension.
 - `GET /health` — `{status, backend, model, dimension, loaded}`.
-- `POST /mcp` — FastMCP streamable-HTTP endpoint (internal tools
-  `__embed_status`, `set_active_model`, and `embed`).
+- `POST /mcp` — FastMCP streamable-HTTP endpoint (internal tool
+  `__embed_status`, probed by the host's `check_local_embed`).  Like the
+  sharefile plugin, local-embed is a *service provider* — the host consumes
+  the model over the OpenAI-compatible HTTP routes, never through MCP tools.
 
 ## Dimension
 

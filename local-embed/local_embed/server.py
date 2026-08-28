@@ -2,9 +2,11 @@
 
 One process, one port, two protocols (the ``sharefile`` precedent):
 
-- **MCP** on ``/mcp`` — the plugin contract.  Tools are bare-named and
-  internal (``__embed_status`` status, plus ``set_active_model`` /
-  ``embed``); the host reaches them programmatically via ``client.call_tool``.
+- **MCP** on ``/mcp`` — the plugin contract.  Like the sharefile plugin,
+  this is a *service provider*, not a tool provider: the only MCP tool is
+  the internal ``__embed_status`` (probed by the host's ``check_local_embed``);
+  the host consumes the service over the OpenAI-compatible HTTP routes,
+  never through MCP tools.
 - **OpenAI-compatible HTTP** on the SAME port via ``@mcp.custom_route``:
   ``POST /v1/embeddings`` (the standard shape: ``{input, model}`` →
   ``{data: [{embedding, index, object}], model, usage}``), ``GET /v1/models``
@@ -73,9 +75,10 @@ mcp, _ = create_plugin_server(
     "local-embed",
     instructions=(
         "local-embed — local embedding service.  Serves OpenAI-compatible "
-        "/v1/embeddings for slife's embeddings config (shared by memdb + "
-        "memfiles).  Internal __embed_status / set_active_model / embed are "
-        "called programmatically by the host."
+        "/v1/embeddings + /v1/models for slife's embeddings config (shared by "
+        "memdb + memfiles).  The only MCP tool is the internal __embed_status, "
+        "probed by the host's check_local_embed — the host consumes the model "
+        "service over HTTP, never through MCP tools."
     ),
 )
 
@@ -117,30 +120,6 @@ async def __embed_status() -> str:
         },
         ensure_ascii=False,
     )
-
-
-@mcp.tool(name="set_active_model", description="Switch the active embedding model by name.")
-async def set_active_model(name: str) -> str:
-    """Switch the active model (loads it on demand); returns its status."""
-    engine = get_engine()
-    try:
-        await engine.set_active(name)
-    except Exception as e:
-        logger.warning("set_active_failed name=%s err=%s", name, e)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-    return json.dumps(_model_status(engine, name), ensure_ascii=False)
-
-
-@mcp.tool(name="embed", description="Embed a list of texts to vectors. Returns one vector per input.")
-async def embed(texts: "list[str]", model: str = "") -> str:
-    """Embed *texts* (optionally with a named model) as a JSON list of vectors."""
-    engine = get_engine()
-    try:
-        vecs = await engine.embed(texts, model=model or None)
-    except Exception as e:
-        logger.warning("embed_failed err=%s", e)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-    return json.dumps(vecs, ensure_ascii=False)
 
 
 # ═══════════════════════════════════════════════════════════════════════
