@@ -15,6 +15,7 @@ from slife.tools.meta import (
     ClearContextTool,
     SetMaxIterationsTool,
     _native_category,
+    _strip_server_prefix,
     _tasks,
     schedule,
     _get_task,
@@ -66,6 +67,42 @@ class TestNativeCategory:
             async def execute(self, **kwargs): return "ok"
 
         assert _native_category(_T()) == "Other"
+
+
+# ── _strip_server_prefix ───────────────────────────────────────────────
+
+
+class TestStripServerPrefix:
+    """Plugin proxy tools stamp `[<server>] ` on their description; the
+    group heading already carries the plugin name, so list_native_tools
+    strips it — tools are bare names, no prefix."""
+
+    def _proxy(self, server: str, desc: str):
+        from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
+        tool = MagicMock(spec=MCPProxyTool)
+        tool._server = server
+        tool._route = ProxyRoute.DIRECT
+        tool.description = f"[{server}] {desc}"
+        return tool
+
+    def test_strips_matching_server_prefix(self):
+        tool = self._proxy("memdb", "Search turns.")
+        assert _strip_server_prefix(tool, "[memdb] Search turns.") == "Search turns."
+
+    def test_non_proxy_desc_untouched(self):
+        from slife.tools.base import Tool
+
+        class _Native(Tool):
+            name = "thing"
+            description = "Does a thing."
+            parameters = {"type": "object", "properties": {}}
+            async def execute(self, **kwargs): return "ok"
+
+        assert _strip_server_prefix(_Native(), "Native desc.") == "Native desc."
+
+    def test_prefix_mismatch_untouched(self):
+        tool = self._proxy("memdb", "Search turns.")
+        assert _strip_server_prefix(tool, "[other] Search turns.") == "[other] Search turns."
 
 
 # ── ListNativeToolsTool ──────────────────────────────────────────────────

@@ -33,13 +33,26 @@ def _native_category(tool) -> str:
     Source-based, no name-prefix guessing:
       - native tools carry their own ``category`` class attribute;
       - built-in plugin tools (MCP proxy tools) group by their plugin
-        name — the same identity the ``[<server>] `` description prefix
-        and the ``server`` field carry.
+        name — the grouping heading carries the identity, so the
+        per-tool ``[<server>] `` description prefix is stripped below.
     External MCP proxy tools are filtered out before this is called.
     """
     if isinstance(tool, MCPProxyTool):
         return getattr(tool, "_server", "") or "Plugins"
     return getattr(tool, "category", "") or "Other"
+
+
+def _strip_server_prefix(tool, desc: str) -> str:
+    """Remove the ``[<server>] `` prefix MCPProxyTool stamps on its
+    description.  In ``list_native_tools`` the plugin name is already the
+    group heading — the per-line prefix is redundant noise (tools are bare
+    names, no ``server__`` prefix)."""
+    if isinstance(tool, MCPProxyTool):
+        server = getattr(tool, "_server", "")
+        prefix = f"[{server}] "
+        if server and desc.startswith(prefix):
+            return desc[len(prefix):]
+    return desc
 
 
 class ListNativeToolsTool(Tool):
@@ -80,6 +93,7 @@ class ListNativeToolsTool(Tool):
         for t in sorted(natives, key=lambda t: t.name):
             cat = _native_category(t)
             desc = t.description.split(".")[0].strip() + "."
+            desc = _strip_server_prefix(t, desc)
             native_groups[cat].append((t.name, desc))
 
         for cat in sorted(native_groups):
