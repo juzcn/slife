@@ -1,6 +1,7 @@
 """Embedding (semantic-search) configuration tools.
 
 embeddings_model_list     — list configured providers + models (active ★)
+embeddings_probe          — probe the active provider: configured vs live /models
 embeddings_model_set      — upsert a model on a provider (creates provider if new)
 embeddings_model_switch   — switch the active embedding model/endpoint
 embeddings_model_remove   — remove a model (or provider) from the config
@@ -167,54 +168,72 @@ class ListEmbeddingsTool(_ConfigPathMixin, Tool):
         return "\n".join(lines)
 
 
-# ── Provider models list ─────────────────────────────────────────────
+# ── Probe active provider ────────────────────────────────────────────
 
 
-class ProviderModelsListTool(_ConfigPathMixin, Tool):
-    """List one provider's models — auto-discovered from the endpoint."""
+class ProviderProbeTool(_ConfigPathMixin, Tool):
+    """Probe the active embedding provider — configured vs live /models."""
 
-    name: ClassVar[str] = "embeddings_provider_models_list"
+    name: ClassVar[str] = "embeddings_probe"
     category: ClassVar[str] = "embeddings"
     description: ClassVar[str] = (
-        "List the models of one embedding provider.  When the endpoint is "
-        "reachable the real list is auto-discovered from its /v1/models "
-        "(model id, dimension, active flag); when offline it falls back to "
-        "the configured models plus the endpoint status."
+        "Probe the ACTIVE embedding provider: list the models configured "
+        "for it in the config AND the models its endpoint returns live "
+        "(GET /v1/models). Active model marked ★."
     )
-    parameters: ClassVar[dict] = make_params(
-        provider={
-            "type": "string",
-            "description": "Provider id (from embeddings_model_list).",
-        },
-    )
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
 
-    async def execute(self, **kwargs) -> str:
+    async def execute(self, **_kwargs) -> str:
         if not self._config_path:
             return "Error: config path not available."
-        provider = kwargs["provider"]
-
         raw = read_config(self._config_path)
         emb = raw.get(_EMBEDDINGS_KEY, {})
         if not isinstance(emb, dict):
-            return f"Error: no embeddings configured."
+            return "No embeddings configured."
         providers = emb.get("providers", {})
-        if not isinstance(providers, dict) or provider not in providers:
-            return f"Error: provider '{provider}' not found. Use embeddings_model_list."
-        pcfg = providers[provider]
-        if not isinstance(pcfg, dict):
-            return f"Error: provider '{provider}' has no config."
+        if not isinstance(providers, dict) or not providers:
+            return "No embeddings configured. Add a provider with embeddings_model_set."
 
+        active_ref = _active_ref(emb)
+        pid = active_ref.split("/", 1)[0] if active_ref else ""
+        if not pid or pid not in providers:
+            return (
+                f"Error: active provider '{pid or '(none)'}' not found. "
+                f"Use embeddings_model_list."
+            )
+        pcfg = providers[pid]
+        if not isinstance(pcfg, dict):
+            return f"Error: provider '{pid}' has no config."
         base_url = pcfg.get("base_url", "")
         api_key = pcfg.get("api_key", "")
-        active_ref = _active_ref(emb)
 
+        lines = [f"## {pid}  (base: {base_url}, active: `{active_ref}`)"]
+
+        # Configured models (config-authoritative).
         configured_models = pcfg.get("models", [])
         if not isinstance(configured_models, list):
             configured_models = []
+        lines.append(f"\n### configured ({len(configured_models)})")
+        if not configured_models:
+            lines.append("  (none — model auto-discovered from endpoint)")
+        for m in configured_models:
+            if not isinstance(m, dict):
+                continue
+            mid = m.get("model", "?")
+            ref = f"{pid}/{mid}"
+            star = "★" if ref == active_ref else " "
+            dim = m.get("dim", "?")
+            lines.append(f"  {star} `{mid}`  dim={dim}")
 
-        # Try live discovery from the endpoint's /v1/models.
-        discovered = None
-        if base_url:
+        # Live models from the endpoint's /v1/models.
+        lines.append(f"\n### /models ({base_url})")
+        if not base_url:
+            lines.append("  (no base_url set — configure with embeddings_model_set)")
+        else:
             try:
                 from openai import AsyncOpenAI
                 client = AsyncOpenAI(api_key=api_key, base_url=base_url)
@@ -222,42 +241,18 @@ class ProviderModelsListTool(_ConfigPathMixin, Tool):
                 discovered = [
                     m for m in (models.data or []) if getattr(m, "id", None)
                 ]
+                if not discovered:
+                    lines.append("  (endpoint returned no models)")
+                for m in discovered:
+                    mid = getattr(m, "id", "?")
+                    ref = f"{pid}/{mid}"
+                    star = "★" if ref == active_ref or mid == active_ref else " "
+                    dim = getattr(m, "dimension", 0) or "?"
+                    act = " [active]" if getattr(m, "active", False) else ""
+                    lines.append(f"  {star} `{mid}`  dim={dim}{act}")
             except Exception as e:
-                logger.warning("embeddings_provider_list_failed provider=%s err=%s", provider, e)
-                discovered = None
-
-        if discovered is not None:
-            lines = []
-            for m in discovered:
-                mid = getattr(m, "id", "?")
-                ref = f"{provider}/{mid}"
-                star = "★" if ref == active_ref or mid == active_ref else " "
-                dim = getattr(m, "dimension", 0) or "?"
-                act = " [active]" if getattr(m, "active", False) else ""
-                lines.append(f"  {star} `{mid}`  dim={dim}{act}")
-            lines.insert(
-                0,
-                f"**{len(discovered)} model(s)** at `{provider}` ({base_url}). "
-                f"Active: `{active_ref}`",
-            )
-            return "\n".join(lines)
-
-        # Offline fallback: configured models + endpoint status.
-        lines = []
-        if not configured_models:
-            lines.append(f"Provider `{provider}` is offline ({base_url}) and has no configured models.")
-        else:
-            lines.append(f"Provider `{provider}` offline — showing configured models ({base_url}):")
-            for m in configured_models:
-                if not isinstance(m, dict):
-                    continue
-                mid = m.get("model", "?")
-                ref = f"{provider}/{mid}"
-                star = "★" if ref == active_ref else " "
-                dim = m.get("dim", "?")
-                lines.append(f"  {star} `{mid}`  dim={dim}")
-        if not base_url:
-            lines.append(f"Provider `{provider}` has no base_url — set one with embeddings_model_set.")
+                logger.warning("embeddings_probe_failed provider=%s err=%s", pid, e)
+                lines.append(f"  (unreachable: {e})")
         return "\n".join(lines)
 
 

@@ -53,9 +53,9 @@ embeddings: {
 - `embeddings_model_list` — 列出所有 provider + models（镜像
   `model_list`）：provider 显示 base_url/api_key 是否已设（不显示明文），
   models 在线时从端点 `/v1/models` 发现 + 配置 active 标记（★）。`NO_PARAMS`。
-- `embeddings_provider_models_list` — 列出**单个 provider** 的模型列表：
-  在线时从该端点 `GET /v1/models` 自动发现（含 dimension、active 标记），
-  离线时回退显示配置里的 models + 端点不可达提示。参数 `provider`。
+- `embeddings_probe` — 探测 **active provider**：同时列出配置里的
+  models 和端点 `GET /v1/models` 实时返回的模型（含 dimension、active
+  标记），active 模型标 ★。`NO_PARAMS`（只对 active provider）。
 - `embeddings_model_set` — **upsert** 一个 provider 下的 model：参数
   `provider`（端点 id，新建时需 base_url+api_key）、`model`（api model id）、
   `base_url`、`api_key`、`dim?`（镜像 `model_set`）。

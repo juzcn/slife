@@ -578,7 +578,7 @@ Search hardening: `search_grep` escapes `%`/`_` with `ESCAPE '\'`; `turn_count` 
 Embeddings are a **first-class top-level `embeddings` section** in `slife.json5`,
 shared by memdb + memfiles and managed by the native tools
 `embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` /
-`embeddings_model_remove` / `embeddings_provider_models_list` /
+`embeddings_model_remove` / `embeddings_probe` /
 `embeddings_enable` (category `embeddings`).  The shape mirrors the LLM
 `models.providers` two-level hierarchy:
 
