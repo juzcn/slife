@@ -40,11 +40,11 @@ def _backend_unavailable_reason(embedder: EmbeddingClient) -> str:
     if not embedder.base_url:
         return (
             "embeddings not configured — add an 'embeddings' section to "
-            "mcp-plugin.json5 (e.g. via mcp_embeddings_set) to enable semantic search"
+            "mcp-plugin.json5 to enable semantic search"
         )
     return (
         "api backend unavailable — base_url is a placeholder or unreachable. "
-        "Configure it with mcp_embeddings_set"
+        "Check the 'embeddings' section in mcp-plugin.json5."
     )
 
 
@@ -185,12 +185,6 @@ class SemanticManager:
     @property
     def reason(self) -> str:
         return self._reason
-
-    async def unembedded(self) -> int:
-        try:
-            return await self._store.count_unembedded()
-        except Exception:
-            return 0
 
     # ── internal ─────────────────────────────────────────────────────
 

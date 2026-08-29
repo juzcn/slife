@@ -389,6 +389,21 @@ class ToolStore:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
+    async def list_tools_by_server(self, server: str) -> list[dict]:
+        """Return every catalog row for *server*.
+
+        One dict per tool: ``full_name`` / ``server`` / ``name`` /
+        ``description`` / ``enabled`` — the persisted view used to compare
+        against a live server's tools.
+        """
+        cursor = await self._c.execute(
+            "SELECT full_name, server, name, description, enabled "
+            "FROM tools WHERE server = ?",
+            (server,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
     # ── Search ─────────────────────────────────────────────────────
 
     async def search_keyword(

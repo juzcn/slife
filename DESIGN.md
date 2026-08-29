@@ -507,7 +507,7 @@ Three wire transports, one raw JSON-RPC connection class (`MCPServerConnection` 
 
 For `url`-configured servers the gateway probes with `GET + Accept: text/event-stream`: a `text/event-stream` reply switches to **SSE** mode (the `endpoint` event yields the POST message URL); otherwise the same client falls through to **Streamable HTTP**. A Streamable response may be a single JSON body or an SSE stream — both are parsed (the first matching JSON-RPC message; later events are server-initiated notifications and are dropped).
 
-Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`), plus the tool-catalog and embeddings tools described below (`mcp_tool_search`, `mcp_embeddings_set` / `mcp_embeddings_remove`, `mcp_semantic_status`). Live status is reported by `check_mcp` via the internal `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is an internal tool — LLM-invisible, invoked only by the `server__tool` proxies.
+Exposed management tools (LLM-visible as `mcp_set`, `mcp_set_enabled`, `mcp_remove`, `mcp_list`, `mcp_list_tools`), plus the tool-catalog search tool described below (`mcp_tool_search`). Live status is reported by `check_mcp` via the internal `__mcp_connection_status`. The tool-call bridge `__mcp_call_tool` is an internal tool — LLM-invisible, invoked only by the `server__tool` proxies.
 
 `mcp_list` is a static config view — the configured servers (name, transport, command/args or url, enabled/disabled, `auto_load`, description), with no live state and no secrets (env/headers/auth omitted). `check_mcp` (a standalone tool, also run by `system_health`) calls the internal `__mcp_connection_status` for the raw live server state and adds health levels (ok/warning/info) with remediation hints. The separation keeps "what is configured" distinct from "what is connected", so the LLM picks the right tool.
 
@@ -517,8 +517,8 @@ row per `{server}__{tool}` with name, description, and a per-tool `enabled`
 flag derived from its server's state. The catalog survives restarts and is
 indexed twice — FTS5 (keyword) and f32-BLOB vectors (semantic) produced
 against the gateway's own `embeddings` section of `mcp-plugin.json5`
-(`mcp_embeddings_set` / `mcp_embeddings_remove` manage it; `mcp_semantic_status`
-reports readiness). `mcp_tool_search` runs hybrid/keyword/grep retrieval over
+(edited in the file; `mcp-plugin build` re-embeds the catalog). `mcp_tool_search`
+runs hybrid/keyword/grep retrieval over
 the catalog, degrading to keyword-only when no embedding endpoint is
 configured or the semantic index is still building.
 

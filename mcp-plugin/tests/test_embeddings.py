@@ -1,4 +1,4 @@
-"""EmbeddingClient + embeddings config accessor unit tests."""
+"""EmbeddingClient + config-driven availability unit tests."""
 
 import json
 
@@ -100,30 +100,6 @@ async def test_embed_one_failure_returns_none():
 
 def test_available_false_without_base_url():
     assert EmbeddingClient().available is False
-
-
-# ── config accessors ───────────────────────────────────────────────
-
-
-def test_embeddings_config_roundtrip(tmp_path):
-    plugin_config.set_config_path(tmp_path / "mcp-plugin.json5")
-    assert plugin_config.get_embeddings_config() is None
-
-    plugin_config.set_embeddings_config({"base_url": "http://127.0.0.1:8000/v1"})
-    assert plugin_config.get_embeddings_config() == {"base_url": "http://127.0.0.1:8000/v1"}
-
-    assert plugin_config.remove_embeddings_config() is True
-    assert plugin_config.get_embeddings_config() is None
-    assert plugin_config.remove_embeddings_config() is False
-
-
-def test_embeddings_config_does_not_touch_servers(tmp_path):
-    plugin_config.set_config_path(tmp_path / "mcp-plugin.json5")
-    plugin_config.add_server_entry("svcA", {"command": "npx", "args": ["x"]})
-    plugin_config.set_embeddings_config({"base_url": "http://127.0.0.1:8000/v1"})
-    raw = plugin_config.read_config(tmp_path / "mcp-plugin.json5")
-    assert "svcA" in raw["servers"]
-    assert raw["embeddings"]["base_url"] == "http://127.0.0.1:8000/v1"
 
 
 def test_resolve_server_config_auto_load():

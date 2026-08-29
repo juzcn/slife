@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from mcp_plugin.connection import ServerStatus
+
 
 @pytest.fixture
 def restore_root_logger():
@@ -82,9 +84,6 @@ class TestAddServerToolRegistration:
             "mcp_list",
             "mcp_list_tools",
             "mcp_tool_search",
-            "mcp_embeddings_set",
-            "mcp_embeddings_remove",
-            "mcp_semantic_status",
             "__mcp_call_tool",
             "__mcp_connection_status",
             "__mcp_get_tool",
@@ -168,3 +167,154 @@ class TestWrapperNotifyToolsChanged:
         await srv._notify_tools_changed()
 
         sess.send_tool_list_changed.assert_awaited_once()
+
+
+class TestMCPListToolsDualRead:
+    """mcp_list_tools — live read + persisted catalog, staleness → build hint."""
+
+    @staticmethod
+    async def _list(srv, *, connected=True, live=None, db=None,
+                    db_unavailable=False, db_raise=""):
+        """Call mcp_list_tools with a patched pool + catalog store."""
+        import json as _json
+
+        conn = MagicMock()
+        conn.status = ServerStatus.CONNECTED if connected else ServerStatus.DISCONNECTED
+        pool = MagicMock()
+        pool.get_server.return_value = conn
+        pool.list_all_tools.return_value = live or []
+
+        async def fake_ensure_store():
+            if db_unavailable:
+                return None
+            if db_raise:
+                raise RuntimeError(db_raise)
+            store = AsyncMock()
+            store.list_tools_by_server.return_value = db or []
+            return store
+
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv, "_ensure_store", fake_ensure_store),
+        ):
+            raw = await srv.mcp_list_tools(server="fs")
+        return _json.loads(raw)
+
+    @staticmethod
+    def _db_row(name, desc, enabled=1):
+        return {"full_name": f"fs__{name}", "server": "fs",
+                "name": name, "description": desc, "enabled": enabled}
+
+    @staticmethod
+    def _live(name, desc=""):
+        return {"name": name, "description": desc, "inputSchema": {"type": "object"}}
+
+    @pytest.mark.asyncio
+    async def test_synced_catalog_no_hint(self, restore_root_logger):
+        srv = _import_mcp_server()
+        live = [self._live("a", "read a"), self._live("b", "read b")]
+        db = [self._db_row("a", "read a"), self._db_row("b", "read b")]
+        out = await self._list(srv, live=live, db=db)
+
+        assert out["status"] == "ok"
+        assert out["connected"] is True
+        assert out["tools"] == live
+        assert out["catalog"] == {"available": True, "count": 2,
+                                  "names": ["a", "b"]}
+        assert out["stale"] is False
+        assert out["hint"] == ""
+        assert out["reason"] == ""
+
+    @pytest.mark.asyncio
+    async def test_db_missing_live_tool_is_stale(self, restore_root_logger):
+        srv = _import_mcp_server()
+        # Server added tool 'b' but the catalog wasn't re-synced ⇒ db behind.
+        out = await self._list(
+            srv, live=[self._live("a"), self._live("b")],
+            db=[self._db_row("a", "")],
+        )
+        assert out["stale"] is True
+        assert "b" in out["reason"]
+        assert "mcp-plugin build" in out["hint"]
+
+    @pytest.mark.asyncio
+    async def test_db_extra_tool_is_stale(self, restore_root_logger):
+        srv = _import_mcp_server()
+        # Server dropped a tool but the catalog still lists it.
+        out = await self._list(srv, live=[self._live("a")],
+                               db=[self._db_row("a", ""), self._db_row("old", "")])
+        assert out["stale"] is True
+        assert "old" in out["reason"]
+        assert "mcp-plugin build" in out["hint"]
+
+    @pytest.mark.asyncio
+    async def test_description_drift_is_stale(self, restore_root_logger):
+        srv = _import_mcp_server()
+        out = await self._list(srv, live=[self._live("a", "new desc")],
+                               db=[self._db_row("a", "old desc")])
+        assert out["stale"] is True
+        assert "a" in out["reason"]
+
+    @pytest.mark.asyncio
+    async def test_db_unavailable_hints_build(self, restore_root_logger):
+        srv = _import_mcp_server()
+        out = await self._list(srv, live=[self._live("a")], db_unavailable=True)
+        assert out["stale"] is True
+        assert "catalog unavailable" in out["reason"]
+        assert "mcp-plugin build" in out["hint"]
+
+    @pytest.mark.asyncio
+    async def test_live_read_failure_reports_unavailable_and_exits(
+        self, restore_root_logger,
+    ):
+        """A live read exception ⇒ 'MCP unavailable' error — no catalog read."""
+        import json as _json
+
+        srv = _import_mcp_server()
+        conn = MagicMock()
+        conn.status = ServerStatus.CONNECTED
+        pool = MagicMock()
+        pool.get_server.return_value = conn
+        pool.list_all_tools.side_effect = RuntimeError("pool boom")
+        store = AsyncMock()
+
+        with (
+            patch.object(srv, "_pool", pool),
+            patch.object(srv, "_ensure_store", AsyncMock(return_value=store)),
+        ):
+            raw = await srv.mcp_list_tools(server="fs")
+
+        out = _json.loads(raw)
+        assert out["status"] == "error"
+        assert "MCP unavailable" in out["error"]
+        assert "pool boom" in out["error"]
+        store.list_tools_by_server.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_db_read_failure_hints_build(self, restore_root_logger):
+        srv = _import_mcp_server()
+        out = await self._list(srv, live=[self._live("a")], db_raise="db broke")
+        assert out["stale"] is True
+        assert "db broke" in out["reason"]
+        assert "mcp-plugin build" in out["hint"]
+
+    @pytest.mark.asyncio
+    async def test_not_connected_shows_persisted_catalog(self, restore_root_logger):
+        srv = _import_mcp_server()
+        out = await self._list(srv, connected=False, live=[], db=[self._db_row("a", "")])
+        assert out["connected"] is False
+        assert out["tools"] == []
+        assert out["catalog"]["names"] == ["a"]
+        assert out["stale"] is False
+        assert out["hint"] == ""
+        assert "not connected" in out["note"]
+
+    @pytest.mark.asyncio
+    async def test_not_connected_and_db_gone_hints_build(self, restore_root_logger):
+        srv = _import_mcp_server()
+        out = await self._list(srv, connected=False, live=[], db_unavailable=True)
+        assert out["connected"] is False
+        assert out["tools"] == []
+        assert out["catalog"]["available"] is False
+        assert out["stale"] is True
+        assert "mcp-plugin build" in out["hint"]

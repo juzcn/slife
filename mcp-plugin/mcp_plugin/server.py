@@ -16,7 +16,6 @@ import json
 import os
 from contextlib import asynccontextmanager
 from typing import Any
-from urllib.parse import urlparse
 
 from fastmcp.server.context import Context
 
@@ -514,25 +513,99 @@ async def __mcp_connection_status(ctx: Context | None = None) -> str:
 @mcp.tool(
     name="mcp_list_tools",
     description=(
-        "List a connected MCP server's tools. Names are prefixed server__tool."
+        "List a server's tools — double read: the live connected tools AND the "
+        "persisted catalog (mcp-plugin.db). When the catalog is unavailable, or "
+        "its data is out of date vs the live tools (the db is stale), the "
+        "response says to run 'mcp-plugin build' offline to rebuild it. Names "
+        "are prefixed server__tool."
     ),
 )
 async def mcp_list_tools(server: str) -> str:
-    """List tools from an MCP server.
+    """List a server's tools: live read + persisted catalog comparison.
 
     Args:
         server: Server name (required). Use mcp_list to discover server names.
     """
-    try:
-        tools = _pool.list_all_tools(server_name=server)
-        if not tools:
-            return ok_json(tools=[], server=server,
-                           note=f"No tools from server '{server}'.")
+    conn = _pool.get_server(server)
+    connected = conn is not None and conn.status == ServerStatus.CONNECTED
 
-        return ok_json(tools=tools)
+    try:
+        live = _pool.list_all_tools(server_name=server)
     except Exception as e:
-        logger.exception("mcp_list_tools_failed server=%s", server)
-        return error_json(str(e))
+        logger.warning("mcp_list_tools_live_failed server=%s err=%s", server, e)
+        return error_json(
+            f"MCP unavailable for server '{server}' — live tool read failed: {e}",
+            server=server,
+        )
+
+    # Second read: the sqlite catalog. Unavailable ⇒ stale-by-default.
+    catalog_ok = False
+    catalog_names: list[str] = []
+    catalog_error = ""
+    rows: list[dict] = []
+    try:
+        store = await _ensure_store()
+        if store is None:
+            catalog_error = "sqlite catalog could not be opened"
+            logger.warning("mcp_list_tools_db_unavailable server=%s", server)
+        else:
+            rows = await store.list_tools_by_server(server)
+            catalog_ok = True
+            catalog_names = [r["name"] for r in rows]
+    except Exception as e:
+        catalog_error = str(e)
+        logger.warning("mcp_list_tools_db_failed server=%s err=%s", server, e)
+
+    # Staleness: the db is stale when it disagrees with the live tools
+    # (a tool was added/removed/renamed, or its description changed).
+    stale = False
+    reason = ""
+    if not catalog_ok:
+        stale = True
+        reason = f"catalog unavailable — {catalog_error}" if catalog_error else "catalog unavailable"
+    elif connected:
+        drift: list[str] = []
+        db_desc = {r["name"]: (r.get("description") or "") for r in rows}
+        for t in live:
+            name = t.get("name", "")
+            if not name:
+                continue
+            if name not in db_desc or db_desc[name] != (t.get("description") or ""):
+                drift.append(name)
+        for name in db_desc:
+            if name not in {t.get("name") for t in live}:
+                drift.append(name)
+        if drift:
+            stale = True
+            reason = (
+                "catalog out of date — sqlite db differs from the live server: "
+                + ", ".join(sorted(set(drift)))
+            )
+
+    note = ""
+    if not connected:
+        note = f"Server '{server}' is not connected — showing its persisted catalog."
+    elif not live:
+        note = f"No tools from server '{server}'."
+    hint = (
+        "Catalog is missing or out of date — run `mcp-plugin build` offline "
+        "(from a terminal) to rebuild it from the live connections."
+    ) if stale else ""
+
+    return ok_json(
+        server=server,
+        connected=connected,
+        tools=live,
+        catalog={
+            "available": catalog_ok,
+            "count": len(catalog_names),
+            "names": catalog_names,
+        },
+        stale=stale,
+        reason=reason,
+        note=note,
+        hint=hint,
+    )
 
 
 @mcp.tool(
@@ -678,7 +751,8 @@ async def mcp_tool_search(
             else:
                 hint = (
                     "semantic search unavailable — no embeddings endpoint "
-                    "configured. Add one with mcp_embeddings_set or mcp-plugin build."
+                    "configured. Add an 'embeddings' section to mcp-plugin.json5 "
+                    "and run mcp-plugin build."
                 )
     reported_mode = mode if mode == "grep" else ("hybrid" if semantic_available else "fts5")
     return ok_json(
@@ -688,95 +762,6 @@ async def mcp_tool_search(
         results=results[:limit],
         hint=hint,
     )
-
-
-@mcp.tool(
-    name="mcp_embeddings_set",
-    description=(
-        "Configure the embeddings endpoint for semantic tool search. base_url "
-        "is an OpenAI-compatible /v1 endpoint, e.g. the local-embed service "
-        "'http://127.0.0.1:8000/v1'. model is optional (the endpoint's active "
-        "model is used otherwise). Present config ⇒ semantic search active; "
-        "remove with mcp_embeddings_remove to fall back to keyword search."
-    ),
-)
-async def mcp_embeddings_set(base_url: str, model: str = "", api_key: str = "") -> str:
-    """Persist the embeddings section and (re)enable semantic indexing."""
-    parsed = urlparse(base_url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return error_json(
-            f"base_url must be an http(s) URL with a host, got {base_url!r}",
-        )
-    plugin_config.set_embeddings_config({
-        "base_url": base_url,
-        "model": model,
-        "api_key": api_key,
-    })
-    manager = _manager
-    if manager is None:
-        await _warm_semantic()
-        manager = _manager
-    if manager is not None:
-        status = await manager.enable()
-    else:
-        status = {"status": "error", "message": "semantic manager unavailable (DB failed to open)"}
-    return ok_json(
-        embeddings=plugin_config.get_embeddings_config(),
-        semantic=status,
-    )
-
-
-@mcp.tool(
-    name="mcp_embeddings_remove",
-    description=(
-        "Remove the embeddings config — semantic search off, keyword/grep "
-        "search remains."
-    ),
-)
-async def mcp_embeddings_remove() -> str:
-    """Drop the embeddings section and disable semantic indexing."""
-    removed = plugin_config.remove_embeddings_config()
-    if _manager is not None:
-        await _manager.disable()
-    if removed:
-        return ok_json(status="removed", message="Semantic search disabled. Keyword search still works.")
-    return ok_json(status="not_present", message="No embeddings config was present.")
-
-
-@mcp.tool(
-    name="mcp_semantic_status",
-    description=(
-        "Semantic search status: configured / backend / model / dimension / "
-        "available / semantic_ready / state / reason / unembedded backlog."
-    ),
-)
-async def mcp_semantic_status() -> str:
-    """Report the semantic-search state (mirrors memdb_semantic_status)."""
-    store = await _ensure_store()
-    cfg = plugin_config.get_embeddings_config()
-    embedder = _manager.embedder if (_manager is not None) else None
-    unembedded = 0
-    if _manager is not None:
-        unembedded = await _manager.unembedded()
-    elif store is not None:
-        unembedded = await store.count_unembedded()
-    payload = {
-        "configured": cfg is not None,
-        "backend": embedder.backend if embedder else "",
-        "model": embedder.model if embedder else (cfg.get("model", "") if cfg else ""),
-        "dimension": embedder.dimension if embedder else 0,
-        "available": bool(embedder and embedder.available),
-        "loaded": bool(embedder and embedder.loaded),
-        "semantic_ready": bool(_manager and _manager.semantic_ready),
-        "state": _manager.state if _manager else "disabled",
-        "reason": _manager.reason if _manager else "",
-        "unembedded": unembedded,
-        "hint": (
-            f"embeddings config: {cfg}"
-            if cfg else "add via mcp_embeddings_set(base_url=...) or mcp-plugin build"
-        ),
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 # ── Entry point ──────────────────────────────────────────────────────

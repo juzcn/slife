@@ -326,39 +326,6 @@ def _load_raw() -> dict:
     return read_config(current_path())
 
 
-# ── Embeddings section (single config: present + base_url = active) ──────
-
-
-def get_embeddings_config() -> dict | None:
-    """Return the top-level ``embeddings`` section, or None when absent.
-
-    Present + ``base_url`` ⇒ semantic search active; absent ⇒ keyword/grep
-    only (``EmbeddingClient.from_plugin_config``).
-    """
-    raw = _load_raw()
-    emb = raw.get("embeddings")
-    return emb if isinstance(emb, dict) else None
-
-
-def set_embeddings_config(cfg: dict) -> None:
-    """Persist the ``embeddings`` section (single config, no provider system)."""
-    raw = _load_raw()
-    raw["embeddings"] = cfg
-    write_config(current_path(), raw)
-    logger.info("mcp_config_set_embeddings cfg=%s", cfg)
-
-
-def remove_embeddings_config() -> bool:
-    """Remove the ``embeddings`` section. True if it existed."""
-    raw = _load_raw()
-    if "embeddings" not in raw:
-        return False
-    del raw["embeddings"]
-    write_config(current_path(), raw)
-    logger.info("mcp_config_remove_embeddings")
-    return True
-
-
 # ── Raw json5 entry → ServerConfig ─────────────────────────────────────
 
 

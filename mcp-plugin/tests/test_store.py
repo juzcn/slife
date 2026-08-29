@@ -50,6 +50,25 @@ async def test_remove_server(store):
 
 
 @pytest.mark.asyncio
+async def test_list_tools_by_server(store):
+    await store.sync_server("svcA", [_tool("search", "find files"), _tool("fetch")])
+    await store.sync_server("svcB", [_tool("list")])
+    await store.set_tool_enabled("svcA__search", False)
+
+    rows = await store.list_tools_by_server("svcA")
+    assert [r["name"] for r in rows] == ["search", "fetch"]
+    search = {r["name"]: r for r in rows}["search"]
+    assert search["full_name"] == "svcA__search"
+    assert search["description"] == "find files"
+    assert search["enabled"] == 0
+    assert await store.list_tools_by_server("svcB") == [
+        {"full_name": "svcB__list", "server": "svcB", "name": "list",
+         "description": "", "enabled": 1},
+    ]
+    assert await store.list_tools_by_server("svcNope") == []
+
+
+@pytest.mark.asyncio
 async def test_set_tool_enabled_unknown(store):
     assert await store.set_tool_enabled("nope__x", True) is False
 

@@ -676,8 +676,8 @@ endpoints (``base_url`` + ``api_key``) and an ``active_model`` ref that is
 configuration-authoritative over the endpoint's own active-model flag. The
 local-embed plugin serves a local model behind it. The MCP gateway keeps its
 *own* ``embeddings`` section in ``mcp-plugin.json5`` — a single flat config
-(base_url + optional model/api_key) managed by ``mcp_embeddings_set`` /
-``mcp_embeddings_remove``. *See also* local-embed; Semantic index (Part II);
+(base_url + optional model/api_key), edited by hand and refreshed with
+``mcp-plugin build``. *See also* local-embed; Semantic index (Part II);
 mcp-plugin.
 
 **External plugin**
@@ -762,8 +762,8 @@ The standalone PyPI package that implements the MCP gateway — the plugin that
 connects Slife to external MCP servers (stdio / SSE / Streamable HTTP). It
 lives in the `mcp-plugin/` workspace member (module `mcp_plugin.server`), is
 registered via `plugins.external` in `slife.json5`, and exposes the `mcp_set` /
-`mcp_list` / … management tools, the tool-catalog tools (`mcp_tool_search`,
-`mcp_embeddings_set`, `mcp_semantic_status`, …), and its own `mcp-plugin` CLI
+`mcp_list` / … management tools, the tool-catalog tool (`mcp_tool_search`,
+…), and its own `mcp-plugin` CLI
 (`set`, `remove`, `build`). It keeps a persistent **tool catalog**
 (`mcp-plugin.db`) of every loaded external tool — name, description, and
 enabled state — indexed for keyword and semantic search. External tools are
@@ -772,8 +772,8 @@ discovers one with `mcp_tool_search` and loads it with `mcp_tool_load`.
 Enable/disable is server-granular (`mcp_set_enabled`), and `mcp-plugin build`
 rebuilds the catalog and its index from live connections, marking a disabled
 server's tools disabled. It self-hosts an ``embeddings`` section in
-``mcp-plugin.json5`` (managed by ``mcp_embeddings_set`` /
-``mcp_embeddings_remove``) that feeds the catalog's semantic index. *See also*
+``mcp-plugin.json5`` (edited by hand; refreshed by ``mcp-plugin build``) that
+feeds the catalog's semantic index. *See also*
 Plugin (Part II); Built-in plugin; Plugin contract; Tool catalog; Tool
 loading; local-embed.
 

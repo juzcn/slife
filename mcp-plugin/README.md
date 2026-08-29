@@ -123,8 +123,7 @@ An MCP-plugin distribution exposes a module that hosts its own FastMCP server
 `{"port": N}`). Slife discovers it via `plugins.external` in `slife.json5` and
 spawns `python -m <module>`. The management tools (`mcp_set`, `mcp_remove`,
 `mcp_set_enabled`, `mcp_list`, `mcp_list_tools`, `mcp_tool_search`,
-`mcp_embeddings_set`, `mcp_embeddings_remove`,
-`mcp_semantic_status`, `__mcp_call_tool`, `__mcp_connection_status`,
+`__mcp_call_tool`, `__mcp_connection_status`,
 `__mcp_get_tool`) are kept separate from the servers they manage.
 
 ### Tools
@@ -135,9 +134,17 @@ spawns `python -m <module>`. The management tools (`mcp_set`, `mcp_remove`,
   embeddings endpoint is configured or the index is still building. Results
   carry `full_name`, `server`, `name`, `description`, `enabled`, snippet and a
   score; `include_disabled=true` (default) surfaces disabled tools too.
+- `mcp_list_tools(server)` — **double read**: the live connected tools AND the
+  persisted catalog (`mcp-plugin.db`). When the catalog is unavailable, or its
+  data is out of date vs the live tools (single source of truth = live), the
+  response flags it and suggests running `mcp-plugin build` offline to rebuild
+  the catalog. While a server is disconnected, the persisted catalog (if any)
+  is still returned; a failed live read instead returns an error ("MCP
+  unavailable") without touching the catalog.
 - `mcp_tool_load(full_name)` (host side) — register one tool into the LLM's
   tool list. Refuses disabled tools (a tool is disabled iff its server is
   disabled — enable/disable is server-level only, via `mcp_set_enabled`).
-- `mcp_embeddings_set(base_url, model, api_key)` / `mcp_embeddings_remove` —
-  manage the `embeddings` section and reindex.
-- `mcp_semantic_status` — configured/backend/model/dimension/ready/state/backlog.
+
+Semantic search is configured **internally** — edit the `embeddings` section
+of `mcp-plugin.json5` and run `mcp-plugin build` to (re)enable indexing; there
+is no MCP tool for it.
