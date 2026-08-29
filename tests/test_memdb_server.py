@@ -120,6 +120,56 @@ class TestHybridDegradationHint:
         assert "query embedding generation failed" in data["hint"]
 
 
+class TestHybridMergeKeysOnTurnId:
+    """The store keys search hits on the internal ``rowid``, but
+    ``merge_hybrid`` aligns on ``turn_id`` (and the merged output must expose
+    turn_id like every other turn_search mode).  The real hit shape is
+    rowid-keyed — the mocked dicts in the degradation tests are already
+    turn_id-keyed, so they never exercised this path (regression: hybrid
+    returned `keyword=6 semantic=6 merged=0`)."""
+
+    def _server(self, keyword_hits: list[dict], semantic_hits: list[dict]):
+        srv = _import_memdb_server()
+        store = AsyncMock()
+        store.search_keyword = AsyncMock(return_value=keyword_hits)
+        store.search_semantic = AsyncMock(return_value=semantic_hits)
+        manager = _fake_manager(semantic_ready=True, reason="")
+        manager.embedder.embed_one = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        srv._store = store
+        srv._manager = manager
+        return srv, store
+
+    @pytest.mark.asyncio
+    async def test_store_shaped_hits_merge_and_keyed_by_turn_id(self, restore_root_logger):
+        import json
+
+        srv, store = self._server(
+            keyword_hits=[
+                {"rowid": 1, "user_message": "微信登录", "summary": "s1",
+                 "tags": "", "created_at": "2026-08-01", "snippet": "…", "rank": -1.0},
+                {"rowid": 2, "user_message": "other", "summary": "s2",
+                 "tags": "", "created_at": "2026-08-02", "snippet": "…", "rank": -0.5},
+            ],
+            semantic_hits=[
+                {"rowid": 5, "diary_rowid": 5, "summary": "s5", "tags": "",
+                 "created_at": "2026-08-01", "distance": 0.5},
+            ],
+        )
+
+        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
+            out = await srv.turn_search(query="微信登录", mode="hybrid")
+
+        data = json.loads(out)
+        assert data["mode"] == "hybrid"
+        assert len(data["results"]) == 3
+        ids = [r["turn_id"] for r in data["results"]]
+        assert 1 in ids and 2 in ids and 5 in ids
+        for r in data["results"]:
+            assert "turn_id" in r
+            assert "rowid" not in r      # internal key never exposed
+            assert "diary_rowid" not in r  # semantic dedup key not exposed
+
+
 class TestStoreLifecycleLocking:
     """The per-turn save holds the lifecycle lock, and wakes the drainer."""
 

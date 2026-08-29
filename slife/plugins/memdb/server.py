@@ -94,10 +94,13 @@ _init_lock: asyncio.Lock | None = None
 def _rename_rowid_to_turn_id(entries: list[dict]) -> None:
     """Map a store result's internal ``rowid`` key to the model-visible
     ``turn_id``, in place.  The store layer uses the SQLite rowid; the LLM
-    sees and addresses turns by their turn id."""
+    sees and addresses turns by their turn id.  Also drops ``diary_rowid`` —
+    the semantic search's dedup key, which holds the same value and is
+    internal noise for the model."""
     for e in entries:
         if "rowid" in e:
             e["turn_id"] = e.pop("rowid")
+        e.pop("diary_rowid", None)
 
 
 def _get_db_path() -> Path:
@@ -556,6 +559,14 @@ async def turn_search(
                                                             limit=limit * 2,
                                                             since=since, until=until)
                 semantic_available = True
+
+        # The store keys both hit lists on the internal ``rowid`` — rename
+        # to the model-visible ``turn_id`` BEFORE the RRF merge, which aligns
+        # on ``turn_id``.  Otherwise every item's key lookup misses and the
+        # merge collapses to empty (keyword=6 semantic=6 merged=0).  This
+        # also keeps hybrid results keyed like every other turn_search mode.
+        _rename_rowid_to_turn_id(keyword_hits)
+        _rename_rowid_to_turn_id(semantic_hits)
 
         merged = merge_hybrid(keyword_hits, semantic_hits)
 
