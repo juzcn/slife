@@ -603,6 +603,9 @@ class AgentLoop:
         changed since the last turn.  *current* is the context token
         count — computed once in :meth:`run` for the note (the trim
         decision later uses its own reading in ``_trim_after_save``).
+        The ``restarted`` flag rides the restore marker (consumed by
+        ``_trim_after_save``, not here) so only the very first footer
+        after a restart reports it.
         """
         cwd_now = os.getcwd()
         shell_now = detect_current_shell()
@@ -610,6 +613,8 @@ class AgentLoop:
             "context_window": self.context_window,
             "last_context_tokens": current,
         }
+        if self._just_restored_history == id(history):
+            kwargs["restarted"] = True
         if self.model_name != self._last_model_name:
             kwargs["model_name"] = self.model_name
             kwargs["input_modalities"] = self.input_modalities

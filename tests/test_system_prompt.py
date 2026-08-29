@@ -483,6 +483,25 @@ class TestContextStatusSchedule:
             build_context_status(schedule_status=[])
 
 
+class TestContextStatusRestart:
+    """build_context_status reports a system restart once, on the first
+    footer after a session restore — nothing otherwise."""
+
+    def test_renders_restart_line_when_flagged(self):
+        from slife.agent.system_prompt import build_context_status
+        result = build_context_status(restarted=True)
+        assert "系统重启" in result
+        # Rendered right after the current-time line, as a bullet.
+        lines = result.splitlines()
+        assert lines.index(next(l for l in lines if "系统重启" in l)) == 2
+        assert "   - 系统重启" in result
+
+    def test_no_restart_line_by_default(self):
+        from slife.agent.system_prompt import build_context_status
+        assert "系统重启" not in build_context_status()
+        assert "系统重启" not in build_context_status(restarted=False)
+
+
 class TestFormatPresenceLine:
     """format_presence_line renders TUI-identical text and filters noise."""
 

@@ -119,6 +119,7 @@ def build_context_status(
     context_time_start: str = "",
     presence_events: list[tuple[float, str]] | None = None,
     schedule_status: list[dict] | None = None,
+    restarted: bool = False,
 ) -> str:
     """Render the dynamic context status footer.
 
@@ -140,6 +141,9 @@ def build_context_status(
     user; ``status`` tells them apart per line) rendered after the context
     usage line until the user backfills with ``run_schedule_now`` or
     closes them with ``scheduled_run_skip``.
+
+    *restarted* is the "system restarted" flag — set once by the loop on
+    the first turn after a session restore.
     """
     now = datetime.now().astimezone()
     last_usage_pct = (
@@ -172,6 +176,7 @@ def build_context_status(
         context_time_start=context_time_start,
         presence_events=rendered_presence,
         schedule_status=rendered_schedule,
+        restarted=restarted,
     ).strip()
 
 

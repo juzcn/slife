@@ -609,6 +609,9 @@ _SYS_NOTE_PARAMS = make_params(
     schedule_status={"type": "array", "default": [],
                      "description": "Open failed/missed scheduled runs "
                                     "(objects with name / due_at / status)."},
+    restarted={"type": "boolean", "default": False,
+               "description": "True on the first turn after a system restart "
+                              "(session restored from memory)."},
 )
 
 

@@ -82,6 +82,40 @@ class TestSysNote:
         assert "daily @ 2026-08-25T09:00:00 (failed)" in out
         assert "run_schedule_now" in out
 
+    @pytest.mark.asyncio
+    async def test_renders_restart_flag(self):
+        reg = _registry()
+        out = await reg.execute("_sys_note", restarted=True)
+        assert "系统重启" in out
+        out = await reg.execute("_sys_note", restarted=False)
+        assert "系统重启" not in out
+
+
+class TestFooterKwargsRestarted:
+    """_footer_kwargs flags the first footer after a session restore."""
+
+    def test_flags_restored_history_once(self):
+        reg = _registry()
+        loop = _loop(reg)
+        conv = MessageHistory(system_prompt="SYS")
+        loop._just_restored_history = id(conv)  # restore_session marks this
+
+        kwargs = loop._footer_kwargs(conv, conv.count_tokens())
+        assert kwargs.get("restarted") is True
+        # The restore marker is consumed by _trim_after_save, not the footer.
+        assert loop._just_restored_history == id(conv)
+
+    def test_no_flag_for_other_histories(self):
+        reg = _registry()
+        loop = _loop(reg)
+        conv = MessageHistory(system_prompt="SYS")
+        loop._footer_kwargs(conv, conv.count_tokens())
+
+        other = MessageHistory(system_prompt="SYS")
+        loop._just_restored_history = id(conv)
+        kwargs = loop._footer_kwargs(other, other.count_tokens())
+        assert "restarted" not in kwargs
+
 
 # ── Internal trim after save (_trim_after_save) ──────────────────────────
 
