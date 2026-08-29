@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class McpToolLoadTool(Tool):
     name = "mcp_tool_load"
-    category = "MCP"
+    category = "mcp"
     description = (
         "Load an external MCP tool into the LLM's tool list by full_name "
         "'{server}__{tool}' (find it with mcp_tool_search). It becomes callable "
