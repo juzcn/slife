@@ -6,7 +6,7 @@ the scheduled-task MCP server tools.
 """
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -14,6 +14,15 @@ pytestmark = pytest.mark.unit
 
 import slife.plugins.memfiles.server as plugin
 from slife.plugins.memfiles.store import MemfilesStore
+
+# The internal scheduled data tools start with ``__`` and get name-mangled
+# inside class methods — bind them once at module level (as the original
+# ``getattr(plugin, "__scheduled_fail_unconfirmed")`` already did).
+_sched_upsert = getattr(plugin, "__scheduled_task_upsert")
+_sched_remove = getattr(plugin, "__scheduled_task_remove")
+_sched_tasks = getattr(plugin, "__scheduled_tasks_list")
+_sched_runs = getattr(plugin, "__scheduled_runs_list")
+_sched_skip = getattr(plugin, "__scheduled_run_skip")
 
 
 async def _real_store(tmp_path) -> MemfilesStore:
@@ -229,6 +238,26 @@ async def test_upsert_report_mirrors_md_and_backfills_run(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_upsert_report_standalone_no_task(tmp_path):
+    """A report without a task is a standalone document (task_id NULL on a
+    fresh DB) — it never touches scheduled_runs."""
+    store = await _real_store(tmp_path)
+    try:
+        rep = await store.upsert_report(
+            task_id=None, title="Standalone", content="solo note",
+        )
+        assert rep["kind"] == "report"
+        assert (tmp_path / "reports" / "standalone.md").read_text(
+            encoding="utf-8") == "# Standalone\n\nsolo note\n"
+        row = await store.get_report(rep["doc_id"])
+        assert row["task_id"] is None
+        # nothing was dispatched or confirmed — runs table stays empty
+        assert await store.list_scheduled_runs() == []
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_upsert_report_append_same_title(tmp_path):
     store = await _real_store(tmp_path)
     try:
@@ -347,57 +376,90 @@ async def test_report_in_drainer_view(tmp_path):
 
 
 class TestScheduledServerTools:
-    @pytest.mark.asyncio
-    async def test_task_set_validates_cron(self, tmp_path):
-        store = await _real_store(tmp_path)
-        try:
-            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-                bad = await plugin.scheduled_task_set(name="x", schedule="61 * * * *")
-                assert "invalid cron" in bad.lower()
-                ok = await plugin.scheduled_task_set(
-                    name="daily", description="d", schedule="0 9 * * *",
-                )
-                info = json.loads(ok)
-                assert info["name"] == "daily" and info["task_id"] >= 1
-                # 'manual' bypasses cron validation
-                manual = await plugin.scheduled_task_set(name="m", schedule="manual")
-                assert "task_id" in json.loads(manual)
-        finally:
-            await store.close()
+    """The memfiles plugin's internal ``__scheduled_*`` data tools + report_save.
+
+    The LLM-visible ``scheduled_*`` tools are native now (``slife/tools/schedule.py``);
+    the plugin keeps only the internal data layer, so name/cron validation is
+    tested against the native tool (in-process), everything else against the
+    internal tools via the patched store.
+    """
 
     @pytest.mark.asyncio
-    async def test_task_set_rejects_invalid_name(self, tmp_path):
+    async def test_task_set_validates_cron_in_process(self):
+        """ScheduledTaskSetTool validates cron locally before delegating —
+        an invalid expression never reaches the plugin."""
+        from slife.tools.schedule import ScheduledTaskSetTool
+
+        calls = []
+
+        async def fake_call_tool(name, arguments=None):
+            calls.append((name, arguments))
+            return ('{"name": "%s", "task_id": 1, "schedule": "%s", "enabled": true}'
+                    % (arguments["name"], arguments["schedule"]))
+
+        ctx = MagicMock()
+        ctx.memfiles_client = AsyncMock()
+        ctx.memfiles_client.call_tool = fake_call_tool
+        tool = ScheduledTaskSetTool()
+        object.__setattr__(tool, "_ctx", ctx)
+
+        bad = await tool.execute(name="x", schedule="61 * * * *")
+        assert "invalid cron" in bad.lower()
+        assert calls == []  # validation failed ⇒ nothing delegated
+
+        ok = await tool.execute(name="daily", description="d", schedule="0 9 * * *")
+        info = json.loads(ok)
+        assert info["name"] == "daily" and info["task_id"] == 1
+        assert len(calls) == 1 and calls[0][0] == "__scheduled_task_upsert"
+
+        # 'manual' bypasses cron validation
+        calls.clear()
+        manual = await tool.execute(name="m", schedule="manual")
+        assert "task_id" in json.loads(manual)
+
+    @pytest.mark.asyncio
+    async def test_task_set_rejects_invalid_name(self):
         """Task names double as the subagent worker name, so they must be safe
-        identifiers — Chinese/space/over-long names are rejected."""
-        store = await _real_store(tmp_path)
-        try:
-            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-                for bad in ("每日日报", "Daily Report", "-lead", ".dot", "x" * 65):
-                    err = await plugin.scheduled_task_set(
-                        name=bad, schedule="0 9 * * *",
-                    )
-                    assert "not a valid task/worker name" in err, bad
-                ok = await plugin.scheduled_task_set(
-                    name="daily_report", schedule="0 9 * * *",
-                )
-                assert "task_id" in json.loads(ok)
-        finally:
-            await store.close()
+        identifiers — Chinese/space/over-long names are rejected in-process."""
+        from slife.tools.schedule import ScheduledTaskSetTool
+
+        calls = []
+
+        async def fake_call_tool(name, arguments=None):
+            calls.append(name)
+            return ('{"name": "%s", "task_id": 2, "schedule": "%s", "enabled": true}'
+                    % (arguments["name"], arguments["schedule"]))
+
+        ctx = MagicMock()
+        ctx.memfiles_client = AsyncMock()
+        ctx.memfiles_client.call_tool = fake_call_tool
+        tool = ScheduledTaskSetTool()
+        object.__setattr__(tool, "_ctx", ctx)
+
+        for bad in ("每日日报", "Daily Report", "-lead", ".dot", "x" * 65):
+            err = await tool.execute(name=bad, schedule="0 9 * * *")
+            assert "not a valid task/worker name" in err, bad
+        assert calls == []
+
+        ok = await tool.execute(name="daily_report", schedule="0 9 * * *")
+        assert "task_id" in json.loads(ok)
 
     @pytest.mark.asyncio
     async def test_task_remove_and_list(self, tmp_path):
         store = await _real_store(tmp_path)
         try:
             with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-                await plugin.scheduled_task_set(name="a", schedule="0 9 * * *")
-                await plugin.scheduled_task_set(name="b", schedule="0 9 * * *", enabled=False)
-                listed = json.loads(await plugin.scheduled_task_list())
+                await _sched_upsert(name="a", schedule="0 9 * * *")
+                await _sched_upsert(
+                    name="b", schedule="0 9 * * *", enabled=False,
+                )
+                listed = json.loads(await _sched_tasks())
                 assert listed["total"] == 2
-                enabled = json.loads(await plugin.scheduled_task_list(enabled_only=True))
+                enabled = json.loads(await _sched_tasks(enabled_only=True))
                 assert enabled["total"] == 1
 
-                assert "removed" in await plugin.scheduled_task_remove(name="a")
-                assert "not found" in await plugin.scheduled_task_remove(name="a")
+                assert "removed" in await _sched_remove(name="a")
+                assert "not found" in await _sched_remove(name="a")
         finally:
             await store.close()
 
@@ -406,22 +468,24 @@ class TestScheduledServerTools:
         store = await _real_store(tmp_path)
         try:
             with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-                await plugin.scheduled_task_set(name="daily", schedule="0 0 * * *")
+                await _sched_upsert(name="daily", schedule="0 0 * * *")
                 task = await store.get_scheduled_task("daily")
                 await store.record_scheduled_run(task["id"], "2026-08-25T00:00:00")
                 await store.mark_run_missed(task["id"], "2026-08-26T00:00:00")
 
-                runs = json.loads(await plugin.scheduled_run_list(name="daily"))
+                runs = json.loads(await _sched_runs(name="daily"))
                 assert runs["total"] == 2
-                missed = json.loads(await plugin.scheduled_run_list(name="daily", status="missed"))
+                missed = json.loads(
+                    await _sched_runs(name="daily", status="missed"))
                 assert missed["total"] == 1
 
-                skip = await plugin.scheduled_run_skip("daily", "2026-08-26T00:00:00")
+                skip = await _sched_skip("daily", "2026-08-26T00:00:00")
                 assert "skipped" in skip
-                skipped = json.loads(await plugin.scheduled_run_list(name="daily", status="skipped"))
+                skipped = json.loads(
+                    await _sched_runs(name="daily", status="skipped"))
                 assert skipped["total"] == 1
                 # unknown task
-                assert "not found" in await plugin.scheduled_run_list(name="nope")
+                assert "not found" in await _sched_runs(name="nope")
         finally:
             await store.close()
 
@@ -430,7 +494,7 @@ class TestScheduledServerTools:
         store = await _real_store(tmp_path)
         try:
             with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-                await plugin.scheduled_task_set(name="daily", schedule="0 0 * * *")
+                await _sched_upsert(name="daily", schedule="0 0 * * *")
                 task = await store.get_scheduled_task("daily")
                 await store.record_scheduled_run(task["id"], "2026-08-25T00:00:00")
                 fail_unconfirmed = getattr(plugin, "__scheduled_fail_unconfirmed")
@@ -443,15 +507,15 @@ class TestScheduledServerTools:
             await store.close()
 
     @pytest.mark.asyncio
-    async def test_save_cron_report_links_run_and_reads_back(self, tmp_path):
+    async def test_report_save_links_run_and_reads_back(self, tmp_path):
         store = await _real_store(tmp_path)
         try:
             with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-                await plugin.scheduled_task_set(name="daily", schedule="0 0 * * *")
+                await _sched_upsert(name="daily", schedule="0 0 * * *")
                 task = await store.get_scheduled_task("daily")
                 await store.record_scheduled_run(task["id"], "2026-08-25T00:00:00")
 
-                saved = await plugin.save_cron_report(
+                saved = await plugin.report_save(
                     name="daily", title="Daily Report", content="All good.",
                 )
                 assert saved.startswith("Saved: ")
@@ -466,7 +530,24 @@ class TestScheduledServerTools:
                 assert "All good." in content
 
                 # unknown task errors cleanly
-                err = await plugin.save_cron_report(name="ghost", title="t", content="c")
+                err = await plugin.report_save(name="ghost", title="t", content="c")
                 assert "not found" in err
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_report_save_standalone_no_task(self, tmp_path):
+        """A report without a task is a standalone document — no run linked
+        (the fresh test DB has a nullable reports.task_id)."""
+        store = await _real_store(tmp_path)
+        try:
+            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+                saved = await plugin.report_save(title="Standalone", content="solo")
+                assert saved.startswith("Saved: ")
+                rows = await store.list_reports()
+                assert rows["total"] == 1
+                assert rows["entries"][0]["task_id"] is None
+                # no scheduled_runs rows were touched
+                assert await store.list_scheduled_runs() == []
         finally:
             await store.close()

@@ -6,21 +6,30 @@ Streamable HTTP, registers the memfiles tools, and never touches
 file-serving state directly.  Public sharing lives in a separate plugin
 (``sharefile``) — memfiles is the private cabinet only.
 
-Three typed knowledge stores (each md-mirrored on disk + SQLite-indexed):
+Four typed knowledge stores (each md-mirrored on disk + SQLite-indexed):
   - ``note_save(subject, …)`` — a private note keyed by subject, appended
     to ``notes/<subject>.md``
   - ``diary_write(date, …)``   — a private day's diary, appended to
     ``diary/<date>.md``
   - ``file_save`` / ``url_save`` — saved attachments (bytes on disk,
     metadata + optional LLM ``summary`` in the SQLite index)
+  - ``report_save(name?, …)`` — a report (notes/diary are also report
+    documents); an optional ``name`` binds it to a scheduled task and
+    confirms that task's run (pending → ran).  Reports double-write to
+    ``reports/<slug>.md``.
 All save tools return the saved **local path** (clickable) — they never
 auto-publish.  ``cabinet_search`` hybrid-searches them (FTS5 + vec0, reusing
 memdb's SemanticManager and RRF merge); ``cabinet_read`` re-opens a saved file.
 
 LLM-visible tools: ``note_save``, ``diary_write``, ``file_save``, ``url_save``,
 ``note_list``, ``diary_list``, ``note_read``, ``diary_read``, ``list_files``,
-``cabinet_search``, ``cabinet_read``, ``memfiles_semantic_status``.
-Internal tools (``__`` prefix, never LLM-visible): ``__cabinet_status``.
+``cabinet_search``, ``cabinet_read``, ``memfiles_semantic_status``,
+``report_save``, ``report_list``, ``report_read``.
+The scheduled-task tools (``scheduled_task_*`` / ``scheduled_run_*``) are native
+in ``slife/tools/schedule.py`` (category "Schedule"); this plugin only exposes
+the ``__scheduled_*`` data layer they call over the memfiles MCP client.
+Internal tools (``__`` prefix, never LLM-visible): ``__cabinet_status``,
+``__memfiles_reload_semantic``, and the ``__scheduled_*`` registry ops.
 
 Usage::
     uv run python -m slife.plugins.memfiles.server
@@ -893,52 +902,21 @@ async def __scheduled_mark_run_failed(
     return "{}"
 
 
-#: Task names double as the subagent worker name (``run_schedule_now`` spawns
-#: a worker named after the task), so they must satisfy the subagent safe-name
-#: rule — the same pattern as ``slife/subagent/process.py _SAFE_SUBAGENT_NAME``.
-_SAFE_TASK_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+# Data-layer tools for the schedule registry.  The LLM-visible ``scheduled_*``
+# tools are native (``slife/tools/schedule.py``, category "Schedule") and reach
+# these over the memfiles MCP client — the main process never touches the
+# plugin's SQLite directly.  Pure validation (safe task-name regex, cron
+# expression check) lives on the native side, not here.
 
 
 @mcp.tool(
-    name="scheduled_task_set",
-    description=(
-        "Create or update a scheduled task (idempotent upsert by name).  "
-        "Stores the task's description, cron schedule, timezone and enabled "
-        "flag in the cabinet.  Returns the task's name and id."
-    ),
+    name="__scheduled_task_upsert",
+    description="Internal: create or update a scheduled task (idempotent upsert by name).",
 )
-async def scheduled_task_set(
+async def __scheduled_task_upsert(
     name: str, description: str = "", schedule: str = "",
     timezone: str = "", enabled: bool = True,
 ) -> str:
-    """Create or update a scheduled task by name.
-
-    Args:
-        name: Unique task name (e.g. "daily_report", "morning_digest",
-            "diary_worker") — it is ALSO the subagent worker name that runs
-            the task, so it appears in list_subagents / save_cron_report /
-            run_schedule_now.  Use a short ASCII slug like the examples: it
-            must start with a letter or digit and contain only A-Za-z0-9_.-
-            (max 64 chars).
-        description: The task text handed to the worker when it fires.
-        schedule: 5-field cron expression ("minute hour dom month dow"), or
-            "manual" for a task that only runs via run_schedule_now.
-        timezone: IANA timezone for the trigger (empty = system local).
-        enabled: Whether the schedule loop fires this task (default true).
-    """
-    if not name.strip():
-        return "Error: name is required."
-    if not _SAFE_TASK_NAME_RE.match(name.strip()):
-        return (
-            f"Error: name {name!r} is not a valid task/worker name — it is "
-            "also the subagent worker name, so it must start with a letter "
-            "or digit and contain only A-Za-z0-9_.- (max 64 chars).  Use an "
-            'ASCII slug like "daily_report".'
-        )
-    from slife.schedules import is_valid
-
-    if schedule and schedule != "manual" and not is_valid(schedule):
-        return f"Error: invalid cron expression {schedule!r}."
     store = await _ensure_store()
     try:
         info = await store.upsert_scheduled_task(
@@ -955,18 +933,10 @@ async def scheduled_task_set(
 
 
 @mcp.tool(
-    name="scheduled_task_remove",
-    description=(
-        "Delete a scheduled task and its run history by name.  Saved reports "
-        "are kept.  Returns whether a task was removed."
-    ),
+    name="__scheduled_task_remove",
+    description="Internal: delete a scheduled task and its run history by name (reports kept).",
 )
-async def scheduled_task_remove(name: str) -> str:
-    """Delete a scheduled task by name.
-
-    Args:
-        name: The task name to remove (from scheduled_task_list).
-    """
+async def __scheduled_task_remove(name: str) -> str:
     if not name.strip():
         return "Error: name is required."
     store = await _ensure_store()
@@ -977,45 +947,23 @@ async def scheduled_task_remove(name: str) -> str:
 
 
 @mcp.tool(
-    name="scheduled_task_list",
-    description=(
-        "List scheduled tasks with name, description, schedule, timezone and "
-        "enabled flag.  Set enabled_only to list only active tasks."
-    ),
+    name="__scheduled_tasks_list",
+    description="Internal: list scheduled tasks (all rows, or enabled only — no run anchors).",
 )
-async def scheduled_task_list(enabled_only: bool = False) -> str:
-    """List scheduled tasks.
-
-    Args:
-        enabled_only: When true, list only enabled tasks.
-    """
+async def __scheduled_tasks_list(enabled_only: bool = False) -> str:
     store = await _ensure_store()
     tasks = await store.list_scheduled_tasks(enabled_only=enabled_only)
     return json.dumps({"total": len(tasks), "tasks": tasks},
-                      ensure_ascii=False, indent=2)
+                      ensure_ascii=False)
 
 
 @mcp.tool(
-    name="scheduled_run_list",
-    description=(
-        "List scheduled-task run records (due_at, status, ran_at, report_id, "
-        "error), newest first.  Filter by task name and/or status "
-        "(pending/ran/failed/missed/skipped).  A 'missed' run means the trigger "
-        "time passed while slife was not running; 'failed' means it fired but "
-        "never produced a report (interrupted / error / restart) — offer to "
-        "backfill either.  'pending' is an in-flight run (success unconfirmed); "
-        "'ran' is a confirmed success (report saved); 'skipped' is a missed/"
-        "failed run the user decided not to backfill."
-    ),
+    name="__scheduled_runs_list",
+    description="Internal: list scheduled-run records, newest first (task name / status filters).",
 )
-async def scheduled_run_list(name: str = "", status: str = "", limit: int = 50) -> str:
-    """List scheduled-task runs.
-
-    Args:
-        name: Optional task name to filter on (empty = all tasks).
-        status: Optional status filter (empty = all statuses).
-        limit: Maximum records to return.
-    """
+async def __scheduled_runs_list(
+    name: str = "", status: str = "", limit: int = 50,
+) -> str:
     store = await _ensure_store()
     task_id = None
     if name.strip():
@@ -1026,24 +974,14 @@ async def scheduled_run_list(name: str = "", status: str = "", limit: int = 50) 
         task_id=task_id, status=status or None, limit=limit,
     )
     return json.dumps({"total": len(runs), "runs": runs},
-                      ensure_ascii=False, indent=2)
+                      ensure_ascii=False)
 
 
 @mcp.tool(
-    name="scheduled_run_skip",
-    description=(
-        "Mark a missed or failed scheduled run as skipped — the user decided "
-        "it does not need to be backfilled.  Only runs in 'missed' or 'failed' "
-        "status change; a successful ('ran') run is never touched."
-    ),
+    name="__scheduled_run_skip",
+    description="Internal: mark a missed or failed run as skipped (only those two statuses change).",
 )
-async def scheduled_run_skip(name: str, due_at: str) -> str:
-    """Mark a missed/failed run as skipped (user declined to backfill).
-
-    Args:
-        name: The task name the run belongs to.
-        due_at: The run's scheduled time (ISO, from scheduled_run_list).
-    """
+async def __scheduled_run_skip(name: str, due_at: str) -> str:
     task_id = await _task_id_by_name(name.strip())
     if task_id is None:
         return f"Scheduled task not found: {name}"
@@ -1053,25 +991,29 @@ async def scheduled_run_skip(name: str, due_at: str) -> str:
 
 
 @mcp.tool(
-    name="save_cron_report",
+    name="report_save",
     description=(
-        "Save a scheduled-task report into the cabinet (reports/<slug>.md) and "
-        "confirm the run it was dispatched for (pending → ran).  Called by the "
-        "worker at the end of a scheduled task — this is what marks the run "
-        "completed.  Pass due_at (from the schedule.j2 task text) to confirm an "
-        "exact run, e.g. a backfilled missed/failed run; omit to confirm the "
-        "newest un-reported run.  Returns the report's file path."
+        "Save a report into the cabinet (reports/<slug>.md).  Reports are a "
+        "general document type here (like notes and diary); the optional "
+        "'name' binds the report to a scheduled task and confirms the run it "
+        "was dispatched for (pending → ran), which is how a schedule worker "
+        "completes its task.  Pass due_at (from the schedule.j2 task text) to "
+        "confirm an exact run, e.g. a backfilled missed/failed run; omit to "
+        "confirm the newest un-reported run.  Returns the report's file path."
     ),
 )
-async def save_cron_report(
-    name: str, title: str, content: str, tags: str = "",
+async def report_save(
+    name: str = "", title: str = "", content: str = "", tags: str = "",
     period_start: str | None = None, period_end: str | None = None,
     due_at: str | None = None,
 ) -> str:
-    """Save a scheduled-task report by task name.
+    """Save a report (bound to a scheduled task when name is given).
 
     Args:
-        name: The scheduled task's name (from the [Schedule <name>] trigger).
+        name: Optional scheduled task's name (from scheduled_task_set).  Given
+            and known: the report is bound to the task and confirms the run it
+            was dispatched for.  Empty: saves a standalone report with no run
+            to confirm.
         title: Report title — also its filename (reports/<title>.md).
         content: The report body (Markdown).
         tags: Optional comma-separated tags for search.
@@ -1081,15 +1023,30 @@ async def save_cron_report(
             worker's task text).  Backfills pass it so the missed/failed run
             they transitioned is the one confirmed.
     """
-    task_id = await _task_id_by_name(name.strip())
-    if task_id is None:
-        return f"Error: scheduled task not found — {name}"
     store = await _ensure_store()
+    task_id = None
+    if name.strip():
+        task_id = await _task_id_by_name(name.strip())
+        if task_id is None:
+            return f"Error: scheduled task not found — {name}"
+    else:
+        # Standalone report (no scheduled task).  Databases created before
+        # reports.task_id became nullable keep NOT NULL and are never migrated
+        # (schema changes only affect new DBs) — reject clearly BEFORE any md
+        # write so no orphan file appears next to the error.
+        cursor = await store._c.execute("PRAGMA table_info(reports)")
+        cols = await cursor.fetchall()
+        if any(c["name"] == "task_id" and c["notnull"] for c in cols):
+            return (
+                "Error: this cabinet's database predates standalone reports "
+                "(reports.task_id is NOT NULL) — pass name=<task> to bind the "
+                "report to a scheduled task."
+            )
     try:
         info = await store.upsert_report(
             task_id=task_id, title=title, content=content, tags=tags,
             period_start=period_start, period_end=period_end,
-            due_at=due_at,
+            due_at=(due_at if task_id is not None else None),
         )
     except ValueError as e:
         return f"Error: {e}"
@@ -1099,13 +1056,13 @@ async def save_cron_report(
 @mcp.tool(
     name="report_list",
     description=(
-        "List scheduled-task reports (newest first) with title, task_id, "
-        "period and file_path.  Optionally filter by task name.  Use "
+        "List reports (newest first) with title, task_id, period and "
+        "file_path.  Optionally filter by task name.  Use "
         "report_read(report_id) for full content."
     ),
 )
 async def report_list(name: str = "", limit: int = 50, offset: int = 0) -> str:
-    """List scheduled-task reports.
+    """List reports.
 
     Args:
         name: Optional task name to filter on (empty = all tasks).

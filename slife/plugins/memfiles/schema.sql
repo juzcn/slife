@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS files (
 
 CREATE TABLE IF NOT EXISTS reports (
     id           INTEGER PRIMARY KEY,
-    task_id      INTEGER NOT NULL,       -- 归属定时任务 → scheduled_tasks.id
+    task_id      INTEGER,                -- 归属定时任务 → scheduled_tasks.id；NULL = 独立报告（不绑定任务）。
+                                        -- 注意：老库（task_id 可空化之前创建）保持 NOT NULL，不做 ALTER 迁移；
+                                        -- report_save 对独立报告会先查 PRAGMA，老库上明确报错。
     title        TEXT DEFAULT '',
     content      TEXT NOT NULL,          -- 完整 md 内容（= reports/<slug>.md 内容）
     tags         TEXT DEFAULT '',

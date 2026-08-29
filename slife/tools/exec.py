@@ -4,7 +4,6 @@ Tools:
     execute_shell          — run shell commands (default timeout 30s)
     run_python_script      — run Python scripts with JSON arguments
     install_python_package — install PyPI packages into slife's environment
-    run_schedule_now       — trigger a scheduled task immediately (dispatch worker)
 """
 
 import asyncio
@@ -15,11 +14,10 @@ import os
 import signal
 import subprocess
 import sys
-from typing import ClassVar
 
 from slife.platform import _resolve_skill_script
 from slife.logfmt import sanitize_secrets
-from slife.tools.base import Tool, make_params, require_params
+from slife.tools.base import Tool
 
 
 async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
@@ -328,52 +326,3 @@ class InstallPythonPackageTool(Tool):
         else:
             logger.warning("pip_install_failed packages=%s err=%s", packages, err)
             return f"Error installing {', '.join(packages)}:\n{err}" if err else f"Error installing {', '.join(packages)} (exit {proc.returncode})"
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# run_schedule_now
-# ═══════════════════════════════════════════════════════════════════════
-
-class RunScheduleNowTool(Tool):
-    """Trigger a scheduled task now (cron fire / missed backfill)."""
-
-    name = "run_schedule_now"
-    category: ClassVar[str] = "Execution"
-    description = (
-        "Trigger a scheduled task now — records a pending run and dispatches "
-        "it immediately to the task's subagent worker (worker name = task "
-        "name).  Called when a '[Schedule <name>]' trigger fires (cron) and "
-        "to backfill a missed/failed run.  A backfill passes the run's due_at "
-        "(the footer reminder / scheduled_run_list shows it) so THAT run "
-        "transitions missed/failed → pending → ran; without due_at a fresh "
-        "run is recorded at now.  The worker saves the report via "
-        "save_cron_report (confirming the run) and notifies the user when done."
-    )
-    parameters = make_params(
-        name={
-            "type": "string",
-            "description": "The scheduled task's name (from scheduled_task_list).",
-        },
-        due_at={
-            "type": "string",
-            "default": "",
-            "description": (
-                "Optional ISO due time of the exact run to trigger — pass the "
-                "missed/failed run's due_at from the footer reminder or "
-                "scheduled_run_list when backfilling.  Omit for a fresh "
-                "cron-fire run."
-            ),
-        },
-    )
-
-    async def execute(self, name: str = "", due_at: str = "", **kwargs) -> str:
-        if err := require_params(name=name):
-            return err
-        ctx = getattr(self, "_ctx", None)
-        fire = getattr(ctx, "fire_schedule_now", None) if ctx is not None else None
-        if fire is None:
-            return (
-                "Error: the scheduler is not available yet — call this after "
-                "the agent service has started."
-            )
-        return await fire(name, due_at)

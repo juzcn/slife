@@ -207,12 +207,13 @@ Switch at runtime: `model_list` → `model_switch(ref="bailian/qwen3.8-max")`.
 
 All unified as OpenAI function definitions. The LLM sees no difference between native, plugin, and external MCP tools.
 
-**52 native tools in 10 categories** — auto-discovered from `slife/tools/` (51 LLM-visible + 1 harness `_sys_note`; `attach_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
+**65 native tools in 13 categories** — auto-discovered from `slife/tools/` (64 LLM-visible + 1 harness `_sys_note`; `attach_image` is dropped when the active model has no vision, and `install_python_package` is disabled by default in the shipped config):
 
 | Category | Tools |
 |----------|-------|
 | System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
-| Execution | `execute_shell`, `run_python_script`, `install_python_package`, `run_schedule_now` |
+| Execution | `execute_shell`, `run_python_script`, `install_python_package` |
+| Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
@@ -221,6 +222,8 @@ All unified as OpenAI function definitions. The LLM sees no difference between n
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image` (feed images to a vision model), `_sys_note` (context status, auto-invoked) |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user` |
+| embeddings | `embeddings_probe`, `embeddings_enable`, `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_remove`, `embeddings_model_switch` |
+| mcp | `mcp_tool_load` |
 
 The A2A mesh tools (`a2a_*`, 8 of them) and all plugin tools are hosted in plugins, not the native tool set — see below.
 
@@ -269,7 +272,7 @@ While idle, the agent gets a periodic autonomous window (every `agent.heartbeat_
 
 ### Scheduled Tasks
 
-Ask the agent to do something on a schedule — "write a diary entry every night at midnight", "summarize the week every Friday" — and it registers a cron-scheduled task (`scheduled_task_set`). The task name is also its worker's name, so it should be a short ASCII identifier. When a task fires, the agent dispatches the work to a subagent worker named after the task (`run_schedule_now`) rather than doing it inline, and the worker saves the result as a **report** in the file cabinet (`save_cron_report`) and notifies you when done. Every fire is recorded (`scheduled_run_list`), so you can see what ran and what it produced (`report_list` / `report_read`).
+Ask the agent to do something on a schedule — "write a diary entry every night at midnight", "summarize the week every Friday" — and it registers a cron-scheduled task (`scheduled_task_set`). The task name is also its worker's name, so it should be a short ASCII identifier. When a task fires, the agent dispatches the work to a subagent worker named after the task (`run_schedule_now`) rather than doing it inline, and the worker saves the result as a **report** in the file cabinet (`report_save`) and notifies you when done. Every fire is recorded (`scheduled_run_list`), so you can see what ran and what it produced (`report_list` / `report_read`).
 
 Tasks fire **only while Slife is running**. At the next start a one-shot sweep settles what a previous session left behind in `scheduled_run_list`: runs that never finished become **failed**, and fires that were due while Slife was closed are marked **missed**. Nothing is announced and nothing waits for your input — a failed or missed run can still be backfilled with `run_schedule_now` (it fires immediately) or closed with `scheduled_run_skip`.
 

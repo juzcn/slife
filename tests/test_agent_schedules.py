@@ -46,7 +46,7 @@ def test_build_worker_task_self_contained():
     task = S.build_worker_task("daily_report", "Write today's report")
     assert "daily_report" in task
     assert "Write today's report" in task
-    assert "save_cron_report" in task
+    assert "report_save" in task
     # the title example carries the MM-DD date context for relative tasks
     assert 'e.g. "daily_report: ' in task
     assert re.search(r"\d{2}-\d{2} summary", task)
@@ -184,7 +184,7 @@ async def test_fire_task_now_dispatches_directly(monkeypatch):
     manager.send_task_async.assert_awaited_once()
     agent_name, task = manager.send_task_async.call_args[0]
     assert agent_name == "daily"
-    assert "save_cron_report" in task
+    assert "report_save" in task
     assert manager.send_task_async.call_args.kwargs["mode"] == "auto"
     assert service.inbox.post.await_count == 0  # no inbox relay
     assert "daily" in S._SCHEDULE_WORKERS  # tracked for reword + recycle
@@ -222,7 +222,7 @@ async def test_fire_task_now_marks_run_failed_on_dispatch_error(monkeypatch):
 async def test_fire_task_now_backfill_transitions_given_due_at(monkeypatch):
     """A backfill passes the failed/missed run's due_at: that exact run is
     recorded pending (the ON-CONFLICT update, not a fresh now-run) and the
-    worker task tells save_cron_report to confirm it."""
+    worker task tells report_save to confirm it."""
     S._SCHEDULE_WORKERS.clear()
     records: list[dict] = []
     client = AsyncMock()
@@ -495,10 +495,10 @@ async def test_pending_schedule_runs_merges_dedupes_and_sorts():
     client = AsyncMock()
 
     async def fake_call_tool(name, arguments=None):
-        if name == "scheduled_task_list":
+        if name == "__scheduled_tasks_list":
             return ('{"total": 2, "tasks": [{"id": 1, "name": "daily"}, '
                     '{"id": 2, "name": "weekly"}]}')
-        if name == "scheduled_run_list":
+        if name == "__scheduled_runs_list":
             if arguments["status"] == "failed":
                 # The same due_at appears twice → must render once.
                 return ('{"total": 2, "runs": ['
@@ -565,7 +565,7 @@ async def test_schedule_loop_never_announces_missed_or_stale(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_schedule_now_tool_requires_name():
-    from slife.tools.exec import RunScheduleNowTool
+    from slife.tools.schedule import RunScheduleNowTool
 
     tool = RunScheduleNowTool()
     result = await tool.execute(name="")
@@ -574,7 +574,7 @@ async def test_run_schedule_now_tool_requires_name():
 
 @pytest.mark.asyncio
 async def test_run_schedule_now_tool_no_hook():
-    from slife.tools.exec import RunScheduleNowTool
+    from slife.tools.schedule import RunScheduleNowTool
 
     tool = RunScheduleNowTool()
     object.__setattr__(tool, "_ctx", None)
@@ -584,7 +584,7 @@ async def test_run_schedule_now_tool_no_hook():
 
 @pytest.mark.asyncio
 async def test_run_schedule_now_tool_calls_hook():
-    from slife.tools.exec import RunScheduleNowTool
+    from slife.tools.schedule import RunScheduleNowTool
 
     tool = RunScheduleNowTool()
     ctx = MagicMock()
@@ -597,7 +597,7 @@ async def test_run_schedule_now_tool_calls_hook():
 
 @pytest.mark.asyncio
 async def test_run_schedule_now_tool_passes_backfill_due_at():
-    from slife.tools.exec import RunScheduleNowTool
+    from slife.tools.schedule import RunScheduleNowTool
 
     tool = RunScheduleNowTool()
     ctx = MagicMock()

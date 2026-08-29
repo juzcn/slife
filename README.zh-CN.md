@@ -204,12 +204,13 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 
 统一为 OpenAI 函数定义。LLM 看不出原生、插件与外部 MCP 工具的区别。
 
-**10 个类别共 52 个原生工具** — 从 `slife/tools/` 自动发现（51 个 LLM 可见 + 1 个 harness `_sys_note`；`attach_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
+**13 个类别共 65 个原生工具** — 从 `slife/tools/` 自动发现（64 个 LLM 可见 + 1 个 harness `_sys_note`；`attach_image` 在活动模型不支持视觉时会被剔除，`install_python_package` 在随附配置中默认禁用）：
 
 | 类别 | 工具 |
 |------|------|
 | System | `system_health`, `check_memdb`, `check_wechat`, `check_memfiles`, `check_local_embed`, `check_sharefile`, `check_mcp`, `check_a2a`, `check_watchdog` |
-| Execution | `execute_shell`, `run_python_script`, `install_python_package`, `run_schedule_now` |
+| Execution | `execute_shell`, `run_python_script`, `install_python_package` |
+| Schedule | `scheduled_task_set`, `scheduled_task_remove`, `scheduled_task_list`, `scheduled_run_list`, `scheduled_run_skip`, `run_schedule_now` |
 | Skills | `skill_list`, `skill_use`, `skill_set`, `skill_remove`, `skill_set_enabled` |
 | CLI | `cli_list`, `cli_set`, `cli_remove`, `cli_set_enabled` |
 | REST API | `rest_api_list`, `rest_api_set`, `rest_api_remove`, `rest_api_set_enabled` |
@@ -218,6 +219,8 @@ OpenAI 后端 `compat.thinking`：`"omit"` 不发送 thinking 字段（针对拒
 | Models | `model_list`, `model_set`, `model_remove`, `model_switch`, `attach_image`（把本地图片或 URL 注入对话）, `_sys_note`（上下文状态，loop 代调） |
 | Credentials | `credential_check`, `credential_inject`, `credential_uninject` |
 | Meta | `list_native_tools`, `check_async`, `cancel_async`, `clear_context`, `set_max_iterations`, `notify_user` |
+| embeddings | `embeddings_probe`, `embeddings_enable`, `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_remove`, `embeddings_model_switch` |
+| mcp | `mcp_tool_load` |
 
 A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，不属于原生工具集——见下文。
 
@@ -266,7 +269,7 @@ Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + 
 
 ### 定时任务
 
-让 agent 按计划做事——"每晚 12 点写日记"、"每周五总结本周"——它会注册一个 cron 定时任务（`scheduled_task_set`）。任务名同时也是执行它的 worker 名，所以用简短 ASCII 标识符。任务触发时，agent 把工作派发给一个以任务名命名的 subagent worker（`run_schedule_now`）而非亲自执行，worker 完成后把结果作为**报告**存入文件柜（`save_cron_report`）并通知你。每次触发都有记录（`scheduled_run_list`），你可以查看跑了什么、产出了什么（`report_list` / `report_read`）。
+让 agent 按计划做事——"每晚 12 点写日记"、"每周五总结本周"——它会注册一个 cron 定时任务（`scheduled_task_set`）。任务名同时也是执行它的 worker 名，所以用简短 ASCII 标识符。任务触发时，agent 把工作派发给一个以任务名命名的 subagent worker（`run_schedule_now`）而非亲自执行，worker 完成后把结果作为**报告**存入文件柜（`report_save`）并通知你。每次触发都有记录（`scheduled_run_list`），你可以查看跑了什么、产出了什么（`report_list` / `report_read`）。
 
 定时任务**只在 Slife 运行时触发**。下次启动时，一次性扫描会结算上一会话留在 `scheduled_run_list` 里的记录：没跑完的记为**未完成（failed）**，Slife 关闭期间到点没做的记为**错过（missed）**。启动不做任何提示、不打扰你——需要的话仍可用 `run_schedule_now` 补做（立即触发），或用 `scheduled_run_skip` 关闭。启动后下一次到点会正常触发。
 

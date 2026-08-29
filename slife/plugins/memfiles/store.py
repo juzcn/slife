@@ -388,23 +388,25 @@ class MemfilesStore:
                 "key": saved_path, "file_path": saved_path}
 
     async def upsert_report(
-        self, task_id: int, title: str, content: str, tags: str = "",
+        self, task_id: int | None, title: str, content: str, tags: str = "",
         period_start: str | None = None, period_end: str | None = None,
         due_at: str | None = None,
     ) -> dict:
-        """Save a scheduled-task report (md + DB row + run backfill).
+        """Save a report (md + DB row) and, when bound to a task, confirm its run.
 
-        Writes the report to ``reports/<slug>.md`` and the DB, then confirms a
-        ``scheduled_runs`` row: with *due_at* the exact run (a backfill of a
-        missed/failed run, whose row was flipped to ``pending`` at dispatch);
-        without it the newest un-reported run (the cron-fire dispatch).  The
-        confirmed run goes ``pending → ran`` — the one success writeback.
+        Writes the report to ``reports/<slug>.md`` and the DB, then — only when
+        *task_id* is not None — confirms a ``scheduled_runs`` row: with *due_at*
+        the exact run (a backfill of a missed/failed run, whose row was flipped
+        to ``pending`` at dispatch); without it the newest un-reported run (the
+        cron-fire dispatch).  The confirmed run goes ``pending → ran`` — the one
+        success writeback.  A standalone report (task_id None) never touches
+        ``scheduled_runs``.
         """
         if not content.strip():
             raise ValueError("content is required")
         if not title.strip():
             raise ValueError("title is required")
-        slug = _slugify(title) or f"report-{task_id}"
+        slug = _slugify(title) or ("report" if task_id is None else f"report-{task_id}")
         rel = f"reports/{slug}.md"
         abs_path = self._mem_dir / rel
         abs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -440,22 +442,25 @@ class MemfilesStore:
             doc_id = cursor.lastrowid
 
         # Store-layer backfill: confirm the run this report is *for*, pending →
-        # ran here (the ONLY 'ran' write).  A due_at targets the exact run —
-        # the backfilled failed/missed run — so a newer stale run is never
-        # grabbed; without one it links the newest un-linked run (cron fire).
-        if due_at is not None:
-            await self._c.execute(
-                "UPDATE scheduled_runs SET report_id=?, status='ran' "
-                "WHERE task_id=? AND due_at=? AND report_id IS NULL",
-                (doc_id, task_id, due_at),
-            )
-        else:
-            await self._c.execute(
-                "UPDATE scheduled_runs SET report_id=?, status='ran' WHERE id = ("
-                "  SELECT id FROM scheduled_runs WHERE task_id=? AND report_id IS NULL "
-                "  ORDER BY due_at DESC LIMIT 1)",
-                (doc_id, task_id),
-            )
+        # ran here (the ONLY 'ran' write).  Only a task-bound report does this;
+        # a standalone report (task_id None) has no run to confirm.  A due_at
+        # targets the exact run — the backfilled failed/missed run — so a newer
+        # stale run is never grabbed; without one it links the newest un-linked
+        # run (cron fire).
+        if task_id is not None:
+            if due_at is not None:
+                await self._c.execute(
+                    "UPDATE scheduled_runs SET report_id=?, status='ran' "
+                    "WHERE task_id=? AND due_at=? AND report_id IS NULL",
+                    (doc_id, task_id, due_at),
+                )
+            else:
+                await self._c.execute(
+                    "UPDATE scheduled_runs SET report_id=?, status='ran' WHERE id = ("
+                    "  SELECT id FROM scheduled_runs WHERE task_id=? AND report_id IS NULL "
+                    "  ORDER BY due_at DESC LIMIT 1)",
+                    (doc_id, task_id),
+                )
         await self._c.commit()
         return {"kind": "report", "doc_id": doc_id, "key": title,
                 "file_path": rel, "content": new_md}

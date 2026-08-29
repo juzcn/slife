@@ -4,7 +4,7 @@ The loop is deliberately thin: it *times* tasks and *injects* a trigger
 message into the unified inbox.  Execution happens elsewhere — the agent
 calls ``run_schedule_now`` on the trigger turn, which records a pending run
 and dispatches the task to a subagent worker (worker name = task name); the
-worker saves its report via ``save_cron_report``.  The loop itself never
+worker saves its report via ``report_save``.  The loop itself never
 runs a task.
 
 State lives in the memfiles DB (``scheduled_tasks`` / ``scheduled_runs``),
@@ -109,10 +109,10 @@ def build_worker_task(name: str, description: str, due_at: str = "") -> str:
     """Self-contained task text for the worker running scheduled task *name*.
 
     The worker starts with a clean context but has the full toolset (incl.
-    ``save_cron_report`` and a way to notify the user).  The headless worker
+    ``report_save`` and a way to notify the user).  The headless worker
     wraps this as ``[Task <rpc_id> from <agent>] …``.  The text lives in
     ``schedule.j2`` (rendered through ``system_prompt.render_template``).
-    *due_at* is the exact run the worker must confirm in ``save_cron_report``
+    *due_at* is the exact run the worker must confirm in ``report_save``
     — a backfill's missed/failed run, or the cron fire's dispatch time.
     """
     desc = (description or "").strip() or "(no description)"
@@ -269,7 +269,7 @@ async def _pending_schedule_runs(client) -> list[dict]:
     rendered twice.
     """
     names: dict[int, str] = {}
-    tasks = await _call(client, "scheduled_task_list")
+    tasks = await _call(client, "__scheduled_tasks_list")
     if isinstance(tasks, dict):
         for t in tasks.get("tasks", []):
             tid = t.get("id")
@@ -279,7 +279,7 @@ async def _pending_schedule_runs(client) -> list[dict]:
     seen: set[tuple] = set()
     runs: list[dict] = []
     for status in ("failed", "missed"):
-        data = await _call(client, "scheduled_run_list", {"status": status})
+        data = await _call(client, "__scheduled_runs_list", {"status": status})
         if not isinstance(data, dict):
             continue
         for r in data.get("runs", []):
@@ -445,7 +445,7 @@ async def fire_task_now(service, name: str, due_at: str = "") -> str:
     ``pending`` in place (update, not insert), so the same run the footer
     nagged about later becomes ``ran``; the cron path omits it and records a
     fresh run at now.  The dispatched worker receives *due_at* and confirms
-    the exact run via ``save_cron_report(due_at=…)`` so ``pending`` →
+    the exact run via ``report_save(due_at=…)`` so ``pending`` →
     ``ran``.  Works for disabled tasks too (an explicit run is explicit).
     """
     from slife.subagent.process import get_manager
