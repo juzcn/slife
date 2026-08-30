@@ -123,23 +123,31 @@ def main(argv: "list[str] | None" = None) -> int:
 
     engine = Engine(specs=settings["specs"], active=settings["active"])
 
-    # Validate the models can actually run.  `resolve_backend_runtime` (not
-    # `check_backend_runtime`, which never imports) so the answer reflects
-    # reality.  Only the ACTIVE model blocks startup — the server can serve
-    # it without the others; a non-active model with a missing backend or
-    # gguf_path is a warning (it fails at load time if requested).
+    # Validate the active model can actually run.  `resolve_backend_runtime`
+    # (not `check_backend_runtime`, which never imports) so the answer
+    # reflects reality.  Only the ACTIVE model is import-checked at startup:
+    # a non-active model's backend import cost (torch!) is only worth paying
+    # when the model is actually requested — it fails at load time then,
+    # and this CLI must not stall on it (or hang an impatient Ctrl-C during
+    # the import).  gguf_path is still checked for every model.
     active_name = engine.active_model
     for spec in settings["specs"]:
         problems: list[str] = []
         if spec.backend == "gguf" and not spec.gguf_path:
             problems.append("no gguf_path (set gguf_path in local_embed.json5)")
-        if not resolve_backend_runtime(spec.backend):
-            from local_embed.cmd_set import backend_install_hint
+        if spec.name == active_name:
+            try:
+                installed = resolve_backend_runtime(spec.backend)
+            except KeyboardInterrupt:
+                print("Interrupted — local-embed not started.", file=sys.stderr)
+                return 130
+            if not installed:
+                from local_embed.cmd_set import backend_install_hint
 
-            problems.append(
-                f"{spec.backend} backend not installed "
-                f"({backend_install_hint(spec.backend)})"
-            )
+                problems.append(
+                    f"{spec.backend} backend not installed "
+                    f"({backend_install_hint(spec.backend)})"
+                )
         if spec.name == active_name and problems:
             print(
                 f"Error: active model '{spec.name}' cannot start: {'; '.join(problems)}",

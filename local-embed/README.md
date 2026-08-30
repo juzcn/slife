@@ -36,8 +36,17 @@ OpenAI-compatible client works.
 
 Requires [uv](https://docs.astral.sh/uv).  All installs below pin
 **Python 3.13** (`requires-python` is `>=3.13`, but 3.13 is what CI tests,
-and uv would otherwise pick the newest 3.14 it finds).  The `transformer`
-backend installs the same everywhere:
+and uv would otherwise pick the newest 3.14 it finds).  Re-running any of
+them over an **existing** install requires `--reinstall` (`uv tool install`
+is a no-op on an already-installed tool otherwise), e.g. to upgrade to a new
+release or pick up the `json5` dependency fix:
+
+```bash
+uv tool install --python 3.13 --reinstall 'local-embed[gguf,transformer]' \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+```
+
+The `transformer` backend installs the same everywhere:
 
 ```bash
 uv tool install --python 3.13 'local-embed[transformer]'   # sentence-transformers

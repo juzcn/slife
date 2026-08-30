@@ -10,6 +10,8 @@ import pytest
 pytestmark = pytest.mark.unit
 
 from local_embed.cli import main
+
+import local_embed.cli as cli
 from local_embed.cmd_set import (
     ENV_CACHE_KEY,
     ENV_OFFLINE_KEY,
@@ -19,7 +21,7 @@ from local_embed.cmd_set import (
     set_gguf_model,
     set_transformer_model,
 )
-from local_embed.config import load_config
+from local_embed.config import load_config, write_config
 
 
 class TestResolveCache:
@@ -218,3 +220,69 @@ class TestRunSetGguf:
         first = config_path.read_text(encoding="utf-8")
         assert main(["set-gguf", "bge-m3", "--path", str(gguf)]) == 0
         assert config_path.read_text(encoding="utf-8") == first
+
+
+class TestCliCtrlC:
+    """Ctrl-C during the active backend check must exit 130, never traceback.
+
+    Regression: the startup validation calls ``resolve_backend_runtime``
+    (a REAL import — torch takes seconds), and a Ctrl-C landing mid-import
+    used to propagate as a raw KeyboardInterrupt traceback.
+    """
+
+    def _write_active_transformer(self, config_path):
+        write_config(
+            {
+                "active_model": "bge-m3-transformer",
+                "models": {
+                    "bge-m3-transformer": {
+                        "backend": "transformer",
+                        "model": "BAAI/bge-m3",
+                    }
+                },
+            },
+            config_path,
+        )
+
+    def test_interrupt_during_active_check_exits_130(self, monkeypatch, config_path, capsys):
+        self._write_active_transformer(config_path)
+
+        def interrupt(_backend):
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr(cli, "resolve_backend_runtime", interrupt)
+        code = cli.main([])
+        assert code == 130
+        assert "Interrupted" in capsys.readouterr().err
+
+    def test_non_active_backend_not_resolved(self, monkeypatch, config_path):
+        # active = gguf; the non-active transformer must NOT trigger the
+        # torch import at startup (it is only checked when actually loaded).
+        write_config(
+            {
+                "active_model": "bge-m3",
+                "models": {
+                    "bge-m3": {"backend": "gguf", "gguf_path": "/x.gguf"},
+                    "bge-m3-transformer": {
+                        "backend": "transformer",
+                        "model": "BAAI/bge-m3",
+                    },
+                },
+            },
+            config_path,
+        )
+        resolved = []
+
+        def tracking(backend):
+            resolved.append(backend)
+            return True
+
+        monkeypatch.setattr(cli, "resolve_backend_runtime", tracking)
+        # stop after the validation loop instead of serving (serve_standalone
+        # is imported lazily inside main, so patch its source module)
+        monkeypatch.setattr(
+            "local_embed.server.serve_standalone", lambda *a, **k: 0
+        )
+        code = cli.main([])
+        assert code == 0
+        assert resolved == ["gguf"]  # only the active backend was imported
