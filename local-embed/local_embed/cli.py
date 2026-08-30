@@ -108,7 +108,19 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # Everything (host/port/backend/model/gguf_path/device) comes from
     # local_embed.json5 — the CLI deliberately takes no model/endpoint flags.
-    settings = resolve_engine_settings()
+    # A missing file is fine (defaults); a file that exists but won't parse
+    # must fail cleanly, not traceback.
+    try:
+        settings = resolve_engine_settings()
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print("Fix local_embed.json5, or run `local-embed set` to rewrite it.",
+              file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"Error: cannot read config: {e}", file=sys.stderr)
+        return 2
+
     engine = Engine(specs=settings["specs"], active=settings["active"])
 
     # Validate the models can actually run.  `resolve_backend_runtime` (not

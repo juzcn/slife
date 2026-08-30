@@ -1,6 +1,6 @@
 [project]
 name = "local-embed"
-version = "0.2.0"
+version = "0.2.1"
 description = "Standalone local embedding server — GGUF / transformer models as an OpenAI-compatible /v1/embeddings service"
 readme = "README.md"
 license = { text = "MIT" }
@@ -11,6 +11,7 @@ requires-python = ">=3.13"
 dependencies = [
     "fastmcp>=2.0.0",
     "starlette>=0.37.0",
+    "json5>=0.15.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
