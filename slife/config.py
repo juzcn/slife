@@ -705,16 +705,20 @@ class Config:
             logger.info("config_seeded from=%s to=%s", pkg, path)
             print(f"\n  First run — created: {path}")
 
-        # Siblings — the harness points at these via MCP_PLUGIN_FILE /
-        # LOCAL_EMBED_FILE (set below in from_json5); seed them the same way.
-        for name in ("mcp-plugin.json5", "local_embed.json5"):
-            target = path.parent / name
+        # Siblings — each module hosts its own config in its own data dir
+        # (~/.mcp-plugin, ~/.local-embed — matches its standalone resolver;
+        # we no longer point $MCP_PLUGIN_FILE / $LOCAL_EMBED_FILE at the slife
+        # data dir).  Seed the same way: missing → copy, never overwrite.
+        for name, subdir in (("mcp-plugin.json5", ".mcp-plugin"),
+                             ("local_embed.json5", ".local-embed")):
+            target = Path.home() / subdir / name
             if target.exists():
                 continue
             pkg = pkg_dir / name
             if not pkg.exists():
                 # Wheels predating the git-tracked configs lack siblings.
                 continue
+            target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(pkg, target)
             try:
                 os.chmod(target, 0o600)
@@ -935,11 +939,8 @@ class Config:
             cli_tools=cli_tools,
         )
         config._path = path
-        # Point the mcp-plugin (external MCP plugin) at a config file living
-        # next to slife.json5 — the plugin resolves it via $MCP_PLUGIN_FILE.
-        if path is not None:
-            os.environ["MCP_PLUGIN_FILE"] = str(path.parent / "mcp-plugin.json5")
-        # Same for the local-embed external plugin: $LOCAL_EMBED_FILE.
-        if path is not None:
-            os.environ["LOCAL_EMBED_FILE"] = str(path.parent / "local_embed.json5")
+        # Each module hosts its own config in its own data dir — we do NOT set
+        # $MCP_PLUGIN_FILE / $LOCAL_EMBED_FILE, so mcp-plugin / local-embed
+        # resolve the same ~/.mcp-plugin / ~/.local-embed files that the
+        # installer and _seed_first_run_config (above) write.
         return config

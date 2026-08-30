@@ -559,37 +559,40 @@ fi
 
 # ── Configs: seed the git-tracked defaults out-of-the-box ───────────────
 # slife.json5 / local_embed.json5 / mcp-plugin.json5 come from the downloaded
-# source tree (now git-tracked).  Missing ones are copied silently; existing
-# ones (upgrades) are only replaced after an explicit "yes".
+# source tree (now git-tracked).  Each module hosts its own config in its own
+# data dir (~/.slife, ~/.local-embed, ~/.mcp-plugin).  Missing ones are copied
+# silently; an existing one is only replaced after a per-file "yes".
 echo -e "${YELLOW}[4c] Setting up configs (out-of-the-box defaults)…${NC}"
-DATA_DIR="$HOME/.slife"
 SEED_DIR="$TMP_DIR/slife-main"
-mkdir -p "$DATA_DIR" 2>/dev/null || true
-ANY_EXISTS=false
-for _name in slife.json5 local_embed.json5 mcp-plugin.json5; do
-    [ -e "$DATA_DIR/$_name" ] && ANY_EXISTS=true
-done
-RESET=false
-if [ "$ANY_EXISTS" = true ] && [ -t 0 ]; then
-    read -p "  Config files already exist — reset to the bundled defaults? (y/N, default: N): " _choice
-    if [ "$_choice" = "y" ] || [ "$_choice" = "Y" ]; then RESET=true; fi
-fi
 for _name in slife.json5 local_embed.json5 mcp-plugin.json5; do
     _src="$SEED_DIR/$_name"
     [ -f "$_src" ] || continue   # older main snapshots may lack the seeds
-    if [ -e "$DATA_DIR/$_name" ]; then
-        if [ "$RESET" = true ]; then
-            if cp -f "$_src" "$DATA_DIR/$_name" 2>/dev/null && chmod 600 "$DATA_DIR/$_name" 2>/dev/null; then
-                echo -e "  ${GRAY}reset  $DATA_DIR/$_name${NC}"
+    # Each module's config lives in its own folder.
+    case "$_name" in
+        local_embed.json5) _target="$HOME/.local-embed/local_embed.json5" ;;
+        mcp-plugin.json5)  _target="$HOME/.mcp-plugin/mcp-plugin.json5" ;;
+        *)                 _target="$HOME/.slife/slife.json5" ;;
+    esac
+    mkdir -p "$(dirname "$_target")" 2>/dev/null || true
+    if [ -e "$_target" ]; then
+        # Ask per file — the user may have customized one config but want
+        # defaults for another; never force a reset on all of them together.
+        _ask="n"
+        if [ -t 0 ]; then
+            read -p "  Reset $_target to the bundled default? (y/N, default: N): " _ask
+        fi
+        if [ "$_ask" = "y" ] || [ "$_ask" = "Y" ]; then
+            if cp -f "$_src" "$_target" 2>/dev/null && chmod 600 "$_target" 2>/dev/null; then
+                echo -e "  ${GRAY}reset  $_target${NC}"
             else
-                echo -e "  ${RED}⚠ could not write $DATA_DIR/$_name${NC}"
+                echo -e "  ${RED}⚠ could not write $_target${NC}"
             fi
         fi
     else
-        if cp "$_src" "$DATA_DIR/$_name" 2>/dev/null && chmod 600 "$DATA_DIR/$_name" 2>/dev/null; then
-            echo -e "  ${GRAY}seeded $DATA_DIR/$_name${NC}"
+        if cp "$_src" "$_target" 2>/dev/null && chmod 600 "$_target" 2>/dev/null; then
+            echo -e "  ${GRAY}seeded $_target${NC}"
         else
-            echo -e "  ${RED}⚠ could not write $DATA_DIR/$_name${NC}"
+            echo -e "  ${RED}⚠ could not write $_target${NC}"
         fi
     fi
 done
@@ -617,7 +620,7 @@ echo -e "${GRAY}  Then download the model:${NC}"
 echo -e "${CYAN}    # transformer (~2 GB) — huggingface.co, falls back to hf-mirror.com automatically:${NC}"
 echo -e "    \"$SEMANTIC_BIN\" download BAAI/bge-m3"
 echo -e "${CYAN}    # or a small GGUF (~100 MB) placed at ~/.slife/models/bge-m3-q4_k_m.gguf${NC}"
-echo -e "${GRAY}    (or set the BGE_M3_GGUF_PATH env var) — details in ~/.slife/local_embed.json5.${NC}"
+echo -e "${GRAY}    (or set the BGE_M3_GGUF_PATH env var) — details in ~/.local-embed/local_embed.json5.${NC}"
 
 #
 echo -e "${YELLOW}[5/5] Cleaning up previous installation artifacts…${NC}"

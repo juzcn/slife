@@ -652,28 +652,23 @@ try {
 
     # 4c. Configs: seed the git-tracked defaults out-of-the-box.  slife.json5 /
     # local_embed.json5 / mcp-plugin.json5 come from the downloaded source tree
-    # (now git-tracked).  Missing ones are copied silently; existing ones
-    # (upgrades) are only replaced after an explicit "yes".
+    # (now git-tracked), and each module hosts its own config in its own data
+    # dir (~/.slife, ~/.local-embed, ~/.mcp-plugin).  Missing ones are copied
+    # silently; an existing one is only replaced after a per-file "yes".
     Write-Step "[4c] Setting up configs (out-of-the-box defaults)..."
-    $dataDir = "$env:USERPROFILE\.slife"
-    New-Item -ItemType Directory -Force $dataDir | Out-Null
     $seedPairs = @(
-        @("slife.json5", "$dataDir\slife.json5"),
-        @("local_embed.json5", "$dataDir\local_embed.json5"),
-        @("mcp-plugin.json5", "$dataDir\mcp-plugin.json5")
+        @("slife.json5", "$env:USERPROFILE\.slife\slife.json5"),
+        @("local_embed.json5", "$env:USERPROFILE\.local-embed\local_embed.json5"),
+        @("mcp-plugin.json5", "$env:USERPROFILE\.mcp-plugin\mcp-plugin.json5")
     )
-    $anyExists = $false
-    foreach ($pair in $seedPairs) { if (Test-Path $pair[1]) { $anyExists = $true } }
-    $resetConfigs = $false
-    if ($anyExists) {
-        try { $ans = Read-Host "  Config files already exist — reset to the bundled defaults? (y/N, default: N)" } catch { $ans = "n" }
-        if ($ans -match '^[yY]') { $resetConfigs = $true }
-    }
     foreach ($pair in $seedPairs) {
         $src = Join-Path $extractedDir.FullName $pair[0]
         if (-not (Test-Path $src)) { continue }   # older main snapshots may lack the seeds
+        New-Item -ItemType Directory -Force (Split-Path $pair[1] -Parent) | Out-Null
         if (Test-Path $pair[1]) {
-            if ($resetConfigs) {
+            $ans = "n"
+            try { $ans = Read-Host "  Reset $($pair[1]) to the bundled default? (y/N, default: N)" } catch { $ans = "n" }
+            if ($ans -match '^[yY]') {
                 Copy-Item $src $pair[1] -Force
                 Write-Dim "  reset  $($pair[1])"
             }
@@ -702,7 +697,7 @@ try {
     Write-Host "    # transformer (~2 GB) — huggingface.co, falls back to hf-mirror.com automatically:" -ForegroundColor Cyan
     Write-Dim "  & `"$semanticBin`" download BAAI/bge-m3"
     Write-Host "    # or a small GGUF (~100 MB) placed at $env:USERPROFILE\.slife\models\bge-m3-q4_k_m.gguf" -ForegroundColor Cyan
-    Write-Dim "  (or set the BGE_M3_GGUF_PATH env var) — details in $env:USERPROFILE\.slife\local_embed.json5."
+    Write-Dim "  (or set the BGE_M3_GGUF_PATH env var) — details in $env:USERPROFILE\.local-embed\local_embed.json5."
 
     # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."

@@ -20,7 +20,7 @@
 
 ## 安装
 
-**零前提、开箱即用。** 安装脚本**从源码（最新的 `main`）** 构建 slife（不用 PyPI，永远是当前最新代码），并自动安装 uv、Node.js、bun 与 Mosquitto（缺失时；WSL 上装 Linux 原生版本——Windows 可执行文件无法经 WSL interop 接收自定义环境变量）。随后把三份 **git 跟踪的配置文件**（`slife.json5`、`local_embed.json5`、`mcp-plugin.json5`）作为开箱即用默认值写入 `~/.slife/`——首次用户即可拥有完整工具集（本地 embeddings、外部 MCP 服务器、yt-dlp、browser-harness、A2A 网格），无需手工配置任何东西。重跑安装器会升级 slife，并在**覆盖已有配置前先询问**。传 `--core`（或设 `SLIFE_CORE=1`）可做仅核心的轻量安装，跳过可选工具。
+**零前提、开箱即用。** 安装脚本**从源码（最新的 `main`）** 构建 slife（不用 PyPI，永远是当前最新代码），并自动安装 uv、Node.js、bun 与 Mosquitto（缺失时；WSL 上装 Linux 原生版本——Windows 可执行文件无法经 WSL interop 接收自定义环境变量）。随后把三份 **git 跟踪的配置文件**作为开箱即用默认值写到各自的模块目录（`~/.slife/slife.json5`、`~/.local-embed/local_embed.json5`、`~/.mcp-plugin/mcp-plugin.json5`）——首次用户即可拥有完整工具集（本地 embeddings、外部 MCP 服务器、yt-dlp、browser-harness、A2A 网格），无需手工配置任何东西。重跑安装器会升级 slife，并对每一份**已存在的配置逐个询问是否覆盖**。传 `--core`（或设 `SLIFE_CORE=1`）可做仅核心的轻量安装，跳过可选工具。
 
 ### 环境要求
 
