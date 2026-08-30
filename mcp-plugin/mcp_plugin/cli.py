@@ -68,7 +68,11 @@ def main(argv: list[str] | None = None) -> int:
     if command == "set-embed":
         return _set_embed_cmd(args)
     if command == "build":
-        return asyncio.run(_build_cmd())
+        try:
+            return asyncio.run(_build_cmd())
+        except KeyboardInterrupt:
+            print("\nInterrupted.", flush=True)
+            return 130
     print(f"Unknown command: {command}")
     return 2
 
@@ -136,6 +140,7 @@ async def _build_cmd() -> int:
     pool = ConnectionPool()
     connected: list[str] = []
     failed: list[str] = []
+    tasks: "list[asyncio.Task]" = []
     try:
         n_disabled = sum(1 for _, _, en in all_servers if not en)
         header = f"[build] connecting to {len(all_servers)} servers"
@@ -224,9 +229,23 @@ async def _build_cmd() -> int:
             print("[build] embeddings: configured but failed to load — semantic search off (keyword-only)")
 
         return 0
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Ctrl+C mid-build: cancel the in-flight connect tasks and report a
+        # clean interruption instead of a traceback.  The catalog is partially
+        # rebuilt — rerunning `mcp-plugin build` finishes it.
+        print("\n[build] interrupted — run `mcp-plugin build` again to finish.", flush=True)
+        return 130
     finally:
-        await pool.shutdown()
-        await store.close()
+        for t in tasks:
+            t.cancel()
+        try:
+            await pool.shutdown()
+        except Exception:
+            pass
+        try:
+            await store.close()
+        except Exception:
+            pass
 
 
 # ── set-embed (embeddings section) ──────────────────────────────────────
