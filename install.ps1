@@ -800,15 +800,22 @@ try {
     # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."
 
-    $localBin   = "$env:USERPROFILE\.local\bin"
-    $bunBin     = "$env:USERPROFILE\.bun\bin"
-    $scriptsDir = "$env:USERPROFILE\.slife\Scripts"
+    $localBin    = "$env:USERPROFILE\.local\bin"
+    $bunBin      = "$env:USERPROFILE\.bun\bin"
+    $toolScripts = Join-Path (uv tool dir) "slife\Scripts"   # mcp-plugin / local-embed live here
+    $scriptsDir  = "$env:USERPROFILE\.slife\Scripts"
 
-    # Ensure ~/.local/bin and ~/.bun/bin are on PATH; remove stale venv entries.
+    # Ensure ~/.local/bin, the slife tool venv Scripts (mcp-plugin / local-embed),
+    # and ~/.bun/bin are on PATH; remove stale venv entries.  The tool venv
+    # Scripts entry is what makes the documented `mcp-plugin build` /
+    # `local-embed set-gguf` commands work out-of-the-box.
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $newPath  = ($userPath -split ';' | Where-Object { $_ -and $_ -ne $scriptsDir }) -join ';'
     if ($newPath -notlike "*$localBin*") {
         $newPath = "$localBin;$newPath"
+    }
+    if ($newPath -notlike "*$toolScripts*") {
+        $newPath = "$toolScripts;$newPath"
     }
     if ($newPath -notlike "*$bunBin*") {
         $newPath = "$bunBin;$newPath"
@@ -819,7 +826,7 @@ try {
             Write-Dim "  Removed stale PATH entry: $scriptsDir"
         }
     }
-    $env:PATH = "$bunBin;$localBin;$env:PATH"
+    $env:PATH = "$bunBin;$toolScripts;$localBin;$env:PATH"
 
     Write-Ok "slife + credstore commands ready"
 

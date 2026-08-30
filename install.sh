@@ -696,8 +696,11 @@ fi
 #
 echo -e "${YELLOW}[5/5] Cleaning up previous installation artifacts…${NC}"
 
-# Ensure ~/.local/bin is on PATH (uv puts tool executables here,
-# and Step 1 only added it to the current session).
+# Ensure ~/.local/bin and the slife tool venv bin (mcp-plugin / local-embed)
+# are on PATH (uv puts tool executables here, and Step 1 only added the former
+# to the current session).  The tool bin entry is what makes the documented
+# `mcp-plugin build` / `local-embed set-gguf` commands work out-of-the-box.
+SLIFE_TOOL_BIN="$(uv tool dir)/slife/bin"
 for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.config/fish/config.fish"; do
     if [ -f "$rc" ]; then
         if ! grep -qF "$HOME/.local/bin" "$rc" 2>/dev/null; then
@@ -707,9 +710,16 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.config/fish/co
                 echo "export PATH=\"$HOME/.local/bin:\$PATH\"" >> "$rc"
             fi
         fi
+        if ! grep -qF "$SLIFE_TOOL_BIN" "$rc" 2>/dev/null; then
+            if echo "$rc" | grep -q fish; then
+                echo "fish_add_path $SLIFE_TOOL_BIN" >> "$rc"
+            else
+                echo "export PATH=\"$SLIFE_TOOL_BIN:\$PATH\"" >> "$rc"
+            fi
+        fi
     fi
 done
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.local/bin:$SLIFE_TOOL_BIN:$PATH"
 
 echo -e "${GREEN}  ✓${NC} slife + credstore commands ready"
 

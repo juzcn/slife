@@ -41,7 +41,7 @@ The installer is best-effort: it uses standard paths, tries several install rout
 
 If a runtime can't be installed, the installer **warns and continues** — slife itself still installs; only the features needing that runtime are unavailable. For example, on a Linux box older than **glibc 2.28 / libstdc++ 3.4.29**, the Node rootless tarball fallback won't run (the installer reports the missing `GLIBC_2.28` / `GLIBCXX_3.4.xx` symbols). The supported route is **not** an older Node — it's a Node built for your distro (e.g. `module load nodejs` on HPC clusters, or your distro's package). Install that, then re-run this installer — it detects an existing `npx` and skips its own Node install.
 
-If you edit `mcp-plugin.json5` by hand, restore the MCP server catalog with `"$(uv tool dir)/slife/bin/mcp-plugin" build` (Windows: `"$(uv tool dir)\slife\Scripts\mcp-plugin.exe" build`). Every optional step is **fail-open**: an error warns and continues, leaving a working core.
+If you edit `mcp-plugin.json5` by hand, restore the MCP server catalog with `mcp-plugin build` (both `mcp-plugin` and `local-embed` are on PATH after install). Every optional step is **fail-open**: an error warns and continues, leaving a working core.
 
 ### macOS / Linux / WSL
 
@@ -181,14 +181,12 @@ Everything — host, port, models, active model, backend — lives in **`local_e
 
 Changes apply on the next start of the local-embed service (restart slife).
 
-**CLI alternative** — the `local-embed` binary in the tool venv upserts a model config, makes it active, and pins the port (idempotent, leaves other models untouched):
+**CLI alternative** — `local-embed` (on PATH after install) upserts a model config, makes it active, and pins the port (idempotent, leaves other models untouched):
 
 ```bash
-"$(uv tool dir)/slife/bin/local-embed" set BAAI/bge-m3 --HF_HUB_CACHE ~/.cache/huggingface/hub
-"$(uv tool dir)/slife/bin/local-embed" set-gguf bge-m3 --path ~/.slife/models/bge-m3-q4_k_m.gguf
+local-embed set BAAI/bge-m3 --HF_HUB_CACHE ~/.cache/huggingface/hub
+local-embed set-gguf bge-m3 --path ~/.slife/models/bge-m3-q4_k_m.gguf
 ```
-
-(Windows: `"$(uv tool dir)\slife\Scripts\local-embed.exe"`.)
 
 ### 4. Make the service ready — verify
 
