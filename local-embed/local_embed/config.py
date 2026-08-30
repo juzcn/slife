@@ -44,9 +44,11 @@ Reads are read-only at runtime — local-embed has no config-mutating tools
 
 from __future__ import annotations
 
+import json
 import json5
 import logging
 import os
+import re
 import tomllib
 from pathlib import Path
 
@@ -198,3 +200,83 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
         "host": cfg.get("host", overrides.get("host", DEFAULT_HOST)),
         "port": int(cfg.get("port", overrides.get("port", DEFAULT_PORT))),
     }
+
+
+_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+_KNOWN_KEY_ORDER = ("active_model", "env", "models", "host", "port")
+
+
+def _js_key(k: str) -> str:
+    """Quote a key only when it is not a plain identifier."""
+    return k if _IDENTIFIER.fullmatch(k) else json.dumps(k)
+
+
+def _js_value(v) -> str:
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return json.dumps(v)
+    return str(v)
+
+
+def _ordered_items(cfg: dict) -> "list[tuple[str, object]]":
+    known = [(k, cfg[k]) for k in _KNOWN_KEY_ORDER if k in cfg]
+    rest = [(k, v) for k, v in cfg.items() if k not in _KNOWN_KEY_ORDER]
+    return known + rest
+
+
+def _render_members(pairs: "list[tuple[str, object]]", indent: int) -> str:
+    pad = " " * indent
+    out: "list[str]" = []
+    for i, (k, v) in enumerate(pairs):
+        last = i == len(pairs) - 1
+        sep = "" if last else ","
+        if isinstance(v, dict):
+            out.append(f"{pad}{_js_key(k)}: {{")
+            out.append(_render_members(list(v.items()), indent + 2))
+            out.append(f"{pad}}}{sep}")
+        elif isinstance(v, list):
+            inner = ", ".join(_js_value(x) for x in v)
+            out.append(f"{pad}{_js_key(k)}: [{inner}]{sep}")
+        else:
+            out.append(f"{pad}{_js_key(k)}: {_js_value(v)}{sep}")
+    return "\n".join(out)
+
+
+def render_json5(cfg: dict) -> str:
+    """Serialise a config dict in the repo's hand-written JSON5 style.
+
+    2-space indent, unquoted keys when they are identifiers, double-quoted
+    strings, multiline objects, the file's header comment.  Known top-level
+    keys keep the canonical order from ``local_embed.json5`` (``active_model``,
+    ``env``, ``models``, ``host``, ``port``); extra keys append in their
+    existing order.  Deterministic — the same dict always renders the same
+    text, so writing twice is idempotent.
+    """
+    header = (
+        "  // local-embed — one process, many local embedding models, ONE active.",
+        "  // Config path: $LOCAL_EMBED_FILE > slife project root (dev) > ~/.local-embed/",
+    )
+    body = "\n".join(header) + "\n" + _render_members(_ordered_items(cfg), indent=2)
+    return "{\n" + body + "\n}"
+
+
+def write_config(cfg: dict, path: "Path | None" = None) -> Path:
+    """Atomically write a full config dict to disk in the canonical JSON5 style.
+
+    Serialises with :func:`render_json5` and replaces the file via a temp
+    sibling, so a crashed write never truncates a good config.  A hand-edited
+    file is normalised on rewrite (comments beyond the header are dropped) —
+    configs are machine-read, and command-line writers canonicalise by design
+    (same trade-off slife's config writer makes).
+    """
+    if path is None:
+        path = resolve_config_path()
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(render_json5(cfg), encoding="utf-8")
+    os.replace(tmp, path)
+    return path

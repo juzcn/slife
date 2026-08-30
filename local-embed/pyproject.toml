@@ -1,6 +1,6 @@
 [project]
 name = "local-embed"
-version = "0.1.0"
+version = "0.2.0"
 description = "Standalone local embedding server — GGUF / transformer models as an OpenAI-compatible /v1/embeddings service"
 readme = "README.md"
 license = { text = "MIT" }

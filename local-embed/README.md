@@ -3,14 +3,17 @@
 **Standalone local embedding server** — loads one GGUF (llama-cpp) or HF
 transformer embedding model **once** and exposes it as an
 [OpenAI-compatible](https://platform.openai.com/docs/api-reference/embeddings)
-HTTP service — `POST /v1/embeddings` plus the Models API
-(`GET /v1/models`, `GET /v1/models/{id}`) — **plus** FastMCP tools, on a
-single port.
+HTTP service on a single port: `POST /v1/embeddings`, the Models API
+(`GET /v1/models`, `GET /v1/models/{id}`), plus FastMCP tools.
 
-Built for **slife** (its `memdb` and `memfiles` plugins both call this
-service over HTTP, so the model is never loaded twice in one process
-tree), but it is a fully standalone package — any OpenAI-compatible
-client can use it.
+Two backends: **`gguf`** loads a local `.gguf` file (llama-cpp-python);
+**`transformer`** loads an HF repo id (sentence-transformers).  The server
+never downloads weights — you pre-download them ([Model
+weights](#model-weights) below).
+
+Built for **slife** (its `memdb` and `memfiles` plugins call it over HTTP, so
+a model is loaded once per process tree); it is fully standalone — any
+OpenAI-compatible client works.
 
 ```
                 POST http://127.0.0.1:8000/v1/embeddings
@@ -31,54 +34,146 @@ client can use it.
 
 ## Install
 
-```bash
-# GGUF backend (llama-cpp-python)
-uv tool install 'local-embed[gguf]'            # or: uv pip install 'local-embed[gguf]'
-# Transformer backend (sentence-transformers)
-uv tool install 'local-embed[transformer]'     # or: uv pip install 'local-embed[transformer]'
-```
-
-Python 3.13+. The server core only depends on `fastmcp` + `starlette`; the
-heavy model backends are optional extras.
-
-## Run
-
-Everything — host, port, model, backend, `gguf_path`, `device` — comes from
-`local_embed.json5`: a top-level `models` map (each entry `{backend,
-model, gguf_path, device, max_tokens}`), `active_model`, and standalone
-`host` / `port` keys (single-model top-level `backend`/`model`/`gguf_path`/
-`device` still work).  The CLI takes no model/endpoint flags:
+Requires [uv](https://docs.astral.sh/uv) (it manages the Python 3.13+
+runtime).  The `transformer` backend installs the same everywhere:
 
 ```bash
-local-embed
+uv tool install 'local-embed[transformer]'   # sentence-transformers
 ```
 
-By default it binds `127.0.0.1:8000` (local only — never exposed to the
-network), configurable via the top-level `host` / `port` keys.
+`gguf` (llama-cpp-python) is the platform-sensitive one: PyPI ships
+Linux/macOS CPU wheels but **no Windows wheels**, so on Windows a plain
+install silently compiles from source (needs MSVC + CMake).  The upstream
+project's prebuilt-wheel indexes (`https://abetlen.github.io/llama-cpp-python/whl/<cpu|cuXXX|metal>`) are the supported one-click path — pick the row
+for your platform:
 
-### Transformer models & the `env:` section
+| Platform | Command |
+|---|---|
+| Linux / macOS, CPU | `uv tool install 'local-embed[gguf]'` (PyPI wheel) |
+| **Windows, CPU** | `uv tool install 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu` |
+| macOS arm64 (Metal) | `uv tool install 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal` |
+| CUDA (Linux or Windows) | `uv tool install 'local-embed[gguf]' --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122` — pick `cu118` / `cu121` / `cu122` / `cu123` / `cu124` / `cu125` / `cu130` / `cu132` to match your CUDA version |
 
-A `transformer` model is referenced by its HF *repo name* (`BAAI/bge-m3`).
-The HuggingFace hub resolves that name against its cache (default
-`~/.cache/huggingface`), downloading on first load if missing.  To keep the
-server self-contained — point it at an existing local cache, or force
-offline — put the env vars in `local_embed.json5`'s `env:` section (injected
-into this process before any model loads; an existing shell env var wins):
+When the index is an *extra*, uv uses its wheel only when PyPI has no
+compatible wheel for the platform (the Windows / Metal cases); on Linux
+PyPI **does** ship a CPU wheel, so to get the CUDA build you must use the
+CUDA index.  Note the CUDA Linux wheels need **glibc ≥ 2.35** (built for
+`manylinux_2_35`) — on an older distro uv falls back to a source build.
+If the `gguf` backend is missing, the server errors at startup with the
+exact command for your platform (the Windows CPU one on Windows).
+
+Core deps are `fastmcp` + `starlette`; the model backends are optional
+extras.  Installing does **not** fetch a model — get the weights first.
+
+## Model weights
+
+The server never downloads models; both backends fail at load time when
+their weights are missing (`gguf` needs the `gguf_path` file, `transformer`
+needs the repo in the HF cache).
+
+### GGUF
+
+`.gguf` files are, in general, **community conversions** — upstream releases
+are PyTorch weights, not GGUF — so there is **no single authoritative
+source**: conversions are scattered across Hugging Face, ModelScope, Ollama,
+llama.cpp community uploads and various project sites.  Pick any source you
+trust; the transport doesn't matter, local-embed only needs the file on disk.
+
+HF is the most common host and its CLI pulls a single file:
+
+```bash
+uv tool install "huggingface-hub[cli]"      # provides `hf`
+hf download <owner>/<repo> <model>.gguf --local-dir D:\models\bge-m3
+# one-off, no permanent tool install:
+uvx --from huggingface-hub hf download <owner>/<repo> <model>.gguf --local-dir D:\models\bge-m3
+```
+
+Any source also works from a browser or `wget`/`curl` — on HF, every file is
+fetchable from `https://huggingface.co/<owner>/<repo>/resolve/main/<model>.gguf`.
+
+Prefer a high-fidelity quant such as **Q8_0** (~99 % of the original
+accuracy at roughly a third of the size).  Point `gguf_path` at the file:
 
 ```json5
-{
-  env: {
-    HF_HUB_CACHE: "C:\\Users\\me\\HuggingFace\\hub",  // existing cache
-    HF_HUB_OFFLINE: "1"                                // never hit the network
-  },
-  models: {
-    "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3", device: "" }
-  }
+models: {
+  "bge-m3": { backend: "gguf", gguf_path: "D:\\models\\bge-m3\\bge-m3-q8_0.gguf" }
 }
 ```
 
-Without `HF_HUB_CACHE` the model resolves against the default cache — a
-model already downloaded elsewhere would be silently re-fetched.
+### Transformer
+
+`sentence-transformers` resolves an HF repo id against the local hub cache:
+
+```bash
+hf download BAAI/bge-m3     # -> ~/.cache/huggingface/hub/models--BAAI--bge-m3
+```
+
+```json5
+models: {
+  "bge-m3": { backend: "transformer", model: "BAAI/bge-m3" }
+}
+```
+
+## Config: `local_embed.json5`
+
+Everything — host, port, models, active model, backend — comes from
+`local_embed.json5`.  Path resolution: `$LOCAL_EMBED_FILE` > slife project
+root (dev) > `~/.local-embed/local_embed.json5`.
+
+```json5
+{
+  active_model: "bge-m3",          // model served by default
+  models: {
+    "bge-m3": { backend: "gguf", gguf_path: "…", device: "" },
+    "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3", device: "" }
+  },
+  env: {                            // injected into this process before any model loads
+    HF_HUB_CACHE: "C:\\…\\HuggingFace\\hub",   // where transformer repos resolve
+    HF_HUB_OFFLINE: "1"                        // force offline
+  },
+  host: "127.0.0.1",                // standalone only
+  port: 8000                        // standalone only (slife plugin spawn binds a free port)
+}
+```
+
+- `models` — map of name → `{backend, gguf_path | model, device, max_tokens}`.
+- `active_model` — key into `models`.
+- `env:` — injected before any backend loads; an existing shell env var
+  wins.  Without `HF_HUB_CACHE`, transformer repos resolve against the
+  default cache and a model downloaded elsewhere is silently re-fetched.
+- Single-model convenience — top-level `backend`/`model`/`gguf_path`/`device`
+  — still works.
+
+## Run
+
+```bash
+local-embed                 # binds 127.0.0.1:8000 by default
+```
+
+The server CLI takes no model/endpoint flags — the config is the only
+source of truth.
+
+## CLI — configure models via subcommands
+
+`local-embed set` (transformer) and `local-embed set-gguf` (gguf) upsert a
+model in the config, make it **active**, and pin port (and, for `set`, the
+HF cache).  Both are **idempotent** — re-running yields the same config —
+and leave other models untouched.
+
+| | `set` (transformer) | `set-gguf` |
+|---|---|---|
+| `<model_name>` | required — HF repo id (key + repo loaded) | required — config key |
+| weight ref | `--HF_HUB_CACHE <dir>` — cache must contain the repo | `--path <PATH>` required — existing `.gguf` file |
+| cache fallback | env `HF_HUB_CACHE`, else error | — |
+| `--port <n>` | default `8000` | default `8000` |
+
+```bash
+local-embed set BAAI/bge-m3 [--HF_HUB_CACHE <dir>] [--port 8000]
+local-embed set-gguf bge-m3 --path D:\models\bge-m3\bge-m3-q8_0.gguf [--port 8000]
+```
+
+Any error — cache unset, repo not in cache, file missing — exits non-zero
+and writes nothing.  Changes apply on the next server start.
 
 ## Use
 
@@ -103,8 +198,8 @@ Returns the standard OpenAI shape:
 ```
 
 Any OpenAI-compatible client works — point `base_url` at
-`http://127.0.0.1:8000/v1` (e.g. slife's `memdb.embedding` api backend, or
-the `openai` Python package):
+`http://127.0.0.1:8000/v1` (e.g. a slife `embeddings` provider, or the
+`openai` Python package):
 
 ```python
 from openai import OpenAI
@@ -150,11 +245,15 @@ plugins: {
     { name: "local-embed", module: "local_embed.server" }
   ]
 },
-memdb: {
-  embedding: {
-    base_url: "http://127.0.0.1:8000/v1",  // stable port from local_embed.json5
-    api_key: "local",
-  }
+embeddings: {
+  providers: {
+    "local-embed": {
+      base_url: "http://127.0.0.1:8000/v1",  // stable port from local_embed.json5
+      api_key: "local",
+    }
+  },
+  active_model: "local-embed",   // provider-id only, or "local-embed/<model>"
+  enabled: true
 }
 ```
 
@@ -162,18 +261,6 @@ The plugin binds the **stable port** from `local_embed.json5` (default
 `8000`), so slife's `base_url` is fixed whether local-embed runs as the
 plugin or standalone.  When the service is unreachable, slife degrades
 gracefully to keyword search.
-
-## CLI
-
-```
-local-embed --help
-```
-
-- `--log-level` — logging level (default `INFO`)
-
-Host, port and model config are read from `local_embed.json5` — the CLI has no
-model/endpoint flags (`--host`, `--port`, `--backend`, `--model`,
-`--gguf-path`, `--device` were removed).
 
 ## License
 
