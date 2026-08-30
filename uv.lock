@@ -1363,10 +1363,11 @@ wheels = [
 
 [[package]]
 name = "local-embed"
-version = "0.1.0"
+version = "0.2.1"
 source = { editable = "local-embed" }
 dependencies = [
     { name = "fastmcp" },
+    { name = "json5" },
     { name = "starlette" },
 ]
 
@@ -1388,6 +1389,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastmcp", specifier = ">=2.0.0" },
+    { name = "json5", specifier = ">=0.15.0" },
     { name = "llama-cpp-python", marker = "extra == 'gguf'" },
     { name = "sentence-transformers", marker = "extra == 'transformer'" },
     { name = "starlette", specifier = ">=0.37.0" },
