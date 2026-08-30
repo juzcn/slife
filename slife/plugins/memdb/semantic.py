@@ -315,12 +315,19 @@ class SemanticManager:
                 chunks = _split_chunks_to_token_limit(chunks, embedder.max_tokens)
                 if not chunks:
                     continue
-                embeddings = await embedder.embed(chunks)
-                if (
-                    embeddings
-                    and len(embeddings) == len(chunks)
-                    and all(emb for emb in embeddings)
-                ):
+                # Embed one chunk per request.  A long document batched into a
+                # single request can exceed the client's embed timeout on a slow
+                # (CPU) backend, so the whole doc times out and stays unembedded.
+                # Per-chunk requests are small and fast; more requests are fine.
+                embeddings: list[list[float]] = []
+                ok = True
+                for chunk in chunks:
+                    vec = await embedder.embed([chunk])
+                    if not vec or not vec[0]:
+                        ok = False
+                        break
+                    embeddings.append(vec[0])
+                if ok and len(embeddings) == len(chunks):
                     async with self._write_lock:
                         await self._store.replace_embedding_chunks(
                             doc, embeddings,

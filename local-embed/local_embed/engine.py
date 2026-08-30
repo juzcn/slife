@@ -462,13 +462,19 @@ class Engine:
             Llama = _Llama  # narrow: non-None after the guard above
 
             def _load_gguf():
+                from llama_cpp import llama_supports_gpu_offload
+
+                kwargs = dict(
+                    model_path=gguf_path,
+                    embedding=True,
+                    n_ctx=8192,
+                    verbose=False,
+                )
+                if llama_supports_gpu_offload():
+                    # Offload all layers to the GPU; a CPU-only build ignores it.
+                    kwargs["n_gpu_layers"] = -1
                 with _guarded_stdout():
-                    return Llama(
-                        model_path=gguf_path,
-                        embedding=True,
-                        n_ctx=8192,
-                        verbose=False,
-                    )
+                    return Llama(**kwargs)
 
             client = await run_daemon(
                 _load_gguf,

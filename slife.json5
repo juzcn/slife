@@ -313,16 +313,20 @@
   },
   active_model: "scnet/DeepSeek-V4-Flash-0731",
   plugins: {
-    // Required (core) plugins — a load failure aborts startup instead of
-    // limping on without them (plugin contract: see server_utils docstring).
-    required: ["memdb", "memfiles"],
-    external: [
-      { name: "mcp", module: "mcp_plugin.server" },
-      // local-embed — standalone local embedding service (OpenAI-compatible
-      // /v1/embeddings).  Loads the local model ONCE, shared by memdb +
-      // memfiles (no double load).  Config: local_embed.json5 next to slife.json5.
-      { name: "local-embed", module: "local_embed.server" },
+    required: [
+      "memdb",
+      "memfiles"
     ],
+    external: [
+      {
+        name: "mcp",
+        module: "mcp_plugin.server"
+      },
+      {
+        name: "local-embed",
+        module: "local_embed.server"
+      }
+    ]
   },
   a2a: {
     broker: {
@@ -376,17 +380,18 @@
       }
     }
   },
-  // First-class embeddings — shared by memdb + memfiles.  Each provider is
-  // an OpenAI-compatible endpoint (base_url + api_key); a local embedding
-  // service serves local models here (offline, no API cost).
-  // active_model is "provider/model" (or bare "provider") — configuration-
-  // authoritative; the endpoint's /v1/models active flag is only a fallback.
   embeddings: {
     providers: {
       local: {
         base_url: "http://127.0.0.1:17347/v1",
         model: "bge-m3",
-        api_key: "local"
+        api_key: "local",
+        models: [
+          {
+            model: "bge-m3",
+            dim: 1024
+          }
+        ]
       }
     },
     active_model: "local",
