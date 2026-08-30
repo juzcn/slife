@@ -680,24 +680,31 @@ try {
 
     # 4d. Semantic memory search — user-run setup.  Needs a model AND one
     # embedding backend.  Not installed by default: the backend build is
-    # env-specific and the model download is ~2 GB, so the user picks the
-    # matching command and runs it in a terminal afterwards.  (Windows: CPU
-    # or NVIDIA CUDA; the macOS/Linux installer lists the Metal variant too.)
-    Write-Step "[4d] Semantic memory search — setup commands (run in a terminal)..."
-    $semanticPy = Join-Path (uv tool dir) "slife\Scripts\python.exe"
-    $semanticBin = Join-Path (uv tool dir) "slife\Scripts\local-embed.exe"
-    Write-Dim "  Semantic memory search needs a model AND an embedding backend.  Choose ONE backend:"
-    Write-Host "    # sentence-transformers — simplest, works everywhere:" -ForegroundColor Cyan
-    Write-Dim "  uv pip install --python `"$semanticPy`" sentence-transformers"
-    Write-Host "    # llama-cpp-python — NVIDIA GPU (CUDA 12):" -ForegroundColor Cyan
-    Write-Dim "  uv pip install --python `"$semanticPy`" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34"
-    Write-Host "    # llama-cpp-python — CPU:" -ForegroundColor Cyan
-    Write-Dim "  uv pip install --python `"$semanticPy`" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34"
-    Write-Dim "  Then download the model:"
-    Write-Host "    # transformer (~2 GB) — huggingface.co, falls back to hf-mirror.com automatically:" -ForegroundColor Cyan
-    Write-Dim "  & `"$semanticBin`" download BAAI/bge-m3"
-    Write-Host "    # or a small GGUF (~100 MB) placed at $env:USERPROFILE\.slife\models\bge-m3-q4_k_m.gguf" -ForegroundColor Cyan
-    Write-Dim "  (or set the BGE_M3_GGUF_PATH env var) — details in $env:USERPROFILE\.local-embed\local_embed.json5."
+    # env-specific and the model download is ~2 GB, so the user sets it up
+    # from the README.  Keyword search already works.
+    Write-Step "[4d] Semantic memory search (optional, not installed by default)..."
+    Write-Dim "  Keyword search works now.  For semantic/hybrid search, set up the embedding"
+    Write-Dim "  backend + model yourself — see README.md -> Install -> Semantic memory search."
+
+    # 4e. MCP server catalog — build it now so the index is ready.
+    Write-Step "[4e] Building the MCP server catalog (mcp-plugin build)..."
+    $buildLog = Join-Path $tmpDir "mcp-build.log"
+    $mcpPluginBin = Join-Path (uv tool dir) "slife\Scripts\mcp-plugin.exe"
+    if (Test-Path $mcpPluginBin) {
+        $prevEAP4 = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & $mcpPluginBin build 2>&1 > $buildLog
+        $buildOk = ($LASTEXITCODE -eq 0)
+        $ErrorActionPreference = $prevEAP4
+        if ($buildOk) {
+            Write-Ok "MCP server catalog ready"
+        } else {
+            Write-Warn "  mcp-plugin build had issues (non-fatal) — log tail:"
+            Get-Content $buildLog -Tail 10 | ForEach-Object { Write-Dim "    $_" }
+        }
+    } else {
+        Write-Warn "  mcp-plugin not found — catalog build skipped"
+    }
 
     # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."
@@ -752,15 +759,12 @@ try {
     Write-Host "  3. slife                               # launch the TUI"
     Write-Host ""
     if ($coreMode) {
-        Write-Host "Core install done:" -ForegroundColor Cyan
-        Write-Host "  - External MCP servers, Mosquitto (A2A mesh)"
-        Write-Host "  - yt-dlp / browser-harness skipped — add later: uv tool install --python 3.12 browser-harness"
+        Write-Host "Core install done — external MCP servers (catalog built), Mosquitto" -ForegroundColor Cyan
+        Write-Host "  (yt-dlp / browser-harness skipped — add later: uv tool install --python 3.12 browser-harness)"
     } else {
-        Write-Host "Installed:" -ForegroundColor Cyan
-        Write-Host "  - External MCP servers, yt-dlp, browser-harness, Mosquitto (A2A mesh)"
+        Write-Host "Installed — slife + credstore, external MCP servers (catalog built), Mosquitto, yt-dlp, browser-harness" -ForegroundColor Cyan
     }
-    Write-Host "  - Semantic memory search: run the [4d] commands above (keyword search already works)"
-    Write-Host "  - mcp-plugin build: & `"`$(uv tool dir)\slife\Scripts\mcp-plugin.exe`" build   # (re)build the MCP server catalog"
+    Write-Host "  Semantic memory search: not installed by default — see README.md -> Install -> Semantic memory search"
     Write-Host ""
     Write-Host "More info: $slifeRepo" -ForegroundColor Cyan
 

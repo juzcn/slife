@@ -599,29 +599,28 @@ for _name in slife.json5 local_embed.json5 mcp-plugin.json5; do
 done
 
 #
-# ── Semantic memory search — user-run setup ──────────────────────────────
-# Semantic / hybrid memory search needs a model AND one embedding backend.
-# The installer does NOT install these by default: the backend build is
-# env-specific (CPU / CUDA / Metal) and the model download is ~2 GB, so the
-# user picks the matching command and runs it in a terminal afterwards.
-# Everything below is the same feature — set the backend first, then the model.
-echo -e "${YELLOW}[4d] Semantic memory search — setup commands (run in a terminal)…${NC}"
-SEMANTIC_PY="$(uv tool dir)/slife/bin/python"
-SEMANTIC_BIN="$(uv tool dir)/slife/bin/local-embed"
-echo -e "${GRAY}  Semantic memory search needs a model AND an embedding backend.  Choose ONE backend:${NC}"
-echo -e "${CYAN}    # sentence-transformers — simplest, works everywhere:${NC}"
-echo -e "    uv pip install --python \"$SEMANTIC_PY\" sentence-transformers"
-echo -e "${CYAN}    # llama-cpp-python — NVIDIA GPU (CUDA 12):${NC}"
-echo -e "    uv pip install --python \"$SEMANTIC_PY\" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34"
-echo -e "${CYAN}    # llama-cpp-python — CPU:${NC}"
-echo -e "    uv pip install --python \"$SEMANTIC_PY\" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34"
-echo -e "${CYAN}    # llama-cpp-python — macOS (Metal):${NC}"
-echo -e "    uv pip install --python \"$SEMANTIC_PY\" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal llama-cpp-python==0.3.34"
-echo -e "${GRAY}  Then download the model:${NC}"
-echo -e "${CYAN}    # transformer (~2 GB) — huggingface.co, falls back to hf-mirror.com automatically:${NC}"
-echo -e "    \"$SEMANTIC_BIN\" download BAAI/bge-m3"
-echo -e "${CYAN}    # or a small GGUF (~100 MB) placed at ~/.slife/models/bge-m3-q4_k_m.gguf${NC}"
-echo -e "${GRAY}    (or set the BGE_M3_GGUF_PATH env var) — details in ~/.local-embed/local_embed.json5.${NC}"
+# ── Semantic memory search — NOT installed by default ────────────────────
+# The embedding backend is env-specific (CPU / CUDA / Metal) and the model
+# download is ~2 GB, so the installer does not do it.  The user sets it up
+# from the README (per-environment commands).  Keyword search already works.
+echo -e "${YELLOW}[4d] Semantic memory search (optional, not installed by default)…${NC}"
+echo -e "${GRAY}  Keyword search works now.  For semantic/hybrid search, set up the embedding backend +${NC}"
+echo -e "${GRAY}  model yourself — see README.md → Install → Semantic memory search.${NC}"
+
+#
+# ── MCP server catalog — build it now so the index is ready ─────────────
+echo -e "${YELLOW}[4e] Building the MCP server catalog (mcp-plugin build)…${NC}"
+MCP_PLUGIN_BIN="$(uv tool dir 2>/dev/null)/slife/bin/mcp-plugin"
+if [ -x "$MCP_PLUGIN_BIN" ]; then
+    if "$MCP_PLUGIN_BIN" build >> "$TOOL_INSTALL_LOG" 2>&1; then
+        echo -e "${GREEN}  ✓${NC} MCP server catalog ready"
+    else
+        echo -e "${YELLOW}  ⚠ mcp-plugin build had issues (non-fatal) — log tail:${NC}"
+        tail -10 "$TOOL_INSTALL_LOG" | while IFS= read -r _l; do echo -e "    ${GRAY}$_l${NC}"; done
+    fi
+else
+    echo -e "${YELLOW}  ⚠ mcp-plugin not found — catalog build skipped${NC}"
+fi
 
 #
 echo -e "${YELLOW}[5/5] Cleaning up previous installation artifacts…${NC}"
@@ -694,14 +693,11 @@ if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
     fi
 fi
 if [ "$CORE_MODE" = true ]; then
-    echo -e "${CYAN}Core install done${NC}:"
-    echo "  • external MCP servers, Mosquitto (A2A mesh)"
-    echo "  • yt-dlp / browser-harness skipped — add later: uv tool install --python 3.12 browser-harness"
+    echo -e "${CYAN}Core install done${NC} — external MCP servers (catalog built), Mosquitto"
+    echo "  (yt-dlp / browser-harness skipped — add later: uv tool install --python 3.12 browser-harness)"
 else
-    echo -e "${CYAN}Installed:${NC}"
-    echo "  • external MCP servers, yt-dlp, browser-harness, Mosquitto (A2A mesh)"
+    echo -e "${CYAN}Installed${NC} — slife + credstore, external MCP servers (catalog built), Mosquitto, yt-dlp, browser-harness"
 fi
-echo "  • semantic memory search: run the [4d] commands above (keyword search already works)"
-echo "  • mcp-plugin build: \"\$(uv tool dir)/slife/bin/mcp-plugin\" build   # (re)build the MCP server catalog"
+echo "  Semantic memory search: not installed by default — see README.md → Install → Semantic memory search"
 echo ""
 echo -e "${CYAN}More info:${NC} $SLIFE_REPO"
