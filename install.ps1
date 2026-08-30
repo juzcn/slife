@@ -52,6 +52,12 @@ New-Item -ItemType Directory -Force $tmpDir | Out-Null
 # browser-harness).  Set $env:SLIFE_CORE=1 (native console: --core).
 $coreMode = ($env:SLIFE_CORE -eq "1") -or ($args -contains "--core")
 
+# Answer every overwrite prompt with "yes" and never call Read-Host.
+# Use for piped installs (`irm url | iex`) and non-interactive terminals,
+# where interactive Read-Host inside a piped script is unreliable and can
+# hang.  `-y` or SLIFE_ASSUME_YES=1.
+$assumeYes = ($env:SLIFE_ASSUME_YES -eq "1") -or ($args -contains "-y")
+
 try {
     Write-Host "Slife Installer" -ForegroundColor Cyan
     Write-Host ""
@@ -688,7 +694,7 @@ try {
         New-Item -ItemType Directory -Force (Split-Path $pair[1] -Parent) | Out-Null
         if (Test-Path $pair[1]) {
             $ans = "n"
-            try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Reset $($pair[1]) to the bundled default? (y/N, default: N)" } } catch { $ans = "n" }
+            if ($assumeYes) { $ans = "y" } else { try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Reset $($pair[1]) to the bundled default? (y/N, default: N)" } } catch { $ans = "n" } }
             if ($ans -match '^[yY]') {
                 Copy-Item $src $pair[1] -Force
                 Write-Dim "  reset  $($pair[1])"
@@ -719,7 +725,7 @@ try {
             $dst = Join-Path $skillsDst $name
             if (Test-Path $dst) {
                 $ans = "n"
-                try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Overwrite skill '$skillsDst\$name' with the bundled default? (y/N, default: N)" } } catch { $ans = "n" }
+                if ($assumeYes) { $ans = "y" } else { try { if (-not [Console]::IsInputRedirected) { $ans = Read-Host "  Overwrite skill '$skillsDst\$name' with the bundled default? (y/N, default: N)" } } catch { $ans = "n" } }
                 if ($ans -match '^[yY]') {
                     Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue
                     Copy-Item -Recurse $skill.FullName $dst -Force
