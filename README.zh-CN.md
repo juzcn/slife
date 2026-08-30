@@ -20,7 +20,7 @@
 
 ## 安装
 
-**零前提。** 安装脚本会自动安装 uv、Node.js 和 bun（如需要）。在 WSL 上安装的是 Linux 原生版本（Windows 可执行文件无法经 WSL interop 接收自定义环境变量）。Mosquitto（仅 A2A MQTT 网格需要）会在安装过程中交互式询问。
+**零前提、开箱即用。** 安装脚本**从源码（最新的 `main`）** 构建 slife（不用 PyPI，永远是当前最新代码），并自动安装 uv、Node.js、bun 与 Mosquitto（缺失时；WSL 上装 Linux 原生版本——Windows 可执行文件无法经 WSL interop 接收自定义环境变量）。随后把三份 **git 跟踪的配置文件**（`slife.json5`、`local_embed.json5`、`mcp-plugin.json5`）作为开箱即用默认值写入 `~/.slife/`——首次用户即可拥有完整工具集（本地 embeddings、外部 MCP 服务器、yt-dlp、browser-harness、A2A 网格），无需手工配置任何东西。重跑安装器会升级 slife，并在**覆盖已有配置前先询问**。传 `--core`（或设 `SLIFE_CORE=1`）可做仅核心的轻量安装，跳过可选工具。
 
 ### 环境要求
 
@@ -31,7 +31,25 @@
 | uv | `~/.local/bin` | 任意现代 Linux/macOS/Windows；Python 由 uv 管理（3.13） |
 | Node.js (LTS v22) | `~/.local/bin`（官方 tarball） | Linux 上需 **glibc ≥ 2.28 / libstdc++ ≥ 3.4.29**。老发行版（如 CentOS 7）**无法运行**官方二进制——安装器会报告缺失的 `GLIBC_2.28` / `GLIBCXX_3.4.xx` 符号。 |
 | bun | `~/.bun/bin` | 现代 Linux/macOS/Windows |
-| Mosquitto（可选） | 包管理器 | 仅 A2A MQTT 网格需要 |
+| Mosquitto | 包管理器（winget / apt / brew / dnf / pacman） | A2A MQTT 网格需要——**静默自动安装** |
+
+默认装好：`yt-dlp`、`browser-harness`、Mosquitto（A2A 网格），以及三份配置（`slife.json5`、`local_embed.json5`、`mcp-plugin.json5`）并接通外部 MCP 服务器。
+
+**语义记忆搜索由用户按需设置**（后端依赖所在环境——CPU / CUDA / Metal，模型下载约 2 GB——都不该阻塞安装）。安装后在一个终端里执行：先选一个后端，再下载模型：
+
+```bash
+# 后端（选其一）
+uv pip install --python "$(uv tool dir)/slife/bin/python" sentence-transformers            # 最简单，全平台可用
+uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34   # NVIDIA CUDA 12
+uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34    # CPU
+uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal llama-cpp-python==0.3.34 # macOS Metal
+
+# 模型 — huggingface.co 主站，失败自动 fallback 到 hf-mirror.com（国内）
+"$(uv tool dir)/slife/bin/local-embed" download BAAI/bge-m3
+# 或更轻的 ~100 MB GGUF：放进默认路径 ~/.slife/models/bge-m3-q4_k_m.gguf（或设 BGE_M3_GGUF_PATH）
+```
+
+若手工编辑了 `mcp-plugin.json5`，重建 MCP 服务器目录：`"$(uv tool dir)/slife/bin/mcp-plugin" build`。所有可选步骤都**fail-open**：出错只警告、继续，核心安装始终可用。
 
 若你的 Linux 低于 glibc 2.28，Node 官方 tarball 无法运行。受支持的路线**不是**安装旧版 Node——而是安装为你的发行版构建的 Node（例如 HPC 集群中的 `module load nodejs`，或发行版自带包）。装好后再运行安装器——它会检测到已有的 `npx` 并跳过自己的 Node 安装。
 
@@ -63,7 +81,7 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 
 ### 更新
 
-重新运行安装脚本即可——通过对比旧环境的包列表，自动保留之前安装的可选包（llama-cpp-python、sentence-transformers）。
+重新运行安装脚本即可——通过对比旧环境的包列表，自动保留之前安装的可选包（llama-cpp-python、sentence-transformers）。若配置已存在，安装器会**问一次**是否要**重置为随包默认值**（默认否，保留你的配置）；配置只在缺失时自动写入。
 
 ### 卸载
 
@@ -257,7 +275,7 @@ A2A 网格工具（`a2a_*`，共 8 个）和全部插件工具由插件承载，
 | `hybrid` | 语义召回（FTS5 + 向量 → RRF 融合） |
 | `time` | 按日期浏览 |
 
-Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + memfiles 共享），由 native tools 管理：`embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` / `embeddings_model_remove` / `embeddings_probe` / `embeddings_enable`（分类 `embeddings`）。每个 provider 是一个 **OpenAI 兼容端点**（`base_url` + `api_key`），`active_model`（`"provider/model"` 或裸 `"provider"`）以配置为准；本地 GGUF/transformer 模型经 **local-embed** 插件在 `http://127.0.0.1:8000/v1` 提供，加载一次、memdb 与 memfiles 共享。无嵌入端点时关键词搜索照常工作。语义（hybrid）结果只在**当前模型的索引完整构建后**才返回——全量重建期间（新/换模型、重启中断续跑）hybrid 退回关键词搜索，索引完成后自动恢复。
+Embeddings 是 `slife.json5` 顶层**一级配置段**（`embeddings`，memdb + memfiles 共享），由 native tools 管理：`embeddings_model_list` / `embeddings_model_set` / `embeddings_model_switch` / `embeddings_model_remove` / `embeddings_probe` / `embeddings_enable`（分类 `embeddings`）。每个 provider 是一个 **OpenAI 兼容端点**（`base_url` + `api_key`），`active_model`（`"provider/model"` 或裸 `"provider"`）以配置为准；本地 GGUF/transformer 模型经 **local-embed** 插件在 `http://127.0.0.1:17347/v1` 提供，加载一次、memdb 与 memfiles 共享。无嵌入端点时关键词搜索照常工作。语义（hybrid）结果只在**当前模型的索引完整构建后**才返回——全量重建期间（新/换模型、重启中断续跑）hybrid 退回关键词搜索，索引完成后自动恢复。
 
 每轮对话还记录两个时间戳——用户输入时间（`created_at`，输入框回车时刻）和 assistant 完成时间（`completed_at`）——在聊天中以灰色 `[HH:MM]` 标记显示（分别位于用户消息和 assistant 回复上）。用户消息会带一条紧凑的 **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** 脚注（turn id 加该轮发生的时间），拼接到消息文本末尾——LLM 能区分新旧轮次、用 turn id 引用（`turn_read` / `turn_summarize`），用户在 TUI 里也能读到同一行。
 
@@ -336,11 +354,13 @@ A2A 唯一已实现的传输 binding 是 MQTT——把 `transport` 设为任何�
 
 ## 可选扩展
 
+这些 embedding 后端**不由一键安装器默认安装**——它们是「语义记忆搜索」的可选设置（见[安装](#macos--linux--wsl)，任选一个后端+模型）。下表供手动安装（uvx / git 检出）或补装后端：
+
 | 扩展 | 启用功能 |
 |------|---------|
-| `slife[gguf]` | 本地 GGUF 嵌入（llama-cpp-python，离线，~300 MB） |
-| `slife[transformer]` | HuggingFace 变换器嵌入（sentence-transformers，~2 GB） |
-| `slife[embeddings]` | 以上两者 |
+| `local-embed[gguf]` | 本地 GGUF 嵌入（llama-cpp-python，离线，~300 MB） |
+| `local-embed[transformer]` | HuggingFace 变换器嵌入（sentence-transformers，~2 GB） |
+| `slife[gguf]` / `slife[transformer]` / `slife[embeddings]` | 旧版进程内嵌入（默认不再使用） |
 
 **Linux / macOS** — 从源码编译：
 

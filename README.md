@@ -21,7 +21,7 @@ Requires Python 3.13+. Runs on Windows (native & WSL), macOS, and Linux.
 
 ## Install
 
-**Zero prerequisites.** The install script auto-installs uv, Node.js, and bun if needed. On WSL, Linux-native versions are installed (Windows executables cannot receive custom env vars via WSL interop). Mosquitto (only needed for the A2A MQTT mesh) is offered interactively.
+**Zero prerequisites, fully out-of-the-box.** The install script builds slife **from source — the latest `main`** (no PyPI, always the newest code) with uv, and auto-installs Node.js, bun and Mosquitto when missing (Linux-native versions on WSL — Windows executables cannot receive custom env vars via WSL interop). It then seeds the three **git-tracked configs** (`slife.json5`, `local_embed.json5`, `mcp-plugin.json5`) into `~/.slife/` as out-of-the-box defaults, so a first-time user gets the full tool set — local embeddings, external MCP servers, yt-dlp, browser-harness, the A2A mesh — with nothing to configure by hand. Re-running the installer upgrades slife and **asks before overwriting** existing configs. Pass `--core` (or set `SLIFE_CORE=1`) for a light core-only install that skips the optional tools.
 
 ### Environment requirements
 
@@ -32,7 +32,25 @@ The install script uses the **standard installation paths** for each runtime —
 | uv | `~/.local/bin` | any modern Linux/macOS/Windows; Python managed by uv (3.13) |
 | Node.js (LTS v22) | `~/.local/bin` via official tarball | **glibc ≥ 2.28 / libstdc++ ≥ 3.4.29** on Linux. Old distros (e.g. CentOS 7) **cannot run** the official binaries — the installer reports the missing `GLIBC_2.28` / `GLIBCXX_3.4.xx` symbols. |
 | bun | `~/.bun/bin` | modern Linux/macOS/Windows |
-| Mosquitto (optional) | via package manager | only needed for A2A MQTT mesh |
+| Mosquitto | via package manager (winget / apt / brew / dnf / pacman) | needed for the A2A MQTT mesh — **auto-installed silently** |
+
+Installed by default: `yt-dlp`, `browser-harness`, Mosquitto (A2A mesh), and the three configs (`slife.json5`, `local_embed.json5`, `mcp-plugin.json5`) with external MCP servers wired in.
+
+**Semantic memory search is a user-run setup** (the backend is env-specific — CPU / CUDA / Metal — and the model download is ~2 GB, so it shouldn't block the install). After installing, run in a terminal — one backend, then the model:
+
+```bash
+# backend — choose ONE
+uv pip install --python "$(uv tool dir)/slife/bin/python" sentence-transformers            # simplest, everywhere
+uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34   # NVIDIA CUDA 12
+uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34    # CPU
+uv pip install --python "$(uv tool dir)/slife/bin/python" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal llama-cpp-python==0.3.34 # macOS Metal
+
+# model — huggingface.co, auto-falls back to hf-mirror.com (mainland China)
+"$(uv tool dir)/slife/bin/local-embed" download BAAI/bge-m3
+# or a small GGUF (~100 MB) at the default ~/.slife/models/bge-m3-q4_k_m.gguf (or set BGE_M3_GGUF_PATH)
+```
+
+Then restore the MCP server catalog if you edit `mcp-plugin.json5` by hand: `"$(uv tool dir)/slife/bin/mcp-plugin" build`. Every optional step is **fail-open**: an error warns and continues, leaving a working core.
 
 If your Linux is older than glibc 2.28, Node's official tarball won't run. The supported route is **not** an older Node — it's a Node built for your distro (e.g. `module load nodejs` on HPC clusters, or your distro's package). Install that, then re-run this installer — it detects an existing `npx` and skips its own Node install.
 
@@ -64,7 +82,7 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 
 ### Update
 
-Re-run the install script — it auto-preserves optional packages (llama-cpp-python, sentence-transformers) by diffing the previous venv and re-adding them.
+Re-run the install script — it auto-preserves optional packages (llama-cpp-python, sentence-transformers) by diffing the previous venv and re-adding them. If your configs already exist, it asks once whether to **reset them to the bundled defaults** (default: no, keeping your config). Configs are only seeded when missing.
 
 ### Uninstall
 
@@ -260,7 +278,7 @@ Every turn is permanently recorded in SQLite (`~/.slife/<agent>.db`). Hybrid sea
 | `hybrid` | Semantic recall (FTS5 + vector → RRF merge) |
 | `time` | Browse by date |
 
-Embeddings are a **first-class top-level `embeddings` section** in `slife.json5` (shared by `memdb` + `memfiles`), managed by the native tools `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_probe`, and `embeddings_enable` (category `embeddings`). Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); `active_model` (`"provider/model"` or bare `"provider"`) is configuration-authoritative. The **`local-embed` external plugin** (or a standalone local-embed server) serves a local GGUF/transformer model at `http://127.0.0.1:8000/v1`, loaded **once** and shared by `memdb` and `memfiles` — no double load. The actual model is pinned from the endpoint's `GET /v1/models` when the config names no model. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
+Embeddings are a **first-class top-level `embeddings` section** in `slife.json5` (shared by `memdb` + `memfiles`), managed by the native tools `embeddings_model_list`, `embeddings_model_set`, `embeddings_model_switch`, `embeddings_model_remove`, `embeddings_probe`, and `embeddings_enable` (category `embeddings`). Each provider is an **OpenAI-compatible endpoint** (`base_url` + `api_key`); `active_model` (`"provider/model"` or bare `"provider"`) is configuration-authoritative. The **`local-embed` external plugin** (or a standalone local-embed server) serves a local GGUF/transformer model at `http://127.0.0.1:17347/v1`, loaded **once** and shared by `memdb` and `memfiles` — no double load. The actual model is pinned from the endpoint's `GET /v1/models` when the config names no model. Keyword search works without any embedding backend. Semantic (hybrid) results are only served once the index is fully built for the current model — while a full reindex runs (new/changed model, restart mid-index), hybrid degrades to keyword-only and resumes automatically when indexing finishes.
 
 Each turn records two timestamps — the user's input time (`created_at`, the Enter-press moment) and the assistant's completion time (`completed_at`) — shown as dim `[HH:MM]` markers in the chat. User messages carry a compact **`[INFO: {"turn_id": N, "begin": …, "end": …}]`** footnote (the turn id plus when the turn happened) so the LLM can reference turns by id (`turn_read` / `turn_summarize`) — and the human reads the same line in the TUI.
 
@@ -341,13 +359,13 @@ Key caps (`Ctrl+C`, `Esc`, …) are universal; the action words after them local
 
 ## Optional Extras
 
+These embedding backends are **not installed by the one-click installer** — they are the optional `semantic memory search` setup (see [Install](#macos--linux--wsl) — pick one backend + the model). The table below is for manual installs (uvx / git checkout) or to re-add a backend:
+
 | Extra | Enables |
 |-------|---------|
 | `local-embed[gguf]` | Local GGUF embeddings via llama-cpp-python (offline, ~300 MB) |
 | `local-embed[transformer]` | HuggingFace transformer embeddings via sentence-transformers (~2 GB) |
-| `slife[gguf]` | Legacy in-process GGUF embeddings (llama-cpp-python) |
-| `slife[transformer]` | Legacy in-process transformer embeddings (sentence-transformers) |
-| `slife[embeddings]` | Both of the above (legacy) |
+| `slife[gguf]` / `slife[transformer]` / `slife[embeddings]` | Legacy in-process embeddings (not used by default) |
 
 **Linux / macOS** — builds from source:
 

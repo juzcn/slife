@@ -151,6 +151,43 @@ def _guarded_stdout():
         raise
 
 
+_MIRROR_ENDPOINT = "https://hf-mirror.com"
+
+
+def _ensure_hf_model(repo_id: str) -> str:
+    """Pre-download *repo_id* (if not cached), with automatic mirror fallback.
+
+    huggingface-hub resolves ``HF_ENDPOINT`` and serves every download URL
+    from it.  A first attempt through the primary endpoint (huggingface.co)
+    fails behind blocked networks (e.g. mainland China), so we retry once
+    through the hf-mirror.com mirror and keep that endpoint for the rest of
+    the process — the primary is unreachable from this network anyway.
+    An already-cached snapshot short-circuits (``snapshot_download`` returns
+    the local path).  Called from the load path, i.e. on a daemon thread.
+    If the user set ``HF_ENDPOINT`` explicitly, that choice is respected and
+    no fallback is attempted.
+    """
+    from huggingface_hub import snapshot_download
+
+    try:
+        return snapshot_download(repo_id)
+    except Exception as primary_err:
+        if os.environ.get("HF_ENDPOINT"):
+            raise  # explicit endpoint — respect it, no fallback
+        logger.warning(
+            "hf_download_failed repo=%s err=%s — retrying via %s",
+            repo_id, primary_err, _MIRROR_ENDPOINT,
+        )
+        os.environ["HF_ENDPOINT"] = _MIRROR_ENDPOINT
+        try:
+            return snapshot_download(repo_id)
+        except Exception as mirror_err:
+            raise RuntimeError(
+                f"Cannot download model {repo_id!r} (huggingface.co and "
+                f"{_MIRROR_ENDPOINT} both failed)"
+            ) from mirror_err
+
+
 def check_backend_runtime(backend: str) -> bool:
     """Whether the Python package a backend needs is already importable.
 
@@ -513,6 +550,7 @@ class Engine:
 
             def _load_transformer():
                 with _guarded_stdout():
+                    _ensure_hf_model(spec.model)  # HF main, mirror fallback
                     return SentenceTransformer(spec.model, device=device)
 
             client = await run_daemon(

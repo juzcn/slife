@@ -16,7 +16,7 @@ a model is loaded once per process tree); it is fully standalone — any
 OpenAI-compatible client works.
 
 ```
-                POST http://127.0.0.1:8000/v1/embeddings
+                POST http://127.0.0.1:17347/v1/embeddings
    slife memdb ─────────────────────────┐
    slife memfiles ──────────────────────┤
    any OpenAI client ───────────────────┤
@@ -154,7 +154,7 @@ root (dev) > `~/.local-embed/local_embed.json5`.
     HF_HUB_OFFLINE: "1"                        // force offline
   },
   host: "127.0.0.1",                // standalone only
-  port: 8000                        // standalone only (slife plugin spawn binds a free port)
+  port: 17347                        // standalone only (slife plugin spawn binds a free port)
 }
 ```
 
@@ -169,7 +169,7 @@ root (dev) > `~/.local-embed/local_embed.json5`.
 ## Run
 
 ```bash
-local-embed                 # binds 127.0.0.1:8000 by default
+local-embed                 # binds 127.0.0.1:17347 by default
 ```
 
 The server CLI takes no model/endpoint flags — the config is the only
@@ -188,20 +188,37 @@ same config — and leave other models untouched.
 | weight ref | `--HF_HUB_CACHE <dir>` — cache must contain the repo | `--path <PATH>` required — existing `.gguf` file |
 | cache fallback | env `HF_HUB_CACHE`, else error | — |
 | env written | `HF_HUB_CACHE` + `HF_HUB_OFFLINE: "1"` (offline server) | — |
-| `--port <n>` | default `8000` | default `8000` |
+| `--port <n>` | default `17347` | default `17347` |
 
 ```bash
-local-embed set BAAI/bge-m3 [--HF_HUB_CACHE <dir>] [--port 8000]
-local-embed set-gguf bge-m3 --path D:\models\bge-m3\bge-m3-q8_0.gguf [--port 8000]
+local-embed set BAAI/bge-m3 [--HF_HUB_CACHE <dir>] [--port 17347]
+local-embed set-gguf bge-m3 --path D:\models\bge-m3\bge-m3-q8_0.gguf [--port 17347]
 ```
 
 Any error — cache unset, repo not in cache, file missing — exits non-zero
 and writes nothing.  Changes apply on the next server start.
 
+### `local-embed download <model>` — pre-download a transformer model
+
+Downloads a transformer model's snapshot so the server loads without a
+first-use download.  `<model>` is a configured model name (resolves its
+repo id) or a bare HF repo id (e.g. `BAAI/bge-m3`).  It tries
+huggingface.co first and **automatically falls back to the hf-mirror.com**
+mirror (mainland China) — no `HF_ENDPOINT` needed:
+
+```bash
+local-embed download BAAI/bge-m3
+HF_ENDPOINT=https://hf-mirror.com  local-embed download BAAI/bge-m3   # explicit mirror
+```
+
+The GGUF route needs no download command: drop a quantized BGE-M3 GGUF at
+the default `~/.slife/models/bge-m3-q4_k_m.gguf` (or set `BGE_M3_GGUF_PATH`)
+and the `bge-m3` model entry picks it up.
+
 ## Use
 
 ```bash
-curl http://127.0.0.1:8000/v1/embeddings \
+curl http://127.0.0.1:17347/v1/embeddings \
   -H 'Content-Type: application/json' \
   -d '{"model": "bge-m3", "input": ["hello world", "another text"]}'
 ```
@@ -221,13 +238,13 @@ Returns the standard OpenAI shape:
 ```
 
 Any OpenAI-compatible client works — point `base_url` at
-`http://127.0.0.1:8000/v1` (e.g. a slife `embeddings` provider, or the
+`http://127.0.0.1:17347/v1` (e.g. a slife `embeddings` provider, or the
 `openai` Python package):
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="local")
+client = OpenAI(base_url="http://127.0.0.1:17347/v1", api_key="local")
 vecs = client.embeddings.create(model="bge-m3", input=["hello"])
 ```
 
@@ -271,7 +288,7 @@ plugins: {
 embeddings: {
   providers: {
     "local-embed": {
-      base_url: "http://127.0.0.1:8000/v1",  // stable port from local_embed.json5
+      base_url: "http://127.0.0.1:17347/v1",  // stable port from local_embed.json5
       api_key: "local",
     }
   },
@@ -281,7 +298,7 @@ embeddings: {
 ```
 
 The plugin binds the **stable port** from `local_embed.json5` (default
-`8000`), so slife's `base_url` is fixed whether local-embed runs as the
+`17347`), so slife's `base_url` is fixed whether local-embed runs as the
 plugin or standalone.  When the service is unreachable, slife degrades
 gracefully to keyword search.
 

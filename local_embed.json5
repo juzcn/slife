@@ -1,0 +1,37 @@
+{
+  // local-embed — one process, many local embedding models, ONE active.
+  // Config path: $LOCAL_EMBED_FILE > slife project root (dev) > ~/.local-embed/
+  // Values support ${VAR} / ${VAR:-default} expansion from the shell (see
+  // local_embed.config.expand_value); shell env wins over the config.
+  //
+  // The embedding model is REQUIRED for slife's full functionality —
+  // semantic / hybrid memory search.  Two routes:
+  //   1) TRANSFORMER (default): the active model "BAAI/bge-m3" (~2 GB)
+  //      downloads on first use into $HF_HUB_CACHE (default
+  //      ~/.cache/huggingface/hub).  Pre-download it with:
+  //        local-embed download BAAI/bge-m3                                # huggingface.co
+  //        HF_ENDPOINT=https://hf-mirror.com local-embed download BAAI/bge-m3  # mirror fallback
+  //      At runtime a failed download also auto-falls back to hf-mirror.com
+  //      (see local_embed.engine._ensure_hf_model).
+  //   2) GGUF (small offline file): drop a quantized BGE-M3 GGUF (~100 MB) at
+  //      ~/.slife/models/bge-m3-q4_k_m.gguf (the default path below), or set
+  //      BGE_M3_GGUF_PATH in the shell / edit gguf_path.
+  active_model: "BAAI/bge-m3",
+  env: {
+    HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}",
+    HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
+  },
+  models: {
+    "BAAI/bge-m3": {
+      backend: "transformer",
+      model: "BAAI/bge-m3"
+    },
+    // GGUF route (local file) — inert until a file exists at the default
+    // path; override with BGE_M3_GGUF_PATH ("~" is expanded).
+    "bge-m3": {
+      backend: "gguf",
+      gguf_path: "${BGE_M3_GGUF_PATH:-~/.slife/models/bge-m3-q4_k_m.gguf}"
+    }
+  },
+  port: 17347  // uncommon fixed port — see local_embed.config.DEFAULT_PORT
+}

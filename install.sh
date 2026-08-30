@@ -26,6 +26,15 @@ set -euo pipefail
 # No prerequisites — the script installs uv if needed, then uses
 # ``uv tool install`` to install slife in an isolated environment.
 # Python 3.13 is managed automatically by uv.
+#
+# Full tool set is installed by default (local embeddings, yt-dlp,
+# browser-harness).  Pass ``--core`` (or set $SLIFE_CORE=1) for a light
+# core install that skips those optional tools.
+
+# --core / $SLIFE_CORE=1 → light install (skip the optional full tool set)
+CORE_MODE=false
+if [ "${1:-}" = "--core" ]; then CORE_MODE=true; fi
+if [ "${SLIFE_CORE:-}" = "1" ]; then CORE_MODE=true; fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -43,14 +52,16 @@ echo -e "${CYAN}Slife Installer${NC}"
 echo ""
 
 #
-echo "Install method    : uv tool install (isolated environment)"
+echo "Install method    : uv tool install (isolated environment, from source — always latest main)"
 echo -e "User data         : ${CYAN}$HOME/.slife/${NC}"
 echo "Python            : managed by uv (3.13)"
 echo "npx               : auto-install Node.js if needed (required for MCP servers)"
 echo "bun               : auto-install bun if needed (required for nvidia-nim MCP)"
 echo "unzip             : auto-install on Linux if missing (bun installer dependency)"
 echo "rootless fallback : official tarballs → ~/.local when no root/package manager"
-echo "Disk space needed : ~500 MB"
+echo "Configs           : seeded from bundled defaults (slife / local-embed / mcp-plugin)"
+echo "Full tool set     : embeddings, yt-dlp, browser-harness, Mosquitto (--core to skip)"
+echo "Disk space needed : ~500 MB (embeddings extra: +0.3–2 GB)"
 echo ""
 
 # ── Rootless install helpers ────────────────────────────────────
@@ -323,46 +334,31 @@ if [ "$HAVE_BUN" = false ]; then
 fi
 
 #
-echo -e "${YELLOW}[optional] Checking Mosquitto (MQTT broker for multi-agent mesh)…${NC}"
+echo -e "${YELLOW}[optional] Ensuring Mosquitto (MQTT broker for multi-agent mesh)…${NC}"
 if command -v mosquitto &>/dev/null; then
     echo -e "${GREEN}  ✓${NC} mosquitto found"
 else
-    echo -e "${YELLOW}  Mosquitto not found.${NC}"
-    echo -e "${GRAY}  Required for: A2A multi-agent mesh communication${NC}"
-    echo -e "${GRAY}  Without it:  slife works normally, just without P2P agent features${NC}"
-    if [ -t 0 ]; then
-        read -p "  Install Mosquitto? (y/n, default: n): " choice
-    else
-        choice="n"
+    echo -e "${GRAY}  Mosquitto not found — installing automatically (A2A mesh)…${NC}"
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get install -y mosquitto mosquitto-clients 2>/dev/null || true
+    elif command -v brew &>/dev/null; then
+        brew install mosquitto 2>/dev/null || true
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y mosquitto 2>/dev/null || true
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm mosquitto 2>/dev/null || true
     fi
-    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
-        if command -v apt-get &>/dev/null; then
-            echo -e "${YELLOW}  Installing Mosquitto via apt…${NC}"
-            sudo apt-get install -y mosquitto mosquitto-clients 2>/dev/null || true
-        elif command -v brew &>/dev/null; then
-            echo -e "${YELLOW}  Installing Mosquitto via Homebrew…${NC}"
-            brew install mosquitto 2>/dev/null || true
-        elif command -v dnf &>/dev/null; then
-            echo -e "${YELLOW}  Installing Mosquitto via dnf…${NC}"
-            sudo dnf install -y mosquitto 2>/dev/null || true
-        elif command -v pacman &>/dev/null; then
-            echo -e "${YELLOW}  Installing Mosquitto via pacman…${NC}"
-            sudo pacman -S --noconfirm mosquitto 2>/dev/null || true
-        else
-            echo -e "${YELLOW}  No supported package manager found.${NC}"
-            echo -e "${YELLOW}  Install manually: https://mosquitto.org/download/${NC}"
-        fi
-        # Re-check
-        if command -v mosquitto &>/dev/null; then
-            echo -e "${GREEN}  ✓${NC} Mosquitto installed"
-            echo -e "${CYAN}  To start Mosquitto:${NC}"
-            echo "    mosquitto -d"
-            echo -e "${CYAN}  Or as a system service:${NC}"
-            echo "    sudo systemctl enable --now mosquitto   # systemd (Linux)"
-            echo "    brew services start mosquitto           # Homebrew (macOS)"
-        fi
+    # Re-check
+    if command -v mosquitto &>/dev/null; then
+        echo -e "${GREEN}  ✓${NC} Mosquitto installed"
+        echo -e "${CYAN}  To start Mosquitto:${NC}"
+        echo "    mosquitto -d"
+        echo -e "${CYAN}  Or as a system service:${NC}"
+        echo "    sudo systemctl enable --now mosquitto   # systemd (Linux)"
+        echo "    brew services start mosquitto           # Homebrew (macOS)"
     else
-        echo -e "${GRAY}  Skipped. Install later with your package manager.${NC}"
+        echo -e "${YELLOW}  Mosquitto unavailable — A2A mesh disabled until it runs.${NC}"
+        echo -e "${YELLOW}  Install manually: https://mosquitto.org/download/${NC}"
     fi
 fi
 
@@ -530,6 +526,100 @@ fi
 
 
 #
+# ── Lightweight extras (out-of-the-box; skip with --core) ────────────────
+# The heavy semantic packages (sentence-transformers, llama-cpp-python) are
+# deliberately NOT installed here — see step [4d]: they are env-specific
+# (CPU / CUDA / Metal builds) and paired with a long model download, so the
+# user runs those commands themselves after the install.  This step only
+# adds the small CLI tools.
+echo -e "${YELLOW}[4b] Installing lightweight CLI tools (yt-dlp, browser-harness)…${NC}"
+if [ "$CORE_MODE" = true ]; then
+    echo -e "${GRAY}  --core: skipping CLI tools${NC}"
+else
+    TOOL_PY="$(uv tool dir)/slife/bin/python" 2>/dev/null || true
+    if [ -x "$TOOL_PY" ]; then
+        # yt-dlp — plain PyPI, no extra index needed.
+        if uv pip install --python "$TOOL_PY" yt-dlp >> "$TOOL_INSTALL_LOG" 2>&1; then
+            echo -e "${GREEN}  ✓${NC} yt-dlp"
+        else
+            echo -e "${YELLOW}  ⚠ yt-dlp install failed (optional) — log tail:${NC}"
+            tail -8 "$TOOL_INSTALL_LOG" | while IFS= read -r _l; do echo -e "    ${GRAY}$_l${NC}"; done
+        fi
+        # browser-harness (declared in the default config's cli_tools)
+        if uv tool install --python 3.12 --upgrade --force browser-harness \
+            >> "$TOOL_INSTALL_LOG" 2>&1; then
+            echo -e "${GREEN}  ✓${NC} browser-harness (uv tool)"
+        else
+            echo -e "${YELLOW}  ⚠ browser-harness install failed (optional)${NC}"
+        fi
+    else
+        echo -e "${YELLOW}  ⚠ tool venv not found — skipped CLI tools (optional)${NC}"
+    fi
+fi
+
+# ── Configs: seed the git-tracked defaults out-of-the-box ───────────────
+# slife.json5 / local_embed.json5 / mcp-plugin.json5 come from the downloaded
+# source tree (now git-tracked).  Missing ones are copied silently; existing
+# ones (upgrades) are only replaced after an explicit "yes".
+echo -e "${YELLOW}[4c] Setting up configs (out-of-the-box defaults)…${NC}"
+DATA_DIR="$HOME/.slife"
+SEED_DIR="$TMP_DIR/slife-main"
+mkdir -p "$DATA_DIR" 2>/dev/null || true
+ANY_EXISTS=false
+for _name in slife.json5 local_embed.json5 mcp-plugin.json5; do
+    [ -e "$DATA_DIR/$_name" ] && ANY_EXISTS=true
+done
+RESET=false
+if [ "$ANY_EXISTS" = true ] && [ -t 0 ]; then
+    read -p "  Config files already exist — reset to the bundled defaults? (y/N, default: N): " _choice
+    if [ "$_choice" = "y" ] || [ "$_choice" = "Y" ]; then RESET=true; fi
+fi
+for _name in slife.json5 local_embed.json5 mcp-plugin.json5; do
+    _src="$SEED_DIR/$_name"
+    [ -f "$_src" ] || continue   # older main snapshots may lack the seeds
+    if [ -e "$DATA_DIR/$_name" ]; then
+        if [ "$RESET" = true ]; then
+            if cp -f "$_src" "$DATA_DIR/$_name" 2>/dev/null && chmod 600 "$DATA_DIR/$_name" 2>/dev/null; then
+                echo -e "  ${GRAY}reset  $DATA_DIR/$_name${NC}"
+            else
+                echo -e "  ${RED}⚠ could not write $DATA_DIR/$_name${NC}"
+            fi
+        fi
+    else
+        if cp "$_src" "$DATA_DIR/$_name" 2>/dev/null && chmod 600 "$DATA_DIR/$_name" 2>/dev/null; then
+            echo -e "  ${GRAY}seeded $DATA_DIR/$_name${NC}"
+        else
+            echo -e "  ${RED}⚠ could not write $DATA_DIR/$_name${NC}"
+        fi
+    fi
+done
+
+#
+# ── Semantic memory search — user-run setup ──────────────────────────────
+# Semantic / hybrid memory search needs a model AND one embedding backend.
+# The installer does NOT install these by default: the backend build is
+# env-specific (CPU / CUDA / Metal) and the model download is ~2 GB, so the
+# user picks the matching command and runs it in a terminal afterwards.
+# Everything below is the same feature — set the backend first, then the model.
+echo -e "${YELLOW}[4d] Semantic memory search — setup commands (run in a terminal)…${NC}"
+SEMANTIC_PY="$(uv tool dir)/slife/bin/python"
+SEMANTIC_BIN="$(uv tool dir)/slife/bin/local-embed"
+echo -e "${GRAY}  Semantic memory search needs a model AND an embedding backend.  Choose ONE backend:${NC}"
+echo -e "${CYAN}    # sentence-transformers — simplest, works everywhere:${NC}"
+echo -e "    uv pip install --python \"$SEMANTIC_PY\" sentence-transformers"
+echo -e "${CYAN}    # llama-cpp-python — NVIDIA GPU (CUDA 12):${NC}"
+echo -e "    uv pip install --python \"$SEMANTIC_PY\" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34"
+echo -e "${CYAN}    # llama-cpp-python — CPU:${NC}"
+echo -e "    uv pip install --python \"$SEMANTIC_PY\" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34"
+echo -e "${CYAN}    # llama-cpp-python — macOS (Metal):${NC}"
+echo -e "    uv pip install --python \"$SEMANTIC_PY\" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal llama-cpp-python==0.3.34"
+echo -e "${GRAY}  Then download the model:${NC}"
+echo -e "${CYAN}    # transformer (~2 GB) — huggingface.co, falls back to hf-mirror.com automatically:${NC}"
+echo -e "    \"$SEMANTIC_BIN\" download BAAI/bge-m3"
+echo -e "${CYAN}    # or a small GGUF (~100 MB) placed at ~/.slife/models/bge-m3-q4_k_m.gguf${NC}"
+echo -e "${GRAY}    (or set the BGE_M3_GGUF_PATH env var) — details in ~/.slife/local_embed.json5.${NC}"
+
+#
 echo -e "${YELLOW}[5/5] Cleaning up previous installation artifacts…${NC}"
 
 # Ensure ~/.local/bin is on PATH (uv puts tool executables here,
@@ -585,9 +675,9 @@ if [ "$NEEDS_SHELL_REFRESH" = true ]; then
 fi
 
 echo -e "${CYAN}Get started:${NC}"
-echo "  credstore set-password              # set up encrypted backup (first time)"
-echo "  credstore set DEEPSEEK_API_KEY       # store your API key"
-echo "  slife                                # launch the TUI"
+echo "  1. credstore set-password                # encrypted backup (first time)"
+echo "  2. credstore set DEEPSEEK_API_KEY        # your first API key (or the one your active model needs — see ~/.slife/slife.json5)"
+echo "  3. slife                                 # launch the TUI"
 echo ""
 if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
     if [ "${PRESERVE_OK:-0}" = "1" ]; then
@@ -599,10 +689,15 @@ if [ -n "${EXTRA_REQS:-}" ] && [ -s "$EXTRA_REQS" ]; then
         echo -e "${YELLOW}  uv pip install -r $EXTRA_REQS${NC}"
     fi
 fi
-echo -e "${CYAN}Optional extras:${NC}"
-echo "  # Local GGUF embeddings (offline, ~30 MB):"
-echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" llama-cpp-python"
-echo "  # HuggingFace transformer embeddings (~2 GB):"
-echo "  uv pip install --python \"\$(uv tool dir)/slife/bin/python\" sentence-transformers"
+if [ "$CORE_MODE" = true ]; then
+    echo -e "${CYAN}Core install done${NC}:"
+    echo "  • external MCP servers, Mosquitto (A2A mesh)"
+    echo "  • yt-dlp / browser-harness skipped — add later: uv tool install --python 3.12 browser-harness"
+else
+    echo -e "${CYAN}Installed:${NC}"
+    echo "  • external MCP servers, yt-dlp, browser-harness, Mosquitto (A2A mesh)"
+fi
+echo "  • semantic memory search: run the [4d] commands above (keyword search already works)"
+echo "  • mcp-plugin build: \"\$(uv tool dir)/slife/bin/mcp-plugin\" build   # (re)build the MCP server catalog"
 echo ""
 echo -e "${CYAN}More info:${NC} $SLIFE_REPO"

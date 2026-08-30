@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_embed.add_argument(
         "--base-url", required=True,
-        help="OpenAI-compatible base URL (e.g. http://127.0.0.1:8000/v1).",
+        help="OpenAI-compatible base URL (e.g. http://127.0.0.1:17347/v1).",
     )
     p_embed.add_argument(
         "--model", default=None,

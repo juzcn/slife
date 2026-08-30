@@ -835,3 +835,75 @@ class TestModelConfigStrictKeys:
     def test_missing_model_raises(self):
         with pytest.raises(ValueError, match="missing"):
             ModelConfig.from_dict({"api_key": "key"})
+
+
+class TestSeedFirstRunConfig:
+    """Seeding of missing configs from the packaged (git-tracked) defaults."""
+
+    @staticmethod
+    def _pkg_dir(tmp_path):
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "slife.json5").write_text(json5.dumps({
+            "active_model": "d/m",  # so the fresh-seed key check can pass
+            "models": {"providers": {"d": {
+                "api_key": "${KEY}",
+                "base_url": "https://example.com",
+                "models": [{"model": "m", "name": "M"}],
+            }}},
+        }))
+        (pkg / "local_embed.json5").write_text('{ active_model: "x" }')
+        (pkg / "mcp-plugin.json5").write_text('{ servers: {} }')
+        return pkg
+
+    def test_seeds_all_three_into_fresh_data_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KEY", "sk-test")
+        monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
+        data = tmp_path / "data"
+        Config.from_json5(str(data / "slife.json5"))
+        assert (data / "slife.json5").exists()
+        assert (data / "local_embed.json5").exists()
+        assert (data / "mcp-plugin.json5").exists()
+
+    def test_existing_slife_config_not_overwritten_siblings_seeded(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KEY", "sk-test")
+        monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
+        data = tmp_path / "data"
+        cfg_path = data / "slife.json5"
+        cfg_path.parent.mkdir()
+        cfg_path.write_text(json5.dumps({"models": {"providers": {"d": {
+            "api_key": "${KEY}", "base_url": "https://example.com",
+            "models": [{"model": "keepme", "name": "Keep"}],
+        }}}}))
+        Config.from_json5(str(cfg_path))
+        raw = json5.loads(cfg_path.read_text(encoding="utf-8"))
+        assert raw["models"]["providers"]["d"]["models"][0]["model"] == "keepme"
+        assert (data / "local_embed.json5").exists()
+        assert (data / "mcp-plugin.json5").exists()
+
+    def test_existing_sibling_not_overwritten(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KEY", "sk-test")
+        monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
+        data = tmp_path / "data"
+        cfg_path = data / "slife.json5"
+        cfg_path.parent.mkdir()
+        cfg_path.write_text(json5.dumps({"models": {"providers": {"d": {
+            "api_key": "${KEY}", "base_url": "https://example.com",
+            "models": [{"model": "m", "name": "M"}],
+        }}}}))
+        (data / "mcp-plugin.json5").write_text('{ servers: {"mine": {}} }')
+        Config.from_json5(str(cfg_path))
+        assert json5.loads((data / "mcp-plugin.json5").read_text()) == \
+            {"servers": {"mine": {}}}
+
+    def test_missing_sibling_in_package_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KEY", "sk-test")
+        pkg = self._pkg_dir(tmp_path)
+        (pkg / "mcp-plugin.json5").unlink()
+        monkeypatch.setattr("slife.config._PKG_DIR", pkg)
+        data = tmp_path / "data"
+        Config.from_json5(str(data / "slife.json5"))
+        assert (data / "slife.json5").exists()
+        assert (data / "local_embed.json5").exists()
+        assert not (data / "mcp-plugin.json5").exists()

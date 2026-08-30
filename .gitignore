@@ -1,7 +1,7 @@
-# Runtime config — personal per-user settings; template is slife.template.json5.
-slife.json5
-mcp-plugin.json5
-local_embed.json5
+# Runtime config — personal per-user settings.  The three initial configs
+# (slife.json5 / local_embed.json5 / mcp-plugin.json5) are git-tracked so the
+# one-click installers can seed them as out-of-the-box defaults.  Copies in a
+# user's data dir (~/.slife/) remain personal and are NOT tracked.
 
 # Playwright MCP browser traces (test artifacts)
 .playwright-mcp/

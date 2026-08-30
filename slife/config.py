@@ -24,6 +24,11 @@ from slife.a2a.config import A2AConfig
 
 logger = logging.getLogger(__name__)
 
+# Package directory — carries the git-tracked seed configs (slife.json5,
+# local_embed.json5, mcp-plugin.json5) force-included into the wheel, plus the
+# bundled skills tree.
+_PKG_DIR = Path(__file__).resolve().parent
+
 
 def _resolve_secret(value: str, *, accept_keyring_uri: bool = False) -> str:
     """Resolve a secret value through the full resolution chain.
@@ -661,33 +666,65 @@ class Config:
 
     @staticmethod
     def _seed_first_run_config(path: Path) -> None:
-        """Copy the bundled template config on first run.
+        """Seed the git-tracked default configs from the package.
 
-        If the config file does not exist, copies the template from the
-        package directory and checks whether the active model's API key
-        is resolvable.  If the key is missing, prints setup instructions
-        and exits gracefully (SystemExit).
+        Copies any *missing* config among ``slife.json5`` /
+        ``local_embed.json5`` / ``mcp-plugin.json5`` from the package
+        directory into ``path.parent`` (the data dir) — the
+        out-of-the-box defaults for a fresh install, and a supplement
+        for existing installs that lack newly-added siblings.  Existing
+        files are never overwritten.
+
+        A freshly seeded ``slife.json5`` is followed by an active-model
+        API-key check: when the key is missing, prints setup
+        instructions and exits gracefully (SystemExit).
         """
         import shutil
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        pkg_template = Path(__file__).parent / "slife.template.json5"
-        if not pkg_template.exists():
-            raise FileNotFoundError(
-                f"Config file not found: {path}\n"
-                f"Run: cp slife.template.json5 ~/.slife/slife.json5"
-            )
+        # Package directory — the git-tracked seed configs are force-included
+        # into the wheel at build time (see pyproject.toml).
+        pkg_dir = _PKG_DIR
 
-        shutil.copy(pkg_template, path)
-        # The template ships 0644 and shutil.copy preserves that mode, but the
-        # config is where plaintext API keys end up — tighten to owner-only on
-        # POSIX so other local accounts can't read it.
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass  # non-POSIX or filesystem without chmod — best effort
-        logger.info("config_seeded from=%s to=%s", pkg_template, path)
-        print(f"\n  First run — created: {path}")
+        fresh = not path.exists()
+        if fresh:
+            pkg = pkg_dir / "slife.json5"
+            if not pkg.exists():
+                raise FileNotFoundError(
+                    f"Config file not found: {path}\n"
+                    f"Run: cp slife.json5 ~/.slife/slife.json5"
+                )
+            shutil.copy(pkg, path)
+            # The seed ships 0644 and shutil.copy preserves that mode, but the
+            # config is where plaintext API keys end up — tighten to owner-only
+            # on POSIX so other local accounts can't read it.
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass  # non-POSIX or filesystem without chmod — best effort
+            logger.info("config_seeded from=%s to=%s", pkg, path)
+            print(f"\n  First run — created: {path}")
+
+        # Siblings — the harness points at these via MCP_PLUGIN_FILE /
+        # LOCAL_EMBED_FILE (set below in from_json5); seed them the same way.
+        for name in ("mcp-plugin.json5", "local_embed.json5"):
+            target = path.parent / name
+            if target.exists():
+                continue
+            pkg = pkg_dir / name
+            if not pkg.exists():
+                # Wheels predating the git-tracked configs lack siblings.
+                continue
+            shutil.copy(pkg, target)
+            try:
+                os.chmod(target, 0o600)
+            except OSError:
+                pass
+            logger.info("config_seeded from=%s to=%s", pkg, target)
+            print(f"  First run — created: {target}")
+
+        if not fresh:
+            return  # existing user config — the fresh-install key check is moot
 
         raw = json5.loads(path.read_text(encoding="utf-8"))
         key_ok, key_hint = Config._check_active_provider_key(raw)
@@ -766,8 +803,10 @@ class Config:
         """
         path = Path(path).expanduser()
         logger.debug("config_load path=%s", path)
-        if not path.exists():
-            cls._seed_first_run_config(path)
+        # Seeds missing configs from the package defaults (slife.json5 +
+        # siblings local_embed.json5 / mcp-plugin.json5); no-op for files the
+        # user already has.
+        cls._seed_first_run_config(path)
 
         raw = json5.loads(path.read_text(encoding="utf-8"))
 

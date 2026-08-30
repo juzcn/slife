@@ -3,7 +3,7 @@
 The plugin stays standalone (no ``slife`` / ``openai`` deps), so embeddings
 go straight over ``httpx`` to any OpenAI-compatible ``/v1/embeddings``
 endpoint — the deployment uses the ``local-embed`` plugin at
-``http://127.0.0.1:8000/v1``.
+``http://127.0.0.1:17347/v1``.
 
 Config is the single top-level ``embeddings`` section of ``mcp-plugin.json5``:
 ``{ base_url, model?, api_key? }``.  Present with a real ``base_url`` ⇒ the

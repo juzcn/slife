@@ -62,7 +62,9 @@ packages = ["slife"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "slife/skills"
-"slife.template.json5" = "slife/slife.template.json5"
+"slife.json5" = "slife/slife.json5"
+"local_embed.json5" = "slife/local_embed.json5"
+"mcp-plugin.json5" = "slife/mcp-plugin.json5"
 
 
 [tool.hatch.build.targets.sdist]
@@ -73,7 +75,9 @@ include = [
     "/README.zh-CN.md",
     "/LICENSE",
     "/pyproject.toml",
-    "/slife.template.json5",
+    "/slife.json5",
+    "/local_embed.json5",
+    "/mcp-plugin.json5",
 ]
 
 [build-system]

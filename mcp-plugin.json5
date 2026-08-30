@@ -1,0 +1,300 @@
+{
+  servers: {
+    filesystem: {
+      enabled: false,
+      command: "npx",
+      args: [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ],
+      description: "Local filesystem operations — read, write, list, and search files within allowed directories."
+    },
+    serper: {
+      command: "npx",
+      args: [
+        "-y",
+        "serper-search-scrape-mcp-server"
+      ],
+      env: {
+        SERPER_API_KEY: "${SERPER_API_KEY}"
+      },
+      description: "Google web search via Serper — search the web and scrape result pages."
+    },
+    fetch: {
+      command: "uvx",
+      args: [
+        "--with",
+        "mcp>=1.0,<1.29",
+        "mcp-server-fetch"
+      ],
+      description: "Fetch and convert web pages to markdown. Pins mcp<1.29 for McpError compatibility."
+    },
+    "tavily-mcp": {
+      command: "npx",
+      args: [
+        "-y",
+        "tavily-mcp@latest"
+      ],
+      env: {
+        TAVILY_API_KEY: "${TAVILY_API_KEY}"
+      },
+      description: "Tavily AI-optimized web search — designed for LLM agents, returns clean structured results."
+    },
+    github: {
+      command: "npx",
+      args: [
+        "-y",
+        "anyapi-mcp-server",
+        "--name",
+        "github",
+        "--spec",
+        "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml",
+        "--base-url",
+        "https://api.github.com",
+        "--header",
+        "Authorization: Bearer ${GITHUB_TOKEN}"
+      ],
+      env: {
+        GITHUB_TOKEN: "${GITHUB_TOKEN}"
+      },
+      description: "GitHub REST API via anyapi-mcp-server — manage repos, issues, PRs, users, and more."
+    },
+    "duckduckgo-search": {
+      command: "uvx",
+      args: [
+        "--with",
+        "duckduckgo-mcp-server[browser]",
+        "duckduckgo-mcp-server",
+        "--fetch-backend",
+        "auto",
+        "--search-backend",
+        "auto"
+      ],
+      description: "DuckDuckGo search MCP server — web search and content extraction via DuckDuckGo."
+    },
+    "amap-maps": {
+      command: "npx",
+      args: [
+        "-y",
+        "@amap/amap-maps-mcp-server"
+      ],
+      description: "高德地图官方 MCP Server，提供地理编码、逆地理编码、IP定位、天气查询、骑行/步行/驾车/公交路径规划、距离测量、关键词/周边/详情POI搜索、专属地图、输入提示、搜索提示、矩形区域交通态势、路径信息、距离测量等多种地图和位置服务。免费，需要申请 Web服务 API Key。",
+      env: {
+        AMAP_MAPS_API_KEY: "${AMAP_MAPS_API_KEY}"
+      }
+    },
+    "iflow-mcp": {
+      command: "uvx",
+      args: [
+        "--from",
+        "iflow-mcp-mcp-claude-code",
+        "claudecode"
+      ],
+      os_paths: true,
+      description: "MCP implementation of Claude Code capabilities - allows Claude to directly execute instructions for modifying and improving project files",
+      source: {
+        type: "pypi",
+        url: "https://pypi.org/project/iflow-mcp_mcp-claude-code/",
+        description: "PyPI package for Claude Code MCP server",
+        fetched_at: "2026-07-23T01:42:26.885197+00:00"
+      }
+    },
+    "file-search": {
+      command: "npx",
+      args: [
+        "-y",
+        "file-search-mcp"
+      ],
+      description: "Blazingly fast MCP server for searching files and content in large codebases — uses ripgrep (100x faster than grep), fuzzy find, and tree view. Tools: search_files, search_content, fuzzy_find, tree.",
+      source: {
+        type: "npm",
+        url: "https://github.com/elad12390/file-search-mcp",
+        description: "npm package for fast file search in large codebases",
+        fetched_at: "2026-07-23T02:12:23.593046+00:00"
+      }
+    },
+    playwright: {
+      command: "npx",
+      args: [
+        "-y",
+        "@playwright/mcp@latest",
+        "--headless"
+      ],
+      description: "Playwright MCP server (official Microsoft) — headless browser automation via accessibility snapshots. Supports navigation, clicks, typing, screenshots, form filling, file uploads, and JavaScript execution.",
+      source: {
+        type: "npm",
+        url: "https://www.npmjs.com/package/@playwright/mcp",
+        version: "latest",
+        description: "Official Playwright MCP server from Microsoft",
+        fetched_at: "2026-08-02T00:00:00.000000+00:00"
+      }
+    },
+    context7: {
+      command: "npx",
+      args: [
+        "-y",
+        "@upstash/context7-mcp"
+      ],
+      description: "Context7 MCP server (Upstash) — up-to-date library/framework API docs to eliminate LLM hallucinations. Resolution-based lookups for any version or commit (Unpkg-compatible projects only).",
+      env: {
+        CONTEXT7_API_KEY: "${CONTEXT7_API_KEY}"
+      },
+      source: {
+        type: "npm",
+        url: "https://www.npmjs.com/package/@upstash/context7-mcp",
+        version: "latest",
+        description: "Context7 MCP server from Upstash",
+        fetched_at: "2026-08-01T23:30:38.777971+00:00"
+      }
+    },
+    "chrome-devtools": {
+      command: "npx",
+      args: [
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--no-usage-statistics"
+      ],
+      description: "Chrome DevTools MCP (official Google) — control and inspect real Chrome browser with performance profiling, network inspection, console access, DOM manipulation, and screenshots.",
+      source: {
+        type: "npm",
+        url: "https://github.com/ChromeDevTools/chrome-devtools-mcp",
+        version: "latest",
+        description: "Chrome DevTools for coding agents - official Google project",
+        fetched_at: "2026-08-01T23:41:47.240842+00:00"
+      }
+    },
+    citecheck: {
+      command: "npx",
+      args: [
+        "-y",
+        "@jhlee0619/citecheck"
+      ],
+      description: "citecheck MCP server — automatically validate and fix references in academic papers. Extracts references from .tex/.md/.docx/.txt/.bib, validates against databases, and fixes inconsistencies. Supports arXiv/DOI/DBLP/ACL/custom APIs.",
+      source: {
+        type: "npm",
+        url: "https://github.com/jhlee0619/citecheck",
+        version: "latest",
+        description: "MCP server for automatic reference repair in scholarly manuscripts (MIT)",
+        fetched_at: "2026-08-01T23:51:06.761712+00:00"
+      }
+    },
+    "mcp-pandoc": {
+      command: "uvx",
+      args: [
+        "mcp-pandoc"
+      ],
+      description: "mcp-pandoc document format converter — use Pandoc to convert between Markdown/HTML/PDF/DOCX/RST/LaTeX/EPUB/TXT/IPYNB and more.",
+      source: {
+        type: "pypi",
+        url: "https://github.com/vivekVells/mcp-pandoc",
+        version: "latest",
+        description: "Pandoc document conversion MCP server (official MCP servers project)",
+        fetched_at: "2026-08-01T23:52:45.022542+00:00"
+      }
+    },
+    markitdown: {
+      command: "uvx",
+      args: [
+        "markitdown-mcp"
+      ],
+      description: "MarkItDown MCP server (Microsoft) — convert various file formats (PDF, DOCX, PPTX, XLSX, images via OCR, audio transcription, HTML, CSV, JSON, XML, ZIP) to Markdown.",
+      source: {
+        type: "pypi",
+        url: "https://github.com/microsoft/markitdown",
+        version: "0.0.1a4",
+        description: "Microsoft MarkItDown MCP server for document-to-markdown conversion",
+        fetched_at: "2026-08-01T23:56:15.694479+00:00"
+      }
+    },
+    "office-word-mcp": {
+      command: "uvx",
+      args: [
+        "--from",
+        "office-word-mcp-server",
+        "word_mcp_server"
+      ],
+      description: "Office-Word-MCP server — create/read/edit Microsoft Word documents. Supports document management (create, merge, convert to PDF), content creation (headings, paragraphs, tables, images, page breaks), formatting (font, alignment, spacing), and comments.",
+      source: {
+        type: "pypi",
+        url: "https://github.com/GongRzhe/Office-Word-MCP-Server",
+        version: "latest",
+        description: "MCP server for creating/reading/editing Word documents",
+        fetched_at: "2026-08-02T00:00:39.614231+00:00"
+      }
+    },
+    "excel-mcp": {
+      command: "npx",
+      args: [
+        "--yes",
+        "@negokaz/excel-mcp-server"
+      ],
+      description: "Excel MCP server — read/write MS Excel files. Supports reading/writing text values and formulas, creating worksheets/tables, copying worksheets, formatting cells (Windows: live editing + screenshots). Supports .xlsx/.xlsm/.xltx/.xltm. Free and open source.",
+      env: {
+        EXCEL_MCP_PAGING_CELLS_LIMIT: "4000"
+      },
+      source: {
+        type: "npm",
+        url: "https://github.com/negokaz/excel-mcp-server",
+        version: "latest",
+        description: "MCP server for reading/writing MS Excel files",
+        fetched_at: "2026-08-02T00:00:58.187765+00:00"
+      }
+    },
+    "pdf-toolkit": {
+      command: "npx",
+      args: [
+        "-y",
+        "@aryanbv/pdf-toolkit-mcp"
+      ],
+      description: "PDF Toolkit MCP — 22-tool PDF suite: create PDFs from Markdown/structured data, render pages as images (for vision models to read scans), fill forms and extract values, split/merge/rotate/crop pages, add text/watermarks/annotations, extract and re-embed attachments.",
+      source: {
+        type: "npm",
+        url: "https://github.com/aryanbv/pdf-toolkit-mcp",
+        version: "latest",
+        description: "Write-capable PDF toolkit MCP server (22 tools)",
+        fetched_at: "2026-08-02T00:04:47.866829+00:00"
+      }
+    },
+    sqlite: {
+      command: "uvx",
+      args: [
+        "--with",
+        "mcp>=1.0,<1.29",
+        "mcp-server-sqlite"
+      ],
+      description: "SQLite MCP (official modelcontextprotocol/servers reference) — query and manipulate SQLite databases via natural language: create tables, CRUD operations, schema inspection, and more.",
+      source: {
+        type: "github",
+        url: "https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite",
+        version: "latest",
+        description: "Official SQLite MCP reference server",
+        fetched_at: "2026-08-02T00:05:14.333705+00:00"
+      }
+    },
+    "mcp-registry": {
+      command: "npx",
+      args: [
+        "-y",
+        "anyapi-mcp-server",
+        "--name",
+        "mcp-registry",
+        "--spec",
+        "https://registry.modelcontextprotocol.io/openapi.json",
+        "--base-url",
+        "https://registry.modelcontextprotocol.io"
+      ],
+      description: "A community driven registry service for Model Context Protocol (MCP) servers. Provides APIs to list/search MCP servers, view server details, versions, and server.json metadata.",
+      source: {
+        type: "rest_api",
+        fetched_at: "2026-08-29T00:16:57.337256+00:00"
+      },
+      url: ""
+    }
+  },
+  embeddings: {
+    base_url: "http://127.0.0.1:8000/v1",
+    model: "bge-m3",
+    api_key: ""
+  }
+}

@@ -18,18 +18,20 @@ Config shape::
         "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3" },
       },
       host: "127.0.0.1",    // standalone only
-      port: 8000,           // standalone only
+      port: 17347,          // standalone only
     }
 
 ``env`` (optional, top level) is injected into this process's environment
 by :func:`apply_env` before any backend loads — a ``transformer`` ``model``
 given as a HF *repo name* (e.g. ``BAAI/bge-m3``) resolves against the local
 hub cache via ``HF_HUB_CACHE`` / ``HF_HUB_OFFLINE`` without the host
-exporting anything::
+exporting anything.  Values support ``${VAR}`` / ``${VAR:-default}``
+expansion from ``os.environ`` (see :func:`expand_value`), so the shipped
+config can carry portable placeholders instead of machine-specific paths::
 
     {
       active_model: "bge-m3-transformer",
-      env: { HF_HUB_CACHE: "C:\\…\\HuggingFace\\hub", HF_HUB_OFFLINE: "1" },
+      env: { HF_HUB_CACHE: "${HF_HUB_CACHE:-~/.cache/huggingface/hub}", HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}" },
       models: { "bge-m3-transformer": { backend: "transformer", model: "BAAI/bge-m3" } },
     }
 
@@ -55,7 +57,33 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8000
+#: Default bind port.  Chosen to be an uncommon, fixed port (outside the
+#: OS ephemeral ranges and the common 8000/8080/3000 dev-port cluster) so a
+#: host that configures ``base_url`` against it doesn't collide with other
+#: local services.
+DEFAULT_PORT = 17347
+
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def expand_value(value: str) -> str:
+    """Expand ``${VAR}`` / ``${VAR:-default}`` references from os.environ.
+
+    Lenient and env-only (no credstore — local-embed is a standalone
+    package): a ``${VAR}`` with no default stays literal when VAR is
+    unset, so a fresh install degrades gracefully instead of erroring.
+    Mirrors the syntax of slife.json5's ``${VAR:-default}`` fallback.
+    """
+    def _sub(m: re.Match) -> str:
+        name, default = m.group(1), m.group(2)
+        val = os.environ.get(name)
+        if val is not None:
+            return val
+        if default is not None:
+            return default
+        return m.group(0)
+
+    return _ENV_REF_RE.sub(_sub, value)
 
 
 def default_config_path() -> Path:
@@ -128,9 +156,10 @@ def apply_env() -> dict:
         if os.environ.get(key):
             logger.info("env_from_shell key=%s", key)
             continue
-        os.environ[key] = str(value)
-        effective[key] = str(value)
-        logger.info("env_injected key=%s", key)
+        expanded = expand_value(str(value))
+        os.environ[key] = expanded
+        effective[key] = expanded
+        logger.info("env_injected key=%s value=%r", key, expanded)
     return effective
 
 
@@ -166,12 +195,16 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
             if not isinstance(m, dict):
                 continue
             # env override may point at the single model keyed by its name
+            # Path().expanduser() resolves a ``~`` default (e.g. ~/.slife/models/…)
+            # and normalises separators on Windows.
+            gguf_path = (str(Path(expand_value(m["gguf_path"])).expanduser())
+                         if m.get("gguf_path") else None)
             specs.append(
                 ModelSpec(
                     name,
                     backend=m.get("backend", "gguf"),
                     model=m.get("model") or name,
-                    gguf_path=m.get("gguf_path") or None,
+                    gguf_path=gguf_path,
                     device=m.get("device", ""),
                     max_tokens=int(m.get("max_tokens", 0) or 0),
                 )
@@ -188,7 +221,8 @@ def resolve_engine_settings(overrides: "dict | None" = None) -> dict:
                 model,
                 backend=backend,
                 model=model,
-                gguf_path=_pick("gguf_path", "") or None,
+                gguf_path=(str(Path(expand_value(_pick("gguf_path", ""))).expanduser()).strip()
+                   or None),
                 device=_pick("device", ""),
             )
         ]

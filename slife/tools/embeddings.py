@@ -283,7 +283,7 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
             },
             "base_url": {
                 "type": "string",
-                "description": "OpenAI-compatible base URL (e.g. http://127.0.0.1:8000/v1). Required for new providers.",
+                "description": "OpenAI-compatible base URL (e.g. http://127.0.0.1:17347/v1). Required for new providers.",
             },
             "api_key": {
                 "type": "string",

@@ -48,17 +48,23 @@ $slifeTarball = "$slifeRepo/archive/refs/heads/main.zip"
 $tmpDir       = Join-Path $env:TEMP "slife-install-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 New-Item -ItemType Directory -Force $tmpDir | Out-Null
 
+# Light install: skip the optional full tool set (embeddings, yt-dlp,
+# browser-harness).  Set $env:SLIFE_CORE=1 (native console: --core).
+$coreMode = ($env:SLIFE_CORE -eq "1") -or ($args -contains "--core")
+
 try {
     Write-Host "Slife Installer" -ForegroundColor Cyan
     Write-Host ""
 
     # Pre-flight summary
-    Write-Host "Install method    : uv tool install (isolated environment)"
+    Write-Host "Install method    : uv tool install (isolated environment, from source — always latest main)"
     Write-Host "User data         : $env:USERPROFILE\.slife\"
     Write-Host "Python            : managed by uv (3.13)"
     Write-Host "npx               : auto-install Node.js if needed (required for MCP servers)"
     Write-Host "bun               : auto-install bun if needed (required for nvidia-nim MCP)"
-    Write-Host "Disk space needed : ~500 MB"
+    Write-Host "Configs           : seeded from bundled defaults (slife / local-embed / mcp-plugin)"
+    Write-Host "Full tool set     : embeddings, yt-dlp, browser-harness, Mosquitto (SLIFE_CORE=1 to skip)"
+    Write-Host "Disk space needed : ~500 MB (embeddings extra: +0.3-2 GB)"
     Write-Host ""
 
     # 0. Disk space check
@@ -292,36 +298,25 @@ try {
         if ($mosqDir -ne "") { $env:PATH = "$mosqDir;$env:PATH" }
         Write-Ok "mosquitto found"
     } else {
-        Write-Warn "  Mosquitto not found."
-        Write-Dim "  Required for: A2A multi-agent mesh communication"
-        Write-Dim "  Without it:  slife works normally, just without P2P agent features"
-        try { $choice = Read-Host "  Install Mosquitto? (y/n, default: n)" } catch { $choice = "n" }
-        if ($choice -eq 'y' -or $choice -eq 'Y') {
-            if (Get-Command winget -ErrorAction SilentlyContinue) {
-                Write-Dim "Installing Mosquitto via winget..."
-                winget install EclipseFoundation.Mosquitto --source winget --accept-package-agreements --accept-source-agreements
-                # winget returns non-zero when the package is already installed
-                # and no upgrade is available — refresh PATH and re-scan.
-                $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                            [System.Environment]::GetEnvironmentVariable("Path", "User")
-                $mosqDir = Find-MosquittoDir
-                if ($mosqDir -ne $null) {
-                    if ($mosqDir -ne "") { $env:PATH = "$mosqDir;$env:PATH" }
-                    Write-Ok "Mosquitto ready"
-                    Write-Host "  To start Mosquitto:" -ForegroundColor Cyan
-                    Write-Host "    net start mosquitto"
-                    Write-Host "  Or run manually:"
-                    Write-Host "    mosquitto -d -p 1883"
-                } else {
-                    Write-Warn "  Mosquitto not found after install. Install manually:"
-                    Write-Warn "    https://mosquitto.org/download/"
-                }
+        Write-Dim "  Mosquitto not found — installing automatically (A2A multi-agent mesh)..."
+        if (Get-Command winget -ErrorAction SilentlyContinue) {
+            Write-Dim "Installing Mosquitto via winget..."
+            winget install EclipseFoundation.Mosquitto --source winget --accept-package-agreements --accept-source-agreements | Out-Null
+            # winget returns non-zero when the package is already installed
+            # and no upgrade is available — refresh PATH and re-scan.
+            $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                        [System.Environment]::GetEnvironmentVariable("Path", "User")
+            $mosqDir = Find-MosquittoDir
+            if ($mosqDir -ne $null) {
+                if ($mosqDir -ne "") { $env:PATH = "$mosqDir;$env:PATH" }
+                Write-Ok "Mosquitto installed"
             } else {
-                Write-Warn "  No supported package manager found (winget not available)."
+                Write-Warn "  Mosquitto not found after install — A2A mesh disabled until it runs."
                 Write-Warn "  Install manually: https://mosquitto.org/download/"
             }
         } else {
-            Write-Dim "  Skipped. Install later with: winget install EclipseFoundation.Mosquitto --source winget"
+            Write-Warn "  No supported package manager found (winget not available) — A2A mesh disabled."
+            Write-Warn "  Install manually: https://mosquitto.org/download/"
         }
     }
     Write-Host ""
@@ -615,6 +610,100 @@ try {
         }
     }
 
+    # 4b. Lightweight extras (out-of-the-box; skip with SLIFE_CORE=1).  The heavy
+    # semantic packages (sentence-transformers, llama-cpp-python) are
+    # deliberately NOT installed here — see step [4d]: they are env-specific
+    # (CPU / CUDA / Metal builds) and paired with a long model download, so the
+    # user runs those commands themselves after the install.  Only the small
+    # CLI tools are added here.
+    Write-Step "[4b] Installing lightweight CLI tools (yt-dlp, browser-harness)..."
+    if ($coreMode) {
+        Write-Dim "  Core mode — skipping CLI tools"
+    } else {
+        $toolPy = Join-Path (uv tool dir) "slife\Scripts\python.exe"
+        if (Test-Path $toolPy) {
+            $extrasLog = Join-Path $tmpDir "extras-install.log"
+            $prevEAP3 = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            & uv pip install --python $toolPy yt-dlp 2>&1 > $extrasLog
+            $ytOk = ($LASTEXITCODE -eq 0)
+            $ErrorActionPreference = $prevEAP3
+            if ($ytOk) {
+                Write-Ok "yt-dlp"
+            } else {
+                Write-Warn "  yt-dlp install failed (optional) — see log tail:"
+                Get-Content $extrasLog -Tail 8 | ForEach-Object { Write-Dim "    $_" }
+            }
+            # browser-harness (declared in the default config's cli_tools)
+            $prevEAP3 = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            & uv tool install --python 3.12 --upgrade --force browser-harness 2>&1 > $extrasLog
+            $bhOk = ($LASTEXITCODE -eq 0)
+            $ErrorActionPreference = $prevEAP3
+            if ($bhOk) {
+                Write-Ok "browser-harness (uv tool)"
+            } else {
+                Write-Warn "  browser-harness install failed (optional)"
+            }
+        } else {
+            Write-Warn "  tool venv not found — skipped CLI tools (optional)"
+        }
+    }
+
+    # 4c. Configs: seed the git-tracked defaults out-of-the-box.  slife.json5 /
+    # local_embed.json5 / mcp-plugin.json5 come from the downloaded source tree
+    # (now git-tracked).  Missing ones are copied silently; existing ones
+    # (upgrades) are only replaced after an explicit "yes".
+    Write-Step "[4c] Setting up configs (out-of-the-box defaults)..."
+    $dataDir = "$env:USERPROFILE\.slife"
+    New-Item -ItemType Directory -Force $dataDir | Out-Null
+    $seedPairs = @(
+        @("slife.json5", "$dataDir\slife.json5"),
+        @("local_embed.json5", "$dataDir\local_embed.json5"),
+        @("mcp-plugin.json5", "$dataDir\mcp-plugin.json5")
+    )
+    $anyExists = $false
+    foreach ($pair in $seedPairs) { if (Test-Path $pair[1]) { $anyExists = $true } }
+    $resetConfigs = $false
+    if ($anyExists) {
+        try { $ans = Read-Host "  Config files already exist — reset to the bundled defaults? (y/N, default: N)" } catch { $ans = "n" }
+        if ($ans -match '^[yY]') { $resetConfigs = $true }
+    }
+    foreach ($pair in $seedPairs) {
+        $src = Join-Path $extractedDir.FullName $pair[0]
+        if (-not (Test-Path $src)) { continue }   # older main snapshots may lack the seeds
+        if (Test-Path $pair[1]) {
+            if ($resetConfigs) {
+                Copy-Item $src $pair[1] -Force
+                Write-Dim "  reset  $($pair[1])"
+            }
+        } else {
+            Copy-Item $src $pair[1] -Force
+            Write-Dim "  seeded $($pair[1])"
+        }
+    }
+
+    # 4d. Semantic memory search — user-run setup.  Needs a model AND one
+    # embedding backend.  Not installed by default: the backend build is
+    # env-specific and the model download is ~2 GB, so the user picks the
+    # matching command and runs it in a terminal afterwards.  (Windows: CPU
+    # or NVIDIA CUDA; the macOS/Linux installer lists the Metal variant too.)
+    Write-Step "[4d] Semantic memory search — setup commands (run in a terminal)..."
+    $semanticPy = Join-Path (uv tool dir) "slife\Scripts\python.exe"
+    $semanticBin = Join-Path (uv tool dir) "slife\Scripts\local-embed.exe"
+    Write-Dim "  Semantic memory search needs a model AND an embedding backend.  Choose ONE backend:"
+    Write-Host "    # sentence-transformers — simplest, works everywhere:" -ForegroundColor Cyan
+    Write-Dim "  uv pip install --python `"$semanticPy`" sentence-transformers"
+    Write-Host "    # llama-cpp-python — NVIDIA GPU (CUDA 12):" -ForegroundColor Cyan
+    Write-Dim "  uv pip install --python `"$semanticPy`" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 llama-cpp-python==0.3.34"
+    Write-Host "    # llama-cpp-python — CPU:" -ForegroundColor Cyan
+    Write-Dim "  uv pip install --python `"$semanticPy`" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.34"
+    Write-Dim "  Then download the model:"
+    Write-Host "    # transformer (~2 GB) — huggingface.co, falls back to hf-mirror.com automatically:" -ForegroundColor Cyan
+    Write-Dim "  & `"$semanticBin`" download BAAI/bge-m3"
+    Write-Host "    # or a small GGUF (~100 MB) placed at $env:USERPROFILE\.slife\models\bge-m3-q4_k_m.gguf" -ForegroundColor Cyan
+    Write-Dim "  (or set the BGE_M3_GGUF_PATH env var) — details in $env:USERPROFILE\.slife\local_embed.json5."
+
     # 5. Finalise PATH
     Write-Step "[5/5] Finalising PATH..."
 
@@ -663,16 +752,20 @@ try {
         }
     }
     Write-Host "Get started:" -ForegroundColor Cyan
-    Write-Host "  credstore set-password              # set up encrypted backup (first time)"
-    Write-Host "  credstore set DEEPSEEK_API_KEY       # store your API key"
-    Write-Host "  slife                                # launch the TUI"
+    Write-Host "  1. credstore set-password              # encrypted backup (first time)"
+    Write-Host "  2. credstore set DEEPSEEK_API_KEY      # your first API key (or the one your active model needs — see $env:USERPROFILE\.slife\slife.json5)"
+    Write-Host "  3. slife                               # launch the TUI"
     Write-Host ""
-    Write-Host "Optional extras:" -ForegroundColor Cyan
-    Write-Host "  # Local GGUF embeddings (offline, ~30 MB):"
-    $ggufUrl = if ($extraIndexArgs.Count -gt 0) { " $($extraIndexArgs[0]) $($extraIndexArgs[1])" } else { "" }
-    Write-Host "  uv pip install --python `"`$(uv tool dir)\slife\Scripts\python.exe`"$ggufUrl llama-cpp-python"
-    Write-Host "  # HuggingFace transformer embeddings (~2 GB):"
-    Write-Host "  uv pip install --python `"`$(uv tool dir)\slife\Scripts\python.exe`" sentence-transformers"
+    if ($coreMode) {
+        Write-Host "Core install done:" -ForegroundColor Cyan
+        Write-Host "  - External MCP servers, Mosquitto (A2A mesh)"
+        Write-Host "  - yt-dlp / browser-harness skipped — add later: uv tool install --python 3.12 browser-harness"
+    } else {
+        Write-Host "Installed:" -ForegroundColor Cyan
+        Write-Host "  - External MCP servers, yt-dlp, browser-harness, Mosquitto (A2A mesh)"
+    }
+    Write-Host "  - Semantic memory search: run the [4d] commands above (keyword search already works)"
+    Write-Host "  - mcp-plugin build: & `"`$(uv tool dir)\slife\Scripts\mcp-plugin.exe`" build   # (re)build the MCP server catalog"
     Write-Host ""
     Write-Host "More info: $slifeRepo" -ForegroundColor Cyan
 

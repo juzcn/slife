@@ -169,7 +169,7 @@ in `args` and `url` (e.g. `"--header", "Authorization: Bearer ${GITHUB_TOKEN}"`)
   // mcp_tool_search falls back to keyword/grep.  Point it at any OpenAI-
   // compatible /v1 endpoint (the local-embed plugin serves this).
   embeddings: {
-    base_url: "http://127.0.0.1:8000/v1",
+    base_url: "http://127.0.0.1:17347/v1",
     api_key: "local",                  // optional; "" | plaintext | "${VAR}" (env → credstore)
     model: "bge-m3",                   // optional; endpoint's active model used otherwise
   },

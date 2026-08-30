@@ -33,6 +33,7 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from local_embed.config import DEFAULT_PORT
 from local_embed.engine import Engine
 from local_embed.logging import silence_noisy_loggers, setup_logging
 from local_embed.server_utils import create_plugin_server, warm_after_handshake
@@ -336,7 +337,7 @@ def _run(mcp_server: FastMCP, *, host: str, port: int) -> int:
     return 0
 
 
-def serve_standalone(engine: Engine, *, host: str = "127.0.0.1", port: int = 8000) -> int:
+def serve_standalone(engine: Engine, *, host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> int:
     """Run as a standalone service on an explicit host:port (CLI path)."""
     build_server(engine)
     logger.info("serve_standalone host=%s port=%s backend=%s", host, port, engine.backend)
@@ -348,10 +349,11 @@ def main() -> int:
 
     Reads ``local_embed.json5`` (env var ``$LOCAL_EMBED_FILE``, else the
     usual precedence) plus ``LOCAL_EMBED_*`` env overrides, builds the
-    multi-model engine, binds the configured port (default 8000 — a STABLE
-    port so a host can point its OpenAI-compatible client's ``base_url`` at
-    it), serves MCP + embeddings on it, and blocks until shutdown.  The
-    stdout port signal is still emitted for hosts that discover the port.
+    multi-model engine, binds the configured port (default {DEFAULT_PORT} — a
+    STABLE port so a host can point its OpenAI-compatible client's
+    ``base_url`` at it), serves MCP + embeddings on it, and blocks until
+    shutdown.  The stdout port signal is still emitted for hosts that
+    discover the port.
     """
     from local_embed.config import resolve_engine_settings
     from local_embed.server_utils import bind_port, run_plugin_server
@@ -361,10 +363,10 @@ def main() -> int:
     engine = Engine(specs=settings["specs"], active=settings["active"])
     build_server(engine)
 
-    # Bind the configured port (default 8000 — a STABLE port so a host can
-    # point its OpenAI-compatible client's base_url at it).  Falls back to a
-    # free port when taken; the stdout signal reports the actual port either
-    # way.
+    # Bind the configured port (default {DEFAULT_PORT} — a STABLE port so a
+    # host can point its OpenAI-compatible client's base_url at it).  Falls
+    # back to a free port when taken; the stdout signal reports the actual
+    # port either way.
     sock, port = bind_port(settings["host"], int(settings["port"]))
     logger.info(
         "local_embed_start port=%s active=%s models=%s",

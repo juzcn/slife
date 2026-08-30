@@ -148,9 +148,9 @@ class TestSetEmbeddings:
     """set_embeddings — top-level embeddings section upsert (merge semantics)."""
 
     def test_creates_section_when_absent(self):
-        cfg.set_embeddings({"base_url": "http://127.0.0.1:8000/v1", "model": "bge-m3"})
+        cfg.set_embeddings({"base_url": "http://127.0.0.1:17347/v1", "model": "bge-m3"})
         emb = _raw_config()["embeddings"]
-        assert emb["base_url"] == "http://127.0.0.1:8000/v1"
+        assert emb["base_url"] == "http://127.0.0.1:17347/v1"
         assert emb["model"] == "bge-m3"
 
     def test_preserves_unpassed_fields(self):

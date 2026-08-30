@@ -36,7 +36,7 @@ def _make_transport(models=None, embeddings_dim=3):
 @pytest_asyncio.fixture
 async def client():
     c = EmbeddingClient(
-        model="bge-m3", api_key="local", base_url="http://127.0.0.1:8000/v1",
+        model="bge-m3", api_key="local", base_url="http://127.0.0.1:17347/v1",
         transport=_make_transport(),
     )
     yield c
@@ -54,7 +54,7 @@ def test_from_config_absent_not_available(tmp_path):
 
 
 def test_from_config_present_available(tmp_path):
-    cfg = {"servers": {}, "embeddings": {"base_url": "http://127.0.0.1:8000/v1", "model": "bge-m3"}}
+    cfg = {"servers": {}, "embeddings": {"base_url": "http://127.0.0.1:17347/v1", "model": "bge-m3"}}
     path = tmp_path / "mcp-plugin.json5"
     plugin_config.write_config(path, cfg)
     c = EmbeddingClient.from_plugin_config(config_path=str(path))
@@ -73,7 +73,7 @@ def test_from_config_placeholder_not_available(tmp_path):
 def test_from_config_api_key_placeholder_resolves_from_env(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBED_API_KEY", "sk-test")
     cfg = {"servers": {}, "embeddings": {
-        "base_url": "http://127.0.0.1:8000/v1",
+        "base_url": "http://127.0.0.1:17347/v1",
         "api_key": "${EMBED_API_KEY}",
     }}
     path = tmp_path / "mcp-plugin.json5"
@@ -88,7 +88,7 @@ def test_from_config_api_key_placeholder_unresolved_is_empty(tmp_path, monkeypat
     monkeypatch.delenv("NO_SUCH_EMBED_KEY_EVER", raising=False)
     monkeypatch.setattr(plugin_config, "_try_credstore_lookup", lambda key: None)
     cfg = {"servers": {}, "embeddings": {
-        "base_url": "http://127.0.0.1:8000/v1",
+        "base_url": "http://127.0.0.1:17347/v1",
         "api_key": "${NO_SUCH_EMBED_KEY_EVER}",  # not in env, not in credstore
     }}
     path = tmp_path / "mcp-plugin.json5"
@@ -110,7 +110,7 @@ async def test_api_key_placeholder_resolved_value_sent_as_bearer(tmp_path, monke
         return httpx.Response(404, json={"error": "not found"})
 
     cfg = {"servers": {}, "embeddings": {
-        "base_url": "http://127.0.0.1:8000/v1",
+        "base_url": "http://127.0.0.1:17347/v1",
         "api_key": "${EMBED_API_KEY}",
     }}
     path = tmp_path / "mcp-plugin.json5"
