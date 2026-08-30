@@ -144,6 +144,37 @@ class TestSetServerEnabled:
         assert cfg.set_server_enabled("nope", False) is False
 
 
+class TestSetEmbeddings:
+    """set_embeddings — top-level embeddings section upsert (merge semantics)."""
+
+    def test_creates_section_when_absent(self):
+        cfg.set_embeddings({"base_url": "http://127.0.0.1:8000/v1", "model": "bge-m3"})
+        emb = _raw_config()["embeddings"]
+        assert emb["base_url"] == "http://127.0.0.1:8000/v1"
+        assert emb["model"] == "bge-m3"
+
+    def test_preserves_unpassed_fields(self):
+        cfg.set_embeddings({
+            "base_url": "http://a/v1", "model": "m1", "api_key": "key-a",
+        })
+        cfg.set_embeddings({"base_url": "http://b/v1"})
+        emb = _raw_config()["embeddings"]
+        assert emb == {"base_url": "http://b/v1", "model": "m1", "api_key": "key-a"}
+
+    def test_empty_string_overwrites_existing(self):
+        cfg.set_embeddings({"base_url": "http://a/v1", "api_key": "key-a", "model": "m1"})
+        cfg.set_embeddings({"api_key": ""})
+        emb = _raw_config()["embeddings"]
+        assert emb["api_key"] == ""   # explicit '' clears auth…
+        assert emb["model"] == "m1"   # …while untouched fields survive
+
+    def test_rest_api_api_key_header_refers_to_env_var(self):
+        """A ${VAR} api_key is stored verbatim, not resolved at save time."""
+        cfg.set_embeddings({"base_url": "http://a/v1", "api_key": "${EMBED_KEY}"})
+        emb = _raw_config()["embeddings"]
+        assert emb["api_key"] == "${EMBED_KEY}"
+
+
 class TestRestAPI:
     """save_rest_api — npx anyapi entry with a fetched_at-stamped source."""
 

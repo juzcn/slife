@@ -3,16 +3,38 @@
 Standalone MCP gateway — persistent connections to external MCP servers, with a
 CLI to configure and maintain them. Ships with [Slife](https://github.com/juzcn/slife)
 as its built-in MCP plugin but has **no dependency on it**. Depends only on
-`fastmcp`, `mcp`, `httpx`, `json5`, `aiosqlite`, and `credstore` (for OAuth token
-storage).
+`fastmcp`, `mcp`, `httpx`, `json5`, and `aiosqlite`; `credstore` is optional
+(secret `${PLACEHOLDER}` resolution + OAuth token storage).
+
+## Requirements
+
+Requires **[uv](https://docs.astral.sh/uv)**.  The uv routes below pin
+**Python 3.13** (`requires-python` is `>=3.13`, but 3.13 is what CI tests, and
+uv would otherwise pick the newest 3.14 it finds).
+
+Your external MCP servers need their own runtimes too: each `servers.<name>`
+entry spawns its `command:` as a subprocess, so the command must be installed
+and on `PATH` (see the config example below).  Typical ones are `npx`
+(Node.js), `bun` / `bunx` (Bun), and `uvx` (uv).  A server whose command is
+missing fails at connect time with an "executable not found" error.
+
+Optional: **`credstore`** (`mcp-plugin[credstore]`) — only needed when a
+secret uses a `${PLACEHOLDER}` that isn't in your shell env, or you use OAuth
+(`auth: {type: "oauth"}`).  Without it, placeholders resolve against the shell
+env only, and OAuth fails with a clear error naming the extra.
 
 ## Install
 
 ```bash
-pip install mcp-plugin
-# or bundled with Slife:
-uv tool install git+https://github.com/juzcn/slife.git
+uv tool install --python 3.13 mcp-plugin                      # standalone
+uv tool install --python 3.13 'mcp-plugin[credstore]'         # + credential store (secret placeholders, OAuth)
+# or bundled with Slife (its built-in MCP gateway):
+uv tool install --python 3.13 git+https://github.com/juzcn/slife.git
 ```
+
+`pip install mcp-plugin` (into a Python 3.13 environment) also works when uv
+isn't available.  Re-running a `uv tool install` over an **existing** install
+is a no-op unless you pass `--reinstall` — use it to upgrade to a new release.
 
 Verify: `mcp-plugin`
 
@@ -28,8 +50,15 @@ Server definitions live in `mcp-plugin.json5`, located by precedence:
 
 This is the same resolution credstore uses for its `credentials.crypt`.
 
-Keys in `env` and `auth.client_id`/`client_secret` support these references,
-resolved in order **shell env → credstore → literal**:
+Secret values — `env` entries, `auth.client_id`/`client_secret`, HTTP
+`headers`, and the embeddings `api_key` — accept three forms: `""` (empty: no
+value / no `Authorization` header), plaintext (used as-is), or a `${VAR}`
+placeholder resolved at use time in order **shell env → credstore → literal**
+(`VAR` is both the env-var name and the credstore key).  The embeddings
+`api_key` specifically treats an unresolvable placeholder as empty — it never
+sends a literal `Bearer ${VAR}` — while other fields keep the unresolved
+`${VAR}` literal as the last resort.  `${VAR}` refs may also appear embedded
+in `args` and `url` (e.g. `"--header", "Authorization: Bearer ${GITHUB_TOKEN}"`).
 
 ```json5
 // mcp-plugin.json5
@@ -68,11 +97,39 @@ resolved in order **shell env → credstore → literal**:
   // compatible /v1 endpoint (the local-embed plugin serves this).
   embeddings: {
     base_url: "http://127.0.0.1:8000/v1",
-    api_key: "local",                  // optional
+    api_key: "local",                  // optional; "" | plaintext | "${VAR}" (env → credstore)
     model: "bge-m3",                   // optional; endpoint's active model used otherwise
   },
 }
 ```
+
+The `command`/`args` pairs above are spawned as subprocesses on this machine,
+so install the runtime each `command` needs (`npx` → Node.js, `bun`/`bunx` →
+Bun, `uvx` → uv); see [Requirements](#requirements).
+
+### Semantic search & automatic degradation
+
+`mcp_tool_search` defaults to `mode="hybrid"` — it merges semantic hits with
+keyword hits **only when** the `embeddings` section is configured and the
+backend is actually working.  In every other situation it degrades
+**automatically** to keyword search (`fts5` BM25, with a LIKE substring
+fallback for CJK) — search never fails because embeddings is absent or
+broken:
+
+- embeddings **not configured** (no `embeddings` section) → `fts5`
+- embeddings **misconfigured** (`base_url` placeholder, wrong endpoint, bad
+  auth) → `fts5`
+- embeddings endpoint **unreachable** at search time (was reachable at
+  startup, is not now) → `fts5`
+- embedding model **failed to load** → `fts5`
+- semantic index still **building/rebuilding** → `fts5`, upgrading back to
+  `hybrid` automatically when indexing finishes
+
+`mode="grep"` (exact substring) never involves embeddings and always works.
+The result's `mode` field reports what actually ran (`hybrid` / `fts5` /
+`grep`) and a `hint` names the reason, so a caller can always tell search
+degraded.  Enable semantic search by fixing the `embeddings` section and
+running `mcp-plugin build` (there is no MCP tool for it).
 
 ### On-demand vs auto-load
 
@@ -102,11 +159,20 @@ across restarts, so `mcp_tool_search` works before any reconnect. Changing
 |---------|-------------|
 | `mcp-plugin` | Overview of configured servers |
 | `mcp-plugin set <server>` | Interactive add/configure a server |
+| `mcp-plugin set-embed --base-url <url> [--model <name>] [--api-key <key>]` | Add/update the embeddings section (semantic search) |
 | `mcp-plugin remove <server>` | Remove a server from config (takes effect at next server start) |
 | `mcp-plugin build` | Rebuild the tool catalog DB + index from live connections |
 
 `set` accepts `--transport stdio|http`, `--command`, `--url`, `--args`,
 `--env` (`KEY=VALUE`), `--enabled/--no-enabled`, and `--auth oauth` prompts.
+
+`set-embed` writes/updates the top-level `embeddings` section: `--base-url` is
+**required** (a placeholder `\${…}` or empty value leaves semantic search
+disabled, keyword fallback only).  `--model` and `--api-key` (alias
+`--apikey`) are **optional** — omit one to keep its current value, pass `""`
+to clear it.  The `api_key` accepts the same forms as other secrets (`""` /
+plaintext / `${VAR}`) and is stored verbatim.  Changes apply at the next
+server start, or run `mcp-plugin build` to (re)index now.
 
 ### Build
 
@@ -130,9 +196,11 @@ spawns `python -m <module>`. The management tools (`mcp_set`, `mcp_remove`,
 
 - `mcp_tool_search(query, mode="hybrid", limit, server, include_disabled)`
   — search the catalog. `mode`: `hybrid` (semantic + keyword), `fts5` (BM25),
-  or `grep` (exact substring). Hybrid degrades to `fts5` automatically when no
-  embeddings endpoint is configured or the index is still building. Results
-  carry `full_name`, `server`, `name`, `description`, `enabled`, snippet and a
+  or `grep` (exact substring). Hybrid degrades to `fts5` automatically when
+  semantic search is unavailable — embeddings missing, misconfigured, or still
+  building (see [Semantic search & automatic
+  degradation](#semantic-search--automatic-degradation)). Results carry
+  `full_name`, `server`, `name`, `description`, `enabled`, snippet and a
   score; `include_disabled=true` (default) surfaces disabled tools too.
 - `mcp_list_tools(server)` — **double read**: the live connected tools AND the
   persisted catalog (`mcp-plugin.db`). When the catalog is unavailable, or its

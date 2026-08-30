@@ -3,6 +3,9 @@
 Commands:
   ``mcp-plugin``               overview of configured servers
   ``mcp-plugin set <s>``       interactively add/configure a server
+  ``mcp-plugin set-embed``     configure the embeddings section (semantic
+                               search); --base-url required, --model/--api-key
+                               optional (omit to keep, "" to clear)
   ``mcp-plugin remove <s>``    remove a server (takes effect next server start)
   ``mcp-plugin build``         rebuild the tool catalog DB + index from live
                                connections (manual config edits, external MCP
@@ -46,6 +49,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_remove = sub.add_parser("remove", help="Remove a server from config.")
     p_remove.add_argument("server", help="Server name.")
 
+    p_embed = sub.add_parser(
+        "set-embed", help="Configure the embeddings section (semantic search).",
+    )
+    p_embed.add_argument(
+        "--base-url", required=True,
+        help="OpenAI-compatible base URL (e.g. http://127.0.0.1:8000/v1).",
+    )
+    p_embed.add_argument(
+        "--model", default=None,
+        help="Embedding model; omit to keep the current value, pass '' to clear "
+             "and use the endpoint's active model.",
+    )
+    p_embed.add_argument(
+        "--api-key", "--apikey", dest="api_key", default=None,
+        help="API key: empty / plaintext / ${VAR}; omit to keep the current "
+             "value, pass '' to clear.",
+    )
+
     sub.add_parser(
         "build", help="Rebuild the tool catalog DB + index from live connections.",
     )
@@ -61,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         return _overview()
     if command == "set":
         return _set_cmd(args.server)
+    if command == "set-embed":
+        return _set_embed_cmd(args)
     if command == "remove":
         return _remove_cmd(args.server)
     if command == "build":
@@ -278,6 +301,36 @@ async def _raw_connect_http(cfg: ServerConfig) -> tuple[list[str], str]:
         result = await session.list_tools()
     info = f"{init.serverInfo.name} {init.serverInfo.version}".strip()
     return [t.name for t in result.tools], info
+
+
+# ── set-embed (embeddings section) ──────────────────────────────────────
+
+
+def _set_embed_cmd(args: argparse.Namespace) -> int:
+    """Write/update the top-level ``embeddings`` section.
+
+    ``--base-url`` is required; ``--model`` / ``--api-key`` are optional —
+    omitted values are preserved (see :func:`set_embeddings`).  The api_key
+    stores whatever form the user passed (empty / plaintext / ``${VAR}``)
+    verbatim — resolution happens at use time, so the command never prints
+    the key itself.
+    """
+    plugin_config.set_embeddings({
+        "base_url": args.base_url,
+        "model": args.model,
+        "api_key": args.api_key,
+    })
+    print(f"[OK] embeddings saved. base_url={args.base_url}")
+    if args.model is not None:
+        print(f"     model={args.model}")
+    if args.api_key is not None:
+        print(f"     api_key={'empty' if args.api_key == '' else '(set, hidden)'}")
+    if not args.base_url or args.base_url.startswith("${"):
+        print("NOTE: a placeholder/empty base_url leaves semantic search disabled "
+              "(keyword fallback only).")
+    print("Changes apply at the next server start, or run 'mcp-plugin build' "
+          "to (re)index now.")
+    return 0
 
 
 # ── remove ──────────────────────────────────────────────────────────────

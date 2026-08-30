@@ -7,8 +7,10 @@ endpoint — the deployment uses the ``local-embed`` plugin at
 
 Config is the single top-level ``embeddings`` section of ``mcp-plugin.json5``:
 ``{ base_url, model?, api_key? }``.  Present with a real ``base_url`` ⇒ the
-client is available (semantic search runs); absent / placeholder ⇒
-unavailable (keyword/grep fallback).
+client is available (semantic search runs); absent / placeholder ``base_url``
+⇒ unavailable (keyword/grep fallback).  ``api_key`` may be empty (no auth
+header), plaintext, or a ``${VAR}`` placeholder resolved at construction via
+shell env → credstore (an unresolvable placeholder degrades to empty).
 """
 
 import asyncio
@@ -17,7 +19,7 @@ from pathlib import Path
 
 import httpx
 
-from mcp_plugin.config import load_config, read_config
+from mcp_plugin.config import _resolve_secret, load_config, read_config
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,9 @@ class EmbeddingClient:
 
         No section, or a ``base_url`` that is a ``${VAR}`` placeholder ⇒
         ``enabled=False`` (semantic search off, keyword/grep fallback).
+        An ``api_key`` that is a ``${VAR}`` placeholder is resolved through
+        shell env → credstore; unresolvable placeholders degrade to empty
+        (no ``Authorization`` header).
         """
         try:
             if config_path is None:
@@ -79,7 +84,10 @@ class EmbeddingClient:
         model = str(emb.get("model", ""))
         api_key = str(emb.get("api_key", ""))
         if _looks_like_placeholder(api_key):
-            api_key = ""
+            # ${VAR} → shell env → credstore; unresolvable ⇒ no auth header
+            # (a literal "Bearer ${VAR}" is never worth sending).
+            resolved = _resolve_secret(api_key)
+            api_key = "" if _looks_like_placeholder(resolved) else resolved
         enabled = bool(base_url) and not _looks_like_placeholder(base_url)
         return cls(
             model=model, api_key=api_key, base_url=base_url,
@@ -115,6 +123,10 @@ class EmbeddingClient:
     @property
     def base_url(self) -> str:
         return self._base_url
+
+    @property
+    def api_key(self) -> str:
+        return self._api_key
 
     # ── Load / discover ─────────────────────────────────────────────
 

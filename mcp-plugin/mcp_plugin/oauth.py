@@ -26,9 +26,40 @@ from dataclasses import dataclass
 
 import httpx
 
-from credstore import delete_credential, get_credential, set_credential
-
 logger = logging.getLogger(__name__)
+
+_CREDSTORE = None
+
+
+def _require_credstore():
+    """Return the credstore module — credstore is an optional dependency.
+
+    OAuth token storage needs it.  Raise a clear error (not a bare
+    ``ImportError``) so the user knows which extra to install.
+    """
+    global _CREDSTORE
+    if _CREDSTORE is None:
+        try:
+            import credstore
+        except ImportError as exc:
+            raise RuntimeError(
+                "OAuth token storage requires the optional 'credstore' extra — "
+                "install with: uv tool install --python 3.13 'mcp-plugin[credstore]'"
+            ) from exc
+        _CREDSTORE = credstore
+    return _CREDSTORE
+
+
+def get_credential(key: str) -> str | None:
+    return _require_credstore().get_credential(key)
+
+
+def set_credential(key: str, value: str) -> None:
+    _require_credstore().set_credential(key, value)
+
+
+def delete_credential(key: str) -> None:
+    _require_credstore().delete_credential(key)
 
 # ── User-facing output channel ─────────────────────────────────────────
 # The device flow runs inside the slife-mcp gateway child, whose stdout is

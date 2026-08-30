@@ -322,6 +322,25 @@ def set_server_enabled(name: str, enabled: bool) -> bool:
     return True
 
 
+def set_embeddings(values: dict) -> None:
+    """Upsert the top-level ``embeddings`` section with merge semantics.
+
+    Present keys overwrite; ``None`` values are skipped so existing fields
+    are preserved.  Creates the section (with unknown keys preserved) when
+    absent.  ``values`` are stored verbatim — a ``${VAR}`` api_key stays a
+    placeholder in the file and resolves at use time.
+    """
+    raw = _load_raw()
+    emb = raw.get("embeddings")
+    section: dict = dict(emb) if isinstance(emb, dict) else {}
+    for key, value in values.items():
+        if value is None:
+            continue
+        section[key] = value
+    raw["embeddings"] = section
+    write_config(current_path(), raw)
+
+
 def _load_raw() -> dict:
     return read_config(current_path())
 

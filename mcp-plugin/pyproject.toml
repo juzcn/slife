@@ -14,7 +14,6 @@ dependencies = [
     "httpx>=0.27.0",
     "json5>=0.15.0",
     "aiosqlite>=0.20.0",
-    "credstore",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -33,6 +32,12 @@ Documentation = "https://github.com/juzcn/slife/blob/main/mcp-plugin/README.md"
 
 [project.scripts]
 mcp-plugin = "mcp_plugin.__main__:main"
+
+[project.optional-dependencies]
+# ${PLACEHOLDER} secret resolution (shell env → credstore) and OAuth token
+# keyring storage.  Optional — without it, placeholders resolve against the
+# shell env only, and OAuth fails with a clear error naming this extra.
+credstore = ["credstore"]
 
 [build-system]
 # See root pyproject.toml: pin below hatchling 1.27 so the wheel stays at

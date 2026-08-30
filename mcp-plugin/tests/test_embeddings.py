@@ -70,6 +70,58 @@ def test_from_config_placeholder_not_available(tmp_path):
     assert c.available is False
 
 
+def test_from_config_api_key_placeholder_resolves_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("EMBED_API_KEY", "sk-test")
+    cfg = {"servers": {}, "embeddings": {
+        "base_url": "http://127.0.0.1:8000/v1",
+        "api_key": "${EMBED_API_KEY}",
+    }}
+    path = tmp_path / "mcp-plugin.json5"
+    plugin_config.write_config(path, cfg)
+    c = EmbeddingClient.from_plugin_config(config_path=str(path))
+    assert c.available is True
+    assert c.api_key == "sk-test"
+
+
+def test_from_config_api_key_placeholder_unresolved_is_empty(tmp_path, monkeypatch):
+    # Hermetic: no env var, and never fall through to the real keyring lookup.
+    monkeypatch.delenv("NO_SUCH_EMBED_KEY_EVER", raising=False)
+    monkeypatch.setattr(plugin_config, "_try_credstore_lookup", lambda key: None)
+    cfg = {"servers": {}, "embeddings": {
+        "base_url": "http://127.0.0.1:8000/v1",
+        "api_key": "${NO_SUCH_EMBED_KEY_EVER}",  # not in env, not in credstore
+    }}
+    path = tmp_path / "mcp-plugin.json5"
+    plugin_config.write_config(path, cfg)
+    c = EmbeddingClient.from_plugin_config(config_path=str(path))
+    assert c.available is True          # base_url real → client available
+    assert c.api_key == ""              # placeholder ⇒ no auth header
+
+
+@pytest.mark.asyncio
+async def test_api_key_placeholder_resolved_value_sent_as_bearer(tmp_path, monkeypatch):
+    monkeypatch.setenv("EMBED_API_KEY", "sk-test")
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["authorization"] = request.headers.get("authorization")
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "bge-m3", "dimension": 3, "active": True}]})
+        return httpx.Response(404, json={"error": "not found"})
+
+    cfg = {"servers": {}, "embeddings": {
+        "base_url": "http://127.0.0.1:8000/v1",
+        "api_key": "${EMBED_API_KEY}",
+    }}
+    path = tmp_path / "mcp-plugin.json5"
+    plugin_config.write_config(path, cfg)
+    c = EmbeddingClient.from_plugin_config(config_path=str(path))
+    c._transport = httpx.MockTransport(handler)  # test hook, see EmbeddingClient.__init__
+    assert await c.load() is True
+    assert seen["authorization"] == "Bearer sk-test"
+    await c.close()
+
+
 # ── load / discover / embed ────────────────────────────────────────
 
 
