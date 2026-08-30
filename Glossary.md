@@ -737,7 +737,7 @@ The external plugin that serves an OpenAI-compatible embedding endpoint —
 ``POST /v1/embeddings``, ``GET /v1/models``, and ``GET /v1/models/{id}`` — from a local GGUF
 (llama-cpp) or HF transformer model, loaded once and shared by memdb, memfiles,
 and the MCP gateway's tool catalog. Registered via ``plugins.external``; binds
-the configured port (default 8000) and reads its model configuration from
+the configured port (default 17347) and reads its model configuration from
 ``local_embed.json5``. *See also* Embeddings section; mcp-plugin.
 
 ### M

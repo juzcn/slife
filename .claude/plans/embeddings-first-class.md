@@ -17,7 +17,7 @@ transformer 后端配置。
 embeddings: {
   providers: {
     "local-embed": {
-      base_url: "http://127.0.0.1:8000/v1",
+      base_url: "http://127.0.0.1:17347/v1",
       api_key: "local",
       models: [ { model: "bge-m3", dim: 1024 } ]
     },

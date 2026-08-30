@@ -56,7 +56,7 @@ URL:
 | Auto-assigned (default / slife plugin) | `python -m mcp_plugin.server` | From the stdout signal `{"port": N}` |
 
 A client that must point a **static URL** at this server needs the fixed mode
-(the same reason slife's embeddings provider fixes local-embed's `:8000`).  A
+(the same reason slife's embeddings provider fixes local-embed's `:17347`).  A
 **host that spawns the process and discovers it** — slife, or any supervisor —
 uses auto-assigned: the server binds a free port, then signals `{"port": N}`
 to stdout as a single JSON line once it is ready to serve MCP.
