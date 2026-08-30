@@ -12,6 +12,7 @@ pytestmark = pytest.mark.unit
 from local_embed.cli import main
 from local_embed.cmd_set import (
     ENV_CACHE_KEY,
+    ENV_OFFLINE_KEY,
     backend_install_hint,
     model_in_cache,
     resolve_cache,
@@ -41,8 +42,14 @@ class TestSetTransformerModel:
             "models": {"BAAI/bge-m3": {"backend": "transformer", "model": "BAAI/bge-m3"}},
             "active_model": "BAAI/bge-m3",
             "port": 8000,
-            "env": {ENV_CACHE_KEY: "C:\\hub"},
+            "env": {ENV_CACHE_KEY: "C:\\hub", ENV_OFFLINE_KEY: "1"},
         }
+
+    def test_offline_flag_defaults_on(self):
+        # the server should never silently refetch a missing repo — pin
+        # HF_HUB_OFFLINE even when the user only supplied a cache dir
+        out = set_transformer_model({}, "BAAI/bge-m3", "C:\\hub", 8000)
+        assert out["env"][ENV_OFFLINE_KEY] == "1"
 
     def test_preserves_existing_models_and_env(self):
         cfg = {

@@ -170,14 +170,15 @@ source of truth.
 
 `local-embed set` (transformer) and `local-embed set-gguf` (gguf) upsert a
 model in the config, make it **active**, and pin port (and, for `set`, the
-HF cache).  Both are **idempotent** — re-running yields the same config —
-and leave other models untouched.
+HF cache + offline flag).  Both are **idempotent** — re-running yields the
+same config — and leave other models untouched.
 
 | | `set` (transformer) | `set-gguf` |
 |---|---|---|
 | `<model_name>` | required — HF repo id (key + repo loaded) | required — config key |
 | weight ref | `--HF_HUB_CACHE <dir>` — cache must contain the repo | `--path <PATH>` required — existing `.gguf` file |
 | cache fallback | env `HF_HUB_CACHE`, else error | — |
+| env written | `HF_HUB_CACHE` + `HF_HUB_OFFLINE: "1"` (offline server) | — |
 | `--port <n>` | default `8000` | default `8000` |
 
 ```bash

@@ -24,6 +24,7 @@ from pathlib import Path
 from local_embed.config import load_config, write_config
 
 ENV_CACHE_KEY = "HF_HUB_CACHE"
+ENV_OFFLINE_KEY = "HF_HUB_OFFLINE"
 
 # Official prebuilt-wheel indexes for llama-cpp-python (the upstream llama.cpp
 # project).  PyPI carries no Windows wheels for llama-cpp-python, so on
@@ -95,11 +96,18 @@ def _upsert_model(cfg: dict, model: str, entry: dict, port: int) -> dict:
 
 
 def set_transformer_model(cfg: dict, model: str, cache: str, port: int) -> dict:
-    """Upsert ``model`` as a transformer model, pin the cache it loads from."""
+    """Upsert ``model`` as a transformer model, pin the pre-downloaded cache.
+
+    The server is intended to run **offline** — the model is pre-downloaded
+    into ``cache`` and ``set`` requires it to already be there — so
+    ``HF_HUB_OFFLINE=1`` is written alongside the cache (the server resolves
+    the repo against this cache and never hits the network).
+    """
     env = dict(cfg.get("env") or {})
     env[ENV_CACHE_KEY] = cache
+    env[ENV_OFFLINE_KEY] = "1"
     out = _upsert_model(cfg, model, {"backend": "transformer", "model": model}, port)
-    out["env"] = env  # existing env keys preserved; HF_HUB_CACHE (re)written
+    out["env"] = env  # existing env keys preserved; cache + offline (re)written
     return out
 
 
