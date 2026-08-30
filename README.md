@@ -72,8 +72,8 @@ uvx --from git+https://github.com/juzcn/slife.git slife
 Re-run the install script to upgrade slife — it rebuilds from the latest `main` and preserves what you've customized:
 
 - **Optional packages** (e.g. `sentence-transformers`, `llama-cpp-python`) are captured from the previous tool venv and re-added after the fresh install, diffed against the new base so nothing is duplicated.
-- **Configs** that already exist are left untouched; resetting one to the bundled default is **asked per file** (default: no). Missing configs are seeded silently.
-- **Skills** that already exist are left untouched; overwriting one is **asked per skill** (default: no). Missing skills are seeded silently.
+- **Configs** that already exist are left untouched; resetting one to the bundled default is **asked per file, only when its content differs from the bundled default** (identical files are skipped silently; default: no). Missing configs are seeded silently.
+- **Skills** that already exist are left untouched; overwriting one is **asked per skill, only when its content differs from the bundled default** (identical files are skipped silently; default: no). Missing skills are seeded silently.
 
 ### Uninstall
 
